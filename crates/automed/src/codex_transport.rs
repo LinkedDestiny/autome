@@ -12,17 +12,41 @@
 //! error (`-32600`) until logged in, and `account/read` itself answers
 //! `{"account": null, "requiresOpenaiAuth": true}` rather than erroring —
 //! three different unauthenticated-state shapes on three related
-//! endpoints, none of them guessed. This module models exactly the four
-//! probes above; it deliberately does not implement `account/rateLimits/
-//! read`, `account/usage/read`, `turn/start`'s lifecycle, dynamic tools,
-//! sandboxed command execution, `turn/interrupt`, `thread/resume`, or
-//! `ServerRequest` approval-deny handling (§4.2.1). `turn/start` in
-//! particular was probed just far enough to learn it does *not* fail
-//! synchronously like `account/*` does — it returns `status: "inProgress"`
-//! immediately and resolves later via notification traffic this module has
-//! no documented rule for yet. None of the unimplemented pieces have a
-//! confirmed shape, and guessing here would repeat the mistake
-//! `harness_probe.rs`'s module doc already warns against.
+//! endpoints, none of them guessed. This module models the four probes
+//! above plus `probe_turn_to_completion`; it deliberately does not
+//! implement `account/rateLimits/read`, `account/usage/read`, dynamic
+//! tools, sandboxed command execution, `turn/interrupt`, `thread/resume`,
+//! or `ServerRequest` approval-deny handling (§4.2.1). None of those
+//! remaining unimplemented pieces have a confirmed shape, and guessing
+//! here would repeat the mistake `harness_probe.rs`'s module doc already
+//! warns against.
+//!
+//! `turn/start`'s full lifecycle, confirmed empirically (`codex-cli
+//! 0.153.4`, no account configured): its own JSON-RPC response resolves
+//! immediately with `{"turn": {"status": "inProgress", ...}}` — it does
+//! *not* fail synchronously the way `account/*` does. Real completion
+//! arrives later as an unsolicited, `id`-less notification line,
+//! `{"method": "turn/completed", "params": {"threadId": ..., "turn": {...,
+//! "status": "failed", "error": {"message": "unexpected status 401
+//! Unauthorized: ...", ...}, "startedAt": ..., "completedAt": ...,
+//! "durationMs": ...}}}`. Between `turn/start`'s response and
+//! `turn/completed`, an unauthenticated turn produces substantial
+//! interleaved notification traffic — `thread/started`,
+//! `thread/status/changed`, `turn/started`, `item/started`/`item/
+//! completed` for the echoed user message, then repeated `method:"error"`
+//! reconnect-attempt notifications (`"Reconnecting... N/5"`, `willRetry:
+//! true`, `codexErrorInfo.responseStreamDisconnected.httpStatusCode:401`)
+//! as the client retries over WebSocket, a `method:"warning"` when it
+//! falls back to HTTPS transport, then a second round of `N/5` reconnect
+//! attempts over HTTPS before giving up — roughly 30-40 seconds
+//! end-to-end for the one failure mode observed. `probe_turn_to_completion`
+//! drives exactly this: it keeps every notification line it sees along the
+//! way (never silently dropped, matching `request()`'s own `skipped`
+//! discipline) but only surfaces the terminal `turn/completed` line's
+//! `status`/`error.message` — the same intentionally-narrow scope this
+//! module applies everywhere else. A genuine *successful* turn's
+//! `turn/completed` shape has not been observed (no account configured in
+//! this environment) and is not guessed at here.
 //!
 //! D8 isolation this module is responsible for: `spawn` takes `codex_home`
 //! as an `fs_guard::OwnedDirGuard`, not a bare `&Path` — that type only
@@ -202,6 +226,61 @@ impl CodexTransport {
                 CodexFrame::Response(v) => return finish_response(v, skipped),
                 CodexFrame::Unmatched(v) => skipped.push(v),
             }
+        }
+    }
+
+    /// Reads further stdout lines — no new write — until an unsolicited
+    /// notification whose top-level `method` equals `notification_method`
+    /// arrives, or `timeout` elapses. Every other line read along the way
+    /// (any other notification, or a response to some request) is kept in
+    /// the returned `Vec`, mirroring `request()`'s own never-drop-silently
+    /// discipline for `skipped`. On timeout the child is killed and
+    /// reaped, same as `request()`.
+    async fn read_until_notification(
+        &mut self,
+        notification_method: &str,
+        timeout: Duration,
+    ) -> Result<(Value, Vec<Value>), CodexTransportError> {
+        match tokio::time::timeout(timeout, self.read_until_notification_inner(notification_method))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self.child.kill().await;
+                let _ = self.child.wait().await;
+                Err(CodexTransportError::Timeout {
+                    timeout_ms: timeout.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    async fn read_until_notification_inner(
+        &mut self,
+        notification_method: &str,
+    ) -> Result<(Value, Vec<Value>), CodexTransportError> {
+        let mut skipped = Vec::new();
+        loop {
+            let mut raw = String::new();
+            let bytes_read = self
+                .stdout
+                .read_line(&mut raw)
+                .await
+                .map_err(CodexTransportError::ReadResponse)?;
+            if bytes_read == 0 {
+                return Err(CodexTransportError::ClosedStdout);
+            }
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let value: Value =
+                serde_json::from_str(trimmed).map_err(CodexTransportError::MalformedLine)?;
+            if value.get("method").and_then(Value::as_str) == Some(notification_method) {
+                return Ok((value, skipped));
+            }
+            skipped.push(value);
         }
     }
 }
@@ -418,15 +497,9 @@ pub async fn probe_account_read(
 /// Result of `thread/start`. Only the fields needed to identify and later
 /// address the thread are modeled; the real response also carries
 /// `sessionId`, `path` (the on-disk rollout `.jsonl` under `codex_home`),
-/// `model`, `cwd`, and more that have no consumer yet.
-///
-/// Deliberately not covered here: `turn/start`. Empirically it does *not*
-/// synchronously error when unauthenticated the way `account/*` does —
-/// against a thread from an unauthenticated `codex_home` it returns
-/// immediately with `{"turn": {"status": "inProgress", ...}}`, meaning
-/// completion (success or an eventual auth failure) arrives later as
-/// notification traffic this module has no documented rule for yet.
-/// Modeling that lifecycle is a separate increment, not a guess made here.
+/// `model`, `cwd`, and more that have no consumer yet. `turn/start`'s own
+/// lifecycle, run on a thread started this way, is modeled separately by
+/// `probe_turn_to_completion` below (see module doc).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexThreadSummary {
     pub id: String,
@@ -464,6 +537,85 @@ pub async fn probe_thread_start(
         .unwrap_or("unknown")
         .to_string();
     Ok(CodexThreadSummary { id, status })
+}
+
+/// Terminal outcome of one `turn/start`, taken from the `turn/completed`
+/// notification's `params.turn` object (see module doc for the confirmed
+/// shape). Only `id`/`status`/`error.message` are parsed — the notification
+/// also carries `items`, `startedAt`/`completedAt`/`durationMs`, none of
+/// which have a consumer yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexTurnOutcome {
+    pub turn_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+}
+
+/// Spawns, initializes, starts a fresh thread, then drives one `turn/start`
+/// on it all the way to its terminal `turn/completed` notification, then
+/// kills the probe child. `turn_completion_timeout` must budget for the
+/// full notification window after `turn/start`'s own (immediate,
+/// `status:"inProgress"`) response — confirmed empirically this can be
+/// 30-40 seconds for the one failure mode observed (repeated WS/HTTPS
+/// reconnect attempts against a 401, see module doc), not just a fast
+/// round trip.
+pub async fn probe_turn_to_completion(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    text: &str,
+    turn_completion_timeout: Duration,
+) -> Result<CodexTurnOutcome, CodexTransportError> {
+    let (mut transport, _initialize_result) =
+        spawn_initialized(codex_binary, codex_home, Duration::from_secs(10)).await?;
+
+    let thread_id = match transport
+        .request("thread/start", serde_json::json!({}), Duration::from_secs(10))
+        .await
+    {
+        Ok((result, _skipped)) => {
+            match result.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str) {
+                Some(id) => id.to_string(),
+                None => {
+                    kill_and_reap(&mut transport).await;
+                    return Err(CodexTransportError::UnexpectedEnvelope {
+                        line: result.to_string(),
+                    });
+                }
+            }
+        }
+        Err(err) => {
+            kill_and_reap(&mut transport).await;
+            return Err(err);
+        }
+    };
+
+    let turn_start_params = serde_json::json!({
+        "threadId": thread_id,
+        "input": [{"type": "text", "text": text}],
+    });
+    if let Err(err) =
+        transport.request("turn/start", turn_start_params, Duration::from_secs(10)).await
+    {
+        kill_and_reap(&mut transport).await;
+        return Err(err);
+    }
+
+    let completion = transport
+        .read_until_notification("turn/completed", turn_completion_timeout)
+        .await;
+    kill_and_reap(&mut transport).await;
+    let (value, _skipped) = completion?;
+
+    let turn = value.get("params").and_then(|p| p.get("turn")).cloned().unwrap_or(Value::Null);
+    Ok(CodexTurnOutcome {
+        turn_id: turn.get("id").and_then(Value::as_str).map(str::to_string),
+        status: turn.get("status").and_then(Value::as_str).unwrap_or("unknown").to_string(),
+        error_message: turn
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 #[cfg(test)]
@@ -571,6 +723,34 @@ mod tests {
 
         assert!(!thread.id.is_empty());
         assert_eq!(thread.status, "idle");
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// Real-binary integration test: `turn/start` on a thread from an
+    /// unauthenticated `CODEX_HOME` resolves via the real `turn/completed`
+    /// notification (not a fast JSON-RPC error) as a failed turn carrying
+    /// the underlying 401 — the one lifecycle this module documents (see
+    /// module doc). Budgets a generous timeout for the confirmed 30-40s
+    /// reconnect/backoff window.
+    #[tokio::test]
+    async fn probe_turn_to_completion_round_trips_the_unauthenticated_failure_mode_against_the_real_codex_binary(
+    ) {
+        let codex_home = real_codex_home();
+        let outcome = probe_turn_to_completion(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            "say hi",
+            Duration::from_secs(90),
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.turn_id.is_some_and(|id| !id.is_empty()));
+        assert_eq!(outcome.status, "failed");
+        assert!(
+            outcome.error_message.is_some_and(|msg| msg.contains("401")),
+            "expected the terminal turn error to mention the underlying 401"
+        );
         std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
     }
 
