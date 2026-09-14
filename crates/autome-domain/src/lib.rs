@@ -7,8 +7,10 @@
 //! persistence, scheduling and adapters, and must route all state changes
 //! through these reducers rather than mutating projections directly.
 
+pub mod certificate;
 pub mod completion;
 pub mod contract;
+pub mod evidence;
 pub mod graph;
 pub mod node;
 pub mod project;
