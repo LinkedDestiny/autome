@@ -133,6 +133,37 @@ pub struct AgentClaim {
     pub suggested_next_steps: Vec<String>,
 }
 
+/// §7.1's `AttemptFailed`: "Harness 未产生有效候选" — a Core-observed fact
+/// about whether this Attempt yielded anything to evaluate at all,
+/// established independently of `AgentClaim` (which is never trusted, see
+/// module doc). §7.1 marks this state "可作为通过：否" with no
+/// recoverability caveat; that is enforced here by construction rather
+/// than by a lookup table — `AttemptFailed` simply carries no
+/// `candidate_tree_hash`, so nothing downstream that requires one (an
+/// `EvidenceReceipt`, a `CandidateCertificate`) can be built from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttemptOutcome {
+    ProducedCandidate { candidate_tree_hash: String },
+    AttemptFailed,
+}
+
+impl AttemptOutcome {
+    pub fn candidate_tree_hash(&self) -> Option<&str> {
+        match self {
+            AttemptOutcome::ProducedCandidate {
+                candidate_tree_hash,
+            } => Some(candidate_tree_hash),
+            AttemptOutcome::AttemptFailed => None,
+        }
+    }
+
+    /// §7.1: an `AttemptFailed` outcome may never proceed to evidence
+    /// collection or audit — there is no candidate for either to examine.
+    pub fn may_proceed_to_evaluation(&self) -> bool {
+        self.candidate_tree_hash().is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ToolSurface {
     pub provider_available_tools: Vec<String>,
@@ -439,5 +470,21 @@ mod tests {
         );
         let profile = base_profile(vec!["/workdir".into()]);
         assert!(validate_planning_attempt_is_read_only(&attempt, &profile).is_ok());
+    }
+
+    #[test]
+    fn produced_candidate_exposes_its_tree_hash_and_may_proceed() {
+        let outcome = AttemptOutcome::ProducedCandidate {
+            candidate_tree_hash: "treehash-1".into(),
+        };
+        assert_eq!(outcome.candidate_tree_hash(), Some("treehash-1"));
+        assert!(outcome.may_proceed_to_evaluation());
+    }
+
+    #[test]
+    fn attempt_failed_has_no_candidate_and_may_not_proceed() {
+        let outcome = AttemptOutcome::AttemptFailed;
+        assert_eq!(outcome.candidate_tree_hash(), None);
+        assert!(!outcome.may_proceed_to_evaluation());
     }
 }
