@@ -1,0 +1,23 @@
+[package]
+name = "automed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "automed"
+path = "src/main.rs"
+
+[dependencies]
+autome-domain = { path = "../autome-domain" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+time.workspace = true
