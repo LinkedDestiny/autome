@@ -151,6 +151,7 @@ mod tests {
             lifecycle: ProjectLifecycle::Active,
             phase: ProjectPhase::Ready,
             hold: ProjectHold::None,
+            revision: 1,
         }
     }
 
@@ -159,6 +160,7 @@ mod tests {
             lifecycle: ProjectLifecycle::Active,
             phase: ProjectPhase::ResolvingIntent,
             hold: ProjectHold::None,
+            revision: 1,
         }
     }
 
