@@ -322,6 +322,79 @@ fn reachable_downstream_includes_business(
     false
 }
 
+/// Every event this module's event-sourced TaskGraph aggregate can replay,
+/// mirroring `contract::ContractEvent`/`contract::apply`. Unlike
+/// `TaskContract`, `TaskGraph` has no `status` field at all — there is no
+/// `Draft`/`Frozen` distinction stored on the graph itself; freeze-gate
+/// approval is tracked externally as a `review::GraphReviewReceipt` keyed
+/// by `graph_hash`; `validate_for_freeze` is a stateless predicate that
+/// takes the must-requirement set and mandatory-check map as external
+/// inputs it cannot look up from `TaskGraph` alone. So this event enum
+/// does not model a `Frozen` transition — there is no such state to
+/// transition into. `Created` is the one-shot initial draft, matching
+/// every existing test's direct struct-literal construction. `Replaced` is
+/// the event-sourced counterpart of a replan: plan §6.6 says "重规划只能提出
+/// 新的 TaskGraph，不能改变 TaskContract", so `Replaced` only carries the new
+/// `graph_hash`/`nodes` — `id` and `contract_ref` are immutable after
+/// `Created` and cannot be changed by a replan event. Validating that a
+/// `Replaced` event's new graph is actually legal (DAG, coverage, replan
+/// coverage-does-not-shrink, ...) is `replan::evaluate_replan_proposal`'s
+/// job, run by the caller *before* emitting this event — `apply` does not
+/// re-run that check, exactly as `run::apply` never re-validates an
+/// `origin` that the caller already decided was legal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GraphEvent {
+    Created {
+        id: String,
+        contract_ref: String,
+        graph_hash: String,
+        nodes: Vec<GraphNode>,
+    },
+    Replaced {
+        graph_hash: String,
+        nodes: Vec<GraphNode>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphEventError {
+    AlreadyCreated,
+    NotYetCreated,
+}
+
+/// `state = None` means the aggregate has never been created, the same
+/// convention `task::apply`/`contract::apply` use. Matches on `event` first
+/// (not on `(state, event)` jointly) so adding a GraphEvent variant without
+/// handling it here is still a compile error.
+pub fn apply(state: Option<TaskGraph>, event: GraphEvent) -> Result<TaskGraph, GraphEventError> {
+    match event {
+        GraphEvent::Created {
+            id,
+            contract_ref,
+            graph_hash,
+            nodes,
+        } => {
+            if state.is_some() {
+                return Err(GraphEventError::AlreadyCreated);
+            }
+            Ok(TaskGraph {
+                id,
+                version: 1,
+                graph_hash,
+                contract_ref,
+                nodes,
+            })
+        }
+        GraphEvent::Replaced { graph_hash, nodes } => {
+            let mut graph = state.ok_or(GraphEventError::NotYetCreated)?;
+            graph.version += 1;
+            graph.graph_hash = graph_hash;
+            graph.nodes = nodes;
+            Ok(graph)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +567,82 @@ mod tests {
                 .iter()
                 .any(|v| matches!(v, FreezeViolation::ZeroBudgetNode { .. }))
         );
+    }
+
+    fn created_event(id: &str, nodes: Vec<GraphNode>) -> GraphEvent {
+        GraphEvent::Created {
+            id: id.into(),
+            contract_ref: "C-1".into(),
+            graph_hash: "hash-1".into(),
+            nodes,
+        }
+    }
+
+    #[test]
+    fn apply_created_on_none_state_constructs_version_one() {
+        let a = node("A", NodePurpose::Business, vec![]);
+        let result = apply(None, created_event("G-1", vec![a])).unwrap();
+        assert_eq!(result.id, "G-1");
+        assert_eq!(result.version, 1);
+        assert_eq!(result.graph_hash, "hash-1");
+        assert_eq!(result.contract_ref, "C-1");
+        assert_eq!(result.nodes.len(), 1);
+    }
+
+    #[test]
+    fn apply_created_on_an_existing_graph_is_rejected() {
+        let existing = graph(vec![]);
+        let err = apply(Some(existing), created_event("G-1", vec![])).unwrap_err();
+        assert_eq!(err, GraphEventError::AlreadyCreated);
+    }
+
+    #[test]
+    fn apply_replaced_on_none_state_is_rejected() {
+        let event = GraphEvent::Replaced {
+            graph_hash: "hash-2".into(),
+            nodes: vec![],
+        };
+        let err = apply(None, event).unwrap_err();
+        assert_eq!(err, GraphEventError::NotYetCreated);
+    }
+
+    #[test]
+    fn apply_replaced_bumps_version_and_swaps_nodes_and_hash_but_keeps_id_and_contract_ref() {
+        let existing = graph(vec![node("A", NodePurpose::Business, vec![])]);
+        let b = node("B", NodePurpose::Business, vec![]);
+        let event = GraphEvent::Replaced {
+            graph_hash: "hash-2".into(),
+            nodes: vec![b],
+        };
+        let result = apply(Some(existing), event).unwrap();
+        assert_eq!(result.id, "G-1");
+        assert_eq!(result.contract_ref, "C-1");
+        assert_eq!(result.version, 2);
+        assert_eq!(result.graph_hash, "hash-2");
+        assert_eq!(result.nodes, vec![node("B", NodePurpose::Business, vec![])]);
+    }
+
+    #[test]
+    fn apply_replaced_twice_advances_version_each_time() {
+        let existing = graph(vec![]);
+        let first = apply(
+            Some(existing),
+            GraphEvent::Replaced {
+                graph_hash: "hash-2".into(),
+                nodes: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(first.version, 2);
+        let second = apply(
+            Some(first),
+            GraphEvent::Replaced {
+                graph_hash: "hash-3".into(),
+                nodes: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(second.version, 3);
+        assert_eq!(second.graph_hash, "hash-3");
     }
 }
