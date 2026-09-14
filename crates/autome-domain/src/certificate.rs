@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::evidence::ReceiptId;
+use crate::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use crate::requirement::RequirementId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,8 @@ pub enum CandidateCertificateError {
         requirement: RequirementId,
         receipt: ReceiptId,
     },
+    ReadinessNotReady,
+    ReadinessNotCurrent,
 }
 
 /// Plan §5.8: "只有事实收据与独立审计同时通过，才签发 CandidateCertificate."
@@ -83,6 +86,14 @@ pub enum CandidateCertificateError {
 /// requirement: a verdict exists, that verdict is Satisfied, and every
 /// receipt it cites is still valid (`valid_receipt_ids` is expected to be
 /// pre-filtered by the caller via `EvidenceReceipt::is_valid_against`).
+///
+/// Plan §5.9 cross-cutting rule: a CandidateCertificate must bind a
+/// *current* ReadinessReceipt revision, never a stale baseline preflight —
+/// `readiness` must both be `Ready` and current against
+/// `current_environment_fingerprint` (recomputed by the caller at
+/// issuance time), or issuance is refused regardless of how the audit
+/// verdicts look.
+#[allow(clippy::too_many_arguments)]
 pub fn issue_candidate_certificate(
     run_id: &str,
     contract_version: u32,
@@ -91,8 +102,16 @@ pub fn issue_candidate_certificate(
     must_requirement_ids: &[RequirementId],
     verdicts: &[AuditVerdict],
     valid_receipt_ids: &HashSet<ReceiptId>,
+    readiness: &ReadinessReceipt,
+    current_environment_fingerprint: &ReadinessFingerprint,
 ) -> Result<CandidateCertificate, Vec<CandidateCertificateError>> {
     let mut errors = Vec::new();
+    if !readiness.is_ready() {
+        errors.push(CandidateCertificateError::ReadinessNotReady);
+    }
+    if !readiness.is_current_against(current_environment_fingerprint) {
+        errors.push(CandidateCertificateError::ReadinessNotCurrent);
+    }
     let verdict_by_requirement: HashMap<&RequirementId, &AuditVerdict> =
         verdicts.iter().map(|v| (&v.requirement_id, v)).collect();
 
@@ -195,6 +214,40 @@ mod tests {
         ReceiptId(id.into())
     }
 
+    fn ready_subject() -> crate::readiness::ReadinessSubject {
+        crate::readiness::ReadinessSubject::ExistingRepo(crate::readiness::ExistingRepoSubject {
+            repository_identity_hash: "repo-hash".into(),
+            base_commit: "base".into(),
+            target_head: "head".into(),
+            worktree_fingerprint: "wt-1".into(),
+        })
+    }
+
+    fn ready_readiness() -> ReadinessReceipt {
+        ReadinessReceipt {
+            revision: 1,
+            scope: crate::readiness::ReadinessScope::Execution,
+            profile_hash: "profile-1".into(),
+            environment_relevant_inputs_digest: "env-digest-1".into(),
+            observed_at: "2026-09-14T00:00:00Z".into(),
+            valid_until: "2026-09-15T00:00:00Z".into(),
+            subject: ready_subject(),
+            programs: vec![],
+            lockfile_hashes: vec![],
+            result: crate::readiness::ReadinessResult::Ready,
+            missing: vec![],
+            receipt_digest: "receipt-digest-1".into(),
+        }
+    }
+
+    fn current_fingerprint() -> ReadinessFingerprint {
+        ReadinessFingerprint {
+            profile_hash: "profile-1".into(),
+            environment_relevant_inputs_digest: "env-digest-1".into(),
+            subject: ready_subject(),
+        }
+    }
+
     #[test]
     fn satisfied_verdict_without_evidence_is_rejected() {
         assert_eq!(
@@ -219,6 +272,8 @@ mod tests {
             &must,
             &[],
             &HashSet::new(),
+            &ready_readiness(),
+            &current_fingerprint(),
         );
         assert_eq!(
             result.unwrap_err(),
@@ -240,6 +295,8 @@ mod tests {
             &must,
             &[verdict],
             &HashSet::new(),
+            &ready_readiness(),
+            &current_fingerprint(),
         );
         assert_eq!(
             result.unwrap_err(),
@@ -266,6 +323,8 @@ mod tests {
             &must,
             &[verdict],
             &HashSet::new(),
+            &ready_readiness(),
+            &current_fingerprint(),
         );
         assert_eq!(
             result.unwrap_err(),
@@ -290,10 +349,75 @@ mod tests {
         let mut valid = HashSet::new();
         valid.insert(receipt("EV-1"));
         valid.insert(receipt("EV-2"));
-        let cert =
-            issue_candidate_certificate("run-1", 1, "commit-1", "tree-1", &must, &verdicts, &valid)
-                .unwrap();
+        let cert = issue_candidate_certificate(
+            "run-1",
+            1,
+            "commit-1",
+            "tree-1",
+            &must,
+            &verdicts,
+            &valid,
+            &ready_readiness(),
+            &current_fingerprint(),
+        )
+        .unwrap();
         assert_eq!(cert.covered_requirement_ids, must);
+    }
+
+    #[test]
+    fn candidate_certificate_rejects_not_ready_environment() {
+        let must = vec![req("R-001")];
+        let verdicts = vec![
+            AuditVerdict::new(req("R-001"), AuditOutcome::Satisfied, vec![receipt("EV-1")])
+                .unwrap(),
+        ];
+        let mut valid = HashSet::new();
+        valid.insert(receipt("EV-1"));
+        let mut not_ready = ready_readiness();
+        not_ready.result = crate::readiness::ReadinessResult::NotReady;
+        let result = issue_candidate_certificate(
+            "run-1",
+            1,
+            "commit-1",
+            "tree-1",
+            &must,
+            &verdicts,
+            &valid,
+            &not_ready,
+            &current_fingerprint(),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            vec![CandidateCertificateError::ReadinessNotReady]
+        );
+    }
+
+    #[test]
+    fn candidate_certificate_rejects_stale_readiness_receipt() {
+        let must = vec![req("R-001")];
+        let verdicts = vec![
+            AuditVerdict::new(req("R-001"), AuditOutcome::Satisfied, vec![receipt("EV-1")])
+                .unwrap(),
+        ];
+        let mut valid = HashSet::new();
+        valid.insert(receipt("EV-1"));
+        let mut stale_fingerprint = current_fingerprint();
+        stale_fingerprint.environment_relevant_inputs_digest = "env-digest-2".into();
+        let result = issue_candidate_certificate(
+            "run-1",
+            1,
+            "commit-1",
+            "tree-1",
+            &must,
+            &verdicts,
+            &valid,
+            &ready_readiness(),
+            &stale_fingerprint,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            vec![CandidateCertificateError::ReadinessNotCurrent]
+        );
     }
 
     fn candidate() -> CandidateCertificate {
