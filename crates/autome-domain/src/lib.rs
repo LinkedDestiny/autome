@@ -9,6 +9,7 @@
 
 pub mod attempt;
 pub mod bounded_failure;
+pub mod capability_broker;
 pub mod certificate;
 pub mod clarification;
 pub mod completion;
