@@ -8,6 +8,7 @@
 //! through these reducers rather than mutating projections directly.
 
 pub mod attempt;
+pub mod bounded_failure;
 pub mod certificate;
 pub mod clarification;
 pub mod completion;
