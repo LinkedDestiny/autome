@@ -190,6 +190,55 @@ impl ExecutionQueue {
     }
 }
 
+/// Event-sourced wrapper over `ExecutionQueue`'s four mutating methods, so
+/// `automed`'s store can journal this singleton the same way it journals
+/// the five per-`aggregate_id` state machines in `store.rs`: one event
+/// appended, one projection row updated, in the same transaction. This
+/// exists to give the singleton the same shape as every other aggregate,
+/// not to add new business rules — each arm below just calls the method a
+/// direct caller would already use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionQueueEvent {
+    Enqueued {
+        task_id: String,
+        enqueued_event_seq: u64,
+    },
+    LeaseAcquired {
+        task_id: String,
+        lease_id: String,
+    },
+    LeaseReleasedViaSafePark {
+        receipt: SafeParkReceipt,
+    },
+    Cancelled {
+        task_id: String,
+    },
+}
+
+pub fn apply(
+    mut state: ExecutionQueue,
+    event: ExecutionQueueEvent,
+) -> Result<ExecutionQueue, ExecutionQueueError> {
+    match event {
+        ExecutionQueueEvent::Enqueued {
+            task_id,
+            enqueued_event_seq,
+        } => {
+            state.enqueue(&task_id, enqueued_event_seq)?;
+        }
+        ExecutionQueueEvent::LeaseAcquired { task_id, lease_id } => {
+            state.try_acquire_lease(&task_id, &lease_id)?;
+        }
+        ExecutionQueueEvent::LeaseReleasedViaSafePark { receipt } => {
+            state.release_lease_via_safe_park(&receipt)?;
+        }
+        ExecutionQueueEvent::Cancelled { task_id } => {
+            state.cancel(&task_id);
+        }
+    }
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +432,94 @@ mod tests {
         queue.enqueue("task-a", 1).unwrap();
         queue.try_acquire_lease("task-a", "lease-1").unwrap();
         let err = queue.enqueue("task-a", 2).unwrap_err();
+        assert_eq!(
+            err,
+            ExecutionQueueError::AlreadyQueuedOrLeased {
+                task_id: "task-a".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn apply_enqueued_adds_the_task_to_a_fresh_queue() {
+        let state = apply(
+            ExecutionQueue::new(),
+            ExecutionQueueEvent::Enqueued {
+                task_id: "task-a".to_string(),
+                enqueued_event_seq: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(state.dispatch_state_of("task-a"), DispatchState::Queued);
+    }
+
+    #[test]
+    fn apply_lease_acquired_moves_the_head_of_queue_into_the_lease() {
+        let state = apply(
+            ExecutionQueue::new(),
+            ExecutionQueueEvent::Enqueued {
+                task_id: "task-a".to_string(),
+                enqueued_event_seq: 1,
+            },
+        )
+        .unwrap();
+        let state = apply(
+            state,
+            ExecutionQueueEvent::LeaseAcquired {
+                task_id: "task-a".to_string(),
+                lease_id: "lease-1".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(state.dispatch_state_of("task-a"), DispatchState::Running);
+        assert_eq!(state.lease().unwrap().lease_id, "lease-1");
+    }
+
+    #[test]
+    fn apply_lease_released_via_safe_park_clears_the_lease() {
+        let mut queue = ExecutionQueue::new();
+        queue.enqueue("task-a", 1).unwrap();
+        queue.try_acquire_lease("task-a", "lease-1").unwrap();
+
+        let state = apply(
+            queue,
+            ExecutionQueueEvent::LeaseReleasedViaSafePark {
+                receipt: satisfied_receipt(vec!["lease-1".to_string()]),
+            },
+        )
+        .unwrap();
+        assert!(state.lease().is_none());
+    }
+
+    #[test]
+    fn apply_cancelled_removes_a_queued_task() {
+        let mut queue = ExecutionQueue::new();
+        queue.enqueue("task-a", 1).unwrap();
+
+        let state = apply(
+            queue,
+            ExecutionQueueEvent::Cancelled {
+                task_id: "task-a".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(state.dispatch_state_of("task-a"), DispatchState::None);
+    }
+
+    #[test]
+    fn apply_surfaces_the_same_errors_the_direct_methods_would() {
+        let mut queue = ExecutionQueue::new();
+        queue.enqueue("task-a", 1).unwrap();
+        queue.try_acquire_lease("task-a", "lease-1").unwrap();
+
+        let err = apply(
+            queue,
+            ExecutionQueueEvent::Enqueued {
+                task_id: "task-a".to_string(),
+                enqueued_event_seq: 2,
+            },
+        )
+        .unwrap_err();
         assert_eq!(
             err,
             ExecutionQueueError::AlreadyQueuedOrLeased {

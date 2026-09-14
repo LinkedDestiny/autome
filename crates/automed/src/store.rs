@@ -10,11 +10,21 @@
 //! in-memory cache that could diverge from what was actually committed.
 
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
+use autome_domain::execution_queue::{
+    self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
+};
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
 use autome_domain::project::{self, ProjectEvent, ProjectState};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
 use rusqlite::{Connection, OptionalExtension, params};
+
+/// `ExecutionQueue` is a single fleet-wide singleton (plan §6.2), not one
+/// instance per caller-chosen id like the five aggregates above it in this
+/// file — so it is always journaled under this one fixed aggregate id.
+/// `pub` so `dispatch.rs` can use the same constant for the `Event`
+/// envelope's `aggregate_id` rather than duplicating the string literal.
+pub const EXECUTION_QUEUE_AGGREGATE_ID: &str = "execution-queue";
 
 pub struct EventStore {
     conn: Connection,
@@ -80,6 +90,18 @@ impl From<rusqlite::Error> for GraphAppendError {
     }
 }
 
+#[derive(Debug)]
+pub enum ExecutionQueueAppendError {
+    Sql(rusqlite::Error),
+    Transition(ExecutionQueueError),
+}
+
+impl From<rusqlite::Error> for ExecutionQueueAppendError {
+    fn from(value: rusqlite::Error) -> Self {
+        ExecutionQueueAppendError::Sql(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendedProjectEvent {
     pub seq: i64,
@@ -122,6 +144,21 @@ pub struct AppendedGraphEvent {
     pub event_type: &'static str,
     pub occurred_at: String,
     pub state: TaskGraph,
+}
+
+/// Mirrors `AppendedGraphEvent`, except this aggregate has no caller-chosen
+/// `aggregate_id`: `ExecutionQueue` is a fleet-wide singleton, so
+/// `append_execution_queue_event`/`load_execution_queue_state` always key
+/// the same fixed row (see `EXECUTION_QUEUE_AGGREGATE_ID`) rather than
+/// taking one as a parameter.
+#[derive(Debug, Clone)]
+pub struct AppendedExecutionQueueEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub revision: u64,
+    pub event_type: &'static str,
+    pub occurred_at: String,
+    pub state: ExecutionQueue,
 }
 
 /// Everything an IPC dispatcher needs to build an outgoing `Event` envelope
@@ -194,6 +231,11 @@ impl EventStore {
                 aggregate_id TEXT PRIMARY KEY,
                 revision INTEGER NOT NULL,
                 version INTEGER NOT NULL,
+                state_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS execution_queue_projections (
+                aggregate_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
                 state_json TEXT NOT NULL
             );
             ",
@@ -753,6 +795,124 @@ impl EventStore {
         })
     }
 
+    /// Loads the current projected (revision, ExecutionQueue), or `None` if
+    /// no event has ever been journaled for it — in which case callers
+    /// should treat the queue as `ExecutionQueue::new()` at revision 0.
+    /// Unlike the five per-`aggregate_id` aggregates above, there is no
+    /// `aggregate_id` parameter: `ExecutionQueue` is a single fleet-wide
+    /// singleton, always keyed by the fixed `EXECUTION_QUEUE_AGGREGATE_ID`.
+    pub fn load_execution_queue_state(&self) -> rusqlite::Result<Option<(u64, ExecutionQueue)>> {
+        self.conn
+            .query_row(
+                "SELECT revision, state_json FROM execution_queue_projections WHERE aggregate_id = ?1",
+                params![EXECUTION_QUEUE_AGGREGATE_ID],
+                |row| {
+                    let revision: i64 = row.get(0)?;
+                    let state_json: String = row.get(1)?;
+                    Ok((revision, state_json))
+                },
+            )
+            .optional()?
+            .map(|(revision, state_json)| {
+                let state: ExecutionQueue = serde_json::from_str(&state_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                Ok((revision as u64, state))
+            })
+            .transpose()
+    }
+
+    /// Applies `event` to the current singleton `ExecutionQueue` state, and
+    /// — in the same transaction — appends the event and updates the
+    /// projection. This is where plan §6.2's "ExecutionQueue 和
+    /// HarnessLease 在同一个 Rust 事务里更新" is satisfied: both live inside
+    /// the one `ExecutionQueue` value, serialized into the one
+    /// `state_json` column written by this transaction. Does not also emit
+    /// a `task.dispatch_state_projected` event for affected Tasks — that
+    /// remains a deliberately separate follow-up call by whichever caller
+    /// drives the queue, not something this method does implicitly.
+    pub fn append_execution_queue_event(
+        &mut self,
+        event: ExecutionQueueEvent,
+    ) -> Result<AppendedExecutionQueueEvent, ExecutionQueueAppendError> {
+        let tx = self.conn.transaction()?;
+
+        let (revision, current_state) = {
+            let loaded = tx
+                .query_row(
+                    "SELECT revision, state_json FROM execution_queue_projections WHERE aggregate_id = ?1",
+                    params![EXECUTION_QUEUE_AGGREGATE_ID],
+                    |row| {
+                        let revision: i64 = row.get(0)?;
+                        let state_json: String = row.get(1)?;
+                        Ok((revision, state_json))
+                    },
+                )
+                .optional()?;
+            match loaded {
+                Some((revision, state_json)) => {
+                    let state: ExecutionQueue = serde_json::from_str(&state_json).expect(
+                        "execution_queue_projections.state_json is only ever written by this module as valid ExecutionQueue JSON",
+                    );
+                    (revision as u64, state)
+                }
+                None => (0, ExecutionQueue::new()),
+            }
+        };
+
+        let event_type = execution_queue_event_type_name(&event);
+        let payload = serde_json::to_string(&event).expect("ExecutionQueueEvent always serializes");
+        let next_state = execution_queue::apply(current_state, event)
+            .map_err(ExecutionQueueAppendError::Transition)?;
+        let next_revision = revision + 1;
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let recorded_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC3339 formatting of now_utc never fails");
+        let state_json =
+            serde_json::to_string(&next_state).expect("ExecutionQueue always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'ExecutionQueue', ?3, ?4, ?5, ?6)",
+            params![
+                event_id,
+                EXECUTION_QUEUE_AGGREGATE_ID,
+                next_revision as i64,
+                event_type,
+                payload,
+                recorded_at
+            ],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO execution_queue_projections (aggregate_id, revision, state_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(aggregate_id) DO UPDATE SET
+                revision = excluded.revision,
+                state_json = excluded.state_json",
+            params![
+                EXECUTION_QUEUE_AGGREGATE_ID,
+                next_revision as i64,
+                state_json
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(AppendedExecutionQueueEvent {
+            seq,
+            event_id,
+            revision: next_revision,
+            event_type,
+            occurred_at: recorded_at,
+            state: next_state,
+        })
+    }
+
     #[cfg(test)]
     fn event_count(&self, aggregate_id: &str) -> i64 {
         self.conn
@@ -838,6 +998,15 @@ fn graph_event_type_name(event: &GraphEvent) -> &'static str {
     match event {
         GraphEvent::Created { .. } => "Created",
         GraphEvent::Replaced { .. } => "Replaced",
+    }
+}
+
+fn execution_queue_event_type_name(event: &ExecutionQueueEvent) -> &'static str {
+    match event {
+        ExecutionQueueEvent::Enqueued { .. } => "Enqueued",
+        ExecutionQueueEvent::LeaseAcquired { .. } => "LeaseAcquired",
+        ExecutionQueueEvent::LeaseReleasedViaSafePark { .. } => "LeaseReleasedViaSafePark",
+        ExecutionQueueEvent::Cancelled { .. } => "Cancelled",
     }
 }
 
@@ -1183,8 +1352,9 @@ mod tests {
     }
 
     #[test]
-    fn run_project_task_contract_and_graph_aggregates_share_the_events_table_without_colliding() {
-        let path = temp_db_path("shared-events-table-five-way");
+    fn run_project_task_contract_graph_and_execution_queue_share_the_events_table_without_colliding()
+     {
+        let path = temp_db_path("shared-events-table-six-way");
         let mut store = EventStore::open(&path).unwrap();
         store
             .append_run_event("same-id", RunEvent::AdvanceNominal)
@@ -1201,11 +1371,18 @@ mod tests {
         store
             .append_graph_event("same-id", graph_created_event())
             .unwrap();
+        store
+            .append_execution_queue_event(ExecutionQueueEvent::Enqueued {
+                task_id: "same-id".to_string(),
+                enqueued_event_seq: 1,
+            })
+            .unwrap();
         assert!(store.load_run_state("same-id").unwrap().is_some());
         assert!(store.load_project_state("same-id").unwrap().is_some());
         assert!(store.load_task_state("same-id").unwrap().is_some());
         assert!(store.load_contract_state("same-id").unwrap().is_some());
         assert!(store.load_graph_state("same-id").unwrap().is_some());
+        assert!(store.load_execution_queue_state().unwrap().is_some());
         std::fs::remove_file(&path).ok();
     }
 
@@ -1436,6 +1613,100 @@ mod tests {
         assert_eq!(revision, 2);
         assert_eq!(state.version, 2);
         assert_eq!(state.graph_hash, "hash-2");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_execution_queue_has_no_projection() {
+        let path = temp_db_path("unknown-execution-queue");
+        let store = EventStore::open(&path).unwrap();
+        assert!(store.load_execution_queue_state().unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_legal_execution_queue_event_creates_revision_one() {
+        let path = temp_db_path("first-execution-queue-event");
+        let mut store = EventStore::open(&path).unwrap();
+        let appended = store
+            .append_execution_queue_event(ExecutionQueueEvent::Enqueued {
+                task_id: "task-1".to_string(),
+                enqueued_event_seq: 1,
+            })
+            .unwrap();
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "Enqueued");
+        let (revision, loaded) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(loaded, appended.state);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn sequential_execution_queue_events_advance_revision_and_state() {
+        use autome_domain::task::DispatchState;
+
+        let path = temp_db_path("sequential-execution-queue");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_execution_queue_event(ExecutionQueueEvent::Enqueued {
+                task_id: "task-1".to_string(),
+                enqueued_event_seq: 1,
+            })
+            .unwrap();
+        let second = store
+            .append_execution_queue_event(ExecutionQueueEvent::LeaseAcquired {
+                task_id: "task-1".to_string(),
+                lease_id: "lease-1".to_string(),
+            })
+            .unwrap();
+        assert_eq!(second.event_type, "LeaseAcquired");
+        assert_eq!(
+            second.state.dispatch_state_of("task-1"),
+            DispatchState::Running
+        );
+        let (revision, _) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(revision, 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn illegal_execution_queue_transition_writes_nothing() {
+        let path = temp_db_path("illegal-execution-queue");
+        let mut store = EventStore::open(&path).unwrap();
+        let err = store
+            .append_execution_queue_event(ExecutionQueueEvent::LeaseAcquired {
+                task_id: "task-1".to_string(),
+                lease_id: "lease-1".to_string(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, ExecutionQueueAppendError::Transition(_)));
+        assert!(store.load_execution_queue_state().unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn execution_queue_state_survives_reconnect() {
+        let path = temp_db_path("execution-queue-reconnect");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            store
+                .append_execution_queue_event(ExecutionQueueEvent::Enqueued {
+                    task_id: "task-1".to_string(),
+                    enqueued_event_seq: 1,
+                })
+                .unwrap();
+            store
+                .append_execution_queue_event(ExecutionQueueEvent::LeaseAcquired {
+                    task_id: "task-1".to_string(),
+                    lease_id: "lease-1".to_string(),
+                })
+                .unwrap();
+        }
+        let reopened = EventStore::open(&path).unwrap();
+        let (revision, state) = reopened.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(state.lease().unwrap().lease_id, "lease-1");
         std::fs::remove_file(&path).ok();
     }
 }

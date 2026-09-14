@@ -32,18 +32,28 @@
 //! explicit pattern: `graph.created` parses `params.contract_ref`,
 //! `params.graph_hash` and `params.nodes` (`Vec<GraphNode>`);
 //! `graph.replaced` parses `params.graph_hash` and `params.nodes`.
+//! `ExecutionQueue` is a fleet-wide singleton (see `store::EXECUTION_QUEUE_AGGREGATE_ID`),
+//! so its four `queue.*` methods take no `aggregate_id` param at all — unlike
+//! every method above, `require_aggregate_id` is never called for them.
+//! `queue.enqueue` parses `params.task_id` and `params.enqueued_event_seq`
+//! (a non-negative integer); `queue.try_acquire_lease` parses `params.task_id`
+//! and `params.lease_id`; `queue.release_via_safe_park` parses `params.receipt`
+//! (a full `SafeParkReceipt`); `queue.cancel` parses `params.task_id`.
 
 use crate::ipc::{Command, Event};
 use crate::store::{
-    AppendError, AppendedContractEvent, AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent,
-    AppendedTaskEvent, ContractAppendError, EventStore, GraphAppendError, ProjectAppendError,
-    TaskAppendError,
+    AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
+    AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, ContractAppendError,
+    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError, GraphAppendError,
+    ProjectAppendError, TaskAppendError,
 };
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
+use autome_domain::execution_queue::ExecutionQueueEvent;
 use autome_domain::graph::{GraphEvent, GraphNode};
 use autome_domain::project::{ProjectEvent, ProjectState};
 use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
+use autome_domain::safe_park::SafeParkReceipt;
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
 
 #[derive(Debug)]
@@ -55,6 +65,7 @@ pub enum DispatchError {
     TaskStore(TaskAppendError),
     ContractStore(ContractAppendError),
     GraphStore(GraphAppendError),
+    ExecutionQueueStore(ExecutionQueueAppendError),
 }
 
 impl From<AppendError> for DispatchError {
@@ -84,6 +95,12 @@ impl From<ContractAppendError> for DispatchError {
 impl From<GraphAppendError> for DispatchError {
     fn from(value: GraphAppendError) -> Self {
         DispatchError::GraphStore(value)
+    }
+}
+
+impl From<ExecutionQueueAppendError> for DispatchError {
+    fn from(value: ExecutionQueueAppendError) -> Self {
+        DispatchError::ExecutionQueueStore(value)
     }
 }
 
@@ -208,6 +225,38 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
                 .append_graph_event(&aggregate_id, GraphEvent::Replaced { graph_hash, nodes })?;
             return Ok(graph_event_envelope(aggregate_id, appended));
         }
+        "queue.enqueue" => {
+            let task_id = parse_string_param(command, "task_id")?;
+            let enqueued_event_seq = parse_u64_param(command, "enqueued_event_seq")?;
+            let appended = store.append_execution_queue_event(ExecutionQueueEvent::Enqueued {
+                task_id,
+                enqueued_event_seq,
+            })?;
+            return Ok(execution_queue_event_envelope(appended));
+        }
+        "queue.try_acquire_lease" => {
+            let task_id = parse_string_param(command, "task_id")?;
+            let lease_id = parse_string_param(command, "lease_id")?;
+            let appended =
+                store.append_execution_queue_event(ExecutionQueueEvent::LeaseAcquired {
+                    task_id,
+                    lease_id,
+                })?;
+            return Ok(execution_queue_event_envelope(appended));
+        }
+        "queue.release_via_safe_park" => {
+            let receipt = parse_safe_park_receipt_param(command)?;
+            let appended = store.append_execution_queue_event(
+                ExecutionQueueEvent::LeaseReleasedViaSafePark { receipt },
+            )?;
+            return Ok(execution_queue_event_envelope(appended));
+        }
+        "queue.cancel" => {
+            let task_id = parse_string_param(command, "task_id")?;
+            let appended =
+                store.append_execution_queue_event(ExecutionQueueEvent::Cancelled { task_id })?;
+            return Ok(execution_queue_event_envelope(appended));
+        }
         _ => {}
     }
     if let Some(event) = parameterless_run_event(&command.method) {
@@ -280,6 +329,21 @@ fn graph_event_envelope(aggregate_id: String, appended: AppendedGraphEvent) -> E
         event_type: appended.event_type.to_string(),
         occurred_at: appended.occurred_at,
         payload: serde_json::to_value(appended.state).expect("TaskGraph always serializes"),
+    }
+}
+
+/// Mirrors `graph_event_envelope`, except `ExecutionQueue` is a singleton
+/// with no caller-chosen id, so this always fills `aggregate_id` with the
+/// same fixed `EXECUTION_QUEUE_AGGREGATE_ID` constant the store uses.
+fn execution_queue_event_envelope(appended: AppendedExecutionQueueEvent) -> Event {
+    Event {
+        event_seq: appended.seq as u64,
+        event_id: appended.event_id,
+        aggregate_id: EXECUTION_QUEUE_AGGREGATE_ID.to_string(),
+        aggregate_revision: appended.revision,
+        event_type: appended.event_type.to_string(),
+        occurred_at: appended.occurred_at,
+        payload: serde_json::to_value(appended.state).expect("ExecutionQueue always serializes"),
     }
 }
 
@@ -399,6 +463,28 @@ fn parse_u32_param(command: &Command, key: &str) -> Result<u32, DispatchError> {
                 "params.{key} must be a non-negative integer that fits in u32"
             ))
         })
+}
+
+fn parse_u64_param(command: &Command, key: &str) -> Result<u64, DispatchError> {
+    command
+        .params
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            DispatchError::InvalidParams(format!("params.{key} must be a non-negative integer"))
+        })
+}
+
+fn parse_safe_park_receipt_param(command: &Command) -> Result<SafeParkReceipt, DispatchError> {
+    let value =
+        command.params.get("receipt").cloned().ok_or_else(|| {
+            DispatchError::InvalidParams("params.receipt is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid SafeParkReceipt: {e}"
+        ))
+    })
 }
 
 fn parse_run_terminal(command: &Command) -> Result<RunTerminal, DispatchError> {
@@ -1301,6 +1387,157 @@ mod tests {
         );
         let err = dispatch(&mut store, &cmd).unwrap_err();
         assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn safe_park_receipt_json(lease_id: &str) -> serde_json::Value {
+        json!({
+            "run": "run-1",
+            "planning_spec_hash": "hash-1",
+            "execution_spec_hash": null,
+            "prior_phase": "Executing",
+            "durable_checkpoint": "checkpoint-1",
+            "provider_session": null,
+            "no_active_tool_call": true,
+            "no_verifier_or_preview_process": true,
+            "no_environment_skill_git_transaction": true,
+            "released_leases": [lease_id],
+            "parked_at": "2026-09-14T00:00:00Z",
+            "receipt_digest": "digest-1",
+        })
+    }
+
+    #[test]
+    fn queue_enqueue_appends_and_returns_matching_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "queue.enqueue",
+            json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "execution-queue");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "Enqueued");
+        let (revision, state) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_try_acquire_lease_moves_the_head_of_queue_into_the_lease() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+            ),
+        )
+        .unwrap();
+        let cmd = command(
+            "queue.try_acquire_lease",
+            json!({ "task_id": "task-1", "lease_id": "lease-1" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "LeaseAcquired");
+        let (_, state) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(state.dispatch_state_of("task-1"), DispatchState::Running);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_try_acquire_lease_rejects_a_task_not_at_the_head_as_execution_queue_store_error() {
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+            ),
+        )
+        .unwrap();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-2", "enqueued_event_seq": 2 }),
+            ),
+        )
+        .unwrap();
+        let cmd = command(
+            "queue.try_acquire_lease",
+            json!({ "task_id": "task-2", "lease_id": "lease-1" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::ExecutionQueueStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_release_via_safe_park_clears_the_lease() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+            ),
+        )
+        .unwrap();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.try_acquire_lease",
+                json!({ "task_id": "task-1", "lease_id": "lease-1" }),
+            ),
+        )
+        .unwrap();
+        let cmd = command(
+            "queue.release_via_safe_park",
+            json!({ "receipt": safe_park_receipt_json("lease-1") }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "LeaseReleasedViaSafePark");
+        let (_, state) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(state.dispatch_state_of("task-1"), DispatchState::None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_release_via_safe_park_rejects_a_malformed_receipt_as_invalid_params() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "queue.release_via_safe_park",
+            json!({ "receipt": { "not": "a receipt" } }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_cancel_removes_a_queued_task() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+            ),
+        )
+        .unwrap();
+        let cmd = command("queue.cancel", json!({ "task_id": "task-1" }));
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "Cancelled");
+        let (_, state) = store.load_execution_queue_state().unwrap().unwrap();
+        assert_eq!(state.dispatch_state_of("task-1"), DispatchState::None);
         std::fs::remove_file(&path).ok();
     }
 }
