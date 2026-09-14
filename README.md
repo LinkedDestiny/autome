@@ -20,15 +20,33 @@ the sibling 1.x repo — read-only reference, not a dependency (see
 
 ## Status
 
-M0 in progress. Current state: domain-level state machines (Project, Run,
-TaskGraph node, completion gate) implemented and unit-tested in
-`autome-domain`; `automed` is a compiling stub with no IPC/SQLite/Harness yet.
+M0 in progress. Current state: domain-level state machines and reducers for
+all six aggregates/singletons (Project, Run, Task, Contract, Graph,
+ExecutionQueue) implemented and unit-tested in `autome-domain`; `automed`
+has a real event-sourced SQLite store, the framed stdio JSON-RPC loop, and
+IPC dispatch for all of them. `apps/desktop` has an Electron Main that
+enforces the §9.4 security baseline (privileged `autome://` scheme, no
+Node/remote content in the renderer, denied navigation/permissions) and
+spawns/talks to the `automed` sidecar over the same protocol — no real
+navigation UI or business-state IPC surface yet, and none of §9.5's
+packaging-dependent lifecycle guarantees (manifest/signature verification,
+single-instance lock, PrepareShutdown/SafePark-gated quit).
 
 ## Building
+
+Rust:
 
 ```
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
+```
+
+Desktop shell (`apps/desktop`):
+
+```
+npm install
+npm test    # framing + sidecar e2e tests against the built automed binary
+npm start   # launch the Electron shell
 ```

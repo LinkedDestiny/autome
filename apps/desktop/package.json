@@ -1,0 +1,14 @@
+{
+  "name": "autome-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Autome 2.0 Electron shell (Main/Preload/Renderer); UI only, no business state (plan D3). Owns no persistence or domain logic of its own; talks to the automed Rust Core sidecar over framed stdio JSON-RPC (plan §3.1/§3.2, §9.5).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "electron": "43.2.0"
+  }
+}
