@@ -24,13 +24,20 @@
 //! `params.acceptance_checks` (`Vec<AcceptanceCheck>`); `contract.frozen`
 //! takes no extra params; `contract.amended` parses `params.amendment` (a
 //! `ContractAmendment`).
+//! GraphEvent has no parameterless variants either (both `Created` and
+//! `Replaced` carry `nodes`), so the two `graph.*` methods follow the same
+//! explicit pattern: `graph.created` parses `params.contract_ref`,
+//! `params.graph_hash` and `params.nodes` (`Vec<GraphNode>`);
+//! `graph.replaced` parses `params.graph_hash` and `params.nodes`.
 
 use crate::ipc::{Command, Event};
 use crate::store::{
-    AppendError, AppendedContractEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent,
-    ContractAppendError, EventStore, ProjectAppendError, TaskAppendError,
+    AppendError, AppendedContractEvent, AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent,
+    AppendedTaskEvent, ContractAppendError, EventStore, GraphAppendError, ProjectAppendError,
+    TaskAppendError,
 };
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
+use autome_domain::graph::{GraphEvent, GraphNode};
 use autome_domain::project::{ProjectEvent, ProjectState};
 use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
@@ -44,6 +51,7 @@ pub enum DispatchError {
     ProjectStore(ProjectAppendError),
     TaskStore(TaskAppendError),
     ContractStore(ContractAppendError),
+    GraphStore(GraphAppendError),
 }
 
 impl From<AppendError> for DispatchError {
@@ -67,6 +75,12 @@ impl From<TaskAppendError> for DispatchError {
 impl From<ContractAppendError> for DispatchError {
     fn from(value: ContractAppendError) -> Self {
         DispatchError::ContractStore(value)
+    }
+}
+
+impl From<GraphAppendError> for DispatchError {
+    fn from(value: GraphAppendError) -> Self {
+        DispatchError::GraphStore(value)
     }
 }
 
@@ -156,6 +170,28 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
                 store.append_contract_event(&aggregate_id, ContractEvent::Amended { amendment })?;
             return Ok(contract_event_envelope(aggregate_id, appended));
         }
+        "graph.created" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let contract_ref = parse_string_param(command, "contract_ref")?;
+            let graph_hash = parse_string_param(command, "graph_hash")?;
+            let nodes = parse_graph_nodes_param(command)?;
+            let event = GraphEvent::Created {
+                id: aggregate_id.clone(),
+                contract_ref,
+                graph_hash,
+                nodes,
+            };
+            let appended = store.append_graph_event(&aggregate_id, event)?;
+            return Ok(graph_event_envelope(aggregate_id, appended));
+        }
+        "graph.replaced" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let graph_hash = parse_string_param(command, "graph_hash")?;
+            let nodes = parse_graph_nodes_param(command)?;
+            let appended = store
+                .append_graph_event(&aggregate_id, GraphEvent::Replaced { graph_hash, nodes })?;
+            return Ok(graph_event_envelope(aggregate_id, appended));
+        }
         _ => {}
     }
     if let Some(event) = parameterless_run_event(&command.method) {
@@ -216,6 +252,18 @@ fn contract_event_envelope(aggregate_id: String, appended: AppendedContractEvent
         event_type: appended.event_type.to_string(),
         occurred_at: appended.occurred_at,
         payload: serde_json::to_value(appended.state).expect("TaskContract always serializes"),
+    }
+}
+
+fn graph_event_envelope(aggregate_id: String, appended: AppendedGraphEvent) -> Event {
+    Event {
+        event_seq: appended.seq as u64,
+        event_id: appended.event_id,
+        aggregate_id,
+        aggregate_revision: appended.revision,
+        event_type: appended.event_type.to_string(),
+        occurred_at: appended.occurred_at,
+        payload: serde_json::to_value(appended.state).expect("TaskGraph always serializes"),
     }
 }
 
@@ -397,6 +445,17 @@ fn parse_contract_amendment_param(command: &Command) -> Result<ContractAmendment
         DispatchError::InvalidParams(format!(
             "params.amendment is not a valid ContractAmendment: {e}"
         ))
+    })
+}
+
+fn parse_graph_nodes_param(command: &Command) -> Result<Vec<GraphNode>, DispatchError> {
+    let value = command
+        .params
+        .get("nodes")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.nodes is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.nodes is not a valid Vec<GraphNode>: {e}"))
     })
 }
 
@@ -1004,6 +1063,125 @@ mod tests {
         )
         .unwrap();
         let cmd = command("contract.amended", json!({ "aggregate_id": "contract-1" }));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn graph_node_json(id: &str, purpose: &str, requirement_ids: &[&str]) -> serde_json::Value {
+        json!({
+            "id": id,
+            "kind": "generic",
+            "purpose": purpose,
+            "title": id,
+            "requirement_ids": requirement_ids,
+            "acceptance_check_ids": [],
+            "depends_on": [],
+            "expected_outputs": [],
+            "write_scope": [],
+            "risk_level": "Low",
+            "estimated_budget": 1,
+        })
+    }
+
+    fn graph_created_command(aggregate_id: &str) -> Command {
+        command(
+            "graph.created",
+            json!({
+                "aggregate_id": aggregate_id,
+                "contract_ref": "contract-1",
+                "graph_hash": "hash-1",
+                "nodes": [graph_node_json("N-1", "Business", &[])],
+            }),
+        )
+    }
+
+    #[test]
+    fn graph_created_appends_a_version_one_graph() {
+        let (mut store, path) = temp_store();
+        let cmd = graph_created_command("graph-1");
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "graph-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "Created");
+        let (revision, state) = store.load_graph_state("graph-1").unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(state.version, 1);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_created_forwards_invalid_nodes_as_invalid_params() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "graph.created",
+            json!({
+                "aggregate_id": "graph-1",
+                "contract_ref": "contract-1",
+                "graph_hash": "hash-1",
+                "nodes": [{ "not": "a node" }],
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_created_on_an_existing_graph_surfaces_as_graph_store_error() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &graph_created_command("graph-1")).unwrap();
+        let err = dispatch(&mut store, &graph_created_command("graph-1")).unwrap_err();
+        assert!(matches!(err, DispatchError::GraphStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_replaced_bumps_version_and_swaps_nodes() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &graph_created_command("graph-1")).unwrap();
+        let cmd = command(
+            "graph.replaced",
+            json!({
+                "aggregate_id": "graph-1",
+                "graph_hash": "hash-2",
+                "nodes": [graph_node_json("N-2", "Business", &[])],
+            }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "Replaced");
+        let (_, state) = store.load_graph_state("graph-1").unwrap().unwrap();
+        assert_eq!(state.version, 2);
+        assert_eq!(state.graph_hash, "hash-2");
+        assert_eq!(state.nodes.len(), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_replaced_on_a_never_created_graph_surfaces_as_graph_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "graph.replaced",
+            json!({
+                "aggregate_id": "graph-1",
+                "graph_hash": "hash-2",
+                "nodes": [],
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::GraphStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_replaced_rejects_missing_nodes_param() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &graph_created_command("graph-1")).unwrap();
+        let cmd = command(
+            "graph.replaced",
+            json!({ "aggregate_id": "graph-1", "graph_hash": "hash-2" }),
+        );
         let err = dispatch(&mut store, &cmd).unwrap_err();
         assert!(matches!(err, DispatchError::InvalidParams(_)));
         std::fs::remove_file(&path).ok();
