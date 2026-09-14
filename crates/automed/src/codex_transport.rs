@@ -1,21 +1,27 @@
 //! Narrow, mechanically-defined slice of the Codex adapter (plan §4.2, D8):
 //! a newline-delimited JSON-RPC 2.0 transport over `codex app-server`'s
-//! stdio, plus `probe_initialize`/`probe_model_list`/`probe_account_read`
-//! built on it.
+//! stdio, plus `probe_initialize`/`probe_model_list`/`probe_account_read`/
+//! `probe_thread_start` built on it.
 //!
 //! Wire format confirmed empirically against the real `codex` binary
 //! (`codex-cli 0.153.4`): one JSON object per line on stdin/stdout, no
 //! `Content-Length` framing — unlike an LSP-style transport, a line *is* a
-//! message. Also confirmed empirically: `model/list` succeeds without any
-//! account configured, while `account/rateLimits/read` and
-//! `account/usage/read` return a JSON-RPC error (`-32600`) until logged in,
-//! and `account/read` itself answers `{"account": null, "requiresOpenaiAuth":
-//! true}` rather than erroring. This module models exactly the three probes
-//! above; it deliberately does not implement `account/rateLimits/read`,
-//! `account/usage/read`, `thread/turn`, dynamic tools, sandboxed command
-//! execution, interrupt/resume, or `ServerRequest` approval-deny handling
-//! (§4.2.1) — none of those have been probed against the real binary yet,
-//! and guessing their shape here would repeat the mistake
+//! message. Also confirmed empirically: `model/list` and `thread/start`
+//! both succeed without any account configured, while
+//! `account/rateLimits/read` and `account/usage/read` return a JSON-RPC
+//! error (`-32600`) until logged in, and `account/read` itself answers
+//! `{"account": null, "requiresOpenaiAuth": true}` rather than erroring —
+//! three different unauthenticated-state shapes on three related
+//! endpoints, none of them guessed. This module models exactly the four
+//! probes above; it deliberately does not implement `account/rateLimits/
+//! read`, `account/usage/read`, `turn/start`'s lifecycle, dynamic tools,
+//! sandboxed command execution, `turn/interrupt`, `thread/resume`, or
+//! `ServerRequest` approval-deny handling (§4.2.1). `turn/start` in
+//! particular was probed just far enough to learn it does *not* fail
+//! synchronously like `account/*` does — it returns `status: "inProgress"`
+//! immediately and resolves later via notification traffic this module has
+//! no documented rule for yet. None of the unimplemented pieces have a
+//! confirmed shape, and guessing here would repeat the mistake
 //! `harness_probe.rs`'s module doc already warns against.
 //!
 //! D8 isolation this module is responsible for: `spawn` takes `codex_home`
@@ -409,6 +415,57 @@ pub async fn probe_account_read(
     })
 }
 
+/// Result of `thread/start`. Only the fields needed to identify and later
+/// address the thread are modeled; the real response also carries
+/// `sessionId`, `path` (the on-disk rollout `.jsonl` under `codex_home`),
+/// `model`, `cwd`, and more that have no consumer yet.
+///
+/// Deliberately not covered here: `turn/start`. Empirically it does *not*
+/// synchronously error when unauthenticated the way `account/*` does —
+/// against a thread from an unauthenticated `codex_home` it returns
+/// immediately with `{"turn": {"status": "inProgress", ...}}`, meaning
+/// completion (success or an eventual auth failure) arrives later as
+/// notification traffic this module has no documented rule for yet.
+/// Modeling that lifecycle is a separate increment, not a guess made here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexThreadSummary {
+    pub id: String,
+    pub status: String,
+}
+
+/// Spawns, initializes, and calls `thread/start` with no parameters (a
+/// fresh, unparented thread — `thread/start`'s `params` also accepts
+/// `cwd`/`model`/`forkFromId` and more, none of which this probe needs),
+/// then kills the probe child. Empirically (`codex-cli 0.153.4`) this
+/// succeeds without any account configured, creating a real
+/// `status: "idle"` thread and rollout file under `codex_home`.
+pub async fn probe_thread_start(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    timeout: Duration,
+) -> Result<CodexThreadSummary, CodexTransportError> {
+    let (mut transport, _initialize_result) =
+        spawn_initialized(codex_binary, codex_home, timeout).await?;
+
+    let request_result = transport.request("thread/start", serde_json::json!({}), timeout).await;
+    kill_and_reap(&mut transport).await;
+    let (result, _skipped) = request_result?;
+
+    let thread = result.get("thread").cloned().unwrap_or(Value::Null);
+    let id = thread
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CodexTransportError::UnexpectedEnvelope { line: thread.to_string() })?
+        .to_string();
+    let status = thread
+        .get("status")
+        .and_then(|s| s.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    Ok(CodexThreadSummary { id, status })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +552,25 @@ mod tests {
 
         assert!(!status.authenticated, "a fresh CODEX_HOME must not already be authenticated");
         assert!(status.requires_openai_auth);
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// Real-binary integration test: `thread/start` succeeds without any
+    /// account configured, returns a non-empty thread id, and the thread
+    /// starts out idle.
+    #[tokio::test]
+    async fn probe_thread_start_round_trips_against_the_real_codex_binary() {
+        let codex_home = real_codex_home();
+        let thread = probe_thread_start(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(!thread.id.is_empty());
+        assert_eq!(thread.status, "idle");
         std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
     }
 
