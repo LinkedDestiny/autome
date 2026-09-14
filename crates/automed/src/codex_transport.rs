@@ -1,0 +1,437 @@
+//! Narrow, mechanically-defined slice of the Codex adapter (plan §4.2, D8):
+//! a newline-delimited JSON-RPC 2.0 transport over `codex app-server`'s
+//! stdio, plus a single `probe_initialize` call built on it.
+//!
+//! Wire format confirmed empirically against the real `codex` binary
+//! (`codex-cli 0.153.4`): one JSON object per line on stdin/stdout, no
+//! `Content-Length` framing — unlike an LSP-style transport, a line *is* a
+//! message. This module models exactly that framing plus one request/
+//! response round trip; it deliberately does not implement `model/list`,
+//! `account/auth_status`, `thread/turn`, dynamic tools, sandboxed command
+//! execution, interrupt/resume, usage, or `ServerRequest` approval-deny
+//! handling (§4.2.1) — none of those have been probed against the real
+//! binary yet, and guessing their shape here would repeat the mistake
+//! `harness_probe.rs`'s module doc already warns against.
+//!
+//! D8 isolation this module is responsible for: `spawn` takes `codex_home`
+//! as an `fs_guard::OwnedDirGuard`, not a bare `&Path` — that type only
+//! exists once `fs_guard::create_owned_dir`/`verify_owned_dir` has already
+//! passed the full owner-only check, so it is structurally impossible to
+//! spawn `codex` against a directory this module hasn't confirmed is
+//! owner-only. This module spawns with a cleared environment plus exactly
+//! `CODEX_HOME` and `PATH` — never inheriting the parent's ambient
+//! environment wholesale.
+
+use std::path::Path;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+
+use crate::fs_guard::OwnedDirGuard;
+
+#[derive(Debug, Error)]
+pub enum CodexTransportError {
+    #[error("failed to spawn {binary:?}: {source}")]
+    Spawn {
+        binary: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write request to child stdin: {0}")]
+    WriteRequest(#[source] std::io::Error),
+    #[error("failed to read response line from child stdout: {0}")]
+    ReadResponse(#[source] std::io::Error),
+    #[error("child closed stdout before a matching response arrived")]
+    ClosedStdout,
+    #[error("response line was not valid JSON: {0}")]
+    MalformedLine(#[source] serde_json::Error),
+    #[error("response envelope was valid JSON but not a JSON-RPC object with the expected id")]
+    UnexpectedEnvelope { line: String },
+    #[error("server returned a JSON-RPC error: code={code} message={message}")]
+    RpcError { code: i64, message: String },
+    #[error("request timed out after {timeout_ms}ms and the child was killed")]
+    Timeout { timeout_ms: u64 },
+}
+
+/// One line of newline-delimited JSON-RPC traffic from the child's stdout,
+/// classified only as far as distinguishing "this is the response to the
+/// request I sent" from everything else. Server-originated requests and
+/// notifications are real `codex app-server` traffic (approval prompts,
+/// progress events, ...) but this module has no documented rule yet for
+/// handling them — they are surfaced verbatim as `Unmatched` rather than
+/// silently dropped or guessed at.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CodexFrame {
+    Response(Value),
+    Unmatched(Value),
+}
+
+/// A running `codex app-server` child process plus its line-oriented stdio
+/// halves. Holds nothing beyond what's needed for one request/response
+/// round trip at a time; concurrent in-flight requests and background
+/// draining of unmatched frames are out of scope for this slice.
+pub struct CodexTransport {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: AtomicU64,
+}
+
+impl CodexTransport {
+    /// Spawns `codex_binary app-server` under `codex_home`, with a cleared
+    /// environment carrying only `PATH` and `CODEX_HOME`. `codex_home` is an
+    /// `OwnedDirGuard`, not a bare path, so reaching this call already
+    /// proves the owner-only check (D8) passed.
+    pub fn spawn(
+        codex_binary: &Path,
+        codex_home: &OwnedDirGuard,
+    ) -> Result<Self, CodexTransportError> {
+        let mut command = tokio::process::Command::new(codex_binary);
+        command
+            .arg("app-server")
+            .env_clear()
+            .env("CODEX_HOME", &codex_home.canonical_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Ok(path) = std::env::var("PATH") {
+            command.env("PATH", path);
+        }
+
+        let mut child = command.spawn().map_err(|source| CodexTransportError::Spawn {
+            binary: codex_binary.to_path_buf(),
+            source,
+        })?;
+        let stdin = child.stdin.take().expect("stdin was piped at spawn");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout was piped at spawn"));
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+            next_id: AtomicU64::new(1),
+        })
+    }
+
+    /// Sends `method`/`params` as a JSON-RPC request and waits up to
+    /// `timeout` for the line carrying the matching `id`. Any line read
+    /// before that (a server-originated request/notification, or a
+    /// response to some other id) is returned to the caller as
+    /// `CodexFrame::Unmatched` interleaved in `skipped`, never dropped
+    /// silently. On timeout the child is killed and reaped — the same
+    /// no-leaked-process discipline `harness_probe.rs` applies.
+    pub async fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<(Value, Vec<Value>), CodexTransportError> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let mut line = serde_json::to_vec(&envelope).expect("a json! object always serializes");
+        line.push(b'\n');
+
+        match tokio::time::timeout(timeout, self.write_and_await(id, &line)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self.child.kill().await;
+                let _ = self.child.wait().await;
+                Err(CodexTransportError::Timeout {
+                    timeout_ms: timeout.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    async fn write_and_await(
+        &mut self,
+        id: u64,
+        line: &[u8],
+    ) -> Result<(Value, Vec<Value>), CodexTransportError> {
+        self.stdin
+            .write_all(line)
+            .await
+            .map_err(CodexTransportError::WriteRequest)?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(CodexTransportError::WriteRequest)?;
+
+        let mut skipped = Vec::new();
+        loop {
+            let mut raw = String::new();
+            let bytes_read = self
+                .stdout
+                .read_line(&mut raw)
+                .await
+                .map_err(CodexTransportError::ReadResponse)?;
+            if bytes_read == 0 {
+                return Err(CodexTransportError::ClosedStdout);
+            }
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let value: Value =
+                serde_json::from_str(trimmed).map_err(CodexTransportError::MalformedLine)?;
+
+            match classify(&value, id) {
+                CodexFrame::Response(v) => return finish_response(v, skipped),
+                CodexFrame::Unmatched(v) => skipped.push(v),
+            }
+        }
+    }
+}
+
+/// Classifies one decoded JSON-RPC line against the `id` we're waiting for.
+/// A value that isn't even an object with an `id` field is still a valid
+/// frame (e.g. a notification) — it's simply `Unmatched`, not an error;
+/// only a genuinely unparsable *line* is an error (see `MalformedLine`).
+fn classify(value: &Value, expected_id: u64) -> CodexFrame {
+    let matches_id = value
+        .as_object()
+        .and_then(|obj| obj.get("id"))
+        .and_then(Value::as_u64)
+        .map(|id| id == expected_id)
+        .unwrap_or(false);
+    if matches_id {
+        CodexFrame::Response(value.clone())
+    } else {
+        CodexFrame::Unmatched(value.clone())
+    }
+}
+
+fn finish_response(
+    value: Value,
+    skipped: Vec<Value>,
+) -> Result<(Value, Vec<Value>), CodexTransportError> {
+    let obj = value.as_object().ok_or_else(|| CodexTransportError::UnexpectedEnvelope {
+        line: value.to_string(),
+    })?;
+    if let Some(error) = obj.get("error") {
+        let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("<no message>")
+            .to_string();
+        return Err(CodexTransportError::RpcError { code, message });
+    }
+    let result = obj
+        .get("result")
+        .cloned()
+        .ok_or_else(|| CodexTransportError::UnexpectedEnvelope {
+            line: value.to_string(),
+        })?;
+    Ok((result, skipped))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexInitializeResult {
+    pub user_agent: Option<String>,
+    pub codex_home: Option<String>,
+    pub platform_family: Option<String>,
+    pub platform_os: Option<String>,
+}
+
+/// Spawns `codex_binary app-server` under `codex_home` and performs a single
+/// `initialize` round trip, then kills the probe child — this is a
+/// stateless capability probe, not a long-lived session. Mirrors
+/// `harness_probe::probe_harness_binary`'s "probe, don't hold open" shape.
+pub async fn probe_initialize(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    timeout: Duration,
+) -> Result<CodexInitializeResult, CodexTransportError> {
+    let mut transport = CodexTransport::spawn(codex_binary, codex_home)?;
+
+    let params = serde_json::json!({
+        "clientInfo": {
+            "name": "autome",
+            "title": "Autome",
+            "version": env!("CARGO_PKG_VERSION"),
+        }
+    });
+    let request_result = transport.request("initialize", params, timeout).await;
+
+    let _ = transport.child.kill().await;
+    let _ = transport.child.wait().await;
+
+    let (result, _skipped) = request_result?;
+    Ok(CodexInitializeResult {
+        user_agent: result
+            .get("userAgent")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        codex_home: result
+            .get("codexHome")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        platform_family: result
+            .get("platformFamily")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        platform_os: result
+            .get("platformOs")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    fn real_codex_home() -> OwnedDirGuard {
+        let root = std::env::temp_dir().join(format!(
+            "automed-codex-transport-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut perms = std::fs::metadata(&root).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
+        std::fs::set_permissions(&root, perms).unwrap();
+        crate::fs_guard::create_owned_dir(&root, "codex-home").unwrap()
+    }
+
+    /// Real-binary integration test: a genuine `codex app-server` speaks
+    /// the exact newline-delimited JSON-RPC framing this module assumes,
+    /// and `initialize` returns a `userAgent` field.
+    #[tokio::test]
+    async fn probe_initialize_round_trips_against_the_real_codex_binary() {
+        let codex_home = real_codex_home();
+        let result = probe_initialize(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.user_agent.is_some(), "expected a userAgent in the initialize result");
+        assert!(
+            result.user_agent.as_deref().unwrap().contains("autome"),
+            "expected our clientInfo.name to be reflected in userAgent, got {:?}",
+            result.user_agent
+        );
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// A stand-in binary that never writes a line and never exits must be
+    /// killed and reaped, not left running, and `request` must return
+    /// promptly rather than waiting out the fixture's own much longer sleep.
+    #[tokio::test]
+    async fn a_hung_server_times_out_and_is_killed_not_leaked() {
+        let codex_home = real_codex_home();
+        let started = std::time::Instant::now();
+        let err = probe_initialize(
+            &fixture("fake_harness_hangs.sh"),
+            &codex_home,
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, CodexTransportError::Timeout { .. }));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// A stand-in binary whose first line is not JSON must surface a typed
+    /// parse error, never panic or hang waiting for a well-formed line that
+    /// will never arrive.
+    #[tokio::test]
+    async fn a_garbage_first_line_yields_a_typed_parse_error() {
+        let codex_home = real_codex_home();
+        let err = probe_initialize(
+            &fixture("fake_codex_garbage.sh"),
+            &codex_home,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, CodexTransportError::MalformedLine(_)));
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// A stand-in binary that exits immediately without writing anything
+    /// must surface `ClosedStdout`, not hang or panic on EOF.
+    #[tokio::test]
+    async fn a_closed_stdout_before_any_response_is_reported_not_hung() {
+        let codex_home = real_codex_home();
+        let err = probe_initialize(
+            &fixture("fake_codex_closes_immediately.sh"),
+            &codex_home,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, CodexTransportError::ClosedStdout));
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// D8 rejection: `spawn`/`probe_initialize` take an `OwnedDirGuard`, not
+    /// a bare path, and that guard cannot be constructed for a group/world-
+    /// writable directory — `verify_owned_dir` rejects it first. There is no
+    /// bypass path from an unsafe `CODEX_HOME` into a spawned `codex`
+    /// process; this test proves the rejection happens before spawn is even
+    /// reachable, not just that `fs_guard` has its own passing unit tests.
+    #[test]
+    fn an_unsafe_codex_home_never_produces_a_guard_spawn_could_accept() {
+        let root = std::env::temp_dir().join(format!(
+            "automed-codex-transport-test-unsafe-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut perms = std::fs::metadata(&root).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
+        std::fs::set_permissions(&root, perms).unwrap();
+
+        let unsafe_home = root.join("world-writable-codex-home");
+        std::fs::create_dir(&unsafe_home).unwrap();
+        let mut perms = std::fs::metadata(&unsafe_home).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o777);
+        std::fs::set_permissions(&unsafe_home, perms).unwrap();
+
+        let err = crate::fs_guard::verify_owned_dir(&unsafe_home, &root).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::fs_guard::FsGuardError::GroupOrWorldWritable { .. }
+        ));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `classify` treats an object whose `id` doesn't match as `Unmatched`
+    /// rather than erroring — server-originated traffic is real, expected
+    /// protocol behavior, not malformed input.
+    #[test]
+    fn classify_distinguishes_matching_response_from_unmatched_traffic() {
+        let matching = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}});
+        let other_id = serde_json::json!({"jsonrpc": "2.0", "id": 2, "result": {}});
+        let notification = serde_json::json!({"jsonrpc": "2.0", "method": "codex/event", "params": {}});
+
+        assert!(matches!(classify(&matching, 1), CodexFrame::Response(_)));
+        assert!(matches!(classify(&other_id, 1), CodexFrame::Unmatched(_)));
+        assert!(matches!(classify(&notification, 1), CodexFrame::Unmatched(_)));
+    }
+}
