@@ -48,6 +48,51 @@
 //! merely *refuses to read* that identity (confirmed here by
 //! `apiKeySource:"none"`), it doesn't relocate it. Spawns with a cleared
 //! environment plus exactly `CLAUDE_CONFIG_DIR` and `PATH`.
+//!
+//! S0 spike progress on the plan's hard ship-blocker (line 123 — a
+//! dedicated API key handed to Claude via `apiKeyHelper` must be proven to
+//! never leak into the Agent, Bash/project subprocesses, argv, env, logs,
+//! or error output): `spawn_with_dedicated_api_key_helper` delivers the
+//! key via `--settings '{"apiKeyHelper": "<path>"}'` (confirmed
+//! empirically that `--settings` accepts an inline JSON string, not just a
+//! file path — no settings file is written to disk by this module). Three
+//! facts confirmed empirically against the real binary
+//! (`claude-cli 2.1.261`) and load-bearing for this design:
+//! 1. **`--bare`'s skip-list does not include `settings.json`'s `env`
+//!    block.** A real, unrelated `~/.claude/settings.json` on this
+//!    development machine carries its own `ANTHROPIC_BASE_URL`/
+//!    `ANTHROPIC_AUTH_TOKEN` for this sandbox, and even with `--bare` and
+//!    a fully-cleared process environment passed to `claude`, those
+//!    values reached a spawned `apiKeyHelper`'s own environment whenever
+//!    `CLAUDE_CONFIG_DIR` was *not* set (falling through to the real
+//!    `~/.claude`). Isolating `CLAUDE_CONFIG_DIR` to an empty owner-only
+//!    directory (already required by D8 above) is confirmed to fully
+//!    prevent this — proven by
+//!    `claude_config_dir_isolation_keeps_ambient_anthropic_env_out_of_the_api_key_helper`
+//!    below, run against the real binary.
+//! 2. **`apiKeyHelper` is invoked once per API attempt, including
+//!    retries** — not once at startup. Against a rejected (dummy) key,
+//!    the real CLI retried with `type:"system",subtype:"api_retry"` lines
+//!    showing exponential backoff (`retry_delay_ms`: 2010, 4223, 8650,
+//!    16006, ...) up to `max_retries: 10`, re-invoking the helper each
+//!    time. A caller cannot assume a bad key fails fast: exhausting all
+//!    10 retries could take minutes. This module does not yet special-
+//!    case 401/`authentication_failed` for a fast-fail path — a caller
+//!    must budget `probe_turn`'s `timeout` accordingly, or a future
+//!    increment must parse `api_retry`/`error_status` lines to fail
+//!    early. Left as an open gap, not guessed at.
+//! 3. The dummy key value itself was confirmed, across repeated runs, to
+//!    never appear in the child's stdout or stderr streams — the only
+//!    channels this module or a caller observes.
+//!
+//! Explicitly **not** proven by this S0 spike, because no genuine
+//! dedicated Anthropic API key was available in this environment: whether
+//! the key leaks into a *successful* turn's Bash-tool-spawned subprocess
+//! environments (only the unauthenticated/retry path was observed), or
+//! into the Agent's own visible transcript content. Those remain open
+//! until a real key can be tested against, per the same
+//! honestly-scoped-gap discipline `codex_transport.rs` applies to
+//! `turn/start`.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -170,6 +215,34 @@ impl ClaudeTransport {
         claude_config_dir: &OwnedDirGuard,
         session_id: &str,
     ) -> Result<Self, ClaudeTransportError> {
+        Self::spawn_inner(claude_binary, claude_config_dir, session_id, None)
+    }
+
+    /// Spawns exactly like [`Self::spawn`], but additionally delivers a
+    /// dedicated API key via `--settings '{"apiKeyHelper": "<path>"}'`
+    /// (an inline JSON string — confirmed empirically `--settings` accepts
+    /// one directly, no file is written to disk) instead of relying on
+    /// `ANTHROPIC_API_KEY` or the shared Keychain identity. This is the
+    /// plan's required delivery mechanism for the automatic Run's Claude
+    /// route (plan line 123): see the module doc's S0-spike section for
+    /// what has and has not been proven about this path's leak-safety.
+    pub fn spawn_with_dedicated_api_key_helper(
+        claude_binary: &Path,
+        claude_config_dir: &OwnedDirGuard,
+        session_id: &str,
+        api_key_helper: &Path,
+    ) -> Result<Self, ClaudeTransportError> {
+        let settings =
+            serde_json::json!({ "apiKeyHelper": api_key_helper.to_string_lossy() }).to_string();
+        Self::spawn_inner(claude_binary, claude_config_dir, session_id, Some(&settings))
+    }
+
+    fn spawn_inner(
+        claude_binary: &Path,
+        claude_config_dir: &OwnedDirGuard,
+        session_id: &str,
+        settings_json: Option<&str>,
+    ) -> Result<Self, ClaudeTransportError> {
         let mut command = tokio::process::Command::new(claude_binary);
         command
             .arg("-p")
@@ -184,7 +257,11 @@ impl ClaudeTransport {
             .arg("--permission-mode")
             .arg("dontAsk")
             .arg("--permission-prompts")
-            .arg("none")
+            .arg("none");
+        if let Some(settings) = settings_json {
+            command.arg("--settings").arg(settings);
+        }
+        command
             .env_clear()
             .env("CLAUDE_CONFIG_DIR", &claude_config_dir.canonical_path)
             .stdin(Stdio::piped())
@@ -348,6 +425,85 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
         std::fs::set_permissions(&root, perms).unwrap();
         crate::fs_guard::create_owned_dir(&root, "claude-config-dir").unwrap()
+    }
+
+    /// Copies the tracked `fake_api_key_helper_records_env.sh` fixture into
+    /// a fresh scratch `dir` and returns the copy's path. Copying (rather
+    /// than pointing straight at `tests/fixtures/`) keeps the
+    /// `observed_env.*.txt` files the fixture writes next to itself out of
+    /// the source tree.
+    fn install_api_key_helper_fixture_into(dir: &Path) -> std::path::PathBuf {
+        let dest = dir.join("fake_api_key_helper_records_env.sh");
+        std::fs::copy(fixture("fake_api_key_helper_records_env.sh"), &dest).unwrap();
+        let mut perms = std::fs::metadata(&dest).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
+        std::fs::set_permissions(&dest, perms).unwrap();
+        dest
+    }
+
+    /// Real-binary S0 spike, encoded as a test: with `CLAUDE_CONFIG_DIR`
+    /// isolated to an empty owner-only directory (the only configuration
+    /// `spawn_with_dedicated_api_key_helper` allows — see D8 above), the
+    /// helper this module invokes must never observe an ambient
+    /// `ANTHROPIC_*` variable, even though this development machine's real
+    /// `~/.claude/settings.json` carries one. This is the portable,
+    /// machine-agnostic proof for module-doc S0-spike fact 1; it does not
+    /// attempt facts 2 or 3, which need no isolated-env assertion.
+    #[tokio::test]
+    async fn claude_config_dir_isolation_keeps_ambient_anthropic_env_out_of_the_api_key_helper() {
+        let config_dir = real_claude_config_dir();
+        let helper_dir = std::env::temp_dir().join(format!(
+            "automed-claude-transport-test-helper-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&helper_dir).unwrap();
+        let helper_path = install_api_key_helper_fixture_into(&helper_dir);
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut transport = ClaudeTransport::spawn_with_dedicated_api_key_helper(
+            Path::new("/Users/dannie/.local/bin/claude"),
+            &config_dir,
+            &session_id,
+            &helper_path,
+        )
+        .unwrap();
+        transport.send_user_text_and_close_stdin("say hi").await.unwrap();
+
+        // The dummy key is rejected, so the turn itself will keep retrying
+        // (see module doc fact 2) well past what this test needs to wait
+        // for — it only cares that the helper was invoked at least once,
+        // not how the turn concludes, so it reads with a short timeout and
+        // then kills the child regardless of outcome.
+        let _ = tokio::time::timeout(Duration::from_secs(10), transport.read_until_result()).await;
+        kill_and_reap(&mut transport).await;
+
+        let observed_files: Vec<_> = std::fs::read_dir(&helper_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("observed_env."))
+            .collect();
+        assert!(
+            !observed_files.is_empty(),
+            "expected the fixture api key helper to have been invoked at least once"
+        );
+
+        for entry in &observed_files {
+            let contents = std::fs::read_to_string(entry.path()).unwrap();
+            assert!(
+                !contents.contains("ANTHROPIC_"),
+                "the api key helper observed an ANTHROPIC_* env var it must never see: {contents}"
+            );
+            assert!(
+                contents.contains(&format!(
+                    "CLAUDE_CONFIG_DIR={}",
+                    config_dir.canonical_path.display()
+                )),
+                "expected the isolated CLAUDE_CONFIG_DIR to be the one visible to the helper, got: {contents}"
+            );
+        }
+
+        std::fs::remove_dir_all(&helper_dir).ok();
+        std::fs::remove_dir_all(config_dir.canonical_path.parent().unwrap()).ok();
     }
 
     /// Real-binary integration test: a genuine `claude -p --input-format
