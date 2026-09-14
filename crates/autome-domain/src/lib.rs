@@ -10,6 +10,7 @@
 pub mod attempt;
 pub mod certificate;
 pub mod completion;
+pub mod config;
 pub mod contract;
 pub mod delivery;
 pub mod evidence;
