@@ -40,21 +40,27 @@
 //! and `params.lease_id`; `queue.release_via_safe_park` parses `params.receipt`
 //! (a full `SafeParkReceipt`); `queue.cancel` parses `params.task_id`.
 
-use crate::ipc::{Command, Event};
+use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
     AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, ContractAppendError,
-    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError, GraphAppendError,
-    ProjectAppendError, TaskAppendError,
+    CreateFromTargetError, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError,
+    GraphAppendError, ProjectAppendError, ProjectSummary, TaskAppendError, TaskSummary,
 };
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
-use autome_domain::execution_queue::ExecutionQueueEvent;
+use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
-use autome_domain::project::{ProjectEvent, ProjectState};
+use autome_domain::project::{
+    ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
+};
 use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
+use serde_json::Value;
+use std::path::Path;
+
+use crate::target_probe::{self, TargetProbeError};
 
 #[derive(Debug)]
 pub enum DispatchError {
@@ -66,6 +72,40 @@ pub enum DispatchError {
     ContractStore(ContractAppendError),
     GraphStore(GraphAppendError),
     ExecutionQueueStore(ExecutionQueueAppendError),
+    /// `ProjectIdentity::new`'s own validation (kind/locator mismatch,
+    /// blank id/display_name/project_home/locator field) rejected the
+    /// `project.create` params before any store call was even made.
+    ProjectIdentity(ProjectIdentityError),
+    /// §8.2 write path: `create_project_from_target`'s failure modes,
+    /// matched exhaustively below rather than flattened into one
+    /// `DispatchError` variant per case -- mirroring how `ProjectStore`/
+    /// `TaskStore`/etc. above already nest their own multi-case store
+    /// errors instead of each getting a flat variant.
+    CreateFromTarget(CreateFromTargetError),
+    /// A `project.register_target` `path` param that failed
+    /// `target_probe::probe_target` (not found, a symlink, an io error
+    /// resolving it, `git` missing from `PATH`, etc.) -- always the
+    /// caller's fault (a bad or since-removed path), never an internal
+    /// failure.
+    TargetProbe(TargetProbeError),
+    /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
+    /// re-verification failed and every write is refused until the
+    /// underlying filesystem problem is fixed. Read methods are
+    /// unaffected -- they never reach `dispatch` at all, see
+    /// `try_dispatch_read`.
+    Diagnostic(String),
+}
+
+impl From<CreateFromTargetError> for DispatchError {
+    fn from(value: CreateFromTargetError) -> Self {
+        DispatchError::CreateFromTarget(value)
+    }
+}
+
+impl From<TargetProbeError> for DispatchError {
+    fn from(value: TargetProbeError) -> Self {
+        DispatchError::TargetProbe(value)
+    }
 }
 
 impl From<AppendError> for DispatchError {
@@ -77,6 +117,12 @@ impl From<AppendError> for DispatchError {
 impl From<ProjectAppendError> for DispatchError {
     fn from(value: ProjectAppendError) -> Self {
         DispatchError::ProjectStore(value)
+    }
+}
+
+impl From<ProjectIdentityError> for DispatchError {
+    fn from(value: ProjectIdentityError) -> Self {
+        DispatchError::ProjectIdentity(value)
     }
 }
 
@@ -105,6 +151,14 @@ impl From<ExecutionQueueAppendError> for DispatchError {
 }
 
 pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, DispatchError> {
+    // §8.3:1362: once the store has flagged itself diagnostic (its own
+    // owner-only disk layout failed re-verification), every write method
+    // below is refused outright, unconditionally, before any params are
+    // even parsed. Read methods never reach this function at all -- see
+    // `try_dispatch_read`, checked first by `handle_command`.
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err(DispatchError::Diagnostic(reason.to_string()));
+    }
     match command.method.as_str() {
         "run.graph_review_rejected" => {
             let aggregate_id = require_aggregate_id(command)?;
@@ -257,6 +311,46 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
                 store.append_execution_queue_event(ExecutionQueueEvent::Cancelled { task_id })?;
             return Ok(execution_queue_event_envelope(appended));
         }
+        // The original, low-level primitive: takes a raw `locator` object
+        // straight from `params`. Kept for tests and any future CLI, but
+        // Main never sends this over the wire -- `ipc-gate.js`'s write
+        // whitelist and `write-gate.js` (§8.2) never admit it either,
+        // since a nested `locator` object can't pass the scalar-only
+        // param rule and, more fundamentally, the path it's derived from
+        // would have had to come from somewhere Main isn't allowed to
+        // trust (see this module's own doc comment on that restriction).
+        // Real project creation goes through `project.create_from_target`
+        // below instead.
+        "project.create" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let display_name = parse_string_param(command, "display_name")?;
+            let kind = parse_project_kind(command)?;
+            let locator = parse_project_locator(command)?;
+            let project_home = store.project_home_for(&aggregate_id);
+            let identity =
+                ProjectIdentity::new(&aggregate_id, &display_name, kind, locator, &project_home)?;
+            let appended = store.create_project(&identity)?;
+            return Ok(project_event_envelope(aggregate_id, appended));
+        }
+        // §8.2 phase ⑤: the only creation path Main actually uses. Takes
+        // nothing but a previously-registered `target_id` (see
+        // `handle_command`'s `project.register_target` branch, the only
+        // way to obtain one) plus scalars -- the `ProjectLocator` is
+        // derived by `create_project_from_target` itself from the target
+        // record it already persisted, never read back out of `params`.
+        "project.create_from_target" => {
+            let target_id = parse_string_param(command, "target_id")?;
+            let display_name = parse_string_param(command, "display_name")?;
+            let trust_confirmed = parse_bool_param(command, "trust_confirmed")?;
+            let destination_name = parse_optional_string_param(command, "destination_name")?;
+            let created = store.create_project_from_target(
+                &target_id,
+                &display_name,
+                trust_confirmed,
+                destination_name.as_deref(),
+            )?;
+            return Ok(project_event_envelope(created.project_id, created.appended));
+        }
         _ => {}
     }
     if let Some(event) = parameterless_run_event(&command.method) {
@@ -270,6 +364,374 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
         return Ok(project_event_envelope(aggregate_id, appended));
     }
     Err(DispatchError::UnknownMethod(command.method.clone()))
+}
+
+/// Every `Command` produces exactly one `Reply`; state-changing commands
+/// additionally produce an `Event`. This wraps `dispatch` (left entirely
+/// unchanged above, including its `Result<Event, DispatchError>` signature
+/// and its 64 existing test call sites) rather than replacing it, so the
+/// write path's behavior and test coverage are untouched by this addition.
+pub struct DispatchOutcome {
+    pub reply: Reply,
+    pub event: Option<Event>,
+}
+
+/// Builds the `ReplyOutcome` for a command that produces a `Value`
+/// payload and never an `Event` -- shared by the read branch below and
+/// by `project.register_target`, the one *write* that also takes this
+/// shape (see `handle_register_target`'s own doc comment for why).
+fn value_outcome(
+    store: &EventStore,
+    result: Result<Value, (ReplyErrorCode, String)>,
+) -> ReplyOutcome {
+    let snapshot_seq = store.latest_event_seq().unwrap_or(0);
+    match result {
+        Ok(payload) => ReplyOutcome::Ok {
+            snapshot_seq,
+            payload,
+        },
+        Err((code, message)) => ReplyOutcome::Error { code, message },
+    }
+}
+
+pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutcome {
+    // §8.2 phase ③: handled here, ahead of both `try_dispatch_read` and
+    // `dispatch`, because it fits neither -- it writes a `project_targets`
+    // row (so it isn't a read) but appends no `ProjectEvent` (there is no
+    // project aggregate yet to append one to), so it can't fit `dispatch`'s
+    // `Result<Event, DispatchError>` shape either. This is the only place
+    // in the whole dispatch layer that calls `handle_register_target`.
+    if command.method == "project.register_target" {
+        let result = handle_register_target(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    if let Some(result) = try_dispatch_read(store, command) {
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    match dispatch(store, command) {
+        Ok(event) => {
+            let snapshot_seq = store.latest_event_seq().unwrap_or(event.event_seq);
+            DispatchOutcome {
+                reply: reply_for(
+                    command,
+                    ReplyOutcome::Ok {
+                        snapshot_seq,
+                        payload: event.payload.clone(),
+                    },
+                ),
+                event: Some(event),
+            }
+        }
+        Err(err) => {
+            let (code, message) = dispatch_error_to_reply_error(err);
+            DispatchOutcome {
+                reply: reply_for(command, ReplyOutcome::Error { code, message }),
+                event: None,
+            }
+        }
+    }
+}
+
+fn reply_for(command: &Command, outcome: ReplyOutcome) -> Reply {
+    Reply {
+        request_id: command.request_id.clone(),
+        command_id: command.command_id.clone(),
+        protocol_version: command.protocol_version,
+        outcome,
+    }
+}
+
+/// §8.2 phase ③: the sole caller of `EventStore::register_target`. Takes
+/// `{ kind, path }` -- `path` is an OS path Main obtained itself via its
+/// own `dialog.showOpenDialog` (see this module's doc comment on the
+/// broader "no Renderer/Agent-supplied path" rule); it is probed, the
+/// result persisted as a new `project_targets` row, and only
+/// `{ target_id, summary }` is handed back -- the `canonical_path` inside
+/// `summary` is the one place a resolved path is allowed to flow back
+/// *out* to a Renderer, since the rule constrains what can flow in, not
+/// what can be displayed (see the design note in the governing plan).
+/// Refuses to run while the store is in its diagnostic state, same as
+/// every write in `dispatch`.
+fn handle_register_target(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let kind = parse_project_kind(command).map_err(dispatch_error_to_reply_error)?;
+    let path = parse_string_param(command, "path").map_err(dispatch_error_to_reply_error)?;
+    let probe = target_probe::probe_target(Path::new(&path))
+        .map_err(|e| (ReplyErrorCode::InvalidParams, e.to_string()))?;
+    // `destination_absent` isn't knowable yet at registration time: for
+    // `NewProduct` the destination name hasn't been typed by the user yet,
+    // and for `ExistingRepository` it is always recomputed as `false`
+    // regardless (see `create_project_from_target`). `true` here is a
+    // documented placeholder -- `TargetRecord`'s own doc comment already
+    // says this field must never be trusted from what gets persisted at
+    // registration time; it is always re-derived fresh at creation time.
+    let inspection = probe.to_inspection(true);
+    let target_id = store
+        .register_target(kind, &probe, &inspection)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({
+        "target_id": target_id,
+        "summary": {
+            "kind": kind,
+            "canonical_path": probe.canonical_path.to_string_lossy(),
+            "is_git_repo": inspection.is_git_repo,
+            "head_resolvable": inspection.head_resolvable,
+            "worktree_clean": inspection.worktree_clean,
+        },
+    }))
+}
+
+/// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
+/// variants (genuine I/O/internal failures) become `Internal`;
+/// `Transition(_)` variants (a reducer rejecting the event given the
+/// aggregate's current state — a well-formed, expected rejection, not a
+/// bug) become `TransitionRejected`, kept distinct from `Internal` so real
+/// failures don't get lost among ordinary domain-rule rejections.
+fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String) {
+    match err {
+        DispatchError::UnknownMethod(method) => (
+            ReplyErrorCode::UnknownMethod,
+            format!("unknown method: {method}"),
+        ),
+        DispatchError::InvalidParams(message) => (ReplyErrorCode::InvalidParams, message),
+        DispatchError::Store(AppendError::Sql(e)) => (ReplyErrorCode::Internal, e.to_string()),
+        DispatchError::Store(AppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::ProjectStore(ProjectAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ProjectStore(ProjectAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::ProjectStore(ProjectAppendError::AlreadyExists) => (
+            ReplyErrorCode::ProtocolViolation,
+            "a project with this aggregate_id already exists".to_string(),
+        ),
+        DispatchError::ProjectStore(ProjectAppendError::NotFound) => (
+            ReplyErrorCode::NotFound,
+            "no project has been created with this aggregate_id".to_string(),
+        ),
+        DispatchError::ProjectIdentity(e) => (ReplyErrorCode::InvalidParams, format!("{e:?}")),
+        DispatchError::TaskStore(TaskAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::TaskStore(TaskAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::ContractStore(ContractAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ContractStore(ContractAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::GraphStore(GraphAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::GraphStore(GraphAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::ExecutionQueueStore(ExecutionQueueAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ExecutionQueueStore(ExecutionQueueAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::CreateFromTarget(CreateFromTargetError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::CreateFromTarget(CreateFromTargetError::TargetNotFound) => (
+            ReplyErrorCode::NotFound,
+            "no registered target with this target_id".to_string(),
+        ),
+        DispatchError::CreateFromTarget(CreateFromTargetError::TargetAlreadyConsumed) => (
+            ReplyErrorCode::InvalidParams,
+            "this target_id has already been used to create a project".to_string(),
+        ),
+        DispatchError::CreateFromTarget(CreateFromTargetError::TrustNotConfirmed) => (
+            ReplyErrorCode::InvalidParams,
+            "existing_repository targets require trust_confirmed: true".to_string(),
+        ),
+        DispatchError::CreateFromTarget(CreateFromTargetError::Rejected(rejection)) => (
+            ReplyErrorCode::InvalidParams,
+            format!("target rejected: {rejection:?}"),
+        ),
+        DispatchError::CreateFromTarget(CreateFromTargetError::Identity(e)) => {
+            (ReplyErrorCode::InvalidParams, format!("{e:?}"))
+        }
+        DispatchError::CreateFromTarget(CreateFromTargetError::FsGuard(e)) => {
+            (ReplyErrorCode::InvalidParams, e.to_string())
+        }
+        DispatchError::TargetProbe(e) => (ReplyErrorCode::InvalidParams, e.to_string()),
+        DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
+    }
+}
+
+/// The five read-only methods this increment adds. `None` means "not a
+/// read method" — the caller falls through to the unchanged write-path
+/// `dispatch`. List queries only ever touch projection-table columns
+/// (never `state_json`), matching plan §2's point of having projection
+/// tables at all.
+fn try_dispatch_read(
+    store: &EventStore,
+    command: &Command,
+) -> Option<Result<Value, (ReplyErrorCode, String)>> {
+    match command.method.as_str() {
+        "project.list" => Some(read_project_list(store)),
+        "project.get" => Some(read_project_get(store, command)),
+        "task.list" => Some(read_task_list(store, command)),
+        "task.get" => Some(read_task_get(store, command)),
+        "queue.get" => Some(read_queue_get(store)),
+        _ => None,
+    }
+}
+
+fn read_project_list(store: &EventStore) -> Result<Value, (ReplyErrorCode, String)> {
+    let summaries = store.list_project_summaries().map_err(internal_error)?;
+    Ok(serde_json::json!({
+        "projects": summaries
+            .into_iter()
+            .map(|s: ProjectSummary| {
+                serde_json::json!({
+                    "id": s.id,
+                    "revision": s.revision,
+                    "lifecycle": s.lifecycle,
+                    "phase": s.phase,
+                    "hold": s.hold,
+                    "display_name": s.display_name,
+                    "kind": s.kind,
+                })
+            })
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn read_project_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let aggregate_id = require_aggregate_id(command).map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_state(&aggregate_id)
+        .map_err(internal_error)?
+    {
+        Some((revision, state)) => {
+            let identity = store
+                .load_project_identity(&aggregate_id)
+                .map_err(internal_error)?;
+            Ok(serde_json::json!({
+                "id": aggregate_id,
+                "revision": revision,
+                "state": state,
+                "identity": identity,
+            }))
+        }
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project with id {aggregate_id}"),
+        )),
+    }
+}
+
+fn read_task_list(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    let summaries = store
+        .list_task_summaries(&project_id)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({
+        "project_id": project_id,
+        "tasks": summaries
+            .into_iter()
+            .map(|t: TaskSummary| {
+                serde_json::json!({
+                    "id": t.id,
+                    "revision": t.revision,
+                    "lifecycle": t.lifecycle,
+                })
+            })
+            .collect::<Vec<_>>(),
+    }))
+}
+
+/// §5.1's cross-project id-leak rule: a `task_id` that exists but belongs
+/// to a different `project_id` than the caller asserted is
+/// `ProtocolViolation`, never `NotFound` — the two are not
+/// interchangeable. `NotFound` means the id doesn't exist at all;
+/// `ProtocolViolation` means the caller is doing something the protocol
+/// forbids (asserting a project/task pairing that isn't true), which must
+/// not be silently downgraded to an ordinary "missing" response.
+fn read_task_get(store: &EventStore, command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let task_id = parse_string_param(command, "task_id").map_err(dispatch_error_to_reply_error)?;
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_task_state(&task_id).map_err(internal_error)? {
+        Some((revision, task)) if task.project_id == project_id => Ok(serde_json::json!({
+            "id": task_id,
+            "revision": revision,
+            "state": task,
+        })),
+        Some((_, task)) => Err((
+            ReplyErrorCode::ProtocolViolation,
+            format!(
+                "task {task_id} belongs to project {}, not {project_id}",
+                task.project_id
+            ),
+        )),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no task with id {task_id}"),
+        )),
+    }
+}
+
+/// `ExecutionQueue` is a fleet-wide singleton (see
+/// `store::EXECUTION_QUEUE_AGGREGATE_ID`) that conceptually always exists —
+/// an empty, unleased queue before its first event is a real state, not a
+/// missing one, so a store with no queue events yet reads back as revision
+/// 0 / `ExecutionQueue::default()` rather than `NotFound`.
+fn read_queue_get(store: &EventStore) -> Result<Value, (ReplyErrorCode, String)> {
+    let (revision, state) = store
+        .load_execution_queue_state()
+        .map_err(internal_error)?
+        .unwrap_or((0, ExecutionQueue::default()));
+    let task_ids = state.known_task_ids();
+    let labels = store
+        .resolve_task_project_labels(&task_ids)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({
+        "id": EXECUTION_QUEUE_AGGREGATE_ID,
+        "revision": revision,
+        "state": state,
+        "entry_labels": labels
+            .into_iter()
+            .map(|l| serde_json::json!({
+                "task_id": l.task_id,
+                "project_id": l.project_id,
+                "project_display_name": l.project_display_name,
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
+    (ReplyErrorCode::Internal, err.to_string())
 }
 
 fn run_event_envelope(aggregate_id: String, appended: AppendedRunEvent) -> Event {
@@ -347,7 +809,7 @@ fn execution_queue_event_envelope(appended: AppendedExecutionQueueEvent) -> Even
     }
 }
 
-/// The 21 of 24 RunEvent variants that carry no payload. See the module
+/// The 23 of 26 RunEvent variants that carry no payload. See the module
 /// doc comment for why the remaining 3 are not here.
 fn parameterless_run_event(method: &str) -> Option<RunEvent> {
     use RunEvent as E;
@@ -450,6 +912,56 @@ fn parse_string_param(command: &Command, key: &str) -> Result<String, DispatchEr
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} must be a string")))
+}
+
+fn parse_bool_param(command: &Command, key: &str) -> Result<bool, DispatchError> {
+    command
+        .params
+        .get(key)
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} must be a boolean")))
+}
+
+/// Like `parse_string_param`, but the key is allowed to be absent or
+/// explicit `null` -- `project.create_from_target`'s `destination_name`
+/// is the one caller: required for `NewProduct`, meaningless for
+/// `ExistingRepository` (rejected downstream by `locator_for`, not here).
+fn parse_optional_string_param(
+    command: &Command,
+    key: &str,
+) -> Result<Option<String>, DispatchError> {
+    match command.params.get(key).cloned() {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(DispatchError::InvalidParams(format!(
+            "params.{key} must be a string when present"
+        ))),
+    }
+}
+
+/// String-enum style, matching `parse_run_terminal` below: the variant
+/// name verbatim, not a snake_case or kebab-case transform of it.
+fn parse_project_kind(command: &Command) -> Result<ProjectKind, DispatchError> {
+    match command.params.get("kind").and_then(|v| v.as_str()) {
+        Some("NewProduct") => Ok(ProjectKind::NewProduct),
+        Some("ExistingRepository") => Ok(ProjectKind::ExistingRepository),
+        _ => Err(DispatchError::InvalidParams(
+            "params.kind must be one of NewProduct|ExistingRepository".to_string(),
+        )),
+    }
+}
+
+/// Serde-blob style, matching `parse_project_state` above: `ProjectLocator`
+/// derives `Deserialize` with serde's default externally-tagged
+/// representation, e.g. `{"ExistingRepository":{"repository_identity":"..."}}`.
+fn parse_project_locator(command: &Command) -> Result<ProjectLocator, DispatchError> {
+    let value =
+        command.params.get("locator").cloned().ok_or_else(|| {
+            DispatchError::InvalidParams("params.locator is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.locator is not a valid ProjectLocator: {e}"))
+    })
 }
 
 fn parse_u32_param(command: &Command, key: &str) -> Result<u32, DispatchError> {
@@ -617,6 +1129,20 @@ mod tests {
         }
     }
 
+    fn create_project_command(aggregate_id: &str) -> Command {
+        command(
+            "project.create",
+            json!({
+                "aggregate_id": aggregate_id,
+                "display_name": format!("Display {aggregate_id}"),
+                "kind": "ExistingRepository",
+                "locator": {
+                    "ExistingRepository": { "repository_identity": format!("repo-{aggregate_id}") }
+                },
+            }),
+        )
+    }
+
     #[test]
     fn advance_nominal_appends_and_returns_matching_event() {
         let (mut store, path) = temp_store();
@@ -635,13 +1161,14 @@ mod tests {
     #[test]
     fn project_advance_nominal_appends_and_returns_matching_event() {
         let (mut store, path) = temp_store();
+        dispatch(&mut store, &create_project_command("project-1")).unwrap();
         let cmd = command(
             "project.advance_nominal",
             json!({ "aggregate_id": "project-1" }),
         );
         let event = dispatch(&mut store, &cmd).unwrap();
         assert_eq!(event.aggregate_id, "project-1");
-        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.aggregate_revision, 2);
         assert_eq!(event.event_type, "AdvanceNominal");
         let (revision, state) = store.load_project_state("project-1").unwrap().unwrap();
         assert_eq!(revision, event.aggregate_revision);
@@ -652,6 +1179,7 @@ mod tests {
     #[test]
     fn project_illegal_transition_surfaces_as_project_store_error() {
         let (mut store, path) = temp_store();
+        dispatch(&mut store, &create_project_command("project-1")).unwrap();
         let cmd = command(
             "project.advance_nominal",
             json!({ "aggregate_id": "project-1" }),
@@ -1539,5 +2067,653 @@ mod tests {
         let (_, state) = store.load_execution_queue_state().unwrap().unwrap();
         assert_eq!(state.dispatch_state_of("task-1"), DispatchState::None);
         std::fs::remove_file(&path).ok();
+    }
+
+    // --- handle_command: Reply-wrapping layer -----------------------------
+
+    #[test]
+    fn handle_command_wraps_a_successful_write_with_an_ok_reply_and_an_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command("run.advance_nominal", json!({ "aggregate_id": "run-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        assert_eq!(outcome.reply.request_id, "req-1");
+        assert_eq!(outcome.reply.command_id, "cmd-1");
+        let event = outcome
+            .event
+            .expect("a write command must produce an event");
+        assert_eq!(event.aggregate_id, "run-1");
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                snapshot_seq,
+                payload,
+            } => {
+                assert_eq!(snapshot_seq, store.latest_event_seq().unwrap());
+                assert_eq!(payload, event.payload);
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_command_wraps_an_unknown_method_as_an_error_reply_with_no_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command("run.frobnicate", json!({ "aggregate_id": "run-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::UnknownMethod),
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_command_maps_a_domain_transition_rejection_to_transition_rejected_not_internal() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &create_project_command("project-1")).unwrap();
+        // §6.1's nominal path has 8 phases; Registered is index 0, so 7
+        // calls walk it all the way to Ready and the 8th has nowhere left
+        // to advance to — a legitimate domain rejection, not a bug.
+        for _ in 0..7 {
+            dispatch(
+                &mut store,
+                &command(
+                    "project.advance_nominal",
+                    json!({ "aggregate_id": "project-1" }),
+                ),
+            )
+            .unwrap();
+        }
+        let cmd = command(
+            "project.advance_nominal",
+            json!({ "aggregate_id": "project-1" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_command_wraps_a_read_method_without_producing_an_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command("project.list", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                snapshot_seq,
+                payload,
+            } => {
+                assert_eq!(snapshot_seq, 0);
+                assert_eq!(payload, json!({ "projects": [] }));
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- project.list / project.get ----------------------------------------
+
+    #[test]
+    fn project_list_is_empty_on_a_fresh_store() {
+        let (store, path) = temp_store();
+        let summaries = store.list_project_summaries().unwrap();
+        assert!(summaries.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_list_returns_every_project_ordered_by_id() {
+        let (mut store, path) = temp_store();
+        for id in ["project-b", "project-a"] {
+            dispatch(&mut store, &create_project_command(id)).unwrap();
+        }
+        let cmd = command("project.list", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        };
+        let projects = payload["projects"].as_array().unwrap();
+        let ids: Vec<&str> = projects.iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["project-a", "project-b"]);
+        let display_names: Vec<&str> = projects
+            .iter()
+            .map(|p| p["display_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            display_names,
+            vec!["Display project-a", "Display project-b"]
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_get_returns_full_state_for_a_known_project() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &create_project_command("project-1")).unwrap();
+        let cmd = command("project.get", json!({ "aggregate_id": "project-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["id"], "project-1");
+                assert_eq!(payload["revision"], 1);
+                assert!(payload["state"].is_object());
+                assert_eq!(payload["identity"]["display_name"], "Display project-1");
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_get_is_not_found_for_an_unknown_project() {
+        let (mut store, path) = temp_store();
+        let cmd = command("project.get", json!({ "aggregate_id": "no-such-project" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- project.create -------------------------------------------------------
+
+    #[test]
+    fn project_create_appends_a_project_created_event() {
+        let (mut store, path) = temp_store();
+        let event = dispatch(&mut store, &create_project_command("project-1")).unwrap();
+        assert_eq!(event.aggregate_id, "project-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "project.created");
+        let identity = store.load_project_identity("project-1").unwrap().unwrap();
+        assert_eq!(identity.display_name, "Display project-1");
+        assert_eq!(identity.kind, ProjectKind::ExistingRepository);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_create_rejects_missing_display_name() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "project.create",
+            json!({
+                "aggregate_id": "project-1",
+                "kind": "ExistingRepository",
+                "locator": { "ExistingRepository": { "repository_identity": "repo-1" } },
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_create_rejects_kind_locator_mismatch() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "project.create",
+            json!({
+                "aggregate_id": "project-1",
+                "display_name": "Display project-1",
+                "kind": "NewProduct",
+                "locator": { "ExistingRepository": { "repository_identity": "repo-1" } },
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::ProjectIdentity(_)));
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_create_on_an_existing_project_surfaces_as_protocol_violation() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &create_project_command("project-1")).unwrap();
+        let err = dispatch(&mut store, &create_project_command("project-1")).unwrap_err();
+        assert!(matches!(
+            err,
+            DispatchError::ProjectStore(ProjectAppendError::AlreadyExists)
+        ));
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::ProtocolViolation);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_advance_nominal_on_an_uncreated_project_is_not_found() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "project.advance_nominal",
+            json!({ "aggregate_id": "project-1" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(
+            err,
+            DispatchError::ProjectStore(ProjectAppendError::NotFound)
+        ));
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::NotFound);
+        assert_eq!(store.latest_event_seq().unwrap(), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- task.list / task.get -----------------------------------------------
+
+    #[test]
+    fn task_list_requires_project_id() {
+        let (mut store, path) = temp_store();
+        let cmd = command("task.list", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_list_only_returns_tasks_for_the_requested_project() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let other_project_task = command(
+            "task.created",
+            json!({
+                "aggregate_id": "task-2",
+                "project": ready_project_state_json(),
+                "project_id": "project-2",
+                "project_revision": 1,
+                "original_request_ref": "original-request-ref-2",
+            }),
+        );
+        dispatch(&mut store, &other_project_task).unwrap();
+
+        let cmd = command("task.list", json!({ "project_id": "project-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                let ids: Vec<&str> = payload["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["id"].as_str().unwrap())
+                    .collect();
+                assert_eq!(ids, vec!["task-1"]);
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_get_returns_the_task_when_project_id_matches() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.get",
+            json!({ "task_id": "task-1", "project_id": "project-1" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["id"], "task-1");
+                assert_eq!(payload["state"]["project_id"], "project-1");
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_get_rejects_a_cross_project_id_as_protocol_violation_not_not_found() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.get",
+            json!({ "task_id": "task-1", "project_id": "some-other-project" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::ProtocolViolation)
+            }
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_get_is_not_found_for_an_unknown_task_id() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "task.get",
+            json!({ "task_id": "no-such-task", "project_id": "project-1" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- queue.get ------------------------------------------------------------
+
+    #[test]
+    fn queue_get_returns_a_default_state_before_any_queue_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command("queue.get", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["revision"], 0);
+                assert!(payload["state"].is_object());
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn queue_get_reflects_state_after_an_enqueue() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "queue.enqueue",
+                json!({ "task_id": "task-1", "enqueued_event_seq": 1 }),
+            ),
+        )
+        .unwrap();
+        let cmd = command("queue.get", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["revision"], 1);
+                let state: ExecutionQueue = serde_json::from_value(payload["state"].clone())
+                    .expect("queue.get payload must deserialize back into ExecutionQueue");
+                assert_ne!(state.dispatch_state_of("task-1"), DispatchState::None);
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    // ---- §8.2 target-registration write path ----
+
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Like `temp_store`, but places the sqlite file inside its own
+    /// freshly created, uniquely named directory rather than directly
+    /// under the shared `std::env::temp_dir()`. Every test below that
+    /// calls `create_project_from_target` needs this: unlike the legacy
+    /// `create_project` the pre-existing tests above exercise (which never
+    /// touches the filesystem), it lazily creates a `projects/` directory
+    /// as a sibling of the db file the first time it runs anywhere, and
+    /// `cargo test`'s default thread-per-test parallelism makes two tests
+    /// racing to create that *same* shared directory a real, observable
+    /// flake if they all shared the bare temp root (the identical fix is
+    /// in `store.rs`'s own test module, `temp_data_root`).
+    fn temp_store_with_isolated_root() -> (EventStore, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "automed-dispatch-test-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        (EventStore::open(&db_path).unwrap(), root)
+    }
+
+    /// Runs a `git` command against `dir` for building real fixtures (not
+    /// the code under test itself) -- mirrors `target_probe.rs`'s own
+    /// test-module helper of the same shape.
+    fn fixture_git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("fixture git command should spawn");
+        assert!(status.success(), "fixture git {args:?} failed in {dir:?}");
+    }
+
+    fn init_repo_with_one_commit(dir: &std::path::Path) {
+        fixture_git(dir, &["init", "--quiet"]);
+        fixture_git(
+            dir,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+    }
+
+    /// Drives `handle_command`'s `project.register_target` branch end to
+    /// end and hands back the resulting `target_id`, panicking on any
+    /// registration failure -- registration succeeding is a precondition
+    /// every `create_from_target` test below needs, not what any of them
+    /// are individually testing.
+    fn register(store: &mut EventStore, kind: &str, path: &std::path::Path) -> String {
+        let cmd = command(
+            "project.register_target",
+            json!({ "kind": kind, "path": path.to_string_lossy() }),
+        );
+        let outcome = handle_command(store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload["target_id"]
+                .as_str()
+                .expect("register_target payload must contain target_id")
+                .to_string(),
+            ReplyOutcome::Error { code, message } => {
+                panic!("register_target failed: {code:?} {message}")
+            }
+        }
+    }
+
+    fn create_from_target_command(
+        target_id: &str,
+        display_name: &str,
+        trust_confirmed: bool,
+        destination_name: Option<&str>,
+    ) -> Command {
+        let mut params = json!({
+            "target_id": target_id,
+            "display_name": display_name,
+            "trust_confirmed": trust_confirmed,
+        });
+        if let Some(name) = destination_name {
+            params["destination_name"] = json!(name);
+        }
+        command("project.create_from_target", params)
+    }
+
+    #[test]
+    fn register_target_returns_a_target_id_and_a_summary_reflecting_the_probe() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let cmd = command(
+            "project.register_target",
+            json!({ "kind": "ExistingRepository", "path": repo.to_string_lossy() }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert!(!payload["target_id"].as_str().unwrap().is_empty());
+                assert_eq!(payload["summary"]["kind"], "ExistingRepository");
+                assert_eq!(payload["summary"]["is_git_repo"], true);
+                assert_eq!(payload["summary"]["head_resolvable"], true);
+                assert_eq!(payload["summary"]["worktree_clean"], true);
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_register_target_produces_no_event() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let cmd = command(
+            "project.register_target",
+            json!({ "kind": "ExistingRepository", "path": repo.to_string_lossy() }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_succeeds_for_a_real_clean_repository_and_lands_at_intent_unresolved() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let target_id = register(&mut store, "ExistingRepository", &repo);
+        let cmd = create_from_target_command(&target_id, "My Repo", true, None);
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "IntentUnresolved");
+        assert_eq!(event.aggregate_revision, 6);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_existing_repository_without_trust_confirmed() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let target_id = register(&mut store, "ExistingRepository", &repo);
+        let cmd = create_from_target_command(&target_id, "My Repo", false, None);
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_a_non_git_directory() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let plain = root.join("plain");
+        std::fs::create_dir(&plain).unwrap();
+
+        let target_id = register(&mut store, "ExistingRepository", &plain);
+        let cmd = create_from_target_command(&target_id, "Not Git", true, None);
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_a_dirty_worktree() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+        std::fs::write(repo.join("untracked.txt"), b"dirty").unwrap();
+
+        let target_id = register(&mut store, "ExistingRepository", &repo);
+        let cmd = create_from_target_command(&target_id, "Dirty", true, None);
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_a_destination_name_containing_a_path_separator() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let parent = root.join("parent");
+        std::fs::create_dir(&parent).unwrap();
+
+        let target_id = register(&mut store, "NewProduct", &parent);
+        let cmd = create_from_target_command(&target_id, "New Thing", false, Some("sub/dir"));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_a_destination_that_already_exists() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let parent = root.join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(parent.join("existing")).unwrap();
+
+        let target_id = register(&mut store, "NewProduct", &parent);
+        let cmd = create_from_target_command(&target_id, "New Thing", false, Some("existing"));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::InvalidParams);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_from_target_rejects_an_unknown_target_id() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let cmd = create_from_target_command("does-not-exist", "Ghost", true, None);
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        let (code, _) = dispatch_error_to_reply_error(err);
+        assert_eq!(code, ReplyErrorCode::NotFound);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The behavioral half of the diagnostic-state story that `store.rs`'s
+    /// own test suite deliberately deferred here (see its
+    /// `diagnostic_reason_is_none_for_healthy_root_and_set_when_reverification_fails`
+    /// doc comment): once `EventStore::open` has flagged a store
+    /// diagnostic, every write must be refused and every read must keep
+    /// working.
+    #[test]
+    fn dispatch_refuses_all_writes_while_diagnostic_but_reads_still_work() {
+        let root = std::env::temp_dir().join(format!(
+            "automed-dispatch-test-diagnostic-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        assert!(store.diagnostic_reason().is_some());
+
+        let write_cmd = command("run.advance_nominal", json!({ "aggregate_id": "run-1" }));
+        let err = dispatch(&mut store, &write_cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::Diagnostic(_)));
+
+        let read_cmd = command("project.list", json!({}));
+        let read_result =
+            try_dispatch_read(&store, &read_cmd).expect("project.list is a read method");
+        assert!(read_result.is_ok());
+
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

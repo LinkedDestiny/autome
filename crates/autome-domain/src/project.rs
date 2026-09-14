@@ -330,6 +330,213 @@ pub fn apply(state: ProjectState, event: ProjectEvent) -> Result<ProjectState, T
     }
 }
 
+/// §5.1: `kind(new_product|existing_repository)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectKind {
+    NewProduct,
+    ExistingRepository,
+}
+
+/// §5.1: `locator = GreenfieldDestination { parent_identity, destination }
+/// | ExistingRepository { repository_identity }`. Exactly one variant per
+/// `ProjectKind` — `ProjectIdentity::new` enforces the pairing so a
+/// `NewProduct` project can never carry an `ExistingRepository` locator or
+/// vice versa.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectLocator {
+    GreenfieldDestination {
+        parent_identity: String,
+        destination: String,
+    },
+    ExistingRepository {
+        repository_identity: String,
+    },
+}
+
+/// §5.1 identity fields that are fixed at creation and do not change with
+/// `ProjectState` transitions: `id · display_name · kind · locator ·
+/// project_home`. Deliberately excludes `initialization_receipt_id`,
+/// `active_intent_revision`, `intent_hash`,
+/// `active_config_override_revision` and `skill_binding_revision` — those
+/// all reference aggregates (`ProjectIntentRevision`,
+/// `ProjectInitializationReceipt`, config/skill bindings) that are not yet
+/// persisted anywhere in this workspace; adding the fields now would only
+/// produce permanently-`None` holes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectIdentity {
+    pub id: String,
+    pub display_name: String,
+    pub kind: ProjectKind,
+    pub locator: ProjectLocator,
+    pub project_home: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectIdentityError {
+    MissingId,
+    MissingDisplayName,
+    MissingProjectHome,
+    /// `kind` and `locator` named different project types (e.g.
+    /// `NewProduct` with an `ExistingRepository` locator). §2.1 pins these
+    /// as a strict one-to-one pairing; a mismatched triple is a protocol
+    /// error, not a value this constructor can silently coerce.
+    KindLocatorMismatch {
+        kind: ProjectKind,
+    },
+    MissingLocatorField {
+        field: &'static str,
+    },
+}
+
+impl ProjectIdentity {
+    pub fn new(
+        id: &str,
+        display_name: &str,
+        kind: ProjectKind,
+        locator: ProjectLocator,
+        project_home: &str,
+    ) -> Result<Self, ProjectIdentityError> {
+        if id.trim().is_empty() {
+            return Err(ProjectIdentityError::MissingId);
+        }
+        if display_name.trim().is_empty() {
+            return Err(ProjectIdentityError::MissingDisplayName);
+        }
+        if project_home.trim().is_empty() {
+            return Err(ProjectIdentityError::MissingProjectHome);
+        }
+        match (&kind, &locator) {
+            (
+                ProjectKind::NewProduct,
+                ProjectLocator::GreenfieldDestination {
+                    parent_identity,
+                    destination,
+                },
+            ) => {
+                if parent_identity.trim().is_empty() {
+                    return Err(ProjectIdentityError::MissingLocatorField {
+                        field: "parent_identity",
+                    });
+                }
+                if destination.trim().is_empty() {
+                    return Err(ProjectIdentityError::MissingLocatorField {
+                        field: "destination",
+                    });
+                }
+            }
+            (
+                ProjectKind::ExistingRepository,
+                ProjectLocator::ExistingRepository {
+                    repository_identity,
+                },
+            ) => {
+                if repository_identity.trim().is_empty() {
+                    return Err(ProjectIdentityError::MissingLocatorField {
+                        field: "repository_identity",
+                    });
+                }
+            }
+            _ => return Err(ProjectIdentityError::KindLocatorMismatch { kind }),
+        }
+
+        Ok(Self {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            kind,
+            locator,
+            project_home: project_home.to_string(),
+        })
+    }
+}
+
+/// A candidate target's raw, orthogonal facts as observed by
+/// `automed::target_probe` (git presence, HEAD resolvability, worktree
+/// cleanliness, destination absence). Pure data — the probing itself is I/O
+/// and lives in `automed`, mirroring the split this module's doc comment
+/// already states between this crate (no I/O) and the application service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetInspection {
+    pub is_git_repo: bool,
+    pub head_resolvable: bool,
+    pub worktree_clean: bool,
+    pub destination_absent: bool,
+}
+
+/// Why a candidate target could not be turned into a `ProjectLocator`.
+/// §2.2: "不支持非 Git 的现有代码库"; §8.1: "现有仓库要求存在可解析 HEAD；
+/// 默认要求基线工作树干净"; §2.1: `new_product` 的初始化输入是"项目名 +
+/// 尚不存在的目标目录".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetRejection {
+    NotAGitRepository,
+    UnbornOrUnresolvableHead,
+    DirtyWorktree,
+    DestinationAlreadyExists,
+    InvalidDestinationName,
+}
+
+/// A single path component: non-empty, no path separators, not `.`/`..`, no
+/// NUL, bounded length. The greenfield `destination` is the one path-shaped
+/// value the Renderer is allowed to type directly (never a path the OS
+/// picker returned) — it must never be usable to escape the parent
+/// directory the picker already fixed.
+fn validate_destination_name(name: &str) -> Result<(), TargetRejection> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.chars().count() > 255
+    {
+        return Err(TargetRejection::InvalidDestinationName);
+    }
+    Ok(())
+}
+
+/// Derives a `ProjectLocator` from orthogonal, already-probed facts about a
+/// candidate target. Pure judgment only — never touches a filesystem or
+/// spawns `git` itself (that is `automed::target_probe`'s job). Enforces
+/// §2.1's strict kind↔locator pairing the same way `ProjectIdentity::new`
+/// does, plus the three rejections named on `TargetRejection` above.
+/// `identity` is `parent_identity` for `NewProduct` and
+/// `repository_identity` for `ExistingRepository` — already computed by the
+/// caller from a `TargetIdentityProbe`, not derived here.
+pub fn locator_for(
+    kind: ProjectKind,
+    identity: &str,
+    destination_name: Option<&str>,
+    inspection: TargetInspection,
+) -> Result<ProjectLocator, TargetRejection> {
+    match kind {
+        ProjectKind::NewProduct => {
+            let destination = destination_name.unwrap_or("");
+            validate_destination_name(destination)?;
+            if !inspection.destination_absent {
+                return Err(TargetRejection::DestinationAlreadyExists);
+            }
+            Ok(ProjectLocator::GreenfieldDestination {
+                parent_identity: identity.to_string(),
+                destination: destination.to_string(),
+            })
+        }
+        ProjectKind::ExistingRepository => {
+            if !inspection.is_git_repo {
+                return Err(TargetRejection::NotAGitRepository);
+            }
+            if !inspection.head_resolvable {
+                return Err(TargetRejection::UnbornOrUnresolvableHead);
+            }
+            if !inspection.worktree_clean {
+                return Err(TargetRejection::DirtyWorktree);
+            }
+            Ok(ProjectLocator::ExistingRepository {
+                repository_identity: identity.to_string(),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +768,275 @@ mod tests {
                 Err(TransitionError::ProjectIsArchived(event))
             );
         }
+    }
+
+    #[test]
+    fn valid_new_product_identity_round_trips() {
+        let identity = ProjectIdentity::new(
+            "proj-1",
+            "演示项目",
+            ProjectKind::NewProduct,
+            ProjectLocator::GreenfieldDestination {
+                parent_identity: "parent-hash".to_string(),
+                destination: "/tmp/demo".to_string(),
+            },
+            "/Library/Application Support/autome/projects/proj-1",
+        )
+        .unwrap();
+        assert_eq!(identity.id, "proj-1");
+        assert_eq!(identity.kind, ProjectKind::NewProduct);
+    }
+
+    #[test]
+    fn valid_existing_repository_identity_round_trips() {
+        let identity = ProjectIdentity::new(
+            "proj-2",
+            "既有仓库项目",
+            ProjectKind::ExistingRepository,
+            ProjectLocator::ExistingRepository {
+                repository_identity: "repo-hash".to_string(),
+            },
+            "/Library/Application Support/autome/projects/proj-2",
+        )
+        .unwrap();
+        assert_eq!(identity.kind, ProjectKind::ExistingRepository);
+    }
+
+    #[test]
+    fn new_product_kind_rejects_existing_repository_locator() {
+        let result = ProjectIdentity::new(
+            "proj-3",
+            "不匹配",
+            ProjectKind::NewProduct,
+            ProjectLocator::ExistingRepository {
+                repository_identity: "repo-hash".to_string(),
+            },
+            "/tmp/home",
+        );
+        assert_eq!(
+            result,
+            Err(ProjectIdentityError::KindLocatorMismatch {
+                kind: ProjectKind::NewProduct
+            })
+        );
+    }
+
+    #[test]
+    fn existing_repository_kind_rejects_greenfield_locator() {
+        let result = ProjectIdentity::new(
+            "proj-4",
+            "不匹配",
+            ProjectKind::ExistingRepository,
+            ProjectLocator::GreenfieldDestination {
+                parent_identity: "parent-hash".to_string(),
+                destination: "/tmp/demo".to_string(),
+            },
+            "/tmp/home",
+        );
+        assert_eq!(
+            result,
+            Err(ProjectIdentityError::KindLocatorMismatch {
+                kind: ProjectKind::ExistingRepository
+            })
+        );
+    }
+
+    #[test]
+    fn blank_fields_are_rejected() {
+        assert_eq!(
+            ProjectIdentity::new(
+                "  ",
+                "name",
+                ProjectKind::ExistingRepository,
+                ProjectLocator::ExistingRepository {
+                    repository_identity: "repo-hash".to_string()
+                },
+                "/tmp/home",
+            ),
+            Err(ProjectIdentityError::MissingId)
+        );
+        assert_eq!(
+            ProjectIdentity::new(
+                "proj-5",
+                "  ",
+                ProjectKind::ExistingRepository,
+                ProjectLocator::ExistingRepository {
+                    repository_identity: "repo-hash".to_string()
+                },
+                "/tmp/home",
+            ),
+            Err(ProjectIdentityError::MissingDisplayName)
+        );
+        assert_eq!(
+            ProjectIdentity::new(
+                "proj-6",
+                "name",
+                ProjectKind::ExistingRepository,
+                ProjectLocator::ExistingRepository {
+                    repository_identity: "repo-hash".to_string()
+                },
+                "  ",
+            ),
+            Err(ProjectIdentityError::MissingProjectHome)
+        );
+        assert_eq!(
+            ProjectIdentity::new(
+                "proj-7",
+                "name",
+                ProjectKind::ExistingRepository,
+                ProjectLocator::ExistingRepository {
+                    repository_identity: "  ".to_string()
+                },
+                "/tmp/home",
+            ),
+            Err(ProjectIdentityError::MissingLocatorField {
+                field: "repository_identity"
+            })
+        );
+    }
+
+    #[test]
+    fn locator_for_greenfield_accepts_absent_destination() {
+        let inspection = TargetInspection {
+            is_git_repo: false,
+            head_resolvable: false,
+            worktree_clean: false,
+            destination_absent: true,
+        };
+        let locator = locator_for(
+            ProjectKind::NewProduct,
+            "parent-hash",
+            Some("my-new-app"),
+            inspection,
+        )
+        .unwrap();
+        assert_eq!(
+            locator,
+            ProjectLocator::GreenfieldDestination {
+                parent_identity: "parent-hash".to_string(),
+                destination: "my-new-app".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn locator_for_greenfield_rejects_existing_destination() {
+        let inspection = TargetInspection {
+            is_git_repo: false,
+            head_resolvable: false,
+            worktree_clean: false,
+            destination_absent: false,
+        };
+        assert_eq!(
+            locator_for(
+                ProjectKind::NewProduct,
+                "parent-hash",
+                Some("taken"),
+                inspection
+            ),
+            Err(TargetRejection::DestinationAlreadyExists)
+        );
+    }
+
+    #[test]
+    fn locator_for_greenfield_rejects_path_shaped_destination_name() {
+        let inspection = TargetInspection {
+            is_git_repo: false,
+            head_resolvable: false,
+            worktree_clean: false,
+            destination_absent: true,
+        };
+        for bad in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
+            assert_eq!(
+                locator_for(
+                    ProjectKind::NewProduct,
+                    "parent-hash",
+                    Some(bad),
+                    inspection
+                ),
+                Err(TargetRejection::InvalidDestinationName),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn locator_for_existing_repository_accepts_clean_resolvable_repo() {
+        let inspection = TargetInspection {
+            is_git_repo: true,
+            head_resolvable: true,
+            worktree_clean: true,
+            destination_absent: false,
+        };
+        let locator = locator_for(
+            ProjectKind::ExistingRepository,
+            "repo-hash",
+            None,
+            inspection,
+        )
+        .unwrap();
+        assert_eq!(
+            locator,
+            ProjectLocator::ExistingRepository {
+                repository_identity: "repo-hash".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn locator_for_existing_repository_rejects_non_git_directory() {
+        let inspection = TargetInspection {
+            is_git_repo: false,
+            head_resolvable: false,
+            worktree_clean: true,
+            destination_absent: false,
+        };
+        assert_eq!(
+            locator_for(
+                ProjectKind::ExistingRepository,
+                "repo-hash",
+                None,
+                inspection
+            ),
+            Err(TargetRejection::NotAGitRepository)
+        );
+    }
+
+    #[test]
+    fn locator_for_existing_repository_rejects_unborn_head() {
+        let inspection = TargetInspection {
+            is_git_repo: true,
+            head_resolvable: false,
+            worktree_clean: true,
+            destination_absent: false,
+        };
+        assert_eq!(
+            locator_for(
+                ProjectKind::ExistingRepository,
+                "repo-hash",
+                None,
+                inspection
+            ),
+            Err(TargetRejection::UnbornOrUnresolvableHead)
+        );
+    }
+
+    #[test]
+    fn locator_for_existing_repository_rejects_dirty_worktree() {
+        let inspection = TargetInspection {
+            is_git_repo: true,
+            head_resolvable: true,
+            worktree_clean: false,
+            destination_absent: false,
+        };
+        assert_eq!(
+            locator_for(
+                ProjectKind::ExistingRepository,
+                "repo-hash",
+                None,
+                inspection
+            ),
+            Err(TargetRejection::DirtyWorktree)
+        );
     }
 }

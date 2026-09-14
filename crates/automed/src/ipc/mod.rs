@@ -8,5 +8,7 @@
 pub mod envelope;
 pub mod framing;
 
-pub use envelope::{Command, Event, PROTOCOL_VERSION};
+pub use envelope::{
+    Command, Event, Outbound, PROTOCOL_VERSION, Reply, ReplyErrorCode, ReplyOutcome,
+};
 pub use framing::{FrameDecoder, FrameError, encode_frame, read_frame, write_frame};

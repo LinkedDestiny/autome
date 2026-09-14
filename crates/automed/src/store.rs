@@ -14,10 +14,16 @@ use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
-use autome_domain::project::{self, ProjectEvent, ProjectState};
+use autome_domain::project::{
+    self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
+    TargetRejection,
+};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+
+use crate::fs_guard::{self, FsGuardError};
+use crate::target_probe::TargetIdentityProbe;
 
 /// `ExecutionQueue` is a single fleet-wide singleton (plan §6.2), not one
 /// instance per caller-chosen id like the five aggregates above it in this
@@ -28,6 +34,59 @@ pub const EXECUTION_QUEUE_AGGREGATE_ID: &str = "execution-queue";
 
 pub struct EventStore {
     conn: Connection,
+    /// The path `EventStore::open` was called with — kept only so
+    /// `project_home_for` can derive a `projects/<project-id>/` sibling
+    /// directory next to the database file. Not otherwise used; the
+    /// connection itself is the source of truth for everything else.
+    db_path: std::path::PathBuf,
+    /// Set by `verify_disk_layout` at the end of `open()` when the data
+    /// root or any already-registered ProjectHome fails its §8.3
+    /// re-check (wrong owner, symlink, group/world-writable, escaped
+    /// root). `Some(reason)` puts the store into the read-only
+    /// diagnostic state plan §8.3:1362 requires: every write command is
+    /// refused (see `diagnostic_reason` and `dispatch::dispatch`'s check
+    /// at the top of its match) while reads continue unaffected.
+    diagnostic: Option<String>,
+}
+
+/// A single row of `project_projections`, for `project.list` — see
+/// `EventStore::list_project_summaries`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub revision: u64,
+    pub lifecycle: String,
+    pub phase: String,
+    pub hold: String,
+    /// `NULL` for rows written before migrate_v3, or (should never happen
+    /// post this increment) any row not created through `create_project`.
+    pub display_name: Option<String>,
+    /// Derived from `identity_json`, not a dedicated column — `kind` is
+    /// display-only metadata for `project.list`, not something any query
+    /// filters or indexes by, so a second denormalized column would only
+    /// be duplication. `None` under the same conditions as `display_name`.
+    pub kind: Option<ProjectKind>,
+}
+
+/// One task's resolved project label, for `queue.get`'s `entry_labels`
+/// (plan §9: every execution-bar entry must show a Project name, not a
+/// bare id). `project_id`/`project_display_name` are both `None` when the
+/// task has no known project or that project has no registered identity —
+/// never a fabricated label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskProjectLabel {
+    pub task_id: String,
+    pub project_id: Option<String>,
+    pub project_display_name: Option<String>,
+}
+
+/// A single row of `task_projections`, for `task.list` — see
+/// `EventStore::list_task_summaries`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSummary {
+    pub id: String,
+    pub revision: u64,
+    pub lifecycle: String,
 }
 
 #[derive(Debug)]
@@ -46,12 +105,102 @@ impl From<rusqlite::Error> for AppendError {
 pub enum ProjectAppendError {
     Sql(rusqlite::Error),
     Transition(project::TransitionError),
+    /// `create_project` was called with an `aggregate_id` that already has
+    /// a `project_projections` row.
+    AlreadyExists,
+    /// A write method was called against an `aggregate_id` with no
+    /// `project.create` ever journaled for it. §5.1: Projects only come
+    /// into existence via explicit creation — this closes the implicit
+    /// `ProjectState::new()` fabrication `append_project_event` used to
+    /// do for any unknown id.
+    NotFound,
 }
 
 impl From<rusqlite::Error> for ProjectAppendError {
     fn from(value: rusqlite::Error) -> Self {
         ProjectAppendError::Sql(value)
     }
+}
+
+/// A single row of `project_targets` — §8.2's two-phase target
+/// registration. `probe`/`inspection` are the exact values `register_target`
+/// persisted (the probe never changes; `inspection.destination_absent` is
+/// stale by the time this is read back and must never be trusted directly —
+/// `create_project_from_target` recomputes it fresh).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TargetRecord {
+    pub target_id: String,
+    pub kind: ProjectKind,
+    pub registered_at: String,
+    pub canonical_path: String,
+    pub probe: TargetIdentityProbe,
+    pub inspection: TargetInspection,
+    pub trust_confirmed: bool,
+    pub consumed_by_project_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum TargetConsumeError {
+    Sql(rusqlite::Error),
+    /// No `project_targets` row exists for the given `target_id`.
+    NotFound,
+    /// The target was already consumed by an earlier call — the same
+    /// target cannot create two projects.
+    AlreadyConsumed,
+}
+
+impl From<rusqlite::Error> for TargetConsumeError {
+    fn from(value: rusqlite::Error) -> Self {
+        TargetConsumeError::Sql(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum CreateFromTargetError {
+    Sql(rusqlite::Error),
+    /// No `project_targets` row exists for the given `target_id`.
+    TargetNotFound,
+    /// The target was already consumed by an earlier
+    /// `create_project_from_target` call.
+    TargetAlreadyConsumed,
+    /// `kind == ExistingRepository` but the caller did not pass
+    /// `trust_confirmed: true`. §8.3:1354's trust gate — checked before
+    /// any disk or SQL write happens.
+    TrustNotConfirmed,
+    /// `autome_domain::project::locator_for` rejected the target (not a
+    /// git repo, unborn/unresolvable HEAD, dirty worktree, destination
+    /// already exists, or an invalid destination name).
+    Rejected(TargetRejection),
+    /// `ProjectIdentity::new`'s own validation rejected the derived
+    /// triple. Should not happen given `locator_for` already agreed with
+    /// `kind` — kept for exhaustiveness rather than an `expect()` panic
+    /// on a path that ultimately runs against untrusted filesystem input.
+    Identity(project::ProjectIdentityError),
+    /// ProjectHome creation, re-verification, or manifest write failed
+    /// per §8.3's owner-only discipline.
+    FsGuard(FsGuardError),
+}
+
+impl From<rusqlite::Error> for CreateFromTargetError {
+    fn from(value: rusqlite::Error) -> Self {
+        CreateFromTargetError::Sql(value)
+    }
+}
+
+impl From<FsGuardError> for CreateFromTargetError {
+    fn from(value: FsGuardError) -> Self {
+        CreateFromTargetError::FsGuard(value)
+    }
+}
+
+/// `create_project_from_target`'s result: the generated `project_id` (Core
+/// owns generation here — unlike the legacy `project.create`, the
+/// two-phase flow gives the caller nothing to pass in) alongside the
+/// terminal `AppendedProjectEvent` (`IntentUnresolved`, revision 6).
+#[derive(Debug, Clone)]
+pub struct CreatedProjectFromTarget {
+    pub project_id: String,
+    pub appended: AppendedProjectEvent,
 }
 
 #[derive(Debug)]
@@ -176,70 +325,391 @@ pub struct AppendedRunEvent {
     pub state: RunState,
 }
 
+/// §11.1: "数据库使用编号迁移". Each step runs once, in its own
+/// transaction, gated by `PRAGMA user_version`; a pre-existing database
+/// (tables already present via the old `CREATE TABLE IF NOT EXISTS`-only
+/// scheme, `user_version` still 0) replays every step from the top —
+/// `migrate_v1`'s `IF NOT EXISTS` statements are idempotent against that
+/// case, and later steps only add what is genuinely missing.
+type MigrationStep = fn(&Connection) -> rusqlite::Result<()>;
+
+const MIGRATIONS: &[MigrationStep] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
+
+fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            aggregate_id TEXT NOT NULL,
+            aggregate_type TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            UNIQUE(aggregate_type, aggregate_id, revision)
+        );
+        CREATE TABLE IF NOT EXISTS run_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            phase TEXT NOT NULL,
+            hold TEXT NOT NULL,
+            terminal TEXT NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            lifecycle TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            hold TEXT NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS task_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            lifecycle TEXT NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contract_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS graph_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS execution_queue_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            state_json TEXT NOT NULL
+        );
+        ",
+    )
+}
+
+/// Adds `task_projections.project_id`, backfilled from the JSON already
+/// stored in `state_json` (`Task.project_id` was always present there —
+/// this migration only promotes it to a queryable column), so
+/// `list_task_summaries` can filter by project without deserializing every
+/// row. Plan §5.1: any cross-project id mixing is a `ProtocolViolation`;
+/// a real column (plus the index below) is what makes that check cheap
+/// enough to run on every `task.get`/`task.list`.
+fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        ALTER TABLE task_projections ADD COLUMN project_id TEXT;
+        UPDATE task_projections
+            SET project_id = json_extract(state_json, '$.project_id')
+            WHERE project_id IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_task_projections_project_id
+            ON task_projections(project_id);
+        ",
+    )
+}
+
+/// §5.1 identity: `display_name` and `identity_json` (the full
+/// `ProjectIdentity`, for `load_project_identity`). Both nullable with no
+/// backfill — nothing in `state_json` ever carried this data, so a
+/// pre-migrate_v3 row's identity is honestly unknown rather than
+/// fabricated (plan discipline: never render unverified data as
+/// verified). Only `create_project` populates these columns going
+/// forward.
+fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        ALTER TABLE project_projections ADD COLUMN display_name TEXT;
+        ALTER TABLE project_projections ADD COLUMN identity_json TEXT;
+        ",
+    )
+}
+
+/// §8.2's two-phase target registration: `project_targets` holds one row
+/// per `register_target` call. `kind`/`canonical_path` are denormalized
+/// out of `identity_probe_json` purely so `load_target` and future
+/// listing UIs don't need to deserialize JSON just to filter/display;
+/// `identity_probe_json`/`inspection_json` are the authoritative values.
+/// `trust_confirmed` defaults to 0 at registration time — the trust gate
+/// (§8.3:1354) is decided at `create_project_from_target` time, not here.
+/// `consumed_by_project_id` starts NULL and is set exactly once, by
+/// whichever `create_project_from_target` call successfully claims this
+/// target — the `WHERE consumed_by_project_id IS NULL` guard on that
+/// UPDATE is what makes "the same target cannot create two projects"
+/// race-safe under concurrent Main-process commands.
+fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS project_targets (
+            target_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            registered_at TEXT NOT NULL,
+            canonical_path TEXT NOT NULL,
+            identity_probe_json TEXT NOT NULL,
+            inspection_json TEXT NOT NULL,
+            trust_confirmed INTEGER NOT NULL DEFAULT 0,
+            consumed_by_project_id TEXT
+        );
+        ",
+    )
+}
+
 impl EventStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        let store = Self { conn };
+        let mut store = Self {
+            conn,
+            db_path: std::path::PathBuf::from(path),
+            diagnostic: None,
+        };
         store.migrate()?;
+        store.diagnostic = store.verify_disk_layout();
         Ok(store)
     }
 
-    fn migrate(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS events (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL UNIQUE,
-                aggregate_id TEXT NOT NULL,
-                aggregate_type TEXT NOT NULL,
-                revision INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                recorded_at TEXT NOT NULL,
-                UNIQUE(aggregate_type, aggregate_id, revision)
-            );
-            CREATE TABLE IF NOT EXISTS run_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                phase TEXT NOT NULL,
-                hold TEXT NOT NULL,
-                terminal TEXT NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS project_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                lifecycle TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                hold TEXT NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS task_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                lifecycle TEXT NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS contract_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS graph_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                version INTEGER NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS execution_queue_projections (
-                aggregate_id TEXT PRIMARY KEY,
-                revision INTEGER NOT NULL,
-                state_json TEXT NOT NULL
-            );
-            ",
-        )
+    /// §5.1: `project_home` is decided by Core, never accepted from
+    /// Renderer params. This increment's rule (D14 anticipates a real
+    /// platform application-support directory; that wiring is Electron
+    /// Main's job, not this crate's): a `projects/<project-id>/` sibling
+    /// of wherever this store's database file lives.
+    pub fn project_home_for(&self, project_id: &str) -> String {
+        let base = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        base.join("projects")
+            .join(project_id)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Shared RFC3339 "now" formatting — the same expression this file
+    /// already used inline at every `recorded_at` call site; factored out
+    /// here because the two-phase target flow needs it in several more
+    /// places (`register_target` and twice inside
+    /// `create_project_from_target_tx`'s transaction).
+    fn now_rfc3339() -> String {
+        time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC3339 formatting of now_utc never fails")
+    }
+
+    /// §8.3:1362's startup re-check: the data root (this database file's
+    /// parent directory) and every ProjectHome this store already knows
+    /// about (one per `project_projections.aggregate_id`, but only the
+    /// ones that actually have a directory on disk — rows created by the
+    /// older disk-free `create_project` never had one, and are silently
+    /// skipped rather than flagged) must still be owner-only,
+    /// non-symlinked, and inside the expected boundary. A brand-new store
+    /// (nothing under `projects/` yet) is not a failure — that directory
+    /// is only checked if it already exists, since
+    /// `create_project_from_target` creates it on demand. Returns
+    /// `Some(reason)` on the first failure found, `None` if everything
+    /// still checks out. Called once, at the end of `open()`; the result
+    /// is cached in `self.diagnostic` rather than re-checked on every
+    /// call.
+    fn verify_disk_layout(&self) -> Option<String> {
+        let data_root = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+
+        if std::fs::symlink_metadata(&data_root).is_ok()
+            && let Err(e) = fs_guard::verify_owned_dir(&data_root, &data_root)
+        {
+            return Some(format!(
+                "data root {data_root:?} failed re-verification: {e:?}"
+            ));
+        }
+
+        let projects_root = data_root.join("projects");
+        if std::fs::symlink_metadata(&projects_root).is_ok()
+            && let Err(e) = fs_guard::verify_owned_dir(&projects_root, &data_root)
+        {
+            return Some(format!(
+                "projects root {projects_root:?} failed re-verification: {e:?}"
+            ));
+        }
+
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT aggregate_id FROM project_projections")
+        {
+            Ok(stmt) => stmt,
+            Err(e) => return Some(format!("could not query project_projections: {e:?}")),
+        };
+        let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows,
+            Err(e) => return Some(format!("could not read project_projections rows: {e:?}")),
+        };
+        let collected: rusqlite::Result<Vec<String>> = rows.collect();
+        let project_ids = match collected {
+            Ok(ids) => ids,
+            Err(e) => return Some(format!("could not collect project_projections rows: {e:?}")),
+        };
+
+        for project_id in project_ids {
+            let home = std::path::PathBuf::from(self.project_home_for(&project_id));
+            if std::fs::symlink_metadata(&home).is_err() {
+                // No ProjectHome on disk for this id — either a legacy row
+                // from the pre-target `create_project`, or (should never
+                // happen) a row whose directory was removed out of band.
+                // Either way there is nothing here for this check to
+                // re-verify.
+                continue;
+            }
+            if let Err(e) = fs_guard::verify_owned_dir(&home, &data_root) {
+                return Some(format!(
+                    "ProjectHome {home:?} for project {project_id} failed re-verification: {e:?}"
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// `Some(reason)` when `verify_disk_layout` found a problem at open
+    /// time — §8.3:1362's read-only diagnostic state. Callers (see
+    /// `dispatch::dispatch`) must check this before any write and refuse
+    /// with a diagnostic error if set; reads are unaffected.
+    pub fn diagnostic_reason(&self) -> Option<&str> {
+        self.diagnostic.as_deref()
+    }
+
+    fn migrate(&mut self) -> rusqlite::Result<()> {
+        let current_version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        for (index, step) in MIGRATIONS.iter().enumerate() {
+            let target_version = (index + 1) as i64;
+            if current_version >= target_version {
+                continue;
+            }
+            let tx = self.conn.transaction()?;
+            step(&tx)?;
+            tx.execute_batch(&format!("PRAGMA user_version = {target_version}"))?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// The `events` table's current max `seq`, or 0 for an empty journal.
+    /// This is the `snapshot_seq` every `Reply` carries (plan §3.2: "先取
+    /// 带 snapshot_seq 的快照，再从 snapshot_seq + 1 订阅").
+    pub fn latest_event_seq(&self) -> rusqlite::Result<u64> {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |row| {
+                let seq: i64 = row.get(0)?;
+                Ok(seq as u64)
+            })
+    }
+
+    /// One row per known Project, from the projection table only — never
+    /// deserializes `state_json`, since the projection columns already
+    /// carry everything a list view needs (plan's read path is snapshot,
+    /// not full-state, for every row but the one the caller drilled into).
+    pub fn list_project_summaries(&self) -> rusqlite::Result<Vec<ProjectSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT aggregate_id, revision, lifecycle, phase, hold, display_name, identity_json
+             FROM project_projections ORDER BY aggregate_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let revision: i64 = row.get(1)?;
+            let identity_json: Option<String> = row.get(6)?;
+            Ok(ProjectSummary {
+                id: row.get(0)?,
+                revision: revision as u64,
+                lifecycle: row.get(2)?,
+                phase: row.get(3)?,
+                hold: row.get(4)?,
+                display_name: row.get(5)?,
+                kind: identity_json
+                    .and_then(|json| serde_json::from_str::<ProjectIdentity>(&json).ok())
+                    .map(|identity| identity.kind),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// The full `ProjectIdentity` for `project.get`, or `None` when the
+    /// aggregate has no projection row or predates migrate_v3 (in which
+    /// case `identity_json` is `NULL`).
+    pub fn load_project_identity(
+        &self,
+        aggregate_id: &str,
+    ) -> rusqlite::Result<Option<ProjectIdentity>> {
+        self.conn
+            .query_row(
+                "SELECT identity_json FROM project_projections WHERE aggregate_id = ?1",
+                params![aggregate_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(|identity_json| {
+                serde_json::from_str(&identity_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    /// For `queue.get`'s `entry_labels`: resolves every task id's
+    /// `project_id` and that project's `display_name` in a single query
+    /// (plan: "一次往返，不做 N+1"). A task with no known project, or a
+    /// project with no registered display name, resolves to `None` rather
+    /// than a fabricated label.
+    pub fn resolve_task_project_labels(
+        &self,
+        task_ids: &[String],
+    ) -> rusqlite::Result<Vec<TaskProjectLabel>> {
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT t.aggregate_id, t.project_id, p.display_name
+             FROM task_projections t
+             LEFT JOIN project_projections p ON p.aggregate_id = t.project_id
+             WHERE t.aggregate_id IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(task_ids.iter()), |row| {
+            Ok(TaskProjectLabel {
+                task_id: row.get(0)?,
+                project_id: row.get(1)?,
+                project_display_name: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// One row per Task belonging to `project_id`. Filtering happens in
+    /// SQL against the indexed column from `migrate_v2`, not in Rust after
+    /// loading every task — the whole point of the column existing.
+    pub fn list_task_summaries(&self, project_id: &str) -> rusqlite::Result<Vec<TaskSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT aggregate_id, revision, lifecycle
+             FROM task_projections WHERE project_id = ?1 ORDER BY aggregate_id",
+        )?;
+        let rows = stmt.query_map(params![project_id], |row| {
+            let revision: i64 = row.get(1)?;
+            Ok(TaskSummary {
+                id: row.get(0)?,
+                revision: revision as u64,
+                lifecycle: row.get(2)?,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Loads the current projected (revision, RunState) for an aggregate, or
@@ -383,12 +853,77 @@ impl EventStore {
             .transpose()
     }
 
+    /// §5.1: the only way a Project comes into existence. Single
+    /// transaction: rejects with `AlreadyExists` if `aggregate_id` already
+    /// has a projection row; otherwise writes the `project.created` event
+    /// (payload = `identity`, revision 1) and the initial projection
+    /// (`state_json` = `ProjectState::new()`, plus the `display_name`/
+    /// `identity_json` columns migrate_v3 added). After this,
+    /// `append_project_event` on this id no longer returns `NotFound`.
+    pub fn create_project(
+        &mut self,
+        identity: &ProjectIdentity,
+    ) -> Result<AppendedProjectEvent, ProjectAppendError> {
+        let tx = self.conn.transaction()?;
+
+        let already_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_projections WHERE aggregate_id = ?1)",
+            params![identity.id],
+            |row| row.get(0),
+        )?;
+        if already_exists {
+            return Err(ProjectAppendError::AlreadyExists);
+        }
+
+        let state = ProjectState::new();
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let event_type: &'static str = "project.created";
+        let identity_json =
+            serde_json::to_string(identity).expect("ProjectIdentity always serializes");
+        let recorded_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC3339 formatting of now_utc never fails");
+        let state_json = serde_json::to_string(&state).expect("ProjectState always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'Project', 1, ?3, ?4, ?5)",
+            params![event_id, identity.id, event_type, identity_json, recorded_at],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO project_projections (aggregate_id, revision, lifecycle, phase, hold, state_json, display_name, identity_json)
+             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                identity.id,
+                format!("{:?}", state.lifecycle),
+                format!("{:?}", state.phase),
+                format!("{:?}", state.hold),
+                state_json,
+                identity.display_name,
+                identity_json,
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(AppendedProjectEvent {
+            seq,
+            event_id,
+            revision: 1,
+            event_type,
+            occurred_at: recorded_at,
+            state,
+        })
+    }
+
     /// Applies `event` to the current state of `aggregate_id`, and — in a
     /// single transaction — appends the event and updates the projection.
     /// On an illegal transition, nothing is written: the event never
     /// existed as far as the journal is concerned. Mirrors
     /// `append_run_event`; see its doc comment for the shape this pattern
-    /// generalizes from.
+    /// generalizes from. Unlike `append_run_event`, an unknown
+    /// `aggregate_id` is `NotFound`, not an implicit `ProjectState::new()`
+    /// — §5.1: Projects only come into existence via `create_project`.
     pub fn append_project_event(
         &mut self,
         aggregate_id: &str,
@@ -415,7 +950,7 @@ impl EventStore {
                     );
                     (revision as u64, state)
                 }
-                None => (0, ProjectState::new()),
+                None => return Err(ProjectAppendError::NotFound),
             }
         };
 
@@ -549,17 +1084,19 @@ impl EventStore {
         )?;
         let seq = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO task_projections (aggregate_id, revision, lifecycle, state_json)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO task_projections (aggregate_id, revision, lifecycle, state_json, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(aggregate_id) DO UPDATE SET
                 revision = excluded.revision,
                 lifecycle = excluded.lifecycle,
-                state_json = excluded.state_json",
+                state_json = excluded.state_json,
+                project_id = excluded.project_id",
             params![
                 aggregate_id,
                 next_revision as i64,
                 format!("{:?}", next_state.lifecycle),
-                state_json
+                state_json,
+                next_state.project_id
             ],
         )?;
 
@@ -923,6 +1460,247 @@ impl EventStore {
             )
             .unwrap()
     }
+
+    /// §8.2 phase ①→③: persists the result of probing a target (already
+    /// done by the caller via `target_probe::probe_target` — this method
+    /// takes the probe, not a path, so it never touches the filesystem
+    /// itself) as a new `project_targets` row and hands back an opaque
+    /// `target_id`. Nothing about the underlying path is ever handed back
+    /// to a Renderer beyond what the probe/inspection summary already
+    /// reveals — see `dispatch::handle_command`'s `project.register_target`
+    /// branch, which is the only caller.
+    pub fn register_target(
+        &mut self,
+        kind: ProjectKind,
+        probe: &TargetIdentityProbe,
+        inspection: &TargetInspection,
+    ) -> rusqlite::Result<String> {
+        let target_id = uuid::Uuid::new_v4().to_string();
+        let kind_str = format!("{kind:?}");
+        let canonical_path = probe.canonical_path.to_string_lossy().into_owned();
+        let probe_json =
+            serde_json::to_string(probe).expect("TargetIdentityProbe always serializes");
+        let inspection_json =
+            serde_json::to_string(inspection).expect("TargetInspection always serializes");
+        let registered_at = Self::now_rfc3339();
+
+        self.conn.execute(
+            "INSERT INTO project_targets
+                (target_id, kind, registered_at, canonical_path, identity_probe_json, inspection_json, trust_confirmed, consumed_by_project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL)",
+            params![
+                target_id,
+                kind_str,
+                registered_at,
+                canonical_path,
+                probe_json,
+                inspection_json
+            ],
+        )?;
+
+        Ok(target_id)
+    }
+
+    /// Loads a previously registered target by id, or `None` if unknown.
+    pub fn load_target(&self, target_id: &str) -> rusqlite::Result<Option<TargetRecord>> {
+        self.conn
+            .query_row(
+                "SELECT target_id, kind, registered_at, canonical_path, identity_probe_json,
+                        inspection_json, trust_confirmed, consumed_by_project_id
+                 FROM project_targets WHERE target_id = ?1",
+                params![target_id],
+                Self::target_record_from_row,
+            )
+            .optional()
+    }
+
+    fn target_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TargetRecord> {
+        let target_id: String = row.get(0)?;
+        let kind_str: String = row.get(1)?;
+        let kind = match kind_str.as_str() {
+            "NewProduct" => ProjectKind::NewProduct,
+            "ExistingRepository" => ProjectKind::ExistingRepository,
+            other => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                        "unknown project_targets.kind {other:?}"
+                    )),
+                ));
+            }
+        };
+        let registered_at: String = row.get(2)?;
+        let canonical_path: String = row.get(3)?;
+        let probe_json: String = row.get(4)?;
+        let probe: TargetIdentityProbe = serde_json::from_str(&probe_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let inspection_json: String = row.get(5)?;
+        let inspection: TargetInspection = serde_json::from_str(&inspection_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let trust_confirmed_int: i64 = row.get(6)?;
+        let consumed_by_project_id: Option<String> = row.get(7)?;
+
+        Ok(TargetRecord {
+            target_id,
+            kind,
+            registered_at,
+            canonical_path,
+            probe,
+            inspection,
+            trust_confirmed: trust_confirmed_int != 0,
+            consumed_by_project_id,
+        })
+    }
+
+    /// Marks `target_id` as consumed by `project_id` in its own,
+    /// standalone transaction. `create_project_from_target` does *not*
+    /// call this — it performs the equivalent guarded `UPDATE` inline,
+    /// inside its own single transaction alongside the event writes, so
+    /// consumption and project creation are atomic together. This exists
+    /// for direct/test use and any future caller that wants
+    /// target-consumption as its own atomic step.
+    pub fn consume_target(
+        &mut self,
+        target_id: &str,
+        project_id: &str,
+    ) -> Result<(), TargetConsumeError> {
+        let tx = self.conn.transaction()?;
+        let current: Option<Option<String>> = tx
+            .query_row(
+                "SELECT consumed_by_project_id FROM project_targets WHERE target_id = ?1",
+                params![target_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match current {
+            None => return Err(TargetConsumeError::NotFound),
+            Some(Some(_)) => return Err(TargetConsumeError::AlreadyConsumed),
+            Some(None) => {}
+        }
+        let claimed = tx.execute(
+            "UPDATE project_targets SET consumed_by_project_id = ?1
+             WHERE target_id = ?2 AND consumed_by_project_id IS NULL",
+            params![project_id, target_id],
+        )?;
+        if claimed == 0 {
+            // Raced with another consumer between the SELECT above and
+            // this UPDATE.
+            return Err(TargetConsumeError::AlreadyConsumed);
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// §8.2's write path: turns an already-registered, already-probed
+    /// target into a real Project. In order: loads the target (rejecting
+    /// an unknown or already-consumed one), enforces the §8.3:1354 trust
+    /// gate for `ExistingRepository`, re-probes `destination_absent` fresh
+    /// (never trusts the value cached at registration time — see
+    /// `TargetIdentityProbe::to_inspection`'s own doc comment), derives
+    /// the `ProjectLocator` via `autome_domain::project::locator_for`,
+    /// creates the owner-only ProjectHome directory and a manifest file on
+    /// disk, then — in a single SQL transaction — writes `project.created`
+    /// (revision 1) followed by 4x `AdvanceNominal` and one
+    /// `IntentUnresolved` (revisions 2-6), claiming the target row in the
+    /// same transaction. If anything after the ProjectHome directory is
+    /// created goes wrong (including a race where the target got consumed
+    /// between the pre-check above and the transaction), the just-created
+    /// directory is removed — no orphaned directory, no half-created
+    /// project. This method does not itself check `diagnostic_reason()`;
+    /// the dispatch layer is responsible for refusing all write commands
+    /// while the store is in its diagnostic state (see
+    /// `dispatch::dispatch`'s check at the top of its match).
+    pub fn create_project_from_target(
+        &mut self,
+        target_id: &str,
+        display_name: &str,
+        trust_confirmed: bool,
+        destination_name: Option<&str>,
+    ) -> Result<CreatedProjectFromTarget, CreateFromTargetError> {
+        let target = self
+            .load_target(target_id)?
+            .ok_or(CreateFromTargetError::TargetNotFound)?;
+        if target.consumed_by_project_id.is_some() {
+            return Err(CreateFromTargetError::TargetAlreadyConsumed);
+        }
+        if target.kind == ProjectKind::ExistingRepository && !trust_confirmed {
+            return Err(CreateFromTargetError::TrustNotConfirmed);
+        }
+
+        let identity_str = target.probe.canonical_path.to_string_lossy().into_owned();
+        let destination_absent = match target.kind {
+            ProjectKind::NewProduct => {
+                let name = destination_name.unwrap_or("");
+                std::fs::symlink_metadata(target.probe.canonical_path.join(name)).is_err()
+            }
+            ProjectKind::ExistingRepository => false,
+        };
+        let inspection = target.probe.to_inspection(destination_absent);
+        let locator =
+            project::locator_for(target.kind, &identity_str, destination_name, inspection)
+                .map_err(CreateFromTargetError::Rejected)?;
+
+        let project_id = uuid::Uuid::new_v4().to_string();
+        let project_home = self.project_home_for(&project_id);
+        let identity_struct = ProjectIdentity::new(
+            &project_id,
+            display_name,
+            target.kind,
+            locator,
+            &project_home,
+        )
+        .map_err(CreateFromTargetError::Identity)?;
+
+        let data_root = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let projects_root_path = data_root.join("projects");
+        let projects_root_guard = if std::fs::symlink_metadata(&projects_root_path).is_ok() {
+            fs_guard::verify_owned_dir(&projects_root_path, &data_root)?
+        } else {
+            fs_guard::create_owned_dir(&data_root, "projects")?
+        };
+        let dir_guard =
+            fs_guard::create_owned_dir(&projects_root_guard.canonical_path, &project_id)?;
+
+        let manifest = serde_json::json!({
+            "project_id": project_id,
+            "target_id": target_id,
+            "trust_confirmed": trust_confirmed,
+            "identity": identity_struct,
+            "created_at": Self::now_rfc3339(),
+        });
+        let manifest_bytes =
+            serde_json::to_vec_pretty(&manifest).expect("manifest json always serializes");
+        if let Err(e) = fs_guard::write_owned_file(&dir_guard, "manifest.json", &manifest_bytes) {
+            let _ = std::fs::remove_dir_all(&dir_guard.canonical_path);
+            return Err(e.into());
+        }
+
+        let identity_json =
+            serde_json::to_string(&identity_struct).expect("ProjectIdentity always serializes");
+        match create_project_from_target_tx(
+            &mut self.conn,
+            &project_id,
+            target_id,
+            display_name,
+            &identity_json,
+        ) {
+            Ok(appended) => Ok(CreatedProjectFromTarget {
+                project_id,
+                appended,
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dir_guard.canonical_path);
+                Err(e)
+            }
+        }
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -976,6 +1754,116 @@ fn project_event_type_name(event: &ProjectEvent) -> &'static str {
     }
 }
 
+/// The single-transaction body of `EventStore::create_project_from_target`:
+/// claims `target_id` (guarded so a second caller racing for the same
+/// target gets `TargetAlreadyConsumed` instead of a double-spend) and then
+/// writes `project.created` (revision 1) followed by 4x `AdvanceNominal`
+/// and one `IntentUnresolved` (revisions 2-6), mirroring `create_project`'s
+/// revision-1 shape and `append_project_event`'s upsert shape for the rest
+/// — see both of their doc comments. A free function, not a method, so it
+/// can take `&mut Connection` directly rather than fight the borrow
+/// checker over `&mut self` while `create_project_from_target` still holds
+/// other data borrowed from `self`.
+fn create_project_from_target_tx(
+    conn: &mut Connection,
+    project_id: &str,
+    target_id: &str,
+    display_name: &str,
+    identity_json: &str,
+) -> Result<AppendedProjectEvent, CreateFromTargetError> {
+    let tx = conn.transaction()?;
+
+    let claimed = tx.execute(
+        "UPDATE project_targets SET consumed_by_project_id = ?1
+         WHERE target_id = ?2 AND consumed_by_project_id IS NULL",
+        params![project_id, target_id],
+    )?;
+    if claimed == 0 {
+        return Err(CreateFromTargetError::TargetAlreadyConsumed);
+    }
+
+    let mut state = ProjectState::new();
+    let mut event_id = uuid::Uuid::new_v4().to_string();
+    let mut event_type: &'static str = "project.created";
+    let mut occurred_at = EventStore::now_rfc3339();
+    let state_json = serde_json::to_string(&state).expect("ProjectState always serializes");
+
+    tx.execute(
+        "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+         VALUES (?1, ?2, 'Project', 1, ?3, ?4, ?5)",
+        params![event_id, project_id, event_type, identity_json, occurred_at],
+    )?;
+    let mut seq = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO project_projections (aggregate_id, revision, lifecycle, phase, hold, state_json, display_name, identity_json)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            project_id,
+            format!("{:?}", state.lifecycle),
+            format!("{:?}", state.phase),
+            format!("{:?}", state.hold),
+            state_json,
+            display_name,
+            identity_json,
+        ],
+    )?;
+    let mut revision: u64 = 1;
+
+    let steps: [ProjectEvent; 5] = [
+        ProjectEvent::AdvanceNominal,
+        ProjectEvent::AdvanceNominal,
+        ProjectEvent::AdvanceNominal,
+        ProjectEvent::AdvanceNominal,
+        ProjectEvent::IntentUnresolved,
+    ];
+    for step in steps {
+        state = project::apply(state, step).expect(
+            "4x AdvanceNominal + IntentUnresolved is always legal immediately after project.created",
+        );
+        revision += 1;
+        event_id = uuid::Uuid::new_v4().to_string();
+        event_type = project_event_type_name(&step);
+        occurred_at = EventStore::now_rfc3339();
+        let payload = serde_json::to_string(&step).expect("ProjectEvent always serializes");
+        let state_json = serde_json::to_string(&state).expect("ProjectState always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'Project', ?3, ?4, ?5, ?6)",
+            params![event_id, project_id, revision as i64, event_type, payload, occurred_at],
+        )?;
+        seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO project_projections (aggregate_id, revision, lifecycle, phase, hold, state_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(aggregate_id) DO UPDATE SET
+                revision = excluded.revision,
+                lifecycle = excluded.lifecycle,
+                phase = excluded.phase,
+                hold = excluded.hold,
+                state_json = excluded.state_json",
+            params![
+                project_id,
+                revision as i64,
+                format!("{:?}", state.lifecycle),
+                format!("{:?}", state.phase),
+                format!("{:?}", state.hold),
+                state_json
+            ],
+        )?;
+    }
+
+    tx.commit()?;
+    Ok(AppendedProjectEvent {
+        seq,
+        event_id,
+        revision,
+        event_type,
+        occurred_at,
+        state,
+    })
+}
+
 fn task_event_type_name(event: &TaskEvent) -> &'static str {
     match event {
         TaskEvent::Created { .. } => "Created",
@@ -1014,6 +1902,7 @@ fn execution_queue_event_type_name(event: &ExecutionQueueEvent) -> &'static str 
 mod tests {
     use super::*;
     use autome_domain::run::RunPhase;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn temp_db_path(label: &str) -> String {
         std::env::temp_dir()
@@ -1023,6 +1912,329 @@ mod tests {
             ))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn sample_project_identity(id: &str) -> ProjectIdentity {
+        ProjectIdentity::new(
+            id,
+            &format!("Display {id}"),
+            autome_domain::project::ProjectKind::ExistingRepository,
+            autome_domain::project::ProjectLocator::ExistingRepository {
+                repository_identity: format!("repo-{id}"),
+            },
+            &format!("/tmp/project-home-{id}"),
+        )
+        .unwrap()
+    }
+
+    /// §8.2 target-registration tests below each need their own isolated
+    /// data root -- never the bare shared `std::env::temp_dir()` that
+    /// `temp_db_path` points at -- because `create_project_from_target`
+    /// lazily creates a shared `projects/` directory directly under the
+    /// db's parent the first time any test calls it. With `cargo test`'s
+    /// default thread-per-test parallelism, two tests racing to create
+    /// that *same* shared directory for the first time is a real,
+    /// observable flake (one loses the `mkdir` race). A fresh, uniquely
+    /// named directory per test removes the shared resource entirely.
+    fn temp_data_root(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "automed-store-test-root-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// A `TargetIdentityProbe` fixture with the three git-derived
+    /// judgment inputs set directly, sidestepping a real `git` subprocess
+    /// (that round trip is `target_probe.rs`'s own test responsibility).
+    /// `canonical_path` is a freshly created, real directory -- needed
+    /// because `create_project_from_target`'s `NewProduct` branch calls
+    /// `symlink_metadata` on a path joined under it.
+    fn sample_probe(
+        label: &str,
+        is_git_repo: bool,
+        head_resolvable: bool,
+        worktree_clean: bool,
+    ) -> crate::target_probe::TargetIdentityProbe {
+        let dir = std::env::temp_dir().join(format!(
+            "automed-store-test-probe-{label}-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::target_probe::TargetIdentityProbe {
+            canonical_path: dir,
+            dev: 0,
+            ino: 0,
+            is_git_repo,
+            git_common_dir: None,
+            object_format: None,
+            config_digest_sha256_hex: None,
+            head_commit: None,
+            head_resolvable,
+            worktree_clean,
+        }
+    }
+
+    /// Simulates a real v3 database (`migrate_v1`..`migrate_v3` already
+    /// applied, `user_version = 3`, one project row already journaled with
+    /// the v3-era `display_name`/`identity_json` columns populated) built
+    /// by calling the migration steps directly rather than hand-writing
+    /// v3's DDL a second time -- `EventStore::open` must then run only
+    /// `migrate_v4` and leave the pre-existing row exactly as it was.
+    #[test]
+    fn opening_a_v3_database_adds_project_targets_without_disturbing_existing_rows() {
+        let root = temp_data_root("v3-migration");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            migrate_v1(&conn).unwrap();
+            migrate_v2(&conn).unwrap();
+            migrate_v3(&conn).unwrap();
+            conn.execute_batch("PRAGMA user_version = 3").unwrap();
+            conn.execute(
+                "INSERT INTO project_projections (aggregate_id, revision, lifecycle, phase, hold, state_json, display_name, identity_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    "project-v3",
+                    1,
+                    "Active",
+                    "Registered",
+                    "None",
+                    r#"{"lifecycle":"Active","phase":"Registered","hold":"None","revision":1}"#,
+                    "V3 Project",
+                    r#"{"id":"project-v3","display_name":"V3 Project","kind":"ExistingRepository","locator":{"ExistingRepository":{"repository_identity":"repo-v3"}},"project_home":"/tmp/project-home-v3"}"#,
+                ],
+            )
+            .unwrap();
+        }
+
+        let mut store = EventStore::open(&db_path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+
+        let summaries = store.list_project_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "project-v3");
+        assert_eq!(summaries[0].display_name.as_deref(), Some("V3 Project"));
+
+        // `project_targets` exists and is usable, proving migrate_v4 ran
+        // on top of the simulated v3 database rather than being skipped.
+        let probe = sample_probe("v3-migration", true, true, true);
+        let inspection = probe.to_inspection(false);
+        let target_id = store
+            .register_target(ProjectKind::ExistingRepository, &probe, &inspection)
+            .unwrap();
+        assert!(store.load_target(&target_id).unwrap().is_some());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.2: `create_project_from_target` claims the target row
+    /// (`consumed_by_project_id` set to the new project's id); a second
+    /// call against the same already-consumed `target_id` must be
+    /// rejected outright rather than silently minting a second project
+    /// from the same registration.
+    #[test]
+    fn create_from_target_consumes_the_target_and_rejects_reuse() {
+        let root = temp_data_root("consume-target");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let probe = sample_probe("consume-target", true, true, true);
+        let inspection = probe.to_inspection(false);
+        let target_id = store
+            .register_target(ProjectKind::ExistingRepository, &probe, &inspection)
+            .unwrap();
+
+        let created = store
+            .create_project_from_target(&target_id, "Consume Target Project", true, None)
+            .unwrap();
+
+        let record = store.load_target(&target_id).unwrap().unwrap();
+        assert_eq!(
+            record.consumed_by_project_id.as_deref(),
+            Some(created.project_id.as_str())
+        );
+
+        let second =
+            store.create_project_from_target(&target_id, "Second Attempt Project", true, None);
+        assert!(
+            matches!(second, Err(CreateFromTargetError::TargetAlreadyConsumed)),
+            "{second:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §6.1: a project created from a target lands at exactly
+    /// `phase=ResolvingIntent, hold=IntentUnresolved` -- 4x `AdvanceNominal`
+    /// from `Registered` followed by `IntentUnresolved`, never advanced
+    /// further (there is no persisted `ProjectIntent` yet to justify
+    /// `IntentResolved`).
+    #[test]
+    fn create_from_target_lands_project_at_resolving_intent_with_intent_unresolved_hold() {
+        let root = temp_data_root("phase-hold");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let probe = sample_probe("phase-hold", true, true, true);
+        let inspection = probe.to_inspection(false);
+        let target_id = store
+            .register_target(ProjectKind::ExistingRepository, &probe, &inspection)
+            .unwrap();
+
+        let created = store
+            .create_project_from_target(&target_id, "Phase Hold Project", true, None)
+            .unwrap();
+        assert_eq!(created.appended.revision, 6);
+        assert_eq!(created.appended.event_type, "IntentUnresolved");
+
+        let (revision, state) = store
+            .load_project_state(&created.project_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revision, 6);
+        assert_eq!(
+            state.phase,
+            autome_domain::project::ProjectPhase::ResolvingIntent
+        );
+        assert_eq!(
+            state.hold,
+            autome_domain::project::ProjectHold::IntentUnresolved
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: the ProjectHome directory `create_project_from_target` writes
+    /// must actually land on disk, owner-only -- the directory itself
+    /// `0700` and its `manifest.json` `0600` -- not just a string returned
+    /// by `project_home_for` with nothing behind it.
+    #[test]
+    fn create_from_target_writes_a_project_home_with_owner_only_permissions() {
+        let root = temp_data_root("permissions");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let probe = sample_probe("permissions", true, true, true);
+        let inspection = probe.to_inspection(false);
+        let target_id = store
+            .register_target(ProjectKind::ExistingRepository, &probe, &inspection)
+            .unwrap();
+
+        let created = store
+            .create_project_from_target(&target_id, "Permissions Project", true, None)
+            .unwrap();
+
+        let home = std::path::PathBuf::from(store.project_home_for(&created.project_id));
+        let dir_meta = std::fs::symlink_metadata(&home).unwrap();
+        assert!(dir_meta.is_dir());
+        assert_eq!(dir_meta.mode() & 0o777, 0o700);
+
+        let manifest_meta = std::fs::symlink_metadata(home.join("manifest.json")).unwrap();
+        assert!(manifest_meta.is_file());
+        assert_eq!(manifest_meta.mode() & 0o777, 0o600);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.2 "落盘失败即整事务回滚": here the shared `projects/` root
+    /// already exists but is `0500` (no owner-write bit), so `mkdir`ing
+    /// the new project's own directory underneath it fails at the OS
+    /// level *before* any SQL is ever executed. Asserts the full
+    /// invariant: no new `project_projections`/`events` rows, no orphan
+    /// directory left under `projects/`, and the target itself comes back
+    /// still unconsumed so a retry remains possible once the permission
+    /// problem is fixed.
+    #[test]
+    fn disk_write_failure_leaves_no_orphan_directory_and_no_journaled_events() {
+        let root = temp_data_root("disk-failure");
+        let projects_root = root.join("projects");
+        {
+            let mut builder = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o500);
+            builder.create(&projects_root).unwrap();
+        }
+
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let probe = sample_probe("disk-failure", true, true, true);
+        let inspection = probe.to_inspection(false);
+        let target_id = store
+            .register_target(ProjectKind::ExistingRepository, &probe, &inspection)
+            .unwrap();
+
+        let projections_before: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM project_projections", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let events_before: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+
+        let result =
+            store.create_project_from_target(&target_id, "Disk Failure Project", true, None);
+        assert!(
+            matches!(result, Err(CreateFromTargetError::FsGuard(_))),
+            "{result:?}"
+        );
+
+        let projections_after: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM project_projections", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let events_after: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(projections_before, projections_after);
+        assert_eq!(events_before, events_after);
+        assert_eq!(std::fs::read_dir(&projects_root).unwrap().count(), 0);
+
+        let record = store.load_target(&target_id).unwrap().unwrap();
+        assert!(record.consumed_by_project_id.is_none());
+
+        std::fs::set_permissions(&projects_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3:1362 diagnostic state: `EventStore::open` re-verifies the data
+    /// root at startup and records a reason when it fails. This is the
+    /// store-level half of that story (`diagnostic_reason()` reports
+    /// `None`/`Some` correctly); the behavioral consequence -- writes
+    /// refused, reads unaffected -- is enforced by `dispatch::dispatch`'s
+    /// gate check (its own test suite), not by any individual store
+    /// method here, since `create_project_from_target` and friends
+    /// deliberately do not each re-check `diagnostic_reason()` themselves
+    /// (see that method's doc comment).
+    #[test]
+    fn diagnostic_reason_is_none_for_healthy_root_and_set_when_reverification_fails() {
+        let healthy_root = temp_data_root("diagnostic-healthy");
+        let healthy_db_path = healthy_root
+            .join("db.sqlite3")
+            .to_string_lossy()
+            .into_owned();
+        let healthy_store = EventStore::open(&healthy_db_path).unwrap();
+        assert!(healthy_store.diagnostic_reason().is_none());
+        std::fs::remove_dir_all(&healthy_root).ok();
+
+        let unsafe_root = temp_data_root("diagnostic-unsafe");
+        std::fs::set_permissions(&unsafe_root, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let unsafe_db_path = unsafe_root
+            .join("db.sqlite3")
+            .to_string_lossy()
+            .into_owned();
+        let unsafe_store = EventStore::open(&unsafe_db_path).unwrap();
+        assert!(unsafe_store.diagnostic_reason().is_some());
+
+        std::fs::set_permissions(&unsafe_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&unsafe_root).ok();
     }
 
     #[test]
@@ -1136,20 +2348,72 @@ mod tests {
     }
 
     #[test]
-    fn first_legal_project_event_creates_revision_one() {
+    fn create_project_writes_revision_one_with_registered_projection() {
+        use autome_domain::project::{ProjectHold, ProjectLifecycle, ProjectPhase};
+
+        let path = temp_db_path("create-project-revision-one");
+        let mut store = EventStore::open(&path).unwrap();
+        let identity = sample_project_identity("project-1");
+        let appended = store.create_project(&identity).unwrap();
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "project.created");
+        assert_eq!(appended.state.lifecycle, ProjectLifecycle::Active);
+        assert_eq!(appended.state.phase, ProjectPhase::Registered);
+        assert_eq!(appended.state.hold, ProjectHold::None);
+        let (revision, loaded) = store.load_project_state("project-1").unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(loaded, appended.state);
+        let loaded_identity = store.load_project_identity("project-1").unwrap().unwrap();
+        assert_eq!(loaded_identity, identity);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_project_event_after_creation_advances_to_revision_two() {
         use autome_domain::project::ProjectPhase;
 
         let path = temp_db_path("first-project-event");
         let mut store = EventStore::open(&path).unwrap();
+        store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap();
         let appended = store
             .append_project_event("project-1", ProjectEvent::AdvanceNominal)
             .unwrap();
         assert_eq!(appended.state.phase, ProjectPhase::Inspecting);
-        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.revision, 2);
         assert_eq!(appended.event_type, "AdvanceNominal");
         let (revision, loaded) = store.load_project_state("project-1").unwrap().unwrap();
-        assert_eq!(revision, 1);
+        assert_eq!(revision, 2);
         assert_eq!(loaded, appended.state);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn create_project_rejects_duplicate_aggregate_id() {
+        let path = temp_db_path("create-project-duplicate");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap();
+        let err = store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap_err();
+        assert!(matches!(err, ProjectAppendError::AlreadyExists));
+        assert_eq!(store.event_count("project-1"), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn append_project_event_on_uncreated_project_is_not_found() {
+        let path = temp_db_path("uncreated-project-append");
+        let mut store = EventStore::open(&path).unwrap();
+        let err = store
+            .append_project_event("project-1", ProjectEvent::AdvanceNominal)
+            .unwrap_err();
+        assert!(matches!(err, ProjectAppendError::NotFound));
+        assert!(store.load_project_state("project-1").unwrap().is_none());
+        assert_eq!(store.event_count("project-1"), 0);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1160,6 +2424,9 @@ mod tests {
         let path = temp_db_path("sequential-project");
         let mut store = EventStore::open(&path).unwrap();
         store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap();
+        store
             .append_project_event("project-1", ProjectEvent::AdvanceNominal)
             .unwrap();
         let second = store
@@ -1167,8 +2434,8 @@ mod tests {
             .unwrap();
         assert_eq!(second.state.phase, ProjectPhase::AwaitingTrust);
         let (revision, _) = store.load_project_state("project-1").unwrap().unwrap();
-        assert_eq!(revision, 2);
-        assert_eq!(store.event_count("project-1"), 2);
+        assert_eq!(revision, 3);
+        assert_eq!(store.event_count("project-1"), 3);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1176,12 +2443,16 @@ mod tests {
     fn illegal_project_transition_writes_nothing() {
         let path = temp_db_path("illegal-project");
         let mut store = EventStore::open(&path).unwrap();
+        store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap();
         let err = store
             .append_project_event("project-1", ProjectEvent::IntentResolved)
             .unwrap_err();
         assert!(matches!(err, ProjectAppendError::Transition(_)));
-        assert!(store.load_project_state("project-1").unwrap().is_none());
-        assert_eq!(store.event_count("project-1"), 0);
+        let (revision, _) = store.load_project_state("project-1").unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(store.event_count("project-1"), 1);
         std::fs::remove_file(&path).ok();
     }
 
@@ -1193,6 +2464,9 @@ mod tests {
         {
             let mut store = EventStore::open(&path).unwrap();
             store
+                .create_project(&sample_project_identity("project-1"))
+                .unwrap();
+            store
                 .append_project_event("project-1", ProjectEvent::AdvanceNominal)
                 .unwrap();
             store
@@ -1201,7 +2475,7 @@ mod tests {
         }
         let reopened = EventStore::open(&path).unwrap();
         let (revision, state) = reopened.load_project_state("project-1").unwrap().unwrap();
-        assert_eq!(revision, 2);
+        assert_eq!(revision, 3);
         assert_eq!(state.phase, ProjectPhase::AwaitingTrust);
         std::fs::remove_file(&path).ok();
     }
@@ -1214,7 +2488,7 @@ mod tests {
             .append_run_event("same-id", RunEvent::AdvanceNominal)
             .unwrap();
         store
-            .append_project_event("same-id", ProjectEvent::AdvanceNominal)
+            .create_project(&sample_project_identity("same-id"))
             .unwrap();
         assert!(store.load_run_state("same-id").unwrap().is_some());
         assert!(store.load_project_state("same-id").unwrap().is_some());
@@ -1360,7 +2634,7 @@ mod tests {
             .append_run_event("same-id", RunEvent::AdvanceNominal)
             .unwrap();
         store
-            .append_project_event("same-id", ProjectEvent::AdvanceNominal)
+            .create_project(&sample_project_identity("same-id"))
             .unwrap();
         store
             .append_task_event("same-id", task_created_event())
@@ -1707,6 +2981,239 @@ mod tests {
         let (revision, state) = reopened.load_execution_queue_state().unwrap().unwrap();
         assert_eq!(revision, 2);
         assert_eq!(state.lease().unwrap().lease_id, "lease-1");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn fresh_database_lands_on_the_latest_schema_version() {
+        let path = temp_db_path("fresh-schema-version");
+        let store = EventStore::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Simulates a v2 database (migrate_v1 + migrate_v2's shape, but not
+    /// yet migrate_v3): `project_projections` exists with only the six
+    /// pre-v3 columns and one row already journaled, `user_version` left
+    /// at its default 0 so `migrate()` replays every step from the top —
+    /// `migrate_v1`'s `IF NOT EXISTS` skips the manually-created table,
+    /// `migrate_v3` still runs against it. Opening it through today's
+    /// `EventStore` must add `display_name`/`identity_json` as NULL
+    /// without disturbing the existing row (plan: no backfill source, a
+    /// pre-migrate_v3 row's identity stays honestly unknown).
+    #[test]
+    fn opening_a_v2_database_adds_null_identity_columns_without_disturbing_existing_rows() {
+        let path = temp_db_path("v2-migration");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE project_projections (
+                    aggregate_id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL,
+                    lifecycle TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    hold TEXT NOT NULL,
+                    state_json TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO project_projections (aggregate_id, revision, lifecycle, phase, hold, state_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "project-old",
+                    1,
+                    "Active",
+                    "Registered",
+                    "None",
+                    r#"{"lifecycle":"Active","phase":"Registered","hold":"None","revision":1}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        let store = EventStore::open(&path).unwrap();
+        let summaries = store.list_project_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "project-old");
+        assert_eq!(summaries[0].display_name, None);
+        assert_eq!(summaries[0].kind, None);
+        assert!(
+            store
+                .load_project_identity("project-old")
+                .unwrap()
+                .is_none()
+        );
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Simulates a database written by pre-migration-framework code: the
+    /// old `CREATE TABLE IF NOT EXISTS`-only scheme already ran (tables
+    /// exist, `task_projections` has no `project_id` column, and
+    /// `user_version` was never touched so it defaults to 0) with one Task
+    /// row already journaled. Opening it through today's `EventStore`
+    /// must backfill `project_id` from the row's own `state_json`, not
+    /// leave it null.
+    #[test]
+    fn opening_a_pre_migration_database_backfills_task_project_id() {
+        let path = temp_db_path("pre-migration-backfill");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE task_projections (
+                    aggregate_id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL,
+                    lifecycle TEXT NOT NULL,
+                    state_json TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task_projections (aggregate_id, revision, lifecycle, state_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "task-old",
+                    1,
+                    "Draft",
+                    r#"{"project_id":"project-old","other":"ignored"}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        let store = EventStore::open(&path).unwrap();
+        let summaries = store.list_task_summaries("project-old").unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "task-old");
+        assert_eq!(summaries[0].lifecycle, "Draft");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn reopening_a_migrated_database_does_not_rerun_migrations() {
+        let path = temp_db_path("no-rerun");
+        {
+            EventStore::open(&path).unwrap();
+        }
+        // A second open must not attempt `ALTER TABLE ... ADD COLUMN
+        // project_id` again (that would error with a duplicate-column
+        // SqliteFailure) — proving each step only ever runs once.
+        let store = EventStore::open(&path).unwrap();
+        let version: i64 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn latest_event_seq_is_zero_for_an_empty_journal_and_tracks_appends() {
+        let path = temp_db_path("latest-event-seq");
+        let mut store = EventStore::open(&path).unwrap();
+        assert_eq!(store.latest_event_seq().unwrap(), 0);
+        store
+            .append_run_event("run-1", RunEvent::AdvanceNominal)
+            .unwrap();
+        assert_eq!(store.latest_event_seq().unwrap(), 1);
+        store
+            .create_project(&sample_project_identity("project-1"))
+            .unwrap();
+        assert_eq!(store.latest_event_seq().unwrap(), 2);
+        store
+            .append_project_event("project-1", ProjectEvent::AdvanceNominal)
+            .unwrap();
+        assert_eq!(store.latest_event_seq().unwrap(), 3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_project_summaries_reflects_every_known_project_in_order() {
+        let path = temp_db_path("list-project-summaries");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .create_project(&sample_project_identity("project-b"))
+            .unwrap();
+        store
+            .create_project(&sample_project_identity("project-a"))
+            .unwrap();
+        let summaries = store.list_project_summaries().unwrap();
+        assert_eq!(
+            summaries.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["project-a", "project-b"]
+        );
+        assert_eq!(summaries[0].revision, 1);
+        assert_eq!(
+            summaries[0].display_name.as_deref(),
+            Some("Display project-a")
+        );
+        assert_eq!(
+            summaries[0].kind,
+            Some(autome_domain::project::ProjectKind::ExistingRepository)
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_task_summaries_is_isolated_per_project() {
+        let path = temp_db_path("list-task-summaries-isolated");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_task_event(
+                "task-1",
+                TaskEvent::Created {
+                    id: "task-1".to_string(),
+                    project: ready_project_state(),
+                    project_id: "project-a".to_string(),
+                    project_revision: 1,
+                    original_request_ref: "ref-1".to_string(),
+                },
+            )
+            .unwrap();
+        store
+            .append_task_event(
+                "task-2",
+                TaskEvent::Created {
+                    id: "task-2".to_string(),
+                    project: ready_project_state(),
+                    project_id: "project-b".to_string(),
+                    project_revision: 1,
+                    original_request_ref: "ref-2".to_string(),
+                },
+            )
+            .unwrap();
+
+        let project_a_tasks = store.list_task_summaries("project-a").unwrap();
+        assert_eq!(
+            project_a_tasks
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task-1"]
+        );
+        let project_b_tasks = store.list_task_summaries("project-b").unwrap();
+        assert_eq!(
+            project_b_tasks
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task-2"]
+        );
+        let unknown_project_tasks = store.list_task_summaries("project-nonexistent").unwrap();
+        assert!(unknown_project_tasks.is_empty());
         std::fs::remove_file(&path).ok();
     }
 }

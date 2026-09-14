@@ -1,7 +1,637 @@
+/*
+  Component styles. Consumes the CSS custom properties defined in
+  tokens.css (loaded first in index.html). Island/kawaii visual language
+  per the plan's "视觉方向" section — warm workshop, not a cold ops
+  console — with the four-tier alert vocabulary (status.js) kept visually
+  distinct even at a glance (color + shape + icon + text, never color
+  alone).
+*/
+
+@font-face {
+  font-family: 'Nunito';
+  src: url('fonts/nunito/Nunito-Variable.ttf') format('truetype-variations');
+  font-weight: 200 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
-  font-family: -apple-system, system-ui, sans-serif;
   margin: 0;
-  padding: 2rem;
-  color: #1a1a1a;
-  background: #fafafa;
+  padding: 0;
+}
+
+body {
+  font-family: var(--ac-font-display), 'PingFang SC', -apple-system, sans-serif;
+  color: var(--ac-text);
+  background-color: var(--ac-bg);
+  background-image: radial-gradient(var(--ac-border-soft) 1px, transparent 1px);
+  background-size: 20px 20px;
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--ac-text-strong);
+  margin: 0 0 var(--ac-space-2) 0;
+}
+
+header {
+  padding: var(--ac-space-4) var(--ac-space-6) 0;
+}
+
+header h1 {
+  font-size: 1.4rem;
+}
+
+/* Execution bar: §9 常驻全局执行条. Always visible, even with zero data. */
+.ac-exec-bar {
+  margin: var(--ac-space-3) var(--ac-space-6) 0;
+  padding: var(--ac-space-3) var(--ac-space-4);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-md);
+}
+
+.ac-exec-bar__status {
+  display: flex;
+  align-items: center;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-2);
+}
+
+.ac-exec-bar__write-disabled {
+  font-size: 0.85rem;
+  color: var(--ac-danger);
+  font-weight: 700;
+}
+
+.ac-exec-bar__lanes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--ac-space-4);
+}
+
+.ac-exec-bar__lane-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--ac-text-muted);
+  margin-bottom: var(--ac-space-1);
+}
+
+.ac-exec-bar__lane-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.ac-exec-bar__lane-empty {
+  font-size: 0.85rem;
+  color: var(--ac-text-faint);
+}
+
+/* Pill tab row. */
+#top-nav {
+  display: flex;
+  gap: var(--ac-space-2);
+  padding: var(--ac-space-4) var(--ac-space-6) 0;
+}
+
+.ac-tab {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ac-text);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-pill);
+  padding: var(--ac-space-2) var(--ac-space-4);
+  cursor: pointer;
+  transition: background var(--ac-duration-fast) var(--ac-ease), color var(--ac-duration-fast) var(--ac-ease),
+    border-color var(--ac-duration-fast) var(--ac-ease);
+}
+
+.ac-tab:hover {
+  border-color: var(--ac-primary);
+}
+
+.ac-tab:focus-visible {
+  outline: 3px solid var(--ac-focus-button);
+  outline-offset: 2px;
+}
+
+.ac-tab--active {
+  background: var(--ac-primary);
+  border-color: var(--ac-primary-active);
+  color: #fff;
+}
+
+main#panel {
+  padding: var(--ac-space-6);
+  max-width: 960px;
+}
+
+.ac-card {
+  background: var(--ac-content-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-lg);
+  padding: var(--ac-space-6);
+  transition: transform var(--ac-duration-base) var(--ac-ease);
+}
+
+.ac-card:hover {
+  transform: translateY(-2px);
+}
+
+.ac-empty-heading {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--ac-text-strong);
+  margin: 0 0 var(--ac-space-2) 0;
+}
+
+.ac-empty-reason {
+  color: var(--ac-text-muted);
+  margin: 0 0 var(--ac-space-4) 0;
+}
+
+/* Buttons: heavy 3D stacked shadow on primary/danger, pill radius. */
+.ac-btn {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  border-radius: var(--ac-radius-pill);
+  padding: var(--ac-space-2) var(--ac-space-4);
+  border: var(--ac-border-width) solid transparent;
+  cursor: pointer;
+  transition: box-shadow var(--ac-duration-fast) var(--ac-ease), transform var(--ac-duration-fast) var(--ac-ease);
+}
+
+.ac-btn--primary {
+  background: var(--ac-primary);
+  color: #fff;
+  box-shadow: var(--ac-shadow-stack);
+}
+
+.ac-btn--primary:hover:not(:disabled) {
+  background: var(--ac-primary-hover);
+  box-shadow: var(--ac-shadow-stack-hover);
+}
+
+.ac-btn--primary:active:not(:disabled) {
+  background: var(--ac-primary-active);
+  box-shadow: var(--ac-shadow-stack-active);
+  transform: translateY(4px);
+}
+
+.ac-btn:focus-visible {
+  outline: 3px solid var(--ac-focus-button);
+  outline-offset: 2px;
+}
+
+.ac-btn:disabled {
+  background: var(--ac-border-soft);
+  color: var(--ac-text-faint);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.ac-cta-row {
+  display: flex;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-6);
+}
+
+/* Axis strip: the core design primitive. N axes, N cells, always. */
+.ac-axis-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-4);
+}
+
+.ac-axis-cell {
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-sm);
+  padding: var(--ac-space-2) var(--ac-space-3);
+  min-width: 120px;
+}
+
+.ac-axis-cell__label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ac-text-muted);
+  margin-bottom: var(--ac-space-1);
+}
+
+/* Status chips: four-tier alert vocabulary, color + shape + icon + text. */
+.ac-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ac-space-1);
+  border-radius: var(--ac-radius-pill);
+  padding: 2px var(--ac-space-2);
+  font-size: 0.8rem;
+  font-weight: 700;
+  border-width: 2px;
+  border-style: solid;
+}
+
+.ac-chip__icon {
+  font-weight: 900;
+}
+
+.ac-chip--ok {
+  color: var(--ac-tone-ok);
+  background: var(--ac-tone-ok-bg);
+  border-color: var(--ac-tone-ok);
+}
+
+.ac-chip--warning {
+  color: var(--ac-tone-warning);
+  background: var(--ac-tone-warning-bg);
+  border-color: var(--ac-tone-warning);
+}
+
+.ac-chip--critical {
+  color: var(--ac-tone-critical);
+  background: var(--ac-tone-critical-bg);
+  border-color: var(--ac-tone-critical);
+  border-width: 3px;
+}
+
+.ac-chip--unobserved {
+  color: var(--ac-tone-unobserved);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--ac-tone-unobserved-bg),
+    var(--ac-tone-unobserved-bg) 6px,
+    rgba(138, 123, 102, 0.12) 6px,
+    rgba(138, 123, 102, 0.12) 12px
+  );
+  border-color: var(--ac-tone-unobserved);
+}
+
+.ac-chip--dashed {
+  border-style: dashed;
+}
+
+/* Reference content: 17-step rail, 40-gate checklist, vocabulary tables. */
+.ac-reference {
+  margin-top: var(--ac-space-6);
+  padding-top: var(--ac-space-4);
+  border-top: var(--ac-border-width) dashed var(--ac-border-soft);
+}
+
+.ac-reference__title {
+  font-size: 0.95rem;
+}
+
+.ac-phase-rail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-2);
+}
+
+.ac-phase-rail__step {
+  display: flex;
+  align-items: center;
+  gap: var(--ac-space-2);
+}
+
+.ac-gate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--ac-space-2);
+}
+
+.ac-gate-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--ac-space-2);
+  font-size: 0.85rem;
+}
+
+.ac-axis-vocab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-2);
+}
+
+.ac-axis-vocab__axis {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+
+.ac-ladder {
+  margin: 0;
+  padding-left: var(--ac-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-1);
+}
+
+/* Staggered entrance animation, disabled under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .ac-fade-up {
+    animation: ac-fade-up var(--ac-duration-slow) var(--ac-ease) both;
+  }
+
+  .ac-fade-up:nth-of-type(2) {
+    animation-delay: 0.05s;
+  }
+
+  .ac-fade-up:nth-of-type(3) {
+    animation-delay: 0.1s;
+  }
+
+  @keyframes ac-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Secondary button: outline only, never the primary/danger shadow stack
+   (tokens.css: "heavy 3D stack reserved for primary/danger controls only"). */
+.ac-btn--secondary {
+  background: var(--ac-input-bg);
+  color: var(--ac-text-strong);
+  border-color: var(--ac-border-soft);
+}
+
+.ac-btn--secondary:hover:not(:disabled) {
+  border-color: var(--ac-primary);
+}
+
+/* Project list: brand-new class names, never .ac-phase-rail__step or
+   .ac-gate-list__item — dom-harness counts those by exact class name. */
+.ac-project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-3);
+}
+
+.ac-project-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--ac-space-3);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-md);
+  padding: var(--ac-space-3) var(--ac-space-4);
+}
+
+.ac-project-list__select {
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ac-text-strong);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ac-project-list__select:hover {
+  color: var(--ac-primary-active);
+  text-decoration: underline;
+}
+
+.ac-project-list__select:focus-visible {
+  outline: 3px solid var(--ac-focus-button);
+  outline-offset: 2px;
+}
+
+/* Project detail: header + sub-tab strip above the delegated subtab panel. */
+.ac-project-detail__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-4);
+}
+
+.ac-project-detail__name {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.ac-project-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ac-space-2);
+  margin-bottom: var(--ac-space-4);
+  padding-bottom: var(--ac-space-3);
+  border-bottom: var(--ac-border-width) dashed var(--ac-border-soft);
+}
+
+/* §9.1 project config matrix: fixed verifier/delivery rows visually locked. */
+.ac-config-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.ac-config-matrix th,
+.ac-config-matrix td {
+  text-align: left;
+  padding: var(--ac-space-2) var(--ac-space-3);
+  border-bottom: var(--ac-border-width) solid var(--ac-border-soft);
+}
+
+.ac-config-matrix__locked {
+  background: var(--ac-tone-unobserved-bg);
+  color: var(--ac-text-muted);
+}
+
+/* History/evidence table column headers — no row data exists yet. */
+.ac-evidence-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ac-space-3);
+  margin-top: var(--ac-space-3);
+}
+
+.ac-evidence-columns__col {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ac-text-muted);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-sm);
+  padding: 2px var(--ac-space-2);
+}
+
+/* §9.3: a disabled CTA must say why, not just look greyed out. */
+.ac-cta-row__reason {
+  color: var(--ac-tone-critical);
+  font-size: 0.85rem;
+  margin: calc(-1 * var(--ac-space-4)) 0 var(--ac-space-6) 0;
+}
+
+/* §8.2 project draft: brand-new class names, never .ac-phase-rail__step or
+   .ac-gate-list__item — dom-harness counts those by exact class name. */
+.ac-draft__header {
+  display: flex;
+  align-items: center;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-4);
+}
+
+.ac-draft__heading {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--ac-text-strong);
+}
+
+.ac-draft__section {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ac-space-3);
+  margin-bottom: var(--ac-space-6);
+}
+
+.ac-draft-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ac-space-3);
+  width: 100%;
+}
+
+.ac-draft-summary__cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-1);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-sm);
+  padding: var(--ac-space-2) var(--ac-space-3);
+  min-width: 160px;
+}
+
+.ac-draft-summary__label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ac-text-muted);
+}
+
+.ac-draft-summary__value {
+  color: var(--ac-text-strong);
+  word-break: break-all;
+}
+
+.ac-draft-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ac-space-1);
+  width: 100%;
+  max-width: 420px;
+}
+
+.ac-draft-field__label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ac-text-strong);
+}
+
+.ac-draft-field__input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.95rem;
+  color: var(--ac-text-strong);
+  background: var(--ac-input-bg);
+  border: var(--ac-border-width-input) solid var(--ac-border-soft);
+  border-radius: var(--ac-radius-sm);
+  padding: var(--ac-space-2) var(--ac-space-3);
+}
+
+.ac-draft-field__input:focus-visible {
+  outline: 3px solid var(--ac-focus-input);
+  outline-offset: 1px;
+}
+
+.ac-draft-field__input:disabled {
+  color: var(--ac-text-faint);
+  cursor: not-allowed;
+}
+
+.ac-draft-field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--ac-space-2);
+}
+
+.ac-draft-error {
+  color: var(--ac-tone-critical);
+  background: var(--ac-tone-critical-bg);
+  border-radius: var(--ac-radius-sm);
+  padding: var(--ac-space-2) var(--ac-space-3);
+  margin: 0 0 var(--ac-space-4) 0;
+}
+
+.ac-draft-blockers {
+  list-style: none;
+  margin: 0 0 var(--ac-space-4) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ac-space-1);
+}
+
+.ac-draft-blockers__item {
+  color: var(--ac-tone-warning);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 800px) {
+  .ac-exec-bar__lanes {
+    grid-template-columns: 1fr;
+  }
+
+  .ac-gate-list {
+    grid-template-columns: 1fr;
+  }
+
+  main#panel {
+    padding: var(--ac-space-4);
+  }
+
+  .ac-project-list__item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ac-draft-field {
+    max-width: none;
+  }
 }

@@ -8,6 +8,8 @@
 //! instead of accreting in `autome-domain`.
 
 pub mod dispatch;
+pub mod fs_guard;
 pub mod harness_probe;
 pub mod ipc;
 pub mod store;
+pub mod target_probe;

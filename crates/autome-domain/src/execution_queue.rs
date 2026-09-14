@@ -63,6 +63,23 @@ impl ExecutionQueue {
         self.lease.as_ref()
     }
 
+    /// Every task id the queue currently knows about: every enqueued
+    /// entry plus the lease holder, if any. The queue itself only knows
+    /// task ids — resolving them to Project display names (plan §9: every
+    /// execution-bar entry must show a Project name) is
+    /// `automed::store`'s job; this is the read-only seam it joins from.
+    pub fn known_task_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .entries
+            .iter()
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        if let Some(lease) = &self.lease {
+            ids.push(lease.task_id.clone());
+        }
+        ids
+    }
+
     /// Also used for "resume after park": a resumed Task is, from this
     /// queue's point of view, simply becoming runnable again with a new
     /// `enqueued_event_seq` — there is no separate resume mechanism.

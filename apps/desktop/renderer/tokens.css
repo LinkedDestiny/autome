@@ -1,0 +1,78 @@
+/*
+  Design tokens borrowed from animal-island-ui's *values* only (CC BY-NC —
+  no code or assets copied, see plan "视觉方向 > Token"). Kept in one file
+  so every component styles off the same palette/scale.
+*/
+:root {
+  /* Brand / primary */
+  --ac-primary: #19c8b9;
+  --ac-primary-hover: #3dd4c6;
+  --ac-primary-active: #11a89b;
+  --ac-primary-bg: #e6f9f6;
+
+  /* Danger (unrelated to the alert-tone system in status.js; used for
+     destructive actions — cancel queued item, abandon install, etc.) */
+  --ac-danger: #e05a5a;
+  --ac-danger-hover: #e97878;
+  --ac-danger-active: #c44646;
+
+  /* Text — no pure black, no cold gray */
+  --ac-text-strong: #794f27;
+  --ac-text: #725d42;
+  --ac-text-muted: #9f927d;
+  --ac-text-faint: #8a7b66;
+
+  /* Surfaces */
+  --ac-bg: #f8f8f0;
+  --ac-content-bg: rgb(247, 243, 223);
+  --ac-input-bg: #fffbe7;
+
+  /* Borders */
+  --ac-border: #9f927d;
+  --ac-border-soft: #c4b89e;
+  --ac-border-width: 2px;
+  --ac-border-width-input: 2.5px;
+
+  /* Radius — 12px minimum, pills for interactive controls */
+  --ac-radius-sm: 12px;
+  --ac-radius-md: 18px;
+  --ac-radius-lg: 24px;
+  --ac-radius-pill: 50px;
+
+  /* Spacing scale */
+  --ac-space-1: 4px;
+  --ac-space-2: 8px;
+  --ac-space-3: 12px;
+  --ac-space-4: 16px;
+  --ac-space-6: 24px;
+
+  /* Shadows — heavy 3D stack reserved for primary/danger controls only */
+  --ac-shadow-stack: 0 5px 0 0 #bdaea0;
+  --ac-shadow-stack-hover: 0 6px 0 0 #bdaea0;
+  --ac-shadow-stack-active: 0 1px 0 0 #bdaea0;
+  --ac-shadow-soft: 0 2px 4px 0 rgba(61, 52, 40, 0.06);
+
+  /* Motion */
+  --ac-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ac-duration-fast: 0.15s;
+  --ac-duration-base: 0.25s;
+  --ac-duration-slow: 0.35s;
+
+  /* Focus rings — never blue */
+  --ac-focus-button: #19c8b9;
+  --ac-focus-input: #ffcc00;
+
+  /* Four-tier alert tones (renderer/status.js), each with a paired
+     "on" (icon/text) and "surface" (chip background) value. */
+  --ac-tone-ok: #6fba2c;
+  --ac-tone-ok-bg: #eef7e1;
+  --ac-tone-warning: #f5c31c;
+  --ac-tone-warning-bg: #fdf6df;
+  --ac-tone-critical: #e05a5a;
+  --ac-tone-critical-bg: #fbeaea;
+  --ac-tone-unobserved: #8a7b66;
+  --ac-tone-unobserved-bg: #efe9d8;
+
+  /* Typography */
+  --ac-font-display: 'Nunito', 'PingFang SC', -apple-system, sans-serif;
+}

@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'" />
 <title>Autome</title>
+<link rel="stylesheet" href="tokens.css" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -12,14 +13,20 @@
     "project" tab has real content, and even that is just the §9.3
     no-project empty state — there is no project.list-style read IPC yet
     (see nav.js), and no preload-exposed API to call it through even if
-    there were. The other 3 tabs render an honest "not yet implemented"
-    placeholder rather than pretending to be functional.
+    there were. The other 3 tabs render a designed empty state carrying
+    the real domain vocabulary rather than pretending to be functional.
   -->
   <header>
     <h1>Autome</h1>
-    <nav id="top-nav"></nav>
   </header>
+  <div id="exec-bar"></div>
+  <nav id="top-nav"></nav>
   <main id="panel"></main>
+  <script src="vocabulary.js"></script>
+  <script src="axis.js"></script>
+  <script src="status.js"></script>
+  <script src="exec-bar.js"></script>
+  <script src="state-catalog.js"></script>
   <script src="nav.js"></script>
   <script src="app.js"></script>
 </body>

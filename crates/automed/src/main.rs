@@ -4,16 +4,25 @@
 //! reserved exclusively for length-prefixed JSON-RPC frames read by
 //! Electron Main.
 //!
-//! This is the M0 thin slice: one aggregate (Run), one method
-//! (`run.advance_nominal`), no error-reply envelope yet (the plan has not
-//! yet specified one at the level of detail modeled so far) — malformed
-//! commands and dispatch failures are logged to stderr and the loop
-//! continues rather than crashing the process or fabricating a fake Event.
+//! Every `Command` read from stdin produces exactly one `Reply` frame,
+//! written before any `Event` frame it also produces — a caller waiting on
+//! a response never hangs, even when dispatch fails or the frame is not a
+//! valid `Command` at all (in which case `request_id`/`command_id` are
+//! unknown, so the `Reply` carries empty strings for both and the failure
+//! is also logged to stderr).
 
-use automed::dispatch::dispatch;
-use automed::ipc::{Command, read_frame, write_frame};
+use automed::dispatch::handle_command;
+use automed::ipc::{
+    Command, FrameError, Outbound, PROTOCOL_VERSION, Reply, ReplyErrorCode, ReplyOutcome,
+    read_frame, write_frame,
+};
 use automed::store::EventStore;
 use std::io;
+
+fn write_outbound(writer: &mut impl io::Write, outbound: &Outbound) -> Result<(), FrameError> {
+    let payload = serde_json::to_vec(outbound).expect("Outbound always serializes");
+    write_frame(writer, &payload)
+}
 
 /// Placeholder ceiling until plan §3.2's frame-size limit is configured
 /// from real environment/profile data.
@@ -56,26 +65,33 @@ fn main() {
             Ok(command) => command,
             Err(e) => {
                 tracing::error!(error = %e, "received a frame that is not a valid Command");
+                let reply = Reply {
+                    request_id: String::new(),
+                    command_id: String::new(),
+                    protocol_version: PROTOCOL_VERSION,
+                    outcome: ReplyOutcome::Error {
+                        code: ReplyErrorCode::InvalidParams,
+                        message: format!("frame is not a valid Command: {e}"),
+                    },
+                };
+                if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Reply(reply)) {
+                    tracing::error!(?e, "failed to write reply frame to stdout");
+                    break;
+                }
                 continue;
             }
         };
 
-        match dispatch(&mut store, &command) {
-            Ok(event) => {
-                let payload = serde_json::to_vec(&event).expect("Event always serializes");
-                if let Err(e) = write_frame(&mut stdout_lock, &payload) {
-                    tracing::error!(?e, "failed to write event frame to stdout");
-                    break;
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    request_id = %command.request_id,
-                    method = %command.method,
-                    ?e,
-                    "command dispatch failed"
-                );
-            }
+        let outcome = handle_command(&mut store, &command);
+        if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Reply(outcome.reply)) {
+            tracing::error!(?e, "failed to write reply frame to stdout");
+            break;
+        }
+        if let Some(event) = outcome.event
+            && let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Event(event))
+        {
+            tracing::error!(?e, "failed to write event frame to stdout");
+            break;
         }
     }
 }
