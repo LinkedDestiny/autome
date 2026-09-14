@@ -201,11 +201,12 @@ pub struct ModelSeparationViolation {
 
 /// Checks every required pair that currently has both sides routed. A step
 /// missing from the map entirely is not yet routed and is not this gate's
-/// concern (a separate schema-completeness check owns "all nine LoopStepIds
-/// must be routed before the Scheduler starts"). A step whose hash is
-/// `None` (unresolved alias) can never satisfy separation, so it always
-/// reports a violation for any pair it appears in — mirroring "该组合不能用
-/// 于分离门" rather than silently treating it as vacuously distinct.
+/// concern — `step_role::validate_step_schema` is the schema-completeness
+/// check that owns "all nine LoopStepIds must be routed before the
+/// Scheduler starts". A step whose hash is `None` (unresolved alias) can
+/// never satisfy separation, so it always reports a violation for any pair
+/// it appears in — mirroring "该组合不能用于分离门" rather than silently
+/// treating it as vacuously distinct.
 pub fn validate_model_separation(
     model_choice_key_hash_by_step: &HashMap<LoopStepId, Option<String>>,
 ) -> Vec<ModelSeparationViolation> {
