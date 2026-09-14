@@ -11,6 +11,7 @@ pub mod attempt;
 pub mod certificate;
 pub mod completion;
 pub mod contract;
+pub mod delivery;
 pub mod evidence;
 pub mod graph;
 pub mod model_selection;
