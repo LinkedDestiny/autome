@@ -8,3 +8,4 @@
 //! instead of accreting in `autome-domain`.
 
 pub mod ipc;
+pub mod store;
