@@ -1,16 +1,21 @@
 //! Narrow, mechanically-defined slice of the Codex adapter (plan §4.2, D8):
 //! a newline-delimited JSON-RPC 2.0 transport over `codex app-server`'s
-//! stdio, plus a single `probe_initialize` call built on it.
+//! stdio, plus `probe_initialize`/`probe_model_list`/`probe_account_read`
+//! built on it.
 //!
 //! Wire format confirmed empirically against the real `codex` binary
 //! (`codex-cli 0.153.4`): one JSON object per line on stdin/stdout, no
 //! `Content-Length` framing — unlike an LSP-style transport, a line *is* a
-//! message. This module models exactly that framing plus one request/
-//! response round trip; it deliberately does not implement `model/list`,
-//! `account/auth_status`, `thread/turn`, dynamic tools, sandboxed command
-//! execution, interrupt/resume, usage, or `ServerRequest` approval-deny
-//! handling (§4.2.1) — none of those have been probed against the real
-//! binary yet, and guessing their shape here would repeat the mistake
+//! message. Also confirmed empirically: `model/list` succeeds without any
+//! account configured, while `account/rateLimits/read` and
+//! `account/usage/read` return a JSON-RPC error (`-32600`) until logged in,
+//! and `account/read` itself answers `{"account": null, "requiresOpenaiAuth":
+//! true}` rather than erroring. This module models exactly the three probes
+//! above; it deliberately does not implement `account/rateLimits/read`,
+//! `account/usage/read`, `thread/turn`, dynamic tools, sandboxed command
+//! execution, interrupt/resume, or `ServerRequest` approval-deny handling
+//! (§4.2.1) — none of those have been probed against the real binary yet,
+//! and guessing their shape here would repeat the mistake
 //! `harness_probe.rs`'s module doc already warns against.
 //!
 //! D8 isolation this module is responsible for: `spawn` takes `codex_home`
@@ -246,6 +251,45 @@ pub struct CodexInitializeResult {
     pub platform_os: Option<String>,
 }
 
+/// Spawns `codex_binary app-server` under `codex_home` and performs the
+/// `initialize` handshake, leaving the transport open for one more call.
+/// Empirically, `codex app-server` (`codex-cli 0.153.4`) also emits an
+/// unsolicited `remoteControl/status/changed` notification somewhere around
+/// this handshake — real traffic the caller's next `request()` will see as
+/// `Unmatched` and correctly skip, not an error case.
+async fn spawn_initialized(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    timeout: Duration,
+) -> Result<(CodexTransport, CodexInitializeResult), CodexTransportError> {
+    let mut transport = CodexTransport::spawn(codex_binary, codex_home)?;
+    let params = serde_json::json!({
+        "clientInfo": {
+            "name": "autome",
+            "title": "Autome",
+            "version": env!("CARGO_PKG_VERSION"),
+        }
+    });
+    match transport.request("initialize", params, timeout).await {
+        Ok((result, _skipped)) => Ok((transport, parse_initialize_result(result))),
+        Err(err) => {
+            // `request()` already kills+reaps on its own Timeout path; the
+            // other error variants (malformed line, closed stdout, rpc
+            // error, ...) return with the child still alive, so this call
+            // still owns the kill here too — the same discipline
+            // `probe_initialize` used to apply unconditionally before this
+            // helper existed.
+            kill_and_reap(&mut transport).await;
+            Err(err)
+        }
+    }
+}
+
+async fn kill_and_reap(transport: &mut CodexTransport) {
+    let _ = transport.child.kill().await;
+    let _ = transport.child.wait().await;
+}
+
 /// Spawns `codex_binary app-server` under `codex_home` and performs a single
 /// `initialize` round trip, then kills the probe child — this is a
 /// stateless capability probe, not a long-lived session. Mirrors
@@ -255,22 +299,17 @@ pub async fn probe_initialize(
     codex_home: &OwnedDirGuard,
     timeout: Duration,
 ) -> Result<CodexInitializeResult, CodexTransportError> {
-    let mut transport = CodexTransport::spawn(codex_binary, codex_home)?;
-
-    let params = serde_json::json!({
-        "clientInfo": {
-            "name": "autome",
-            "title": "Autome",
-            "version": env!("CARGO_PKG_VERSION"),
+    match spawn_initialized(codex_binary, codex_home, timeout).await {
+        Ok((mut transport, initialize_result)) => {
+            kill_and_reap(&mut transport).await;
+            Ok(initialize_result)
         }
-    });
-    let request_result = transport.request("initialize", params, timeout).await;
+        Err(err) => Err(err),
+    }
+}
 
-    let _ = transport.child.kill().await;
-    let _ = transport.child.wait().await;
-
-    let (result, _skipped) = request_result?;
-    Ok(CodexInitializeResult {
+fn parse_initialize_result(result: Value) -> CodexInitializeResult {
+    CodexInitializeResult {
         user_agent: result
             .get("userAgent")
             .and_then(Value::as_str)
@@ -287,6 +326,86 @@ pub async fn probe_initialize(
             .get("platformOs")
             .and_then(Value::as_str)
             .map(str::to_string),
+    }
+}
+
+/// One entry from `model/list`'s `data` array. Only the fields this probe
+/// actually needs are modeled — the real response carries many more
+/// (`supportedReasoningEfforts`, `serviceTiers`, `inputModalities`, ...)
+/// that have no consumer yet and are deliberately left unparsed rather than
+/// guessed into a struct shape nothing uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexModelSummary {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub is_default: bool,
+}
+
+/// Spawns, initializes, and calls `model/list`, then kills the probe child.
+/// Empirically (`codex-cli 0.153.4`, no auth configured) this succeeds
+/// without any account being logged in — model listing is not
+/// authentication-gated the way `account/rateLimits/read` and
+/// `account/usage/read` are.
+pub async fn probe_model_list(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    timeout: Duration,
+) -> Result<Vec<CodexModelSummary>, CodexTransportError> {
+    let (mut transport, _initialize_result) =
+        spawn_initialized(codex_binary, codex_home, timeout).await?;
+
+    let request_result = transport.request("model/list", serde_json::json!({}), timeout).await;
+    kill_and_reap(&mut transport).await;
+    let (result, _skipped) = request_result?;
+
+    let entries = result.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            Some(CodexModelSummary {
+                id,
+                display_name: entry.get("displayName").and_then(Value::as_str).map(str::to_string),
+                is_default: entry.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .collect())
+}
+
+/// Result of `account/read`. Empirically (`codex-cli 0.153.4`, no auth
+/// configured), a logged-out server answers `{"account": null,
+/// "requiresOpenaiAuth": true}` rather than erroring — unlike
+/// `account/rateLimits/read`/`account/usage/read`, which do return a
+/// JSON-RPC error when unauthenticated. This probe only distinguishes
+/// logged-in vs. not; it does not parse the shape of a populated `account`
+/// object, which has not been observed against a real authenticated
+/// session yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAccountStatus {
+    pub authenticated: bool,
+    pub requires_openai_auth: bool,
+}
+
+/// Spawns, initializes, and calls `account/read`, then kills the probe
+/// child.
+pub async fn probe_account_read(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    timeout: Duration,
+) -> Result<CodexAccountStatus, CodexTransportError> {
+    let (mut transport, _initialize_result) =
+        spawn_initialized(codex_binary, codex_home, timeout).await?;
+
+    let request_result = transport.request("account/read", serde_json::json!({}), timeout).await;
+    kill_and_reap(&mut transport).await;
+    let (result, _skipped) = request_result?;
+
+    Ok(CodexAccountStatus {
+        authenticated: result.get("account").is_some_and(|v| !v.is_null()),
+        requires_openai_auth: result
+            .get("requiresOpenaiAuth")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -332,6 +451,50 @@ mod tests {
             "expected our clientInfo.name to be reflected in userAgent, got {:?}",
             result.user_agent
         );
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// Real-binary integration test: `model/list` succeeds without any
+    /// account configured and returns at least one model whose `id` is
+    /// non-empty and exactly one of them is marked `isDefault`.
+    #[tokio::test]
+    async fn probe_model_list_round_trips_against_the_real_codex_binary() {
+        let codex_home = real_codex_home();
+        let models = probe_model_list(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(!models.is_empty(), "expected at least one model");
+        assert!(models.iter().all(|m| !m.id.is_empty()));
+        assert_eq!(
+            models.iter().filter(|m| m.is_default).count(),
+            1,
+            "expected exactly one default model, got {models:?}"
+        );
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+    }
+
+    /// Real-binary integration test: `account/read` against a fresh,
+    /// never-logged-in `CODEX_HOME` reports `requiresOpenaiAuth: true` and
+    /// no authenticated account — this is the oracle a fresh sandboxed
+    /// `CODEX_HOME` should always produce, not a guess.
+    #[tokio::test]
+    async fn probe_account_read_round_trips_against_the_real_codex_binary() {
+        let codex_home = real_codex_home();
+        let status = probe_account_read(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        assert!(!status.authenticated, "a fresh CODEX_HOME must not already be authenticated");
+        assert!(status.requires_openai_auth);
         std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
     }
 
