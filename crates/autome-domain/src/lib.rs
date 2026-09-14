@@ -8,6 +8,8 @@
 //! through these reducers rather than mutating projections directly.
 
 pub mod completion;
+pub mod graph;
 pub mod node;
 pub mod project;
+pub mod requirement;
 pub mod run;
