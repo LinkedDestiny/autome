@@ -17,7 +17,10 @@
 //! `params.project_revision` (u32) and `params.original_request_ref`;
 //! `task.cancelled` takes no extra params; `task.run_terminal_applied`
 //! parses `params.run_terminal` (one of RunTerminal's variant names);
-//! `task.run_state_projected` parses `params.run_state` (a `RunState`).
+//! `task.run_state_projected` parses `params.run_state` (a `RunState`);
+//! `task.dispatch_state_projected` parses `params.dispatch_state` (one of
+//! `DispatchState`'s variant names) and an optional `params.queue_entry`
+//! (a `QueueEntry`, absent meaning `None`).
 //! ContractEvent has no parameterless variants either, so the three
 //! `contract.*` methods follow the same explicit pattern: `contract.created`
 //! parses `params.requirements` (`Vec<Requirement>`) and
@@ -41,7 +44,7 @@ use autome_domain::graph::{GraphEvent, GraphNode};
 use autome_domain::project::{ProjectEvent, ProjectState};
 use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
-use autome_domain::task::TaskEvent;
+use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
 
 #[derive(Debug)]
 pub enum DispatchError {
@@ -142,6 +145,19 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
             let run_state = parse_run_state(command)?;
             let appended = store
                 .append_task_event(&aggregate_id, TaskEvent::RunStateProjected { run_state })?;
+            return Ok(task_event_envelope(aggregate_id, appended));
+        }
+        "task.dispatch_state_projected" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let dispatch_state = parse_dispatch_state(command)?;
+            let queue_entry = parse_optional_queue_entry_param(command)?;
+            let appended = store.append_task_event(
+                &aggregate_id,
+                TaskEvent::DispatchStateProjected {
+                    dispatch_state,
+                    queue_entry,
+                },
+            )?;
             return Ok(task_event_envelope(aggregate_id, appended));
         }
         "contract.created" => {
@@ -408,6 +424,35 @@ fn parse_run_state(command: &Command) -> Result<RunState, DispatchError> {
     serde_json::from_value(value).map_err(|e| {
         DispatchError::InvalidParams(format!("params.run_state is not a valid RunState: {e}"))
     })
+}
+
+fn parse_dispatch_state(command: &Command) -> Result<DispatchState, DispatchError> {
+    match command
+        .params
+        .get("dispatch_state")
+        .and_then(|v| v.as_str())
+    {
+        Some("Queued") => Ok(DispatchState::Queued),
+        Some("Running") => Ok(DispatchState::Running),
+        Some("Waiting") => Ok(DispatchState::Waiting),
+        Some("None") => Ok(DispatchState::None),
+        _ => Err(DispatchError::InvalidParams(
+            "params.dispatch_state must be one of Queued|Running|Waiting|None".to_string(),
+        )),
+    }
+}
+
+fn parse_optional_queue_entry_param(
+    command: &Command,
+) -> Result<Option<QueueEntry>, DispatchError> {
+    match command.params.get("queue_entry").cloned() {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value).map(Some).map_err(|e| {
+            DispatchError::InvalidParams(format!(
+                "params.queue_entry is not a valid QueueEntry: {e}"
+            ))
+        }),
+    }
 }
 
 fn parse_requirements_param(command: &Command) -> Result<Vec<Requirement>, DispatchError> {
@@ -881,6 +926,78 @@ mod tests {
         );
         let err = dispatch(&mut store, &cmd).unwrap_err();
         assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_dispatch_state_projected_refreshes_dispatch_state_and_queue_entry() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.dispatch_state_projected",
+            json!({
+                "aggregate_id": "task-1",
+                "dispatch_state": "Queued",
+                "queue_entry": {
+                    "enqueued_event_seq": 3,
+                    "projected_position": 1,
+                    "blocked_by_task_id": "task-0",
+                },
+            }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "DispatchStateProjected");
+        let (_, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(state.dispatch_state, DispatchState::Queued);
+        assert_eq!(
+            state.queue_entry.unwrap().blocked_by_task_id,
+            Some("task-0".to_string())
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_dispatch_state_projected_treats_a_missing_queue_entry_as_none() {
+        use autome_domain::task::DispatchState;
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.dispatch_state_projected",
+            json!({ "aggregate_id": "task-1", "dispatch_state": "Running" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "DispatchStateProjected");
+        let (_, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(state.dispatch_state, DispatchState::Running);
+        assert!(state.queue_entry.is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_dispatch_state_projected_rejects_an_unknown_dispatch_state_string() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.dispatch_state_projected",
+            json!({ "aggregate_id": "task-1", "dispatch_state": "sideways" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_dispatch_state_projected_on_a_never_created_task_surfaces_as_task_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "task.dispatch_state_projected",
+            json!({ "aggregate_id": "task-1", "dispatch_state": "None" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::TaskStore(_)));
         std::fs::remove_file(&path).ok();
     }
 

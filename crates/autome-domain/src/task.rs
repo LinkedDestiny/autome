@@ -140,6 +140,21 @@ pub fn project_run_state(mut task: Task, run_state: RunState) -> Task {
     task
 }
 
+/// Refreshes `dispatch_state`/`queue_entry` from the global
+/// `execution_queue::ExecutionQueue`'s view of this Task. Pure projection,
+/// mirrors `project_run_state` — does not touch `lifecycle` or
+/// `status_projection`, and does not itself decide queue placement (that is
+/// `execution_queue`'s job; this function only records the result).
+pub fn project_dispatch_state(
+    mut task: Task,
+    dispatch_state: DispatchState,
+    queue_entry: Option<QueueEntry>,
+) -> Task {
+    task.dispatch_state = dispatch_state;
+    task.queue_entry = queue_entry;
+    task
+}
+
 /// Every event this module's event-sourced Task aggregate can replay.
 /// `apply` below is a thin dispatcher onto the pure functions already
 /// defined above (`create_task`/`cancel_task`/`apply_run_terminal_to_task`/
@@ -161,6 +176,10 @@ pub enum TaskEvent {
     },
     RunStateProjected {
         run_state: RunState,
+    },
+    DispatchStateProjected {
+        dispatch_state: DispatchState,
+        queue_entry: Option<QueueEntry>,
     },
 }
 
@@ -210,6 +229,13 @@ pub fn apply(state: Option<Task>, event: TaskEvent) -> Result<Task, TaskEventErr
         TaskEvent::RunStateProjected { run_state } => {
             let task = state.ok_or(TaskEventError::NotYetCreated)?;
             Ok(project_run_state(task, run_state))
+        }
+        TaskEvent::DispatchStateProjected {
+            dispatch_state,
+            queue_entry,
+        } => {
+            let task = state.ok_or(TaskEventError::NotYetCreated)?;
+            Ok(project_dispatch_state(task, dispatch_state, queue_entry))
         }
     }
 }
@@ -461,5 +487,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(task.status_projection.phase, RunPhase::Executing);
+    }
+
+    #[test]
+    fn dispatch_state_is_refreshed_by_direct_projection() {
+        let task = project_dispatch_state(
+            active_task(),
+            DispatchState::Queued,
+            Some(QueueEntry {
+                enqueued_event_seq: 7,
+                projected_position: 2,
+                blocked_by_task_id: Some("task-0".to_string()),
+            }),
+        );
+        assert_eq!(task.dispatch_state, DispatchState::Queued);
+        assert_eq!(
+            task.queue_entry,
+            Some(QueueEntry {
+                enqueued_event_seq: 7,
+                projected_position: 2,
+                blocked_by_task_id: Some("task-0".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn apply_dispatch_state_projected_refreshes_dispatch_state_without_touching_lifecycle() {
+        let task = apply(None, created_event()).unwrap();
+        let task = apply(
+            Some(task),
+            TaskEvent::DispatchStateProjected {
+                dispatch_state: DispatchState::Running,
+                queue_entry: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(task.dispatch_state, DispatchState::Running);
+        assert!(task.queue_entry.is_none());
+        assert_eq!(task.lifecycle, TaskLifecycle::Draft);
+    }
+
+    #[test]
+    fn apply_dispatch_state_projected_on_none_state_is_rejected() {
+        let err = apply(
+            None,
+            TaskEvent::DispatchStateProjected {
+                dispatch_state: DispatchState::None,
+                queue_entry: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, TaskEventError::NotYetCreated);
     }
 }

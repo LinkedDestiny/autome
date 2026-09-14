@@ -822,6 +822,7 @@ fn task_event_type_name(event: &TaskEvent) -> &'static str {
         TaskEvent::Cancelled => "Cancelled",
         TaskEvent::RunTerminalApplied { .. } => "RunTerminalApplied",
         TaskEvent::RunStateProjected { .. } => "RunStateProjected",
+        TaskEvent::DispatchStateProjected { .. } => "DispatchStateProjected",
     }
 }
 
@@ -1113,6 +1114,37 @@ mod tests {
         let (revision, _) = store.load_task_state("task-1").unwrap().unwrap();
         assert_eq!(revision, 2);
         assert_eq!(store.event_count("task-1"), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn dispatch_state_projected_updates_task_dispatch_state_and_queue_entry() {
+        use autome_domain::task::{DispatchState, QueueEntry};
+
+        let path = temp_db_path("dispatch-state-projected");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_task_event("task-1", task_created_event())
+            .unwrap();
+        let appended = store
+            .append_task_event(
+                "task-1",
+                TaskEvent::DispatchStateProjected {
+                    dispatch_state: DispatchState::Queued,
+                    queue_entry: Some(QueueEntry {
+                        enqueued_event_seq: 3,
+                        projected_position: 1,
+                        blocked_by_task_id: Some("task-0".to_string()),
+                    }),
+                },
+            )
+            .unwrap();
+        assert_eq!(appended.event_type, "DispatchStateProjected");
+        assert_eq!(appended.state.dispatch_state, DispatchState::Queued);
+        assert_eq!(
+            appended.state.queue_entry.unwrap().blocked_by_task_id,
+            Some("task-0".to_string())
+        );
         std::fs::remove_file(&path).ok();
     }
 
