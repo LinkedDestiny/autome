@@ -13,6 +13,7 @@ pub mod completion;
 pub mod contract;
 pub mod evidence;
 pub mod graph;
+pub mod model_selection;
 pub mod node;
 pub mod project;
 pub mod readiness;
