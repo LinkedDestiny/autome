@@ -10,6 +10,7 @@
 //! in-memory cache that could diverge from what was actually committed.
 
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
+use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
 use autome_domain::project::{self, ProjectEvent, ProjectState};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
@@ -67,6 +68,18 @@ impl From<rusqlite::Error> for ContractAppendError {
     }
 }
 
+#[derive(Debug)]
+pub enum GraphAppendError {
+    Sql(rusqlite::Error),
+    Transition(GraphEventError),
+}
+
+impl From<rusqlite::Error> for GraphAppendError {
+    fn from(value: rusqlite::Error) -> Self {
+        GraphAppendError::Sql(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendedProjectEvent {
     pub seq: i64,
@@ -98,6 +111,17 @@ pub struct AppendedContractEvent {
     pub event_type: &'static str,
     pub occurred_at: String,
     pub state: TaskContract,
+}
+
+/// Mirrors `AppendedContractEvent`; see its doc comment.
+#[derive(Debug, Clone)]
+pub struct AppendedGraphEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub revision: u64,
+    pub event_type: &'static str,
+    pub occurred_at: String,
+    pub state: TaskGraph,
 }
 
 /// Everything an IPC dispatcher needs to build an outgoing `Event` envelope
@@ -163,6 +187,12 @@ impl EventStore {
                 aggregate_id TEXT PRIMARY KEY,
                 revision INTEGER NOT NULL,
                 status TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                state_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS graph_projections (
+                aggregate_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
                 version INTEGER NOT NULL,
                 state_json TEXT NOT NULL
             );
@@ -614,6 +644,115 @@ impl EventStore {
         })
     }
 
+    /// Loads the current projected (revision, TaskGraph) for an aggregate,
+    /// or `None` if it has never been created — mirrors
+    /// `load_contract_state`.
+    pub fn load_graph_state(
+        &self,
+        aggregate_id: &str,
+    ) -> rusqlite::Result<Option<(u64, TaskGraph)>> {
+        self.conn
+            .query_row(
+                "SELECT revision, state_json FROM graph_projections WHERE aggregate_id = ?1",
+                params![aggregate_id],
+                |row| {
+                    let revision: i64 = row.get(0)?;
+                    let state_json: String = row.get(1)?;
+                    Ok((revision, state_json))
+                },
+            )
+            .optional()?
+            .map(|(revision, state_json)| {
+                let state: TaskGraph = serde_json::from_str(&state_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                Ok((revision as u64, state))
+            })
+            .transpose()
+    }
+
+    /// Applies `event` to the current state of `aggregate_id`, and — in a
+    /// single transaction — appends the event and updates the projection.
+    /// Mirrors `append_contract_event`; the projection has no `status`
+    /// column since `TaskGraph` has no status field (see `graph::apply`'s
+    /// doc comment).
+    pub fn append_graph_event(
+        &mut self,
+        aggregate_id: &str,
+        event: GraphEvent,
+    ) -> Result<AppendedGraphEvent, GraphAppendError> {
+        let tx = self.conn.transaction()?;
+
+        let (revision, current_state) = {
+            let loaded = tx
+                .query_row(
+                    "SELECT revision, state_json FROM graph_projections WHERE aggregate_id = ?1",
+                    params![aggregate_id],
+                    |row| {
+                        let revision: i64 = row.get(0)?;
+                        let state_json: String = row.get(1)?;
+                        Ok((revision, state_json))
+                    },
+                )
+                .optional()?;
+            match loaded {
+                Some((revision, state_json)) => {
+                    let state: TaskGraph = serde_json::from_str(&state_json).expect(
+                        "graph_projections.state_json is only ever written by this module as valid TaskGraph JSON",
+                    );
+                    (revision as u64, Some(state))
+                }
+                None => (0, None),
+            }
+        };
+
+        let event_type = graph_event_type_name(&event);
+        let payload = serde_json::to_string(&event).expect("GraphEvent always serializes");
+        let next_state =
+            graph::apply(current_state, event).map_err(GraphAppendError::Transition)?;
+        let next_revision = revision + 1;
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let recorded_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC3339 formatting of now_utc never fails");
+        let state_json = serde_json::to_string(&next_state).expect("TaskGraph always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'Graph', ?3, ?4, ?5, ?6)",
+            params![event_id, aggregate_id, next_revision as i64, event_type, payload, recorded_at],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO graph_projections (aggregate_id, revision, version, state_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(aggregate_id) DO UPDATE SET
+                revision = excluded.revision,
+                version = excluded.version,
+                state_json = excluded.state_json",
+            params![
+                aggregate_id,
+                next_revision as i64,
+                next_state.version,
+                state_json
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(AppendedGraphEvent {
+            seq,
+            event_id,
+            revision: next_revision,
+            event_type,
+            occurred_at: recorded_at,
+            state: next_state,
+        })
+    }
+
     #[cfg(test)]
     fn event_count(&self, aggregate_id: &str) -> i64 {
         self.conn
@@ -691,6 +830,13 @@ fn contract_event_type_name(event: &ContractEvent) -> &'static str {
         ContractEvent::Created { .. } => "Created",
         ContractEvent::Frozen => "Frozen",
         ContractEvent::Amended { .. } => "Amended",
+    }
+}
+
+fn graph_event_type_name(event: &GraphEvent) -> &'static str {
+    match event {
+        GraphEvent::Created { .. } => "Created",
+        GraphEvent::Replaced { .. } => "Replaced",
     }
 }
 
@@ -1005,8 +1151,8 @@ mod tests {
     }
 
     #[test]
-    fn run_project_task_and_contract_aggregates_share_the_events_table_without_colliding() {
-        let path = temp_db_path("shared-events-table-four-way");
+    fn run_project_task_contract_and_graph_aggregates_share_the_events_table_without_colliding() {
+        let path = temp_db_path("shared-events-table-five-way");
         let mut store = EventStore::open(&path).unwrap();
         store
             .append_run_event("same-id", RunEvent::AdvanceNominal)
@@ -1020,10 +1166,14 @@ mod tests {
         store
             .append_contract_event("same-id", contract_created_event())
             .unwrap();
+        store
+            .append_graph_event("same-id", graph_created_event())
+            .unwrap();
         assert!(store.load_run_state("same-id").unwrap().is_some());
         assert!(store.load_project_state("same-id").unwrap().is_some());
         assert!(store.load_task_state("same-id").unwrap().is_some());
         assert!(store.load_contract_state("same-id").unwrap().is_some());
+        assert!(store.load_graph_state("same-id").unwrap().is_some());
         std::fs::remove_file(&path).ok();
     }
 
@@ -1138,6 +1288,122 @@ mod tests {
         let (revision, state) = reopened.load_contract_state("contract-1").unwrap().unwrap();
         assert_eq!(revision, 2);
         assert_eq!(state.status, ContractStatus::Frozen);
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn graph_created_event() -> GraphEvent {
+        GraphEvent::Created {
+            id: "graph-1".to_string(),
+            contract_ref: "contract-1".to_string(),
+            graph_hash: "hash-1".to_string(),
+            nodes: vec![autome_domain::graph::GraphNode {
+                id: autome_domain::graph::NodeId("N-1".into()),
+                kind: "generic".into(),
+                purpose: autome_domain::graph::NodePurpose::Business,
+                title: "do the thing".into(),
+                requirement_ids: vec![autome_domain::requirement::RequirementId("R-001".into())],
+                acceptance_check_ids: vec![autome_domain::requirement::CheckId("C-001".into())],
+                depends_on: vec![],
+                expected_outputs: vec!["artifact-1".into()],
+                write_scope: vec!["src/lib.rs".into()],
+                risk_level: autome_domain::graph::RiskLevel::Low,
+                estimated_budget: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn unknown_graph_aggregate_has_no_projection() {
+        let path = temp_db_path("unknown-graph-aggregate");
+        let store = EventStore::open(&path).unwrap();
+        assert!(store.load_graph_state("graph-1").unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_legal_graph_event_creates_revision_one() {
+        let path = temp_db_path("first-graph-event");
+        let mut store = EventStore::open(&path).unwrap();
+        let appended = store
+            .append_graph_event("graph-1", graph_created_event())
+            .unwrap();
+        assert_eq!(appended.state.version, 1);
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "Created");
+        let (revision, loaded) = store.load_graph_state("graph-1").unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(loaded, appended.state);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn sequential_graph_events_advance_revision_and_state() {
+        let path = temp_db_path("sequential-graph");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_graph_event("graph-1", graph_created_event())
+            .unwrap();
+        let second = store
+            .append_graph_event(
+                "graph-1",
+                GraphEvent::Replaced {
+                    graph_hash: "hash-2".to_string(),
+                    nodes: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(second.state.version, 2);
+        assert_eq!(second.state.graph_hash, "hash-2");
+        assert!(second.state.nodes.is_empty());
+        assert_eq!(second.event_type, "Replaced");
+        let (revision, _) = store.load_graph_state("graph-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(store.event_count("graph-1"), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn illegal_graph_transition_writes_nothing() {
+        let path = temp_db_path("illegal-graph");
+        let mut store = EventStore::open(&path).unwrap();
+        let err = store
+            .append_graph_event(
+                "graph-1",
+                GraphEvent::Replaced {
+                    graph_hash: "hash-2".to_string(),
+                    nodes: vec![],
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, GraphAppendError::Transition(_)));
+        assert!(store.load_graph_state("graph-1").unwrap().is_none());
+        assert_eq!(store.event_count("graph-1"), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_state_survives_reconnect() {
+        let path = temp_db_path("graph-reconnect");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            store
+                .append_graph_event("graph-1", graph_created_event())
+                .unwrap();
+            store
+                .append_graph_event(
+                    "graph-1",
+                    GraphEvent::Replaced {
+                        graph_hash: "hash-2".to_string(),
+                        nodes: vec![],
+                    },
+                )
+                .unwrap();
+        }
+        let reopened = EventStore::open(&path).unwrap();
+        let (revision, state) = reopened.load_graph_state("graph-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(state.version, 2);
+        assert_eq!(state.graph_hash, "hash-2");
         std::fs::remove_file(&path).ok();
     }
 }
