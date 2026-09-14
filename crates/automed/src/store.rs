@@ -9,6 +9,7 @@
 //! exercised directly by `state_survives_reconnect` below: there is no
 //! in-memory cache that could diverge from what was actually committed.
 
+use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
 use autome_domain::project::{self, ProjectEvent, ProjectState};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
@@ -54,6 +55,18 @@ impl From<rusqlite::Error> for TaskAppendError {
     }
 }
 
+#[derive(Debug)]
+pub enum ContractAppendError {
+    Sql(rusqlite::Error),
+    Transition(ContractEventError),
+}
+
+impl From<rusqlite::Error> for ContractAppendError {
+    fn from(value: rusqlite::Error) -> Self {
+        ContractAppendError::Sql(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendedProjectEvent {
     pub seq: i64,
@@ -74,6 +87,17 @@ pub struct AppendedTaskEvent {
     pub event_type: &'static str,
     pub occurred_at: String,
     pub state: Task,
+}
+
+/// Mirrors `AppendedTaskEvent`; see its doc comment.
+#[derive(Debug, Clone)]
+pub struct AppendedContractEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub revision: u64,
+    pub event_type: &'static str,
+    pub occurred_at: String,
+    pub state: TaskContract,
 }
 
 /// Everything an IPC dispatcher needs to build an outgoing `Event` envelope
@@ -133,6 +157,13 @@ impl EventStore {
                 aggregate_id TEXT PRIMARY KEY,
                 revision INTEGER NOT NULL,
                 lifecycle TEXT NOT NULL,
+                state_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS contract_projections (
+                aggregate_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                version INTEGER NOT NULL,
                 state_json TEXT NOT NULL
             );
             ",
@@ -471,6 +502,118 @@ impl EventStore {
         })
     }
 
+    /// Loads the current projected (revision, TaskContract) for an
+    /// aggregate, or `None` if it has never been created — mirrors
+    /// `load_task_state`.
+    pub fn load_contract_state(
+        &self,
+        aggregate_id: &str,
+    ) -> rusqlite::Result<Option<(u64, TaskContract)>> {
+        self.conn
+            .query_row(
+                "SELECT revision, state_json FROM contract_projections WHERE aggregate_id = ?1",
+                params![aggregate_id],
+                |row| {
+                    let revision: i64 = row.get(0)?;
+                    let state_json: String = row.get(1)?;
+                    Ok((revision, state_json))
+                },
+            )
+            .optional()?
+            .map(|(revision, state_json)| {
+                let state: TaskContract = serde_json::from_str(&state_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                Ok((revision as u64, state))
+            })
+            .transpose()
+    }
+
+    /// Applies `event` to the current state of `aggregate_id`, and — in a
+    /// single transaction — appends the event and updates the projection.
+    /// Mirrors `append_task_event`; the only structural difference is the
+    /// projection's scalar columns (`status`/`version` instead of
+    /// `lifecycle`).
+    pub fn append_contract_event(
+        &mut self,
+        aggregate_id: &str,
+        event: ContractEvent,
+    ) -> Result<AppendedContractEvent, ContractAppendError> {
+        let tx = self.conn.transaction()?;
+
+        let (revision, current_state) = {
+            let loaded = tx
+                .query_row(
+                    "SELECT revision, state_json FROM contract_projections WHERE aggregate_id = ?1",
+                    params![aggregate_id],
+                    |row| {
+                        let revision: i64 = row.get(0)?;
+                        let state_json: String = row.get(1)?;
+                        Ok((revision, state_json))
+                    },
+                )
+                .optional()?;
+            match loaded {
+                Some((revision, state_json)) => {
+                    let state: TaskContract = serde_json::from_str(&state_json).expect(
+                        "contract_projections.state_json is only ever written by this module as valid TaskContract JSON",
+                    );
+                    (revision as u64, Some(state))
+                }
+                None => (0, None),
+            }
+        };
+
+        let event_type = contract_event_type_name(&event);
+        let payload = serde_json::to_string(&event).expect("ContractEvent always serializes");
+        let next_state =
+            contract::apply(current_state, event).map_err(ContractAppendError::Transition)?;
+        let next_revision = revision + 1;
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let recorded_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC3339 formatting of now_utc never fails");
+        let state_json =
+            serde_json::to_string(&next_state).expect("TaskContract always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'Contract', ?3, ?4, ?5, ?6)",
+            params![event_id, aggregate_id, next_revision as i64, event_type, payload, recorded_at],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO contract_projections (aggregate_id, revision, status, version, state_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(aggregate_id) DO UPDATE SET
+                revision = excluded.revision,
+                status = excluded.status,
+                version = excluded.version,
+                state_json = excluded.state_json",
+            params![
+                aggregate_id,
+                next_revision as i64,
+                format!("{:?}", next_state.status),
+                next_state.version.0,
+                state_json
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(AppendedContractEvent {
+            seq,
+            event_id,
+            revision: next_revision,
+            event_type,
+            occurred_at: recorded_at,
+            state: next_state,
+        })
+    }
+
     #[cfg(test)]
     fn event_count(&self, aggregate_id: &str) -> i64 {
         self.conn
@@ -540,6 +683,14 @@ fn task_event_type_name(event: &TaskEvent) -> &'static str {
         TaskEvent::Cancelled => "Cancelled",
         TaskEvent::RunTerminalApplied { .. } => "RunTerminalApplied",
         TaskEvent::RunStateProjected { .. } => "RunStateProjected",
+    }
+}
+
+fn contract_event_type_name(event: &ContractEvent) -> &'static str {
+    match event {
+        ContractEvent::Created { .. } => "Created",
+        ContractEvent::Frozen => "Frozen",
+        ContractEvent::Amended { .. } => "Amended",
     }
 }
 
@@ -854,8 +1005,8 @@ mod tests {
     }
 
     #[test]
-    fn run_project_and_task_aggregates_share_the_events_table_without_colliding() {
-        let path = temp_db_path("shared-events-table-three-way");
+    fn run_project_task_and_contract_aggregates_share_the_events_table_without_colliding() {
+        let path = temp_db_path("shared-events-table-four-way");
         let mut store = EventStore::open(&path).unwrap();
         store
             .append_run_event("same-id", RunEvent::AdvanceNominal)
@@ -866,9 +1017,127 @@ mod tests {
         store
             .append_task_event("same-id", task_created_event())
             .unwrap();
+        store
+            .append_contract_event("same-id", contract_created_event())
+            .unwrap();
         assert!(store.load_run_state("same-id").unwrap().is_some());
         assert!(store.load_project_state("same-id").unwrap().is_some());
         assert!(store.load_task_state("same-id").unwrap().is_some());
+        assert!(store.load_contract_state("same-id").unwrap().is_some());
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn contract_created_event() -> ContractEvent {
+        ContractEvent::Created {
+            id: "contract-1".to_string(),
+            content_hash: "hash-1".to_string(),
+            requirements: vec![autome_domain::requirement::Requirement {
+                id: autome_domain::requirement::RequirementId("R-001".into()),
+                statement: "does something".into(),
+                kind: autome_domain::requirement::RequirementKind::Functional,
+                necessity: autome_domain::requirement::Necessity::Must,
+                source_anchors: vec![autome_domain::requirement::SourceAnchor {
+                    anchor_ref: "raw_text:0-10".into(),
+                }],
+                acceptance_logic: autome_domain::requirement::AllOf,
+                acceptance_check_ids: vec![autome_domain::requirement::CheckId("C-001".into())],
+                delivery_spec: None,
+                risk_level: autome_domain::requirement::RiskLevel::Low,
+                superseded_by: None,
+            }],
+            acceptance_checks: vec![autome_domain::contract::AcceptanceCheck {
+                id: autome_domain::requirement::CheckId("C-001".into()),
+                kind: autome_domain::contract::CheckKind::Process,
+                requirement_id: autome_domain::requirement::RequirementId("R-001".into()),
+                mandatory: true,
+                expected_observation: "exit code 0".into(),
+                negative_scenario: "non-zero exit".into(),
+                required_environment_level: "base".into(),
+                isolation_policy: "worktree".into(),
+                repeat_policy: "once".into(),
+                inventory_policy: "track".into(),
+                freshness_policy: "must-be-current".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn unknown_contract_aggregate_has_no_projection() {
+        let path = temp_db_path("unknown-contract-aggregate");
+        let store = EventStore::open(&path).unwrap();
+        assert!(store.load_contract_state("contract-1").unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_legal_contract_event_creates_revision_one() {
+        use autome_domain::contract::ContractStatus;
+
+        let path = temp_db_path("first-contract-event");
+        let mut store = EventStore::open(&path).unwrap();
+        let appended = store
+            .append_contract_event("contract-1", contract_created_event())
+            .unwrap();
+        assert_eq!(appended.state.status, ContractStatus::Draft);
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "Created");
+        let (revision, loaded) = store.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(loaded, appended.state);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn sequential_contract_events_advance_revision_and_state() {
+        use autome_domain::contract::ContractStatus;
+
+        let path = temp_db_path("sequential-contract");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_contract_event("contract-1", contract_created_event())
+            .unwrap();
+        let second = store
+            .append_contract_event("contract-1", ContractEvent::Frozen)
+            .unwrap();
+        assert_eq!(second.state.status, ContractStatus::Frozen);
+        assert_eq!(second.event_type, "Frozen");
+        let (revision, _) = store.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(store.event_count("contract-1"), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn illegal_contract_transition_writes_nothing() {
+        let path = temp_db_path("illegal-contract");
+        let mut store = EventStore::open(&path).unwrap();
+        let err = store
+            .append_contract_event("contract-1", ContractEvent::Frozen)
+            .unwrap_err();
+        assert!(matches!(err, ContractAppendError::Transition(_)));
+        assert!(store.load_contract_state("contract-1").unwrap().is_none());
+        assert_eq!(store.event_count("contract-1"), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_state_survives_reconnect() {
+        use autome_domain::contract::ContractStatus;
+
+        let path = temp_db_path("contract-reconnect");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            store
+                .append_contract_event("contract-1", contract_created_event())
+                .unwrap();
+            store
+                .append_contract_event("contract-1", ContractEvent::Frozen)
+                .unwrap();
+        }
+        let reopened = EventStore::open(&path).unwrap();
+        let (revision, state) = reopened.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(state.status, ContractStatus::Frozen);
         std::fs::remove_file(&path).ok();
     }
 }
