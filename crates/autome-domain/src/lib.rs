@@ -19,3 +19,4 @@ pub mod project;
 pub mod readiness;
 pub mod requirement;
 pub mod run;
+pub mod skill;
