@@ -7,5 +7,6 @@
 //! (SQLite schema, IPC framing, Codex adapter) has a real place to land
 //! instead of accreting in `autome-domain`.
 
+pub mod dispatch;
 pub mod ipc;
 pub mod store;

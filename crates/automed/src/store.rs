@@ -28,6 +28,21 @@ impl From<rusqlite::Error> for AppendError {
     }
 }
 
+/// Everything an IPC dispatcher needs to build an outgoing `Event` envelope
+/// after a successful append: the globally monotonic `seq` (the events
+/// table's own rowid — already unique and ordered across every aggregate),
+/// the per-aggregate `revision`, the event's own id/type/timestamp, and the
+/// resulting projected state.
+#[derive(Debug, Clone)]
+pub struct AppendedRunEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub revision: u64,
+    pub event_type: &'static str,
+    pub occurred_at: String,
+    pub state: RunState,
+}
+
 impl EventStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
@@ -99,7 +114,7 @@ impl EventStore {
         &mut self,
         aggregate_id: &str,
         event: RunEvent,
-    ) -> Result<RunState, AppendError> {
+    ) -> Result<AppendedRunEvent, AppendError> {
         let tx = self.conn.transaction()?;
 
         let (revision, current_state) = {
@@ -140,6 +155,7 @@ impl EventStore {
              VALUES (?1, ?2, 'Run', ?3, ?4, ?5, ?6)",
             params![event_id, aggregate_id, next_revision as i64, event_type, payload, recorded_at],
         )?;
+        let seq = tx.last_insert_rowid();
         tx.execute(
             "INSERT INTO run_projections (aggregate_id, revision, phase, hold, terminal, state_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -160,7 +176,14 @@ impl EventStore {
         )?;
 
         tx.commit()?;
-        Ok(next_state)
+        Ok(AppendedRunEvent {
+            seq,
+            event_id,
+            revision: next_revision,
+            event_type,
+            occurred_at: recorded_at,
+            state: next_state,
+        })
     }
 
     #[cfg(test)]
@@ -233,13 +256,16 @@ mod tests {
     fn first_legal_event_creates_revision_one() {
         let path = temp_db_path("first-event");
         let mut store = EventStore::open(&path).unwrap();
-        let state = store
+        let appended = store
             .append_run_event("run-1", RunEvent::AdvanceNominal)
             .unwrap();
-        assert_eq!(state.phase, RunPhase::ResolvingProjectContext);
+        assert_eq!(appended.state.phase, RunPhase::ResolvingProjectContext);
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "AdvanceNominal");
+        assert_eq!(appended.seq, 1);
         let (revision, loaded) = store.load_run_state("run-1").unwrap().unwrap();
         assert_eq!(revision, 1);
-        assert_eq!(loaded, state);
+        assert_eq!(loaded, appended.state);
         std::fs::remove_file(&path).ok();
     }
 
@@ -247,13 +273,14 @@ mod tests {
     fn sequential_events_advance_revision_and_state() {
         let path = temp_db_path("sequential");
         let mut store = EventStore::open(&path).unwrap();
-        store
+        let first = store
             .append_run_event("run-1", RunEvent::AdvanceNominal)
             .unwrap();
-        let state = store
+        let second = store
             .append_run_event("run-1", RunEvent::AdvanceNominal)
             .unwrap();
-        assert_eq!(state.phase, RunPhase::DiscoveringFacts);
+        assert_eq!(second.state.phase, RunPhase::DiscoveringFacts);
+        assert_eq!(second.seq, first.seq + 1);
         let (revision, _) = store.load_run_state("run-1").unwrap().unwrap();
         assert_eq!(revision, 2);
         assert_eq!(store.event_count("run-1"), 2);
