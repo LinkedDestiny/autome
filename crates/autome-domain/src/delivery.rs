@@ -40,6 +40,15 @@ pub enum DeliverySubject {
     Greenfield(GreenfieldDelivery),
 }
 
+impl DeliverySubject {
+    pub fn identity_hash(&self) -> &str {
+        match self {
+            DeliverySubject::ExistingRepo(d) => &d.repository_identity_hash,
+            DeliverySubject::Greenfield(d) => &d.parent_directory_identity_hash,
+        }
+    }
+}
+
 /// §5.12: "`CandidateCertificate` 的 candidate envelope 为 ... 其后
 /// ...才使用 ... delivery envelope" — two distinct envelope shapes rather
 /// than one self-referential signed envelope for everything.
@@ -168,6 +177,14 @@ impl DeliveryChain {
         &self.subject
     }
 
+    pub fn rehearsal(&self) -> Option<&DeliveryRehearsalReceipt> {
+        self.rehearsal.as_ref()
+    }
+
+    pub fn approval(&self) -> Option<&DeliveryApprovalReceipt> {
+        self.approval.as_ref()
+    }
+
     pub fn append_rehearsal(&mut self, receipt: DeliveryRehearsalReceipt) {
         self.rehearsal = Some(receipt);
     }
@@ -257,6 +274,42 @@ impl DeliveryChain {
         }
         Ok(())
     }
+}
+
+/// §8.1: "用户批准的不是抽象合并，而是 candidate_tree + delivery_tree +
+/// target_identity + target_head/destination + required_artifact_set/
+/// destinations + policy_revision。任一值变化都使批准和演练收据立即失效."
+/// This is the exact tuple a caller must re-derive from the *current*
+/// state of the world (fresh CandidateCertificate, current subject
+/// identity, current artifact plan) and hand to
+/// `approval_and_rehearsal_are_current` — mirroring the `is_current_against`
+/// pattern already used by `evidence.rs`/`readiness.rs`/`review.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryApprovalSubject {
+    pub candidate_tree_hash: String,
+    pub delivery_tree_hash: String,
+    pub target_identity_hash: String,
+    pub target_head_or_destination: String,
+    pub required_artifact_destinations: Vec<String>,
+    pub policy_revision: String,
+}
+
+/// Returns `false` if either receipt is missing, or if any bound field no
+/// longer matches `current` — there is deliberately no partial-match case;
+/// a single drifted field invalidates the whole binding, per §8.1.
+pub fn approval_and_rehearsal_are_current(
+    chain: &DeliveryChain,
+    current: &DeliveryApprovalSubject,
+) -> bool {
+    let (Some(rehearsal), Some(approval)) = (chain.rehearsal(), chain.approval()) else {
+        return false;
+    };
+    rehearsal.envelope.candidate_certificate_hash == current.candidate_tree_hash
+        && rehearsal.delivery_tree_hash == current.delivery_tree_hash
+        && chain.subject().identity_hash() == current.target_identity_hash
+        && approval.destination_or_new_ref == current.target_head_or_destination
+        && approval.artifact_destinations == current.required_artifact_destinations
+        && approval.envelope.policy_hash == current.policy_revision
 }
 
 #[cfg(test)]
@@ -467,5 +520,77 @@ mod tests {
             err,
             DeliveryChainError::ProjectTargetTransitionOnlyValidForGreenfieldSubject
         );
+    }
+
+    fn matching_approval_subject() -> DeliveryApprovalSubject {
+        DeliveryApprovalSubject {
+            candidate_tree_hash: "candidate-1".into(),
+            delivery_tree_hash: "tree-1".into(),
+            target_identity_hash: "repo-hash".into(),
+            target_head_or_destination: "refs/heads/delivered".into(),
+            required_artifact_destinations: vec![],
+            policy_revision: "policy-1".into(),
+        }
+    }
+
+    fn chain_with_rehearsal_and_approval() -> DeliveryChain {
+        let mut chain = DeliveryChain::new(existing_repo_subject());
+        chain.append_rehearsal(rehearsal());
+        chain.append_approval(approval()).unwrap();
+        chain
+    }
+
+    #[test]
+    fn approval_missing_rehearsal_or_approval_is_never_current() {
+        let empty = DeliveryChain::new(existing_repo_subject());
+        assert!(!approval_and_rehearsal_are_current(
+            &empty,
+            &matching_approval_subject()
+        ));
+
+        let mut only_rehearsal = DeliveryChain::new(existing_repo_subject());
+        only_rehearsal.append_rehearsal(rehearsal());
+        assert!(!approval_and_rehearsal_are_current(
+            &only_rehearsal,
+            &matching_approval_subject()
+        ));
+    }
+
+    #[test]
+    fn approval_matching_current_subject_in_every_field_is_current() {
+        let chain = chain_with_rehearsal_and_approval();
+        assert!(approval_and_rehearsal_are_current(
+            &chain,
+            &matching_approval_subject()
+        ));
+    }
+
+    #[test]
+    fn any_single_drifted_field_invalidates_the_binding() {
+        let chain = chain_with_rehearsal_and_approval();
+
+        let mut drifted = matching_approval_subject();
+        drifted.candidate_tree_hash = "other-candidate".into();
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
+
+        let mut drifted = matching_approval_subject();
+        drifted.delivery_tree_hash = "other-tree".into();
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
+
+        let mut drifted = matching_approval_subject();
+        drifted.target_identity_hash = "other-repo".into();
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
+
+        let mut drifted = matching_approval_subject();
+        drifted.target_head_or_destination = "refs/heads/other".into();
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
+
+        let mut drifted = matching_approval_subject();
+        drifted.required_artifact_destinations = vec!["extra-artifact".into()];
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
+
+        let mut drifted = matching_approval_subject();
+        drifted.policy_revision = "other-policy".into();
+        assert!(!approval_and_rehearsal_are_current(&chain, &drifted));
     }
 }
