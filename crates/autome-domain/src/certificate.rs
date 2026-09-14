@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::delivery::{DeliveryChain, DeliveryChainError};
 use crate::evidence::ReceiptId;
 use crate::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use crate::requirement::RequirementId;
@@ -160,15 +161,14 @@ pub struct CompletionCertificate {
     pub contract_version: u32,
     pub candidate_commit: String,
     pub candidate_tree_hash: String,
-    pub delivery_destination_ref: String,
-    pub delivery_commit: String,
+    pub delivery_subject: crate::delivery::DeliverySubject,
     pub delivery_tree_hash: String,
     pub user_approval_decision_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionCertificateError {
-    DeliveryNotConfirmed,
+    DeliveryChainNotReady(DeliveryChainError),
     MissingUserApprovalDecision,
 }
 
@@ -177,17 +177,22 @@ pub enum CompletionCertificateError {
 /// `CompletionCertificate`, and it can only be called *with* an already
 /// issued `CandidateCertificate` (never with raw evidence/verdicts) plus
 /// proof delivery actually happened and the user approved it.
+///
+/// Plan §5.12 cross-cutting rule: "proof delivery actually happened" means
+/// the caller's `DeliveryChain` must itself already satisfy
+/// `is_ready_for_completion()` — a matching DeliveredTreeCheckReceipt, and
+/// (for a Greenfield subject) an already-appended
+/// ProjectTargetTransitionReceipt. There is no boolean shortcut that lets a
+/// caller assert delivery happened without the chain itself agreeing.
 pub fn issue_completion_certificate(
     candidate: &CandidateCertificate,
-    delivery_confirmed: bool,
-    delivery_destination_ref: &str,
-    delivery_commit: &str,
+    delivery: &DeliveryChain,
     delivery_tree_hash: &str,
     user_approval_decision_ref: &str,
 ) -> Result<CompletionCertificate, CompletionCertificateError> {
-    if !delivery_confirmed {
-        return Err(CompletionCertificateError::DeliveryNotConfirmed);
-    }
+    delivery
+        .is_ready_for_completion()
+        .map_err(CompletionCertificateError::DeliveryChainNotReady)?;
     if user_approval_decision_ref.trim().is_empty() {
         return Err(CompletionCertificateError::MissingUserApprovalDecision);
     }
@@ -195,8 +200,7 @@ pub fn issue_completion_certificate(
         contract_version: candidate.contract_version,
         candidate_commit: candidate.candidate_commit.clone(),
         candidate_tree_hash: candidate.candidate_tree_hash.clone(),
-        delivery_destination_ref: delivery_destination_ref.to_string(),
-        delivery_commit: delivery_commit.to_string(),
+        delivery_subject: delivery.subject().clone(),
         delivery_tree_hash: delivery_tree_hash.to_string(),
         user_approval_decision_ref: user_approval_decision_ref.to_string(),
     })
@@ -430,26 +434,93 @@ mod tests {
         }
     }
 
+    fn delivery_subject() -> crate::delivery::DeliverySubject {
+        crate::delivery::DeliverySubject::ExistingRepo(crate::delivery::ExistingRepoDelivery {
+            repository_identity_hash: "repo-hash".into(),
+            target_head: "head".into(),
+            target_worktree_fingerprint: "wt-1".into(),
+            new_ref: "refs/heads/delivered".into(),
+        })
+    }
+
+    fn delivery_envelope() -> crate::delivery::DeliveryEnvelope {
+        crate::delivery::DeliveryEnvelope {
+            run_id: "run-1".into(),
+            contract_hash: "contract-1".into(),
+            candidate_certificate_hash: "candidate-1".into(),
+            policy_hash: "policy-1".into(),
+            nonce: "nonce-1".into(),
+            issued_at: "2026-09-14T00:00:00Z".into(),
+            receipt_digest: "digest-1".into(),
+        }
+    }
+
+    fn not_ready_delivery_chain() -> DeliveryChain {
+        DeliveryChain::new(delivery_subject())
+    }
+
+    fn ready_delivery_chain() -> DeliveryChain {
+        let mut chain = DeliveryChain::new(delivery_subject());
+        chain.append_rehearsal(crate::delivery::DeliveryRehearsalReceipt {
+            envelope: delivery_envelope(),
+            subject: delivery_subject(),
+            target_head_or_parent: "head".into(),
+            delivery_tree_hash: "tree-2".into(),
+            check_receipt_ids: vec!["check-1".into()],
+        });
+        chain
+            .append_approval(crate::delivery::DeliveryApprovalReceipt {
+                envelope: delivery_envelope(),
+                rehearsal_receipt_digest: "digest-1".into(),
+                display_summary: "summary".into(),
+                destination_or_new_ref: "refs/heads/delivered".into(),
+                artifact_destinations: vec![],
+                valid_until: "2026-09-15T00:00:00Z".into(),
+                operator_decision_ref: "decision:0".into(),
+            })
+            .unwrap();
+        chain
+            .append_delivery(crate::delivery::DeliveryReceipt {
+                envelope: delivery_envelope(),
+                approval_receipt_digest: "digest-1".into(),
+                before_identity_hash: "before-1".into(),
+                after_identity_hash: "after-1".into(),
+                outcome: crate::delivery::DeliveryOutcome::Succeeded,
+            })
+            .unwrap();
+        chain
+            .append_tree_check(crate::delivery::DeliveredTreeCheckReceipt {
+                envelope: delivery_envelope(),
+                delivery_receipt_digest: "digest-1".into(),
+                observed_ref_or_tree: "refs/heads/delivered".into(),
+                artifact_hashes: vec![],
+                worktree_fingerprint: "wt-1".into(),
+                matches_delivery: true,
+            })
+            .unwrap();
+        chain
+    }
+
     #[test]
-    fn completion_certificate_requires_delivery_confirmation() {
+    fn completion_certificate_requires_delivery_chain_to_be_ready() {
         let result = issue_completion_certificate(
             &candidate(),
-            false,
-            "dest",
-            "commit-2",
+            &not_ready_delivery_chain(),
             "tree-2",
             "decision:1",
         );
         assert_eq!(
             result.unwrap_err(),
-            CompletionCertificateError::DeliveryNotConfirmed
+            CompletionCertificateError::DeliveryChainNotReady(
+                DeliveryChainError::TreeCheckRequiredBeforeCompletion
+            )
         );
     }
 
     #[test]
     fn completion_certificate_requires_user_approval_decision() {
         let result =
-            issue_completion_certificate(&candidate(), true, "dest", "commit-2", "tree-2", "  ");
+            issue_completion_certificate(&candidate(), &ready_delivery_chain(), "tree-2", "  ");
         assert_eq!(
             result.unwrap_err(),
             CompletionCertificateError::MissingUserApprovalDecision
@@ -460,14 +531,13 @@ mod tests {
     fn completion_certificate_issues_from_a_candidate_certificate() {
         let cert = issue_completion_certificate(
             &candidate(),
-            true,
-            "dest",
-            "commit-2",
+            &ready_delivery_chain(),
             "tree-2",
             "decision:1",
         )
         .unwrap();
         assert_eq!(cert.contract_version, 1);
-        assert_eq!(cert.delivery_commit, "commit-2");
+        assert_eq!(cert.delivery_subject, delivery_subject());
+        assert_eq!(cert.delivery_tree_hash, "tree-2");
     }
 }
