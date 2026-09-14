@@ -15,6 +15,7 @@ pub mod clarification;
 pub mod completion;
 pub mod config;
 pub mod contract;
+pub mod credential;
 pub mod delivery;
 pub mod evidence;
 pub mod graph;
