@@ -7,6 +7,7 @@
 //! (SQLite schema, IPC framing, Codex adapter) has a real place to land
 //! instead of accreting in `autome-domain`.
 
+pub mod claude_transport;
 pub mod codex_transport;
 pub mod dispatch;
 pub mod fs_guard;
