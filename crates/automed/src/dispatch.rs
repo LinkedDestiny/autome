@@ -2,12 +2,13 @@
 //! through the `EventStore`, and the resulting `Event` envelope sent back
 //! to Electron Main. This is the thinnest possible real closed loop for
 //! M0: stdin frame -> Command -> reducer -> SQLite -> Event -> stdout
-//! frame. Only the Run aggregate's `AdvanceNominal` transition is wired up
-//! so far; every other RunEvent variant and every other aggregate will
-//! extend this match, not replace its shape.
+//! frame. Only the `AdvanceNominal` transition is wired up so far, for the
+//! Run and Project aggregates; every other event variant and every other
+//! aggregate will extend this match, not replace its shape.
 
 use crate::ipc::{Command, Event};
-use crate::store::{AppendError, EventStore};
+use crate::store::{AppendError, EventStore, ProjectAppendError};
+use autome_domain::project::ProjectEvent;
 use autome_domain::run::RunEvent;
 
 #[derive(Debug)]
@@ -15,11 +16,18 @@ pub enum DispatchError {
     UnknownMethod(String),
     InvalidParams(String),
     Store(AppendError),
+    ProjectStore(ProjectAppendError),
 }
 
 impl From<AppendError> for DispatchError {
     fn from(value: AppendError) -> Self {
         DispatchError::Store(value)
+    }
+}
+
+impl From<ProjectAppendError> for DispatchError {
+    fn from(value: ProjectAppendError) -> Self {
+        DispatchError::ProjectStore(value)
     }
 }
 
@@ -36,6 +44,21 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
                 event_type: appended.event_type.to_string(),
                 occurred_at: appended.occurred_at,
                 payload: serde_json::to_value(appended.state).expect("RunState always serializes"),
+            })
+        }
+        "project.advance_nominal" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let appended =
+                store.append_project_event(&aggregate_id, ProjectEvent::AdvanceNominal)?;
+            Ok(Event {
+                event_seq: appended.seq as u64,
+                event_id: appended.event_id,
+                aggregate_id,
+                aggregate_revision: appended.revision,
+                event_type: appended.event_type.to_string(),
+                occurred_at: appended.occurred_at,
+                payload: serde_json::to_value(appended.state)
+                    .expect("ProjectState always serializes"),
             })
         }
         other => Err(DispatchError::UnknownMethod(other.to_string())),
@@ -92,6 +115,44 @@ mod tests {
         let (revision, state) = store.load_run_state("run-1").unwrap().unwrap();
         assert_eq!(revision, event.aggregate_revision);
         assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_advance_nominal_appends_and_returns_matching_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "project.advance_nominal",
+            json!({ "aggregate_id": "project-1" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "project-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "AdvanceNominal");
+        let (revision, state) = store.load_project_state("project-1").unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn project_illegal_transition_surfaces_as_project_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "project.advance_nominal",
+            json!({ "aggregate_id": "project-1" }),
+        );
+        // §6.1's nominal path has 8 phases; Registered is index 0, so 7
+        // calls walk it all the way to Ready and the 8th has nowhere left
+        // to advance to.
+        for _ in 0..7 {
+            dispatch(&mut store, &cmd).unwrap();
+        }
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(
+            err,
+            DispatchError::ProjectStore(ProjectAppendError::Transition(_))
+        ));
         std::fs::remove_file(&path).ok();
     }
 
