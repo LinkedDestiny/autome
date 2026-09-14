@@ -17,6 +17,7 @@ pub mod contract;
 pub mod delivery;
 pub mod evidence;
 pub mod graph;
+pub mod historical_red_light;
 pub mod model_selection;
 pub mod node;
 pub mod policy_restart;
