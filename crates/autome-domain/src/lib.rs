@@ -9,6 +9,7 @@
 
 pub mod attempt;
 pub mod certificate;
+pub mod clarification;
 pub mod completion;
 pub mod config;
 pub mod contract;
