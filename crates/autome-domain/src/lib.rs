@@ -22,6 +22,7 @@ pub mod graph;
 pub mod historical_red_light;
 pub mod model_selection;
 pub mod node;
+pub mod playbook;
 pub mod policy_restart;
 pub mod project;
 pub mod project_intent;
