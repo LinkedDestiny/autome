@@ -6,17 +6,17 @@
 //! its own is wired up via the lookup tables below (method name ==
 //! snake_case of the variant name, under a `run.`/`project.` prefix).
 //! RunEvent's three variants that carry an `origin` field
-//! (GraphReviewRejected/GraphReviewPassed/ReadinessConfirmed) are
-//! deliberately not wired yet: they need a params-parsing story for that
-//! field, which is a different, non-mechanical task from this lookup-table
-//! extension.
+//! (GraphReviewRejected/GraphReviewPassed/ReadinessConfirmed) are wired
+//! explicitly in `dispatch` below, ahead of the lookup tables: `params.origin`
+//! is a string, "initial_plan" | "replan" for GraphReviewOrigin's two cases,
+//! "node_candidate" | "post_integration" for ReadinessOrigin's two cases.
 
 use crate::ipc::{Command, Event};
 use crate::store::{
     AppendError, AppendedProjectEvent, AppendedRunEvent, EventStore, ProjectAppendError,
 };
 use autome_domain::project::ProjectEvent;
-use autome_domain::run::RunEvent;
+use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent};
 
 #[derive(Debug)]
 pub enum DispatchError {
@@ -39,6 +39,30 @@ impl From<ProjectAppendError> for DispatchError {
 }
 
 pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, DispatchError> {
+    match command.method.as_str() {
+        "run.graph_review_rejected" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let origin = parse_graph_review_origin(command)?;
+            let appended =
+                store.append_run_event(&aggregate_id, RunEvent::GraphReviewRejected { origin })?;
+            return Ok(run_event_envelope(aggregate_id, appended));
+        }
+        "run.graph_review_passed" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let origin = parse_graph_review_origin(command)?;
+            let appended =
+                store.append_run_event(&aggregate_id, RunEvent::GraphReviewPassed { origin })?;
+            return Ok(run_event_envelope(aggregate_id, appended));
+        }
+        "run.readiness_confirmed" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let origin = parse_readiness_origin(command)?;
+            let appended =
+                store.append_run_event(&aggregate_id, RunEvent::ReadinessConfirmed { origin })?;
+            return Ok(run_event_envelope(aggregate_id, appended));
+        }
+        _ => {}
+    }
     if let Some(event) = parameterless_run_event(&command.method) {
         let aggregate_id = require_aggregate_id(command)?;
         let appended = store.append_run_event(&aggregate_id, event)?;
@@ -142,6 +166,26 @@ fn require_aggregate_id(command: &Command) -> Result<String, DispatchError> {
         })
 }
 
+fn parse_graph_review_origin(command: &Command) -> Result<GraphReviewOrigin, DispatchError> {
+    match command.params.get("origin").and_then(|v| v.as_str()) {
+        Some("initial_plan") => Ok(GraphReviewOrigin::InitialPlan),
+        Some("replan") => Ok(GraphReviewOrigin::Replan),
+        _ => Err(DispatchError::InvalidParams(
+            "params.origin must be \"initial_plan\" or \"replan\"".to_string(),
+        )),
+    }
+}
+
+fn parse_readiness_origin(command: &Command) -> Result<ReadinessOrigin, DispatchError> {
+    match command.params.get("origin").and_then(|v| v.as_str()) {
+        Some("node_candidate") => Ok(ReadinessOrigin::NodeCandidate),
+        Some("post_integration") => Ok(ReadinessOrigin::PostIntegration),
+        _ => Err(DispatchError::InvalidParams(
+            "params.origin must be \"node_candidate\" or \"post_integration\"".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +263,85 @@ mod tests {
             err,
             DispatchError::ProjectStore(ProjectAppendError::Transition(_))
         ));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Drives a fresh run through N `run.advance_nominal` calls so a test
+    /// can exercise an event legal only at a later phase (§6.2's nominal
+    /// path: GraphReview is index 6, CheckingReadiness is index 7).
+    fn advance_to(store: &mut EventStore, aggregate_id: &str, steps: usize) {
+        let cmd = command(
+            "run.advance_nominal",
+            json!({ "aggregate_id": aggregate_id }),
+        );
+        for _ in 0..steps {
+            dispatch(store, &cmd).unwrap();
+        }
+    }
+
+    #[test]
+    fn graph_review_rejected_with_initial_plan_origin_appends_event() {
+        let (mut store, path) = temp_store();
+        advance_to(&mut store, "run-1", 6); // Received -> ... -> GraphReview
+        let cmd = command(
+            "run.graph_review_rejected",
+            json!({ "aggregate_id": "run-1", "origin": "initial_plan" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "GraphReviewRejected");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_review_passed_with_replan_origin_supersedes_the_run() {
+        let (mut store, path) = temp_store();
+        advance_to(&mut store, "run-1", 6); // Received -> ... -> GraphReview
+        let cmd = command(
+            "run.graph_review_passed",
+            json!({ "aggregate_id": "run-1", "origin": "replan" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "GraphReviewPassed");
+        let (_, state) = store.load_run_state("run-1").unwrap().unwrap();
+        assert_eq!(state.terminal, autome_domain::run::RunTerminal::Superseded);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn readiness_confirmed_with_node_candidate_origin_appends_event() {
+        let (mut store, path) = temp_store();
+        advance_to(&mut store, "run-1", 7); // Received -> ... -> CheckingReadiness
+        let cmd = command(
+            "run.readiness_confirmed",
+            json!({ "aggregate_id": "run-1", "origin": "node_candidate" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "ReadinessConfirmed");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn graph_review_rejected_rejects_unknown_origin_string() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "run.graph_review_rejected",
+            json!({ "aggregate_id": "run-1", "origin": "sideways" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        assert!(store.load_run_state("run-1").unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn readiness_confirmed_rejects_missing_origin() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "run.readiness_confirmed",
+            json!({ "aggregate_id": "run-1" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
         std::fs::remove_file(&path).ok();
     }
 
