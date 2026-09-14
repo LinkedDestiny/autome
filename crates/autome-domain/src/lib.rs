@@ -18,6 +18,7 @@ pub mod graph;
 pub mod model_selection;
 pub mod node;
 pub mod project;
+pub mod project_intent;
 pub mod readiness;
 pub mod requirement;
 pub mod review;
