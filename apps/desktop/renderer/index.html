@@ -2,22 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'" />
 <title>Autome</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <!--
-    Placeholder shell only: no dynamic content, no preload-exposed API yet.
-    Plan §9's real navigation (Project / Local Environment / Skill
-    Marketplace / Global Settings) is a separate, much larger slice that
-    depends on business-state IPC methods this increment does not define.
-    This page exists to prove the autome:// privileged-scheme + security
-    baseline (§9.4) end to end, not to be the real workbench.
+    Plan §9's fixed 4-tab top nav, rendered by nav.js/app.js. Only the
+    "project" tab has real content, and even that is just the §9.3
+    no-project empty state — there is no project.list-style read IPC yet
+    (see nav.js), and no preload-exposed API to call it through even if
+    there were. The other 3 tabs render an honest "not yet implemented"
+    placeholder rather than pretending to be functional.
   -->
-  <main>
+  <header>
     <h1>Autome</h1>
-    <p>Desktop shell scaffold. Core sidecar lifecycle is managed by Main; see apps/desktop/main.js.</p>
-  </main>
+    <nav id="top-nav"></nav>
+  </header>
+  <main id="panel"></main>
+  <script src="nav.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
