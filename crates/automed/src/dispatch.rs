@@ -10,13 +10,23 @@
 //! explicitly in `dispatch` below, ahead of the lookup tables: `params.origin`
 //! is a string, "initial_plan" | "replan" for GraphReviewOrigin's two cases,
 //! "node_candidate" | "post_integration" for ReadinessOrigin's two cases.
+//! TaskEvent has no parameterless variants at all (even `Cancelled` targets
+//! a different store method than run.*/project.*), so all four `task.*`
+//! methods are wired the same explicit way: `task.created` parses
+//! `params.project` (a `ProjectState`), `params.project_id`,
+//! `params.project_revision` (u32) and `params.original_request_ref`;
+//! `task.cancelled` takes no extra params; `task.run_terminal_applied`
+//! parses `params.run_terminal` (one of RunTerminal's variant names);
+//! `task.run_state_projected` parses `params.run_state` (a `RunState`).
 
 use crate::ipc::{Command, Event};
 use crate::store::{
-    AppendError, AppendedProjectEvent, AppendedRunEvent, EventStore, ProjectAppendError,
+    AppendError, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, EventStore,
+    ProjectAppendError, TaskAppendError,
 };
-use autome_domain::project::ProjectEvent;
-use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent};
+use autome_domain::project::{ProjectEvent, ProjectState};
+use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
+use autome_domain::task::TaskEvent;
 
 #[derive(Debug)]
 pub enum DispatchError {
@@ -24,6 +34,7 @@ pub enum DispatchError {
     InvalidParams(String),
     Store(AppendError),
     ProjectStore(ProjectAppendError),
+    TaskStore(TaskAppendError),
 }
 
 impl From<AppendError> for DispatchError {
@@ -35,6 +46,12 @@ impl From<AppendError> for DispatchError {
 impl From<ProjectAppendError> for DispatchError {
     fn from(value: ProjectAppendError) -> Self {
         DispatchError::ProjectStore(value)
+    }
+}
+
+impl From<TaskAppendError> for DispatchError {
+    fn from(value: TaskAppendError) -> Self {
+        DispatchError::TaskStore(value)
     }
 }
 
@@ -60,6 +77,43 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
             let appended =
                 store.append_run_event(&aggregate_id, RunEvent::ReadinessConfirmed { origin })?;
             return Ok(run_event_envelope(aggregate_id, appended));
+        }
+        "task.created" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let project = parse_project_state(command)?;
+            let project_id = parse_string_param(command, "project_id")?;
+            let project_revision = parse_u32_param(command, "project_revision")?;
+            let original_request_ref = parse_string_param(command, "original_request_ref")?;
+            let event = TaskEvent::Created {
+                id: aggregate_id.clone(),
+                project,
+                project_id,
+                project_revision,
+                original_request_ref,
+            };
+            let appended = store.append_task_event(&aggregate_id, event)?;
+            return Ok(task_event_envelope(aggregate_id, appended));
+        }
+        "task.cancelled" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let appended = store.append_task_event(&aggregate_id, TaskEvent::Cancelled)?;
+            return Ok(task_event_envelope(aggregate_id, appended));
+        }
+        "task.run_terminal_applied" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let run_terminal = parse_run_terminal(command)?;
+            let appended = store.append_task_event(
+                &aggregate_id,
+                TaskEvent::RunTerminalApplied { run_terminal },
+            )?;
+            return Ok(task_event_envelope(aggregate_id, appended));
+        }
+        "task.run_state_projected" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let run_state = parse_run_state(command)?;
+            let appended = store
+                .append_task_event(&aggregate_id, TaskEvent::RunStateProjected { run_state })?;
+            return Ok(task_event_envelope(aggregate_id, appended));
         }
         _ => {}
     }
@@ -97,6 +151,18 @@ fn project_event_envelope(aggregate_id: String, appended: AppendedProjectEvent) 
         event_type: appended.event_type.to_string(),
         occurred_at: appended.occurred_at,
         payload: serde_json::to_value(appended.state).expect("ProjectState always serializes"),
+    }
+}
+
+fn task_event_envelope(aggregate_id: String, appended: AppendedTaskEvent) -> Event {
+    Event {
+        event_seq: appended.seq as u64,
+        event_id: appended.event_id,
+        aggregate_id,
+        aggregate_revision: appended.revision,
+        event_type: appended.event_type.to_string(),
+        occurred_at: appended.occurred_at,
+        payload: serde_json::to_value(appended.state).expect("Task always serializes"),
     }
 }
 
@@ -184,6 +250,63 @@ fn parse_readiness_origin(command: &Command) -> Result<ReadinessOrigin, Dispatch
             "params.origin must be \"node_candidate\" or \"post_integration\"".to_string(),
         )),
     }
+}
+
+fn parse_project_state(command: &Command) -> Result<ProjectState, DispatchError> {
+    let value =
+        command.params.get("project").cloned().ok_or_else(|| {
+            DispatchError::InvalidParams("params.project is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.project is not a valid ProjectState: {e}"))
+    })
+}
+
+fn parse_string_param(command: &Command, key: &str) -> Result<String, DispatchError> {
+    command
+        .params
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} must be a string")))
+}
+
+fn parse_u32_param(command: &Command, key: &str) -> Result<u32, DispatchError> {
+    command
+        .params
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| {
+            DispatchError::InvalidParams(format!(
+                "params.{key} must be a non-negative integer that fits in u32"
+            ))
+        })
+}
+
+fn parse_run_terminal(command: &Command) -> Result<RunTerminal, DispatchError> {
+    match command.params.get("run_terminal").and_then(|v| v.as_str()) {
+        Some("None") => Ok(RunTerminal::None),
+        Some("Completed") => Ok(RunTerminal::Completed),
+        Some("Superseded") => Ok(RunTerminal::Superseded),
+        Some("ProtocolFailed") => Ok(RunTerminal::ProtocolFailed),
+        Some("Infeasible") => Ok(RunTerminal::Infeasible),
+        Some("Cancelled") => Ok(RunTerminal::Cancelled),
+        _ => Err(DispatchError::InvalidParams(
+            "params.run_terminal must be one of None|Completed|Superseded|ProtocolFailed|Infeasible|Cancelled"
+                .to_string(),
+        )),
+    }
+}
+
+fn parse_run_state(command: &Command) -> Result<RunState, DispatchError> {
+    let value =
+        command.params.get("run_state").cloned().ok_or_else(|| {
+            DispatchError::InvalidParams("params.run_state is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.run_state is not a valid RunState: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -449,6 +572,174 @@ mod tests {
             err,
             DispatchError::Store(AppendError::Transition(_))
         ));
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn ready_project_state_json() -> serde_json::Value {
+        json!({
+            "lifecycle": "Active",
+            "phase": "Ready",
+            "hold": "None",
+            "revision": 1,
+        })
+    }
+
+    fn task_created_command(aggregate_id: &str) -> Command {
+        command(
+            "task.created",
+            json!({
+                "aggregate_id": aggregate_id,
+                "project": ready_project_state_json(),
+                "project_id": "project-1",
+                "project_revision": 1,
+                "original_request_ref": "original-request-ref-1",
+            }),
+        )
+    }
+
+    #[test]
+    fn task_created_appends_a_draft_task() {
+        let (mut store, path) = temp_store();
+        let cmd = task_created_command("task-1");
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "task-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "Created");
+        let (revision, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_created_forwards_invalid_project_state_as_invalid_params() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "task.created",
+            json!({
+                "aggregate_id": "task-1",
+                "project": { "not": "a project state" },
+                "project_id": "project-1",
+                "project_revision": 1,
+                "original_request_ref": "original-request-ref-1",
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_created_forwards_project_not_ready_as_task_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "task.created",
+            json!({
+                "aggregate_id": "task-1",
+                "project": {
+                    "lifecycle": "Active",
+                    "phase": "Registered",
+                    "hold": "None",
+                    "revision": 1,
+                },
+                "project_id": "project-1",
+                "project_revision": 1,
+                "original_request_ref": "original-request-ref-1",
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::TaskStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_cancelled_cancels_a_draft_task() {
+        use autome_domain::task::TaskLifecycle;
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command("task.cancelled", json!({ "aggregate_id": "task-1" }));
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "Cancelled");
+        let (_, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(state.lifecycle, TaskLifecycle::Cancelled);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_run_terminal_applied_completes_the_task_on_a_completed_terminal() {
+        use autome_domain::task::TaskLifecycle;
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.run_terminal_applied",
+            json!({ "aggregate_id": "task-1", "run_terminal": "Completed" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "RunTerminalApplied");
+        let (_, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(state.lifecycle, TaskLifecycle::Completed);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_run_terminal_applied_rejects_unknown_terminal_string() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.run_terminal_applied",
+            json!({ "aggregate_id": "task-1", "run_terminal": "sideways" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_run_state_projected_refreshes_the_status_projection() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.run_state_projected",
+            json!({
+                "aggregate_id": "task-1",
+                "run_state": {
+                    "phase": "GraphReview",
+                    "hold": "None",
+                    "terminal": "None",
+                },
+            }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "RunStateProjected");
+        let (_, state) = store.load_task_state("task-1").unwrap().unwrap();
+        assert_eq!(
+            state.status_projection.phase,
+            autome_domain::run::RunPhase::GraphReview
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_run_state_projected_rejects_missing_run_state() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &task_created_command("task-1")).unwrap();
+        let cmd = command(
+            "task.run_state_projected",
+            json!({ "aggregate_id": "task-1" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn task_cancelled_on_a_never_created_task_surfaces_as_task_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command("task.cancelled", json!({ "aggregate_id": "task-1" }));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::TaskStore(_)));
         std::fs::remove_file(&path).ok();
     }
 }
