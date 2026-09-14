@@ -153,7 +153,7 @@ pub fn freeze(mut contract: TaskContract) -> Result<TaskContract, Vec<ContractFr
     Ok(contract)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AmendmentChange {
     AddRequirement(Requirement),
     SupersedeRequirement {
@@ -169,7 +169,7 @@ pub enum AmendmentChange {
 /// gap / relax acceptance" always carries the explicit user decision the
 /// plan demands — this type has no variant that changes contract semantics
 /// without one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAmendment {
     pub base_version: ContractVersion,
     pub reason: String,
@@ -238,6 +238,81 @@ pub fn apply_amendment(
     }
 
     Ok(next)
+}
+
+/// Every event this module's event-sourced TaskContract aggregate can
+/// replay, mirroring the `TaskEvent`/`task::apply` envelope `task.rs`
+/// already has. `Created` is the one-shot equivalent of building the
+/// initial `TaskContract` struct literal that every existing test in this
+/// module already uses directly — the plan's document-parsing step
+/// produces a whole draft (id/content_hash/requirements/acceptance_checks)
+/// up front, there is no incremental "add one requirement to the draft"
+/// event, so this does not invent one. `Frozen` and `Amended` are thin
+/// wrappers over the `freeze`/`apply_amendment` functions already defined
+/// above — no new business rules, only the Event+apply envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContractEvent {
+    Created {
+        id: String,
+        content_hash: String,
+        requirements: Vec<Requirement>,
+        acceptance_checks: Vec<AcceptanceCheck>,
+    },
+    Frozen,
+    Amended {
+        amendment: ContractAmendment,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContractEventError {
+    AlreadyCreated,
+    NotYetCreated,
+    AlreadyFrozen,
+    Freeze(Vec<ContractFreezeViolation>),
+    Amend(AmendmentError),
+}
+
+/// `state = None` means the aggregate has never been created — the same
+/// convention `task::apply` uses for `Option<Task>`. Matches on `event`
+/// first (not on `(state, event)` jointly) so adding a ContractEvent
+/// variant without handling it here is still a compile error.
+pub fn apply(
+    state: Option<TaskContract>,
+    event: ContractEvent,
+) -> Result<TaskContract, ContractEventError> {
+    match event {
+        ContractEvent::Created {
+            id,
+            content_hash,
+            requirements,
+            acceptance_checks,
+        } => {
+            if state.is_some() {
+                return Err(ContractEventError::AlreadyCreated);
+            }
+            Ok(TaskContract {
+                id,
+                version: ContractVersion(1),
+                content_hash,
+                status: ContractStatus::Draft,
+                previous_version: None,
+                requirements,
+                acceptance_checks,
+            })
+        }
+        ContractEvent::Frozen => {
+            let contract = state.ok_or(ContractEventError::NotYetCreated)?;
+            if contract.status == ContractStatus::Frozen {
+                return Err(ContractEventError::AlreadyFrozen);
+            }
+            freeze(contract).map_err(ContractEventError::Freeze)
+        }
+        ContractEvent::Amended { amendment } => {
+            let contract = state.ok_or(ContractEventError::NotYetCreated)?;
+            apply_amendment(&contract, amendment).map_err(ContractEventError::Amend)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +544,113 @@ mod tests {
         assert_eq!(
             apply_amendment(&frozen, amendment).unwrap_err(),
             AmendmentError::UnknownRequirement(RequirementId("R-ghost".into()))
+        );
+    }
+
+    fn created_event() -> ContractEvent {
+        ContractEvent::Created {
+            id: "T-1".into(),
+            content_hash: "hash".into(),
+            requirements: vec![anchored_requirement(
+                "R-001",
+                Necessity::Must,
+                Some("C-001"),
+            )],
+            acceptance_checks: vec![mandatory_check("C-001", "R-001")],
+        }
+    }
+
+    #[test]
+    fn apply_created_on_none_state_constructs_a_draft_contract() {
+        let contract = apply(None, created_event()).unwrap();
+        assert_eq!(contract.id, "T-1");
+        assert_eq!(contract.version, ContractVersion(1));
+        assert_eq!(contract.status, ContractStatus::Draft);
+        assert_eq!(contract.previous_version, None);
+        assert_eq!(contract.requirements.len(), 1);
+        assert_eq!(contract.acceptance_checks.len(), 1);
+    }
+
+    #[test]
+    fn apply_created_on_an_existing_contract_is_rejected() {
+        let contract = apply(None, created_event()).unwrap();
+        let err = apply(Some(contract), created_event()).unwrap_err();
+        assert_eq!(err, ContractEventError::AlreadyCreated);
+    }
+
+    #[test]
+    fn apply_any_event_other_than_created_on_none_state_is_rejected() {
+        assert_eq!(
+            apply(None, ContractEvent::Frozen).unwrap_err(),
+            ContractEventError::NotYetCreated
+        );
+        let amendment = ContractAmendment {
+            base_version: ContractVersion(1),
+            reason: "test".into(),
+            user_decision_ref: "decision:1".into(),
+            change: AmendmentChange::AddAcceptanceCheck(mandatory_check("C-002", "R-001")),
+        };
+        assert_eq!(
+            apply(None, ContractEvent::Amended { amendment }).unwrap_err(),
+            ContractEventError::NotYetCreated
+        );
+    }
+
+    #[test]
+    fn apply_frozen_freezes_a_well_formed_draft() {
+        let draft = apply(None, created_event()).unwrap();
+        let frozen = apply(Some(draft), ContractEvent::Frozen).unwrap();
+        assert_eq!(frozen.status, ContractStatus::Frozen);
+    }
+
+    #[test]
+    fn apply_frozen_forwards_freeze_violations() {
+        let draft = draft_contract(
+            vec![anchored_requirement("R-001", Necessity::Must, None)],
+            vec![],
+        );
+        let err = apply(Some(draft), ContractEvent::Frozen).unwrap_err();
+        assert!(matches!(err, ContractEventError::Freeze(violations) if !violations.is_empty()));
+    }
+
+    #[test]
+    fn apply_frozen_on_an_already_frozen_contract_is_rejected() {
+        let frozen = frozen_baseline();
+        let err = apply(Some(frozen), ContractEvent::Frozen).unwrap_err();
+        assert_eq!(err, ContractEventError::AlreadyFrozen);
+    }
+
+    #[test]
+    fn apply_amended_produces_a_new_draft_version() {
+        let frozen = frozen_baseline();
+        let amendment = ContractAmendment {
+            base_version: ContractVersion(1),
+            reason: "add non-functional requirement".into(),
+            user_decision_ref: "decision:42".into(),
+            change: AmendmentChange::AddRequirement(anchored_requirement(
+                "R-002",
+                Necessity::Optional,
+                None,
+            )),
+        };
+        let amended = apply(Some(frozen), ContractEvent::Amended { amendment }).unwrap();
+        assert_eq!(amended.version, ContractVersion(2));
+        assert_eq!(amended.status, ContractStatus::Draft);
+    }
+
+    #[test]
+    fn apply_amended_forwards_amendment_errors() {
+        let draft = draft_contract(vec![], vec![]);
+        let amendment = ContractAmendment {
+            base_version: ContractVersion(1),
+            reason: "test".into(),
+            user_decision_ref: "decision:1".into(),
+            change: AmendmentChange::AddAcceptanceCheck(mandatory_check("C-002", "R-001")),
+        };
+        let err = apply(Some(draft), ContractEvent::Amended { amendment }).unwrap_err();
+        assert_eq!(
+            err,
+            ContractEventError::Amend(AmendmentError::ContractNotFrozen)
         );
     }
 }
