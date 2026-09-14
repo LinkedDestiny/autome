@@ -18,13 +18,21 @@
 //! `task.cancelled` takes no extra params; `task.run_terminal_applied`
 //! parses `params.run_terminal` (one of RunTerminal's variant names);
 //! `task.run_state_projected` parses `params.run_state` (a `RunState`).
+//! ContractEvent has no parameterless variants either, so the three
+//! `contract.*` methods follow the same explicit pattern: `contract.created`
+//! parses `params.requirements` (`Vec<Requirement>`) and
+//! `params.acceptance_checks` (`Vec<AcceptanceCheck>`); `contract.frozen`
+//! takes no extra params; `contract.amended` parses `params.amendment` (a
+//! `ContractAmendment`).
 
 use crate::ipc::{Command, Event};
 use crate::store::{
-    AppendError, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, EventStore,
-    ProjectAppendError, TaskAppendError,
+    AppendError, AppendedContractEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent,
+    ContractAppendError, EventStore, ProjectAppendError, TaskAppendError,
 };
+use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::project::{ProjectEvent, ProjectState};
+use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::task::TaskEvent;
 
@@ -35,6 +43,7 @@ pub enum DispatchError {
     Store(AppendError),
     ProjectStore(ProjectAppendError),
     TaskStore(TaskAppendError),
+    ContractStore(ContractAppendError),
 }
 
 impl From<AppendError> for DispatchError {
@@ -52,6 +61,12 @@ impl From<ProjectAppendError> for DispatchError {
 impl From<TaskAppendError> for DispatchError {
     fn from(value: TaskAppendError) -> Self {
         DispatchError::TaskStore(value)
+    }
+}
+
+impl From<ContractAppendError> for DispatchError {
+    fn from(value: ContractAppendError) -> Self {
+        DispatchError::ContractStore(value)
     }
 }
 
@@ -115,6 +130,32 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
                 .append_task_event(&aggregate_id, TaskEvent::RunStateProjected { run_state })?;
             return Ok(task_event_envelope(aggregate_id, appended));
         }
+        "contract.created" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let content_hash = parse_string_param(command, "content_hash")?;
+            let requirements = parse_requirements_param(command)?;
+            let acceptance_checks = parse_acceptance_checks_param(command)?;
+            let event = ContractEvent::Created {
+                id: aggregate_id.clone(),
+                content_hash,
+                requirements,
+                acceptance_checks,
+            };
+            let appended = store.append_contract_event(&aggregate_id, event)?;
+            return Ok(contract_event_envelope(aggregate_id, appended));
+        }
+        "contract.frozen" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let appended = store.append_contract_event(&aggregate_id, ContractEvent::Frozen)?;
+            return Ok(contract_event_envelope(aggregate_id, appended));
+        }
+        "contract.amended" => {
+            let aggregate_id = require_aggregate_id(command)?;
+            let amendment = parse_contract_amendment_param(command)?;
+            let appended =
+                store.append_contract_event(&aggregate_id, ContractEvent::Amended { amendment })?;
+            return Ok(contract_event_envelope(aggregate_id, appended));
+        }
         _ => {}
     }
     if let Some(event) = parameterless_run_event(&command.method) {
@@ -163,6 +204,18 @@ fn task_event_envelope(aggregate_id: String, appended: AppendedTaskEvent) -> Eve
         event_type: appended.event_type.to_string(),
         occurred_at: appended.occurred_at,
         payload: serde_json::to_value(appended.state).expect("Task always serializes"),
+    }
+}
+
+fn contract_event_envelope(aggregate_id: String, appended: AppendedContractEvent) -> Event {
+    Event {
+        event_seq: appended.seq as u64,
+        event_id: appended.event_id,
+        aggregate_id,
+        aggregate_revision: appended.revision,
+        event_type: appended.event_type.to_string(),
+        occurred_at: appended.occurred_at,
+        payload: serde_json::to_value(appended.state).expect("TaskContract always serializes"),
     }
 }
 
@@ -306,6 +359,44 @@ fn parse_run_state(command: &Command) -> Result<RunState, DispatchError> {
         })?;
     serde_json::from_value(value).map_err(|e| {
         DispatchError::InvalidParams(format!("params.run_state is not a valid RunState: {e}"))
+    })
+}
+
+fn parse_requirements_param(command: &Command) -> Result<Vec<Requirement>, DispatchError> {
+    let value = command.params.get("requirements").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.requirements is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.requirements is not a valid Vec<Requirement>: {e}"
+        ))
+    })
+}
+
+fn parse_acceptance_checks_param(command: &Command) -> Result<Vec<AcceptanceCheck>, DispatchError> {
+    let value = command
+        .params
+        .get("acceptance_checks")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.acceptance_checks is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.acceptance_checks is not a valid Vec<AcceptanceCheck>: {e}"
+        ))
+    })
+}
+
+fn parse_contract_amendment_param(command: &Command) -> Result<ContractAmendment, DispatchError> {
+    let value =
+        command.params.get("amendment").cloned().ok_or_else(|| {
+            DispatchError::InvalidParams("params.amendment is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.amendment is not a valid ContractAmendment: {e}"
+        ))
     })
 }
 
@@ -740,6 +831,181 @@ mod tests {
         let cmd = command("task.cancelled", json!({ "aggregate_id": "task-1" }));
         let err = dispatch(&mut store, &cmd).unwrap_err();
         assert!(matches!(err, DispatchError::TaskStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn requirement_json(id: &str, check_id: &str) -> serde_json::Value {
+        json!({
+            "id": id,
+            "statement": "does something",
+            "kind": "Functional",
+            "necessity": "Must",
+            "source_anchors": [{ "anchor_ref": "raw_text:0-10" }],
+            "acceptance_logic": null,
+            "acceptance_check_ids": [check_id],
+            "delivery_spec": null,
+            "risk_level": "Low",
+            "superseded_by": null,
+        })
+    }
+
+    fn acceptance_check_json(id: &str, requirement_id: &str, mandatory: bool) -> serde_json::Value {
+        json!({
+            "id": id,
+            "kind": "Process",
+            "requirement_id": requirement_id,
+            "mandatory": mandatory,
+            "expected_observation": "exit code 0",
+            "negative_scenario": "non-zero exit",
+            "required_environment_level": "base",
+            "isolation_policy": "worktree",
+            "repeat_policy": "once",
+            "inventory_policy": "track",
+            "freshness_policy": "must-be-current",
+        })
+    }
+
+    fn contract_created_command(aggregate_id: &str) -> Command {
+        command(
+            "contract.created",
+            json!({
+                "aggregate_id": aggregate_id,
+                "content_hash": "hash-1",
+                "requirements": [requirement_json("R-001", "C-001")],
+                "acceptance_checks": [acceptance_check_json("C-001", "R-001", true)],
+            }),
+        )
+    }
+
+    #[test]
+    fn contract_created_appends_a_draft_contract() {
+        use autome_domain::contract::ContractStatus;
+
+        let (mut store, path) = temp_store();
+        let cmd = contract_created_command("contract-1");
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "contract-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "Created");
+        let (revision, state) = store.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(state.status, ContractStatus::Draft);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_created_forwards_invalid_requirements_as_invalid_params() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "contract.created",
+            json!({
+                "aggregate_id": "contract-1",
+                "content_hash": "hash-1",
+                "requirements": [{ "not": "a requirement" }],
+                "acceptance_checks": [],
+            }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_created_on_an_existing_contract_surfaces_as_contract_store_error() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &contract_created_command("contract-1")).unwrap();
+        let err = dispatch(&mut store, &contract_created_command("contract-1")).unwrap_err();
+        assert!(matches!(err, DispatchError::ContractStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_frozen_freezes_a_well_formed_draft() {
+        use autome_domain::contract::ContractStatus;
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &contract_created_command("contract-1")).unwrap();
+        let cmd = command("contract.frozen", json!({ "aggregate_id": "contract-1" }));
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "Frozen");
+        let (_, state) = store.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(state.status, ContractStatus::Frozen);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_frozen_forwards_freeze_violations_as_contract_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "contract.created",
+            json!({
+                "aggregate_id": "contract-1",
+                "content_hash": "hash-1",
+                "requirements": [requirement_json("R-001", "C-001")],
+                "acceptance_checks": [acceptance_check_json("C-001", "R-001", false)],
+            }),
+        );
+        dispatch(&mut store, &cmd).unwrap();
+        let cmd = command("contract.frozen", json!({ "aggregate_id": "contract-1" }));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::ContractStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_frozen_on_a_never_created_contract_surfaces_as_contract_store_error() {
+        let (mut store, path) = temp_store();
+        let cmd = command("contract.frozen", json!({ "aggregate_id": "contract-1" }));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::ContractStore(_)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_amended_produces_a_new_draft_version() {
+        use autome_domain::contract::{ContractStatus, ContractVersion};
+
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &contract_created_command("contract-1")).unwrap();
+        dispatch(
+            &mut store,
+            &command("contract.frozen", json!({ "aggregate_id": "contract-1" })),
+        )
+        .unwrap();
+        let cmd = command(
+            "contract.amended",
+            json!({
+                "aggregate_id": "contract-1",
+                "amendment": {
+                    "base_version": 1,
+                    "reason": "scope grew",
+                    "user_decision_ref": "decision-1",
+                    "change": { "AddRequirement": requirement_json("R-002", "C-002") },
+                },
+            }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.event_type, "Amended");
+        let (_, state) = store.load_contract_state("contract-1").unwrap().unwrap();
+        assert_eq!(state.status, ContractStatus::Draft);
+        assert_eq!(state.version, ContractVersion(2));
+        assert_eq!(state.requirements.len(), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn contract_amended_rejects_missing_amendment_param() {
+        let (mut store, path) = temp_store();
+        dispatch(&mut store, &contract_created_command("contract-1")).unwrap();
+        dispatch(
+            &mut store,
+            &command("contract.frozen", json!({ "aggregate_id": "contract-1" })),
+        )
+        .unwrap();
+        let cmd = command("contract.amended", json!({ "aggregate_id": "contract-1" }));
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(err, DispatchError::InvalidParams(_)));
         std::fs::remove_file(&path).ok();
     }
 }
