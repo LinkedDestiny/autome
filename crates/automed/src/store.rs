@@ -43,6 +43,10 @@ use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::RequirementId;
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
+use autome_domain::user_correction::{
+    self, CorrectionClassification, CorrectionDisposition, CorrectionImpactFlags,
+    UserCorrectionError, UserCorrectionReceipt,
+};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::fs_guard::{self, FsGuardError};
@@ -574,6 +578,36 @@ impl From<rusqlite::Error> for RecordCredentialReceiptError {
     }
 }
 
+/// A persisted §6.5 `UserCorrectionReceipt` plus when it landed. Unlike
+/// `AttemptRecord`, no aggregate-linking key is added at the store layer --
+/// `UserCorrectionReceipt` already carries its own `run_id`, so there is
+/// nothing this layer needs to know that the domain type doesn't already say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserCorrectionRecord {
+    pub receipt: UserCorrectionReceipt,
+    pub created_at: String,
+}
+
+/// `record_user_correction`'s failure modes. Re-runs
+/// `user_correction::issue_user_correction_receipt` server-side rather than
+/// trusting an already-built `UserCorrectionReceipt` from the caller, same
+/// discipline as `record_attempt`/`record_credential_receipt`. Unlike
+/// `RecordAttemptError`, there is no separate `Sql`-vs-domain-check
+/// distinction to make beyond `Receipt` -- a duplicate `receipt_digest`
+/// surfaces as a plain SQL primary-key violation, same as
+/// `RecordReadinessError`.
+#[derive(Debug)]
+pub enum RecordUserCorrectionError {
+    Sql(rusqlite::Error),
+    Receipt(Vec<UserCorrectionError>),
+}
+
+impl From<rusqlite::Error> for RecordUserCorrectionError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordUserCorrectionError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -743,6 +777,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v11,
     migrate_v12,
     migrate_v13,
+    migrate_v14,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1078,6 +1113,26 @@ fn migrate_v13(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_credential_receipts_credential_ref
             ON credential_receipts(credential_ref);
+        ",
+    )
+}
+
+/// `user_correction_receipts`: one row per `record_user_correction` call
+/// (plan §6.5). Same "write returns Value not Event, one-time fact record"
+/// shape as `readiness_receipts` -- `receipt_digest` is the caller-chosen
+/// primary key, `run_id` is indexed (same reasoning as `attempts`/
+/// `evidence_receipts`) even though no `list`-by-`run_id` read exists yet.
+fn migrate_v14(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS user_correction_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_correction_receipts_run_id
+            ON user_correction_receipts(run_id);
         ",
     )
 }
@@ -2585,6 +2640,100 @@ impl EventStore {
         .collect()
     }
 
+    /// §6.5's write path: re-runs
+    /// `user_correction::issue_user_correction_receipt` server-side --
+    /// every raw field the domain constructor needs, not a pre-built
+    /// receipt -- same "don't trust the caller already validated"
+    /// discipline as `record_credential_receipt`. `INSERT`s rather than
+    /// upserts: a `UserCorrectionReceipt` is a one-time fact about a single
+    /// user correction, not current state to overwrite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_user_correction(
+        &mut self,
+        project_id: &str,
+        task_id: &str,
+        run_id: &str,
+        attempt_id: Option<&str>,
+        planning_spec_hash: &str,
+        execution_spec_hash: Option<&str>,
+        execution_spec_frozen: bool,
+        raw_text_ref: &str,
+        attachment_hashes: Vec<String>,
+        submitted_at: &str,
+        operator: &str,
+        subject_contract_hash: Option<&str>,
+        subject_graph_hash: Option<&str>,
+        subject_candidate_hash: Option<&str>,
+        classification: CorrectionClassification,
+        impact: CorrectionImpactFlags,
+        affected_requirement_ids: Vec<String>,
+        affected_node_ids: Vec<String>,
+        disposition: CorrectionDisposition,
+        successor_ref: Option<&str>,
+        receipt_digest: &str,
+    ) -> Result<UserCorrectionRecord, RecordUserCorrectionError> {
+        let receipt = user_correction::issue_user_correction_receipt(
+            project_id,
+            task_id,
+            run_id,
+            attempt_id,
+            planning_spec_hash,
+            execution_spec_hash,
+            execution_spec_frozen,
+            raw_text_ref,
+            attachment_hashes,
+            submitted_at,
+            operator,
+            subject_contract_hash,
+            subject_graph_hash,
+            subject_candidate_hash,
+            classification,
+            impact,
+            affected_requirement_ids,
+            affected_node_ids,
+            disposition,
+            successor_ref,
+            receipt_digest,
+        )
+        .map_err(RecordUserCorrectionError::Receipt)?;
+
+        let receipt_json =
+            serde_json::to_string(&receipt).expect("UserCorrectionReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO user_correction_receipts (receipt_digest, run_id, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![receipt.receipt_digest, receipt.run_id, receipt_json, created_at],
+        )?;
+
+        Ok(UserCorrectionRecord { receipt, created_at })
+    }
+
+    /// Read counterpart to `record_user_correction` -- looks up the
+    /// recorded `user_correction_receipts` row for `receipt_digest`, if any.
+    pub fn load_user_correction(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<UserCorrectionRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM user_correction_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: UserCorrectionReceipt = serde_json::from_str(&receipt_json)
+                .expect("user_correction_receipts.receipt_json round-trips");
+            UserCorrectionRecord { receipt, created_at }
+        }))
+    }
+
     /// §5.7's write path: records an `EvidenceReceipt` produced by a
     /// verifier run. Like `record_attempt`, this is a fact recorded once,
     /// not a journaled event -- staleness is a query-time property
@@ -4010,6 +4159,136 @@ mod tests {
         assert_eq!(receipts[2].operator, Some("user-1".to_string()));
 
         assert!(store.list_credential_receipts("cred-unknown").unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_fixture_user_correction(
+        store: &mut EventStore,
+        receipt_digest: &str,
+        execution_spec_frozen: bool,
+        classification: CorrectionClassification,
+        impact: CorrectionImpactFlags,
+        disposition: CorrectionDisposition,
+    ) -> Result<UserCorrectionRecord, RecordUserCorrectionError> {
+        store.record_user_correction(
+            "project-1",
+            "task-1",
+            "run-1",
+            None,
+            "planning-spec-hash-1",
+            if execution_spec_frozen {
+                Some("execution-spec-hash-1")
+            } else {
+                None
+            },
+            execution_spec_frozen,
+            "raw-text-ref-1",
+            vec![],
+            "2026-09-14T00:00:00Z",
+            "dannie",
+            None,
+            None,
+            None,
+            classification,
+            impact,
+            vec![],
+            vec![],
+            disposition,
+            None,
+            receipt_digest,
+        )
+    }
+
+    /// A well-formed `record_user_correction` call lands one
+    /// `user_correction_receipts` row, readable back via
+    /// `load_user_correction`.
+    #[test]
+    fn record_user_correction_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-user-correction");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_user_correction("UC-1").unwrap().is_none());
+
+        let record = record_fixture_user_correction(
+            &mut store,
+            "UC-1",
+            false,
+            CorrectionClassification::PlanningRevision,
+            CorrectionImpactFlags::default(),
+            CorrectionDisposition::NewPlanningRunSpec,
+        )
+        .unwrap();
+        assert_eq!(record.receipt.receipt_digest, "UC-1");
+        assert_eq!(record.receipt.run_id, "run-1");
+
+        let loaded = store.load_user_correction("UC-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `receipt_digest` must fail rather
+    /// than silently overwriting a prior correction's receipt.
+    #[test]
+    fn record_user_correction_refuses_to_reuse_an_existing_receipt_digest() {
+        let root = temp_data_root("record-user-correction-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_user_correction(
+            &mut store,
+            "UC-1",
+            false,
+            CorrectionClassification::PlanningRevision,
+            CorrectionImpactFlags::default(),
+            CorrectionDisposition::NewPlanningRunSpec,
+        )
+        .unwrap();
+        let err = record_fixture_user_correction(
+            &mut store,
+            "UC-1",
+            false,
+            CorrectionClassification::PlanningRevision,
+            CorrectionImpactFlags::default(),
+            CorrectionDisposition::NewPlanningRunSpec,
+        )
+        .unwrap_err();
+        assert!(matches!(err, RecordUserCorrectionError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `record_user_correction` re-runs `issue_user_correction_receipt`
+    /// server-side, so a pre-freeze non-`PlanningRevision` classification is
+    /// refused before anything is written -- same discipline as
+    /// `record_attempt` re-validating shape/profile.
+    #[test]
+    fn record_user_correction_rejects_a_domain_rule_violation_without_writing_anything() {
+        let root = temp_data_root("record-user-correction-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = record_fixture_user_correction(
+            &mut store,
+            "UC-1",
+            false,
+            CorrectionClassification::GraphStrategy,
+            CorrectionImpactFlags::default(),
+            CorrectionDisposition::ReplanProposal,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordUserCorrectionError::Receipt(errors)
+                    if errors.contains(&UserCorrectionError::PreFreezeMustBePlanningRevision)
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_user_correction("UC-1").unwrap().is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }

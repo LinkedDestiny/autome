@@ -99,7 +99,8 @@ use crate::store::{
     IssueCompletionCertificateError, NodeAppendError, ProjectAppendError, ProjectSummary,
     CredentialRecordRow, ReadinessRecord, RecordAttemptError, RecordCredentialError,
     RecordCredentialReceiptError, RecordEvidenceError, RecordReadinessError,
-    StartDeliveryChainError, TaskAppendError, TaskSummary,
+    RecordUserCorrectionError, StartDeliveryChainError, TaskAppendError, TaskSummary,
+    UserCorrectionRecord,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
 use autome_domain::capability_broker::{
@@ -130,6 +131,10 @@ use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState,
 use autome_domain::safe_park::SafeParkReceipt;
 use autome_domain::step_role::{self, LogicalRole};
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
+use autome_domain::user_correction::{
+    CorrectionClassification, CorrectionDisposition, CorrectionImpactFlags,
+};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
@@ -217,6 +222,13 @@ pub enum DispatchError {
     /// `UninstallRetentionDecisionRequiresOperator` check, re-run
     /// server-side rather than trusting the caller.
     RecordCredentialReceipt(RecordCredentialReceiptError),
+    /// §6.5 write path: `record_user_correction`'s failure modes --
+    /// `user_correction::issue_user_correction_receipt`'s own mechanical
+    /// rules (pre/post-freeze classification, classification/disposition
+    /// mismatch, contract-preserving impact), re-run server-side rather
+    /// than trusting the caller (`Receipt`), or a duplicate `receipt_digest`
+    /// surfaced as a SQL primary-key violation (`Sql`).
+    RecordUserCorrection(RecordUserCorrectionError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -264,6 +276,12 @@ impl From<RecordCredentialError> for DispatchError {
 impl From<RecordCredentialReceiptError> for DispatchError {
     fn from(value: RecordCredentialReceiptError) -> Self {
         DispatchError::RecordCredentialReceipt(value)
+    }
+}
+
+impl From<RecordUserCorrectionError> for DispatchError {
+    fn from(value: RecordUserCorrectionError) -> Self {
+        DispatchError::RecordUserCorrection(value)
     }
 }
 
@@ -759,6 +777,17 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §6.5: same shape again -- `user_correction.record` appends a
+    // `user_correction_receipts` row, not a domain `Event` (a correction
+    // receipt is a fact issued once, not an aggregate with a reducer).
+    if command.method == "user_correction.record" {
+        let result = handle_record_user_correction(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -1104,6 +1133,125 @@ fn parse_credential_event_param(command: &Command) -> Result<CredentialEvent, Di
     serde_json::from_value(value).map_err(|e| {
         DispatchError::InvalidParams(format!("params.event is not a valid CredentialEvent: {e}"))
     })
+}
+
+/// The raw field bundle `user_correction.record` takes as `params.input` --
+/// every argument `user_correction::issue_user_correction_receipt` needs,
+/// not a pre-built `UserCorrectionReceipt`, so `handle_record_user_correction`
+/// still re-runs the domain constructor server-side rather than trusting the
+/// caller. Purely an IPC-parsing convenience, not a new domain concept: its
+/// shape is just `issue_user_correction_receipt`'s own argument list.
+#[derive(Debug, Deserialize)]
+struct UserCorrectionInputParam {
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    attempt_id: Option<String>,
+    planning_spec_hash: String,
+    execution_spec_hash: Option<String>,
+    execution_spec_frozen: bool,
+    raw_text_ref: String,
+    #[serde(default)]
+    attachment_hashes: Vec<String>,
+    submitted_at: String,
+    operator: String,
+    subject_contract_hash: Option<String>,
+    subject_graph_hash: Option<String>,
+    subject_candidate_hash: Option<String>,
+    classification: CorrectionClassification,
+    #[serde(default)]
+    impact: CorrectionImpactFlags,
+    #[serde(default)]
+    affected_requirement_ids: Vec<String>,
+    #[serde(default)]
+    affected_node_ids: Vec<String>,
+    disposition: CorrectionDisposition,
+    successor_ref: Option<String>,
+    receipt_digest: String,
+}
+
+fn parse_user_correction_input_param(
+    command: &Command,
+) -> Result<UserCorrectionInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid user_correction input: {e}"
+        ))
+    })
+}
+
+/// §6.5: the sole caller of `EventStore::record_user_correction`. Takes
+/// `{ input: <UserCorrectionInputParam> }` and re-validates server-side via
+/// `user_correction::issue_user_correction_receipt` rather than trusting an
+/// already-built receipt from the caller, same discipline as
+/// `handle_record_credential_receipt`. Refuses to run while the store is in
+/// its diagnostic state, same as every other write.
+fn handle_record_user_correction(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_user_correction_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_user_correction(
+            &input.project_id,
+            &input.task_id,
+            &input.run_id,
+            input.attempt_id.as_deref(),
+            &input.planning_spec_hash,
+            input.execution_spec_hash.as_deref(),
+            input.execution_spec_frozen,
+            &input.raw_text_ref,
+            input.attachment_hashes,
+            &input.submitted_at,
+            &input.operator,
+            input.subject_contract_hash.as_deref(),
+            input.subject_graph_hash.as_deref(),
+            input.subject_candidate_hash.as_deref(),
+            input.classification,
+            input.impact,
+            input.affected_requirement_ids,
+            input.affected_node_ids,
+            input.disposition,
+            input.successor_ref.as_deref(),
+            &input.receipt_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(user_correction_record_json(&record))
+}
+
+fn user_correction_record_json(record: &UserCorrectionRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_user_correction` -- looks up the
+/// recorded `user_correction_receipts` row for `receipt_digest`, if any.
+fn read_user_correction_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_user_correction(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(user_correction_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no user correction receipt recorded with digest {receipt_digest}"),
+        )),
+    }
 }
 
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
@@ -1681,6 +1829,12 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordCredentialReceipt(RecordCredentialReceiptError::Receipt(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::RecordUserCorrection(RecordUserCorrectionError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordUserCorrection(RecordUserCorrectionError::Receipt(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -1784,6 +1938,7 @@ fn try_dispatch_read(
         "step_role.canonical_bindings" => Some(read_step_role_canonical_bindings()),
         "step_role.validate_schema" => Some(read_step_role_validate_schema(command)),
         "step_role.role_properties" => Some(read_step_role_role_properties(command)),
+        "user_correction.get" => Some(read_user_correction_get(store, command)),
         _ => None,
     }
 }
@@ -7012,6 +7167,161 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("step_role.role_properties", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_user_correction_input_json() -> Value {
+        json!({
+            "project_id": "project-1",
+            "task_id": "task-1",
+            "run_id": "run-1",
+            "attempt_id": null,
+            "planning_spec_hash": "planning-spec-hash-1",
+            "execution_spec_hash": null,
+            "execution_spec_frozen": false,
+            "raw_text_ref": "raw-text-ref-1",
+            "attachment_hashes": [],
+            "submitted_at": "2026-09-15T00:00:00Z",
+            "operator": "dannie",
+            "subject_contract_hash": null,
+            "subject_graph_hash": null,
+            "subject_candidate_hash": null,
+            "classification": "PlanningRevision",
+            "impact": {
+                "would_delete_requirement": false,
+                "would_relax_check": false,
+                "would_change_project_intent": false,
+                "adds_external_side_effect": false,
+            },
+            "affected_requirement_ids": [],
+            "affected_node_ids": [],
+            "disposition": "NewPlanningRunSpec",
+            "successor_ref": null,
+            "receipt_digest": "UC-1",
+        })
+    }
+
+    /// §6.5: `user_correction.record` follows the same no-`Event`-produced
+    /// shape as `credential.issue_receipt`, and its payload round-trips
+    /// through the `user_correction.get` read command.
+    #[test]
+    fn handle_command_user_correction_record_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "user_correction.record",
+            json!({ "input": well_formed_user_correction_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("user_correction.record failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_digest"], "UC-1");
+        assert_eq!(payload["receipt"]["classification"], "PlanningRevision");
+
+        let get_cmd = command("user_correction.get", json!({ "receipt_digest": "UC-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("user_correction.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Unlike `credential.record`, a second `user_correction.record` call
+    /// reusing the same `receipt_digest` must be refused -- a correction
+    /// receipt is a one-time fact, not current state to overwrite.
+    #[test]
+    fn handle_command_user_correction_record_refuses_to_reuse_an_existing_receipt_digest() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "user_correction.record",
+            json!({ "input": well_formed_user_correction_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §6.5: pre-freeze corrections must be classified `PlanningRevision`
+    /// -- re-validated server-side via `issue_user_correction_receipt`
+    /// rather than trusting the caller's own classification/disposition
+    /// pairing.
+    #[test]
+    fn handle_command_user_correction_record_rejects_a_pre_freeze_non_planning_classification() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_user_correction_input_json();
+        input["classification"] = json!("GraphStrategy");
+        input["disposition"] = json!("ReplanProposal");
+        let record_cmd = command("user_correction.record", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command("user_correction.get", json!({ "receipt_digest": "UC-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `user_correction.get` for a `receipt_digest` with no recorded
+    /// correction is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_user_correction_get_is_not_found_when_no_receipt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "user_correction.get",
+            json!({ "receipt_digest": "no-such-receipt" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_user_correction_record_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("user_correction.record", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
