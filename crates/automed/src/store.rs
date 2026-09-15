@@ -43,6 +43,11 @@ use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
     TargetRejection,
 };
+use autome_domain::project_intent::{
+    self, InitializationResult, IntentRevision, KeyDecision, ProjectInitializationError,
+    ProjectInitializationReceipt, ProjectIntentAmendment, ProjectIntentAmendmentError,
+    ProjectIntentAmendmentRequest, ProjectIntentError, ProjectIntentRevision,
+};
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::RequirementId;
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
@@ -678,6 +683,80 @@ impl From<rusqlite::Error> for RecordBudgetGrantError {
     }
 }
 
+/// A persisted §5.1 `ProjectIntentRevision` plus when it landed. Same
+/// "no extra aggregate-linking key" reasoning as `UserCorrectionRecord` --
+/// `ProjectIntentRevision` already carries its own `project_id`/`revision`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectIntentRevisionRecord {
+    pub revision: ProjectIntentRevision,
+    pub created_at: String,
+}
+
+/// `record_project_intent_revision`'s failure modes. Re-runs
+/// `project_intent::issue_project_intent_revision` server-side, same
+/// discipline as `record_user_correction`. A duplicate `(project_id,
+/// revision)` pair surfaces as a plain SQL primary-key violation.
+#[derive(Debug)]
+pub enum RecordProjectIntentRevisionError {
+    Sql(rusqlite::Error),
+    Revision(Vec<ProjectIntentError>),
+}
+
+impl From<rusqlite::Error> for RecordProjectIntentRevisionError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordProjectIntentRevisionError::Sql(value)
+    }
+}
+
+/// A persisted §5.1 `ProjectIntentAmendment` plus when it landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectIntentAmendmentRecord {
+    pub amendment: ProjectIntentAmendment,
+    pub created_at: String,
+}
+
+/// `record_project_intent_amendment`'s failure modes. Composes an
+/// already-recorded current revision (looked up via
+/// `load_current_project_intent_revision`, same "组合已存条目" pattern as
+/// `issue_candidate_certificate` loading a readiness receipt by digest)
+/// rather than requiring the caller to resupply the whole revision --
+/// `NoCurrentRevision` is the store-level equivalent of
+/// `IssueCandidateCertificateError::ReadinessNotFound`: there is no
+/// revision yet to amend, not a domain rejection of a well-formed request.
+#[derive(Debug)]
+pub enum RecordProjectIntentAmendmentError {
+    Sql(rusqlite::Error),
+    NoCurrentRevision,
+    Amendment(ProjectIntentAmendmentError),
+}
+
+impl From<rusqlite::Error> for RecordProjectIntentAmendmentError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordProjectIntentAmendmentError::Sql(value)
+    }
+}
+
+/// A persisted §5.1 `ProjectInitializationReceipt` plus when it landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectInitializationReceiptRecord {
+    pub receipt: ProjectInitializationReceipt,
+    pub created_at: String,
+}
+
+/// `record_project_initialization_receipt`'s failure modes. Re-runs
+/// `project_intent::issue_project_initialization_receipt` server-side.
+#[derive(Debug)]
+pub enum RecordProjectInitializationReceiptError {
+    Sql(rusqlite::Error),
+    Receipt(ProjectInitializationError),
+}
+
+impl From<rusqlite::Error> for RecordProjectInitializationReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordProjectInitializationReceiptError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -849,6 +928,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v13,
     migrate_v14,
     migrate_v15,
+    migrate_v16,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1244,6 +1324,40 @@ fn migrate_v15(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_budget_grant_receipts_run_id
             ON budget_grant_receipts(run_id);
+        ",
+    )
+}
+
+/// §5.1 project_intent's three tables. `project_intent_revisions` uses a
+/// composite `(project_id, revision)` primary key — same reasoning as
+/// `run_workspaces`' `(task_id, run_id)` key from §8.1: multiple revisions
+/// legitimately coexist per project, so no single column identifies a row.
+fn migrate_v16(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS project_intent_revisions (
+            project_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            revision_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, revision)
+        );
+        CREATE TABLE IF NOT EXISTS project_intent_amendments (
+            amendment_hash TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            amendment_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_intent_amendments_project_id
+            ON project_intent_amendments(project_id);
+        CREATE TABLE IF NOT EXISTS project_initialization_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_initialization_receipts_project_id
+            ON project_initialization_receipts(project_id);
         ",
     )
 }
@@ -3059,6 +3173,281 @@ impl EventStore {
             let receipt: BudgetGrantReceipt = serde_json::from_str(&receipt_json)
                 .expect("budget_grant_receipts.receipt_json round-trips");
             BudgetGrantRecord { receipt, created_at }
+        }))
+    }
+
+    /// §5.1's write path for `ProjectIntentRevision`: re-runs
+    /// `project_intent::issue_project_intent_revision` server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_project_intent_revision(
+        &mut self,
+        project_id: &str,
+        revision: u32,
+        source_anchors: Vec<String>,
+        approved_by: &str,
+        approved_at: &str,
+        product_goal: &str,
+        target_users: Vec<String>,
+        durable_cross_task_constraints: Vec<String>,
+        explicit_non_goals: Vec<String>,
+        key_decisions: Vec<KeyDecision>,
+        supersedes: Option<u32>,
+        intent_hash: &str,
+    ) -> Result<ProjectIntentRevisionRecord, RecordProjectIntentRevisionError> {
+        let revision = project_intent::issue_project_intent_revision(
+            project_id,
+            IntentRevision(revision),
+            source_anchors,
+            approved_by,
+            approved_at,
+            product_goal,
+            target_users,
+            durable_cross_task_constraints,
+            explicit_non_goals,
+            key_decisions,
+            supersedes.map(IntentRevision),
+            intent_hash,
+        )
+        .map_err(RecordProjectIntentRevisionError::Revision)?;
+
+        let revision_json =
+            serde_json::to_string(&revision).expect("ProjectIntentRevision is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO project_intent_revisions (project_id, revision, revision_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                revision.project_id,
+                revision.revision.0,
+                revision_json,
+                created_at
+            ],
+        )?;
+
+        Ok(ProjectIntentRevisionRecord {
+            revision,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_project_intent_revision` for one exact
+    /// `(project_id, revision)` pair.
+    pub fn load_project_intent_revision(
+        &self,
+        project_id: &str,
+        revision: u32,
+    ) -> rusqlite::Result<Option<ProjectIntentRevisionRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT revision_json, created_at FROM project_intent_revisions \
+                 WHERE project_id = ?1 AND revision = ?2",
+                rusqlite::params![project_id, revision],
+                |row| {
+                    let revision_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((revision_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(revision_json, created_at)| {
+            let revision: ProjectIntentRevision = serde_json::from_str(&revision_json)
+                .expect("project_intent_revisions.revision_json round-trips");
+            ProjectIntentRevisionRecord {
+                revision,
+                created_at,
+            }
+        }))
+    }
+
+    /// The derived "current revision" read a project actually has: the
+    /// highest `revision` recorded for `project_id`, not a separately
+    /// stored value. `record_project_intent_amendment` uses this to find
+    /// the revision an amendment request is checked against.
+    pub fn load_current_project_intent_revision(
+        &self,
+        project_id: &str,
+    ) -> rusqlite::Result<Option<ProjectIntentRevisionRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT revision_json, created_at FROM project_intent_revisions \
+                 WHERE project_id = ?1 ORDER BY revision DESC LIMIT 1",
+                rusqlite::params![project_id],
+                |row| {
+                    let revision_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((revision_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(revision_json, created_at)| {
+            let revision: ProjectIntentRevision = serde_json::from_str(&revision_json)
+                .expect("project_intent_revisions.revision_json round-trips");
+            ProjectIntentRevisionRecord {
+                revision,
+                created_at,
+            }
+        }))
+    }
+
+    /// §5.1's write path for `ProjectIntentAmendment`: loads the project's
+    /// current revision (an already-recorded prerequisite, same "组合已存
+    /// 条目" pattern as `issue_candidate_certificate` loading a readiness
+    /// receipt by digest) and checks the request against it. Only records
+    /// the amendment itself and hands back `to_revision` -- building the
+    /// next authoritative `ProjectIntentRevision` is a separate call to
+    /// `record_project_intent_revision`, matching
+    /// `project_intent::apply_project_intent_amendment`'s own division of
+    /// labor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_project_intent_amendment(
+        &mut self,
+        project_id: &str,
+        from_revision: u32,
+        trigger_task: Option<&str>,
+        semantic_diff: &str,
+        affected_active_tasks: Vec<String>,
+        user_decision_receipt: &str,
+        amendment_hash: &str,
+    ) -> Result<ProjectIntentAmendmentRecord, RecordProjectIntentAmendmentError> {
+        let current = self
+            .load_current_project_intent_revision(project_id)?
+            .ok_or(RecordProjectIntentAmendmentError::NoCurrentRevision)?;
+
+        let request = ProjectIntentAmendmentRequest {
+            project_id: project_id.to_string(),
+            from_revision: IntentRevision(from_revision),
+            trigger_task: trigger_task.map(|s| s.to_string()),
+            semantic_diff: semantic_diff.to_string(),
+            affected_active_tasks,
+            user_decision_receipt: user_decision_receipt.to_string(),
+            amendment_hash: amendment_hash.to_string(),
+        };
+        let amendment = project_intent::apply_project_intent_amendment(&current.revision, request)
+            .map_err(RecordProjectIntentAmendmentError::Amendment)?;
+
+        let amendment_json =
+            serde_json::to_string(&amendment).expect("ProjectIntentAmendment is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO project_intent_amendments (amendment_hash, project_id, amendment_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                amendment.amendment_hash,
+                amendment.project_id,
+                amendment_json,
+                created_at
+            ],
+        )?;
+
+        Ok(ProjectIntentAmendmentRecord {
+            amendment,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_project_intent_amendment`.
+    pub fn load_project_intent_amendment(
+        &self,
+        amendment_hash: &str,
+    ) -> rusqlite::Result<Option<ProjectIntentAmendmentRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT amendment_json, created_at FROM project_intent_amendments WHERE amendment_hash = ?1",
+                rusqlite::params![amendment_hash],
+                |row| {
+                    let amendment_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((amendment_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(amendment_json, created_at)| {
+            let amendment: ProjectIntentAmendment = serde_json::from_str(&amendment_json)
+                .expect("project_intent_amendments.amendment_json round-trips");
+            ProjectIntentAmendmentRecord {
+                amendment,
+                created_at,
+            }
+        }))
+    }
+
+    /// §5.1's write path for `ProjectInitializationReceipt`: re-runs
+    /// `project_intent::issue_project_initialization_receipt` server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_project_initialization_receipt(
+        &mut self,
+        project_id: &str,
+        project_revision: u32,
+        subject_identity_hash: &str,
+        trust_decision_ref: Option<&str>,
+        environment_snapshot_id: &str,
+        skill_inventory_id: &str,
+        project_home_manifest: &str,
+        result: InitializationResult,
+        issues: Vec<String>,
+        receipt_digest: &str,
+    ) -> Result<ProjectInitializationReceiptRecord, RecordProjectInitializationReceiptError> {
+        let receipt = project_intent::issue_project_initialization_receipt(
+            project_id,
+            project_revision,
+            subject_identity_hash,
+            trust_decision_ref,
+            environment_snapshot_id,
+            skill_inventory_id,
+            project_home_manifest,
+            result,
+            issues,
+            receipt_digest,
+        )
+        .map_err(RecordProjectInitializationReceiptError::Receipt)?;
+
+        let receipt_json = serde_json::to_string(&receipt)
+            .expect("ProjectInitializationReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO project_initialization_receipts (receipt_digest, project_id, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.receipt_digest,
+                receipt.project_id,
+                receipt_json,
+                created_at
+            ],
+        )?;
+
+        Ok(ProjectInitializationReceiptRecord {
+            receipt,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_project_initialization_receipt`.
+    pub fn load_project_initialization_receipt(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<ProjectInitializationReceiptRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM project_initialization_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: ProjectInitializationReceipt = serde_json::from_str(&receipt_json)
+                .expect("project_initialization_receipts.receipt_json round-trips");
+            ProjectInitializationReceiptRecord {
+                receipt,
+                created_at,
+            }
         }))
     }
 
@@ -4878,6 +5267,366 @@ mod tests {
             "{err:?}"
         );
         assert!(store.load_budget_grant("GRANT-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_fixture_project_intent_revision(
+        store: &mut EventStore,
+        project_id: &str,
+        revision: u32,
+        approved_by: &str,
+        supersedes: Option<u32>,
+    ) -> Result<ProjectIntentRevisionRecord, RecordProjectIntentRevisionError> {
+        store.record_project_intent_revision(
+            project_id,
+            revision,
+            vec!["README.md".to_string()],
+            approved_by,
+            "2026-09-14T00:00:00Z",
+            "Ship a local-first digital employee",
+            vec!["solo developers".to_string()],
+            vec!["never phone home".to_string()],
+            vec!["no multi-tenant support".to_string()],
+            vec![KeyDecision {
+                id: "kd-1".into(),
+                statement: "Use SQLite for the event journal".into(),
+                rationale: "Local-first, single-user, no server dependency".into(),
+                source_ref: "docs/plan.md#L42".into(),
+            }],
+            supersedes,
+            "intent-hash-1",
+        )
+    }
+
+    #[test]
+    fn record_project_intent_revision_records_a_well_formed_revision_and_reads_it_back() {
+        let root = temp_data_root("record-project-intent-revision-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_project_intent_revision("project-1", 1)
+                .unwrap()
+                .is_none()
+        );
+
+        let record =
+            record_fixture_project_intent_revision(&mut store, "project-1", 1, "dannie", None)
+                .unwrap();
+        assert_eq!(record.revision.revision, IntentRevision(1));
+
+        let loaded = store
+            .load_project_intent_revision("project-1", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_intent_revision_refuses_to_reuse_an_existing_project_id_revision_pair() {
+        let root = temp_data_root("record-project-intent-revision-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_project_intent_revision(&mut store, "project-1", 1, "dannie", None)
+            .unwrap();
+        let err =
+            record_fixture_project_intent_revision(&mut store, "project-1", 1, "someone-else", None)
+                .unwrap_err();
+        assert!(
+            matches!(err, RecordProjectIntentRevisionError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_intent_revision_rejects_missing_approved_by_without_writing_anything() {
+        let root = temp_data_root("record-project-intent-revision-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err =
+            record_fixture_project_intent_revision(&mut store, "project-1", 1, "", None)
+                .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordProjectIntentRevisionError::Revision(errors)
+                    if errors.contains(&ProjectIntentError::MissingApprovedBy)
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_project_intent_revision("project-1", 1)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn load_current_project_intent_revision_returns_the_highest_revision() {
+        let root = temp_data_root("load-current-project-intent-revision");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_current_project_intent_revision("project-1")
+                .unwrap()
+                .is_none()
+        );
+
+        record_fixture_project_intent_revision(&mut store, "project-1", 1, "dannie", None)
+            .unwrap();
+        record_fixture_project_intent_revision(
+            &mut store,
+            "project-1",
+            2,
+            "dannie",
+            Some(1),
+        )
+        .unwrap();
+
+        let current = store
+            .load_current_project_intent_revision("project-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.revision.revision, IntentRevision(2));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn record_fixture_project_intent_amendment(
+        store: &mut EventStore,
+        project_id: &str,
+        from_revision: u32,
+        amendment_hash: &str,
+    ) -> Result<ProjectIntentAmendmentRecord, RecordProjectIntentAmendmentError> {
+        store.record_project_intent_amendment(
+            project_id,
+            from_revision,
+            Some("task-9"),
+            "Added a non-goal: no team accounts in 2.0.0",
+            vec!["task-9".to_string()],
+            "decision-ref-1",
+            amendment_hash,
+        )
+    }
+
+    #[test]
+    fn record_project_intent_amendment_records_a_well_formed_amendment_and_reads_it_back() {
+        let root = temp_data_root("record-project-intent-amendment-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_project_intent_revision(&mut store, "project-1", 1, "dannie", None)
+            .unwrap();
+        assert!(
+            store
+                .load_project_intent_amendment("AMEND-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let record =
+            record_fixture_project_intent_amendment(&mut store, "project-1", 1, "AMEND-1")
+                .unwrap();
+        assert_eq!(record.amendment.to_revision, IntentRevision(2));
+
+        let loaded = store
+            .load_project_intent_amendment("AMEND-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_intent_amendment_refuses_to_reuse_an_existing_amendment_hash() {
+        let root = temp_data_root("record-project-intent-amendment-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_project_intent_revision(&mut store, "project-1", 1, "dannie", None)
+            .unwrap();
+        record_fixture_project_intent_amendment(&mut store, "project-1", 1, "AMEND-1").unwrap();
+        let err =
+            record_fixture_project_intent_amendment(&mut store, "project-1", 1, "AMEND-1")
+                .unwrap_err();
+        assert!(
+            matches!(err, RecordProjectIntentAmendmentError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_intent_amendment_is_no_current_revision_when_none_recorded() {
+        let root = temp_data_root("record-project-intent-amendment-no-current-revision");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err =
+            record_fixture_project_intent_amendment(&mut store, "project-1", 1, "AMEND-1")
+                .unwrap_err();
+        assert!(
+            matches!(err, RecordProjectIntentAmendmentError::NoCurrentRevision),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_intent_amendment_rejects_stale_from_revision_without_writing_anything() {
+        let root = temp_data_root("record-project-intent-amendment-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_project_intent_revision(&mut store, "project-1", 3, "dannie", None)
+            .unwrap();
+        let err =
+            record_fixture_project_intent_amendment(&mut store, "project-1", 1, "AMEND-1")
+                .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordProjectIntentAmendmentError::Amendment(
+                    ProjectIntentAmendmentError::FromRevisionMismatch { expected, actual }
+                ) if *expected == IntentRevision(3) && *actual == IntentRevision(1)
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_project_intent_amendment("AMEND-1")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn record_fixture_project_initialization_receipt(
+        store: &mut EventStore,
+        receipt_digest: &str,
+        result: InitializationResult,
+        issues: Vec<String>,
+    ) -> Result<ProjectInitializationReceiptRecord, RecordProjectInitializationReceiptError> {
+        store.record_project_initialization_receipt(
+            "project-1",
+            1,
+            "identity-hash-1",
+            None,
+            "env-snapshot-1",
+            "skill-inventory-1",
+            "manifest-1",
+            result,
+            issues,
+            receipt_digest,
+        )
+    }
+
+    #[test]
+    fn record_project_initialization_receipt_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-project-initialization-receipt-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_project_initialization_receipt("RECEIPT-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let record = record_fixture_project_initialization_receipt(
+            &mut store,
+            "RECEIPT-1",
+            InitializationResult::Ready,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(record.receipt.result, InitializationResult::Ready);
+
+        let loaded = store
+            .load_project_initialization_receipt("RECEIPT-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_initialization_receipt_refuses_to_reuse_an_existing_receipt_digest() {
+        let root = temp_data_root("record-project-initialization-receipt-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_project_initialization_receipt(
+            &mut store,
+            "RECEIPT-1",
+            InitializationResult::Ready,
+            vec![],
+        )
+        .unwrap();
+        let err = record_fixture_project_initialization_receipt(
+            &mut store,
+            "RECEIPT-1",
+            InitializationResult::Blocked,
+            vec!["environment not qualified".to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, RecordProjectInitializationReceiptError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_project_initialization_receipt_rejects_blocked_with_no_issues_without_writing_anything()
+     {
+        let root = temp_data_root("record-project-initialization-receipt-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = record_fixture_project_initialization_receipt(
+            &mut store,
+            "RECEIPT-1",
+            InitializationResult::Blocked,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordProjectInitializationReceiptError::Receipt(
+                    ProjectInitializationError::BlockedResultRequiresAtLeastOneIssue
+                )
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_project_initialization_receipt("RECEIPT-1")
+                .unwrap()
+                .is_none()
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

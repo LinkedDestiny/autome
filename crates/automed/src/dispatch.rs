@@ -98,9 +98,13 @@ use crate::store::{
     ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
     IssueCandidateCertificateError, IssueCompletionCertificateError, NodeAppendError,
     PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
-    ReadinessRecord, RecordAttemptError, RecordBudgetGrantError, RecordCredentialError,
-    RecordCredentialReceiptError, RecordEvidenceError, RecordPlanningPolicyRestartError,
-    RecordReadinessError, RecordRunPolicyAmendmentError, RecordUserCorrectionError,
+    ProjectIntentAmendmentRecord, ProjectIntentRevisionRecord,
+    ProjectInitializationReceiptRecord, ReadinessRecord, RecordAttemptError,
+    RecordBudgetGrantError, RecordCredentialError, RecordCredentialReceiptError,
+    RecordEvidenceError, RecordPlanningPolicyRestartError,
+    RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
+    RecordProjectInitializationReceiptError, RecordReadinessError,
+    RecordRunPolicyAmendmentError, RecordUserCorrectionError,
     RunPolicyAmendmentRecord, StartDeliveryChainError, TaskAppendError, TaskSummary,
     UserCorrectionRecord,
 };
@@ -128,6 +132,7 @@ use autome_domain::policy_restart::BudgetLimitGrant;
 use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
 };
+use autome_domain::project_intent::{InitializationResult, KeyDecision};
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::{Requirement, RequirementId};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
@@ -252,6 +257,28 @@ pub enum DispatchError {
     /// (`Grant`), or a duplicate `grant_digest` surfaced as a SQL
     /// primary-key violation (`Sql`).
     RecordBudgetGrant(RecordBudgetGrantError),
+    /// §5.1 write path: `record_project_intent_revision`'s failure modes --
+    /// `project_intent::issue_project_intent_revision`'s own mechanical
+    /// rules (missing approved_by/approved_at/source anchor/product goal, an
+    /// incomplete key decision), re-run server-side (`Revision`), or a
+    /// duplicate `(project_id, revision)` pair surfaced as a SQL
+    /// primary-key violation (`Sql`).
+    RecordProjectIntentRevision(RecordProjectIntentRevisionError),
+    /// §5.1 write path: `record_project_intent_amendment`'s failure modes --
+    /// no current revision was ever recorded for this project
+    /// (`NoCurrentRevision`, the store-level equivalent of
+    /// `IssueCandidateCertificateError::ReadinessNotFound`), the domain's
+    /// own `apply_project_intent_amendment` rejected the request
+    /// (`Amendment`), or a duplicate `amendment_hash` surfaced as a SQL
+    /// primary-key violation (`Sql`).
+    RecordProjectIntentAmendment(RecordProjectIntentAmendmentError),
+    /// §5.1 write path: `record_project_initialization_receipt`'s failure
+    /// modes -- `project_intent::issue_project_initialization_receipt`'s
+    /// own mechanical rule (a `Blocked` result with no issues, or a `Ready`
+    /// result that still lists issues), re-run server-side (`Receipt`), or a
+    /// duplicate `receipt_digest` surfaced as a SQL primary-key violation
+    /// (`Sql`).
+    RecordProjectInitializationReceipt(RecordProjectInitializationReceiptError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -323,6 +350,24 @@ impl From<RecordRunPolicyAmendmentError> for DispatchError {
 impl From<RecordBudgetGrantError> for DispatchError {
     fn from(value: RecordBudgetGrantError) -> Self {
         DispatchError::RecordBudgetGrant(value)
+    }
+}
+
+impl From<RecordProjectIntentRevisionError> for DispatchError {
+    fn from(value: RecordProjectIntentRevisionError) -> Self {
+        DispatchError::RecordProjectIntentRevision(value)
+    }
+}
+
+impl From<RecordProjectIntentAmendmentError> for DispatchError {
+    fn from(value: RecordProjectIntentAmendmentError) -> Self {
+        DispatchError::RecordProjectIntentAmendment(value)
+    }
+}
+
+impl From<RecordProjectInitializationReceiptError> for DispatchError {
+    fn from(value: RecordProjectInitializationReceiptError) -> Self {
+        DispatchError::RecordProjectInitializationReceipt(value)
     }
 }
 
@@ -847,6 +892,29 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     }
     if command.method == "policy_restart.issue_budget_grant" {
         let result = handle_record_budget_grant(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // §5.1: project_intent's three fact records -- same shape again.
+    if command.method == "project_intent.record_revision" {
+        let result = handle_record_project_intent_revision(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "project_intent.record_amendment" {
+        let result = handle_record_project_intent_amendment(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "project_intent.record_initialization_receipt" {
+        let result = handle_record_project_initialization_receipt(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -1597,6 +1665,307 @@ fn read_budget_grant_get(
     }
 }
 
+/// The raw field bundle `project_intent.record_revision` takes as
+/// `params.input` -- every argument
+/// `project_intent::issue_project_intent_revision` needs, same reasoning as
+/// `PlanningPolicyRestartInputParam`.
+#[derive(Debug, Deserialize)]
+struct ProjectIntentRevisionInputParam {
+    project_id: String,
+    revision: u32,
+    #[serde(default)]
+    source_anchors: Vec<String>,
+    approved_by: String,
+    approved_at: String,
+    product_goal: String,
+    #[serde(default)]
+    target_users: Vec<String>,
+    #[serde(default)]
+    durable_cross_task_constraints: Vec<String>,
+    #[serde(default)]
+    explicit_non_goals: Vec<String>,
+    #[serde(default)]
+    key_decisions: Vec<KeyDecision>,
+    supersedes: Option<u32>,
+    intent_hash: String,
+}
+
+fn parse_project_intent_revision_input_param(
+    command: &Command,
+) -> Result<ProjectIntentRevisionInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid project_intent revision input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_project_intent_revision`.
+/// Takes `{ input: <ProjectIntentRevisionInputParam> }` and re-validates
+/// server-side via `project_intent::issue_project_intent_revision`.
+fn handle_record_project_intent_revision(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input =
+        parse_project_intent_revision_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_project_intent_revision(
+            &input.project_id,
+            input.revision,
+            input.source_anchors,
+            &input.approved_by,
+            &input.approved_at,
+            &input.product_goal,
+            input.target_users,
+            input.durable_cross_task_constraints,
+            input.explicit_non_goals,
+            input.key_decisions,
+            input.supersedes,
+            &input.intent_hash,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(project_intent_revision_record_json(&record))
+}
+
+fn project_intent_revision_record_json(record: &ProjectIntentRevisionRecord) -> Value {
+    serde_json::json!({
+        "revision": record.revision,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_project_intent_revision` -- looks up
+/// the recorded `project_intent_revisions` row for one exact
+/// `(project_id, revision)` pair.
+fn read_project_intent_revision_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    let revision = parse_u32_param(command, "revision").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_intent_revision(&project_id, revision)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(project_intent_revision_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project intent revision recorded for project {project_id} revision {revision}"),
+        )),
+    }
+}
+
+/// The derived "current revision" read -- looks up the highest recorded
+/// `revision` for `project_id`, same query `record_project_intent_amendment`
+/// itself uses to find the revision an amendment request is checked
+/// against.
+fn read_current_project_intent_revision_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_current_project_intent_revision(&project_id)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(project_intent_revision_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project intent revision recorded for project {project_id}"),
+        )),
+    }
+}
+
+/// The raw field bundle `project_intent.record_amendment` takes as
+/// `params.input` -- every argument `project_intent::apply_project_intent_amendment`
+/// needs, same reasoning as `PlanningPolicyRestartInputParam`.
+#[derive(Debug, Deserialize)]
+struct ProjectIntentAmendmentInputParam {
+    project_id: String,
+    from_revision: u32,
+    trigger_task: Option<String>,
+    semantic_diff: String,
+    #[serde(default)]
+    affected_active_tasks: Vec<String>,
+    user_decision_receipt: String,
+    amendment_hash: String,
+}
+
+fn parse_project_intent_amendment_input_param(
+    command: &Command,
+) -> Result<ProjectIntentAmendmentInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid project_intent amendment input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_project_intent_amendment`.
+/// Takes `{ input: <ProjectIntentAmendmentInputParam> }`; the store loads
+/// the project's current revision itself and re-validates the request
+/// against it server-side.
+fn handle_record_project_intent_amendment(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_project_intent_amendment_input_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_project_intent_amendment(
+            &input.project_id,
+            input.from_revision,
+            input.trigger_task.as_deref(),
+            &input.semantic_diff,
+            input.affected_active_tasks,
+            &input.user_decision_receipt,
+            &input.amendment_hash,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(project_intent_amendment_record_json(&record))
+}
+
+fn project_intent_amendment_record_json(record: &ProjectIntentAmendmentRecord) -> Value {
+    serde_json::json!({
+        "amendment": record.amendment,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_project_intent_amendment` -- looks up
+/// the recorded `project_intent_amendments` row for `amendment_hash`, if
+/// any.
+fn read_project_intent_amendment_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let amendment_hash =
+        parse_string_param(command, "amendment_hash").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_intent_amendment(&amendment_hash)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(project_intent_amendment_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project intent amendment recorded with hash {amendment_hash}"),
+        )),
+    }
+}
+
+/// The raw field bundle `project_intent.record_initialization_receipt`
+/// takes as `params.input` -- every argument
+/// `project_intent::issue_project_initialization_receipt` needs, same
+/// reasoning as `PlanningPolicyRestartInputParam`.
+#[derive(Debug, Deserialize)]
+struct ProjectInitializationReceiptInputParam {
+    project_id: String,
+    project_revision: u32,
+    subject_identity_hash: String,
+    trust_decision_ref: Option<String>,
+    environment_snapshot_id: String,
+    skill_inventory_id: String,
+    project_home_manifest: String,
+    result: InitializationResult,
+    #[serde(default)]
+    issues: Vec<String>,
+    receipt_digest: String,
+}
+
+fn parse_project_initialization_receipt_input_param(
+    command: &Command,
+) -> Result<ProjectInitializationReceiptInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid project_intent initialization-receipt input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_project_initialization_receipt`.
+/// Takes `{ input: <ProjectInitializationReceiptInputParam> }` and
+/// re-validates server-side via
+/// `project_intent::issue_project_initialization_receipt`.
+fn handle_record_project_initialization_receipt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_project_initialization_receipt_input_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_project_initialization_receipt(
+            &input.project_id,
+            input.project_revision,
+            &input.subject_identity_hash,
+            input.trust_decision_ref.as_deref(),
+            &input.environment_snapshot_id,
+            &input.skill_inventory_id,
+            &input.project_home_manifest,
+            input.result,
+            input.issues,
+            &input.receipt_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(project_initialization_receipt_record_json(&record))
+}
+
+fn project_initialization_receipt_record_json(
+    record: &ProjectInitializationReceiptRecord,
+) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_project_initialization_receipt` --
+/// looks up the recorded `project_initialization_receipts` row for
+/// `receipt_digest`, if any.
+fn read_project_initialization_receipt_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_initialization_receipt(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(project_initialization_receipt_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project initialization receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -2196,6 +2565,30 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordBudgetGrant(RecordBudgetGrantError::Grant(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::RecordProjectIntentRevision(RecordProjectIntentRevisionError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordProjectIntentRevision(
+            RecordProjectIntentRevisionError::Revision(e),
+        ) => (ReplyErrorCode::TransitionRejected, format!("{e:?}")),
+        DispatchError::RecordProjectIntentAmendment(RecordProjectIntentAmendmentError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordProjectIntentAmendment(
+            RecordProjectIntentAmendmentError::NoCurrentRevision,
+        ) => (
+            ReplyErrorCode::NotFound,
+            "no current project intent revision recorded for this project".to_string(),
+        ),
+        DispatchError::RecordProjectIntentAmendment(
+            RecordProjectIntentAmendmentError::Amendment(e),
+        ) => (ReplyErrorCode::TransitionRejected, format!("{e:?}")),
+        DispatchError::RecordProjectInitializationReceipt(
+            RecordProjectInitializationReceiptError::Sql(e),
+        ) => (ReplyErrorCode::Internal, e.to_string()),
+        DispatchError::RecordProjectInitializationReceipt(
+            RecordProjectInitializationReceiptError::Receipt(e),
+        ) => (ReplyErrorCode::TransitionRejected, format!("{e:?}")),
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -2305,6 +2698,14 @@ fn try_dispatch_read(
         }
         "policy_restart.get_run_amendment" => Some(read_run_policy_amendment_get(store, command)),
         "policy_restart.get_budget_grant" => Some(read_budget_grant_get(store, command)),
+        "project_intent.get_revision" => Some(read_project_intent_revision_get(store, command)),
+        "project_intent.get_current_revision" => {
+            Some(read_current_project_intent_revision_get(store, command))
+        }
+        "project_intent.get_amendment" => Some(read_project_intent_amendment_get(store, command)),
+        "project_intent.get_initialization_receipt" => {
+            Some(read_project_initialization_receipt_get(store, command))
+        }
         _ => None,
     }
 }
@@ -8052,6 +8453,467 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("policy_restart.issue_budget_grant", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_project_intent_revision_input_json(revision: u32, supersedes: Option<u32>) -> Value {
+        json!({
+            "project_id": "project-1",
+            "revision": revision,
+            "source_anchors": ["README.md"],
+            "approved_by": "dannie",
+            "approved_at": "2026-09-14T00:00:00Z",
+            "product_goal": "Ship a local-first digital employee",
+            "target_users": ["solo developers"],
+            "durable_cross_task_constraints": ["never phone home"],
+            "explicit_non_goals": ["no multi-tenant support"],
+            "key_decisions": [{
+                "id": "kd-1",
+                "statement": "Use SQLite for the event journal",
+                "rationale": "Local-first, single-user, no server dependency",
+                "source_ref": "docs/plan.md#L42",
+            }],
+            "supersedes": supersedes,
+            "intent_hash": "intent-hash-1",
+        })
+    }
+
+    /// §5.1: `project_intent.record_revision` follows the same
+    /// no-`Event`-produced shape as `user_correction.record`, and its
+    /// payload round-trips through `project_intent.get_revision`.
+    #[test]
+    fn handle_command_project_intent_record_revision_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "project_intent.record_revision",
+            json!({ "input": well_formed_project_intent_revision_input_json(1, None) }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.record_revision failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["revision"]["revision"], 1);
+        assert_eq!(payload["revision"]["project_id"], "project-1");
+
+        let get_cmd = command(
+            "project_intent.get_revision",
+            json!({ "project_id": "project-1", "revision": 1 }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.get_revision failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_revision_refuses_to_reuse_an_existing_project_id_revision_pair()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "project_intent.record_revision",
+            json!({ "input": well_formed_project_intent_revision_input_json(1, None) }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_revision_rejects_missing_approved_by() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_project_intent_revision_input_json(1, None);
+        input["approved_by"] = json!("");
+        let record_cmd = command("project_intent.record_revision", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "project_intent.get_revision",
+            json!({ "project_id": "project-1", "revision": 1 }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_get_revision_is_not_found_when_no_revision_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "project_intent.get_revision",
+            json!({ "project_id": "no-such-project", "revision": 1 }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_get_current_revision_returns_the_highest_revision() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        handle_command(
+            &mut store,
+            &command(
+                "project_intent.record_revision",
+                json!({ "input": well_formed_project_intent_revision_input_json(1, None) }),
+            ),
+        );
+        handle_command(
+            &mut store,
+            &command(
+                "project_intent.record_revision",
+                json!({ "input": well_formed_project_intent_revision_input_json(2, Some(1)) }),
+            ),
+        );
+
+        let get_cmd = command(
+            "project_intent.get_current_revision",
+            json!({ "project_id": "project-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.get_current_revision failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["revision"]["revision"], 2);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_revision_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("project_intent.record_revision", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_project_intent_amendment_input_json(from_revision: u32) -> Value {
+        json!({
+            "project_id": "project-1",
+            "from_revision": from_revision,
+            "trigger_task": "task-9",
+            "semantic_diff": "Added a non-goal: no team accounts in 2.0.0",
+            "affected_active_tasks": ["task-9"],
+            "user_decision_receipt": "decision-ref-1",
+            "amendment_hash": "AMEND-1",
+        })
+    }
+
+    /// §5.1: `project_intent.record_amendment` follows the same
+    /// no-`Event`-produced shape, and its payload round-trips through
+    /// `project_intent.get_amendment`.
+    #[test]
+    fn handle_command_project_intent_record_amendment_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        handle_command(
+            &mut store,
+            &command(
+                "project_intent.record_revision",
+                json!({ "input": well_formed_project_intent_revision_input_json(1, None) }),
+            ),
+        );
+
+        let record_cmd = command(
+            "project_intent.record_amendment",
+            json!({ "input": well_formed_project_intent_amendment_input_json(1) }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.record_amendment failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["amendment"]["to_revision"], 2);
+
+        let get_cmd = command(
+            "project_intent.get_amendment",
+            json!({ "amendment_hash": "AMEND-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.get_amendment failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_amendment_refuses_to_reuse_an_existing_amendment_hash() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        handle_command(
+            &mut store,
+            &command(
+                "project_intent.record_revision",
+                json!({ "input": well_formed_project_intent_revision_input_json(1, None) }),
+            ),
+        );
+        let record_cmd = command(
+            "project_intent.record_amendment",
+            json!({ "input": well_formed_project_intent_amendment_input_json(1) }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// No revision has ever been recorded for this project -- the store's
+    /// `NoCurrentRevision` prerequisite-missing case, mapped to `NotFound`
+    /// same as `IssueCandidateCertificateError::ReadinessNotFound`.
+    #[test]
+    fn handle_command_project_intent_record_amendment_is_not_found_when_no_current_revision_exists()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "project_intent.record_amendment",
+            json!({ "input": well_formed_project_intent_amendment_input_json(1) }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_amendment_rejects_stale_from_revision() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        handle_command(
+            &mut store,
+            &command(
+                "project_intent.record_revision",
+                json!({ "input": well_formed_project_intent_revision_input_json(3, None) }),
+            ),
+        );
+
+        let record_cmd = command(
+            "project_intent.record_amendment",
+            json!({ "input": well_formed_project_intent_amendment_input_json(1) }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "project_intent.get_amendment",
+            json!({ "amendment_hash": "AMEND-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_amendment_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("project_intent.record_amendment", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_project_initialization_receipt_input_json() -> Value {
+        json!({
+            "project_id": "project-1",
+            "project_revision": 1,
+            "subject_identity_hash": "identity-hash-1",
+            "trust_decision_ref": null,
+            "environment_snapshot_id": "env-snapshot-1",
+            "skill_inventory_id": "skill-inventory-1",
+            "project_home_manifest": "manifest-1",
+            "result": "Ready",
+            "issues": [],
+            "receipt_digest": "RECEIPT-1",
+        })
+    }
+
+    /// §5.1: `project_intent.record_initialization_receipt` follows the
+    /// same no-`Event`-produced shape, and its payload round-trips through
+    /// `project_intent.get_initialization_receipt`.
+    #[test]
+    fn handle_command_project_intent_record_initialization_receipt_produces_no_event_and_reads_back()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "project_intent.record_initialization_receipt",
+            json!({ "input": well_formed_project_initialization_receipt_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.record_initialization_receipt failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_digest"], "RECEIPT-1");
+        assert_eq!(payload["receipt"]["result"], "Ready");
+
+        let get_cmd = command(
+            "project_intent.get_initialization_receipt",
+            json!({ "receipt_digest": "RECEIPT-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("project_intent.get_initialization_receipt failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_initialization_receipt_refuses_to_reuse_an_existing_receipt_digest()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "project_intent.record_initialization_receipt",
+            json!({ "input": well_formed_project_initialization_receipt_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_initialization_receipt_rejects_blocked_with_no_issues()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_project_initialization_receipt_input_json();
+        input["result"] = json!("Blocked");
+        input["issues"] = json!([]);
+        let record_cmd = command(
+            "project_intent.record_initialization_receipt",
+            json!({ "input": input }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "project_intent.get_initialization_receipt",
+            json!({ "receipt_digest": "RECEIPT-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_project_intent_record_initialization_receipt_is_invalid_params_without_input()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("project_intent.record_initialization_receipt", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
