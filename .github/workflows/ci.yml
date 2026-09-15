@@ -1,0 +1,74 @@
+# Quality gates from technical design §16. Everything here runs on every push;
+# the two gates that cannot (T5's real CLIs, T6's screenshot comparison) are
+# called out in the design as manual.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    # macOS because the product is macOS-only (plan D9) and because the git,
+    # worktree and process tests exercise real platform behaviour. Running them
+    # on Linux would test a platform we do not ship.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      # T1: static gates. `-D warnings` because a warning that is allowed to
+      # accumulate stops being read.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # T1/T2/T3: the unit suites. Git is present on the runner, so the git
+      # and launcher tests run rather than skipping.
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+      # T7: the end-to-end suite, which drives a whole task to a merge commit
+      # against a real repository with a stand-in for the model. Run
+      # separately so a failure here is legible as "the loop broke" rather
+      # than being buried in the unit output.
+      - name: End to end
+        run: cargo test --test end_to_end -- --nocapture
+
+  desktop:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        working-directory: apps/desktop
+        run: npm ci || npm install
+      # T4/T6: the IPC gates, the shell, and the renderer's screen tests
+      # including the one-screen height measurement.
+      - name: Test
+        working-directory: apps/desktop
+        run: npm test
+
+  # A guard rather than a gate: the two allowlists in the desktop shell must
+  # stay in step with the core's own read/write split. The desktop suite
+  # already cross-checks the read side by parsing dispatch.rs; this job fails
+  # loudly if the file it parses ever moves.
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The read allowlist's source of truth exists
+        run: |
+          test -f crates/automed/src/dispatch.rs
+          grep -q 'pub const READ_METHODS' crates/automed/src/dispatch.rs
