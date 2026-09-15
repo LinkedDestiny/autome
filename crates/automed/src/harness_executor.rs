@@ -106,12 +106,65 @@ pub struct ExecuteCodexAttemptRequest<'a> {
     pub turn_completion_timeout: Duration,
 }
 
+/// The turn-level half of `ExecutedAttempt` -- everything except the
+/// `DisposableClone` itself. Split out so a caller that already has a
+/// clone (e.g. `dispatch::handle_execute_codex_attempt`, which creates one
+/// via `EventStore::create_disposable_clone_for_run` so it gets recorded
+/// in `run_workspaces`) can drive and classify a turn against it without
+/// this module creating a second, unrecorded clone of its own.
+#[derive(Debug)]
+pub struct TurnClassification {
+    pub turn_id: Option<String>,
+    pub turn_status: String,
+    pub error_message: Option<String>,
+    pub outcome: AttemptOutcome,
+}
+
+/// Drives one Codex turn against an already-prepared `repo_path` under
+/// `workspace-write` (Codex's own native sandbox disables network access by
+/// default under this mode, confirmed empirically — see `codex_transport`
+/// module doc) and classifies the terminal outcome per §7.1.
+pub async fn run_codex_turn_and_classify(
+    codex_binary: &Path,
+    codex_home: &OwnedDirGuard,
+    repo_path: &Path,
+    instruction: &str,
+    turn_completion_timeout: Duration,
+) -> Result<TurnClassification, HarnessExecutorError> {
+    let turn_outcome = codex_transport::probe_turn_to_completion(
+        codex_binary,
+        codex_home,
+        repo_path,
+        CodexSandboxMode::WorkspaceWrite,
+        instruction,
+        turn_completion_timeout,
+    )
+    .await?;
+
+    let outcome = if turn_outcome.status == SUCCESS_STATUS {
+        let candidate_tree_hash = compute_candidate_tree_hash(repo_path)?;
+        AttemptOutcome::ProducedCandidate {
+            candidate_tree_hash,
+        }
+    } else {
+        AttemptOutcome::AttemptFailed
+    };
+
+    Ok(TurnClassification {
+        turn_id: turn_outcome.turn_id,
+        turn_status: turn_outcome.status,
+        error_message: turn_outcome.error_message,
+        outcome,
+    })
+}
+
 /// Drives the thinnest real Harness-to-Run execution path for the Codex
 /// adapter: clones `source_repo` into a disposable, single-purpose
-/// workspace; runs one Codex turn against it under `workspace-write` (Codex's
-/// own native sandbox disables network access by default under this mode,
-/// confirmed empirically — see `codex_transport` module doc); classifies the
-/// terminal outcome per §7.1.
+/// workspace, then runs `run_codex_turn_and_classify` against it. Standalone
+/// convenience for callers that have no clone of their own yet (this
+/// module's own tests below); `dispatch::handle_execute_codex_attempt` calls
+/// `run_codex_turn_and_classify` directly instead, against a clone it
+/// already created and recorded itself.
 pub async fn execute_codex_attempt(
     request: ExecuteCodexAttemptRequest<'_>,
 ) -> Result<ExecutedAttempt, HarnessExecutorError> {
@@ -122,31 +175,21 @@ pub async fn execute_codex_attempt(
         request.source_repo,
     )?;
 
-    let turn_outcome = codex_transport::probe_turn_to_completion(
+    let classification = run_codex_turn_and_classify(
         request.codex_binary,
         request.codex_home,
         &clone.repo_path,
-        CodexSandboxMode::WorkspaceWrite,
         request.instruction,
         request.turn_completion_timeout,
     )
     .await?;
 
-    let outcome = if turn_outcome.status == SUCCESS_STATUS {
-        let candidate_tree_hash = compute_candidate_tree_hash(&clone.repo_path)?;
-        AttemptOutcome::ProducedCandidate {
-            candidate_tree_hash,
-        }
-    } else {
-        AttemptOutcome::AttemptFailed
-    };
-
     Ok(ExecutedAttempt {
         clone,
-        turn_id: turn_outcome.turn_id,
-        turn_status: turn_outcome.status,
-        error_message: turn_outcome.error_message,
-        outcome,
+        turn_id: classification.turn_id,
+        turn_status: classification.turn_status,
+        error_message: classification.error_message,
+        outcome: classification.outcome,
     })
 }
 

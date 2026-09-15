@@ -51,6 +51,21 @@
 //! `params.run_id`, `params.attempt` (a full `autome_domain::attempt::Attempt`)
 //! and `params.permission_profile` (a full `AttemptPermissionProfile`); its
 //! read counterpart `attempt.get` parses `params.attempt_id`.
+//! `harness.execute_codex_attempt` (§5.6/§7.1) is the same "write returns
+//! Value not Event" shape once more, but composes three store calls
+//! instead of one: `record_attempt`, `create_disposable_clone_for_run`,
+//! then (after driving one Codex turn via
+//! `harness_executor::run_codex_turn_and_classify` against
+//! `EventStore::ensure_codex_home`'s shared `codex-home` and
+//! `codex_binary_path()`'s `AUTOMED_CODEX_BINARY`-or-default binary)
+//! `record_attempt_outcome`. Parses `params.task_id`, `params.run_id`,
+//! `params.source_repo`, `params.instruction`, `params.attempt`,
+//! `params.permission_profile`, and an optional
+//! `params.turn_completion_timeout_secs`; its read counterpart
+//! `harness.get_attempt_outcome` parses `params.attempt_id`. The
+//! synchronous/async boundary is bridged with a module-local `block_on`
+//! helper over a lazily-built single-thread `tokio::runtime::Runtime`,
+//! rather than making `handle_command` itself async.
 //! `evidence.record` (§5.7) is the same shape again: writes an
 //! `evidence_receipts` row but appends no `Event`. Parses `params.receipt`
 //! (a full `autome_domain::evidence::EvidenceReceipt`); its read counterpart
@@ -116,11 +131,12 @@
 //! caller's own verdict. Returns `{ is_complete, open_gates }`.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
+use crate::harness_executor::{self, HarnessExecutorError};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
     AppendedGraphEvent, AppendedNodeEvent, AppendedProjectEvent, AppendedRunEvent,
-    AppendedTaskEvent, AttemptRecord, AuthorizeContractAmendmentError, AuthorizeReplanError,
-    BindPlaybookError, BudgetGrantRecord,
+    AppendedTaskEvent, AttemptOutcomeRecord, AttemptRecord, AuthorizeContractAmendmentError,
+    AuthorizeReplanError, BindPlaybookError, BudgetGrantRecord,
     CandidateCertificateRecord, CompletionCertificateRecord, ContractAmendmentAuthorizationRecord,
     ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
@@ -131,7 +147,8 @@ use crate::store::{
     PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
     ProjectIntentAmendmentRecord, ProjectIntentRevisionRecord,
     ProjectInitializationReceiptRecord, QualificationRecord, ReadinessRecord, RecordAttemptError,
-    RecordBudgetGrantError, RecordCredentialError, RecordCredentialReceiptError,
+    RecordAttemptOutcomeError, RecordBudgetGrantError, RecordCredentialError,
+    RecordCredentialReceiptError,
     RecordEvidenceError, RecordHumanReviewReceiptError, RecordPlanningPolicyRestartError,
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
     RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
@@ -194,6 +211,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 use time::OffsetDateTime;
 
 use crate::target_probe::{self, TargetProbeError};
@@ -238,6 +256,22 @@ pub enum DispatchError {
     /// write-granting profile), matched exhaustively below -- same
     /// reasoning as `CreateDisposableClone` above.
     RecordAttempt(RecordAttemptError),
+    /// §7.1 write path: `harness_executor::run_codex_turn_and_classify`'s
+    /// failure modes -- the Codex transport itself failed
+    /// (`CodexTransport`) or the post-turn `git write-tree` candidate-hash
+    /// computation failed (`TreeHash`); `Workspace` cannot actually occur
+    /// here (`handle_execute_codex_attempt` calls
+    /// `run_codex_turn_and_classify` directly against an already-created
+    /// clone, never `execute_codex_attempt`'s own clone-creating path) but
+    /// is matched exhaustively below anyway since it is part of
+    /// `HarnessExecutorError`'s public shape.
+    ExecuteCodexAttempt(HarnessExecutorError),
+    /// §5.6/§7.1 write path: `record_attempt_outcome`'s failure modes -- no
+    /// `Attempt` was ever recorded for this `attempt_id` (`UnknownAttempt`,
+    /// the outcome-side equivalent of `IssueCandidateCertificateError::ReadinessNotFound`),
+    /// or a duplicate `attempt_id` surfaced as a SQL primary-key violation
+    /// (`Sql`).
+    RecordAttemptOutcome(RecordAttemptOutcomeError),
     /// §5.7 write path: `record_evidence`'s only failure mode (a duplicate
     /// `receipt_id`, surfaced as a SQL primary-key violation).
     RecordEvidence(RecordEvidenceError),
@@ -392,6 +426,18 @@ impl From<CreateDisposableCloneError> for DispatchError {
 impl From<RecordAttemptError> for DispatchError {
     fn from(value: RecordAttemptError) -> Self {
         DispatchError::RecordAttempt(value)
+    }
+}
+
+impl From<HarnessExecutorError> for DispatchError {
+    fn from(value: HarnessExecutorError) -> Self {
+        DispatchError::ExecuteCodexAttempt(value)
+    }
+}
+
+impl From<RecordAttemptOutcomeError> for DispatchError {
+    fn from(value: RecordAttemptOutcomeError) -> Self {
+        DispatchError::RecordAttemptOutcome(value)
     }
 }
 
@@ -871,6 +917,18 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.6/§7.1: same shape again -- composes `create_disposable_clone_for_run`
+    // (a `run_workspaces` row) and `record_attempt_outcome` (an
+    // `attempt_outcomes` row), appending no domain `Event` either, so it
+    // can't fit `dispatch`'s `Result<Event, _>` shape.
+    if command.method == "harness.execute_codex_attempt" {
+        let result = handle_execute_codex_attempt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     // §5.7: same shape again -- writes an `evidence_receipts` row (so it
     // isn't a read) but appends no domain `Event` (a receipt is a fact
     // fixed once by a verifier run, not an aggregate with a reducer).
@@ -1328,6 +1386,20 @@ fn attempt_record_json(record: &AttemptRecord) -> Value {
     })
 }
 
+fn attempt_outcome_json(record: &AttemptOutcomeRecord) -> Value {
+    serde_json::json!({
+        "attempt_id": record.attempt_id,
+        "run_id": record.run_id,
+        "outcome": record.outcome,
+        "turn_id": record.turn_id,
+        "turn_status": record.turn_status,
+        "error_message": record.error_message,
+        "clone_repo_path": record.clone_repo_path,
+        "clone_head_commit": record.clone_head_commit,
+        "created_at": record.created_at,
+    })
+}
+
 fn parse_attempt_param(command: &Command) -> Result<Attempt, DispatchError> {
     let value = command
         .params
@@ -1354,6 +1426,130 @@ fn parse_attempt_permission_profile_param(
             "params.permission_profile is not a valid AttemptPermissionProfile: {e}"
         ))
     })
+}
+
+/// Default ceiling `handle_execute_codex_attempt` drives one Codex turn
+/// for, when the caller does not supply `turn_completion_timeout_secs` --
+/// matches `harness_executor`'s own test fixture's order of magnitude
+/// (90s against an unauthenticated binary that fails fast); real turns
+/// against an authenticated binary get more room.
+const DEFAULT_CODEX_TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// `AUTOMED_CODEX_BINARY` mirrors `main.rs`'s own `AUTOMED_DB_PATH`
+/// convention -- read lazily here rather than threaded through
+/// `EventStore::open`, since that constructor already has 150+ existing
+/// call sites that know nothing about Codex. Defaults to the path this
+/// repo's own `harness_executor` tests are empirically confirmed against.
+fn codex_binary_path() -> std::path::PathBuf {
+    std::env::var("AUTOMED_CODEX_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/homebrew/bin/codex"))
+}
+
+/// Bridges `main.rs`'s fully synchronous stdio loop into
+/// `harness_executor::run_codex_turn_and_classify`'s async signature,
+/// without making `handle_command`'s signature (158+ existing
+/// `EventStore::open` call sites' worth of surrounding sync code) async.
+/// `current_thread` is deliberate: `handle_command` is called from a
+/// single-threaded blocking loop that processes one `Command` at a time,
+/// so there is never more than one in-flight turn to schedule.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build the current-thread tokio runtime")
+        })
+        .block_on(future)
+}
+
+/// §5.6/§7.1: the sole caller of `harness_executor::run_codex_turn_and_classify`.
+/// Takes `{ task_id, run_id, source_repo, instruction, attempt,
+/// permission_profile, turn_completion_timeout_secs? }` and composes the
+/// full thinnest-real-execution path end to end: records the `Attempt`
+/// (`record_attempt`), clones `source_repo` into a recorded disposable
+/// workspace (`create_disposable_clone_for_run`), drives one Codex turn
+/// against that clone under the store's shared `codex-home`
+/// (`ensure_codex_home`), classifies the terminal outcome, and persists it
+/// (`record_attempt_outcome`). Deliberately does not accept a
+/// caller-supplied `codex_binary`/`codex_home` -- those come from
+/// `codex_binary_path()`/`store.ensure_codex_home()` so every caller drives
+/// the same binary and shares the same authentication state. Refuses to
+/// run while the store is in its diagnostic state, same as every other
+/// write.
+fn handle_execute_codex_attempt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let task_id = parse_string_param(command, "task_id").map_err(dispatch_error_to_reply_error)?;
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let source_repo =
+        parse_string_param(command, "source_repo").map_err(dispatch_error_to_reply_error)?;
+    let instruction =
+        parse_string_param(command, "instruction").map_err(dispatch_error_to_reply_error)?;
+    let attempt = parse_attempt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let permission_profile =
+        parse_attempt_permission_profile_param(command).map_err(dispatch_error_to_reply_error)?;
+    let turn_completion_timeout = parse_optional_u64_param(command, "turn_completion_timeout_secs")
+        .map_err(dispatch_error_to_reply_error)?
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_CODEX_TURN_TIMEOUT);
+
+    let attempt_record = store
+        .record_attempt(&run_id, &attempt, &permission_profile)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    let attempt_id = attempt_record.attempt.id.0.clone();
+
+    let clone = store
+        .create_disposable_clone_for_run(&task_id, &run_id, Path::new(&source_repo))
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+
+    let codex_home = store
+        .ensure_codex_home()
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(CreateDisposableCloneError::Workspace(e))))?;
+    let codex_binary = codex_binary_path();
+
+    let classification = block_on(harness_executor::run_codex_turn_and_classify(
+        &codex_binary,
+        &codex_home,
+        Path::new(&clone.repo_path),
+        &instruction,
+        turn_completion_timeout,
+    ))
+    .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+
+    let outcome_record = store
+        .record_attempt_outcome(
+            &attempt_id,
+            &run_id,
+            &classification.outcome,
+            classification.turn_id.as_deref(),
+            &classification.turn_status,
+            classification.error_message.as_deref(),
+            &clone.repo_path,
+            &clone.head_commit,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+
+    Ok(attempt_outcome_json(&outcome_record))
+}
+
+fn parse_optional_u64_param(
+    command: &Command,
+    key: &str,
+) -> Result<Option<u64>, DispatchError> {
+    match command.params.get(key).cloned() {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) if n.as_u64().is_some() => Ok(n.as_u64()),
+        Some(_) => Err(DispatchError::InvalidParams(format!(
+            "params.{key} must be a non-negative integer when present"
+        ))),
+    }
 }
 
 /// Handles `evidence.record`: `{ receipt: EvidenceReceipt }`. Same
@@ -4032,6 +4228,22 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordAttempt(RecordAttemptError::PlanningWrite(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::ExecuteCodexAttempt(HarnessExecutorError::Workspace(e)) => {
+            (ReplyErrorCode::InvalidParams, e.to_string())
+        }
+        DispatchError::ExecuteCodexAttempt(HarnessExecutorError::CodexTransport(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ExecuteCodexAttempt(HarnessExecutorError::TreeHash(e)) => {
+            (ReplyErrorCode::Internal, e)
+        }
+        DispatchError::RecordAttemptOutcome(RecordAttemptOutcomeError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordAttemptOutcome(RecordAttemptOutcomeError::UnknownAttempt(id)) => (
+            ReplyErrorCode::NotFound,
+            format!("no attempt has been recorded with attempt_id: {id}"),
+        ),
         DispatchError::RecordEvidence(RecordEvidenceError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -4220,6 +4432,7 @@ fn try_dispatch_read(
         "queue.get" => Some(read_queue_get(store)),
         "workspace.get" => Some(read_workspace_get(store, command)),
         "attempt.get" => Some(read_attempt_get(store, command)),
+        "harness.get_attempt_outcome" => Some(read_attempt_outcome_get(store, command)),
         "evidence.get" => Some(read_evidence_get(store, command)),
         "evidence.check" => Some(read_evidence_check(store, command)),
         "readiness.get" => Some(read_readiness_get(store, command)),
@@ -4483,6 +4696,25 @@ fn read_attempt_get(
         None => Err((
             ReplyErrorCode::NotFound,
             format!("no attempt recorded with id {attempt_id}"),
+        )),
+    }
+}
+
+/// Read counterpart to `handle_execute_codex_attempt`. Takes
+/// `{ attempt_id }`; `NotFound` if no outcome has been recorded for that
+/// attempt yet (either the attempt itself doesn't exist, or it exists but
+/// hasn't been executed yet).
+fn read_attempt_outcome_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let attempt_id =
+        parse_string_param(command, "attempt_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_attempt_outcome(&attempt_id).map_err(internal_error)? {
+        Some(record) => Ok(attempt_outcome_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no attempt outcome recorded for attempt_id {attempt_id}"),
         )),
     }
 }
@@ -7526,6 +7758,84 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
             other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.6/§7.1: real-binary integration test driving
+    /// `harness.execute_codex_attempt` end to end through `handle_command`
+    /// against the unauthenticated `/opt/homebrew/bin/codex` binary
+    /// (same confirmed `"failed"`/401 fixture as
+    /// `harness_executor`'s own test). Asserts the composed write records
+    /// an `AttemptFailed` outcome (never fabricating a `candidate_tree_hash`
+    /// for a Harness that produced no real candidate) and that
+    /// `harness.get_attempt_outcome` round-trips it byte for byte.
+    #[test]
+    fn handle_command_harness_execute_codex_attempt_records_attempt_failed_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let mut params = well_formed_attempt_and_profile_json("attempt-1", vec!["/workdir"]);
+        params["task_id"] = json!("task-1");
+        params["source_repo"] = json!(repo.to_string_lossy());
+        params["instruction"] = json!("say hi");
+        params["turn_completion_timeout_secs"] = json!(90);
+        let cmd = command("harness.execute_codex_attempt", params);
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("harness.execute_codex_attempt failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["attempt_id"], "attempt-1");
+        assert_eq!(payload["run_id"], "run-1");
+        assert_eq!(payload["turn_status"], "failed");
+        assert_eq!(payload["outcome"], json!("AttemptFailed"));
+        assert!(
+            payload["error_message"]
+                .as_str()
+                .is_some_and(|msg| msg.contains("401"))
+        );
+
+        let get_cmd = command(
+            "harness.get_attempt_outcome",
+            json!({ "attempt_id": "attempt-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("harness.get_attempt_outcome failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `harness.get_attempt_outcome` for an `attempt_id` with no recorded
+    /// outcome is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_harness_get_attempt_outcome_is_not_found_when_none_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "harness.get_attempt_outcome",
+            json!({ "attempt_id": "no-such-attempt" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();

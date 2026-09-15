@@ -97,6 +97,17 @@ pub fn ensure_runs_root(data_root: &OwnedDirGuard) -> Result<OwnedDirGuard, Work
     ensure_owned_dir(data_root, "runs").map_err(WorkspaceError::from)
 }
 
+/// Creates `data_root/codex-home` (or re-verifies it if a past run already
+/// created it) as the owner-only `CODEX_HOME` every Codex-adapter turn runs
+/// under (see `codex_transport`'s `CODEX_HOME`/`PATH`-only isolation
+/// discipline). Shared and reused across Runs rather than one fresh
+/// directory per attempt -- this is also where authentication state a
+/// human operator sets up out of band will persist once real credentials
+/// are provisioned.
+pub fn ensure_codex_home(data_root: &OwnedDirGuard) -> Result<OwnedDirGuard, WorkspaceError> {
+    ensure_owned_dir(data_root, "codex-home").map_err(WorkspaceError::from)
+}
+
 fn run_git(args: &[&str]) -> Result<Output, WorkspaceError> {
     Command::new("git")
         .args(args)

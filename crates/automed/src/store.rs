@@ -12,8 +12,8 @@
 use std::collections::{HashMap, HashSet};
 
 use autome_domain::attempt::{
-    self, Attempt, AttemptPermissionProfile, AttemptShapeError, PermissionProfileViolation,
-    PlanningWriteViolation,
+    self, Attempt, AttemptOutcome, AttemptPermissionProfile, AttemptShapeError,
+    PermissionProfileViolation, PlanningWriteViolation,
 };
 use autome_domain::certificate::{
     self, AuditVerdict, CandidateCertificate, CandidateCertificateError, CompletionCertificate,
@@ -316,6 +316,43 @@ pub enum RecordAttemptError {
 impl From<rusqlite::Error> for RecordAttemptError {
     fn from(value: rusqlite::Error) -> Self {
         RecordAttemptError::Sql(value)
+    }
+}
+
+/// One `attempt_outcomes` row, as persisted by `record_attempt_outcome`:
+/// the post-execution `AttemptOutcome` for an already-recorded `Attempt`,
+/// plus the raw Codex-adapter turn fields and the disposable clone the turn
+/// ran against -- the gap `attempt::AttemptOutcome`'s own doc comment
+/// describes as "a single boolean fact recorded by whichever automed-side
+/// code drives the Harness" (see `harness_executor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptOutcomeRecord {
+    pub attempt_id: String,
+    pub run_id: String,
+    pub outcome: AttemptOutcome,
+    pub turn_id: Option<String>,
+    pub turn_status: String,
+    pub error_message: Option<String>,
+    pub clone_repo_path: String,
+    pub clone_head_commit: String,
+    pub created_at: String,
+}
+
+/// `record_attempt_outcome`'s failure modes. `UnknownAttempt` is an
+/// app-level check (not a domain validation, since `AttemptOutcome` has no
+/// shape of its own to validate) -- an outcome may only be recorded against
+/// an `Attempt` that was itself already recorded via `record_attempt`,
+/// mirroring the real execution order (the pre-execution fact must exist
+/// before the post-execution one can).
+#[derive(Debug)]
+pub enum RecordAttemptOutcomeError {
+    Sql(rusqlite::Error),
+    UnknownAttempt(String),
+}
+
+impl From<rusqlite::Error> for RecordAttemptOutcomeError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordAttemptOutcomeError::Sql(value)
     }
 }
 
@@ -1148,6 +1185,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v19,
     migrate_v20,
     migrate_v21,
+    migrate_v22,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1747,6 +1785,33 @@ fn migrate_v20(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_contract_amendment_authorizations_triggering_run_id
             ON contract_amendment_authorizations(triggering_run_id);
+        ",
+    )
+}
+
+/// `attempt_outcomes`: one row per `record_attempt_outcome` call (§5.6/§7.1).
+/// `attempt_id` is the primary key, mirroring `attempts`' own discipline --
+/// an outcome is recorded exactly once, since an `Attempt` runs exactly
+/// once. `run_id` is denormalized out for the same cheap-scoped-listing
+/// reason as `migrate_v6`'s `attempts` table; `outcome_json` remains the
+/// authoritative value. `turn_id`/`error_message` are nullable (a
+/// classification can observe no turn id, or no error), `turn_status` is
+/// not (every classified turn has a terminal status string).
+fn migrate_v22(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS attempt_outcomes (
+            attempt_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
+            turn_id TEXT,
+            turn_status TEXT NOT NULL,
+            error_message TEXT,
+            clone_repo_path TEXT NOT NULL,
+            clone_head_commit TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attempt_outcomes_run_id ON attempt_outcomes(run_id);
         ",
     )
 }
@@ -3007,19 +3072,34 @@ impl EventStore {
     /// refuses to reuse an existing `<run_id>` directory, and the
     /// `(task_id, run_id)` primary key would refuse the duplicate row even
     /// if it somehow got that far.
+    /// The owner-only directory `db_path` lives in, re-verified fresh on
+    /// every call rather than cached -- shared by `create_disposable_clone_for_run`
+    /// and `ensure_codex_home` so both derive the same root the same way.
+    fn data_root_guard(&self) -> Result<fs_guard::OwnedDirGuard, WorkspaceError> {
+        let data_root = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        fs_guard::verify_owned_dir(&data_root, &data_root).map_err(WorkspaceError::from)
+    }
+
+    /// Re-verifies (or creates, on first use) `data_root/codex-home` as the
+    /// owner-only `CODEX_HOME` the Codex adapter runs every turn under --
+    /// see `workspace::ensure_codex_home`. The sole caller is
+    /// `dispatch::handle_execute_codex_attempt`.
+    pub fn ensure_codex_home(&self) -> Result<fs_guard::OwnedDirGuard, WorkspaceError> {
+        let data_root_guard = self.data_root_guard()?;
+        workspace::ensure_codex_home(&data_root_guard)
+    }
+
     pub fn create_disposable_clone_for_run(
         &mut self,
         task_id: &str,
         run_id: &str,
         source_repo: &std::path::Path,
     ) -> Result<DisposableCloneRecord, CreateDisposableCloneError> {
-        let data_root = self
-            .db_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .to_path_buf();
-        let data_root_guard = fs_guard::verify_owned_dir(&data_root, &data_root)
-            .map_err(WorkspaceError::from)?;
+        let data_root_guard = self.data_root_guard()?;
         let runs_root = workspace::ensure_runs_root(&data_root_guard)?;
         let clone = workspace::create_disposable_clone(&runs_root, task_id, run_id, source_repo)?;
 
@@ -3147,6 +3227,124 @@ impl EventStore {
                 created_at,
             }
         }))
+    }
+
+    /// §5.6/§7.1's write path: records the post-execution `AttemptOutcome`
+    /// for an already-recorded `attempt_id`, alongside the raw Harness turn
+    /// fields and the disposable clone it ran against. The sole caller is
+    /// `dispatch::handle_execute_codex_attempt`. Refuses to run if
+    /// `attempt_id` was never recorded via `record_attempt` -- an outcome
+    /// with no matching pre-execution fact would have no
+    /// `AttemptPermissionProfile` it could be checked against.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_attempt_outcome(
+        &mut self,
+        attempt_id: &str,
+        run_id: &str,
+        outcome: &AttemptOutcome,
+        turn_id: Option<&str>,
+        turn_status: &str,
+        error_message: Option<&str>,
+        clone_repo_path: &str,
+        clone_head_commit: &str,
+    ) -> Result<AttemptOutcomeRecord, RecordAttemptOutcomeError> {
+        if self.load_attempt(attempt_id)?.is_none() {
+            return Err(RecordAttemptOutcomeError::UnknownAttempt(
+                attempt_id.to_string(),
+            ));
+        }
+
+        let outcome_json = serde_json::to_string(outcome).expect("AttemptOutcome is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO attempt_outcomes (attempt_id, run_id, outcome_json, turn_id, turn_status, error_message, clone_repo_path, clone_head_commit, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                attempt_id,
+                run_id,
+                outcome_json,
+                turn_id,
+                turn_status,
+                error_message,
+                clone_repo_path,
+                clone_head_commit,
+                created_at,
+            ],
+        )?;
+
+        Ok(AttemptOutcomeRecord {
+            attempt_id: attempt_id.to_string(),
+            run_id: run_id.to_string(),
+            outcome: outcome.clone(),
+            turn_id: turn_id.map(str::to_string),
+            turn_status: turn_status.to_string(),
+            error_message: error_message.map(str::to_string),
+            clone_repo_path: clone_repo_path.to_string(),
+            clone_head_commit: clone_head_commit.to_string(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_attempt_outcome` — looks up the recorded
+    /// `attempt_outcomes` row for `attempt_id`, if any.
+    pub fn load_attempt_outcome(
+        &self,
+        attempt_id: &str,
+    ) -> rusqlite::Result<Option<AttemptOutcomeRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT run_id, outcome_json, turn_id, turn_status, error_message, clone_repo_path, clone_head_commit, created_at \
+                 FROM attempt_outcomes WHERE attempt_id = ?1",
+                rusqlite::params![attempt_id],
+                |row| {
+                    let run_id: String = row.get(0)?;
+                    let outcome_json: String = row.get(1)?;
+                    let turn_id: Option<String> = row.get(2)?;
+                    let turn_status: String = row.get(3)?;
+                    let error_message: Option<String> = row.get(4)?;
+                    let clone_repo_path: String = row.get(5)?;
+                    let clone_head_commit: String = row.get(6)?;
+                    let created_at: String = row.get(7)?;
+                    Ok((
+                        run_id,
+                        outcome_json,
+                        turn_id,
+                        turn_status,
+                        error_message,
+                        clone_repo_path,
+                        clone_head_commit,
+                        created_at,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row.map(
+            |(
+                run_id,
+                outcome_json,
+                turn_id,
+                turn_status,
+                error_message,
+                clone_repo_path,
+                clone_head_commit,
+                created_at,
+            )| {
+                let outcome: AttemptOutcome = serde_json::from_str(&outcome_json)
+                    .expect("attempt_outcomes.outcome_json round-trips");
+                AttemptOutcomeRecord {
+                    attempt_id: attempt_id.to_string(),
+                    run_id,
+                    outcome,
+                    turn_id,
+                    turn_status,
+                    error_message,
+                    clone_repo_path,
+                    clone_head_commit,
+                    created_at,
+                }
+            },
+        ))
     }
 
     /// §8.3's write path for the *current-state* `credentials` row.
