@@ -353,7 +353,9 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     // Entering the implementation loop for the first time is when N is
     // computed, and it needs the milestone count the design just produced.
-    let budget = resolve_budget(&transition, trigger, &resolved, task.budget_n);
+    let budget = resolve_budget(&transition, trigger, &resolved, task.budget_n, || {
+        read_status(&project, &task)
+    });
 
     ctx.store.set_task_state(task_id, &transition.next)?;
     if let Some(n) = budget {
@@ -380,34 +382,47 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 /// N is computed from the *initial* milestone count when the design is
 /// approved, and only then (design §5.5). Later transitions carry their own
 /// budget when they change it.
+///
+/// `status` is a closure rather than a value because reading the design
+/// document costs a file read, and every transition but this one already knows
+/// its budget.
 fn resolve_budget(
     transition: &Transition,
     trigger: &Trigger,
     resolved: &ResolvedConfig,
     current: Option<u32>,
+    status: impl FnOnce() -> Option<StatusBlock>,
 ) -> Option<u32> {
-    match transition.budget_n {
-        // The transition table returns `Some(0)` from the approval path when
-        // nothing has been computed yet; that is the signal to compute it.
-        Some(0) => None,
-        Some(n) if n > 0 => Some(n),
-        _ => None,
+    // A transition that changed the budget carries the new value.
+    if let Some(n) = transition.budget_n
+        && n > 0
+    {
+        return Some(n);
     }
-    .or_else(|| {
-        if matches!(trigger, Trigger::Approve)
-            && transition.next
-                == (TaskState::Active {
-                    node: Node::Implement,
-                })
-            && current.is_none()
-        {
-            // Fall back to the factor alone when the design produced no
-            // milestone table; `compute_budget` handles the empty case.
-            Some(resolved.loop_defaults.budget_factor)
-        } else {
-            None
-        }
+    let entering_implementation = matches!(trigger, Trigger::Approve)
+        && transition.next
+            == (TaskState::Active {
+                node: Node::Implement,
+            });
+    if !entering_implementation || current.is_some() {
+        return None;
+    }
+    // factor × the milestone count the design produced. Using the factor alone
+    // — which an earlier version did — gives a five-round budget to a
+    // five-milestone task, and the loop runs out partway through the second
+    // milestone.
+    Some(match status() {
+        Some(s) => task::compute_budget(resolved, &s),
+        None => resolved.loop_defaults.budget_factor,
     })
+}
+
+/// Reads and parses the task's design document, if it is there and valid.
+fn read_status(project: &Project, task: &TaskRecord) -> Option<StatusBlock> {
+    let repo = Path::new(&project.path);
+    let doc = worktree_path(repo, &task.slug).join(task.design_doc());
+    let text = std::fs::read_to_string(doc).ok()?;
+    status_block::parse(&text).ok()
 }
 
 fn trigger_name(t: &Trigger) -> &'static str {
@@ -1122,6 +1137,59 @@ mod tests {
         // fallback here, so assert it is at least the factor.
         let n = w.ctx.store.get_task("T-1").unwrap().budget_n.unwrap();
         assert!(n >= 5, "budget {n}");
+    }
+
+    #[test]
+    fn approving_a_five_milestone_design_gets_five_times_the_factor() {
+        // The bug this replaced: N was the factor alone, so a five-milestone
+        // task got a five-round budget and ran out partway through the second
+        // milestone.
+        needs_git!();
+        let mut w = World::new("budget-count");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+        w.write_design(
+            &task,
+            &design_doc(
+                "实现中",
+                &[
+                    ("M-01", MilestoneState::Open),
+                    ("M-02", MilestoneState::Open),
+                    ("M-03", MilestoneState::Open),
+                    ("M-04", MilestoneState::Open),
+                    ("M-05", MilestoneState::Open),
+                ],
+                "",
+            ),
+        );
+        let _ = advance(&mut w.ctx, "T-1", &Trigger::Approve);
+        assert_eq!(
+            w.ctx.store.get_task("T-1").unwrap().budget_n,
+            Some(25),
+            "factor 5 × 5 milestones"
+        );
+    }
+
+    #[test]
+    fn approving_a_design_with_no_milestones_still_gets_a_workable_budget() {
+        needs_git!();
+        let mut w = World::new("budget-empty");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+        w.write_design(&task, &design_doc("设计中", &[], ""));
+        let _ = advance(&mut w.ctx, "T-1", &Trigger::Approve);
+        let n = w.ctx.store.get_task("T-1").unwrap().budget_n.unwrap();
+        assert!(n >= 5, "a task must not start already out of budget: {n}");
     }
 
     #[test]
