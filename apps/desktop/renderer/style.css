@@ -826,3 +826,18 @@ body { font-size: 13px; }
    measured on the designed payloads, not on pathological ones). */
 .main { overflow: auto; }
 .screen { display: block; }
+
+/* ===== layer 8: the Onboarding artefact editor (requirement C-02 step 4) ===== */
+.artefact { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.artefact__head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--animal-text-secondary); }
+.artefact__head b { color: var(--animal-text); font-weight: 800; }
+/* A fixed height rather than auto-grow: two editors must both stay visible in
+   a 944px drawer, and a document that grows the drawer past the viewport
+   would push the save button out of reach. */
+.artefact__text {
+  height: 180px; resize: vertical; width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.6;
+  padding: 10px 12px; border: 2px solid var(--animal-border-light); border-radius: 14px;
+  background: #fffbe7; color: var(--animal-text-body);
+}
+.artefact__text:focus { outline: none; border-color: var(--animal-primary); }

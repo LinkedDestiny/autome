@@ -462,6 +462,91 @@ async function run() {
     textNotMarkup
   );
 
+  // ---- the Onboarding wizard (requirement C-02) --------------------------
+  //
+  // Steps 3, 4 and 5 each need something different from the user. A wizard
+  // that showed the same "next" button at every step would leave the user with
+  // no way to run the drafting session or to confirm what it produced, which
+  // is what shipped before this.
+  const wizard = await evaluate(async () => {
+    const projects = await import('autome://app/screens/projects.js');
+    const overlay = await import('autome://app/lib/overlay.js');
+    const out = {};
+    for (const step of [3, 4, 5]) {
+      overlay.close();
+      const project = {
+        id: 'prj-onboarding',
+        path: '/tmp/p',
+        display_name: '珊瑚笔记',
+        default_branch: 'main',
+        onboarding: { onboarding: 'in_progress', step },
+      };
+      projects.__testOpenOnboarding(project, {
+        refresh: async () => {},
+        navigate: () => {
+          out.navigated = true;
+        },
+      });
+      const modal = document.getElementById('modal');
+      out[step] = {
+        open: document.getElementById('modal-mask').classList.contains('open'),
+        buttons: Array.from(modal.querySelectorAll('button')).map((b) => b.textContent.trim()),
+        current: modal.querySelectorAll('.wstep.now').length,
+        done: modal.querySelectorAll('.wstep.done').length,
+      };
+    }
+    overlay.close();
+    return out;
+  });
+  check(
+    'the wizard marks the step it is on, and the ones before it as done',
+    wizard[3].current === 1 && wizard[3].done === 2 && wizard[5].done === 4,
+    wizard
+  );
+  check(
+    'step 3 offers to run the drafting session',
+    wizard[3].buttons.some((b) => b.includes('运行起草会话')),
+    wizard[3].buttons
+  );
+  check(
+    'step 4 offers to view and edit the artefacts',
+    wizard[4].buttons.some((b) => b.includes('查看并编辑产物')),
+    wizard[4].buttons
+  );
+  check(
+    'step 5 sends the user to the routing graph rather than duplicating it',
+    wizard[5].buttons.some((b) => b.includes('去路由图')),
+    wizard[5].buttons
+  );
+  check(
+    'every step can be skipped, because the whole wizard is optional',
+    [3, 4, 5].every((s) => wizard[s].buttons.some((b) => b.includes('跳过剩下的'))),
+    wizard
+  );
+
+  // The editor reads through the core, so with no sidecar the read rejects.
+  // What matters is that the failure is reported rather than swallowed into
+  // an empty editor the user could save over their profile.
+  const editorOffline = await evaluate(async () => {
+    const projects = await import('autome://app/screens/projects.js');
+    const before = document.querySelectorAll('.notif--error').length;
+    await projects.__testOpenArtefactEditor(
+      { id: 'prj-onboarding', display_name: 'x' },
+      { refresh: async () => {} }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return {
+      errors: document.querySelectorAll('.notif--error').length - before,
+      drawerOpen: document.getElementById('drawer').classList.contains('open'),
+      editors: document.querySelectorAll('.artefact__text').length,
+    };
+  });
+  check(
+    'a failed artefact read is reported and opens no editor to save over',
+    editorOffline.errors === 1 && editorOffline.drawerOpen === false && editorOffline.editors === 0,
+    editorOffline
+  );
+
   const cspViolations = consoleMessages.filter((m) =>
     /content security policy|refused to/i.test(String(m))
   );

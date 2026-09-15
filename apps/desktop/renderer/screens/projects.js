@@ -12,8 +12,9 @@
 import {
   h, icon, text, reveal, tag, spinnerTag, empty, activateOnKey,
 } from '../lib/dom.js';
-import { read, attempt, registerWrite } from '../lib/api.js';
-import { openModal, closeButton, close } from '../lib/overlay.js';
+import { read, attempt, registerWrite, coreMessage } from '../lib/api.js';
+import { openModal, openDrawer, closeButton, close } from '../lib/overlay.js';
+import { notify } from '../lib/notify.js';
 
 export const id = 'projects';
 export const nav = 'projects';
@@ -140,9 +141,24 @@ export async function addProject(ctx) {
 }
 
 /**
- * C-02's wizard, as far as this screen is concerned: the five steps are run by
- * the core in a visible terminal, so the modal states where it got to and
- * offers the two things the user can decide — carry on, or skip the rest.
+ * C-02's wizard.
+ *
+ * Steps 1 and 2 have already happened by the time a project exists. The three
+ * that remain each need something different from the user, so the modal is
+ * step-aware rather than a static list with one "next" button:
+ *
+ *  - **3** runs Claude Code in a visible terminal. The user watches it there;
+ *    this screen only starts it and says where to look.
+ *  - **4** is the confirm-and-edit step. The two artefacts are read through
+ *    the core — the renderer has no filesystem — and edited in a drawer,
+ *    because two documents do not fit a modal at 944px.
+ *  - **5** points at the routing graph, which is where Loop configuration
+ *    actually lives; duplicating it here would give two places to change one
+ *    thing.
+ *
+ * Skipping is offered at every step, because the whole wizard is optional: a
+ * skipped project uses the global defaults and its first task writes its own
+ * profile (C-02).
  */
 function openOnboarding(project, ctx) {
   const step = (project.onboarding && project.onboarding.step) || 3;
@@ -166,6 +182,81 @@ function openOnboarding(project, ctx) {
     ]);
   });
 
+  const advance = (label, success) =>
+    registerWrite(
+      h('button.btn.btn--yellow.ml-auto', {
+        type: 'button',
+        onClick: () =>
+          attempt({
+            label,
+            success,
+            run: (write) => write.advanceOnboarding(project.id),
+            onDone: () => {
+              close();
+              return ctx.refresh();
+            },
+          }),
+      }, [text(label)])
+    );
+
+  // The step-specific action. Everything else about the modal is the same.
+  let action;
+  if (step === 3) {
+    body.push(
+      h('p.quiet.mt-8', {
+        text:
+          '起草会在可见终端里运行，空目录时 Claude 会先问你几个关于项目定位的问题。' +
+          '会话结束后回到这里点「下一步」。',
+      })
+    );
+    action = [
+      registerWrite(
+        h('button.modal__btn', {
+          type: 'button',
+          onClick: () =>
+            attempt({
+              label: '已开始起草',
+              // The notification is written in onDone, where the session id is
+              // available, so the generic success line is suppressed.
+              success: false,
+              run: (write) => write.runOnboarding(project.id),
+              onDone: (result) =>
+                notify(
+                  'info',
+                  '已在终端中开始起草',
+                  `会话 ${result && result.session_id ? result.session_id : ''}`.trim()
+                ),
+            }),
+        }, [text('运行起草会话')])
+      ),
+      advance('下一步', '进入「确认产物」。'),
+    ];
+  } else if (step === 4) {
+    action = [
+      h('button.modal__btn', {
+        type: 'button',
+        onClick: () => openArtefactEditor(project, ctx),
+      }, [text('查看并编辑产物')]),
+      advance('确认，下一步', '进入「Loop 配置」。'),
+    ];
+  } else {
+    body.push(
+      h('p.quiet.mt-8', {
+        text: '在路由图里为这个项目设置五个角色；未覆盖的字段继续跟随全局默认。',
+      })
+    );
+    action = [
+      h('button.modal__btn', {
+        type: 'button',
+        onClick: () => {
+          close();
+          ctx.navigate('routing', { projectId: project.id });
+        },
+      }, [text('去路由图')]),
+      advance('完成 Onboarding', '这个项目已就绪。'),
+    ];
+  }
+
   openModal({
     title: `Onboarding · ${project.display_name || project.id}`,
     lead: '五步，随时可以跳过剩下的。',
@@ -187,21 +278,90 @@ function openOnboarding(project, ctx) {
             }),
         }, [text('跳过剩下的')])
       ),
-      registerWrite(
-        h('button.btn.btn--yellow.ml-auto', {
-          type: 'button',
-          onClick: () =>
-            attempt({
-              label: '继续 Onboarding',
-              success: `已推进到第 ${Math.min(step + 1, 5)} 步。`,
-              run: (write) => write.advanceOnboarding(project.id),
-              onDone: () => {
-                close();
-                return ctx.refresh();
-              },
-            }),
-        }, [text('继续下一步')])
-      ),
+      ...action,
     ],
   });
 }
+
+/**
+ * Step 4's editor (C-02). Reads both artefacts through the core and saves each
+ * one separately, so a failure on one does not lose edits to the other.
+ *
+ * The renderer never names the path: it saves whichever path the core told it
+ * about, and the core accepts exactly two (see `ONBOARDING_FILES` in
+ * dispatch.rs, and the same list again in the write gate).
+ */
+async function openArtefactEditor(project, ctx) {
+  let payload;
+  try {
+    payload = await read('onboardingArtefacts', project.id);
+  } catch (err) {
+    notify('error', '读取产物失败', coreMessage(err));
+    return;
+  }
+  const files = (payload && payload.files) || [];
+  if (!files.length) {
+    notify('info', '还没有产物', '先运行第 3 步的起草会话。');
+    return;
+  }
+
+  const editors = files.map((file) => {
+    // A textarea's initial content is its text node, not a `value`
+    // attribute — setting the attribute leaves the box empty and the user
+    // would save an emptied file over their profile.
+    const area = h('textarea.artefact__text', {
+      spellcheck: 'false',
+      text: file.content || '',
+    });
+    const status = h('span.quiet');
+    const save = registerWrite(
+      h('button.btn.btn--sm', {
+        type: 'button',
+        onClick: () =>
+          attempt({
+            label: `已保存 ${file.path}`,
+            success: false,
+            run: (write) => write.saveOnboardingFile(project.id, file.path, area.value),
+            onDone: () => {
+              status.textContent = '已保存';
+            },
+          }),
+      }, [text('保存')])
+    );
+    // Any edit invalidates the "saved" note, so it can never describe an
+    // older version of what is on screen.
+    area.addEventListener('input', () => {
+      status.textContent = '未保存';
+    });
+    return h('div.artefact', [
+      h('div.artefact__head', [
+        h('b', { text: file.path }),
+        file.exists ? tag('已生成', 'soft-green') : tag('尚未生成', 'dashed-brown'),
+        h('span.ml-auto', [status]),
+        save,
+      ]),
+      area,
+    ]);
+  });
+
+  openDrawer({
+    title: '确认 Onboarding 产物',
+    body: [
+      h('p.quiet', {
+        text:
+          '这两个文件是每一轮会话都会读到的项目背景与规范。改完保存即可；' +
+          '它们是仓库里的普通文件，之后也可以直接用编辑器改。',
+      }),
+      ...editors,
+    ],
+    footer: [closeButton('关闭')],
+    onClose: () => ctx.refresh(),
+  });
+}
+
+// Test seams. The wizard and its editor are reached through a tile click in
+// normal use, which needs a rendered project list and a live read; exporting
+// them lets the harness exercise each step directly. Named so a reader can see
+// at a glance that nothing in the app calls them.
+export const __testOpenOnboarding = openOnboarding;
+export const __testOpenArtefactEditor = openArtefactEditor;
