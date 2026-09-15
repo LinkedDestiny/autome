@@ -1,549 +1,892 @@
-//! GlobalConfigRevision / ProjectConfigPatch / ResolvedProjectConfig /
-//! GlobalConfigImpactPreview per plan §5.1's "全局默认 + 项目稀疏覆盖 + Run
-//! 冻结快照" configuration model.
+//! Loop configuration: global defaults, sparse project overrides, and the
+//! resolved view a session is launched from. Technical design §9, §3.3;
+//! requirements C-04 through C-09.
 //!
-//! Two mechanical rules from the plan text are enforced here:
+//! Two rules shape everything here:
 //!
-//! 1. "安全下限在继承层之外，项目不能覆盖" — `ProjectConfigPatch` simply has
-//!    no field through which a project could supply its own
-//!    `safety_policy_hash`; `resolve_project_config` always takes it
-//!    straight from the `GlobalConfigRevision`, so there is no code path
-//!    for a project override to reach it at all.
-//! 2. "无效 CLI/model/Effort/skills 组合不得静默钳制或 fallback" —
-//!    `resolve_project_config` takes an `is_profile_valid` predicate (the
-//!    caller supplies it from real qualification/capability facts) and
-//!    refuses to resolve at all when an override fails it, rather than
-//!    silently falling back to the global default.
-//!
-//! `GlobalConfigImpactPreview` implements "保存命令绑定 preview hash 与
-//! project-set hash；预览过期或项目集合变化即拒绝", mirroring the
-//! fingerprint-staleness pattern used elsewhere in this crate
-//! (`ReadinessFingerprint`, `EvidenceFingerprint`).
-//!
-//! ProjectIntentRevision/ProjectIntentAmendment/ProjectInitializationReceipt,
-//! PlanningPolicyRestart, RunPolicyAmendment and BudgetGrantReceipt are the
-//! remaining unimplemented pieces of §5.1, left for a future increment.
+//! 1. **Sparse overrides.** A project file stores only the fields it
+//!    overrides. "Restore default" is implemented as *removing* a field, not
+//!    as copying the global value in — otherwise a later change to the global
+//!    default would silently stop propagating.
+//! 2. **Validation is a pure function of the resolved view plus the skill
+//!    inventory.** The SAME-MODEL discipline (C-06) and the skill-visibility
+//!    rule (S-04) are checked here, in the domain, so that the IPC layer, the
+//!    launcher and the test suite all reach the same verdict.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 
-use crate::attempt::LoopStepId;
+use crate::role::{Role, Runtime};
 
-/// §5.1: "2.0.0 的可配置 AI 步骤固定为" these nine — Rust verifier, receipt
-/// signing, completion gate and Git/artifact delivery are not AI steps and
-/// take no CLI/model/Effort configuration at all.
-pub const CONFIGURABLE_AI_STEPS: &[&str] = &[
-    "fact_analysis",
-    "contract_drafting",
-    "contract_review",
-    "task_graph_planning",
-    "graph_review",
-    "implementation",
-    "repair",
-    "node_evaluation",
-    "final_audit",
-];
+/// Inclusive bounds on a project's parallel task limit (requirement P-04).
+pub const PARALLEL_MIN: u32 = 1;
+pub const PARALLEL_MAX: u32 = 5;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentExecutionProfile {
-    pub adapter_id: String,
-    pub installation_id: String,
-    pub model_id: String,
-    pub effort_id: String,
-    /// Only constrains capability — never selects a Skill (§5.1: "只约束
-    /// 能力，不选择 Skill").
-    pub skill_policy_ref: String,
-}
+/// Shipped defaults, used when `~/.autome/config.toml` does not exist yet.
+pub const DEFAULT_PARALLEL: u32 = 3;
+pub const DEFAULT_DESIGN_ROUNDS: u32 = 15;
+pub const DEFAULT_BUDGET_FACTOR: u32 = 5;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StepOverride {
-    Inherit,
-    Replace(AgentExecutionProfile),
-}
-
+/// Loop-wide numeric settings. Every field is overridable per project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HumanReviewSetting {
-    Off,
-    Required,
+pub struct LoopDefaults {
+    pub parallel: u32,
+    pub design_rounds: u32,
+    pub budget_factor: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HumanReviewOverride {
-    Inherit,
-    Off,
-    Required,
+impl Default for LoopDefaults {
+    fn default() -> Self {
+        Self {
+            parallel: DEFAULT_PARALLEL,
+            design_rounds: DEFAULT_DESIGN_ROUNDS,
+            budget_factor: DEFAULT_BUDGET_FACTOR,
+        }
+    }
 }
 
+/// The sparse counterpart of `LoopDefaults`: `None` means "inherit".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoopOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_factor: Option<u32>,
+}
+
+/// One role's fully-resolved execution profile (requirement C-04).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GlobalConfigRevision {
-    pub revision: u32,
-    pub step_defaults: HashMap<LoopStepId, AgentExecutionProfile>,
-    pub human_review_default: HashMap<LoopStepId, HumanReviewSetting>,
-    pub environment_defaults_ref: String,
-    pub budget_defaults_ref: String,
-    pub skill_policy_default_ref: String,
-    pub safety_policy_hash: String,
-    pub content_hash: String,
+pub struct RoleConfig {
+    pub enabled: bool,
+    pub runtime: Runtime,
+    pub model: String,
+    /// `None` means "use whatever the CLI defaults to" — deliberately not
+    /// normalised to a string, so that "unset" and "explicitly set to the
+    /// value that happens to be the default" stay distinguishable.
+    pub effort: Option<String>,
+    /// Skills this role *must* use (requirement S-03). Order is the user's;
+    /// duplicates are removed on save.
+    pub skills: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProjectConfigPatch {
-    pub project_id: String,
-    pub revision: u32,
-    pub step_overrides: HashMap<LoopStepId, StepOverride>,
-    pub human_review_overrides: HashMap<LoopStepId, HumanReviewOverride>,
-    pub environment_override_ref: Option<String>,
-    pub budget_override_ref: Option<String>,
-    pub skill_policy_override_ref: Option<String>,
-    pub content_hash: String,
+impl RoleConfig {
+    /// The identity SAME-MODEL compares (design §9: "比较 `runtime:model` 字面值").
+    pub fn model_identity(&self) -> String {
+        format!("{}:{}", self.runtime, self.model)
+    }
 }
 
+/// The sparse counterpart of `RoleConfig`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Two levels of optionality, and they mean different things:
+    /// `None` = inherit the global effort; `Some(None)` = override it to
+    /// "CLI default"; `Some(Some(e))` = override it to `e`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+}
+
+impl RoleOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.runtime.is_none()
+            && self.model.is_none()
+            && self.effort.is_none()
+            && self.skills.is_none()
+    }
+}
+
+/// Which side of the overlay a resolved field came from. Surfaced so the
+/// project view can offer "restore default" only where there is something to
+/// restore (requirement C-07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConfigProvenance {
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
     Global,
     Project,
 }
 
+/// `~/.autome/config.toml` — always complete, never sparse.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedStepConfig {
-    pub step_id: LoopStepId,
-    pub profile: AgentExecutionProfile,
-    pub human_review: HumanReviewSetting,
-    /// Reflects the *profile*'s override provenance; `human_review` may
-    /// still independently be inherited even when `provenance` is
-    /// `Project` (a project can override one without the other).
-    pub provenance: ConfigProvenance,
+pub struct GlobalConfig {
+    #[serde(default)]
+    pub loop_defaults: LoopDefaults,
+    pub roles: BTreeMap<Role, RoleConfig>,
 }
 
+impl Default for GlobalConfig {
+    /// The first-run defaults: Claude generates, Codex evaluates. Chosen so
+    /// that a fresh install already satisfies SAME-MODEL rather than opening
+    /// on a blocked configuration the user has to fix before doing anything.
+    fn default() -> Self {
+        let claude = |model: &str, effort: Option<&str>| RoleConfig {
+            enabled: true,
+            runtime: Runtime::Claude,
+            model: model.to_string(),
+            effort: effort.map(str::to_string),
+            skills: Vec::new(),
+        };
+        let codex = |model: &str, effort: Option<&str>| RoleConfig {
+            enabled: true,
+            runtime: Runtime::Codex,
+            model: model.to_string(),
+            effort: effort.map(str::to_string),
+            skills: Vec::new(),
+        };
+        let mut roles = BTreeMap::new();
+        roles.insert(Role::Plan, claude("claude-opus-5", Some("high")));
+        roles.insert(Role::Review, codex("gpt-5.4", Some("high")));
+        roles.insert(Role::Adjudicate, claude("claude-opus-5", None));
+        roles.insert(Role::Impl, claude("claude-opus-5", Some("high")));
+        roles.insert(Role::Audit, codex("gpt-5.4", Some("high")));
+        Self {
+            loop_defaults: LoopDefaults::default(),
+            roles,
+        }
+    }
+}
+
+impl GlobalConfig {
+    /// Every role is always present in a global config; a file missing one is
+    /// repaired against `Default` at load time, so this cannot panic.
+    pub fn role(&self, role: Role) -> &RoleConfig {
+        self.roles
+            .get(&role)
+            .expect("global config always carries all five roles")
+    }
+
+    /// Fills in any role absent from a hand-edited file, so the rest of the
+    /// system can rely on `role()` being total.
+    pub fn repair(&mut self) {
+        let defaults = GlobalConfig::default();
+        for role in Role::ALL {
+            self.roles
+                .entry(role)
+                .or_insert_with(|| defaults.role(role).clone());
+        }
+    }
+}
+
+/// `<repo>/.autome/config.toml` — sparse by construction.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    #[serde(default, rename = "loop")]
+    pub loop_overrides: LoopOverrides,
+    #[serde(default)]
+    pub roles: BTreeMap<Role, RoleOverrides>,
+}
+
+impl ProjectConfig {
+    pub fn overrides_for(&self, role: Role) -> RoleOverrides {
+        self.roles.get(&role).cloned().unwrap_or_default()
+    }
+
+    /// Drops role entries that no longer override anything, so a file never
+    /// accumulates empty `[roles.x]` tables after repeated "restore default".
+    pub fn prune(&mut self) {
+        self.roles.retain(|_, o| !o.is_empty());
+    }
+}
+
+/// One role as a session will actually run it, plus where each part came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedProjectConfig {
-    pub global_revision: u32,
-    pub project_patch_revision: u32,
-    pub steps: Vec<ResolvedStepConfig>,
-    pub environment_ref: String,
-    pub budget_ref: String,
-    pub skill_policy_ref: String,
-    pub skill_binding_revision_ref: String,
-    pub safety_policy_hash: String,
-    pub snapshot_hash: String,
+pub struct ResolvedRole {
+    pub role: Role,
+    pub config: RoleConfig,
+    /// `Project` when *any* field of this role is overridden — the UI shows a
+    /// single "restore default" per role, not per field (requirement C-07).
+    pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolveProjectConfigError {
-    MissingGlobalDefault { step: LoopStepId },
-    InvalidStepOverride { step: LoopStepId },
+/// The complete view a session is launched from (design §9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedConfig {
+    pub loop_defaults: LoopDefaults,
+    pub loop_provenance: LoopProvenance,
+    pub roles: Vec<ResolvedRole>,
 }
 
-/// Sole way to compute a `ResolvedProjectConfig`. `snapshot_hash` is
-/// supplied by the caller (it is a content hash of everything else here,
-/// and this crate does not do hashing) rather than computed inside.
-pub fn resolve_project_config(
-    global: &GlobalConfigRevision,
-    patch: Option<&ProjectConfigPatch>,
-    is_profile_valid: impl Fn(&AgentExecutionProfile) -> bool,
-    skill_binding_revision_ref: &str,
-    snapshot_hash: &str,
-) -> Result<ResolvedProjectConfig, Vec<ResolveProjectConfigError>> {
-    let mut errors = Vec::new();
-    let mut steps = Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoopProvenance {
+    pub parallel: Provenance,
+    pub design_rounds: Provenance,
+    pub budget_factor: Provenance,
+}
 
-    for step_key in CONFIGURABLE_AI_STEPS {
-        let step_id = LoopStepId((*step_key).to_string());
+impl ResolvedConfig {
+    pub fn role(&self, role: Role) -> &ResolvedRole {
+        self.roles
+            .iter()
+            .find(|r| r.role == role)
+            .expect("resolved config always carries all five roles")
+    }
 
-        let global_profile = match global.step_defaults.get(&step_id) {
-            Some(profile) => profile,
-            None => {
-                errors.push(ResolveProjectConfigError::MissingGlobalDefault {
-                    step: step_id.clone(),
-                });
-                continue;
+    pub fn is_enabled(&self, role: Role) -> bool {
+        self.role(role).config.enabled
+    }
+}
+
+/// Overlays a sparse project config onto the global defaults. Total: the
+/// result always carries all five roles, in `Role::ALL` order.
+pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig {
+    fn pick<T>(override_value: Option<T>, global_value: T) -> (T, Provenance) {
+        match override_value {
+            Some(v) => (v, Provenance::Project),
+            None => (global_value, Provenance::Global),
+        }
+    }
+
+    let (parallel, parallel_src) = pick(
+        project.loop_overrides.parallel,
+        global.loop_defaults.parallel,
+    );
+    let (design_rounds, design_src) = pick(
+        project.loop_overrides.design_rounds,
+        global.loop_defaults.design_rounds,
+    );
+    let (budget_factor, budget_src) = pick(
+        project.loop_overrides.budget_factor,
+        global.loop_defaults.budget_factor,
+    );
+
+    let roles = Role::ALL
+        .into_iter()
+        .map(|role| {
+            let base = global.role(role);
+            let over = project.overrides_for(role);
+            let overridden = !over.is_empty();
+            ResolvedRole {
+                role,
+                config: RoleConfig {
+                    enabled: over.enabled.unwrap_or(base.enabled),
+                    runtime: over.runtime.unwrap_or(base.runtime),
+                    model: over.model.unwrap_or_else(|| base.model.clone()),
+                    effort: over.effort.unwrap_or_else(|| base.effort.clone()),
+                    skills: over.skills.unwrap_or_else(|| base.skills.clone()),
+                },
+                provenance: if overridden {
+                    Provenance::Project
+                } else {
+                    Provenance::Global
+                },
             }
-        };
-        let global_review = global
-            .human_review_default
-            .get(&step_id)
-            .copied()
-            .unwrap_or(HumanReviewSetting::Off);
+        })
+        .collect();
 
-        let step_override = patch.and_then(|p| p.step_overrides.get(&step_id));
-        let (profile, provenance) = match step_override {
-            None | Some(StepOverride::Inherit) => {
-                (global_profile.clone(), ConfigProvenance::Global)
-            }
-            Some(StepOverride::Replace(profile)) => {
-                if !is_profile_valid(profile) {
-                    errors.push(ResolveProjectConfigError::InvalidStepOverride {
-                        step: step_id.clone(),
-                    });
-                    continue;
-                }
-                (profile.clone(), ConfigProvenance::Project)
-            }
-        };
+    ResolvedConfig {
+        loop_defaults: LoopDefaults {
+            parallel,
+            design_rounds,
+            budget_factor,
+        },
+        loop_provenance: LoopProvenance {
+            parallel: parallel_src,
+            design_rounds: design_src,
+            budget_factor: budget_src,
+        },
+        roles,
+    }
+}
 
-        let human_review = match patch.and_then(|p| p.human_review_overrides.get(&step_id)) {
-            None | Some(HumanReviewOverride::Inherit) => global_review,
-            Some(HumanReviewOverride::Off) => HumanReviewSetting::Off,
-            Some(HumanReviewOverride::Required) => HumanReviewSetting::Required,
-        };
+/// A reason a configuration cannot be saved. Each variant carries enough to
+/// render the UI's red highlight without the caller re-deriving anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConfigViolation {
+    /// C-06. The evaluating role shares an identity with its generating side.
+    SameModel {
+        evaluator: Role,
+        generator: Role,
+        identity: String,
+    },
+    /// S-04. A bound skill is invisible to the runtime this role uses.
+    SkillNotVisible {
+        role: Role,
+        skill: String,
+        runtime: Runtime,
+    },
+    /// S-04's other half: the binding names a skill that is not installed at
+    /// all. Distinct from `SkillNotVisible`, because the fix is different —
+    /// install it, versus move it or change the runtime.
+    SkillNotFound {
+        role: Role,
+        skill: String,
+    },
+    /// P-04.
+    ParallelOutOfRange {
+        value: u32,
+        min: u32,
+        max: u32,
+    },
+    DesignRoundsOutOfRange {
+        value: u32,
+    },
+    BudgetFactorOutOfRange {
+        value: u32,
+    },
+    /// A role with an empty model string would launch a CLI with no model
+    /// argument and silently get its default, which SAME-MODEL could not then
+    /// compare meaningfully.
+    EmptyModel {
+        role: Role,
+    },
+}
 
-        steps.push(ResolvedStepConfig {
-            step_id,
-            profile,
-            human_review,
-            provenance,
+impl ConfigViolation {
+    /// Which role the UI should mark. `None` for loop-wide numeric problems.
+    pub fn role(&self) -> Option<Role> {
+        match self {
+            ConfigViolation::SameModel { evaluator, .. } => Some(*evaluator),
+            ConfigViolation::SkillNotVisible { role, .. }
+            | ConfigViolation::SkillNotFound { role, .. }
+            | ConfigViolation::EmptyModel { role } => Some(*role),
+            _ => None,
+        }
+    }
+}
+
+/// What `validate` needs to know about the skill inventory. Kept as a trait so
+/// the domain stays I/O-free: `automed` implements it over a real filesystem
+/// scan, tests implement it over a literal map.
+pub trait SkillVisibility {
+    /// `None` when no skill by that name exists anywhere.
+    fn visible_to(&self, skill: &str) -> Option<&[Runtime]>;
+}
+
+/// An inventory that knows about no skills at all. Used when validating a
+/// configuration that binds none, and by tests that do not exercise S-04.
+pub struct NoSkills;
+
+impl SkillVisibility for NoSkills {
+    fn visible_to(&self, _skill: &str) -> Option<&[Runtime]> {
+        None
+    }
+}
+
+/// Full validation of a resolved configuration. Returns every violation, not
+/// just the first — the UI highlights all offending roles at once.
+///
+/// A *disabled* role is still validated for skill bindings and model shape,
+/// but is exempt from SAME-MODEL: a disabled evaluator never runs, so it
+/// cannot share a blind spot with anything (requirement C-05 + C-06).
+pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec<ConfigViolation> {
+    let mut violations = Vec::new();
+
+    let loop_cfg = resolved.loop_defaults;
+    if !(PARALLEL_MIN..=PARALLEL_MAX).contains(&loop_cfg.parallel) {
+        violations.push(ConfigViolation::ParallelOutOfRange {
+            value: loop_cfg.parallel,
+            min: PARALLEL_MIN,
+            max: PARALLEL_MAX,
+        });
+    }
+    if loop_cfg.design_rounds == 0 {
+        violations.push(ConfigViolation::DesignRoundsOutOfRange {
+            value: loop_cfg.design_rounds,
+        });
+    }
+    if loop_cfg.budget_factor == 0 {
+        violations.push(ConfigViolation::BudgetFactorOutOfRange {
+            value: loop_cfg.budget_factor,
         });
     }
 
-    if !errors.is_empty() {
-        return Err(errors);
+    for resolved_role in &resolved.roles {
+        let role = resolved_role.role;
+        let cfg = &resolved_role.config;
+
+        if cfg.model.trim().is_empty() {
+            violations.push(ConfigViolation::EmptyModel { role });
+        }
+
+        for skill in &cfg.skills {
+            match skills.visible_to(skill) {
+                None => violations.push(ConfigViolation::SkillNotFound {
+                    role,
+                    skill: skill.clone(),
+                }),
+                Some(runtimes) if !runtimes.contains(&cfg.runtime) => {
+                    violations.push(ConfigViolation::SkillNotVisible {
+                        role,
+                        skill: skill.clone(),
+                        runtime: cfg.runtime,
+                    })
+                }
+                Some(_) => {}
+            }
+        }
+
+        if let Some(generator) = role.same_model_counterpart() {
+            let generator_cfg = &resolved.role(generator).config;
+            if cfg.enabled
+                && generator_cfg.enabled
+                && cfg.model_identity() == generator_cfg.model_identity()
+            {
+                violations.push(ConfigViolation::SameModel {
+                    evaluator: role,
+                    generator,
+                    identity: cfg.model_identity(),
+                });
+            }
+        }
     }
 
-    let environment_ref = patch
-        .and_then(|p| p.environment_override_ref.clone())
-        .unwrap_or_else(|| global.environment_defaults_ref.clone());
-    let budget_ref = patch
-        .and_then(|p| p.budget_override_ref.clone())
-        .unwrap_or_else(|| global.budget_defaults_ref.clone());
-    let skill_policy_ref = patch
-        .and_then(|p| p.skill_policy_override_ref.clone())
-        .unwrap_or_else(|| global.skill_policy_default_ref.clone());
-
-    Ok(ResolvedProjectConfig {
-        global_revision: global.revision,
-        project_patch_revision: patch.map(|p| p.revision).unwrap_or(0),
-        steps,
-        environment_ref,
-        budget_ref,
-        skill_policy_ref,
-        skill_binding_revision_ref: skill_binding_revision_ref.to_string(),
-        safety_policy_hash: global.safety_policy_hash.clone(),
-        snapshot_hash: snapshot_hash.to_string(),
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AffectedProjectImpact {
-    pub project_id: String,
-    pub affected_step_ids: Vec<LoopStepId>,
-    pub before_route_hash: String,
-    pub after_route_hash: String,
-    pub before_human_review_hash: String,
-    pub after_human_review_hash: String,
-    pub before_policy_hash: String,
-    pub after_policy_hash: String,
-    /// Installation/provider/account fingerprint or auth mode/Skill
-    /// policy/readiness changes this project would see, each as an
-    /// opaque description string (the concrete diffing lives with the
-    /// caller, which has the real capability/readiness facts).
-    pub capability_changes: Vec<String>,
-    pub projected_state: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GlobalConfigImpactPreview {
-    pub base_global_revision: u32,
-    pub proposed_config_hash: String,
-    pub observed_project_set_hash: String,
-    pub affected_projects: Vec<AffectedProjectImpact>,
-    pub blocking_project_ids: Vec<String>,
-    pub requires_second_confirmation: bool,
-    #[serde(with = "time::serde::rfc3339")]
-    pub expires_at: OffsetDateTime,
-    pub preview_hash: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaveGlobalConfigError {
-    PreviewHashMismatch,
-    ProjectSetChanged,
-    PreviewExpired,
-    SecondConfirmationRequired,
-}
-
-/// §5.1: "保存命令绑定 preview hash 与 project-set hash；预览过期或项目集合
-/// 变化即拒绝" plus "存在任何 projected blocked、账号/provider 切换或
-/// Global Skill 影响时需要第二次明确确认". Returns every violation found
-/// rather than stopping at the first, matching this crate's other
-/// multi-error validation gates.
-pub fn validate_save_global_config_revision(
-    preview: &GlobalConfigImpactPreview,
-    submitted_preview_hash: &str,
-    current_project_set_hash: &str,
-    now: OffsetDateTime,
-    second_confirmation_acquired: bool,
-) -> Vec<SaveGlobalConfigError> {
-    let mut errors = Vec::new();
-    if preview.preview_hash != submitted_preview_hash {
-        errors.push(SaveGlobalConfigError::PreviewHashMismatch);
-    }
-    if preview.observed_project_set_hash != current_project_set_hash {
-        errors.push(SaveGlobalConfigError::ProjectSetChanged);
-    }
-    if now > preview.expires_at {
-        errors.push(SaveGlobalConfigError::PreviewExpired);
-    }
-    if preview.requires_second_confirmation && !second_confirmation_acquired {
-        errors.push(SaveGlobalConfigError::SecondConfirmationRequired);
-    }
-    errors
+    violations
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    fn profile(model_id: &str) -> AgentExecutionProfile {
-        AgentExecutionProfile {
-            adapter_id: "codex".into(),
-            installation_id: "install-1".into(),
-            model_id: model_id.into(),
-            effort_id: "medium".into(),
-            skill_policy_ref: "skill-policy-1".into(),
+    struct MapSkills(HashMap<String, Vec<Runtime>>);
+
+    impl MapSkills {
+        fn new(pairs: &[(&str, &[Runtime])]) -> Self {
+            Self(
+                pairs
+                    .iter()
+                    .map(|(n, r)| ((*n).to_string(), r.to_vec()))
+                    .collect(),
+            )
         }
     }
 
-    fn global_config() -> GlobalConfigRevision {
-        let mut step_defaults = HashMap::new();
-        let mut human_review_default = HashMap::new();
-        for step in CONFIGURABLE_AI_STEPS {
-            step_defaults.insert(LoopStepId((*step).to_string()), profile("global-model"));
-            human_review_default.insert(LoopStepId((*step).to_string()), HumanReviewSetting::Off);
-        }
-        GlobalConfigRevision {
-            revision: 1,
-            step_defaults,
-            human_review_default,
-            environment_defaults_ref: "env-default".into(),
-            budget_defaults_ref: "budget-default".into(),
-            skill_policy_default_ref: "skill-policy-default".into(),
-            safety_policy_hash: "safety-floor-1".into(),
-            content_hash: "global-content-1".into(),
+    impl SkillVisibility for MapSkills {
+        fn visible_to(&self, skill: &str) -> Option<&[Runtime]> {
+            self.0.get(skill).map(Vec::as_slice)
         }
     }
 
-    fn always_valid(_: &AgentExecutionProfile) -> bool {
-        true
+    fn resolved_default() -> ResolvedConfig {
+        resolve(&GlobalConfig::default(), &ProjectConfig::default())
     }
 
     #[test]
-    fn no_patch_resolves_every_step_from_global() {
-        let resolved =
-            resolve_project_config(&global_config(), None, always_valid, "binding-1", "snap-1")
-                .unwrap();
-        assert_eq!(resolved.steps.len(), CONFIGURABLE_AI_STEPS.len());
-        assert!(
-            resolved
-                .steps
-                .iter()
-                .all(|s| s.provenance == ConfigProvenance::Global)
-        );
-        assert_eq!(resolved.environment_ref, "env-default");
-        assert_eq!(resolved.safety_policy_hash, "safety-floor-1");
+    fn shipped_defaults_resolve_cleanly() {
+        let resolved = resolved_default();
+        assert!(validate(&resolved, &NoSkills).is_empty());
+        assert_eq!(resolved.loop_defaults.parallel, DEFAULT_PARALLEL);
+        assert_eq!(resolved.roles.len(), 5);
     }
 
     #[test]
-    fn project_override_replaces_one_step_profile() {
-        let mut step_overrides = HashMap::new();
-        step_overrides.insert(
-            LoopStepId("contract_review".into()),
-            StepOverride::Replace(profile("project-model")),
-        );
-        let patch = ProjectConfigPatch {
-            project_id: "project-1".into(),
-            revision: 1,
-            step_overrides,
-            human_review_overrides: HashMap::new(),
-            environment_override_ref: None,
-            budget_override_ref: None,
-            skill_policy_override_ref: None,
-            content_hash: "patch-content-1".into(),
-        };
-        let resolved = resolve_project_config(
-            &global_config(),
-            Some(&patch),
-            always_valid,
-            "binding-1",
-            "snap-1",
-        )
-        .unwrap();
-        let contract_review = resolved
-            .steps
-            .iter()
-            .find(|s| s.step_id == LoopStepId("contract_review".into()))
-            .unwrap();
-        assert_eq!(contract_review.profile.model_id, "project-model");
-        assert_eq!(contract_review.provenance, ConfigProvenance::Project);
-        let other = resolved
-            .steps
-            .iter()
-            .find(|s| s.step_id == LoopStepId("final_audit".into()))
-            .unwrap();
-        assert_eq!(other.profile.model_id, "global-model");
-        assert_eq!(other.provenance, ConfigProvenance::Global);
+    fn resolved_roles_are_in_loop_order() {
+        let resolved = resolved_default();
+        let order: Vec<Role> = resolved.roles.iter().map(|r| r.role).collect();
+        assert_eq!(order, Role::ALL.to_vec());
     }
 
     #[test]
-    fn invalid_override_profile_is_rejected_without_falling_back() {
-        let mut step_overrides = HashMap::new();
-        step_overrides.insert(
-            LoopStepId("implementation".into()),
-            StepOverride::Replace(profile("unqualified-model")),
+    fn empty_project_config_inherits_everything() {
+        let resolved = resolved_default();
+        for role in &resolved.roles {
+            assert_eq!(role.provenance, Provenance::Global);
+        }
+        assert_eq!(resolved.loop_provenance.parallel, Provenance::Global);
+    }
+
+    #[test]
+    fn project_override_wins_and_is_marked_as_project_provenance() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Impl,
+            RoleOverrides {
+                model: Some("claude-sonnet-5".into()),
+                ..Default::default()
+            },
         );
-        let patch = ProjectConfigPatch {
-            project_id: "project-1".into(),
-            revision: 1,
-            step_overrides,
-            human_review_overrides: HashMap::new(),
-            environment_override_ref: None,
-            budget_override_ref: None,
-            skill_policy_override_ref: None,
-            content_hash: "patch-content-1".into(),
-        };
-        let result = resolve_project_config(
-            &global_config(),
-            Some(&patch),
-            |p: &AgentExecutionProfile| p.model_id != "unqualified-model",
-            "binding-1",
-            "snap-1",
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(resolved.role(Role::Impl).config.model, "claude-sonnet-5");
+        assert_eq!(resolved.role(Role::Impl).provenance, Provenance::Project);
+        // Untouched roles keep inheriting.
+        assert_eq!(resolved.role(Role::Plan).provenance, Provenance::Global);
+    }
+
+    #[test]
+    fn overriding_only_effort_still_inherits_runtime_and_model() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Plan,
+            RoleOverrides {
+                effort: Some(Some("xhigh".into())),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let plan = &resolved.role(Role::Plan).config;
+        assert_eq!(plan.effort.as_deref(), Some("xhigh"));
+        assert_eq!(plan.runtime, Runtime::Claude);
+        assert_eq!(plan.model, "claude-opus-5");
+    }
+
+    #[test]
+    fn effort_can_be_overridden_back_to_cli_default() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Plan,
+            RoleOverrides {
+                effort: Some(None),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(resolved.role(Role::Plan).config.effort, None);
+        // And that is distinguishable from not overriding at all.
+        let inherited = resolve(&GlobalConfig::default(), &ProjectConfig::default());
+        assert_eq!(
+            inherited.role(Role::Plan).config.effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn removing_the_override_restores_the_global_value() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                model: Some("gpt-5.9".into()),
+                ..Default::default()
+            },
         );
         assert_eq!(
-            result.unwrap_err(),
-            vec![ResolveProjectConfigError::InvalidStepOverride {
-                step: LoopStepId("implementation".into())
+            resolve(&GlobalConfig::default(), &project)
+                .role(Role::Audit)
+                .config
+                .model,
+            "gpt-5.9"
+        );
+        project.roles.remove(&Role::Audit);
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(resolved.role(Role::Audit).config.model, "gpt-5.4");
+        assert_eq!(resolved.role(Role::Audit).provenance, Provenance::Global);
+    }
+
+    #[test]
+    fn a_later_global_change_propagates_to_non_overridden_fields() {
+        let mut global = GlobalConfig::default();
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Impl,
+            RoleOverrides {
+                effort: Some(Some("low".into())),
+                ..Default::default()
+            },
+        );
+        global.roles.get_mut(&Role::Impl).unwrap().model = "claude-opus-6".into();
+        let resolved = resolve(&global, &project);
+        // Model follows the new global; effort stays overridden.
+        assert_eq!(resolved.role(Role::Impl).config.model, "claude-opus-6");
+        assert_eq!(
+            resolved.role(Role::Impl).config.effort.as_deref(),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn same_model_is_rejected_for_audit_and_impl() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                runtime: Some(Runtime::Claude),
+                model: Some("claude-opus-5".into()),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let violations = validate(&resolved, &NoSkills);
+        assert_eq!(
+            violations,
+            vec![ConfigViolation::SameModel {
+                evaluator: Role::Audit,
+                generator: Role::Impl,
+                identity: "claude:claude-opus-5".into(),
             }]
         );
     }
 
     #[test]
-    fn human_review_override_is_independent_of_profile_override() {
-        let mut human_review_overrides = HashMap::new();
-        human_review_overrides.insert(
-            LoopStepId("final_audit".into()),
-            HumanReviewOverride::Required,
+    fn same_model_is_rejected_for_review_and_plan() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Review,
+            RoleOverrides {
+                runtime: Some(Runtime::Claude),
+                model: Some("claude-opus-5".into()),
+                ..Default::default()
+            },
         );
-        let patch = ProjectConfigPatch {
-            project_id: "project-1".into(),
-            revision: 1,
-            step_overrides: HashMap::new(),
-            human_review_overrides,
-            environment_override_ref: None,
-            budget_override_ref: None,
-            skill_policy_override_ref: None,
-            content_hash: "patch-content-1".into(),
-        };
-        let resolved = resolve_project_config(
-            &global_config(),
-            Some(&patch),
-            always_valid,
-            "binding-1",
-            "snap-1",
-        )
-        .unwrap();
-        let final_audit = resolved
-            .steps
-            .iter()
-            .find(|s| s.step_id == LoopStepId("final_audit".into()))
-            .unwrap();
-        assert_eq!(final_audit.human_review, HumanReviewSetting::Required);
-        // Profile itself stayed inherited even though human_review didn't.
-        assert_eq!(final_audit.provenance, ConfigProvenance::Global);
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let violations = validate(&resolved, &NoSkills);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].role(), Some(Role::Review));
     }
 
-    fn preview(
-        expires_at: OffsetDateTime,
-        requires_second_confirmation: bool,
-    ) -> GlobalConfigImpactPreview {
-        GlobalConfigImpactPreview {
-            base_global_revision: 1,
-            proposed_config_hash: "proposed-1".into(),
-            observed_project_set_hash: "project-set-1".into(),
-            affected_projects: vec![],
-            blocking_project_ids: vec![],
-            requires_second_confirmation,
-            expires_at,
-            preview_hash: "preview-1".into(),
+    #[test]
+    fn same_runtime_with_a_different_model_is_allowed() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                runtime: Some(Runtime::Claude),
+                model: Some("claude-sonnet-5".into()),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert!(validate(&resolved, &NoSkills).is_empty());
+    }
+
+    #[test]
+    fn adjudicate_may_share_a_model_with_anything() {
+        // adjudicate == plan == impl, all Claude opus-5 by default; only the
+        // two evaluator pairs are constrained.
+        let resolved = resolved_default();
+        assert_eq!(
+            resolved.role(Role::Adjudicate).config.model_identity(),
+            resolved.role(Role::Plan).config.model_identity()
+        );
+        assert!(validate(&resolved, &NoSkills).is_empty());
+    }
+
+    #[test]
+    fn a_disabled_evaluator_is_exempt_from_same_model() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                enabled: Some(false),
+                runtime: Some(Runtime::Claude),
+                model: Some("claude-opus-5".into()),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert!(validate(&resolved, &NoSkills).is_empty());
+    }
+
+    #[test]
+    fn a_skill_invisible_to_the_roles_runtime_is_rejected() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Review, // Codex by default
+            RoleOverrides {
+                skills: Some(vec!["repo-facts".into()]),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let skills = MapSkills::new(&[("repo-facts", &[Runtime::Claude])]);
+        assert_eq!(
+            validate(&resolved, &skills),
+            vec![ConfigViolation::SkillNotVisible {
+                role: Role::Review,
+                skill: "repo-facts".into(),
+                runtime: Runtime::Codex,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_skill_visible_to_both_runtimes_is_accepted_anywhere() {
+        let mut project = ProjectConfig::default();
+        for role in Role::ALL {
+            project.roles.insert(
+                role,
+                RoleOverrides {
+                    skills: Some(vec!["conventions".into()]),
+                    ..Default::default()
+                },
+            );
+        }
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let skills = MapSkills::new(&[("conventions", &[Runtime::Claude, Runtime::Codex])]);
+        assert!(validate(&resolved, &skills).is_empty());
+    }
+
+    #[test]
+    fn an_unknown_skill_is_reported_as_not_found_not_as_invisible() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Impl,
+            RoleOverrides {
+                skills: Some(vec!["ghost".into()]),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(
+            validate(&resolved, &NoSkills),
+            vec![ConfigViolation::SkillNotFound {
+                role: Role::Impl,
+                skill: "ghost".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_disabled_role_is_still_checked_for_skill_bindings() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Review,
+            RoleOverrides {
+                enabled: Some(false),
+                skills: Some(vec!["ghost".into()]),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(validate(&resolved, &NoSkills).len(), 1);
+    }
+
+    #[test]
+    fn parallel_out_of_range_is_rejected_at_both_ends() {
+        for bad in [0u32, 6, 99] {
+            let project = ProjectConfig {
+                loop_overrides: LoopOverrides {
+                    parallel: Some(bad),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let resolved = resolve(&GlobalConfig::default(), &project);
+            assert_eq!(
+                validate(&resolved, &NoSkills),
+                vec![ConfigViolation::ParallelOutOfRange {
+                    value: bad,
+                    min: PARALLEL_MIN,
+                    max: PARALLEL_MAX,
+                }],
+                "parallel = {bad} should be rejected"
+            );
+        }
+        for ok in PARALLEL_MIN..=PARALLEL_MAX {
+            let project = ProjectConfig {
+                loop_overrides: LoopOverrides {
+                    parallel: Some(ok),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let resolved = resolve(&GlobalConfig::default(), &project);
+            assert!(validate(&resolved, &NoSkills).is_empty(), "parallel = {ok}");
         }
     }
 
-    fn t(seconds_from_epoch: i64) -> OffsetDateTime {
-        OffsetDateTime::from_unix_timestamp(seconds_from_epoch).unwrap()
+    #[test]
+    fn zero_rounds_or_factor_is_rejected() {
+        let project = ProjectConfig {
+            loop_overrides: LoopOverrides {
+                design_rounds: Some(0),
+                budget_factor: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let violations = validate(&resolved, &NoSkills);
+        assert!(violations.contains(&ConfigViolation::DesignRoundsOutOfRange { value: 0 }));
+        assert!(violations.contains(&ConfigViolation::BudgetFactorOutOfRange { value: 0 }));
     }
 
     #[test]
-    fn save_is_accepted_when_everything_matches_and_no_confirmation_needed() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), false),
-            "preview-1",
-            "project-set-1",
-            t(500),
-            false,
+    fn every_violation_is_reported_not_just_the_first() {
+        let mut project = ProjectConfig {
+            loop_overrides: LoopOverrides {
+                parallel: Some(9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                runtime: Some(Runtime::Claude),
+                model: Some("claude-opus-5".into()),
+                skills: Some(vec!["ghost".into()]),
+                ..Default::default()
+            },
         );
-        assert!(errors.is_empty());
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        let violations = validate(&resolved, &NoSkills);
+        assert_eq!(violations.len(), 3, "{violations:#?}");
     }
 
     #[test]
-    fn save_rejects_preview_hash_mismatch() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), false),
-            "wrong-hash",
-            "project-set-1",
-            t(500),
-            false,
+    fn an_empty_model_is_rejected() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Plan,
+            RoleOverrides {
+                model: Some("   ".into()),
+                ..Default::default()
+            },
         );
-        assert_eq!(errors, vec![SaveGlobalConfigError::PreviewHashMismatch]);
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert!(
+            validate(&resolved, &NoSkills)
+                .contains(&ConfigViolation::EmptyModel { role: Role::Plan })
+        );
     }
 
     #[test]
-    fn save_rejects_changed_project_set() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), false),
-            "preview-1",
-            "different-project-set",
-            t(500),
-            false,
+    fn prune_drops_role_tables_that_no_longer_override_anything() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(Role::Plan, RoleOverrides::default());
+        project.roles.insert(
+            Role::Impl,
+            RoleOverrides {
+                model: Some("m".into()),
+                ..Default::default()
+            },
         );
-        assert_eq!(errors, vec![SaveGlobalConfigError::ProjectSetChanged]);
-    }
-
-    #[test]
-    fn save_rejects_expired_preview() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), false),
-            "preview-1",
-            "project-set-1",
-            t(1500),
-            false,
-        );
-        assert_eq!(errors, vec![SaveGlobalConfigError::PreviewExpired]);
-    }
-
-    #[test]
-    fn save_requires_second_confirmation_when_preview_demands_it() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), true),
-            "preview-1",
-            "project-set-1",
-            t(500),
-            false,
-        );
+        project.prune();
         assert_eq!(
-            errors,
-            vec![SaveGlobalConfigError::SecondConfirmationRequired]
+            project.roles.keys().copied().collect::<Vec<_>>(),
+            vec![Role::Impl]
         );
     }
 
     #[test]
-    fn save_succeeds_once_second_confirmation_is_acquired() {
-        let errors = validate_save_global_config_revision(
-            &preview(t(1000), true),
-            "preview-1",
-            "project-set-1",
-            t(500),
-            true,
+    fn repair_fills_in_a_role_missing_from_a_hand_edited_global_file() {
+        let mut global = GlobalConfig::default();
+        global.roles.remove(&Role::Audit);
+        global.repair();
+        assert_eq!(global.role(Role::Audit).runtime, Runtime::Codex);
+    }
+
+    #[test]
+    fn global_config_round_trips_through_json() {
+        let global = GlobalConfig::default();
+        let json = serde_json::to_string(&global).unwrap();
+        assert_eq!(serde_json::from_str::<GlobalConfig>(&json).unwrap(), global);
+    }
+
+    #[test]
+    fn a_sparse_project_config_serializes_without_inherited_fields() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Impl,
+            RoleOverrides {
+                model: Some("m".into()),
+                ..Default::default()
+            },
         );
-        assert!(errors.is_empty());
+        let value = serde_json::to_value(&project).unwrap();
+        let impl_table = value.pointer("/roles/impl").unwrap().as_object().unwrap();
+        assert_eq!(impl_table.keys().collect::<Vec<_>>(), vec!["model"]);
     }
 }
