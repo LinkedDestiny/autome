@@ -70,7 +70,12 @@ export function render(host, data, ctx) {
  * exactly when the core would refuse to launch — never on a hunch here.
  */
 function environmentBanner(environment, ctx) {
-  if (!environment || environment.severity === 'ok') return null;
+  // `probed: false` means the background probe has not landed yet. That is
+  // not a problem to report — showing a red banner for a fact nobody has
+  // observed would be the same mistake as rendering unverified state as
+  // verified, in the other direction.
+  if (!environment || environment.probed === false) return null;
+  if (environment.severity === 'ok') return null;
   const problems = environment.problems || [];
   const names = problems
     .map((p) => {

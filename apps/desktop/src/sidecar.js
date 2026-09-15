@@ -15,17 +15,43 @@
 // against; tracked as the next slice of the desktop shell.
 
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const { encodeFrame, FrameDecoder } = require('./framing');
 
 const MAX_FRAME_LEN = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 
+/**
+ * Where the `automed` binary lives, in the three situations that exist.
+ *
+ * Packaged, it sits in the app bundle's `Resources/core/`. In development it
+ * is wherever Cargo put it. The order matters: a developer running the
+ * packaged app must not silently get their working-tree build, and a packaged
+ * app has no Cargo target directory to fall back to — so the packaged location
+ * is checked first and only used when the binary is actually there.
+ *
+ * `AUTOMED_BIN` overrides both, which is how the test suite points at a build
+ * it just made.
+ */
 function defaultBinaryPath() {
   if (process.env.AUTOMED_BIN) return process.env.AUTOMED_BIN;
-  const profile = process.env.AUTOMED_CARGO_PROFILE || 'debug';
   const exe = process.platform === 'win32' ? 'automed.exe' : 'automed';
+  const packaged = packagedBinaryPath(exe);
+  if (packaged && fs.existsSync(packaged)) return packaged;
+  const profile = process.env.AUTOMED_CARGO_PROFILE || 'debug';
   return path.join(__dirname, '..', '..', '..', 'target', profile, exe);
+}
+
+/**
+ * `process.resourcesPath` is set by Electron in both packaged and unpackaged
+ * runs, so its presence proves nothing on its own — the caller checks whether
+ * the binary is really there. Returns `null` outside Electron, where the
+ * property does not exist at all (plain `node --test`).
+ */
+function packagedBinaryPath(exe) {
+  if (!process.resourcesPath) return null;
+  return path.join(process.resourcesPath, 'core', exe);
 }
 
 // Wraps one child `automed` process. Every frame on stdout is a tagged
@@ -159,4 +185,4 @@ class AutomedSidecar {
   }
 }
 
-module.exports = { AutomedSidecar, defaultBinaryPath, MAX_FRAME_LEN };
+module.exports = { AutomedSidecar, defaultBinaryPath, packagedBinaryPath, MAX_FRAME_LEN };

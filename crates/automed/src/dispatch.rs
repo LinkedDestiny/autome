@@ -42,9 +42,8 @@ pub struct Ctx {
     pub autome_home: std::path::PathBuf,
     /// `$HOME` — the root of the two global skill directories.
     pub home: std::path::PathBuf,
-    /// Cached environment probe. Probing shells out four times, so the
-    /// dashboard's frequent reads use this and only `env.detect` refreshes it.
-    pub environment: Option<autome_domain::environment::Environment>,
+    /// The environment as last observed, updated by a background thread.
+    pub environment: EnvCache,
 }
 
 impl Ctx {
@@ -57,7 +56,86 @@ impl Ctx {
             store,
             autome_home: autome_home.into(),
             home: home.into(),
-            environment: None,
+            environment: EnvCache::default(),
+        }
+    }
+}
+
+/// The environment snapshot, and whether a probe is in flight.
+///
+/// Probing runs four external programs, and the login probes try several argv
+/// forms each because the CLIs move their flags around. That is tens of
+/// seconds in the worst case. The core's stdio loop is strictly serial — one
+/// command at a time — so doing it inside a request blocks *every* later
+/// request behind it, including the scheduler tick.
+///
+/// The packaged app demonstrated this on first launch: the dashboard's first
+/// read sat on the probe, the IPC layer gave up after five seconds, and every
+/// subsequent request queued behind the same probe and timed out too. The app
+/// was unusable and the log said only "timed out".
+///
+/// So the probe runs on its own thread and callers read whatever is there.
+/// "Not probed yet" is a legitimate answer and the UI says so, which is the
+/// honest thing to show for a fact nobody has observed yet.
+#[derive(Clone, Default)]
+pub struct EnvCache {
+    inner: std::sync::Arc<std::sync::Mutex<EnvState>>,
+}
+
+#[derive(Default)]
+struct EnvState {
+    snapshot: Option<autome_domain::environment::Environment>,
+    probing: bool,
+    /// Bumped on every completed probe, so a poller can tell a fresh result
+    /// from the same one it already has.
+    generation: u64,
+}
+
+impl EnvCache {
+    pub fn snapshot(&self) -> Option<autome_domain::environment::Environment> {
+        self.inner.lock().ok().and_then(|s| s.snapshot.clone())
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.inner.lock().map(|s| s.generation).unwrap_or(0)
+    }
+
+    pub fn is_probing(&self) -> bool {
+        self.inner.lock().map(|s| s.probing).unwrap_or(false)
+    }
+
+    /// Starts a probe unless one is already running. Returns whether it
+    /// started one, so a caller can say "probing" rather than "unknown".
+    pub fn start_probe(&self) -> bool {
+        {
+            let mut state = match self.inner.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            if state.probing {
+                return false;
+            }
+            state.probing = true;
+        }
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let observed = env_probe::probe_all();
+            if let Ok(mut state) = inner.lock() {
+                state.snapshot = Some(observed);
+                state.probing = false;
+                state.generation += 1;
+            }
+        });
+        true
+    }
+
+    /// For tests and for the recovery path: probe on this thread.
+    pub fn probe_blocking(&self) {
+        let observed = env_probe::probe_all();
+        if let Ok(mut state) = self.inner.lock() {
+            state.snapshot = Some(observed);
+            state.probing = false;
+            state.generation += 1;
         }
     }
 }
@@ -1399,24 +1477,31 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
         }
     }
 
-    if ctx.environment.is_none() {
-        ctx.environment = Some(env_probe::probe_all());
+    if ctx.environment.snapshot().is_none() {
+        ctx.environment.start_probe();
     }
-    let env = ctx.environment.as_ref().expect("just probed");
+    // The banner is driven from whatever has been observed. Before the first
+    // probe finishes there is nothing to report — which is not the same as
+    // reporting that everything is fine, so `probed` says which it is.
+    let environment = match ctx.environment.snapshot() {
+        Some(env) => json!({
+            "probed": true,
+            "severity": env.severity(),
+            "problems": env.problems().iter().map(|c| json!({
+                "component": c.component,
+                "name": c.component.display_name(),
+                "present": c.present,
+                "login": c.login,
+            })).collect::<Vec<_>>(),
+        }),
+        None => json!({ "probed": false, "problems": [] }),
+    };
 
     Ok((
         json!({
             "waiting": waiting,
             "running": running,
-            "environment": {
-                "severity": env.severity(),
-                "problems": env.problems().iter().map(|c| json!({
-                    "component": c.component,
-                    "name": c.component.display_name(),
-                    "present": c.present,
-                    "login": c.login,
-                })).collect::<Vec<_>>(),
-            },
+            "environment": environment,
         }),
         vec![],
     ))
@@ -1434,6 +1519,10 @@ fn scheduler_tick(ctx: &mut Ctx) -> DispatchResult {
             "tasks_started": report.tasks_started,
             "errors": report.errors,
             "latest_seq": ctx.store.latest_seq()?,
+            // The UI polls this; a change means a background probe finished
+            // and `env.get` now has something new to say.
+            "env_generation": ctx.environment.generation(),
+            "env_probing": ctx.environment.is_probing(),
         }),
         vec![],
     ))
@@ -1443,28 +1532,44 @@ fn scheduler_tick(ctx: &mut Ctx) -> DispatchResult {
 // Environment and skills
 // ---------------------------------------------------------------------------
 
+/// Returns whatever has been observed, and starts a probe if nothing has.
+/// Never waits for one (see `EnvCache`).
 fn env_get(ctx: &mut Ctx) -> DispatchResult {
-    if ctx.environment.is_none() {
-        ctx.environment = Some(env_probe::probe_all());
+    if ctx.environment.snapshot().is_none() {
+        ctx.environment.start_probe();
     }
-    let env = ctx.environment.as_ref().expect("just probed");
-    Ok((env_json(env), vec![]))
+    Ok((env_json(&ctx.environment), vec![]))
 }
 
+/// Asks for a fresh probe. Returns immediately with what is currently known;
+/// the caller learns the new result from the next `env.get`, which the UI
+/// issues when a tick reports the generation moved.
 fn env_detect(ctx: &mut Ctx) -> DispatchResult {
-    let env = env_probe::probe_all();
-    ctx.environment = Some(env.clone());
-    let seq = ctx
-        .store
-        .append_event("env.changed", "environment", json!({}))?;
+    let started = ctx.environment.start_probe();
+    let seq =
+        ctx.store
+            .append_event("env.changed", "environment", json!({ "started": started }))?;
     Ok((
-        env_json(&env),
+        env_json(&ctx.environment),
         vec![event(seq, "env.changed", "environment", json!({}))],
     ))
 }
 
-fn env_json(env: &autome_domain::environment::Environment) -> Value {
+/// `probed: false` is a distinct answer from "everything is fine", and the UI
+/// must not render one as the other.
+fn env_json(cache: &EnvCache) -> Value {
+    let Some(env) = cache.snapshot() else {
+        return json!({
+            "probed": false,
+            "probing": cache.is_probing(),
+            "generation": cache.generation(),
+            "environment": Value::Null,
+        });
+    };
     json!({
+        "probed": true,
+        "probing": cache.is_probing(),
+        "generation": cache.generation(),
         "environment": env,
         "severity": env.severity(),
         "problems": env.problems().iter().map(|c| c.component).collect::<Vec<_>>(),
@@ -2191,14 +2296,69 @@ mod tests {
     // ---- environment and skills -----------------------------------------
 
     #[test]
-    fn env_get_returns_all_four_components_and_caches_the_probe() {
+    fn env_get_answers_immediately_and_probes_in_the_background() {
+        // The packaged app hung on first launch because this probe ran inside
+        // the request: it takes tens of seconds, the IPC timeout is five, and
+        // the core's stdio loop is serial, so every later request queued
+        // behind it and timed out too.
         let mut sb = Sandbox::new("env");
+        let started = std::time::Instant::now();
         let out = handle_command(sb.ctx(), &cmd("env.get", json!({})));
-        let components = ok_payload(&out)["environment"]["components"]
-            .as_array()
-            .unwrap();
-        assert_eq!(components.len(), 4);
-        assert!(sb.ctx().environment.is_some(), "the probe is cached");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "env.get must not wait for the probe: took {:?}",
+            started.elapsed()
+        );
+        let payload = ok_payload(&out);
+        // Before the first probe lands, "not observed" is the honest answer,
+        // and it is a different answer from "everything is fine".
+        assert!(payload["probed"].is_boolean());
+        if payload["probed"] == json!(false) {
+            assert_eq!(payload["environment"], Value::Null);
+        }
+    }
+
+    #[test]
+    fn a_completed_probe_reports_all_four_components() {
+        let mut sb = Sandbox::new("env-blocking");
+        sb.ctx().environment.probe_blocking();
+        let out = handle_command(sb.ctx(), &cmd("env.get", json!({})));
+        let payload = ok_payload(&out);
+        assert_eq!(payload["probed"], json!(true));
+        assert_eq!(
+            payload["environment"]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(payload["generation"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn the_dashboard_never_waits_for_a_probe_either() {
+        let mut sb = Sandbox::new("env-dashboard");
+        let started = std::time::Instant::now();
+        let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "dashboard.get took {:?}",
+            started.elapsed()
+        );
+        assert!(ok_payload(&out)["environment"]["probed"].is_boolean());
+    }
+
+    #[test]
+    fn env_detect_returns_at_once_rather_than_holding_the_protocol() {
+        let mut sb = Sandbox::new("env-detect");
+        let started = std::time::Instant::now();
+        let out = handle_command(sb.ctx(), &cmd("env.detect", json!({})));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "env.detect took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(out.events.len(), 1);
     }
 
     #[test]

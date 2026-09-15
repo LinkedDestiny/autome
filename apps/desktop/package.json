@@ -1,14 +1,54 @@
 {
   "name": "autome-desktop",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Autome 2.0 Electron shell (Main/Preload/Renderer); UI only, no business state (plan D3). Owns no persistence or domain logic of its own; talks to the automed Rust Core sidecar over framed stdio JSON-RPC (plan §3.1/§3.2, §9.5).",
+  "description": "Autome 2.0 desktop shell. UI only, no business state (plan D3); talks to the automed Rust core over framed stdio JSON-RPC.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "package": "../../scripts/package.sh"
   },
   "devDependencies": {
     "electron": "43.2.0"
+  },
+  "build": {
+    "appId": "dev.autome.desktop",
+    "productName": "Autome",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "core",
+        "to": "core"
+      }
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "darkModeSupport": false,
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Autome 在 iTerm2 或 Terminal 中打开会话窗口，好让你能看到每一轮在做什么。"
+      }
+    },
+    "dmg": {
+      "writeUpdateInfo": false
+    }
   }
 }

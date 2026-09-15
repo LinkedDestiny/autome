@@ -924,7 +924,13 @@ fn the_dashboard_lists_running_and_waiting_tasks() {
     let waiting = payload["waiting"].as_array().unwrap();
     assert_eq!(waiting.len(), 1, "{payload:#?}");
     assert_eq!(waiting[0]["task"]["id"], json!(task_id));
-    assert!(payload["environment"]["severity"].is_string());
+    // The probe runs in the background, so a dashboard read may legitimately
+    // answer before it has landed. What must always hold is that the payload
+    // says which of the two it is rather than implying "fine".
+    assert!(payload["environment"]["probed"].is_boolean());
+    if payload["environment"]["probed"] == json!(true) {
+        assert!(payload["environment"]["severity"].is_string());
+    }
 }
 
 // ---------------------------------------------------------------------------

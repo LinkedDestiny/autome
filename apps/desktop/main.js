@@ -12,10 +12,10 @@
 //      the core's own answer — so a compromised renderer can ask to open "the
 //      log of session S", never "/Users/me/.ssh/id_rsa".
 //
-// Deliberately out of scope for this increment, tracked rather than
-// forgotten: core-manifest signature verification, the single-instance lock,
-// ASAR integrity and Electron fuses, and code signing. Those belong with
-// packaging, which does not exist yet.
+// Deliberately out of scope, tracked rather than forgotten: core-manifest
+// signature verification, the single-instance lock, and Electron fuses.
+// Packaging, the hardened runtime and signing are in scripts/package.sh and
+// the `build` block of package.json.
 
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron');
@@ -286,6 +286,11 @@ function startSidecar(dbPath) {
 // reasonably want to change.
 const TICK_INTERVAL_MS = 3000;
 let tickTimer = null;
+// The environment is probed on a background thread in the core, so its result
+// arrives between requests rather than in reply to one. The tick reports a
+// generation counter; a change means a probe landed and the screens showing
+// environment state should re-read.
+let lastEnvGeneration = null;
 
 function startTicking() {
   if (tickTimer) return;
@@ -293,10 +298,14 @@ function startTicking() {
     if (!sidecar) return;
     try {
       const report = await callCore('scheduler.tick', {});
+      const envMoved =
+        report.env_generation !== undefined && report.env_generation !== lastEnvGeneration;
+      if (envMoved) lastEnvGeneration = report.env_generation;
       if (
         report.sessions_reaped.length ||
         report.tasks_advanced.length ||
-        report.tasks_started.length
+        report.tasks_started.length ||
+        envMoved
       ) {
         broadcast('autome:event', { event_type: 'tick', payload: report });
       }

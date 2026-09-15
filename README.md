@@ -65,9 +65,9 @@ specified, what survives, and why the rest was dropped.
 ## Building
 
 ```sh
-cargo test                      # 176 domain + 286 automed + 16 end-to-end
+cargo test                      # 176 domain + 289 automed + 16 end-to-end
 cargo clippy --all-targets      # clean
-cd apps/desktop && npm test     # 87: the shell, the gates and the renderer
+cd apps/desktop && npm test     # 102: the shell, the gates and the renderer
 ```
 
 The end-to-end suite drives a whole task from a one-line request to a merge
@@ -102,5 +102,24 @@ design, review, adjudication, the approval stop, implementation and an
 independent audit, to a merge commit on `main` — six real sessions, the user
 pressing two buttons.
 
-Remaining before this is something to install: packaging and signing, and the
-Onboarding wizard's in-app editing step wired into the renderer.
+### Packaging
+
+```sh
+sh scripts/package.sh            # unsigned .app and .dmg, for local use
+CSC_NAME="Developer ID Application: …" sh scripts/package.sh   # signed
+```
+
+Signing is opt-in rather than best-effort: an unsigned build that claims to be
+signed is worse than one that says it is not. The hardened runtime is on, so
+`build/entitlements.mac.plist` declares every capability the app uses —
+including AppleEvents, without which the session launcher cannot open a
+terminal and every session fails to start, in signed builds only.
+
+## Status
+
+Feature-complete against the requirements document. The loop runs end to end
+against the real CLIs, and `scripts/package.sh` produces a runnable macOS app.
+
+Not done: signing and notarisation have configuration but have never been run
+(no Developer ID here), there is no application icon, and `automed` is spawned
+without verifying its signature or holding a single-instance lock.

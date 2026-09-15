@@ -53,6 +53,49 @@ function startSidecar({ dbPath, home, onEvent }) {
   }).start();
 }
 
+test('the packaged location wins over the development build, but only if it is there', () => {
+  // The order is the point. A developer running the packaged app must not
+  // silently get their working-tree build; a packaged app has no Cargo target
+  // directory to fall back to. So packaged is checked first and used only when
+  // the binary actually exists there.
+  const { packagedBinaryPath } = require('../src/sidecar');
+  const originalResources = process.resourcesPath;
+  const originalBin = process.env.AUTOMED_BIN;
+  delete process.env.AUTOMED_BIN;
+
+  const staging = path.join(os.tmpdir(), `automed-resources-${crypto.randomUUID()}`);
+  fs.mkdirSync(path.join(staging, 'core'), { recursive: true });
+  Object.defineProperty(process, 'resourcesPath', { value: staging, configurable: true });
+
+  try {
+    // Nothing there yet: fall back to the development build.
+    assert.match(defaultBinaryPath(), /target[/\\](debug|release)[/\\]automed/);
+
+    // Once the binary exists in the bundle, that is the one.
+    const exe = process.platform === 'win32' ? 'automed.exe' : 'automed';
+    const packaged = path.join(staging, 'core', exe);
+    fs.writeFileSync(packaged, '');
+    assert.equal(defaultBinaryPath(), packaged);
+    assert.equal(packagedBinaryPath(exe), packaged);
+
+    // And an explicit override beats both.
+    process.env.AUTOMED_BIN = '/somewhere/else/automed';
+    assert.equal(defaultBinaryPath(), '/somewhere/else/automed');
+  } finally {
+    delete process.env.AUTOMED_BIN;
+    if (originalBin !== undefined) process.env.AUTOMED_BIN = originalBin;
+    if (originalResources === undefined) {
+      delete process.resourcesPath;
+    } else {
+      Object.defineProperty(process, 'resourcesPath', {
+        value: originalResources,
+        configurable: true,
+      });
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+});
+
 test('automed binary is built before running sidecar e2e tests', () => {
   assert.ok(
     fs.existsSync(defaultBinaryPath()),

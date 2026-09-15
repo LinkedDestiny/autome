@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The hardened runtime is on, so every capability the app actually uses has to
+  be declared. Each of these is here because something would break without it,
+  not as a precaution:
+
+  - allow-jit / allow-unsigned-executable-memory: Electron's V8.
+  - allow-dyld-environment-variables / disable-library-validation: Electron
+    loads its own frameworks.
+  - AppleEvents: the session launcher drives iTerm2 or Terminal through
+    osascript. Without it every session fails to start.
+
+  Deliberately absent: network entitlements. The app itself makes no network
+  calls — the two CLIs do, in their own processes.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

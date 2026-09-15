@@ -4,3 +4,7 @@ dist/
 .DS_Store
 *.log
 .autome-v2-local/
+
+# Packaging outputs
+apps/desktop/core/
+apps/desktop/dist/

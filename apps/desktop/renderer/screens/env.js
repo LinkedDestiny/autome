@@ -30,13 +30,19 @@ export function render(host, data, ctx) {
   const screen = h('div.screen.active', { 'data-screen': 'env' });
   const environment = (data && data.environment) || {};
   const components = environment.components || [];
+  // The probe runs on its own thread and takes tens of seconds, because it
+  // runs four external programs and the CLIs have moved their login flags
+  // around. Saying so beats four cards that look like findings.
+  const probed = data && data.probed !== false;
   const prerequisites = (data && data.prerequisites) || {};
 
   screen.appendChild(
     h('div.pagehead', [
       h('h1.ribbon.ribbon--orange', [h('span.ribbon__front', { text: '本地环境' })]),
       h('span.pagehead__sub', {
-        text: `只检测四样东西 · Homebrew ${prerequisites.brew ? '✓' : '缺失'} · npm ${prerequisites.npm ? '✓' : '缺失'} · 最近检测 ${labels.clock(environment.checked_at) || '—'}`,
+        text: probed
+          ? `只检测四样东西 · Homebrew ${prerequisites.brew ? '✓' : '缺失'} · npm ${prerequisites.npm ? '✓' : '缺失'} · 最近检测 ${labels.clock(environment.checked_at) || '—'}`
+          : '只检测四样东西 · 正在检测…（每项最多几秒，检测期间不会挡住其它操作）',
       }),
       h('div.pagehead__actions', [
         registerWrite(
