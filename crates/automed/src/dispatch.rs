@@ -104,8 +104,9 @@ use crate::store::{
     RecordEvidenceError, RecordPlanningPolicyRestartError,
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
     RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
-    RecordRunPolicyAmendmentError, RecordUserCorrectionError,
-    RunPolicyAmendmentRecord, StartDeliveryChainError, TaskAppendError, TaskSummary,
+    RecordRunPolicyAmendmentError, RecordSkillInstallReceiptError, RecordUserCorrectionError,
+    RunPolicyAmendmentRecord, SkillEvidenceLadderRecord, SkillInstallRecord,
+    SkillLadderTransitionError, StartDeliveryChainError, TaskAppendError, TaskSummary,
     UserCorrectionRecord,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
@@ -142,6 +143,7 @@ use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::{Requirement, RequirementId};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
+use autome_domain::skill::{self, GlobalSkillBinding, ProjectSkillBinding, SkillAuditOutcome, SkillDigest};
 use autome_domain::step_role::{self, LogicalRole};
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
 use autome_domain::user_correction::{
@@ -286,6 +288,17 @@ pub enum DispatchError {
     /// duplicate `receipt_digest` surfaced as a SQL primary-key violation
     /// (`Sql`).
     RecordProjectInitializationReceipt(RecordProjectInitializationReceiptError),
+    /// §5.11 write path: `record_skill_install_receipt`'s failure modes --
+    /// `issue_skill_install_receipt`'s own `MissingUserApprovalDecision`
+    /// check, re-run server-side (`Install`), or a duplicate
+    /// `receipt_digest` surfaced as a SQL primary-key violation (`Sql`).
+    RecordSkillInstallReceipt(RecordSkillInstallReceiptError),
+    /// §5.11 write path: every `mark_skill_*`/`record_skill_effective`
+    /// method's failure modes -- no ladder was ever seeded by an install
+    /// for this `skill_digest` (`NotFound`), the domain's own
+    /// `SkillEvidenceLadder` rung-order check rejected the transition
+    /// (`Ladder`), or a SQL failure (`Sql`).
+    SkillLadderTransition(SkillLadderTransitionError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -399,6 +412,18 @@ impl From<RecordQualificationReceiptError> for DispatchError {
 impl From<StartDeliveryChainError> for DispatchError {
     fn from(value: StartDeliveryChainError) -> Self {
         DispatchError::StartDeliveryChain(value)
+    }
+}
+
+impl From<RecordSkillInstallReceiptError> for DispatchError {
+    fn from(value: RecordSkillInstallReceiptError) -> Self {
+        DispatchError::RecordSkillInstallReceipt(value)
+    }
+}
+
+impl From<SkillLadderTransitionError> for DispatchError {
+    fn from(value: SkillLadderTransitionError) -> Self {
+        DispatchError::SkillLadderTransition(value)
     }
 }
 
@@ -940,6 +965,68 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     // reducer).
     if command.method == "model_selection.issue_qualification_receipt" {
         let result = handle_issue_qualification_receipt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // §5.11: same shape again -- each writes a `skill_install_receipts`/
+    // `skill_evidence_ladders`/`global_skill_bindings`/
+    // `project_skill_bindings` row but appends no domain `Event`. A
+    // Skill's Vault entry, evidence ladder, and binding are all
+    // current-state facts, not aggregates with a reducer.
+    if command.method == "skill.issue_install_receipt" {
+        let result = handle_issue_skill_install_receipt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.mark_bound" {
+        let result = handle_mark_skill_bound(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.mark_discoverable" {
+        let result = handle_mark_skill_discoverable(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.mark_available_to_attempt" {
+        let result = handle_mark_skill_available_to_attempt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.mark_invoked" {
+        let result = handle_mark_skill_invoked(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.record_effective" {
+        let result = handle_record_skill_effective(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.record_global_binding" {
+        let result = handle_record_global_skill_binding(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "skill.record_project_binding" {
+        let result = handle_record_project_skill_binding(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -2169,6 +2256,401 @@ fn parse_model_choice_key_hash_by_step_param(
     })
 }
 
+/// Dispatch-layer-only input for `skill.issue_install_receipt` -- mirrors
+/// `issue_skill_install_receipt`'s own argument list rather than accepting a
+/// client-supplied `SkillInstallReceipt` directly, same
+/// derive-bypasses-the-constructor reasoning as
+/// `QualificationReceiptInputParam`: every field of `SkillInstallReceipt` is
+/// `pub` with a derived `Deserialize`, so a caller who could hand in a whole
+/// receipt could blank out `user_approval_decision_ref` and bypass the one
+/// invariant `issue_skill_install_receipt` exists to enforce.
+#[derive(Debug, Deserialize)]
+struct SkillInstallInputParam {
+    package_digest: String,
+    audit_outcome: SkillAuditOutcome,
+    plan_digest: String,
+    user_approval_decision_ref: String,
+    receipt_digest: String,
+}
+
+fn parse_skill_install_input_param(
+    command: &Command,
+) -> Result<SkillInstallInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid SkillInstallInputParam: {e}"
+        ))
+    })
+}
+
+/// Handles `skill.issue_install_receipt`: `{ input: SkillInstallInputParam
+/// }`. Calls `record_skill_install_receipt`, which itself calls
+/// `issue_skill_install_receipt` server-side (so the approval-decision
+/// invariant is actually enforced) and seeds the fresh `Installed` ladder
+/// in the same write -- see `record_skill_install_receipt`'s own doc
+/// comment for why this is one call, not two.
+fn handle_issue_skill_install_receipt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_skill_install_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_skill_install_receipt(
+            &input.package_digest,
+            input.audit_outcome,
+            &input.plan_digest,
+            &input.user_approval_decision_ref,
+            &input.receipt_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(skill_install_record_json(&record))
+}
+
+fn skill_install_record_json(record: &SkillInstallRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "ladder": record.ladder,
+        "created_at": record.created_at,
+    })
+}
+
+fn skill_evidence_ladder_record_json(record: &SkillEvidenceLadderRecord) -> Value {
+    serde_json::json!({
+        "ladder": record.ladder,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_issue_skill_install_receipt` -- looks up the
+/// recorded `skill_install_receipts` row for `receipt_digest`, if any.
+fn read_skill_install_receipt_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_skill_install_receipt(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(serde_json::json!({
+            "receipt": record.receipt,
+            "created_at": record.created_at,
+        })),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no skill install receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
+/// Read counterpart to the ladder half of `handle_issue_skill_install_receipt`
+/// and every `mark_skill_*`/`skill.record_effective` write below -- the
+/// current `SkillEvidenceLadder` for `skill_digest`, if one has ever been
+/// seeded by an install.
+fn read_skill_evidence_ladder_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_skill_evidence_ladder(&skill_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(skill_evidence_ladder_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no skill evidence ladder recorded for skill_digest {skill_digest}"),
+        )),
+    }
+}
+
+/// Shared by every `skill.mark_*`/`skill.record_effective` write handler
+/// below: refuses to run in the store's diagnostic state, parses
+/// `skill_digest`, runs the given ladder transition, and formats the
+/// resulting `SkillEvidenceLadderRecord`.
+fn handle_skill_ladder_transition(
+    store: &mut EventStore,
+    command: &Command,
+    transition: impl FnOnce(&mut EventStore, &str) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError>,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    let record = transition(store, &skill_digest)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(skill_evidence_ladder_record_json(&record))
+}
+
+/// Handles `skill.mark_bound`: `{ skill_digest }`.
+fn handle_mark_skill_bound(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    handle_skill_ladder_transition(store, command, |store, skill_digest| {
+        store.mark_skill_bound(skill_digest)
+    })
+}
+
+/// Handles `skill.mark_discoverable`: `{ skill_digest }`.
+fn handle_mark_skill_discoverable(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    handle_skill_ladder_transition(store, command, |store, skill_digest| {
+        store.mark_skill_discoverable(skill_digest)
+    })
+}
+
+/// Handles `skill.mark_available_to_attempt`: `{ skill_digest }`.
+fn handle_mark_skill_available_to_attempt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    handle_skill_ladder_transition(store, command, |store, skill_digest| {
+        store.mark_skill_available_to_attempt(skill_digest)
+    })
+}
+
+/// Handles `skill.mark_invoked`: `{ skill_digest }`.
+fn handle_mark_skill_invoked(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    handle_skill_ladder_transition(store, command, |store, skill_digest| {
+        store.mark_skill_invoked(skill_digest)
+    })
+}
+
+/// Handles `skill.record_effective`: `{ skill_digest, effective }`.
+fn handle_record_skill_effective(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    let effective = parse_bool_param(command, "effective").map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_skill_effective(&skill_digest, effective)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(skill_evidence_ladder_record_json(&record))
+}
+
+fn parse_global_skill_binding_param(
+    command: &Command,
+) -> Result<GlobalSkillBinding, DispatchError> {
+    let value = command
+        .params
+        .get("binding")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.binding is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.binding is not a valid GlobalSkillBinding: {e}"
+        ))
+    })
+}
+
+/// Handles `skill.record_global_binding`: `{ binding: GlobalSkillBinding }`.
+/// `GlobalSkillBinding` has no validating constructor of its own, so it is
+/// trusted directly -- same reasoning as `handle_record_readiness` trusting
+/// a whole client-supplied `ReadinessReceipt`.
+fn handle_record_global_skill_binding(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let binding = parse_global_skill_binding_param(command).map_err(dispatch_error_to_reply_error)?;
+    let created_at = store
+        .record_global_skill_binding(&binding)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({ "binding": binding, "created_at": created_at }))
+}
+
+/// Read counterpart to `handle_record_global_skill_binding` -- the current
+/// snapshot for `skill_digest`, if one has ever been recorded.
+fn read_global_skill_binding_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_global_skill_binding(&skill_digest)
+        .map_err(internal_error)?
+    {
+        Some(binding) => Ok(serde_json::json!({ "binding": binding })),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no global skill binding recorded for skill_digest {skill_digest}"),
+        )),
+    }
+}
+
+struct ProjectSkillBindingInputParam {
+    project_id: String,
+    skill_digest: String,
+    binding: ProjectSkillBinding,
+}
+
+fn parse_project_skill_binding_input_param(
+    command: &Command,
+) -> Result<ProjectSkillBindingInputParam, DispatchError> {
+    let project_id = parse_string_param(command, "project_id")?;
+    let skill_digest = parse_string_param(command, "skill_digest")?;
+    let value = command
+        .params
+        .get("binding")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.binding is required".to_string()))?;
+    let binding = serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.binding is not a valid ProjectSkillBinding: {e}"
+        ))
+    })?;
+    Ok(ProjectSkillBindingInputParam {
+        project_id,
+        skill_digest,
+        binding,
+    })
+}
+
+/// Handles `skill.record_project_binding`: `{ project_id, skill_digest,
+/// binding: ProjectSkillBinding }`. `ProjectSkillBinding` has no validating
+/// constructor of its own either, so it is trusted directly -- same
+/// reasoning as `handle_record_global_skill_binding` above. The composite
+/// key's two halves come from the caller's own `project_id`/`skill_digest`
+/// params, not from the (key-less) `ProjectSkillBinding` struct itself --
+/// same reasoning documented on `record_project_skill_binding`.
+fn handle_record_project_skill_binding(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input =
+        parse_project_skill_binding_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let created_at = store
+        .record_project_skill_binding(&input.project_id, &input.skill_digest, &input.binding)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({ "binding": input.binding, "created_at": created_at }))
+}
+
+/// Read counterpart to `handle_record_project_skill_binding` -- the current
+/// snapshot for `(project_id, skill_digest)`, if one has ever been
+/// recorded.
+fn read_project_skill_binding_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_skill_binding(&project_id, &skill_digest)
+        .map_err(internal_error)?
+    {
+        Some(binding) => Ok(serde_json::json!({ "binding": binding })),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!(
+                "no project skill binding recorded for project_id {project_id} and skill_digest {skill_digest}"
+            ),
+        )),
+    }
+}
+
+/// §5.11: `{ skill_digest, project_id: Option<String> }` -- re-exercises
+/// `resolve_project_binding` server-side against whatever global/project
+/// bindings are actually recorded, rather than trusting a caller's own
+/// merge of the two. A `skill_digest` with no recorded global binding at
+/// all is `NotFound` (there is nothing to resolve); a `project_id` with no
+/// recorded project binding is treated as pure inheritance, same as passing
+/// `None` to `resolve_project_binding` directly.
+fn read_skill_resolve_binding(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let skill_digest =
+        parse_string_param(command, "skill_digest").map_err(dispatch_error_to_reply_error)?;
+    let global = store
+        .load_global_skill_binding(&skill_digest)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                format!("no global skill binding recorded for skill_digest {skill_digest}"),
+            )
+        })?;
+    let project_id = parse_optional_string_param(command, "project_id")
+        .map_err(dispatch_error_to_reply_error)?;
+    let project = match project_id {
+        Some(project_id) => store
+            .load_project_skill_binding(&project_id, &skill_digest)
+            .map_err(internal_error)?,
+        None => None,
+    };
+    let resolved = skill::resolve_project_binding(&global, project.as_ref());
+    Ok(serde_json::json!({ "resolved": resolved }))
+}
+
+fn parse_skill_digest_set_param(
+    command: &Command,
+    key: &str,
+) -> Result<HashSet<SkillDigest>, DispatchError> {
+    let value = command
+        .params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} is required")))?;
+    let digests: Vec<String> = serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.{key} is not a valid array of strings: {e}"))
+    })?;
+    Ok(digests.into_iter().map(SkillDigest).collect())
+}
+
+/// §5.11: `{ digest, currently_bound_digests: [String], \
+/// historically_referenced_digests: [String] }` -- re-exercises
+/// `can_garbage_collect` server-side, matching the
+/// `bounded_failure.may_auto_retry`-style "check" convention of reporting a
+/// negative answer as data rather than an error. Pure -- no store lookup,
+/// the caller supplies both sets, mirroring how
+/// `read_model_selection_validate_model_separation` takes its whole map as
+/// a param rather than deriving it from recorded state.
+fn read_skill_can_garbage_collect(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let digest =
+        parse_string_param(command, "digest").map_err(dispatch_error_to_reply_error)?;
+    let currently_bound = parse_skill_digest_set_param(command, "currently_bound_digests")
+        .map_err(dispatch_error_to_reply_error)?;
+    let historically_referenced =
+        parse_skill_digest_set_param(command, "historically_referenced_digests")
+            .map_err(dispatch_error_to_reply_error)?;
+    let can_garbage_collect = skill::can_garbage_collect(
+        &SkillDigest(digest),
+        &currently_bound,
+        &historically_referenced,
+    );
+    Ok(serde_json::json!({ "can_garbage_collect": can_garbage_collect }))
+}
+
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -2798,6 +3280,26 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordQualificationReceipt(RecordQualificationReceiptError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::RecordSkillInstallReceipt(RecordSkillInstallReceiptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordSkillInstallReceipt(RecordSkillInstallReceiptError::Install(e)) => {
+            (
+                ReplyErrorCode::TransitionRejected,
+                format!("skill install receipt rejected: {e:?}"),
+            )
+        }
+        DispatchError::SkillLadderTransition(SkillLadderTransitionError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::SkillLadderTransition(SkillLadderTransitionError::NotFound) => (
+            ReplyErrorCode::NotFound,
+            "no skill evidence ladder recorded for this skill_digest".to_string(),
+        ),
+        DispatchError::SkillLadderTransition(SkillLadderTransitionError::Ladder(e)) => (
+            ReplyErrorCode::TransitionRejected,
+            format!("skill ladder transition rejected: {e:?}"),
+        ),
         DispatchError::StartDeliveryChain(StartDeliveryChainError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -2933,6 +3435,12 @@ fn try_dispatch_read(
         "model_selection.validate_model_separation" => {
             Some(read_model_selection_validate_model_separation(command))
         }
+        "skill.get_install_receipt" => Some(read_skill_install_receipt_get(store, command)),
+        "skill.get_evidence_ladder" => Some(read_skill_evidence_ladder_get(store, command)),
+        "skill.get_global_binding" => Some(read_global_skill_binding_get(store, command)),
+        "skill.get_project_binding" => Some(read_project_skill_binding_get(store, command)),
+        "skill.resolve_binding" => Some(read_skill_resolve_binding(store, command)),
+        "skill.can_garbage_collect" => Some(read_skill_can_garbage_collect(command)),
         _ => None,
     }
 }
@@ -10199,6 +10707,546 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("model_selection.validate_model_separation", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn skill_install_input_json(package_digest: &str, receipt_digest: &str) -> Value {
+        json!({
+            "package_digest": package_digest,
+            "audit_outcome": { "NoKnownRisksFound": null },
+            "plan_digest": "plan-1",
+            "user_approval_decision_ref": "decision:1",
+            "receipt_digest": receipt_digest,
+        })
+    }
+
+    fn issue_skill_install(store: &mut EventStore, package_digest: &str, receipt_digest: &str) {
+        let cmd = command(
+            "skill.issue_install_receipt",
+            json!({ "input": skill_install_input_json(package_digest, receipt_digest) }),
+        );
+        let outcome = handle_command(store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("skill.issue_install_receipt failed: {code:?} {message}")
+        }
+    }
+
+    /// §5.11: `skill.issue_install_receipt` follows the same
+    /// no-`Event`-produced shape as `readiness.record`/
+    /// `model_selection.issue_qualification_receipt`, and seeds a fresh
+    /// `Installed`-only ladder in the same write -- both round-trip through
+    /// their `skill.get_*` counterparts.
+    #[test]
+    fn handle_command_skill_issue_install_receipt_seeds_receipt_and_ladder_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        issue_skill_install(&mut store, "pkg-1", "SR-1");
+
+        let get_receipt = command(
+            "skill.get_install_receipt",
+            json!({ "receipt_digest": "SR-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_receipt);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["receipt"]["package_digest"], "pkg-1");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.get_install_receipt failed: {code:?} {message}")
+            }
+        }
+
+        let get_ladder = command(
+            "skill.get_evidence_ladder",
+            json!({ "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_ladder);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ladder"]["installed"], true);
+                assert_eq!(payload["ladder"]["bound"], false);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.get_evidence_ladder failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_issue_install_receipt_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("skill.issue_install_receipt", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `issue_skill_install_receipt`'s `MissingUserApprovalDecision` check
+    /// is re-run server-side, same as `bounded_failure`/`model_selection`'s
+    /// own domain re-validation.
+    #[test]
+    fn handle_command_skill_issue_install_receipt_rejects_a_blank_user_approval_decision() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = skill_install_input_json("pkg-1", "SR-1");
+        input["user_approval_decision_ref"] = json!("  ");
+        let cmd = command("skill.issue_install_receipt", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_get_install_receipt_and_get_evidence_ladder_are_not_found_before_issuance()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_receipt = command(
+            "skill.get_install_receipt",
+            json!({ "receipt_digest": "SR-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_receipt);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        let get_ladder = command(
+            "skill.get_evidence_ladder",
+            json!({ "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_ladder);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `skill.mark_bound`/`.mark_discoverable`/`.mark_available_to_attempt`/
+    /// `.mark_invoked`/`.record_effective` walk the ladder forward one rung
+    /// at a time, each persisted and readable back.
+    #[test]
+    fn handle_command_skill_ladder_transitions_walk_forward_and_persist_each_rung() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        issue_skill_install(&mut store, "pkg-1", "SR-1");
+
+        for method in [
+            "skill.mark_bound",
+            "skill.mark_discoverable",
+            "skill.mark_available_to_attempt",
+            "skill.mark_invoked",
+        ] {
+            let cmd = command(method, json!({ "skill_digest": "pkg-1" }));
+            let outcome = handle_command(&mut store, &cmd);
+            if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+                panic!("{method} failed: {code:?} {message}")
+            }
+        }
+        let cmd = command(
+            "skill.record_effective",
+            json!({ "skill_digest": "pkg-1", "effective": true }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ladder"]["invoked"], true);
+                assert_eq!(payload["ladder"]["effective"], true);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.record_effective failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_mark_discoverable_rejects_skipping_mark_bound() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        issue_skill_install(&mut store, "pkg-1", "SR-1");
+
+        let cmd = command("skill.mark_discoverable", json!({ "skill_digest": "pkg-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_mark_bound_is_not_found_without_a_prior_install() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.mark_bound",
+            json!({ "skill_digest": "never-installed" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_mark_bound_is_invalid_params_without_skill_digest() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("skill.mark_bound", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn global_skill_binding_json(skill_digest: &str, state: &str) -> Value {
+        json!({
+            "revision": 1,
+            "skill_digest": skill_digest,
+            "steps": ["implementation"],
+            "cli_targets": ["claude-code"],
+            "invocation": "ExplicitOnly",
+            "state": state,
+        })
+    }
+
+    /// `skill.record_global_binding` upserts the current-state row -- no
+    /// server-side re-validation since `GlobalSkillBinding` has no
+    /// validating constructor to re-run, same reasoning as
+    /// `readiness.record`.
+    #[test]
+    fn handle_command_skill_record_global_binding_upserts_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.record_global_binding",
+            json!({ "binding": global_skill_binding_json("pkg-1", "Enabled") }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("skill.record_global_binding failed: {code:?} {message}")
+        }
+
+        let get = command(
+            "skill.get_global_binding",
+            json!({ "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &get);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["binding"]["state"], "Enabled");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.get_global_binding failed: {code:?} {message}")
+            }
+        }
+
+        let cmd = command(
+            "skill.record_global_binding",
+            json!({ "binding": global_skill_binding_json("pkg-1", "Disabled") }),
+        );
+        handle_command(&mut store, &cmd);
+        let outcome = handle_command(&mut store, &get);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["binding"]["state"], "Disabled");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.get_global_binding failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_get_global_binding_is_not_found_before_recording() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.get_global_binding",
+            json!({ "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_record_global_binding_is_invalid_params_without_binding() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("skill.record_global_binding", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `skill.record_project_binding` is keyed by `(project_id,
+    /// skill_digest)` -- distinct projects binding the same skill don't
+    /// collide.
+    #[test]
+    fn handle_command_skill_record_project_binding_is_keyed_by_project_and_skill_digest() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let binding = json!({
+            "project_id": "proj-1",
+            "revision": 1,
+            "mode": "Disable",
+            "steps": null,
+            "cli_targets": null,
+            "invocation": null,
+            "state": null,
+        });
+        let cmd = command(
+            "skill.record_project_binding",
+            json!({ "project_id": "proj-1", "skill_digest": "pkg-1", "binding": binding }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("skill.record_project_binding failed: {code:?} {message}")
+        }
+
+        let get = command(
+            "skill.get_project_binding",
+            json!({ "project_id": "proj-1", "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &get);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["binding"]["mode"], "Disable");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.get_project_binding failed: {code:?} {message}")
+            }
+        }
+
+        let get_other_project = command(
+            "skill.get_project_binding",
+            json!({ "project_id": "proj-2", "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &get_other_project);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_record_project_binding_is_invalid_params_without_project_id() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.record_project_binding",
+            json!({
+                "skill_digest": "pkg-1",
+                "binding": {
+                    "project_id": "proj-1",
+                    "revision": 1,
+                    "mode": "Inherit",
+                    "steps": null,
+                    "cli_targets": null,
+                    "invocation": null,
+                    "state": null,
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.11: `skill.resolve_binding` re-exercises `resolve_project_binding`
+    /// server-side. No `project_id` is pure inheritance; a `Disable`-mode
+    /// project binding forces the resolved state regardless of the global
+    /// binding's own state.
+    #[test]
+    fn handle_command_skill_resolve_binding_inherits_without_a_project_id_and_overrides_with_one() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.record_global_binding",
+            json!({ "binding": global_skill_binding_json("pkg-1", "Enabled") }),
+        );
+        handle_command(&mut store, &cmd);
+
+        let resolve_without_project = command(
+            "skill.resolve_binding",
+            json!({ "skill_digest": "pkg-1" }),
+        );
+        let outcome = handle_command(&mut store, &resolve_without_project);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["resolved"]["state"], "Enabled");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.resolve_binding failed: {code:?} {message}")
+            }
+        }
+
+        let binding = json!({
+            "project_id": "proj-1",
+            "revision": 1,
+            "mode": "Disable",
+            "steps": null,
+            "cli_targets": null,
+            "invocation": null,
+            "state": null,
+        });
+        let cmd = command(
+            "skill.record_project_binding",
+            json!({ "project_id": "proj-1", "skill_digest": "pkg-1", "binding": binding }),
+        );
+        handle_command(&mut store, &cmd);
+
+        let resolve_with_project = command(
+            "skill.resolve_binding",
+            json!({ "skill_digest": "pkg-1", "project_id": "proj-1" }),
+        );
+        let outcome = handle_command(&mut store, &resolve_with_project);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["resolved"]["state"], "Disabled");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.resolve_binding failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_resolve_binding_is_not_found_without_a_global_binding() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("skill.resolve_binding", json!({ "skill_digest": "pkg-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_can_garbage_collect_refuses_a_currently_bound_or_referenced_digest_and_allows_otherwise()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let bound_cmd = command(
+            "skill.can_garbage_collect",
+            json!({
+                "digest": "pkg-1",
+                "currently_bound_digests": ["pkg-1"],
+                "historically_referenced_digests": [],
+            }),
+        );
+        let outcome = handle_command(&mut store, &bound_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["can_garbage_collect"], false);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.can_garbage_collect failed: {code:?} {message}")
+            }
+        }
+
+        let referenced_cmd = command(
+            "skill.can_garbage_collect",
+            json!({
+                "digest": "pkg-1",
+                "currently_bound_digests": [],
+                "historically_referenced_digests": ["pkg-1"],
+            }),
+        );
+        let outcome = handle_command(&mut store, &referenced_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["can_garbage_collect"], false);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.can_garbage_collect failed: {code:?} {message}")
+            }
+        }
+
+        let free_cmd = command(
+            "skill.can_garbage_collect",
+            json!({
+                "digest": "pkg-1",
+                "currently_bound_digests": [],
+                "historically_referenced_digests": [],
+            }),
+        );
+        let outcome = handle_command(&mut store, &free_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["can_garbage_collect"], true);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("skill.can_garbage_collect failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_skill_can_garbage_collect_is_invalid_params_without_digest() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "skill.can_garbage_collect",
+            json!({
+                "currently_bound_digests": [],
+                "historically_referenced_digests": [],
+            }),
+        );
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),

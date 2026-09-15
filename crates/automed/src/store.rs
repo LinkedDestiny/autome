@@ -52,6 +52,10 @@ use autome_domain::project_intent::{
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::RequirementId;
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
+use autome_domain::skill::{
+    self, GlobalSkillBinding, ProjectSkillBinding, SkillAuditOutcome, SkillEvidenceError,
+    SkillEvidenceLadder, SkillInstallError, SkillInstallReceipt,
+};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
 use autome_domain::user_correction::{
     self, CorrectionClassification, CorrectionDisposition, CorrectionImpactFlags,
@@ -384,6 +388,72 @@ pub enum RecordQualificationReceiptError {
 impl From<rusqlite::Error> for RecordQualificationReceiptError {
     fn from(value: rusqlite::Error) -> Self {
         RecordQualificationReceiptError::Sql(value)
+    }
+}
+
+/// A persisted §5.11 `SkillInstallReceipt` plus when it landed. Same shape
+/// as `ReadinessRecord` -- the domain type already carries its own natural
+/// key (`receipt_digest`), so the store layer adds nothing beyond
+/// `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInstallReceiptRecord {
+    pub receipt: SkillInstallReceipt,
+    pub created_at: String,
+}
+
+/// `issue_skill_install_receipt` returns a `SkillInstallReceipt` *and* the
+/// freshly-`Installed` `SkillEvidenceLadder` it seeds in the same call --
+/// see `record_skill_install_receipt`'s doc comment for why those two rows
+/// are always written together. This is what that write path hands back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillInstallRecord {
+    pub receipt: SkillInstallReceipt,
+    pub ladder: SkillEvidenceLadder,
+    pub created_at: String,
+}
+
+/// `record_skill_install_receipt`'s failure modes. Re-runs
+/// `skill::issue_skill_install_receipt` server-side rather than trusting an
+/// already-built `SkillInstallReceipt` from the caller, same discipline as
+/// `record_credential_receipt`/`record_user_correction`: `Install` is
+/// `issue_skill_install_receipt`'s own `MissingUserApprovalDecision` check,
+/// `Sql` is a duplicate `receipt_digest`.
+#[derive(Debug)]
+pub enum RecordSkillInstallReceiptError {
+    Sql(rusqlite::Error),
+    Install(SkillInstallError),
+}
+
+impl From<rusqlite::Error> for RecordSkillInstallReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordSkillInstallReceiptError::Sql(value)
+    }
+}
+
+/// A persisted §5.11 `SkillEvidenceLadder` plus when it was last touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillEvidenceLadderRecord {
+    pub ladder: SkillEvidenceLadder,
+    pub created_at: String,
+}
+
+/// Failure modes shared by every `mark_skill_*`/`record_skill_effective`
+/// transition: the SQL layer, no ladder ever recorded for this
+/// `skill_digest` (`NotFound` -- the store-level equivalent of
+/// `RecordProjectIntentAmendmentError::NoCurrentRevision`, since a ladder
+/// only ever comes into existence via `record_skill_install_receipt`), or
+/// the domain ladder's own preceding-level check rejecting the transition
+/// (`Ladder`).
+#[derive(Debug)]
+pub enum SkillLadderTransitionError {
+    Sql(rusqlite::Error),
+    NotFound,
+    Ladder(SkillEvidenceError),
+}
+
+impl From<rusqlite::Error> for SkillLadderTransitionError {
+    fn from(value: rusqlite::Error) -> Self {
+        SkillLadderTransitionError::Sql(value)
     }
 }
 
@@ -957,6 +1027,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v15,
     migrate_v16,
     migrate_v17,
+    migrate_v18,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1409,6 +1480,54 @@ fn migrate_v17(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_qualification_receipts_batch_id
             ON qualification_receipts(qualification_batch_id);
+        ",
+    )
+}
+
+/// §5.11's four tables: `skill_install_receipts` (fact record, PK
+/// `receipt_digest`, same shape as `qualification_receipts`) and three
+/// mutable current-state snapshots that get `INSERT OR REPLACE`d rather than
+/// appended -- `skill_evidence_ladders` (PK `skill_digest`, a ladder is
+/// mutated in place by `mark_*`/`record_effective` and there is no domain
+/// type modelling its history), `global_skill_bindings` (PK `skill_digest`;
+/// `GlobalSkillBinding` has no validating constructor of its own, so unlike
+/// every fact-record table above there is nothing to re-check before
+/// overwriting) and `project_skill_bindings` (composite PK
+/// `(project_id, skill_digest)`, third occurrence of a composite key after
+/// `run_workspaces`/`project_intent_revisions` -- `ProjectSkillBinding` has
+/// no `skill_digest` field of its own, so the key's second half always comes
+/// from the caller, not the row).
+fn migrate_v18(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_install_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            package_digest TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_install_receipts_package_digest
+            ON skill_install_receipts(package_digest);
+
+        CREATE TABLE IF NOT EXISTS skill_evidence_ladders (
+            skill_digest TEXT PRIMARY KEY,
+            ladder_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS global_skill_bindings (
+            skill_digest TEXT PRIMARY KEY,
+            binding_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_skill_bindings (
+            project_id TEXT NOT NULL,
+            skill_digest TEXT NOT NULL,
+            binding_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, skill_digest)
+        );
         ",
     )
 }
@@ -3660,6 +3779,268 @@ impl EventStore {
         }))
     }
 
+    /// §5.11's write path: records a `SkillInstallReceipt` issued by
+    /// `issue_skill_install_receipt`, and in the same call seeds the
+    /// freshly-`Installed` `SkillEvidenceLadder` it returns alongside it --
+    /// installation and the ladder's first rung are the same fact per
+    /// `skill.rs`'s own doc comment ("安装成功的默认终态只是 Vault 中
+    /// `Installed (disabled)`"), never two separate calls a caller could
+    /// skip between. Re-installing the same `skill_digest` (`INSERT OR
+    /// REPLACE`, mirroring `record_credential`'s upsert reasoning) resets
+    /// its ladder back down to `Installed`-only: a reinstalled package has
+    /// to re-earn Bound/Discoverable/etc, exactly as a brand-new one does.
+    pub fn record_skill_install_receipt(
+        &mut self,
+        package_digest: &str,
+        audit_outcome: SkillAuditOutcome,
+        plan_digest: &str,
+        user_approval_decision_ref: &str,
+        receipt_digest: &str,
+    ) -> Result<SkillInstallRecord, RecordSkillInstallReceiptError> {
+        let (receipt, ladder) = skill::issue_skill_install_receipt(
+            package_digest,
+            audit_outcome,
+            plan_digest,
+            user_approval_decision_ref,
+            receipt_digest,
+        )
+        .map_err(RecordSkillInstallReceiptError::Install)?;
+
+        let receipt_json =
+            serde_json::to_string(&receipt).expect("SkillInstallReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO skill_install_receipts (receipt_digest, package_digest, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.receipt_digest,
+                receipt.package_digest,
+                receipt_json,
+                created_at,
+            ],
+        )?;
+
+        let ladder_json =
+            serde_json::to_string(&ladder).expect("SkillEvidenceLadder is serializable");
+        self.conn.execute(
+            "INSERT OR REPLACE INTO skill_evidence_ladders (skill_digest, ladder_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![ladder.skill_digest.0, ladder_json, created_at],
+        )?;
+
+        Ok(SkillInstallRecord {
+            receipt,
+            ladder,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_skill_install_receipt` -- looks up the
+    /// recorded `skill_install_receipts` row for `receipt_digest`, if any.
+    /// Returns only the receipt, not the (separately mutable) current
+    /// ladder -- use `load_skill_evidence_ladder` for that.
+    pub fn load_skill_install_receipt(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<SkillInstallReceiptRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM skill_install_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: SkillInstallReceipt = serde_json::from_str(&receipt_json)
+                .expect("skill_install_receipts.receipt_json round-trips");
+            SkillInstallReceiptRecord { receipt, created_at }
+        }))
+    }
+
+    /// Read counterpart to the ladder half of `record_skill_install_receipt`
+    /// and every `mark_skill_*`/`record_skill_effective` transition below --
+    /// the current `SkillEvidenceLadder` for `skill_digest`, if one has ever
+    /// been seeded by an install.
+    pub fn load_skill_evidence_ladder(
+        &self,
+        skill_digest: &str,
+    ) -> rusqlite::Result<Option<SkillEvidenceLadderRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT ladder_json, created_at FROM skill_evidence_ladders WHERE skill_digest = ?1",
+                rusqlite::params![skill_digest],
+                |row| {
+                    let ladder_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((ladder_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(ladder_json, created_at)| {
+            let ladder: SkillEvidenceLadder = serde_json::from_str(&ladder_json)
+                .expect("skill_evidence_ladders.ladder_json round-trips");
+            SkillEvidenceLadderRecord { ladder, created_at }
+        }))
+    }
+
+    /// Shared by every `mark_skill_*`/`record_skill_effective` method below:
+    /// loads the current ladder (`NotFound` if none was ever seeded by an
+    /// install), applies the domain-level rung transition, and persists the
+    /// result back with the same `INSERT OR REPLACE` as the install path.
+    fn transition_skill_ladder(
+        &mut self,
+        skill_digest: &str,
+        apply: impl FnOnce(&mut SkillEvidenceLadder) -> Result<(), SkillEvidenceError>,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        let mut current = self
+            .load_skill_evidence_ladder(skill_digest)?
+            .ok_or(SkillLadderTransitionError::NotFound)?;
+        apply(&mut current.ladder).map_err(SkillLadderTransitionError::Ladder)?;
+        let ladder_json =
+            serde_json::to_string(&current.ladder).expect("SkillEvidenceLadder is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO skill_evidence_ladders (skill_digest, ladder_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![skill_digest, ladder_json, created_at],
+        )?;
+        Ok(SkillEvidenceLadderRecord {
+            ladder: current.ladder,
+            created_at,
+        })
+    }
+
+    pub fn mark_skill_bound(
+        &mut self,
+        skill_digest: &str,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        self.transition_skill_ladder(skill_digest, |ladder| ladder.mark_bound())
+    }
+
+    pub fn mark_skill_discoverable(
+        &mut self,
+        skill_digest: &str,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        self.transition_skill_ladder(skill_digest, |ladder| ladder.mark_discoverable())
+    }
+
+    pub fn mark_skill_available_to_attempt(
+        &mut self,
+        skill_digest: &str,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        self.transition_skill_ladder(skill_digest, |ladder| ladder.mark_available_to_attempt())
+    }
+
+    pub fn mark_skill_invoked(
+        &mut self,
+        skill_digest: &str,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        self.transition_skill_ladder(skill_digest, |ladder| ladder.mark_invoked())
+    }
+
+    pub fn record_skill_effective(
+        &mut self,
+        skill_digest: &str,
+        effective: bool,
+    ) -> Result<SkillEvidenceLadderRecord, SkillLadderTransitionError> {
+        self.transition_skill_ladder(skill_digest, |ladder| ladder.record_effective(effective))
+    }
+
+    /// §5.11's write path for the *current-state* `global_skill_bindings`
+    /// row. `GlobalSkillBinding` has no validating constructor of its own
+    /// (unlike `SkillInstallReceipt`/`QualificationReceipt` etc.), so unlike
+    /// every fact-record write above there is nothing to re-check
+    /// server-side before writing -- same reasoning as why `readiness.record`
+    /// trusts a whole client-supplied `ReadinessReceipt`. Deliberately
+    /// upserts (`INSERT OR REPLACE`), same reasoning as `record_credential`:
+    /// this is a binding's *current* state, and a new `revision` amending it
+    /// is expected to replace the row, not conflict with it.
+    pub fn record_global_skill_binding(
+        &mut self,
+        binding: &GlobalSkillBinding,
+    ) -> rusqlite::Result<String> {
+        let binding_json =
+            serde_json::to_string(binding).expect("GlobalSkillBinding is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO global_skill_bindings (skill_digest, binding_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![binding.skill_digest.0, binding_json, created_at],
+        )?;
+        Ok(created_at)
+    }
+
+    /// Read counterpart to `record_global_skill_binding` -- the current
+    /// snapshot for `skill_digest`, if one has ever been recorded.
+    pub fn load_global_skill_binding(
+        &self,
+        skill_digest: &str,
+    ) -> rusqlite::Result<Option<GlobalSkillBinding>> {
+        let binding_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT binding_json FROM global_skill_bindings WHERE skill_digest = ?1",
+                rusqlite::params![skill_digest],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(binding_json.map(|binding_json| {
+            serde_json::from_str(&binding_json)
+                .expect("global_skill_bindings.binding_json round-trips")
+        }))
+    }
+
+    /// §5.11's write path for the *current-state* `project_skill_bindings`
+    /// row. `ProjectSkillBinding` carries no `skill_digest` field of its own
+    /// (it is meaningless without a global binding to resolve against), so
+    /// the composite key's second half always comes from the caller, not the
+    /// struct -- same reasoning as `record_global_skill_binding` for why
+    /// there is nothing to re-check server-side before upserting.
+    pub fn record_project_skill_binding(
+        &mut self,
+        project_id: &str,
+        skill_digest: &str,
+        binding: &ProjectSkillBinding,
+    ) -> rusqlite::Result<String> {
+        let binding_json =
+            serde_json::to_string(binding).expect("ProjectSkillBinding is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO project_skill_bindings (project_id, skill_digest, binding_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![project_id, skill_digest, binding_json, created_at],
+        )?;
+        Ok(created_at)
+    }
+
+    /// Read counterpart to `record_project_skill_binding` -- the current
+    /// snapshot for `(project_id, skill_digest)`, if one has ever been
+    /// recorded.
+    pub fn load_project_skill_binding(
+        &self,
+        project_id: &str,
+        skill_digest: &str,
+    ) -> rusqlite::Result<Option<ProjectSkillBinding>> {
+        let binding_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT binding_json FROM project_skill_bindings WHERE project_id = ?1 AND skill_digest = ?2",
+                rusqlite::params![project_id, skill_digest],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(binding_json.map(|binding_json| {
+            serde_json::from_str(&binding_json)
+                .expect("project_skill_bindings.binding_json round-trips")
+        }))
+    }
+
     /// §5.12's write path: fixes a `DeliveryChain`'s `subject` for the rest
     /// of a run's delivery lifecycle. Like `record_attempt`, this is a fact
     /// recorded once, not a journaled event -- every subsequent
@@ -4420,6 +4801,9 @@ fn execution_queue_event_type_name(event: &ExecutionQueueEvent) -> &'static str 
 mod tests {
     use super::*;
     use autome_domain::run::RunPhase;
+    use autome_domain::skill::{
+        BindingState, InvocationPolicy, ProjectSkillBindingMode, SkillDigest,
+    };
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn temp_db_path(label: &str) -> String {
@@ -5938,6 +6322,256 @@ mod tests {
             matches!(err, RecordQualificationReceiptError::Sql(_)),
             "{err:?}"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A well-formed `record_skill_install_receipt` call lands one
+    /// `skill_install_receipts` row and seeds an `Installed`-only
+    /// `skill_evidence_ladders` row for the same `skill_digest`, both
+    /// readable back.
+    #[test]
+    fn record_skill_install_receipt_seeds_both_the_receipt_and_a_fresh_ladder() {
+        let root = temp_data_root("record-skill-install-receipt");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_skill_install_receipt("SR-1").unwrap().is_none());
+        assert!(store.load_skill_evidence_ladder("pkg-1").unwrap().is_none());
+
+        let record = store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "decision:1",
+                "SR-1",
+            )
+            .unwrap();
+        assert_eq!(record.receipt.package_digest, "pkg-1");
+        assert!(record.ladder.installed);
+        assert!(!record.ladder.bound);
+
+        let loaded_receipt = store.load_skill_install_receipt("SR-1").unwrap().unwrap();
+        assert_eq!(loaded_receipt.receipt, record.receipt);
+
+        let loaded_ladder = store.load_skill_evidence_ladder("pkg-1").unwrap().unwrap();
+        assert_eq!(loaded_ladder.ladder, record.ladder);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `issue_skill_install_receipt`'s own `MissingUserApprovalDecision`
+    /// check runs server-side and refuses the write -- no receipt or ladder
+    /// row is left behind by a rejected install.
+    #[test]
+    fn record_skill_install_receipt_rejects_a_blank_user_approval_decision() {
+        let root = temp_data_root("record-skill-install-receipt-no-approval");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "  ",
+                "SR-1",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RecordSkillInstallReceiptError::Install(SkillInstallError::MissingUserApprovalDecision)
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_skill_install_receipt("SR-1").unwrap().is_none());
+        assert!(store.load_skill_evidence_ladder("pkg-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Re-installing the same `skill_digest` resets its ladder back down to
+    /// `Installed`-only, even if it had already progressed further.
+    #[test]
+    fn record_skill_install_receipt_resets_an_already_progressed_ladder() {
+        let root = temp_data_root("record-skill-install-receipt-reinstall");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "decision:1",
+                "SR-1",
+            )
+            .unwrap();
+        store.mark_skill_bound("pkg-1").unwrap();
+        assert!(store.load_skill_evidence_ladder("pkg-1").unwrap().unwrap().ladder.bound);
+
+        store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "decision:2",
+                "SR-2",
+            )
+            .unwrap();
+        let ladder = store.load_skill_evidence_ladder("pkg-1").unwrap().unwrap().ladder;
+        assert!(ladder.installed);
+        assert!(!ladder.bound);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `mark_skill_bound`/`mark_skill_discoverable`/
+    /// `mark_skill_available_to_attempt`/`mark_skill_invoked`/
+    /// `record_skill_effective` walk a ladder forward one rung at a time,
+    /// each persisted and readable back.
+    #[test]
+    fn skill_ladder_transitions_walk_forward_and_persist_each_rung() {
+        let root = temp_data_root("skill-ladder-transitions");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "decision:1",
+                "SR-1",
+            )
+            .unwrap();
+
+        store.mark_skill_bound("pkg-1").unwrap();
+        store.mark_skill_discoverable("pkg-1").unwrap();
+        store.mark_skill_available_to_attempt("pkg-1").unwrap();
+        store.mark_skill_invoked("pkg-1").unwrap();
+        let record = store.record_skill_effective("pkg-1", true).unwrap();
+
+        assert!(record.ladder.invoked);
+        assert_eq!(record.ladder.effective, Some(true));
+        let loaded = store.load_skill_evidence_ladder("pkg-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A ladder transition attempted before its preceding rung is refused by
+    /// the domain's own `SkillEvidenceError`, not silently applied.
+    #[test]
+    fn skill_ladder_transition_rejects_skipping_a_level() {
+        let root = temp_data_root("skill-ladder-transition-skip");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        store
+            .record_skill_install_receipt(
+                "pkg-1",
+                SkillAuditOutcome::NoKnownRisksFound,
+                "plan-1",
+                "decision:1",
+                "SR-1",
+            )
+            .unwrap();
+
+        let err = store.mark_skill_discoverable("pkg-1").unwrap_err();
+        assert!(matches!(err, SkillLadderTransitionError::Ladder(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A transition against a `skill_digest` that was never installed is
+    /// `NotFound`, not a silently-created ladder.
+    #[test]
+    fn skill_ladder_transition_is_not_found_without_a_prior_install() {
+        let root = temp_data_root("skill-ladder-transition-not-found");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = store.mark_skill_bound("never-installed").unwrap_err();
+        assert!(matches!(err, SkillLadderTransitionError::NotFound), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_global_skill_binding(skill_digest: &str) -> GlobalSkillBinding {
+        GlobalSkillBinding {
+            revision: 1,
+            skill_digest: SkillDigest(skill_digest.to_string()),
+            steps: vec![attempt::LoopStepId("implementation".into())],
+            cli_targets: vec!["claude-code".into()],
+            invocation: InvocationPolicy::ExplicitOnly,
+            state: BindingState::Enabled,
+        }
+    }
+
+    /// `record_global_skill_binding` upserts the current-state row --
+    /// no server-side re-validation since `GlobalSkillBinding` has no
+    /// validating constructor to re-run.
+    #[test]
+    fn record_global_skill_binding_upserts_the_current_snapshot() {
+        let root = temp_data_root("record-global-skill-binding");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_global_skill_binding("pkg-1").unwrap().is_none());
+
+        let binding = fixture_global_skill_binding("pkg-1");
+        store.record_global_skill_binding(&binding).unwrap();
+        assert_eq!(
+            store.load_global_skill_binding("pkg-1").unwrap().unwrap(),
+            binding
+        );
+
+        let mut disabled = binding.clone();
+        disabled.revision = 2;
+        disabled.state = BindingState::Disabled;
+        store.record_global_skill_binding(&disabled).unwrap();
+        assert_eq!(
+            store.load_global_skill_binding("pkg-1").unwrap().unwrap(),
+            disabled
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `record_project_skill_binding` is keyed by `(project_id,
+    /// skill_digest)` -- distinct projects binding the same skill don't
+    /// collide.
+    #[test]
+    fn record_project_skill_binding_is_keyed_by_project_and_skill_digest() {
+        let root = temp_data_root("record-project-skill-binding");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let binding = ProjectSkillBinding {
+            project_id: "proj-1".into(),
+            revision: 1,
+            mode: ProjectSkillBindingMode::Disable,
+            steps: None,
+            cli_targets: None,
+            invocation: None,
+            state: None,
+        };
+        store
+            .record_project_skill_binding("proj-1", "pkg-1", &binding)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .load_project_skill_binding("proj-1", "pkg-1")
+                .unwrap()
+                .unwrap(),
+            binding
+        );
+        assert!(store
+            .load_project_skill_binding("proj-2", "pkg-1")
+            .unwrap()
+            .is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }
