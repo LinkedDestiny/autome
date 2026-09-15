@@ -23,6 +23,7 @@ use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
     TargetRejection,
 };
+use autome_domain::readiness::ReadinessReceipt;
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -302,6 +303,33 @@ impl From<rusqlite::Error> for RecordEvidenceError {
     }
 }
 
+/// A persisted §5.9 `ReadinessReceipt` plus when it landed. Same shape as
+/// `EvidenceRecord`: the domain type already carries every field a caller
+/// needs (`profile_hash`, `subject`, `receipt_digest`), so the store layer
+/// adds nothing beyond `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessRecord {
+    pub receipt: ReadinessReceipt,
+    pub created_at: String,
+}
+
+/// `record_readiness`'s only failure mode. Same reasoning as
+/// `RecordEvidenceError`: staleness (`ReadinessReceipt::is_current_against`)
+/// and gate-passing (`ReadinessReceipt::is_ready`) are both query-time
+/// properties, not something this method decides, so a duplicate
+/// `receipt_digest` -- surfaced as a primary-key violation -- is the only
+/// way recording can fail.
+#[derive(Debug)]
+pub enum RecordReadinessError {
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for RecordReadinessError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordReadinessError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -440,6 +468,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v5,
     migrate_v6,
     migrate_v7,
+    migrate_v8,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -628,6 +657,28 @@ fn migrate_v7(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_evidence_receipts_run_id ON evidence_receipts(run_id);
+        ",
+    )
+}
+
+/// `readiness_receipts`: one row per `record_readiness` call (plan §5.9).
+/// `receipt_digest` is the primary key -- §5.9 revisions each get a fresh
+/// digest rather than mutating in place ("环境相关输入、profile 或模型资格
+/// 变化会追加新的 ReadinessReceipt revision"), so the digest is already the
+/// natural globally-unique identity, matching `migrate_v6`/`migrate_v7`'s
+/// caller-chosen-id discipline even though nothing here calls it an "id".
+/// `profile_hash` is denormalized out of `receipt_json` purely to make
+/// profile-scoped listing cheap later; `receipt_json` remains authoritative.
+fn migrate_v8(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS readiness_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            profile_hash TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_readiness_receipts_profile_hash ON readiness_receipts(profile_hash);
         ",
     )
 }
@@ -2081,6 +2132,59 @@ impl EventStore {
             EvidenceRecord { receipt, created_at }
         }))
     }
+
+    /// §5.9's write path: records a `ReadinessReceipt` produced by an
+    /// environment probe. Same shape as `record_evidence` -- a fact recorded
+    /// once, not a journaled event, since staleness/readiness are query-time
+    /// properties this method doesn't decide.
+    pub fn record_readiness(
+        &mut self,
+        receipt: &ReadinessReceipt,
+    ) -> Result<ReadinessRecord, RecordReadinessError> {
+        let receipt_json =
+            serde_json::to_string(receipt).expect("ReadinessReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO readiness_receipts (receipt_digest, profile_hash, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.receipt_digest,
+                receipt.profile_hash,
+                receipt_json,
+                created_at,
+            ],
+        )?;
+
+        Ok(ReadinessRecord {
+            receipt: receipt.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_readiness` -- looks up the recorded
+    /// `readiness_receipts` row for `receipt_digest`, if any.
+    pub fn load_readiness(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<ReadinessRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM readiness_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: ReadinessReceipt = serde_json::from_str(&receipt_json)
+                .expect("readiness_receipts.receipt_json round-trips");
+            ReadinessRecord { receipt, created_at }
+        }))
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -2761,6 +2865,68 @@ mod tests {
         store.record_evidence(&receipt).unwrap();
         let err = store.record_evidence(&receipt).unwrap_err();
         assert!(matches!(err, RecordEvidenceError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_readiness_receipt(receipt_digest: &str) -> ReadinessReceipt {
+        use autome_domain::readiness::{
+            ExistingRepoSubject, ReadinessResult, ReadinessScope, ReadinessSubject,
+        };
+
+        ReadinessReceipt {
+            revision: 1,
+            scope: ReadinessScope::Execution,
+            profile_hash: "profile-1".into(),
+            environment_relevant_inputs_digest: "env-digest-1".into(),
+            observed_at: "2026-09-15T00:00:00Z".into(),
+            valid_until: "2026-09-16T00:00:00Z".into(),
+            subject: ReadinessSubject::ExistingRepo(ExistingRepoSubject {
+                repository_identity_hash: "repo-hash".into(),
+                base_commit: "base".into(),
+                target_head: "head".into(),
+                worktree_fingerprint: "wt-1".into(),
+            }),
+            programs: vec![],
+            lockfile_hashes: vec![],
+            result: ReadinessResult::Ready,
+            missing: vec![],
+            receipt_digest: receipt_digest.to_string(),
+        }
+    }
+
+    /// A well-formed `record_readiness` call lands one `readiness_receipts`
+    /// row, readable back via `load_readiness`.
+    #[test]
+    fn record_readiness_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-readiness");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_readiness_receipt("RD-1");
+
+        assert!(store.load_readiness("RD-1").unwrap().is_none());
+
+        let record = store.record_readiness(&receipt).unwrap();
+        assert_eq!(record.receipt, receipt);
+
+        let loaded = store.load_readiness("RD-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `receipt_digest` must fail rather than
+    /// silently overwriting a prior probe result.
+    #[test]
+    fn record_readiness_refuses_to_reuse_an_existing_receipt_digest() {
+        let root = temp_data_root("record-readiness-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_readiness_receipt("RD-1");
+
+        store.record_readiness(&receipt).unwrap();
+        let err = store.record_readiness(&receipt).unwrap_err();
+        assert!(matches!(err, RecordReadinessError::Sql(_)), "{err:?}");
 
         std::fs::remove_dir_all(&root).ok();
     }

@@ -58,6 +58,16 @@
 //! `EvidenceReceipt::is_valid_against` against a caller-supplied *current*
 //! fingerprint (`params.receipt_id`, `params.fingerprint`) rather than
 //! trusting the caller's own staleness judgment.
+//! `readiness.record` (§5.9) is the same shape again: writes a
+//! `readiness_receipts` row but appends no `Event`. Parses `params.receipt`
+//! (a full `autome_domain::readiness::ReadinessReceipt`); its read
+//! counterpart `readiness.get` parses `params.receipt_digest`.
+//! `readiness.check` re-exercises both `ReadinessReceipt::is_current_against`
+//! (against a caller-supplied *current* `params.fingerprint`) and
+//! `ReadinessReceipt::is_ready`, reporting each as its own boolean rather
+//! than collapsing them into one -- a receipt can be current but not ready
+//! (missing programs) or ready but stale (environment moved on since it was
+//! observed), and a caller needs to tell those apart.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
@@ -65,8 +75,8 @@ use crate::store::{
     AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord, ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DisposableCloneRecord,
     EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
-    GraphAppendError, ProjectAppendError, ProjectSummary, RecordAttemptError, RecordEvidenceError,
-    TaskAppendError, TaskSummary,
+    GraphAppendError, ProjectAppendError, ProjectSummary, ReadinessRecord, RecordAttemptError,
+    RecordEvidenceError, RecordReadinessError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
 use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt};
@@ -76,6 +86,7 @@ use autome_domain::graph::{GraphEvent, GraphNode};
 use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
 };
+use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::Requirement;
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
@@ -125,6 +136,9 @@ pub enum DispatchError {
     /// §5.7 write path: `record_evidence`'s only failure mode (a duplicate
     /// `receipt_id`, surfaced as a SQL primary-key violation).
     RecordEvidence(RecordEvidenceError),
+    /// §5.9 write path: `record_readiness`'s only failure mode (a duplicate
+    /// `receipt_digest`, surfaced as a SQL primary-key violation).
+    RecordReadiness(RecordReadinessError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -160,6 +174,12 @@ impl From<RecordAttemptError> for DispatchError {
 impl From<RecordEvidenceError> for DispatchError {
     fn from(value: RecordEvidenceError) -> Self {
         DispatchError::RecordEvidence(value)
+    }
+}
+
+impl From<RecordReadinessError> for DispatchError {
+    fn from(value: RecordReadinessError) -> Self {
+        DispatchError::RecordReadiness(value)
     }
 }
 
@@ -501,6 +521,17 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.9: same shape again -- writes a `readiness_receipts` row (so it
+    // isn't a read) but appends no domain `Event` (a receipt is a fact
+    // fixed once by an environment probe, not an aggregate with a reducer).
+    if command.method == "readiness.record" {
+        let result = handle_record_readiness(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -735,6 +766,58 @@ fn parse_evidence_fingerprint_param(
     })
 }
 
+/// Handles `readiness.record`: `{ receipt: ReadinessReceipt }`. Same
+/// "write returns Value not Event" shape as `handle_record_evidence` -- a
+/// recorded receipt is a fact fixed once by an environment probe, not a
+/// state-machine transition. Refuses to run while the store is in its
+/// diagnostic state, same as every other write.
+fn handle_record_readiness(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let receipt = parse_readiness_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_readiness(&receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(readiness_record_json(&record))
+}
+
+fn readiness_record_json(record: &ReadinessRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+fn parse_readiness_receipt_param(command: &Command) -> Result<ReadinessReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid ReadinessReceipt: {e}"
+        ))
+    })
+}
+
+fn parse_readiness_fingerprint_param(
+    command: &Command,
+) -> Result<ReadinessFingerprint, DispatchError> {
+    let value = command.params.get("fingerprint").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.fingerprint is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.fingerprint is not a valid ReadinessFingerprint: {e}"
+        ))
+    })
+}
+
 /// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
 /// variants (genuine I/O/internal failures) become `Internal`;
 /// `Transition(_)` variants (a reducer rejecting the event given the
@@ -838,6 +921,9 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordEvidence(RecordEvidenceError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -861,6 +947,8 @@ fn try_dispatch_read(
         "attempt.get" => Some(read_attempt_get(store, command)),
         "evidence.get" => Some(read_evidence_get(store, command)),
         "evidence.check" => Some(read_evidence_check(store, command)),
+        "readiness.get" => Some(read_readiness_get(store, command)),
+        "readiness.check" => Some(read_readiness_check(store, command)),
         _ => None,
     }
 }
@@ -1077,6 +1165,58 @@ fn read_evidence_check(
     Ok(serde_json::json!({
         "receipt_id": receipt_id,
         "valid": valid,
+    }))
+}
+
+/// Read counterpart to `handle_record_readiness`. Takes `{ receipt_digest }`;
+/// `NotFound` if no receipt has been recorded with that digest yet.
+fn read_readiness_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_readiness(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(readiness_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no readiness receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
+/// §5.9: `{ receipt_digest, fingerprint }` -- re-exercises both
+/// `ReadinessReceipt::is_current_against` (against the caller-supplied
+/// *current* fingerprint) and `ReadinessReceipt::is_ready`, reported as two
+/// separate booleans since a receipt can be current-but-not-ready (missing
+/// programs) or ready-but-stale (environment moved on since it was
+/// observed). `NotFound` if `receipt_digest` was never recorded.
+fn read_readiness_check(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    let fingerprint =
+        parse_readiness_fingerprint_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .load_readiness(&receipt_digest)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                format!("no readiness receipt recorded with digest {receipt_digest}"),
+            )
+        })?;
+    let current = record.receipt.is_current_against(&fingerprint);
+    let ready = record.receipt.is_ready();
+    Ok(serde_json::json!({
+        "receipt_digest": receipt_digest,
+        "current": current,
+        "ready": ready,
     }))
 }
 
@@ -3345,6 +3485,253 @@ mod tests {
                     "project_rule_snapshot_hash": "rules-1",
                     "candidate_tree_hash": "tree-1",
                     "environment_class": "macos-15-arm64",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_readiness_receipt_json(receipt_digest: &str, result: &str) -> Value {
+        json!({
+            "receipt": {
+                "revision": 1,
+                "scope": "Execution",
+                "profile_hash": "profile-1",
+                "environment_relevant_inputs_digest": "env-digest-1",
+                "observed_at": "2026-09-15T00:00:00Z",
+                "valid_until": "2026-09-16T00:00:00Z",
+                "subject": {
+                    "ExistingRepo": {
+                        "repository_identity_hash": "repo-hash",
+                        "base_commit": "base",
+                        "target_head": "head",
+                        "worktree_fingerprint": "wt-1",
+                    },
+                },
+                "programs": [],
+                "lockfile_hashes": [],
+                "result": result,
+                "missing": [],
+                "receipt_digest": receipt_digest,
+            },
+        })
+    }
+
+    /// §5.9: `readiness.record` follows the same no-`Event`-produced shape
+    /// as `evidence.record` above, and its payload round-trips through the
+    /// `readiness.get` read command.
+    #[test]
+    fn handle_command_readiness_record_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("readiness.record failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_digest"], "RD-1");
+
+        let get_cmd = command("readiness.get", json!({ "receipt_digest": "RD-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("readiness.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `readiness.get` for a `receipt_digest` with no recorded receipt is
+    /// `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_readiness_get_is_not_found_when_no_receipt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("readiness.get", json!({ "receipt_digest": "no-such-receipt" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.9: `readiness.check` reports `current: true, ready: true` when the
+    /// caller-supplied current fingerprint matches the recorded receipt
+    /// exactly and its result was `Ready` with nothing missing.
+    #[test]
+    fn handle_command_readiness_check_reports_current_and_ready_for_a_matching_fingerprint() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let check_cmd = command(
+            "readiness.check",
+            json!({
+                "receipt_digest": "RD-1",
+                "fingerprint": {
+                    "profile_hash": "profile-1",
+                    "environment_relevant_inputs_digest": "env-digest-1",
+                    "subject": {
+                        "ExistingRepo": {
+                            "repository_identity_hash": "repo-hash",
+                            "base_commit": "base",
+                            "target_head": "head",
+                            "worktree_fingerprint": "wt-1",
+                        },
+                    },
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["current"], true);
+                assert_eq!(payload["ready"], true);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("readiness.check failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.9: a changed `environment_relevant_inputs_digest` must report
+    /// `current: false` even though the receipt's own `result` is still
+    /// `Ready` -- current-ness and readiness are independent booleans.
+    #[test]
+    fn handle_command_readiness_check_reports_stale_for_a_mismatched_fingerprint() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let check_cmd = command(
+            "readiness.check",
+            json!({
+                "receipt_digest": "RD-1",
+                "fingerprint": {
+                    "profile_hash": "profile-1",
+                    "environment_relevant_inputs_digest": "env-digest-2",
+                    "subject": {
+                        "ExistingRepo": {
+                            "repository_identity_hash": "repo-hash",
+                            "base_commit": "base",
+                            "target_head": "head",
+                            "worktree_fingerprint": "wt-1",
+                        },
+                    },
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["current"], false);
+                assert_eq!(payload["ready"], true);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("readiness.check failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.9: a `NotReady` result must report `ready: false` regardless of
+    /// whether the fingerprint is current.
+    #[test]
+    fn handle_command_readiness_check_reports_not_ready_for_a_not_ready_result() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "NotReady"),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let check_cmd = command(
+            "readiness.check",
+            json!({
+                "receipt_digest": "RD-1",
+                "fingerprint": {
+                    "profile_hash": "profile-1",
+                    "environment_relevant_inputs_digest": "env-digest-1",
+                    "subject": {
+                        "ExistingRepo": {
+                            "repository_identity_hash": "repo-hash",
+                            "base_commit": "base",
+                            "target_head": "head",
+                            "worktree_fingerprint": "wt-1",
+                        },
+                    },
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["current"], true);
+                assert_eq!(payload["ready"], false);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("readiness.check failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `readiness.check` for a `receipt_digest` with no recorded receipt is
+    /// `NotFound` -- there is nothing to check staleness or readiness of.
+    #[test]
+    fn handle_command_readiness_check_is_not_found_when_no_receipt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let check_cmd = command(
+            "readiness.check",
+            json!({
+                "receipt_digest": "no-such-receipt",
+                "fingerprint": {
+                    "profile_hash": "profile-1",
+                    "environment_relevant_inputs_digest": "env-digest-1",
+                    "subject": {
+                        "ExistingRepo": {
+                            "repository_identity_hash": "repo-hash",
+                            "base_commit": "base",
+                            "target_head": "head",
+                            "worktree_fingerprint": "wt-1",
+                        },
+                    },
                 },
             }),
         );
