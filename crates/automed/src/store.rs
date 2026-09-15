@@ -9,7 +9,7 @@
 //! exercised directly by `state_survives_reconnect` below: there is no
 //! in-memory cache that could diverge from what was actually committed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use autome_domain::attempt::{
     self, Attempt, AttemptPermissionProfile, AttemptShapeError, PermissionProfileViolation,
@@ -53,7 +53,11 @@ use autome_domain::project_intent::{
     ProjectIntentAmendmentRequest, ProjectIntentError, ProjectIntentRevision,
 };
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
-use autome_domain::requirement::RequirementId;
+use autome_domain::replan::{
+    self, AmendmentReviewKind, ContractAmendmentAuthorization, ContractAmendmentAuthorizationError,
+    ContractAmendmentProposal, ReplanAuthorization, ReplanAuthorizationError, ReplanProposal,
+};
+use autome_domain::requirement::{CheckId, RequirementId};
 use autome_domain::review::{self, HumanReviewFinding, HumanReviewReceipt, HumanReviewReceiptError, ReviewDecision, ReviewSpecSubject, ReviewSubject};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::skill::{
@@ -914,6 +918,59 @@ impl From<rusqlite::Error> for SaveGlobalConfigRevisionError {
     }
 }
 
+/// A persisted §6.6 `ReplanAuthorization` plus when it landed. Same shape as
+/// `ReadinessRecord`/`QualificationRecord` -- but unlike those, the domain
+/// type carries no digest of its own, so `authorize_replan` below keys the
+/// row on `(run_id, new_graph_hash)` instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplanAuthorizationRecord {
+    pub authorization: ReplanAuthorization,
+    pub created_at: String,
+}
+
+/// `authorize_replan`'s failure modes. Re-runs `replan::authorize_replan`
+/// server-side, same discipline as `record_planning_policy_restart` --
+/// `Authorization` carries the whole rejected-graph/missing-receipt error
+/// collection rather than flattening it to one case, since the domain
+/// constructor itself never returns just one.
+#[derive(Debug)]
+pub enum AuthorizeReplanError {
+    Sql(rusqlite::Error),
+    Authorization(Vec<ReplanAuthorizationError>),
+}
+
+impl From<rusqlite::Error> for AuthorizeReplanError {
+    fn from(value: rusqlite::Error) -> Self {
+        AuthorizeReplanError::Sql(value)
+    }
+}
+
+/// A persisted §6.6 `ContractAmendmentAuthorization` plus when it landed.
+/// Unlike `ReplanAuthorizationRecord`, `authorize_contract_amendment` below
+/// keys this row on `new_run_id` alone -- the domain type's
+/// `preallocated_new_run_id` is a naturally unique field, never reused
+/// across amendments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractAmendmentAuthorizationRecord {
+    pub authorization: ContractAmendmentAuthorization,
+    pub created_at: String,
+}
+
+/// `authorize_contract_amendment`'s failure modes. Same shape as
+/// `AuthorizeReplanError` -- re-runs `replan::authorize_contract_amendment`
+/// server-side and keeps its whole error collection intact.
+#[derive(Debug)]
+pub enum AuthorizeContractAmendmentError {
+    Sql(rusqlite::Error),
+    Authorization(Vec<ContractAmendmentAuthorizationError>),
+}
+
+impl From<rusqlite::Error> for AuthorizeContractAmendmentError {
+    fn from(value: rusqlite::Error) -> Self {
+        AuthorizeContractAmendmentError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -1089,6 +1146,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v17,
     migrate_v18,
     migrate_v19,
+    migrate_v20,
     migrate_v21,
 ];
 
@@ -1652,6 +1710,43 @@ fn migrate_v21(conn: &Connection) -> rusqlite::Result<()> {
             patch_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        ",
+    )
+}
+
+/// §6.6 replan's two tables. `replan_authorizations` uses a composite
+/// `(run_id, new_graph_hash)` primary key -- same reasoning as
+/// `project_intent_revisions`'/`run_workspaces`' composite keys: unlike
+/// every other fact record so far, `ReplanAuthorization` carries no digest
+/// or other field of its own that is unique across the table, since a
+/// single Run can legitimately be replanned more than once (each
+/// successful replan produces a new, distinct `new_graph_hash` for the same
+/// `run_id`). `contract_amendment_authorizations` instead keys on
+/// `new_run_id` -- `ContractAmendmentAuthorization` *does* carry a
+/// naturally unique field here, since `authorize_contract_amendment`'s
+/// caller preallocates exactly one fresh run id per amendment and it is
+/// never reused; `triggering_run_id` is indexed for the same
+/// no-list-read-yet-but-index-the-natural-lookup-column reasoning as every
+/// other fact table above.
+fn migrate_v20(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS replan_authorizations (
+            run_id TEXT NOT NULL,
+            new_graph_hash TEXT NOT NULL,
+            authorization_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, new_graph_hash)
+        );
+
+        CREATE TABLE IF NOT EXISTS contract_amendment_authorizations (
+            new_run_id TEXT PRIMARY KEY,
+            triggering_run_id TEXT NOT NULL,
+            authorization_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_contract_amendment_authorizations_triggering_run_id
+            ON contract_amendment_authorizations(triggering_run_id);
         ",
     )
 }
@@ -4294,6 +4389,55 @@ impl EventStore {
         })
     }
 
+    /// §6.6's write path for `ReplanAuthorization`: re-runs
+    /// `replan::authorize_replan` server-side (so its graph-rejection and
+    /// missing-receipt/-approval invariants are actually enforced) and
+    /// records the resulting authorization, same "write returns Value not
+    /// Event" shape as `record_readiness` -- an authorization is a fact
+    /// issued once per accepted proposal, not a state-machine transition.
+    /// `INSERT`s rather than upserts -- a Run may be replanned more than
+    /// once, but each `(run_id, new_graph_hash)` pair is issued at most
+    /// once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn authorize_replan(
+        &mut self,
+        old_graph: &TaskGraph,
+        proposal: &ReplanProposal,
+        must_requirements: &[RequirementId],
+        mandatory_checks_by_requirement: &HashMap<RequirementId, Vec<CheckId>>,
+        graph_review_receipt_ref: Option<&str>,
+        user_approval_ref: Option<&str>,
+    ) -> Result<ReplanAuthorizationRecord, AuthorizeReplanError> {
+        let authorization = replan::authorize_replan(
+            old_graph,
+            proposal,
+            must_requirements,
+            mandatory_checks_by_requirement,
+            graph_review_receipt_ref,
+            user_approval_ref,
+        )
+        .map_err(AuthorizeReplanError::Authorization)?;
+
+        let authorization_json =
+            serde_json::to_string(&authorization).expect("ReplanAuthorization is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO replan_authorizations (run_id, new_graph_hash, authorization_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                authorization.run_id,
+                authorization.new_graph_hash,
+                authorization_json,
+                created_at
+            ],
+        )?;
+
+        Ok(ReplanAuthorizationRecord {
+            authorization,
+            created_at,
+        })
+    }
+
     /// Read counterpart to `save_global_config_revision` for one exact
     /// `revision` number.
     pub fn load_global_config_revision(
@@ -4317,6 +4461,36 @@ impl EventStore {
                 .expect("global_config_revisions.revision_json round-trips");
             GlobalConfigRevisionRecord {
                 revision,
+                created_at,
+            }
+        }))
+    }
+
+    /// Read counterpart to `authorize_replan` -- looks up the recorded
+    /// `replan_authorizations` row for `(run_id, new_graph_hash)`, if any.
+    pub fn load_replan_authorization(
+        &self,
+        run_id: &str,
+        new_graph_hash: &str,
+    ) -> rusqlite::Result<Option<ReplanAuthorizationRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT authorization_json, created_at FROM replan_authorizations \
+                 WHERE run_id = ?1 AND new_graph_hash = ?2",
+                rusqlite::params![run_id, new_graph_hash],
+                |row| {
+                    let authorization_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((authorization_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(authorization_json, created_at)| {
+            let authorization: ReplanAuthorization = serde_json::from_str(&authorization_json)
+                .expect("replan_authorizations.authorization_json round-trips");
+            ReplanAuthorizationRecord {
+                authorization,
                 created_at,
             }
         }))
@@ -4393,6 +4567,77 @@ impl EventStore {
         Ok(patch_json.map(|patch_json| {
             serde_json::from_str(&patch_json)
                 .expect("project_config_patches.patch_json round-trips")
+        }))
+    }
+
+    /// §6.6's write path for `ContractAmendmentAuthorization`: re-runs
+    /// `replan::authorize_contract_amendment` server-side, same discipline
+    /// as `authorize_replan` above. `INSERT`s rather than upserts -- the
+    /// caller's `preallocated_new_run_id` is a fresh id per amendment, never
+    /// reused.
+    pub fn authorize_contract_amendment(
+        &mut self,
+        proposal: &ContractAmendmentProposal,
+        required_review_kinds: &[AmendmentReviewKind],
+        provided_review_receipts: &HashMap<AmendmentReviewKind, String>,
+        user_approval_ref: Option<&str>,
+    ) -> Result<ContractAmendmentAuthorizationRecord, AuthorizeContractAmendmentError> {
+        let authorization = replan::authorize_contract_amendment(
+            proposal,
+            required_review_kinds,
+            provided_review_receipts,
+            user_approval_ref,
+        )
+        .map_err(AuthorizeContractAmendmentError::Authorization)?;
+
+        let authorization_json = serde_json::to_string(&authorization)
+            .expect("ContractAmendmentAuthorization is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO contract_amendment_authorizations (new_run_id, triggering_run_id, authorization_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                authorization.new_run_id,
+                authorization.triggering_run_id,
+                authorization_json,
+                created_at
+            ],
+        )?;
+
+        Ok(ContractAmendmentAuthorizationRecord {
+            authorization,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `authorize_contract_amendment` -- looks up the
+    /// recorded `contract_amendment_authorizations` row for `new_run_id`, if
+    /// any.
+    pub fn load_contract_amendment_authorization(
+        &self,
+        new_run_id: &str,
+    ) -> rusqlite::Result<Option<ContractAmendmentAuthorizationRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT authorization_json, created_at FROM contract_amendment_authorizations \
+                 WHERE new_run_id = ?1",
+                rusqlite::params![new_run_id],
+                |row| {
+                    let authorization_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((authorization_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(authorization_json, created_at)| {
+            let authorization: ContractAmendmentAuthorization =
+                serde_json::from_str(&authorization_json)
+                    .expect("contract_amendment_authorizations.authorization_json round-trips");
+            ContractAmendmentAuthorizationRecord {
+                authorization,
+                created_at,
+            }
         }))
     }
 
@@ -5155,6 +5400,8 @@ fn execution_queue_event_type_name(event: &ExecutionQueueEvent) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use autome_domain::graph::{GraphNode, NodeId, NodePurpose, RiskLevel};
+    use autome_domain::replan::ReplanRejection;
     use autome_domain::run::RunPhase;
     use autome_domain::skill::{
         BindingState, InvocationPolicy, ProjectSkillBindingMode, SkillDigest,
@@ -9367,5 +9614,285 @@ mod tests {
         let unknown_project_tasks = store.list_task_summaries("project-nonexistent").unwrap();
         assert!(unknown_project_tasks.is_empty());
         std::fs::remove_file(&path).ok();
+    }
+
+    fn replan_node(id: &str, requirement_ids: Vec<&str>, check_ids: Vec<&str>) -> GraphNode {
+        GraphNode {
+            id: NodeId(id.into()),
+            kind: "generic".into(),
+            purpose: NodePurpose::Business,
+            title: id.into(),
+            requirement_ids: requirement_ids
+                .into_iter()
+                .map(|r| RequirementId(r.into()))
+                .collect(),
+            acceptance_check_ids: check_ids.into_iter().map(|c| CheckId(c.into())).collect(),
+            depends_on: vec![],
+            expected_outputs: vec![],
+            write_scope: vec![],
+            risk_level: RiskLevel::Low,
+            estimated_budget: 1,
+        }
+    }
+
+    fn replan_graph(hash: &str, nodes: Vec<GraphNode>) -> TaskGraph {
+        TaskGraph {
+            id: "G-1".into(),
+            version: 1,
+            graph_hash: hash.into(),
+            contract_ref: "C-1".into(),
+            nodes,
+        }
+    }
+
+    fn replan_proposal_fixture(old_hash: &str, new_graph: TaskGraph) -> ReplanProposal {
+        ReplanProposal {
+            run_id: "run-1".into(),
+            trigger_evidence_refs: vec!["evidence-1".into()],
+            affected_requirement_ids: vec![],
+            affected_node_ids: vec![],
+            semantically_unchanged_node_ids: vec![],
+            invalidated_attempt_ids: vec!["attempt-1".into()],
+            invalidated_candidate_ids: vec![],
+            invalidated_receipt_ids: vec![],
+            old_graph_hash: old_hash.into(),
+            new_graph,
+            budget_delta_ref: "budget-delta-1".into(),
+        }
+    }
+
+    #[test]
+    fn authorize_replan_records_a_well_formed_authorization_and_reads_it_back() {
+        let root = temp_data_root("authorize-replan-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_replan_authorization("run-1", "hash-new")
+                .unwrap()
+                .is_none()
+        );
+
+        let old = replan_graph("hash-old", vec![replan_node("A", vec!["R1"], vec![])]);
+        let new_graph = replan_graph("hash-new", vec![replan_node("A", vec!["R1"], vec![])]);
+        let proposal = replan_proposal_fixture("hash-old", new_graph);
+        let record = store
+            .authorize_replan(
+                &old,
+                &proposal,
+                &[],
+                &HashMap::new(),
+                Some("graph-review-1"),
+                Some("user-approval-1"),
+            )
+            .unwrap();
+        assert_eq!(record.authorization.new_graph_hash, "hash-new");
+
+        let loaded = store
+            .load_replan_authorization("run-1", "hash-new")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn authorize_replan_refuses_to_reuse_an_existing_run_id_and_new_graph_hash_pair() {
+        let root = temp_data_root("authorize-replan-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let old = replan_graph("hash-old", vec![replan_node("A", vec!["R1"], vec![])]);
+        let new_graph = replan_graph("hash-new", vec![replan_node("A", vec!["R1"], vec![])]);
+        let proposal = replan_proposal_fixture("hash-old", new_graph.clone());
+        store
+            .authorize_replan(
+                &old,
+                &proposal,
+                &[],
+                &HashMap::new(),
+                Some("graph-review-1"),
+                Some("user-approval-1"),
+            )
+            .unwrap();
+
+        let proposal_again = replan_proposal_fixture("hash-old", new_graph);
+        let err = store
+            .authorize_replan(
+                &old,
+                &proposal_again,
+                &[],
+                &HashMap::new(),
+                Some("graph-review-2"),
+                Some("user-approval-2"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AuthorizeReplanError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn authorize_replan_rejects_a_stale_old_graph_hash_without_writing_anything() {
+        let root = temp_data_root("authorize-replan-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let old = replan_graph("hash-old", vec![]);
+        let new_graph = replan_graph("hash-new", vec![]);
+        let proposal = replan_proposal_fixture("hash-stale", new_graph);
+        let err = store
+            .authorize_replan(
+                &old,
+                &proposal,
+                &[],
+                &HashMap::new(),
+                Some("graph-review-1"),
+                Some("user-approval-1"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AuthorizeReplanError::Authorization(errors)
+                    if errors.contains(&ReplanAuthorizationError::GraphRejected(
+                        ReplanRejection::ProposalTargetsWrongOldGraph
+                    ))
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_replan_authorization("run-1", "hash-new")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn contract_amendment_proposal_fixture() -> ContractAmendmentProposal {
+        ContractAmendmentProposal {
+            triggering_run_id: "run-1".into(),
+            preallocated_new_run_id: "run-2".into(),
+            base_contract_version: 1,
+            new_contract_ref: "contract-2".into(),
+            new_graph_ref: "graph-2".into(),
+            new_execution_run_spec_ref: "spec-2".into(),
+        }
+    }
+
+    #[test]
+    fn authorize_contract_amendment_records_a_well_formed_authorization_and_reads_it_back() {
+        let root = temp_data_root("authorize-contract-amendment-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_contract_amendment_authorization("run-2")
+                .unwrap()
+                .is_none()
+        );
+
+        let mut receipts = HashMap::new();
+        receipts.insert(AmendmentReviewKind::Planning, "planning-receipt".to_string());
+        receipts.insert(AmendmentReviewKind::Contract, "contract-receipt".to_string());
+        receipts.insert(AmendmentReviewKind::Graph, "graph-receipt".to_string());
+        let required = [
+            AmendmentReviewKind::Planning,
+            AmendmentReviewKind::Contract,
+            AmendmentReviewKind::Graph,
+        ];
+        let record = store
+            .authorize_contract_amendment(
+                &contract_amendment_proposal_fixture(),
+                &required,
+                &receipts,
+                Some("user-approval-1"),
+            )
+            .unwrap();
+        assert_eq!(record.authorization.new_run_id, "run-2");
+
+        let loaded = store
+            .load_contract_amendment_authorization("run-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn authorize_contract_amendment_refuses_to_reuse_an_existing_new_run_id() {
+        let root = temp_data_root("authorize-contract-amendment-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let mut receipts = HashMap::new();
+        receipts.insert(AmendmentReviewKind::Planning, "planning-receipt".to_string());
+        let required = [AmendmentReviewKind::Planning];
+        store
+            .authorize_contract_amendment(
+                &contract_amendment_proposal_fixture(),
+                &required,
+                &receipts,
+                Some("user-approval-1"),
+            )
+            .unwrap();
+
+        receipts.insert(AmendmentReviewKind::Planning, "planning-receipt-2".to_string());
+        let err = store
+            .authorize_contract_amendment(
+                &contract_amendment_proposal_fixture(),
+                &required,
+                &receipts,
+                Some("user-approval-2"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AuthorizeContractAmendmentError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn authorize_contract_amendment_rejects_a_missing_required_receipt_without_writing_anything()
+    {
+        let root = temp_data_root("authorize-contract-amendment-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let required = [AmendmentReviewKind::Planning, AmendmentReviewKind::Graph];
+        let err = store
+            .authorize_contract_amendment(
+                &contract_amendment_proposal_fixture(),
+                &required,
+                &HashMap::new(),
+                Some("user-approval-1"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AuthorizeContractAmendmentError::Authorization(errors)
+                    if errors.contains(&ContractAmendmentAuthorizationError::MissingRequiredReviewReceipt(
+                        AmendmentReviewKind::Planning
+                    ))
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_contract_amendment_authorization("run-2")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

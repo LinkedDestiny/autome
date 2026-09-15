@@ -58,7 +58,7 @@ pub struct TaskGraph {
     pub nodes: Vec<GraphNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FreezeViolation {
     DanglingDependency {
         node: NodeId,

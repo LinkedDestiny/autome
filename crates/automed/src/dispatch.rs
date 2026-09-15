@@ -86,13 +86,36 @@
 //! `DeliveryChain::is_ready_for_completion` against the currently recorded
 //! chain, reporting `{ ready, reason }` rather than trusting a caller's own
 //! judgment of whether every rung is in place.
+//! §6.6 `replan.*` is a different shape from every write method above once
+//! more: `evaluate_replan_proposal` takes its whole `old_graph` explicitly
+//! rather than reading it from the store, so it is completely stateless and
+//! wired straight into `try_dispatch_read` (`replan.evaluate_proposal`) as
+//! a `{ ok, violations }` check, matching
+//! `historical_red_light.evaluate`/`step_role.validate_schema`'s
+//! convention. `authorize_replan` and `authorize_contract_amendment` are
+//! each a real validating constructor (`Result<_, Vec<_>>`), so per the
+//! `QualificationReceiptInputParam`/`SkillInstallInputParam` rule each gets
+//! its own `...InputParam` mirroring the constructor's own argument list
+//! rather than trusting a client-supplied finished
+//! `ReplanAuthorization`/`ContractAmendmentAuthorization` -- `replan.authorize`
+//! and `replan.authorize_contract_amendment` write a
+//! `replan_authorizations`/`contract_amendment_authorizations` row but
+//! append no domain `Event`, same "fact issued once" shape as
+//! `readiness.record`. `replan.get_authorization` parses `params.run_id`
+//! and `params.new_graph_hash` (`ReplanAuthorization` carries no digest of
+//! its own, so a Run replanned more than once needs both to disambiguate);
+//! `replan.get_contract_amendment_authorization` parses `params.new_run_id`
+//! alone (the one field `ContractAmendmentAuthorization` does carry that is
+//! naturally unique).
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
     AppendedGraphEvent, AppendedNodeEvent, AppendedProjectEvent, AppendedRunEvent,
-    AppendedTaskEvent, AttemptRecord, BindPlaybookError, BudgetGrantRecord,
-    CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
+    AppendedTaskEvent, AttemptRecord, AuthorizeContractAmendmentError, AuthorizeReplanError,
+    BindPlaybookError, BudgetGrantRecord,
+    CandidateCertificateRecord, CompletionCertificateRecord, ContractAmendmentAuthorizationRecord,
+    ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
     DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
     ExecutionQueueAppendError, FrozenPlaybookRecord, GlobalConfigRevisionRecord, GraphAppendError,
@@ -106,6 +129,7 @@ use crate::store::{
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
     RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
     RecordRunPolicyAmendmentError, RecordSkillInstallReceiptError, RecordUserCorrectionError,
+    ReplanAuthorizationRecord,
     RunPolicyAmendmentRecord, SaveGlobalConfigRevisionError, SkillEvidenceLadderRecord,
     SkillInstallRecord, SkillLadderTransitionError, StartDeliveryChainError, TaskAppendError,
     TaskSummary, UserCorrectionRecord,
@@ -135,7 +159,7 @@ use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
 use autome_domain::historical_red_light::{self, HistoricalRedLightAssessment};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
-use autome_domain::graph::{GraphEvent, GraphNode};
+use autome_domain::graph::{GraphEvent, GraphNode, TaskGraph};
 use autome_domain::model_selection::{self, ModelSelectionIdentity, QualificationResult};
 use autome_domain::node::NodeEvent;
 use autome_domain::playbook::{FrozenPlaybook, RoleOutput};
@@ -145,7 +169,10 @@ use autome_domain::project::{
 };
 use autome_domain::project_intent::{InitializationResult, KeyDecision};
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
-use autome_domain::requirement::{Requirement, RequirementId};
+use autome_domain::replan::{
+    self, AmendmentReviewKind, ContractAmendmentProposal, ReplanProposal,
+};
+use autome_domain::requirement::{CheckId, Requirement, RequirementId};
 use autome_domain::review::{self, HumanReviewFinding, ReviewDecision, ReviewSpecSubject, ReviewSubject};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
@@ -157,7 +184,7 @@ use autome_domain::user_correction::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -316,6 +343,18 @@ pub enum DispatchError {
     /// against the caller-supplied preview (`Rejected`), or a duplicate
     /// `revision` surfaced as a SQL primary-key violation (`Sql`).
     SaveGlobalConfigRevision(SaveGlobalConfigRevisionError),
+    /// §6.6 write path: `authorize_replan`'s failure modes -- the domain's
+    /// own `replan::authorize_replan` rejected the proposal, a missing
+    /// graph review receipt, and/or a missing user approval, collected
+    /// together rather than flattened to one case (`Authorization`), or a
+    /// duplicate `(run_id, new_graph_hash)` pair surfaced as a SQL
+    /// primary-key violation (`Sql`).
+    AuthorizeReplan(AuthorizeReplanError),
+    /// §6.6 write path: `authorize_contract_amendment`'s failure modes --
+    /// same shape as `AuthorizeReplan` above, collected together rather
+    /// than flattened (`Authorization`), or a duplicate `new_run_id`
+    /// surfaced as a SQL primary-key violation (`Sql`).
+    AuthorizeContractAmendment(AuthorizeContractAmendmentError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -519,6 +558,18 @@ impl From<ExecutionQueueAppendError> for DispatchError {
 impl From<NodeAppendError> for DispatchError {
     fn from(value: NodeAppendError) -> Self {
         DispatchError::NodeStore(value)
+    }
+}
+
+impl From<AuthorizeReplanError> for DispatchError {
+    fn from(value: AuthorizeReplanError) -> Self {
+        DispatchError::AuthorizeReplan(value)
+    }
+}
+
+impl From<AuthorizeContractAmendmentError> for DispatchError {
+    fn from(value: AuthorizeContractAmendmentError) -> Self {
+        DispatchError::AuthorizeContractAmendment(value)
     }
 }
 
@@ -1088,6 +1139,25 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     }
     if command.method == "config.save_project_patch" {
         let result = handle_record_project_config_patch(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // §6.6: same shape again -- each writes a `replan_authorizations`/
+    // `contract_amendment_authorizations` row but appends no domain `Event`.
+    // A replan/contract-amendment authorization is a fact issued once per
+    // accepted proposal, not a state-machine transition.
+    if command.method == "replan.authorize" {
+        let result = handle_authorize_replan(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "replan.authorize_contract_amendment" {
+        let result = handle_authorize_contract_amendment(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -3132,6 +3202,245 @@ fn read_config_resolve_project_config(
     }
 }
 
+/// Dispatch-layer-only input for `replan.authorize` -- mirrors
+/// `authorize_replan`'s own argument list rather than accepting a
+/// client-supplied `ReplanAuthorization` directly, same
+/// derive-bypasses-the-constructor reasoning as
+/// `QualificationReceiptInputParam`/`PlanningPolicyRestartInputParam`:
+/// `ReplanAuthorization` is a plain `pub`-field struct with a derived
+/// `Deserialize`, so a caller who could hand one in directly could fabricate
+/// an authorization with no graph review or user approval behind it at all.
+#[derive(Debug, Deserialize)]
+struct ReplanAuthorizationInputParam {
+    old_graph: TaskGraph,
+    proposal: ReplanProposal,
+    #[serde(default)]
+    must_requirements: Vec<RequirementId>,
+    #[serde(default)]
+    mandatory_checks_by_requirement: HashMap<RequirementId, Vec<CheckId>>,
+    graph_review_receipt_ref: Option<String>,
+    user_approval_ref: Option<String>,
+}
+
+fn parse_replan_authorization_input_param(
+    command: &Command,
+) -> Result<ReplanAuthorizationInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid ReplanAuthorizationInputParam: {e}"
+        ))
+    })
+}
+
+/// §6.6: the sole caller of `EventStore::authorize_replan`. Takes `{ input:
+/// <ReplanAuthorizationInputParam> }` and re-validates server-side via
+/// `replan::authorize_replan` rather than trusting an already-built
+/// authorization from the caller, same discipline as
+/// `handle_record_planning_policy_restart`. Refuses to run while the store
+/// is in its diagnostic state, same as every other write.
+fn handle_authorize_replan(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_replan_authorization_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .authorize_replan(
+            &input.old_graph,
+            &input.proposal,
+            &input.must_requirements,
+            &input.mandatory_checks_by_requirement,
+            input.graph_review_receipt_ref.as_deref(),
+            input.user_approval_ref.as_deref(),
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(replan_authorization_record_json(&record))
+}
+
+fn replan_authorization_record_json(record: &ReplanAuthorizationRecord) -> Value {
+    serde_json::json!({
+        "authorization": record.authorization,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_authorize_replan` -- looks up the recorded
+/// `replan_authorizations` row for `(run_id, new_graph_hash)`, if any.
+fn read_replan_get_authorization(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let new_graph_hash =
+        parse_string_param(command, "new_graph_hash").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_replan_authorization(&run_id, &new_graph_hash)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(replan_authorization_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!(
+                "no replan authorization recorded for run {run_id} and graph hash {new_graph_hash}"
+            ),
+        )),
+    }
+}
+
+fn parse_old_graph_param(command: &Command) -> Result<TaskGraph, DispatchError> {
+    let value = command
+        .params
+        .get("old_graph")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.old_graph is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.old_graph is not a valid TaskGraph: {e}"))
+    })
+}
+
+fn parse_replan_proposal_param(command: &Command) -> Result<ReplanProposal, DispatchError> {
+    let value = command
+        .params
+        .get("proposal")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.proposal is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.proposal is not a valid ReplanProposal: {e}"))
+    })
+}
+
+fn parse_mandatory_checks_by_requirement_param(
+    command: &Command,
+) -> Result<HashMap<RequirementId, Vec<CheckId>>, DispatchError> {
+    let value = command
+        .params
+        .get("mandatory_checks_by_requirement")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams(
+                "params.mandatory_checks_by_requirement is required".to_string(),
+            )
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.mandatory_checks_by_requirement is not a valid HashMap<RequirementId, Vec<CheckId>>: {e}"
+        ))
+    })
+}
+
+/// §6.6: `{ old_graph, proposal, must_requirement_ids,
+/// mandatory_checks_by_requirement }` -- re-exercises
+/// `replan::evaluate_replan_proposal` server-side rather than trusting a
+/// caller's own judgment of whether a proposal is acceptable. Collects every
+/// rejection rather than just the first, matching the
+/// `historical_red_light.evaluate`/`step_role.validate_schema` "check"
+/// convention.
+fn read_replan_evaluate_proposal(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let old_graph = parse_old_graph_param(command).map_err(dispatch_error_to_reply_error)?;
+    let proposal = parse_replan_proposal_param(command).map_err(dispatch_error_to_reply_error)?;
+    let must_requirements =
+        parse_must_requirement_ids_param(command).map_err(dispatch_error_to_reply_error)?;
+    let mandatory_checks_by_requirement = parse_mandatory_checks_by_requirement_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let rejections = replan::evaluate_replan_proposal(
+        &old_graph,
+        &proposal,
+        &must_requirements,
+        &mandatory_checks_by_requirement,
+    );
+    Ok(serde_json::json!({
+        "ok": rejections.is_empty(),
+        "rejections": rejections,
+    }))
+}
+
+/// Dispatch-layer-only input for `replan.authorize_contract_amendment` --
+/// mirrors `authorize_contract_amendment`'s own argument list, same
+/// reasoning as `ReplanAuthorizationInputParam`.
+#[derive(Debug, Deserialize)]
+struct ContractAmendmentAuthorizationInputParam {
+    proposal: ContractAmendmentProposal,
+    #[serde(default)]
+    required_review_kinds: Vec<AmendmentReviewKind>,
+    #[serde(default)]
+    provided_review_receipts: HashMap<AmendmentReviewKind, String>,
+    user_approval_ref: Option<String>,
+}
+
+fn parse_contract_amendment_authorization_input_param(
+    command: &Command,
+) -> Result<ContractAmendmentAuthorizationInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid ContractAmendmentAuthorizationInputParam: {e}"
+        ))
+    })
+}
+
+/// §6.6: the sole caller of `EventStore::authorize_contract_amendment`.
+/// Takes `{ input: <ContractAmendmentAuthorizationInputParam> }` and
+/// re-validates server-side via `replan::authorize_contract_amendment`, same
+/// discipline as `handle_authorize_replan`.
+fn handle_authorize_contract_amendment(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_contract_amendment_authorization_input_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .authorize_contract_amendment(
+            &input.proposal,
+            &input.required_review_kinds,
+            &input.provided_review_receipts,
+            input.user_approval_ref.as_deref(),
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(contract_amendment_authorization_record_json(&record))
+}
+
+fn contract_amendment_authorization_record_json(
+    record: &ContractAmendmentAuthorizationRecord,
+) -> Value {
+    serde_json::json!({
+        "authorization": record.authorization,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_authorize_contract_amendment` -- looks up the
+/// recorded `contract_amendment_authorizations` row for `new_run_id`, if any.
+fn read_replan_get_contract_amendment_authorization(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let new_run_id =
+        parse_string_param(command, "new_run_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_contract_amendment_authorization(&new_run_id)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(contract_amendment_authorization_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no contract amendment authorization recorded for new_run_id {new_run_id}"),
+        )),
+    }
+}
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -3840,6 +4149,22 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::IssueCompletionCertificate(IssueCompletionCertificateError::Domain(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::AuthorizeReplan(AuthorizeReplanError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::AuthorizeReplan(AuthorizeReplanError::Authorization(errors)) => (
+            ReplyErrorCode::TransitionRejected,
+            format!("replan authorization rejected: {errors:?}"),
+        ),
+        DispatchError::AuthorizeContractAmendment(AuthorizeContractAmendmentError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::AuthorizeContractAmendment(
+            AuthorizeContractAmendmentError::Authorization(errors),
+        ) => (
+            ReplyErrorCode::TransitionRejected,
+            format!("contract amendment authorization rejected: {errors:?}"),
+        ),
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -3949,6 +4274,11 @@ fn try_dispatch_read(
         }
         "config.get_project_patch" => Some(read_project_config_patch_get(store, command)),
         "config.resolve_project_config" => Some(read_config_resolve_project_config(store, command)),
+        "replan.evaluate_proposal" => Some(read_replan_evaluate_proposal(command)),
+        "replan.get_authorization" => Some(read_replan_get_authorization(store, command)),
+        "replan.get_contract_amendment_authorization" => Some(
+            read_replan_get_contract_amendment_authorization(store, command),
+        ),
         _ => None,
     }
 }
@@ -12582,6 +12912,509 @@ mod tests {
                 assert_eq!(code, ReplyErrorCode::TransitionRejected)
             }
             other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+
+    fn replan_task_graph_json(graph_hash: &str, nodes: Vec<Value>) -> Value {
+        json!({
+            "id": "G-1",
+            "version": 1,
+            "graph_hash": graph_hash,
+            "contract_ref": "C-1",
+            "nodes": nodes,
+        })
+    }
+
+    fn replan_proposal_json(old_graph_hash: &str, new_graph: Value) -> Value {
+        json!({
+            "run_id": "run-1",
+            "trigger_evidence_refs": ["evidence-1"],
+            "affected_requirement_ids": [],
+            "affected_node_ids": [],
+            "semantically_unchanged_node_ids": [],
+            "invalidated_attempt_ids": ["attempt-1"],
+            "invalidated_candidate_ids": [],
+            "invalidated_receipt_ids": [],
+            "old_graph_hash": old_graph_hash,
+            "new_graph": new_graph,
+            "budget_delta_ref": "budget-delta-1",
+        })
+    }
+
+    fn well_formed_replan_authorization_input_json() -> Value {
+        let old_graph = replan_task_graph_json(
+            "hash-old",
+            vec![graph_node_json("A", "Business", &["R1"])],
+        );
+        let new_graph = replan_task_graph_json(
+            "hash-new",
+            vec![graph_node_json("A", "Business", &["R1"])],
+        );
+        json!({
+            "old_graph": old_graph,
+            "proposal": replan_proposal_json("hash-old", new_graph),
+            "must_requirements": [],
+            "mandatory_checks_by_requirement": {},
+            "graph_review_receipt_ref": "graph-review-1",
+            "user_approval_ref": "user-approval-1",
+        })
+    }
+
+    /// §6.6: `replan.authorize` follows the same no-`Event`-produced shape as
+    /// `policy_restart.issue_planning_restart`, and its payload round-trips
+    /// through `replan.get_authorization`.
+    #[test]
+    fn handle_command_replan_authorize_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "replan.authorize",
+            json!({ "input": well_formed_replan_authorization_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.authorize failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["authorization"]["new_graph_hash"], "hash-new");
+
+        let get_cmd = command(
+            "replan.get_authorization",
+            json!({ "run_id": "run-1", "new_graph_hash": "hash-new" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.get_authorization failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_refuses_to_reuse_an_existing_run_id_and_new_graph_hash_pair()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "replan.authorize",
+            json!({ "input": well_formed_replan_authorization_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_rejects_a_stale_old_graph_hash() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_replan_authorization_input_json();
+        input["proposal"]["old_graph_hash"] = json!("hash-stale");
+        let record_cmd = command("replan.authorize", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "replan.get_authorization",
+            json!({ "run_id": "run-1", "new_graph_hash": "hash-new" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("replan.authorize", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_get_authorization_is_not_found_before_issuance() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "replan.get_authorization",
+            json!({ "run_id": "run-1", "new_graph_hash": "hash-new" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(matches!(
+            outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_contract_amendment_authorization_input_json() -> Value {
+        json!({
+            "proposal": {
+                "triggering_run_id": "run-1",
+                "preallocated_new_run_id": "run-2",
+                "base_contract_version": 1,
+                "new_contract_ref": "contract-2",
+                "new_graph_ref": "graph-2",
+                "new_execution_run_spec_ref": "spec-2",
+            },
+            "required_review_kinds": ["Planning", "Contract", "Graph"],
+            "provided_review_receipts": {
+                "Planning": "planning-receipt",
+                "Contract": "contract-receipt",
+                "Graph": "graph-receipt",
+            },
+            "user_approval_ref": "user-approval-1",
+        })
+    }
+
+    /// §6.6: `replan.authorize_contract_amendment` follows the same
+    /// no-`Event`-produced shape as `replan.authorize`, and its payload
+    /// round-trips through `replan.get_contract_amendment_authorization`.
+    #[test]
+    fn handle_command_replan_authorize_contract_amendment_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "replan.authorize_contract_amendment",
+            json!({ "input": well_formed_contract_amendment_authorization_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.authorize_contract_amendment failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["authorization"]["new_run_id"], "run-2");
+
+        let get_cmd = command(
+            "replan.get_contract_amendment_authorization",
+            json!({ "new_run_id": "run-2" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.get_contract_amendment_authorization failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_contract_amendment_refuses_to_reuse_an_existing_new_run_id()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "replan.authorize_contract_amendment",
+            json!({ "input": well_formed_contract_amendment_authorization_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_contract_amendment_rejects_a_missing_required_review_receipt()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_contract_amendment_authorization_input_json();
+        input["provided_review_receipts"] = json!({
+            "Planning": "planning-receipt",
+            "Contract": "contract-receipt",
+        });
+        let record_cmd = command(
+            "replan.authorize_contract_amendment",
+            json!({ "input": input }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "replan.get_contract_amendment_authorization",
+            json!({ "new_run_id": "run-2" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_authorize_contract_amendment_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("replan.authorize_contract_amendment", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_get_contract_amendment_authorization_is_not_found_before_issuance() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "replan.get_contract_amendment_authorization",
+            json!({ "new_run_id": "run-2" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(matches!(
+            outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §6.6: `replan.evaluate_proposal` is stateless -- no store row is
+    /// involved at all, same shape as `historical_red_light.evaluate`/
+    /// `step_role.validate_schema`.
+    #[test]
+    fn handle_command_replan_evaluate_proposal_accepts_a_well_formed_proposal() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut old_node = graph_node_json("A", "Business", &["R1"]);
+        old_node["acceptance_check_ids"] = json!(["chk-1"]);
+        let mut new_node = graph_node_json("A", "Business", &["R1"]);
+        new_node["acceptance_check_ids"] = json!(["chk-1"]);
+        let old_graph = replan_task_graph_json("hash-old", vec![old_node]);
+        let new_graph = replan_task_graph_json("hash-new", vec![new_node]);
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "old_graph": old_graph,
+                "proposal": replan_proposal_json("hash-old", new_graph),
+                "must_requirement_ids": ["R1"],
+                "mandatory_checks_by_requirement": { "R1": ["chk-1"] },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ok"], true);
+                assert_eq!(payload["rejections"], json!([]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.evaluate_proposal failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_evaluate_proposal_rejects_a_stale_old_graph_hash() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let old_graph = replan_task_graph_json("hash-old", vec![]);
+        let new_graph = replan_task_graph_json("hash-new", vec![]);
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "old_graph": old_graph,
+                "proposal": replan_proposal_json("hash-stale", new_graph),
+                "must_requirement_ids": [],
+                "mandatory_checks_by_requirement": {},
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ok"], false);
+                assert_eq!(
+                    payload["rejections"],
+                    json!(["ProposalTargetsWrongOldGraph"])
+                );
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.evaluate_proposal failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_evaluate_proposal_rejects_dropped_requirement_coverage() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let old_graph = replan_task_graph_json(
+            "hash-old",
+            vec![graph_node_json("A", "Business", &["R1", "R2"])],
+        );
+        let new_graph = replan_task_graph_json(
+            "hash-new",
+            vec![graph_node_json("A", "Business", &["R1"])],
+        );
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "old_graph": old_graph,
+                "proposal": replan_proposal_json("hash-old", new_graph),
+                "must_requirement_ids": [],
+                "mandatory_checks_by_requirement": {},
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ok"], false);
+                assert_eq!(
+                    payload["rejections"],
+                    json!([{ "RequirementCoverageDecreased": { "requirement": "R2" } }])
+                );
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.evaluate_proposal failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_evaluate_proposal_rejects_a_cyclic_new_graph() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let old_graph = replan_task_graph_json("hash-old", vec![]);
+        let mut a = graph_node_json("A", "Business", &[]);
+        a["depends_on"] = json!(["B"]);
+        let mut b = graph_node_json("B", "Business", &[]);
+        b["depends_on"] = json!(["A"]);
+        let new_graph = replan_task_graph_json("hash-new", vec![a, b]);
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "old_graph": old_graph,
+                "proposal": replan_proposal_json("hash-old", new_graph),
+                "must_requirement_ids": [],
+                "mandatory_checks_by_requirement": {},
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ok"], false);
+                let rejections = payload["rejections"].as_array().unwrap();
+                assert!(rejections.iter().any(|r| r["GraphFreezeViolation"]["Cycle"].is_object()));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("replan.evaluate_proposal failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_evaluate_proposal_is_invalid_params_without_old_graph() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let new_graph = replan_task_graph_json("hash-new", vec![]);
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "proposal": replan_proposal_json("hash-old", new_graph),
+                "must_requirement_ids": [],
+                "mandatory_checks_by_requirement": {},
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_replan_evaluate_proposal_is_invalid_params_without_proposal() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let old_graph = replan_task_graph_json("hash-old", vec![]);
+        let cmd = command(
+            "replan.evaluate_proposal",
+            json!({
+                "old_graph": old_graph,
+                "must_requirement_ids": [],
+                "mandatory_checks_by_requirement": {},
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();

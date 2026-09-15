@@ -16,10 +16,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::graph::{FreezeViolation, TaskGraph, validate_for_freeze};
 use crate::requirement::{CheckId, RequirementId};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplanProposal {
     pub run_id: String,
     pub trigger_evidence_refs: Vec<String>,
@@ -34,7 +36,7 @@ pub struct ReplanProposal {
     pub budget_delta_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplanRejection {
     ProposalTargetsWrongOldGraph,
     RequirementCoverageDecreased { requirement: RequirementId },
@@ -107,7 +109,7 @@ pub enum ReplanAuthorizationError {
     MissingUserApproval,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplanAuthorization {
     pub run_id: String,
     pub new_graph_hash: String,
@@ -169,14 +171,14 @@ pub fn authorize_replan(
 /// "如果必须改变已冻结 TaskContract，则不能走 Replanning" — a distinct
 /// kind from `ReplanProposal`, carrying a replacement contract instead of
 /// only a replacement graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AmendmentReviewKind {
     Planning,
     Contract,
     Graph,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAmendmentProposal {
     pub triggering_run_id: String,
     pub preallocated_new_run_id: String,
@@ -195,7 +197,7 @@ pub enum ContractAmendmentAuthorizationError {
     MissingUserApproval,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAmendmentAuthorization {
     pub triggering_run_id: String,
     pub new_run_id: String,
