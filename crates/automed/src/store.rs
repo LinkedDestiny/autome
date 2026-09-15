@@ -14,6 +14,7 @@ use autome_domain::attempt::{
     PlanningWriteViolation,
 };
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
+use autome_domain::evidence::EvidenceReceipt;
 use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
@@ -274,6 +275,33 @@ impl From<rusqlite::Error> for RecordAttemptError {
     }
 }
 
+/// A persisted §5.7 `EvidenceReceipt` plus when it landed. Unlike
+/// `AttemptRecord`, no aggregate-linking key is added at the store layer --
+/// `EvidenceReceipt` already carries its own `run_id`/`check_id`, so there is
+/// nothing this layer needs to know that the domain type doesn't already say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceRecord {
+    pub receipt: EvidenceReceipt,
+    pub created_at: String,
+}
+
+/// `record_evidence`'s only failure mode. Unlike `record_attempt`, there is
+/// no domain-level shape check to re-run here: §5.7 staleness
+/// (`EvidenceReceipt::is_valid_against`) is a property checked against the
+/// *current* fingerprint at query time, not at record time, so a receipt is
+/// always well-formed to store as-is -- a duplicate `receipt_id` is the only
+/// way this can fail, and that already surfaces as a primary-key violation.
+#[derive(Debug)]
+pub enum RecordEvidenceError {
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for RecordEvidenceError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordEvidenceError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -411,6 +439,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v4,
     migrate_v5,
     migrate_v6,
+    migrate_v7,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -578,6 +607,27 @@ fn migrate_v6(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id);
+        ",
+    )
+}
+
+/// `evidence_receipts`: one row per `record_evidence` call (plan §5.7).
+/// `receipt_id` is the primary key, matching `ReceiptId`'s caller-chosen,
+/// globally-unique-by-construction discipline -- same reasoning as
+/// `migrate_v6`'s `attempts` table. `run_id`/`check_id` are denormalized out
+/// of `receipt_json` purely to make `run_id`-scoped listing cheap later;
+/// `receipt_json` remains the authoritative value.
+fn migrate_v7(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS evidence_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            check_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_evidence_receipts_run_id ON evidence_receipts(run_id);
         ",
     )
 }
@@ -1979,6 +2029,58 @@ impl EventStore {
             }
         }))
     }
+
+    /// §5.7's write path: records an `EvidenceReceipt` produced by a
+    /// verifier run. Like `record_attempt`, this is a fact recorded once,
+    /// not a journaled event -- staleness is a query-time property
+    /// (`EvidenceReceipt::is_valid_against`), not something this method
+    /// decides, so there is nothing to validate before writing beyond what
+    /// the primary key already enforces.
+    pub fn record_evidence(
+        &mut self,
+        receipt: &EvidenceReceipt,
+    ) -> Result<EvidenceRecord, RecordEvidenceError> {
+        let receipt_json = serde_json::to_string(receipt).expect("EvidenceReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO evidence_receipts (receipt_id, run_id, check_id, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                receipt.receipt_id.0,
+                receipt.run_id,
+                receipt.check_id.0,
+                receipt_json,
+                created_at,
+            ],
+        )?;
+
+        Ok(EvidenceRecord {
+            receipt: receipt.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_evidence` -- looks up the recorded
+    /// `evidence_receipts` row for `receipt_id`, if any.
+    pub fn load_evidence(&self, receipt_id: &str) -> rusqlite::Result<Option<EvidenceRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM evidence_receipts WHERE receipt_id = ?1",
+                rusqlite::params![receipt_id],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: EvidenceReceipt = serde_json::from_str(&receipt_json)
+                .expect("evidence_receipts.receipt_json round-trips");
+            EvidenceRecord { receipt, created_at }
+        }))
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -2593,6 +2695,72 @@ mod tests {
             "{err:?}"
         );
         assert!(store.load_attempt("attempt-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_evidence_receipt(receipt_id: &str) -> EvidenceReceipt {
+        use autome_domain::evidence::{
+            CheckOutcome, EvidenceFingerprint, EvidencePayload, ProcessResultPayload, ReceiptId,
+        };
+        use autome_domain::requirement::CheckId;
+
+        EvidenceReceipt {
+            receipt_id: ReceiptId(receipt_id.to_string()),
+            nonce: "nonce-1".into(),
+            run_id: "run-1".into(),
+            check_id: CheckId("C-001".into()),
+            fingerprint: EvidenceFingerprint {
+                contract_hash: "contract-1".into(),
+                check_hash: "check-1".into(),
+                project_rule_snapshot_hash: "rules-1".into(),
+                candidate_tree_hash: "tree-1".into(),
+                environment_class: "macos-15-arm64".into(),
+            },
+            verifier_version: "0.1.0".into(),
+            payload: EvidencePayload::Process(ProcessResultPayload {
+                program: "cargo".into(),
+                args: vec!["test".into()],
+                exit_code: 0,
+                assertions: vec![],
+                inventory_changes: vec![],
+            }),
+            result: CheckOutcome::Pass,
+        }
+    }
+
+    /// A well-formed `record_evidence` call lands one `evidence_receipts`
+    /// row, readable back via `load_evidence`.
+    #[test]
+    fn record_evidence_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-evidence");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_evidence_receipt("EV-1");
+
+        assert!(store.load_evidence("EV-1").unwrap().is_none());
+
+        let record = store.record_evidence(&receipt).unwrap();
+        assert_eq!(record.receipt, receipt);
+
+        let loaded = store.load_evidence("EV-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `receipt_id` must fail rather than
+    /// silently overwriting a prior verifier result.
+    #[test]
+    fn record_evidence_refuses_to_reuse_an_existing_receipt_id() {
+        let root = temp_data_root("record-evidence-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_evidence_receipt("EV-1");
+
+        store.record_evidence(&receipt).unwrap();
+        let err = store.record_evidence(&receipt).unwrap_err();
+        assert!(matches!(err, RecordEvidenceError::Sql(_)), "{err:?}");
 
         std::fs::remove_dir_all(&root).ok();
     }

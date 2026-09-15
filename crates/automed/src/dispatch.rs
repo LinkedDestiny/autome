@@ -51,16 +51,25 @@
 //! `params.run_id`, `params.attempt` (a full `autome_domain::attempt::Attempt`)
 //! and `params.permission_profile` (a full `AttemptPermissionProfile`); its
 //! read counterpart `attempt.get` parses `params.attempt_id`.
+//! `evidence.record` (§5.7) is the same shape again: writes an
+//! `evidence_receipts` row but appends no `Event`. Parses `params.receipt`
+//! (a full `autome_domain::evidence::EvidenceReceipt`); its read counterpart
+//! `evidence.get` parses `params.receipt_id`. `evidence.check` re-exercises
+//! `EvidenceReceipt::is_valid_against` against a caller-supplied *current*
+//! fingerprint (`params.receipt_id`, `params.fingerprint`) rather than
+//! trusting the caller's own staleness judgment.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
     AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord, ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DisposableCloneRecord,
-    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError, GraphAppendError,
-    ProjectAppendError, ProjectSummary, RecordAttemptError, TaskAppendError, TaskSummary,
+    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
+    GraphAppendError, ProjectAppendError, ProjectSummary, RecordAttemptError, RecordEvidenceError,
+    TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
+use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
@@ -113,6 +122,9 @@ pub enum DispatchError {
     /// write-granting profile), matched exhaustively below -- same
     /// reasoning as `CreateDisposableClone` above.
     RecordAttempt(RecordAttemptError),
+    /// §5.7 write path: `record_evidence`'s only failure mode (a duplicate
+    /// `receipt_id`, surfaced as a SQL primary-key violation).
+    RecordEvidence(RecordEvidenceError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -142,6 +154,12 @@ impl From<CreateDisposableCloneError> for DispatchError {
 impl From<RecordAttemptError> for DispatchError {
     fn from(value: RecordAttemptError) -> Self {
         DispatchError::RecordAttempt(value)
+    }
+}
+
+impl From<RecordEvidenceError> for DispatchError {
+    fn from(value: RecordEvidenceError) -> Self {
+        DispatchError::RecordEvidence(value)
     }
 }
 
@@ -472,6 +490,17 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.7: same shape again -- writes an `evidence_receipts` row (so it
+    // isn't a read) but appends no domain `Event` (a receipt is a fact
+    // fixed once by a verifier run, not an aggregate with a reducer).
+    if command.method == "evidence.record" {
+        let result = handle_record_evidence(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -656,6 +685,56 @@ fn parse_attempt_permission_profile_param(
     })
 }
 
+/// Handles `evidence.record`: `{ receipt: EvidenceReceipt }`. Same
+/// "write returns Value not Event" shape as `handle_record_attempt` --
+/// a recorded receipt is a fact fixed once by a verifier run, not a
+/// state-machine transition. Refuses to run while the store is in its
+/// diagnostic state, same as every other write.
+fn handle_record_evidence(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let receipt = parse_evidence_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_evidence(&receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(evidence_record_json(&record))
+}
+
+fn evidence_record_json(record: &EvidenceRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.receipt is not a valid EvidenceReceipt: {e}"))
+    })
+}
+
+fn parse_evidence_fingerprint_param(
+    command: &Command,
+) -> Result<EvidenceFingerprint, DispatchError> {
+    let value = command.params.get("fingerprint").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.fingerprint is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.fingerprint is not a valid EvidenceFingerprint: {e}"
+        ))
+    })
+}
+
 /// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
 /// variants (genuine I/O/internal failures) become `Internal`;
 /// `Transition(_)` variants (a reducer rejecting the event given the
@@ -756,6 +835,9 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordAttempt(RecordAttemptError::PlanningWrite(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::RecordEvidence(RecordEvidenceError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -777,6 +859,8 @@ fn try_dispatch_read(
         "queue.get" => Some(read_queue_get(store)),
         "workspace.get" => Some(read_workspace_get(store, command)),
         "attempt.get" => Some(read_attempt_get(store, command)),
+        "evidence.get" => Some(read_evidence_get(store, command)),
+        "evidence.check" => Some(read_evidence_check(store, command)),
         _ => None,
     }
 }
@@ -948,6 +1032,52 @@ fn read_attempt_get(
             format!("no attempt recorded with id {attempt_id}"),
         )),
     }
+}
+
+/// Read counterpart to `handle_record_evidence`. Takes `{ receipt_id }`;
+/// `NotFound` if no receipt has been recorded with that id yet.
+fn read_evidence_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_id =
+        parse_string_param(command, "receipt_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_evidence(&receipt_id).map_err(internal_error)? {
+        Some(record) => Ok(evidence_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no evidence receipt recorded with id {receipt_id}"),
+        )),
+    }
+}
+
+/// §5.7: `{ receipt_id, fingerprint }` -- re-exercises
+/// `EvidenceReceipt::is_valid_against` against the caller-supplied *current*
+/// fingerprint, rather than trusting the caller's own staleness judgment.
+/// `NotFound` if `receipt_id` was never recorded (there is nothing to check
+/// staleness of).
+fn read_evidence_check(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_id =
+        parse_string_param(command, "receipt_id").map_err(dispatch_error_to_reply_error)?;
+    let fingerprint =
+        parse_evidence_fingerprint_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .load_evidence(&receipt_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                format!("no evidence receipt recorded with id {receipt_id}"),
+            )
+        })?;
+    let valid = record.receipt.is_valid_against(&fingerprint);
+    Ok(serde_json::json!({
+        "receipt_id": receipt_id,
+        "valid": valid,
+    }))
 }
 
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
@@ -3046,6 +3176,182 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
             other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_evidence_receipt_json(receipt_id: &str) -> Value {
+        json!({
+            "receipt": {
+                "receipt_id": receipt_id,
+                "nonce": "nonce-1",
+                "run_id": "run-1",
+                "check_id": "C-001",
+                "fingerprint": {
+                    "contract_hash": "contract-1",
+                    "check_hash": "check-1",
+                    "project_rule_snapshot_hash": "rules-1",
+                    "candidate_tree_hash": "tree-1",
+                    "environment_class": "macos-15-arm64",
+                },
+                "verifier_version": "0.1.0",
+                "payload": {
+                    "Process": {
+                        "program": "cargo",
+                        "args": ["test"],
+                        "exit_code": 0,
+                        "assertions": [],
+                        "inventory_changes": [],
+                    },
+                },
+                "result": "Pass",
+            },
+        })
+    }
+
+    /// §5.7: `evidence.record` follows the same no-`Event`-produced shape as
+    /// `attempt.record` above, and its payload round-trips through the
+    /// `evidence.get` read command.
+    #[test]
+    fn handle_command_evidence_record_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command("evidence.record", well_formed_evidence_receipt_json("EV-1"));
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("evidence.record failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_id"], "EV-1");
+
+        let get_cmd = command("evidence.get", json!({ "receipt_id": "EV-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("evidence.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `evidence.get` for a `receipt_id` with no recorded receipt is
+    /// `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_evidence_get_is_not_found_when_no_receipt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("evidence.get", json!({ "receipt_id": "no-such-receipt" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.7: `evidence.check` reports `valid: true` when the caller-supplied
+    /// current fingerprint matches the recorded receipt's fingerprint
+    /// exactly.
+    #[test]
+    fn handle_command_evidence_check_reports_valid_for_a_matching_fingerprint() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command("evidence.record", well_formed_evidence_receipt_json("EV-1"));
+        handle_command(&mut store, &record_cmd);
+
+        let check_cmd = command(
+            "evidence.check",
+            json!({
+                "receipt_id": "EV-1",
+                "fingerprint": {
+                    "contract_hash": "contract-1",
+                    "check_hash": "check-1",
+                    "project_rule_snapshot_hash": "rules-1",
+                    "candidate_tree_hash": "tree-1",
+                    "environment_class": "macos-15-arm64",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["valid"], true),
+            ReplyOutcome::Error { code, message } => {
+                panic!("evidence.check failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.7: any single fingerprint field mismatch (here, a stale
+    /// `candidate_tree_hash`) must report `valid: false` -- matching four
+    /// out of five fields is not "close enough".
+    #[test]
+    fn handle_command_evidence_check_reports_invalid_for_a_mismatched_fingerprint() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command("evidence.record", well_formed_evidence_receipt_json("EV-1"));
+        handle_command(&mut store, &record_cmd);
+
+        let check_cmd = command(
+            "evidence.check",
+            json!({
+                "receipt_id": "EV-1",
+                "fingerprint": {
+                    "contract_hash": "contract-1",
+                    "check_hash": "check-1",
+                    "project_rule_snapshot_hash": "rules-1",
+                    "candidate_tree_hash": "tree-2",
+                    "environment_class": "macos-15-arm64",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["valid"], false),
+            ReplyOutcome::Error { code, message } => {
+                panic!("evidence.check failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `evidence.check` for a `receipt_id` with no recorded receipt is
+    /// `NotFound` -- there is nothing to check staleness of.
+    #[test]
+    fn handle_command_evidence_check_is_not_found_when_no_receipt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let check_cmd = command(
+            "evidence.check",
+            json!({
+                "receipt_id": "no-such-receipt",
+                "fingerprint": {
+                    "contract_hash": "contract-1",
+                    "check_hash": "check-1",
+                    "project_rule_snapshot_hash": "rules-1",
+                    "candidate_tree_hash": "tree-1",
+                    "environment_class": "macos-15-arm64",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
