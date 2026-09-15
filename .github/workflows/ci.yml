@@ -67,6 +67,30 @@ jobs:
         working-directory: apps/desktop
         run: npm test
 
+  # The package is built on every push, unsigned. A build step that only ever
+  # runs by hand breaks quietly and is discovered at release, which is the one
+  # time it must not.
+  package:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the app
+        run: sh scripts/package.sh
+      - name: The bundle carries a runnable core
+        run: |
+          app="apps/desktop/dist/mac-arm64/Autome.app"
+          test -x "$app/Contents/Resources/core/automed"
+          "$app/Contents/Resources/core/automed" --help < /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Autome-unsigned-dmg
+          path: apps/desktop/dist/*.dmg
+          retention-days: 7
+
   # A guard rather than a gate: the two allowlists in the desktop shell must
   # stay in step with the core's own read/write split. The desktop suite
   # already cross-checks the read side by parsing dispatch.rs; this job fails
