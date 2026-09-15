@@ -65,9 +65,9 @@ specified, what survives, and why the rest was dropped.
 ## Building
 
 ```sh
-cargo test                      # 168 domain + 271 automed + 15 end-to-end
+cargo test                      # 176 domain + 286 automed + 16 end-to-end
 cargo clippy --all-targets      # clean
-cd apps/desktop && npm test     # the shell and the renderer
+cd apps/desktop && npm test     # 87: the shell, the gates and the renderer
 ```
 
 The end-to-end suite drives a whole task from a one-line request to a merge
@@ -75,8 +75,32 @@ commit against a real Git repository, with a stand-in for the model. Nothing
 else is substituted: real worktrees, the real wrapper script, the real
 exit-marker protocol, a real rebase and a real merge.
 
+### Against the real CLIs
+
+A stand-in cannot catch a flag that does not exist, or one that means
+something other than what you assumed — and that is the class of bug that bit
+this project hardest. `tests/real_cli.rs` runs the real binaries:
+
+```sh
+# Free, no account: asks each CLI for its own --help and checks every flag
+# we pass appears in it.
+cargo test --test real_cli every_adapter_flag
+
+# Costs money, needs a logged-in account.
+AUTOMED_REAL_CLI=1 cargo test --test real_cli -- --nocapture
+
+# The whole loop, real models, to a real merge commit. ~40 minutes.
+AUTOMED_REAL_CLI=1 AUTOMED_REAL_LOOP=1 \
+  cargo test --test real_cli the_whole_loop -- --nocapture --test-threads=1
+```
+
 ## Status
 
-The loop runs end to end. Remaining before this is something to install:
-packaging and signing, the Onboarding wizard's in-app editing step, and a run
-against the real CLIs (technical design §16, gate T5).
+The loop runs end to end against the real CLIs. Verified 2026-09-16 with
+Claude Code 2.1.261 and Codex 0.153.4: a one-line request went through intake,
+design, review, adjudication, the approval stop, implementation and an
+independent audit, to a merge commit on `main` — six real sessions, the user
+pressing two buttons.
+
+Remaining before this is something to install: packaging and signing, and the
+Onboarding wizard's in-app editing step wired into the renderer.

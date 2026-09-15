@@ -44,6 +44,13 @@ jobs:
       - name: End to end
         run: cargo test --test end_to_end -- --nocapture
 
+      # T5, the free half: ask each installed CLI for its own --help and check
+      # every flag the adapter table passes appears in it. Costs nothing and
+      # needs no account, and would have caught the `-p` bug that made every
+      # session hang. Skips whichever CLI the runner does not have.
+      - name: Adapter flags exist
+        run: cargo test --test real_cli every_adapter_flag -- --nocapture
+
   desktop:
     runs-on: macos-14
     steps:
