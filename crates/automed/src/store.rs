@@ -20,6 +20,10 @@ use autome_domain::certificate::{
     CompletionCertificateError,
 };
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
+use autome_domain::credential::{
+    self, CredentialEvent, CredentialReceipt, CredentialReceiptError, CredentialRecord,
+    CredentialShapeError,
+};
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveryChain, DeliveryChainError, DeliveredTreeCheckReceipt,
     DeliveryReceipt, DeliveryRehearsalReceipt, DeliverySubject, ProjectTargetTransitionReceipt,
@@ -522,6 +526,54 @@ impl From<rusqlite::Error> for BindPlaybookError {
     }
 }
 
+/// A persisted §8.3 `CredentialRecord` plus the caller-chosen `credential_ref`
+/// it is stored under. `CredentialRecord` has no id field of its own
+/// (mirrors `Attempt`/`FrozenPlaybook`'s reasoning), so `credential_ref` is
+/// an explicit column here, not pulled out of `record_json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialRecordRow {
+    pub credential_ref: String,
+    pub record: CredentialRecord,
+    pub created_at: String,
+}
+
+/// `record_credential`'s failure modes. Unlike `AttemptRecord`/
+/// `FrozenPlaybookRecord`, `record_credential` deliberately *upserts*
+/// rather than refusing a duplicate `credential_ref`: `CredentialRecord`
+/// is §8.3's record of a credential's *current* state, and rotation/
+/// revocation are supposed to update the same record in place, not start
+/// a new one -- so there is no `AlreadyRecorded`-style variant here, only
+/// `Shape` (re-running `CredentialRecord::validate_shape()` before writing
+/// anything, same discipline as `RecordAttemptError::Shape`).
+#[derive(Debug)]
+pub enum RecordCredentialError {
+    Sql(rusqlite::Error),
+    Shape(Vec<CredentialShapeError>),
+}
+
+impl From<rusqlite::Error> for RecordCredentialError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordCredentialError::Sql(value)
+    }
+}
+
+/// `record_credential_receipt`'s failure modes. Re-runs
+/// `credential::issue_credential_receipt` server-side rather than
+/// accepting an already-built `CredentialReceipt` from the caller, same
+/// "don't trust the caller already validated" discipline as
+/// `record_attempt`.
+#[derive(Debug)]
+pub enum RecordCredentialReceiptError {
+    Sql(rusqlite::Error),
+    Receipt(CredentialReceiptError),
+}
+
+impl From<rusqlite::Error> for RecordCredentialReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordCredentialReceiptError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -690,6 +742,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v10,
     migrate_v11,
     migrate_v12,
+    migrate_v13,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -994,6 +1047,37 @@ fn migrate_v12(conn: &Connection) -> rusqlite::Result<()> {
             revision INTEGER NOT NULL,
             status_json TEXT NOT NULL
         );
+        ",
+    )
+}
+
+/// `credentials`/`credential_receipts` (plan §8.3). `credentials` is keyed
+/// by the caller-chosen `credential_ref` and holds the *current*
+/// `CredentialRecord` snapshot -- `record_credential` upserts this row
+/// rather than refusing a duplicate key, since rotation/revocation are
+/// supposed to update the one record in place (see
+/// `RecordCredentialError`'s doc comment). `credential_receipts` is a
+/// genuine append-only log (§8.3: "创建、替换、撤销...都生成
+/// CredentialReceipt"), so it is *not* keyed by `credential_ref` -- an
+/// autoincrement `id` orders the log, mirroring how `events` uses `seq`
+/// for the same reason, and `credential_ref` is only an index here, not a
+/// primary key.
+fn migrate_v13(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS credentials (
+            credential_ref TEXT PRIMARY KEY,
+            record_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS credential_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            credential_ref TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_credential_receipts_credential_ref
+            ON credential_receipts(credential_ref);
         ",
     )
 }
@@ -2396,6 +2480,111 @@ impl EventStore {
         }))
     }
 
+    /// §8.3's write path for the *current-state* `credentials` row.
+    /// Deliberately upserts (`INSERT OR REPLACE`) rather than refusing a
+    /// duplicate `credential_ref`, unlike every fact-record write above --
+    /// see `RecordCredentialError`'s doc comment for why.
+    pub fn record_credential(
+        &mut self,
+        credential_ref: &str,
+        record: &CredentialRecord,
+    ) -> Result<CredentialRecordRow, RecordCredentialError> {
+        let shape_errors = record.validate_shape();
+        if !shape_errors.is_empty() {
+            return Err(RecordCredentialError::Shape(shape_errors));
+        }
+
+        let record_json = serde_json::to_string(record).expect("CredentialRecord is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO credentials (credential_ref, record_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![credential_ref, record_json, created_at],
+        )?;
+
+        Ok(CredentialRecordRow {
+            credential_ref: credential_ref.to_string(),
+            record: record.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_credential` -- the current snapshot for
+    /// `credential_ref`, if one has ever been recorded.
+    pub fn load_credential(
+        &self,
+        credential_ref: &str,
+    ) -> rusqlite::Result<Option<CredentialRecordRow>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT record_json, created_at FROM credentials WHERE credential_ref = ?1",
+                rusqlite::params![credential_ref],
+                |row| {
+                    let record_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((record_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(record_json, created_at)| {
+            let record: CredentialRecord =
+                serde_json::from_str(&record_json).expect("credentials.record_json round-trips");
+            CredentialRecordRow {
+                credential_ref: credential_ref.to_string(),
+                record,
+                created_at,
+            }
+        }))
+    }
+
+    /// §8.3's write path for the append-only `credential_receipts` log.
+    /// Re-runs `credential::issue_credential_receipt` server-side rather
+    /// than trusting an already-built `CredentialReceipt` from the caller,
+    /// same discipline as `record_attempt` re-validating shape/profile.
+    pub fn record_credential_receipt(
+        &mut self,
+        credential_ref: &str,
+        event: CredentialEvent,
+        occurred_at: &str,
+        operator: Option<&str>,
+    ) -> Result<CredentialReceipt, RecordCredentialReceiptError> {
+        let receipt = credential::issue_credential_receipt(credential_ref, event, occurred_at, operator)
+            .map_err(RecordCredentialReceiptError::Receipt)?;
+
+        let receipt_json = serde_json::to_string(&receipt).expect("CredentialReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO credential_receipts (credential_ref, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![credential_ref, receipt_json, created_at],
+        )?;
+
+        Ok(receipt)
+    }
+
+    /// Read counterpart to `record_credential_receipt` -- every receipt
+    /// ever issued for `credential_ref`, in append order.
+    pub fn list_credential_receipts(
+        &self,
+        credential_ref: &str,
+    ) -> rusqlite::Result<Vec<CredentialReceipt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT receipt_json FROM credential_receipts WHERE credential_ref = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![credential_ref], |row| {
+            let receipt_json: String = row.get(0)?;
+            Ok(receipt_json)
+        })?;
+        rows.map(|r| {
+            r.map(|receipt_json| {
+                serde_json::from_str(&receipt_json)
+                    .expect("credential_receipts.receipt_json round-trips")
+            })
+        })
+        .collect()
+    }
+
     /// §5.7's write path: records an `EvidenceReceipt` produced by a
     /// verifier run. Like `record_attempt`, this is a fact recorded once,
     /// not a journaled event -- staleness is a query-time property
@@ -3674,6 +3863,153 @@ mod tests {
             "{err:?}"
         );
         assert!(store.load_attempt("attempt-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_active_keychain_credential() -> CredentialRecord {
+        CredentialRecord {
+            provider: "anthropic".into(),
+            auth_mode: autome_domain::credential::AuthMode::ApiKey,
+            storage_kind: autome_domain::credential::StorageKind::AutomeManagedKeychainItem,
+            storage_location: autome_domain::credential::StorageLocation::Keychain(
+                autome_domain::credential::KeychainItemIdentity {
+                    service: "com.autome.credentials".into(),
+                    account: "anthropic-default".into(),
+                },
+            ),
+            created_at: "2026-09-14T00:00:00Z".into(),
+            rotated_at: None,
+            revoked_at: None,
+            status: autome_domain::credential::CredentialStatus::Active,
+        }
+    }
+
+    /// A well-formed `record_credential` call lands one `credentials` row,
+    /// readable back via `load_credential`.
+    #[test]
+    fn record_credential_records_a_well_formed_record_and_reads_it_back() {
+        let root = temp_data_root("record-credential");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let record = fixture_active_keychain_credential();
+
+        assert!(store.load_credential("cred-1").unwrap().is_none());
+
+        let row = store.record_credential("cred-1", &record).unwrap();
+        assert_eq!(row.credential_ref, "cred-1");
+        assert_eq!(row.record, record);
+
+        let loaded = store.load_credential("cred-1").unwrap().unwrap();
+        assert_eq!(loaded, row);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Unlike `record_attempt`, a second `record_credential` call reusing
+    /// the same `credential_ref` must *overwrite* the snapshot in place
+    /// (rotation/revocation update the one record), not be refused.
+    #[test]
+    fn record_credential_upserts_rather_than_refusing_a_reused_credential_ref() {
+        let root = temp_data_root("record-credential-upsert");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let record = fixture_active_keychain_credential();
+        store.record_credential("cred-1", &record).unwrap();
+
+        let mut rotated = record.clone();
+        rotated.status = autome_domain::credential::CredentialStatus::Rotated;
+        rotated.rotated_at = Some("2026-09-14T02:00:00Z".into());
+        store.record_credential("cred-1", &rotated).unwrap();
+
+        let loaded = store.load_credential("cred-1").unwrap().unwrap();
+        assert_eq!(loaded.record, rotated);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: a `Revoked` status without `revoked_at` must be refused
+    /// before anything is written, mirroring `CredentialRecord::validate_shape`.
+    #[test]
+    fn record_credential_refuses_a_shape_invalid_record() {
+        let root = temp_data_root("record-credential-shape");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let mut record = fixture_active_keychain_credential();
+        record.status = autome_domain::credential::CredentialStatus::Revoked;
+
+        let err = store.record_credential("cred-1", &record).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RecordCredentialError::Shape(ref errors)
+                    if errors == &vec![autome_domain::credential::CredentialShapeError::RevokedStatusRequiresRevokedAt]
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_credential("cred-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: `record_credential_receipt` re-validates server-side --
+    /// an `UninstallRetentionDecision` without an operator must be refused
+    /// and nothing appended to the log.
+    #[test]
+    fn record_credential_receipt_refuses_an_uninstall_decision_without_an_operator() {
+        let root = temp_data_root("record-credential-receipt-no-operator");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = store
+            .record_credential_receipt(
+                "cred-1",
+                CredentialEvent::UninstallRetentionDecision { retained: true },
+                "2026-09-14T00:00:00Z",
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, RecordCredentialReceiptError::Receipt(_)), "{err:?}");
+        assert!(store.list_credential_receipts("cred-1").unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: the receipt log is genuinely append-only -- multiple receipts
+    /// for the same `credential_ref` all persist, in insertion order,
+    /// unlike every reject-duplicate fact-record store above.
+    #[test]
+    fn record_credential_receipt_appends_every_receipt_in_order() {
+        let root = temp_data_root("record-credential-receipt-append");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        store
+            .record_credential_receipt("cred-1", CredentialEvent::Created, "2026-09-14T00:00:00Z", None)
+            .unwrap();
+        store
+            .record_credential_receipt("cred-1", CredentialEvent::Rotated, "2026-09-14T01:00:00Z", None)
+            .unwrap();
+        store
+            .record_credential_receipt(
+                "cred-1",
+                CredentialEvent::UninstallRetentionDecision { retained: false },
+                "2026-09-14T02:00:00Z",
+                Some("user-1"),
+            )
+            .unwrap();
+
+        let receipts = store.list_credential_receipts("cred-1").unwrap();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts[0].event, CredentialEvent::Created);
+        assert_eq!(receipts[1].event, CredentialEvent::Rotated);
+        assert_eq!(
+            receipts[2].event,
+            CredentialEvent::UninstallRetentionDecision { retained: false }
+        );
+        assert_eq!(receipts[2].operator, Some("user-1".to_string()));
+
+        assert!(store.list_credential_receipts("cred-unknown").unwrap().is_empty());
 
         std::fs::remove_dir_all(&root).ok();
     }

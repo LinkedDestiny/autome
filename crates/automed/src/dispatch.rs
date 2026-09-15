@@ -97,7 +97,8 @@ use crate::store::{
     EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
     FrozenPlaybookRecord, GraphAppendError, IssueCandidateCertificateError,
     IssueCompletionCertificateError, NodeAppendError, ProjectAppendError, ProjectSummary,
-    ReadinessRecord, RecordAttemptError, RecordEvidenceError, RecordReadinessError,
+    CredentialRecordRow, ReadinessRecord, RecordAttemptError, RecordCredentialError,
+    RecordCredentialReceiptError, RecordEvidenceError, RecordReadinessError,
     StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
@@ -112,6 +113,7 @@ use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
     DeliverySubject, ProjectTargetTransitionReceipt,
 };
+use autome_domain::credential::{CredentialEvent, CredentialReceipt, CredentialRecord};
 use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
 use autome_domain::historical_red_light::{self, HistoricalRedLightAssessment};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
@@ -203,6 +205,17 @@ pub enum DispatchError {
     /// `run_id`, surfaced as a SQL primary-key violation -- a Run binds
     /// exactly one playbook for its whole lifetime).
     BindPlaybook(BindPlaybookError),
+    /// §8.3 write path: `record_credential`'s only failure mode -- a shape
+    /// mismatch caught by `CredentialRecord::validate_shape` before
+    /// anything is written. Unlike `RecordAttempt`/`RecordEvidence` etc.,
+    /// there is no duplicate-key failure mode here: `record_credential`
+    /// deliberately upserts.
+    RecordCredential(RecordCredentialError),
+    /// §8.3 write path: `record_credential_receipt`'s only failure mode --
+    /// `credential::issue_credential_receipt`'s own
+    /// `UninstallRetentionDecisionRequiresOperator` check, re-run
+    /// server-side rather than trusting the caller.
+    RecordCredentialReceipt(RecordCredentialReceiptError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -238,6 +251,18 @@ impl From<RecordAttemptError> for DispatchError {
 impl From<BindPlaybookError> for DispatchError {
     fn from(value: BindPlaybookError) -> Self {
         DispatchError::BindPlaybook(value)
+    }
+}
+
+impl From<RecordCredentialError> for DispatchError {
+    fn from(value: RecordCredentialError) -> Self {
+        DispatchError::RecordCredential(value)
+    }
+}
+
+impl From<RecordCredentialReceiptError> for DispatchError {
+    fn from(value: RecordCredentialReceiptError) -> Self {
+        DispatchError::RecordCredentialReceipt(value)
     }
 }
 
@@ -715,6 +740,24 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §8.3: same shape again -- `credential.record` upserts a
+    // `credentials` row and `credential.issue_receipt` appends a
+    // `credential_receipts` row, neither appends a domain `Event`.
+    if command.method == "credential.record" {
+        let result = handle_record_credential(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "credential.issue_receipt" {
+        let result = handle_record_credential_receipt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -963,6 +1006,102 @@ fn parse_frozen_playbook_param(command: &Command) -> Result<FrozenPlaybook, Disp
         .ok_or_else(|| DispatchError::InvalidParams("params.playbook is required".to_string()))?;
     serde_json::from_value(value).map_err(|e| {
         DispatchError::InvalidParams(format!("params.playbook is not a valid FrozenPlaybook: {e}"))
+    })
+}
+
+/// §8.3: the sole caller of `EventStore::record_credential`. Takes
+/// `{ credential_ref, record }` -- `record` is a full JSON object matching
+/// `autome_domain::credential::CredentialRecord`. Unlike every other write
+/// handler above, a second call with the same `credential_ref` succeeds
+/// and overwrites the snapshot -- see `RecordCredentialError`'s doc
+/// comment. Refuses to run while the store is in its diagnostic state,
+/// same as every other write.
+fn handle_record_credential(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let credential_ref =
+        parse_string_param(command, "credential_ref").map_err(dispatch_error_to_reply_error)?;
+    let record = parse_credential_record_param(command).map_err(dispatch_error_to_reply_error)?;
+    let row = store
+        .record_credential(&credential_ref, &record)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(credential_record_row_json(&row))
+}
+
+fn credential_record_row_json(row: &CredentialRecordRow) -> Value {
+    serde_json::json!({
+        "credential_ref": row.credential_ref,
+        "record": row.record,
+        "created_at": row.created_at,
+    })
+}
+
+fn parse_credential_record_param(command: &Command) -> Result<CredentialRecord, DispatchError> {
+    let value = command
+        .params
+        .get("record")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.record is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.record is not a valid CredentialRecord: {e}"))
+    })
+}
+
+/// §8.3: the sole caller of `EventStore::record_credential_receipt`. Takes
+/// `{ credential_ref, event, occurred_at, operator? }` -- `event` is a full
+/// JSON object matching `autome_domain::credential::CredentialEvent`.
+/// Re-validates server-side via `credential::issue_credential_receipt`
+/// rather than trusting an already-built receipt from the caller, same
+/// discipline as `handle_record_attempt` re-validating shape/profile.
+/// Refuses to run while the store is in its diagnostic state, same as
+/// every other write.
+fn handle_record_credential_receipt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let credential_ref =
+        parse_string_param(command, "credential_ref").map_err(dispatch_error_to_reply_error)?;
+    let event = parse_credential_event_param(command).map_err(dispatch_error_to_reply_error)?;
+    let occurred_at =
+        parse_string_param(command, "occurred_at").map_err(dispatch_error_to_reply_error)?;
+    let operator = match command.params.get("operator") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_str().map(|s| s.to_string()).ok_or_else(|| {
+            dispatch_error_to_reply_error(DispatchError::InvalidParams(
+                "params.operator must be a string".to_string(),
+            ))
+        })?),
+    };
+    let receipt = store
+        .record_credential_receipt(&credential_ref, event, &occurred_at, operator.as_deref())
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(credential_receipt_json(&receipt))
+}
+
+fn credential_receipt_json(receipt: &CredentialReceipt) -> Value {
+    serde_json::json!({
+        "credential_ref": receipt.credential_ref,
+        "event": receipt.event,
+        "occurred_at": receipt.occurred_at,
+        "operator": receipt.operator,
+    })
+}
+
+fn parse_credential_event_param(command: &Command) -> Result<CredentialEvent, DispatchError> {
+    let value = command
+        .params
+        .get("event")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.event is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.event is not a valid CredentialEvent: {e}"))
     })
 }
 
@@ -1529,6 +1668,18 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::BindPlaybook(BindPlaybookError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::RecordCredential(RecordCredentialError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordCredential(RecordCredentialError::Shape(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::RecordCredentialReceipt(RecordCredentialReceiptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordCredentialReceipt(RecordCredentialReceiptError::Receipt(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -1627,6 +1778,8 @@ fn try_dispatch_read(
         "historical_red_light.evaluate" => {
             Some(read_historical_red_light_evaluate(command))
         }
+        "credential.get" => Some(read_credential_get(store, command)),
+        "credential.list_receipts" => Some(read_credential_list_receipts(store, command)),
         _ => None,
     }
 }
@@ -2146,6 +2299,49 @@ fn parse_historical_red_light_assessment_param(
             "params.assessment is not a valid HistoricalRedLightAssessment: {e}"
         ))
     })
+}
+
+/// Read counterpart to `handle_record_credential`. Takes
+/// `{ credential_ref }`; `NotFound` if no credential has ever been
+/// recorded with that ref.
+fn read_credential_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let credential_ref =
+        parse_string_param(command, "credential_ref").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_credential(&credential_ref)
+        .map_err(internal_error)?
+    {
+        Some(row) => Ok(credential_record_row_json(&row)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no credential recorded with ref {credential_ref}"),
+        )),
+    }
+}
+
+/// Read counterpart to `handle_record_credential_receipt`. Takes
+/// `{ credential_ref }`; an empty list (never `NotFound`) if no receipt
+/// has ever been issued for that ref, same "list of records per key"
+/// convention as `task.list`.
+fn read_credential_list_receipts(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let credential_ref =
+        parse_string_param(command, "credential_ref").map_err(dispatch_error_to_reply_error)?;
+    let receipts = store
+        .list_credential_receipts(&credential_ref)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({
+        "credential_ref": credential_ref,
+        "receipts": receipts
+            .iter()
+            .map(credential_receipt_json)
+            .collect::<Vec<_>>(),
+    }))
 }
 
 /// Read counterpart to `handle_bind_playbook`. Takes `{ run_id }`;
@@ -5955,6 +6151,286 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
             other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_credential_record_json() -> Value {
+        json!({
+            "provider": "anthropic",
+            "auth_mode": "ApiKey",
+            "storage_kind": "AutomeManagedKeychainItem",
+            "storage_location": {
+                "Keychain": {
+                    "service": "com.autome.credentials",
+                    "account": "anthropic-default",
+                },
+            },
+            "created_at": "2026-09-14T00:00:00Z",
+            "rotated_at": null,
+            "revoked_at": null,
+            "status": "Active",
+        })
+    }
+
+    /// §8.3: `credential.record` follows the same no-`Event`-produced shape
+    /// as `attempt.record`, and its payload round-trips through the
+    /// `credential.get` read command.
+    #[test]
+    fn handle_command_credential_record_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "credential.record",
+            json!({
+                "credential_ref": "cred-1",
+                "record": well_formed_credential_record_json(),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.record failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["credential_ref"], "cred-1");
+        assert_eq!(payload["record"]["provider"], "anthropic");
+
+        let get_cmd = command("credential.get", json!({ "credential_ref": "cred-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Unlike `attempt.record`, a second `credential.record` call reusing
+    /// the same `credential_ref` must succeed and overwrite the snapshot
+    /// (rotation updates the one record in place), and `credential.get`
+    /// must reflect the update.
+    #[test]
+    fn handle_command_credential_record_upserts_on_a_reused_credential_ref() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "credential.record",
+            json!({
+                "credential_ref": "cred-1",
+                "record": well_formed_credential_record_json(),
+            }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let mut rotated_record = well_formed_credential_record_json();
+        rotated_record["status"] = json!("Rotated");
+        rotated_record["rotated_at"] = json!("2026-09-14T02:00:00Z");
+        let rotate_cmd = command(
+            "credential.record",
+            json!({
+                "credential_ref": "cred-1",
+                "record": rotated_record,
+            }),
+        );
+        let outcome = handle_command(&mut store, &rotate_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { .. } => {}
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.record (rotate) failed: {code:?} {message}")
+            }
+        }
+
+        let get_cmd = command("credential.get", json!({ "credential_ref": "cred-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["record"]["status"], "Rotated"),
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: a `Revoked` status without `revoked_at` must be rejected as
+    /// `TransitionRejected`, not written.
+    #[test]
+    fn handle_command_credential_record_rejects_a_shape_invalid_record() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut record = well_formed_credential_record_json();
+        record["status"] = json!("Revoked");
+        let record_cmd = command(
+            "credential.record",
+            json!({ "credential_ref": "cred-1", "record": record }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command("credential.get", json!({ "credential_ref": "cred-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `credential.get` for a `credential_ref` with no recorded credential
+    /// is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_credential_get_is_not_found_when_no_credential_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("credential.get", json!({ "credential_ref": "no-such-cred" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: `credential.issue_receipt` appends to the log and
+    /// `credential.list_receipts` reads every receipt back in insertion
+    /// order -- the first module where a repeat write is expected to
+    /// succeed and accumulate, rather than being refused.
+    #[test]
+    fn handle_command_credential_issue_receipt_appends_and_lists_in_order() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let created_cmd = command(
+            "credential.issue_receipt",
+            json!({
+                "credential_ref": "cred-1",
+                "event": "Created",
+                "occurred_at": "2026-09-14T00:00:00Z",
+            }),
+        );
+        let outcome = handle_command(&mut store, &created_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { .. } => {}
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.issue_receipt failed: {code:?} {message}")
+            }
+        }
+
+        let rotated_cmd = command(
+            "credential.issue_receipt",
+            json!({
+                "credential_ref": "cred-1",
+                "event": "Rotated",
+                "occurred_at": "2026-09-14T01:00:00Z",
+            }),
+        );
+        handle_command(&mut store, &rotated_cmd);
+
+        let uninstall_cmd = command(
+            "credential.issue_receipt",
+            json!({
+                "credential_ref": "cred-1",
+                "event": { "UninstallRetentionDecision": { "retained": false } },
+                "occurred_at": "2026-09-14T02:00:00Z",
+                "operator": "user-1",
+            }),
+        );
+        handle_command(&mut store, &uninstall_cmd);
+
+        let list_cmd = command("credential.list_receipts", json!({ "credential_ref": "cred-1" }));
+        let list_outcome = handle_command(&mut store, &list_cmd);
+        match list_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                let receipts = payload["receipts"].as_array().unwrap();
+                assert_eq!(receipts.len(), 3);
+                assert_eq!(receipts[0]["event"], "Created");
+                assert_eq!(receipts[1]["event"], "Rotated");
+                assert_eq!(
+                    receipts[2]["event"],
+                    json!({ "UninstallRetentionDecision": { "retained": false } })
+                );
+                assert_eq!(receipts[2]["operator"], "user-1");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.list_receipts failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.3: `credential.issue_receipt` re-validates server-side -- an
+    /// `UninstallRetentionDecision` without an operator must be rejected
+    /// as `TransitionRejected` and nothing appended to the log.
+    #[test]
+    fn handle_command_credential_issue_receipt_rejects_an_uninstall_decision_without_an_operator() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "credential.issue_receipt",
+            json!({
+                "credential_ref": "cred-1",
+                "event": { "UninstallRetentionDecision": { "retained": true } },
+                "occurred_at": "2026-09-14T00:00:00Z",
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let list_cmd = command("credential.list_receipts", json!({ "credential_ref": "cred-1" }));
+        let list_outcome = handle_command(&mut store, &list_cmd);
+        match list_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert!(payload["receipts"].as_array().unwrap().is_empty())
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.list_receipts failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `credential.list_receipts` for an unknown `credential_ref` is an
+    /// empty list, never `NotFound` -- same "list of records" convention
+    /// as `task.list`.
+    #[test]
+    fn handle_command_credential_list_receipts_is_empty_for_an_unknown_credential_ref() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let list_cmd = command(
+            "credential.list_receipts",
+            json!({ "credential_ref": "no-such-cred" }),
+        );
+        let outcome = handle_command(&mut store, &list_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert!(payload["receipts"].as_array().unwrap().is_empty())
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("credential.list_receipts failed: {code:?} {message}")
+            }
         }
 
         std::fs::remove_dir_all(&root).ok();
