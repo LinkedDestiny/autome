@@ -99,6 +99,9 @@ use crate::store::{
     RecordReadinessError, StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
+use autome_domain::capability_broker::{
+    self, BrokerActionError, BrokerActionOrigin, UserInitiatedOnlyActionKind,
+};
 use autome_domain::certificate::AuditVerdict;
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
@@ -954,6 +957,36 @@ fn parse_readiness_fingerprint_param(
     })
 }
 
+fn parse_broker_action_kind_param(
+    command: &Command,
+) -> Result<UserInitiatedOnlyActionKind, DispatchError> {
+    let value = command
+        .params
+        .get("action")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.action is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.action is not a valid UserInitiatedOnlyActionKind: {e}"
+        ))
+    })
+}
+
+fn parse_broker_action_origin_param(
+    command: &Command,
+) -> Result<BrokerActionOrigin, DispatchError> {
+    let value = command
+        .params
+        .get("origin")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.origin is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.origin is not a valid BrokerActionOrigin: {e}"
+        ))
+    })
+}
+
 /// Handles `certificate.issue_candidate`: `{ run_id, contract_version,
 /// candidate_commit, candidate_tree_hash, must_requirement_ids, verdicts,
 /// valid_receipt_ids, readiness_receipt_digest, fingerprint }`. Composes
@@ -1477,6 +1510,9 @@ fn try_dispatch_read(
         "delivery.check_completion" => Some(read_delivery_check_completion(store, command)),
         "certificate.get_candidate" => Some(read_certificate_get_candidate(store, command)),
         "certificate.get_completion" => Some(read_certificate_get_completion(store, command)),
+        "capability_broker.validate_action_origin" => {
+            Some(read_capability_broker_validate_action_origin(command))
+        }
         _ => None,
     }
 }
@@ -1831,6 +1867,35 @@ fn read_certificate_get_completion(
             ReplyErrorCode::NotFound,
             format!("no completion certificate issued for run {run_id}"),
         )),
+    }
+}
+
+/// §8.2: `{ action, origin }` -- stateless gate. Unlike every other read in
+/// this file, this one touches no store at all: `capability_broker.rs`
+/// records no facts, it just answers "is this origin allowed to cause this
+/// action kind." Returns `{ allowed: bool, action, reason }` rather than
+/// erroring on a negative result, matching the `evidence.check` /
+/// `readiness.check` / `delivery.check_completion` "check" convention.
+fn read_capability_broker_validate_action_origin(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let action =
+        parse_broker_action_kind_param(command).map_err(dispatch_error_to_reply_error)?;
+    let origin =
+        parse_broker_action_origin_param(command).map_err(dispatch_error_to_reply_error)?;
+    match capability_broker::validate_broker_action_origin(action, origin) {
+        Ok(()) => Ok(serde_json::json!({
+            "allowed": true,
+            "action": action,
+            "reason": Value::Null,
+        })),
+        Err(BrokerActionError::RequiresUserInitiationNotAgentProposal(action)) => {
+            Ok(serde_json::json!({
+                "allowed": false,
+                "action": action,
+                "reason": "RequiresUserInitiationNotAgentProposal",
+            }))
+        }
     }
 }
 
@@ -4966,6 +5031,100 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
             other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    const ALL_USER_INITIATED_ONLY_ACTION_KINDS: [&str; 5] = [
+        "ProjectInitialization",
+        "ConfigApplication",
+        "EnvironmentTransaction",
+        "SkillTransaction",
+        "Delivery",
+    ];
+
+    #[test]
+    fn handle_command_capability_broker_rejects_every_user_initiated_only_action_from_an_agent_proposal_origin(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        for action in ALL_USER_INITIATED_ONLY_ACTION_KINDS {
+            let cmd = command(
+                "capability_broker.validate_action_origin",
+                json!({ "action": action, "origin": "AgentProposal" }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            let payload = match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => payload,
+                ReplyOutcome::Error { code, message } => {
+                    panic!("capability_broker.validate_action_origin failed for {action}: {code:?} {message}")
+                }
+            };
+            assert_eq!(payload["allowed"], false, "action = {action}");
+            assert_eq!(
+                payload["reason"], "RequiresUserInitiationNotAgentProposal",
+                "action = {action}"
+            );
+            assert_eq!(payload["action"], action);
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_capability_broker_accepts_every_user_initiated_only_action_from_a_user_initiated_origin(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        for action in ALL_USER_INITIATED_ONLY_ACTION_KINDS {
+            let cmd = command(
+                "capability_broker.validate_action_origin",
+                json!({ "action": action, "origin": "UserInitiatedFromUi" }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            let payload = match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => payload,
+                ReplyOutcome::Error { code, message } => {
+                    panic!("capability_broker.validate_action_origin failed for {action}: {code:?} {message}")
+                }
+            };
+            assert_eq!(payload["allowed"], true, "action = {action}");
+            assert_eq!(payload["reason"], Value::Null, "action = {action}");
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_capability_broker_validate_action_origin_is_invalid_params_without_action() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "capability_broker.validate_action_origin",
+            json!({ "origin": "UserInitiatedFromUi" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_capability_broker_validate_action_origin_is_invalid_params_without_origin() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "capability_broker.validate_action_origin",
+            json!({ "action": "Delivery" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
