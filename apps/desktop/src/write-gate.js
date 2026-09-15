@@ -1,33 +1,67 @@
 'use strict';
 
-// Pure validation for the `autome:write` IPC channel — plan §8.2's
-// two-phase target-registration write path. Deliberately independent from
-// src/ipc-gate.js: a separate allowlist, never merged with or relaxed by
-// the read gate's own list. `isTrustedSenderUrl` is the one thing genuinely
-// shared with ipc-gate.js (identifying the packaged renderer origin isn't a
-// method-surface decision, so main.js imports it straight from ipc-gate.js
-// for both channels rather than this module re-exporting a duplicate).
+// Pure validation for the `autome:write` IPC channel. Deliberately
+// independent from src/ipc-gate.js: a separate allowlist that is never merged
+// with, or relaxed by, the read gate's. `isTrustedSenderUrl` is the one thing
+// genuinely shared — identifying the packaged renderer origin is not a
+// method-surface decision — so main.js imports it from ipc-gate.js for both
+// channels rather than this module re-exporting a duplicate.
+//
+// Two rules shape the list below:
+//
+// 1. **The renderer never sends a filesystem path.** `project.pick` is the
+//    only way a directory enters the system, and Main owns the dialog: the
+//    renderer asks for a picker and gets back whatever Main chose. A renderer
+//    that could name a path could name `~/.ssh`.
+// 2. **Free text is allowed only where the product needs it**, and then it is
+//    bounded. A task request and a rejection reason are prose the user typed;
+//    everything else is an identifier from a list the renderer was given.
 
-// Renderer-facing op names over the `autome:write` channel. Neither
-// `project.register_target` (Core's method, Main-only — it takes a raw
-// filesystem path) nor `project.create` (the old raw-locator primitive)
-// is ever reachable from here; see write-gate.test.js's negative tests.
-const ALLOWED_WRITE_OPS = Object.freeze(['project.pick_target', 'project.create_from_target']);
+// Renderer-facing op names. `project.add` is deliberately absent — it takes a
+// path, and only Main may supply one (see `project.pick` below).
+const ALLOWED_WRITE_OPS = Object.freeze([
+  'project.pick',
+  'project.remove',
+  'project.onboarding.advance',
+  'project.onboarding.skip',
+  'task.create',
+  'task.approve',
+  'task.reject',
+  'task.merge',
+  'task.pause',
+  'task.resume',
+  'task.stop',
+  'task.cancel',
+  'task.decide',
+  'task.extend_budget',
+  'task.rerun_from',
+  'task.archive',
+  'task.restore',
+  'config.set_role',
+  'config.reset_role',
+  'config.set_loop',
+  'env.detect',
+  'env.install',
+  'env.login',
+  'scheduler.tick',
+  'open.path',
+  'open.terminal',
+]);
 
-// snake_case at this layer; main.js translates to Core's PascalCase
-// `ProjectKind` variant strings ("NewProduct" / "ExistingRepository") only
-// when it forwards to `project.register_target`.
-const ALLOWED_PROJECT_KINDS = Object.freeze(['new_product', 'existing_repository']);
+// Ops whose params may contain prose the user typed, and the cap on it. A
+// one-line request and a rejection reason are the only two.
+const PROSE_FIELDS = Object.freeze({
+  'task.create': ['request'],
+  'task.reject': ['feedback'],
+  'task.decide': ['ruling'],
+});
+const MAX_PROSE_LENGTH = 8000;
 
-// Generous but finite, matching ipc-gate.js's read-side limit — a write
-// request here is a handful of short strings and a boolean, never a
-// document.
-const MAX_PAYLOAD_JSON_LENGTH = 4096;
+// Everything else is identifiers and small numbers.
+const MAX_PAYLOAD_JSON_LENGTH = 32 * 1024;
 
-// §8.2/§8.3: `display_name` and `destination_name` are scalars that
-// eventually get written to disk (a project's display name; a new
-// directory's name) — they must never carry a path, URL, or shell shape,
-// regardless of what Core's own validation would separately catch.
+// A value that eventually reaches the filesystem or a shell must never carry a
+// path or a null byte, whatever the core would separately catch.
 function looksLikeAPath(value) {
   return (
     value.includes('/') ||
@@ -42,7 +76,7 @@ function isAllowedOp(op) {
   return ALLOWED_WRITE_OPS.includes(op);
 }
 
-function validateScalarParams(params) {
+function validateShape(op, params) {
   if (params === null || typeof params !== 'object' || Array.isArray(params)) {
     return { ok: false, message: 'params must be a JSON object' };
   }
@@ -55,22 +89,83 @@ function validateScalarParams(params) {
   if (serialized.length > MAX_PAYLOAD_JSON_LENGTH) {
     return { ok: false, message: `params exceed the ${MAX_PAYLOAD_JSON_LENGTH}-byte limit` };
   }
-  for (const value of Object.values(params)) {
-    // `destination_name` may be explicitly absent — null is allowed at
-    // this generic layer; the per-op checks below reject null where it
-    // isn't meaningful (e.g. `kind`, `target_id`).
-    if (value === null) continue;
-    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
-      return { ok: false, message: 'params values must be strings, numbers, booleans, or null' };
+
+  const proseFields = PROSE_FIELDS[op] || [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined) continue;
+    if (Array.isArray(value)) {
+      // Only `task.create` carries arrays, and only of short strings.
+      if (op !== 'task.create') {
+        return { ok: false, message: `${op} params must not contain arrays` };
+      }
+      for (const item of value) {
+        if (typeof item !== 'string' || item.length > 1024) {
+          return { ok: false, message: `${key} entries must be short strings` };
+        }
+      }
+      continue;
+    }
+    if (typeof value === 'string') {
+      const limit = proseFields.includes(key) ? MAX_PROSE_LENGTH : 512;
+      if (value.length > limit) {
+        return { ok: false, message: `${key} exceeds ${limit} characters` };
+      }
+      if (value.includes('\u0000')) {
+        return { ok: false, message: `${key} must not contain a null byte` };
+      }
+      continue;
+    }
+    if (typeof value !== 'number' && typeof value !== 'boolean') {
+      return { ok: false, message: `${key} must be a string, number or boolean` };
     }
   }
   return { ok: true };
 }
 
-// Validates the shape of a renderer-submitted write request. Returns
-// `{ ok: true, op, params }` or `{ ok: false, message }` — never throws,
-// mirroring ipc-gate.js's validateReadRequest so main.js's handler can
-// reuse the same error-mapping shape for both channels.
+// Per-op checks for the values that leave the sandbox: an opened path, a
+// terminal command, an install target.
+function validateOpSpecific(op, params) {
+  if (op === 'open.path') {
+    // The renderer names *which* thing to open by id, never by path — Main
+    // resolves the path from the core's own answer.
+    if (typeof params.kind !== 'string') {
+      return { ok: false, message: 'open.path needs a kind' };
+    }
+    if (!['project', 'worktree', 'document', 'skill', 'log'].includes(params.kind)) {
+      return { ok: false, message: `unknown open kind: ${params.kind}` };
+    }
+    for (const key of ['project_id', 'task_id', 'session_id', 'name']) {
+      const v = params[key];
+      if (typeof v === 'string' && looksLikeAPath(v)) {
+        return { ok: false, message: `${key} must not contain a path` };
+      }
+    }
+  }
+  if (op === 'env.install' || op === 'env.login') {
+    if (!['git', 'claude', 'codex', 'iterm2'].includes(params.component)) {
+      return { ok: false, message: 'component must be one of git, claude, codex, iterm2' };
+    }
+  }
+  if (op === 'task.decide') {
+    if (!['backlog', 'dispute'].includes(params.kind)) {
+      return { ok: false, message: 'kind must be backlog or dispute' };
+    }
+    if (!['none', 'include', 'ignore', 'ruled'].includes(params.disposition)) {
+      return { ok: false, message: 'unknown disposition' };
+    }
+  }
+  if (op === 'config.set_role' || op === 'config.reset_role') {
+    if (!['plan', 'review', 'adjudicate', 'impl', 'audit'].includes(params.role)) {
+      return { ok: false, message: 'unknown role' };
+    }
+    if (params.runtime !== undefined && !['claude', 'codex'].includes(params.runtime)) {
+      return { ok: false, message: 'runtime must be claude or codex' };
+    }
+  }
+  return { ok: true };
+}
+
+// Returns `{ ok: true, op, params }` or `{ ok: false, message }`.
 function validateWriteRequest(request) {
   if (request === null || typeof request !== 'object' || Array.isArray(request)) {
     return { ok: false, message: 'request must be a JSON object' };
@@ -80,64 +175,18 @@ function validateWriteRequest(request) {
     return { ok: false, message: `op must be one of: ${ALLOWED_WRITE_OPS.join(', ')}` };
   }
   const effectiveParams = params === undefined ? {} : params;
-  const scalarCheck = validateScalarParams(effectiveParams);
-  if (!scalarCheck.ok) {
-    return scalarCheck;
-  }
-
-  if (op === 'project.pick_target') {
-    const { kind, ...rest } = effectiveParams;
-    if (Object.keys(rest).length > 0) {
-      return { ok: false, message: 'project.pick_target accepts only { kind }' };
-    }
-    if (!ALLOWED_PROJECT_KINDS.includes(kind)) {
-      return { ok: false, message: `kind must be one of: ${ALLOWED_PROJECT_KINDS.join(', ')}` };
-    }
-  }
-
-  if (op === 'project.create_from_target') {
-    const {
-      target_id: targetId,
-      display_name: displayName,
-      trust_confirmed: trustConfirmed,
-      destination_name: destinationName,
-      ...rest
-    } = effectiveParams;
-    if (Object.keys(rest).length > 0) {
-      return {
-        ok: false,
-        message: 'project.create_from_target accepts only target_id, display_name, trust_confirmed, destination_name',
-      };
-    }
-    if (typeof targetId !== 'string' || targetId.length === 0) {
-      return { ok: false, message: 'target_id must be a non-empty string' };
-    }
-    if (typeof displayName !== 'string' || displayName.trim().length === 0) {
-      return { ok: false, message: 'display_name must be a non-empty string' };
-    }
-    if (looksLikeAPath(displayName)) {
-      return { ok: false, message: 'display_name must not look like a filesystem path' };
-    }
-    if (typeof trustConfirmed !== 'boolean') {
-      return { ok: false, message: 'trust_confirmed must be a boolean' };
-    }
-    if (destinationName !== undefined && destinationName !== null) {
-      if (typeof destinationName !== 'string' || destinationName.length === 0) {
-        return { ok: false, message: 'destination_name must be a non-empty string when present' };
-      }
-      if (looksLikeAPath(destinationName)) {
-        return { ok: false, message: 'destination_name must not look like a filesystem path' };
-      }
-    }
-  }
-
+  const shape = validateShape(op, effectiveParams);
+  if (!shape.ok) return shape;
+  const specific = validateOpSpecific(op, effectiveParams);
+  if (!specific.ok) return specific;
   return { ok: true, op, params: effectiveParams };
 }
 
 module.exports = {
   ALLOWED_WRITE_OPS,
-  ALLOWED_PROJECT_KINDS,
   MAX_PAYLOAD_JSON_LENGTH,
+  MAX_PROSE_LENGTH,
+  looksLikeAPath,
   isAllowedOp,
   validateWriteRequest,
 };

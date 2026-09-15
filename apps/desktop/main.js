@@ -1,48 +1,63 @@
 'use strict';
 
-// Electron Main entrypoint. Plan D3: Electron is UI only, owns no business
-// state — Main's job here is (a) enforce the §9.4 security baseline for
-// every window and the privileged `autome://` scheme, and (b) manage the
-// automed Rust Core sidecar's process lifecycle per §9.5.
+// Electron Main. Plan D3: Electron is UI only and owns no business state.
+// Main's job is three things and nothing else:
 //
-// Deliberately out of scope for this increment (tracked, not forgotten):
-// core-manifest.json signature/binary-digest verification, single-instance
-// OS lock + parent_instance_nonce binding, PrepareShutdown/SafePark-gated
-// quit, tray/hide-on-close, ASAR integrity + Electron fuses, and the real
-// §9 navigation UI. Those all depend on packaging and business-state IPC
-// surfaces that do not exist yet; building them now would mean guessing at
-// unspecified details rather than following the plan.
+//   1. Enforce the security baseline for every window and for the privileged
+//      `autome://` scheme.
+//   2. Manage the `automed` sidecar's lifecycle and forward its events.
+//   3. Own the few capabilities the renderer must never have: the directory
+//      picker, opening a path, and running a command in a terminal. Each is
+//      keyed by identifier, and Main resolves the actual path or command from
+//      the core's own answer — so a compromised renderer can ask to open "the
+//      log of session S", never "/Users/me/.ssh/id_rsa".
+//
+// Deliberately out of scope for this increment, tracked rather than
+// forgotten: core-manifest signature verification, the single-instance lock,
+// ASAR integrity and Electron fuses, and code signing. Those belong with
+// packaging, which does not exist yet.
 
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, session, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron');
 const { AutomedSidecar } = require('./src/sidecar');
 const appProtocol = require('./src/app-protocol');
 const ipcGate = require('./src/ipc-gate');
 const writeGate = require('./src/write-gate');
 
-// §8.2 phase②: write-gate.js's snake_case kind names translated to Core's
-// PascalCase `ProjectKind` variant strings — only `project.pick_target`
-// needs this; `project.create_from_target` reads kind off the
-// already-persisted target row, never from the request.
-const PROJECT_KIND_TO_CORE = Object.freeze({
-  new_product: 'NewProduct',
-  existing_repository: 'ExistingRepository',
-});
-
 appProtocol.registerSchemeAsPrivileged();
+
+let mainWindow = null;
+let sidecar = null;
+let requestCounter = 0;
+let commandCounter = 0;
+
+// Two independent generators: §14 needs `command_id` to stay stable across a
+// retry, which only holds if it is not also incremented every time a
+// `request_id` is drawn.
+function nextRequestId() {
+  requestCounter += 1;
+  return `desktop-req-${requestCounter}`;
+}
+function nextCommandId() {
+  commandCounter += 1;
+  return `desktop-cmd-${commandCounter}`;
+}
 
 function denyAllPermissionRequests() {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => {
     callback(false);
   });
+  session.defaultSession.setPermissionCheckHandler(() => false);
 }
-
-let mainWindow = null;
 
 function createMainWindow() {
   const win = new BrowserWindow({
-    width: 1100,
-    height: 720,
+    width: 1512,
+    height: 944,
+    minWidth: 1100,
+    minHeight: 700,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#f8f8f0',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -50,10 +65,10 @@ function createMainWindow() {
       sandbox: true,
       webSecurity: true,
       webviewTag: false,
+      spellcheck: false,
     },
   });
 
-  // §9.4: "拒绝导航、新窗口和默认权限请求".
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('closed', () => {
@@ -65,157 +80,231 @@ function createMainWindow() {
   return win;
 }
 
-let sidecar = null;
-let requestCounter = 0;
-let commandCounter = 0;
-// Split into two independent generators (previously one counter served
-// both, called twice per command, so request_id and command_id never
-// matched) — §3.2 needs command_id to stay stable across a retry, which
-// only holds if it isn't also incrementing every time a request_id is
-// drawn.
-function nextRequestId() {
-  requestCounter += 1;
-  return `desktop-req-${requestCounter}`;
-}
-function nextCommandId() {
-  commandCounter += 1;
-  return `desktop-cmd-${commandCounter}`;
+// Every handler re-checks the sender per invocation, since it outlives any
+// single window.
+function assertTrustedSender(event) {
+  const url = event.senderFrame && event.senderFrame.url;
+  if (!ipcGate.isTrustedSenderUrl(url)) {
+    throw new Error('rejected: sender is not the packaged autome://app origin');
+  }
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('rejected: sender is not the main window');
+  }
 }
 
-// §9.4: "每个 IPC handler 校验 sender origin、webContents、schema 和 payload
-// 上限". Registered once at startup; every call still re-checks the sender
-// per-invocation since the handler outlives any single window.
+async function callCore(method, params) {
+  if (!sidecar) throw new Error('内核未运行');
+  const reply = await sidecar.request({
+    request_id: nextRequestId(),
+    command_id: nextCommandId(),
+    expected_revision: null,
+    protocol_version: 1,
+    method,
+    params,
+  });
+  if (reply.outcome.status === 'error') {
+    const err = new Error(reply.outcome.message);
+    err.code = reply.outcome.code;
+    throw err;
+  }
+  return reply.outcome.payload;
+}
+
 function registerReadChannel() {
   ipcMain.handle('autome:read', async (event, request) => {
-    if (!ipcGate.isTrustedSenderUrl(event.senderFrame && event.senderFrame.url)) {
-      throw new Error('rejected: sender is not the packaged autome://app origin');
-    }
-    if (!mainWindow || event.sender !== mainWindow.webContents) {
-      throw new Error('rejected: sender is not the main window');
-    }
+    assertTrustedSender(event);
     const validated = ipcGate.validateReadRequest(request);
-    if (!validated.ok) {
-      throw new Error(`rejected: ${validated.message}`);
-    }
-    if (!sidecar) {
-      throw new Error('automed sidecar is not running');
-    }
-    const reply = await sidecar.request({
-      request_id: nextRequestId(),
-      command_id: nextCommandId(),
-      expected_revision: null,
-      protocol_version: 1,
-      method: validated.method,
-      params: validated.params,
-    });
-    if (reply.outcome.status === 'error') {
-      throw new Error(`${reply.outcome.code}: ${reply.outcome.message}`);
-    }
-    return reply.outcome.payload;
+    if (!validated.ok) throw new Error(`rejected: ${validated.message}`);
+    return callCore(validated.method, validated.params);
   });
 }
 
-// §8.2's write path. Same three-gate pattern as registerReadChannel above
-// (sender origin → webContents identity → gate validation), backed by a
-// wholly separate allowlist (write-gate.js) that never merges with or
-// relaxes ipc-gate.js's read-side one. `project.pick_target` is handled
-// entirely in Main: it never forwards to Core as-is — the directory comes
-// from Main's own `dialog.showOpenDialog`, and only the resulting
-// `{ target_id, summary }` (Core's `project.register_target` response) is
-// handed back to the Renderer. `project.create_from_target` forwards
-// straight through: Core derives the `ProjectLocator` itself from the
-// already-persisted target row, never from anything in this request.
 function registerWriteChannel() {
   ipcMain.handle('autome:write', async (event, request) => {
-    if (!ipcGate.isTrustedSenderUrl(event.senderFrame && event.senderFrame.url)) {
-      throw new Error('rejected: sender is not the packaged autome://app origin');
-    }
-    if (!mainWindow || event.sender !== mainWindow.webContents) {
-      throw new Error('rejected: sender is not the main window');
-    }
+    assertTrustedSender(event);
     const validated = writeGate.validateWriteRequest(request);
-    if (!validated.ok) {
-      throw new Error(`rejected: ${validated.message}`);
-    }
-    if (!sidecar) {
-      throw new Error('automed sidecar is not running');
-    }
+    if (!validated.ok) throw new Error(`rejected: ${validated.message}`);
+    const { op, params } = validated;
 
-    if (validated.op === 'project.pick_target') {
-      const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
-      if (result.canceled || result.filePaths.length === 0) {
-        return { cancelled: true };
-      }
-      const reply = await sidecar.request({
-        request_id: nextRequestId(),
-        command_id: nextCommandId(),
-        expected_revision: null,
-        protocol_version: 1,
-        method: 'project.register_target',
-        params: {
-          kind: PROJECT_KIND_TO_CORE[validated.params.kind],
-          path: result.filePaths[0],
-        },
-      });
-      if (reply.outcome.status === 'error') {
-        throw new Error(`${reply.outcome.code}: ${reply.outcome.message}`);
-      }
-      return reply.outcome.payload;
-    }
+    // Three ops are handled entirely in Main, because each is a capability
+    // the renderer must not have.
+    if (op === 'project.pick') return pickProject();
+    if (op === 'open.path') return openPath(params);
+    if (op === 'open.terminal') return openTerminal(params);
+    if (op === 'env.install') return runInstall(params);
+    if (op === 'env.login') return runLogin(params);
 
-    // Only `project.create_from_target` remains — write-gate.js's
-    // allowlist has exactly two ops.
-    const reply = await sidecar.request({
-      request_id: nextRequestId(),
-      command_id: nextCommandId(),
-      expected_revision: null,
-      protocol_version: 1,
-      method: validated.op,
-      params: validated.params,
-    });
-    if (reply.outcome.status === 'error') {
-      throw new Error(`${reply.outcome.code}: ${reply.outcome.message}`);
-    }
-    return reply.outcome.payload;
+    return callCore(op, params);
   });
+}
+
+// Main owns the dialog, so the path never originates in the renderer.
+async function pickProject() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: '选择',
+    title: '选择项目目录',
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { cancelled: true };
+  }
+  return callCore('project.add', { path: result.filePaths[0] });
+}
+
+// Resolves an identifier to a path by asking the core, then reveals it. The
+// renderer names *what*, never *where*.
+async function openPath(params) {
+  let target = null;
+  switch (params.kind) {
+    case 'project': {
+      const payload = await callCore('project.get', { project_id: params.project_id });
+      target = payload.project.path;
+      break;
+    }
+    case 'worktree': {
+      const payload = await callCore('task.get', { task_id: params.task_id });
+      target = payload.worktree;
+      break;
+    }
+    case 'document': {
+      const payload = await callCore('task.get', { task_id: params.task_id });
+      const doc = (payload.documents || []).find((d) => d.name === params.name);
+      if (!doc) throw new Error(`找不到文档 ${params.name}`);
+      target = doc.absolute;
+      break;
+    }
+    case 'log': {
+      const payload = await callCore('session.log', { session_id: params.session_id });
+      target = payload.path;
+      break;
+    }
+    case 'skill': {
+      const payload = await callCore('skills.list', { project_id: params.project_id });
+      const skill = (payload.skills || []).find((s) => s.name === params.name);
+      if (!skill || !skill.sources.length) throw new Error(`找不到技能 ${params.name}`);
+      target = skill.sources[0].path;
+      break;
+    }
+    default:
+      throw new Error(`unknown open kind: ${params.kind}`);
+  }
+  if (typeof target !== 'string' || target.length === 0) {
+    throw new Error('内核没有返回可打开的路径');
+  }
+  // `openPath` reveals the item; it never executes it.
+  const error = await shell.openPath(target);
+  if (error) throw new Error(error);
+  return { opened: target };
+}
+
+// The two commands a user can have run for them, both in a visible terminal
+// so they can see exactly what happened (requirement E-02, E-03).
+async function runInTerminal(command, title) {
+  const { spawn } = require('node:child_process');
+  const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const useITerm = require('node:fs').existsSync('/Applications/iTerm.app');
+  const script = useITerm
+    ? `tell application "iTerm"
+         activate
+         if (count of windows) = 0 then
+           set w to (create window with default profile)
+           set s to current session of w
+         else
+           tell current window
+             set t to (create tab with default profile)
+             set s to current session of t
+           end tell
+         end if
+         tell s
+           set name to "${title.replace(/"/g, '')}"
+           write text "${escaped}"
+         end tell
+       end tell`
+    : `tell application "Terminal"
+         activate
+         do script "${escaped}"
+       end tell`;
+  await new Promise((resolve, reject) => {
+    const child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`osascript 退出码 ${code}`))
+    );
+  });
+  return { terminal: useITerm ? 'iTerm2' : 'Terminal' };
+}
+
+async function runInstall(params) {
+  const payload = await callCore('env.install_recipe', { component: params.component });
+  if (!payload.prerequisite_ok) {
+    throw new Error(`请先安装 ${payload.recipe.prerequisite}`);
+  }
+  const result = await runInTerminal(payload.recipe.command, `autome · 安装 ${params.component}`);
+  return { ...result, command: payload.recipe.command };
+}
+
+async function runLogin(params) {
+  const payload = await callCore('env.install_recipe', { component: params.component });
+  if (!payload.login_command) {
+    throw new Error(`${params.component} 没有登录命令`);
+  }
+  const result = await runInTerminal(payload.login_command, `autome · 登录 ${params.component}`);
+  return { ...result, command: payload.login_command };
+}
+
+function broadcast(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
 }
 
 function startSidecar(dbPath) {
   sidecar = new AutomedSidecar({
     dbPath,
-    onEvent: () => {},
+    onEvent: (event) => broadcast('autome:event', event),
     onStderrLine: (line) => console.error('[automed]', line),
     onExit: (code, signal) => {
       console.log('[automed] exited', { code, signal });
       sidecar = null;
+      broadcast('autome:core-status', { connected: false, code, signal });
+      // The core is the only place business state lives, so a dead core means
+      // a dead app. Restart it rather than leaving the window showing a
+      // frozen projection.
+      setTimeout(() => {
+        if (!sidecar && !app.isQuiting) {
+          startSidecar(dbPath);
+          broadcast('autome:core-status', { connected: true, restarted: true });
+        }
+      }, 1000);
     },
   }).start();
   return sidecar;
 }
 
-// Proves the Main <-> Core round trip actually works at startup, the same
-// contract crates/automed/tests/stdio_loop.rs and
-// apps/desktop/test/sidecar.test.js verify in isolation. Uses the real
-// `queue.get` read method rather than a fabricated write command — the
-// prior handshake used `run.advance_nominal`, which appended a real
-// `desktop-startup-handshake` Run event to the user's database on every
-// single launch. A read call proves the same round trip without writing
-// anything.
-async function verifySidecarHandshake(s) {
-  const reply = await s.request(
-    {
-      request_id: 'desktop-startup',
-      command_id: 'desktop-startup-handshake',
-      expected_revision: null,
-      protocol_version: 1,
-      method: 'queue.get',
-      params: {},
-    },
-    { timeoutMs: 5000 }
-  );
-  if (reply.outcome.status === 'error') {
-    throw new Error(`${reply.outcome.code}: ${reply.outcome.message}`);
-  }
+// The core does not run its own timer: the polling interval is a UI decision,
+// and making it one keeps a constant out of the core that the user might
+// reasonably want to change.
+const TICK_INTERVAL_MS = 3000;
+let tickTimer = null;
+
+function startTicking() {
+  if (tickTimer) return;
+  tickTimer = setInterval(async () => {
+    if (!sidecar) return;
+    try {
+      const report = await callCore('scheduler.tick', {});
+      if (
+        report.sessions_reaped.length ||
+        report.tasks_advanced.length ||
+        report.tasks_started.length
+      ) {
+        broadcast('autome:event', { event_type: 'tick', payload: report });
+      }
+      for (const error of report.errors) console.error('[scheduler]', error);
+    } catch (err) {
+      console.error('[scheduler] tick failed:', err.message);
+    }
+  }, TICK_INTERVAL_MS);
 }
 
 app.whenReady().then(async () => {
@@ -224,18 +313,28 @@ app.whenReady().then(async () => {
   registerReadChannel();
   registerWriteChannel();
 
-  const dbPath = process.env.AUTOMED_DB_PATH || path.join(app.getPath('userData'), 'automed.sqlite3');
-  const s = startSidecar(dbPath);
-  try {
-    await verifySidecarHandshake(s);
-  } catch (err) {
-    console.error('[automed] startup handshake failed:', err);
-  }
-
+  const dbPath =
+    process.env.AUTOMED_DB_PATH || path.join(app.getPath('userData'), 'automed.sqlite3');
+  startSidecar(dbPath);
   createMainWindow();
+  startTicking();
+
+  // Reconcile after a restart before the window asks for anything: a session
+  // that finished while the app was closed is consumed here (design §13).
+  try {
+    await callCore('scheduler.tick', {});
+  } catch (err) {
+    console.error('[automed] startup reconciliation failed:', err.message);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+  });
+
+  // Environment state can change while the app is in the background — a CLI
+  // installed, a login expired.
+  app.on('browser-window-focus', () => {
+    callCore('env.detect', {}).catch(() => {});
   });
 });
 
@@ -246,9 +345,13 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async (event) => {
   if (sidecar) {
     event.preventDefault();
+    app.isQuiting = true;
+    if (tickTimer) clearInterval(tickTimer);
     const toStop = sidecar;
     sidecar = null;
     await toStop.stop();
     app.quit();
   }
 });
+
+module.exports = { TICK_INTERVAL_MS };

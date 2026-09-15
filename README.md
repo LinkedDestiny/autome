@@ -1,52 +1,82 @@
 # Autome 2.0
 
-Rust-core, Electron-desktop, evidence-gated task execution system. See
-`docs/development/plan.md` (mirrored from the authoring plan) for the full
-specification. Authoritative source of truth for scope/decisions is
-`autome/docs/plans/2026-09-13-autome-2.0-greenfield-development-plan.md` in
-the sibling 1.x repo — read-only reference, not a dependency (see
-[ADR-0001](docs/adr/0001-greenfield-independent-repo.md)).
+A macOS desktop app that turns a one-line request into a merged branch.
 
-## Workspace layout
+You point it at a Git repository and type what you want. It runs Claude Code
+and Codex through a five-role loop — design, review, adjudicate, implement,
+audit — in a dedicated worktree, and stops for you exactly twice: once to
+approve the design, once to press merge.
 
-- `crates/autome-domain` — pure domain types and state reducers (no I/O).
-- `crates/automed` — application service: SQLite, event journal, scheduler,
-  Harness adapters, brokers, JSON-RPC stdio IPC.
-- `apps/desktop` — Electron shell (Main/Preload/Renderer); UI only, no
-  business state (D3).
-- `contracts/` — generated JSON Schema / TS bindings (not yet generated).
-- `profiles/`, `install-recipes/`, `skill-policies/`, `playbooks/` — see
-  plan §4 for each directory's authority.
+## The shape of it
 
-## Status
+```
+Electron (UI only)  ──framed JSON-RPC over stdio──  automed (Rust, all state)
+                                                          │
+                                              ┌───────────┼───────────┐
+                                           git/worktree  iTerm2   .autome/ · docs/
+                                                          │
+                                                   claude / codex
+```
 
-M0 in progress. Current state: domain-level state machines and reducers for
-all six aggregates/singletons (Project, Run, Task, Contract, Graph,
-ExecutionQueue) implemented and unit-tested in `autome-domain`; `automed`
-has a real event-sourced SQLite store, the framed stdio JSON-RPC loop, and
-IPC dispatch for all of them. `apps/desktop` has an Electron Main that
-enforces the §9.4 security baseline (privileged `autome://` scheme, no
-Node/remote content in the renderer, denied navigation/permissions) and
-spawns/talks to the `automed` sidecar over the same protocol — no real
-navigation UI or business-state IPC surface yet, and none of §9.5's
-packaging-dependent lifecycle guarantees (manifest/signature verification,
-single-instance lock, PrepareShutdown/SafePark-gated quit).
+Three properties the design turns on:
+
+- **The core owns every node transition.** An agent writes its result into the
+  design document and exits; the scheduler reads the document and decides what
+  runs next. That is what makes pause, the parallel limit, role toggles, round
+  budgets and the two stopping points enforceable by the core rather than by
+  the cooperation of a prompt.
+- **Task progress lives in the repository**, in the design document's status
+  block. It travels with the branch and survives a machine change. SQLite holds
+  the registry, the index, the session ledger and your decisions.
+- **Generation and evaluation never share a model.** Review must differ from
+  design, and audit from implementation. A configuration that violates this
+  cannot be saved.
+
+Sessions run in a visible terminal, so you can watch them. Autome never pushes,
+never opens a pull request, and never merges without you pressing the button.
+
+## Layout
+
+- `crates/autome-domain` — pure types and transitions. No I/O, no async, no
+  SQLite. The five roles, the configuration overlay and its validation, the
+  design-document parser, the task state machine.
+- `crates/automed` — everything that touches the outside world: SQLite, Git,
+  the session launcher, the scheduler, the environment probe, the skill scan,
+  and the JSON-RPC surface.
+- `apps/desktop` — the Electron shell. Two IPC channels with two independent
+  allowlists; the renderer can never name a filesystem path.
+- `docs/development/requirements.md`, `docs/development/technical-design.md` —
+  mirrored from the authoring repository; see below.
+- `docs/adr/` — the two decisions that shaped the repository.
+
+## Authority
+
+The specification lives in the sibling 1.x repository as a read-only reference
+(ADR-0001), at `autome/docs/plans/`:
+
+- `2026-09-15-autome-2.0-requirements.md`
+- `2026-09-15-autome-2.0-technical-design.md`
+- `2026-09-15-autome-2.0-project-task-ui-decisions.md` — the decision record
+- `autome-2.0-desktop-ui.html` — the interaction design
+
+The 2026-09-13 greenfield plan is historical; ADR-0002 records what it
+specified, what survives, and why the rest was dropped.
 
 ## Building
 
-Rust:
-
-```
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
+```sh
+cargo test                      # 168 domain + 271 automed + 15 end-to-end
+cargo clippy --all-targets      # clean
+cd apps/desktop && npm test     # the shell and the renderer
 ```
 
-Desktop shell (`apps/desktop`):
+The end-to-end suite drives a whole task from a one-line request to a merge
+commit against a real Git repository, with a stand-in for the model. Nothing
+else is substituted: real worktrees, the real wrapper script, the real
+exit-marker protocol, a real rebase and a real merge.
 
-```
-npm install
-npm test    # framing + sidecar e2e tests against the built automed binary
-npm start   # launch the Electron shell
-```
+## Status
+
+The loop runs end to end. Remaining before this is something to install:
+packaging and signing, the Onboarding wizard's in-app editing step, and a run
+against the real CLIs (technical design §16, gate T5).

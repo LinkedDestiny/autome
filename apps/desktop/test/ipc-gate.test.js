@@ -1,90 +1,117 @@
 'use strict';
 
+// The read gate is one half of the security boundary between the renderer and
+// the core. Its job is narrow — reject anything not on the allowlist, and
+// anything shaped wrongly — so the tests are mostly about what it *refuses*.
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
+
 const gate = require('../src/ipc-gate');
 
-test('exactly the five read methods are allowed', () => {
-  assert.deepEqual(
-    [...gate.ALLOWED_READ_METHODS].sort(),
-    ['project.get', 'project.list', 'queue.get', 'task.get', 'task.list'].sort()
+test('the allowlist is frozen, so nothing can extend it at runtime', () => {
+  assert.ok(Object.isFrozen(gate.ALLOWED_READ_METHODS));
+  const before = gate.ALLOWED_READ_METHODS.length;
+  try {
+    gate.ALLOWED_READ_METHODS.push('project.add');
+  } catch {
+    // Strict mode throws; either way the list must not grow.
+  }
+  assert.equal(gate.ALLOWED_READ_METHODS.length, before);
+});
+
+test('every allowed method is a read in the core', () => {
+  // The core's own READ_METHODS is the authority (dispatch.rs). Keeping the
+  // two lists in step is what makes the read/write split meaningful: a method
+  // here that mutates would turn the separate write gate into decoration.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const dispatch = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'crates', 'automed', 'src', 'dispatch.rs'),
+    'utf8'
+  );
+  const block = dispatch.slice(dispatch.indexOf('pub const READ_METHODS'));
+  const coreList = block.slice(0, block.indexOf('];'));
+  for (const method of gate.ALLOWED_READ_METHODS) {
+    assert.ok(
+      coreList.includes(`"${method}"`),
+      `${method} is allowed here but is not in the core's READ_METHODS`
+    );
+  }
+});
+
+test('a write method is refused on the read channel', () => {
+  for (const method of [
+    'project.add',
+    'project.remove',
+    'task.create',
+    'task.approve',
+    'config.set_role',
+  ]) {
+    const result = gate.validateReadRequest({ method });
+    assert.equal(result.ok, false, `${method} must not be readable`);
+  }
+});
+
+test('an unknown method is refused and the message lists the real ones', () => {
+  const result = gate.validateReadRequest({ method: 'project.destroy' });
+  assert.equal(result.ok, false);
+  assert.match(result.message, /project\.list/);
+});
+
+test('each allowed method passes with no params', () => {
+  for (const method of gate.ALLOWED_READ_METHODS) {
+    const result = gate.validateReadRequest({ method });
+    assert.equal(result.ok, true, `${method}: ${result.message}`);
+    assert.deepEqual(result.params, {});
+  }
+});
+
+test('a non-object request is refused', () => {
+  for (const request of [null, undefined, 'project.list', 42, ['project.list']]) {
+    assert.equal(gate.validateReadRequest(request).ok, false);
+  }
+});
+
+test('params must be a plain object of scalars', () => {
+  assert.equal(gate.validateReadRequest({ method: 'project.get', params: [] }).ok, false);
+  assert.equal(gate.validateReadRequest({ method: 'project.get', params: 'x' }).ok, false);
+  assert.equal(
+    gate.validateReadRequest({ method: 'project.get', params: { nested: { a: 1 } } }).ok,
+    false
+  );
+  assert.equal(
+    gate.validateReadRequest({ method: 'project.get', params: { list: [1, 2] } }).ok,
+    false
+  );
+  assert.equal(
+    gate.validateReadRequest({
+      method: 'project.get',
+      params: { project_id: 'p1', n: 3, flag: true },
+    }).ok,
+    true
   );
 });
 
-for (const method of ['project.list', 'project.get', 'task.list', 'task.get', 'queue.get']) {
-  test(`isAllowedMethod accepts "${method}"`, () => {
-    assert.equal(gate.isAllowedMethod(method), true);
-  });
-}
-
-test('isAllowedMethod rejects a write method', () => {
-  assert.equal(gate.isAllowedMethod('run.advance_nominal'), false);
-});
-
-test('isAllowedMethod rejects an unknown or empty method', () => {
-  assert.equal(gate.isAllowedMethod('project.create'), false);
-  assert.equal(gate.isAllowedMethod(''), false);
-  assert.equal(gate.isAllowedMethod(undefined), false);
-});
-
-test('validateReadRequest accepts an allowed method with no params', () => {
-  const result = gate.validateReadRequest({ method: 'queue.get' });
-  assert.equal(result.ok, true);
-  assert.equal(result.method, 'queue.get');
-  assert.deepEqual(result.params, {});
-});
-
-test('validateReadRequest accepts an allowed method with plain string params', () => {
-  const result = gate.validateReadRequest({ method: 'project.get', params: { project_id: 'proj-1' } });
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.params, { project_id: 'proj-1' });
-});
-
-test('validateReadRequest rejects any method not in the allowlist', () => {
-  const result = gate.validateReadRequest({ method: 'project.create', params: {} });
+test('an oversized payload is refused before it reaches the sidecar pipe', () => {
+  const params = { project_id: 'x'.repeat(gate.MAX_PAYLOAD_JSON_LENGTH) };
+  const result = gate.validateReadRequest({ method: 'project.get', params });
   assert.equal(result.ok, false);
-  assert.match(result.message, /must be one of/);
+  assert.match(result.message, /limit/);
 });
 
-test('validateReadRequest rejects a write method even though the sidecar itself would accept it', () => {
-  const result = gate.validateReadRequest({ method: 'run.advance_nominal', params: { aggregate_id: 'x' } });
-  assert.equal(result.ok, false);
-});
-
-test('validateReadRequest rejects a non-object request', () => {
-  assert.equal(gate.validateReadRequest(null).ok, false);
-  assert.equal(gate.validateReadRequest('queue.get').ok, false);
-  assert.equal(gate.validateReadRequest(['queue.get']).ok, false);
-});
-
-test('validateReadRequest rejects non-object params', () => {
-  const result = gate.validateReadRequest({ method: 'queue.get', params: 'not-an-object' });
-  assert.equal(result.ok, false);
-});
-
-test('validateReadRequest rejects params carrying a nested object or array (no argv/shell smuggling)', () => {
-  assert.equal(gate.validateReadRequest({ method: 'task.get', params: { task_id: { nested: true } } }).ok, false);
-  assert.equal(gate.validateReadRequest({ method: 'task.get', params: { task_id: ['a', 'b'] } }).ok, false);
-});
-
-test('validateReadRequest rejects an oversized params payload', () => {
-  const result = gate.validateReadRequest({
-    method: 'task.get',
-    params: { task_id: 'x'.repeat(gate.MAX_PAYLOAD_JSON_LENGTH) },
-  });
-  assert.equal(result.ok, false);
-  assert.match(result.message, /exceed/);
-});
-
-test('isTrustedSenderUrl accepts only the packaged app origin', () => {
-  assert.equal(gate.isTrustedSenderUrl('autome://app/index.html'), true);
-  assert.equal(gate.isTrustedSenderUrl('autome://app/nested/path.html'), true);
-});
-
-test('isTrustedSenderUrl rejects any other scheme or host', () => {
-  assert.equal(gate.isTrustedSenderUrl('https://evil.example/index.html'), false);
-  assert.equal(gate.isTrustedSenderUrl('file:///etc/passwd'), false);
-  assert.equal(gate.isTrustedSenderUrl('autome://not-app/index.html'), false);
-  assert.equal(gate.isTrustedSenderUrl(''), false);
-  assert.equal(gate.isTrustedSenderUrl(undefined), false);
+test('only the packaged origin is trusted', () => {
+  assert.ok(gate.isTrustedSenderUrl('autome://app/index.html'));
+  assert.ok(gate.isTrustedSenderUrl('autome://app/screens/task.js'));
+  for (const url of [
+    'autome://other/index.html',
+    'file:///Users/me/index.html',
+    'https://example.com/',
+    'autome://app',
+    '',
+    null,
+    undefined,
+  ]) {
+    assert.equal(gate.isTrustedSenderUrl(url), false, `${url} must not be trusted`);
+  }
 });

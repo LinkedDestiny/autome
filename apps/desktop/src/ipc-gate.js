@@ -1,25 +1,40 @@
 'use strict';
 
-// Pure validation for the `autome:read` IPC channel — plan §9.4 "每个 IPC
-// handler 校验 sender origin、webContents、schema 和 payload 上限" and §5.9
-// "Renderer 只能提交 plan/action ID，不能提交 shell、URL 或 argv". Kept out of
-// main.js so it can be unit-tested under plain `node --test` without an
-// Electron runtime — main.js is the only caller and adds nothing this
-// module doesn't already decide.
+// Pure validation for the `autome:read` IPC channel — technical design §15
+// and the Electron security baseline it inherits: every IPC handler checks
+// the sender origin, the webContents identity, the method against an
+// allowlist, and the payload shape and size.
+//
+// Kept out of main.js so it can be unit-tested under plain `node --test`
+// without an Electron runtime. main.js is the only caller and adds nothing
+// this module does not already decide.
+//
+// The read/write split is load-bearing: a method on this list must be
+// side-effect free in the core (see `READ_METHODS` in
+// crates/automed/src/dispatch.rs, which this mirrors). If the two ever
+// disagree, a "read" could mutate, and the separate write gate would be
+// decoration.
 
 const ALLOWED_READ_METHODS = Object.freeze([
   'project.list',
   'project.get',
-  'task.list',
   'task.get',
-  'queue.get',
+  'task.changes',
+  'session.log',
+  'dashboard.get',
+  'config.get',
+  'config.validate',
+  'env.get',
+  'env.install_recipe',
+  'skills.list',
+  'events.since',
 ]);
 
 const TRUSTED_ORIGIN_PREFIX = 'autome://app/';
 
-// Generous but finite — a read method's params are a handful of short
-// string ids, never a document. Guards against a compromised/buggy
-// renderer wedging an unbounded payload into the sidecar pipe.
+// Generous but finite. A read method's params are a handful of short string
+// ids, never a document. This guards against a buggy or compromised renderer
+// wedging an unbounded payload into the sidecar pipe.
 const MAX_PAYLOAD_JSON_LENGTH = 4096;
 
 function isTrustedSenderUrl(url) {
@@ -30,10 +45,10 @@ function isAllowedMethod(method) {
   return ALLOWED_READ_METHODS.includes(method);
 }
 
-// Validates the shape of a renderer-submitted read request before it is
-// ever handed to the sidecar. Returns `{ ok: true, method, params }` or
-// `{ ok: false, message }` — never throws, so main.js's handler can map
-// straight to a Reply-shaped error without its own try/catch.
+// Validates a renderer-submitted read request before it is ever handed to the
+// sidecar. Returns `{ ok: true, method, params }` or `{ ok: false, message }`;
+// never throws, so main.js's handler maps straight to an error without its own
+// try/catch.
 function validateReadRequest(request) {
   if (request === null || typeof request !== 'object' || Array.isArray(request)) {
     return { ok: false, message: 'request must be a JSON object' };
@@ -43,7 +58,11 @@ function validateReadRequest(request) {
     return { ok: false, message: `method must be one of: ${ALLOWED_READ_METHODS.join(', ')}` };
   }
   const effectiveParams = params === undefined ? {} : params;
-  if (effectiveParams === null || typeof effectiveParams !== 'object' || Array.isArray(effectiveParams)) {
+  if (
+    effectiveParams === null ||
+    typeof effectiveParams !== 'object' ||
+    Array.isArray(effectiveParams)
+  ) {
     return { ok: false, message: 'params must be a JSON object' };
   }
   let serialized;
