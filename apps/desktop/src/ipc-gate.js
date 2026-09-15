@@ -18,6 +18,7 @@
 const ALLOWED_READ_METHODS = Object.freeze([
   'project.list',
   'project.get',
+  'project.onboarding.artefacts',
   'task.get',
   'task.changes',
   'session.log',

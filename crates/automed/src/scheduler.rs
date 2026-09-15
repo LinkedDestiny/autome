@@ -772,6 +772,68 @@ fn redispatch(ctx: &mut Ctx, task_id: &str, node: Node) -> Result<()> {
     start_session(ctx, &task, &project, &resolved, kind, None)
 }
 
+/// Starts the Onboarding session (design §10, requirement C-02 step 3).
+///
+/// Unlike every other session this one has no task and no worktree: it runs in
+/// the repository root, because what it produces — the project profile and
+/// AGENTS.md — belongs to the project rather than to any piece of work. It
+/// therefore also gets a synthetic session directory rather than a per-task
+/// one.
+pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
+    let project = ctx.store.get_project(project_id)?;
+    let repo = PathBuf::from(&project.path);
+    let role_config = launcher::system_role_config();
+
+    let prompt = launcher::build_prompt(&launcher::PromptSpec {
+        kind: SessionKind::Onboarding,
+        slug: "onboarding",
+        request: "",
+        skills: &[],
+        inject: None,
+        decisions: &[],
+        attachments: &[],
+        doc_refs: &[],
+    });
+
+    let session_id = crate::store::new_id("ses");
+    let launched = launcher::launch(&launcher::LaunchSpec {
+        session_id: &session_id,
+        task_id: ONBOARDING_SESSION_KEY,
+        cwd: &repo,
+        repo: &repo,
+        runtime: role_config.runtime,
+        args: launcher::build_args(&role_config),
+        prompt,
+        title: format!("autome · {} · Onboarding", project.display_name),
+    })?;
+
+    ctx.store.append_event(
+        "session.started",
+        project_id,
+        json!({ "session_id": session_id, "kind": "onboarding", "terminal": launched.terminal.as_str() }),
+    )?;
+    Ok(session_id)
+}
+
+/// The synthetic task id Onboarding sessions file their logs under. Not a real
+/// task, so it never appears in a task list; it exists only so the wrapper
+/// script's paths are well-defined.
+pub const ONBOARDING_SESSION_KEY: &str = "onboarding";
+
+/// Whether an Onboarding session has finished, and where its log is.
+pub fn onboarding_status(repo: &Path, session_id: &str) -> (bool, Option<String>) {
+    let marker = repo.join(SessionPaths::exit(ONBOARDING_SESSION_KEY, session_id));
+    let done = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|t| ExitMarker::parse(&t))
+        .is_some();
+    let log = repo.join(SessionPaths::log(ONBOARDING_SESSION_KEY, session_id));
+    (
+        done,
+        log.exists().then(|| log.to_string_lossy().into_owned()),
+    )
+}
+
 /// Marks a task failed with a reason, used when a launch could not even be
 /// attempted.
 pub fn fail_task(ctx: &mut Ctx, task_id: &str, at: Node, reason: FailureReason) -> Result<()> {

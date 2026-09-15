@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('autome', {
     validateConfig: (projectId) =>
       read('config.validate')(projectId ? { project_id: projectId } : {}),
     listSkills: (projectId) => read('skills.list')(projectId ? { project_id: projectId } : {}),
+    onboardingArtefacts: (projectId) =>
+      read('project.onboarding.artefacts')({ project_id: projectId }),
     environment: () => read('env.get')(),
     installRecipe: (component) => read('env.install_recipe')({ component }),
     eventsSince: (afterSeq) => read('events.since')({ after_seq: afterSeq }),
@@ -48,6 +50,9 @@ contextBridge.exposeInMainWorld('autome', {
     advanceOnboarding: (projectId) =>
       write('project.onboarding.advance')({ project_id: projectId }),
     skipOnboarding: (projectId) => write('project.onboarding.skip')({ project_id: projectId }),
+    runOnboarding: (projectId) => write('project.onboarding.run')({ project_id: projectId }),
+    saveOnboardingFile: (projectId, path, content) =>
+      write('project.onboarding.save')({ project_id: projectId, path, content }),
 
     createTask: ({ projectId, request, attachments, docRefs }) =>
       write('task.create')({

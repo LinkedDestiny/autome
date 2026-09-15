@@ -24,6 +24,8 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'project.remove',
   'project.onboarding.advance',
   'project.onboarding.skip',
+  'project.onboarding.run',
+  'project.onboarding.save',
   'task.create',
   'task.approve',
   'task.reject',
@@ -54,11 +56,24 @@ const PROSE_FIELDS = Object.freeze({
   'task.create': ['request'],
   'task.reject': ['feedback'],
   'task.decide': ['ruling'],
+  // A whole project profile or AGENTS.md, edited in the wizard.
+  'project.onboarding.save': ['content'],
 });
 const MAX_PROSE_LENGTH = 8000;
+const MAX_DOCUMENT_LENGTH = 256 * 1024;
 
-// Everything else is identifiers and small numbers.
+// The payload cap, per op. One op legitimately carries a whole document —
+// the Onboarding wizard's in-app editor — and giving every op that headroom
+// would mean a buggy renderer could wedge half a megabyte of attachment paths
+// into the sidecar pipe.
 const MAX_PAYLOAD_JSON_LENGTH = 32 * 1024;
+const PAYLOAD_LIMITS = Object.freeze({
+  'project.onboarding.save': MAX_DOCUMENT_LENGTH + 4096,
+});
+
+function payloadLimitFor(op) {
+  return PAYLOAD_LIMITS[op] || MAX_PAYLOAD_JSON_LENGTH;
+}
 
 // A value that eventually reaches the filesystem or a shell must never carry a
 // path or a null byte, whatever the core would separately catch.
@@ -86,8 +101,9 @@ function validateShape(op, params) {
   } catch {
     return { ok: false, message: 'params must be JSON-serializable' };
   }
-  if (serialized.length > MAX_PAYLOAD_JSON_LENGTH) {
-    return { ok: false, message: `params exceed the ${MAX_PAYLOAD_JSON_LENGTH}-byte limit` };
+  const limit = payloadLimitFor(op);
+  if (serialized.length > limit) {
+    return { ok: false, message: `params exceed the ${limit}-byte limit` };
   }
 
   const proseFields = PROSE_FIELDS[op] || [];
@@ -106,7 +122,11 @@ function validateShape(op, params) {
       continue;
     }
     if (typeof value === 'string') {
-      const limit = proseFields.includes(key) ? MAX_PROSE_LENGTH : 512;
+      const limit = proseFields.includes(key)
+        ? op === 'project.onboarding.save'
+          ? MAX_DOCUMENT_LENGTH
+          : MAX_PROSE_LENGTH
+        : 512;
       if (value.length > limit) {
         return { ok: false, message: `${key} exceeds ${limit} characters` };
       }
@@ -154,6 +174,13 @@ function validateOpSpecific(op, params) {
       return { ok: false, message: 'unknown disposition' };
     }
   }
+  if (op === 'project.onboarding.save') {
+    // The renderer names one of two known files, never an arbitrary path;
+    // the core enforces the same list, and both are deliberate.
+    if (!['docs/agent-project-profile.md', 'AGENTS.md'].includes(params.path)) {
+      return { ok: false, message: 'path must be the profile or AGENTS.md' };
+    }
+  }
   if (op === 'config.set_role' || op === 'config.reset_role') {
     if (!['plan', 'review', 'adjudicate', 'impl', 'audit'].includes(params.role)) {
       return { ok: false, message: 'unknown role' };
@@ -186,6 +213,8 @@ module.exports = {
   ALLOWED_WRITE_OPS,
   MAX_PAYLOAD_JSON_LENGTH,
   MAX_PROSE_LENGTH,
+  MAX_DOCUMENT_LENGTH,
+  payloadLimitFor,
   looksLikeAPath,
   isAllowedOp,
   validateWriteRequest,

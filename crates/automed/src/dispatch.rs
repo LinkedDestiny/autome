@@ -184,6 +184,9 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "project.remove" => project_remove(ctx, str_param(p, "project_id")?),
         "project.onboarding.advance" => onboarding_step(ctx, str_param(p, "project_id")?, true),
         "project.onboarding.skip" => onboarding_step(ctx, str_param(p, "project_id")?, false),
+        "project.onboarding.run" => onboarding_run(ctx, str_param(p, "project_id")?),
+        "project.onboarding.artefacts" => onboarding_artefacts(ctx, str_param(p, "project_id")?),
+        "project.onboarding.save" => onboarding_save(ctx, p),
 
         // ---- tasks -------------------------------------------------------
         "task.create" => task_create(ctx, p),
@@ -505,6 +508,71 @@ fn onboarding_step(ctx: &mut Ctx, project_id: &str, advance: bool) -> DispatchRe
     )?;
     Ok((
         json!({ "onboarding": next, "init_commit": committed }),
+        vec![event(seq, "project.updated", project_id, json!({}))],
+    ))
+}
+
+/// Starts the Onboarding session (requirement C-02 step 3). Returns the
+/// session id so the UI can poll for it finishing and show the log.
+fn onboarding_run(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
+    let project = ctx.store.get_project(project_id)?;
+    if project.onboarding.is_settled() {
+        return Err(rejected("Onboarding 已经结束"));
+    }
+    let session_id = scheduler::start_onboarding(ctx, project_id)?;
+    Ok((
+        json!({ "session_id": session_id, "project_id": project_id }),
+        vec![],
+    ))
+}
+
+/// The two files Onboarding produces, for the in-app confirm-and-edit step
+/// (requirement C-02 step 4). Reading them here rather than making the
+/// renderer open a file keeps the renderer without filesystem access.
+fn onboarding_artefacts(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let files: Vec<Value> = ONBOARDING_FILES
+        .iter()
+        .map(|rel| {
+            let path = repo.join(rel);
+            json!({
+                "path": rel,
+                "exists": path.exists(),
+                "content": std::fs::read_to_string(&path).unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok((json!({ "files": files }), vec![]))
+}
+
+/// The two artefacts, in the order the wizard presents them.
+const ONBOARDING_FILES: [&str; 2] = ["docs/agent-project-profile.md", "AGENTS.md"];
+
+/// Saves an edited artefact.
+///
+/// Refuses anything outside the two known files: this is a write into the
+/// user's repository driven by the renderer, and the renderer must not be able
+/// to choose the target.
+fn onboarding_save(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let project_id = str_param(params, "project_id")?;
+    let rel = str_param(params, "path")?;
+    if !ONBOARDING_FILES.contains(&rel) {
+        return Err(bad_params(format!("只能编辑 {}", ONBOARDING_FILES.join(" 与 "))));
+    }
+    let content = str_param(params, "content")?;
+    let project = ctx.store.get_project(project_id)?;
+    let path = std::path::Path::new(&project.path).join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| internal(format!("无法创建目录：{e}")))?;
+    }
+    std::fs::write(&path, content).map_err(|e| internal(format!("无法写入 {rel}：{e}")))?;
+    let seq = ctx
+        .store
+        .append_event("project.onboarding", project_id, json!({ "saved": rel }))?;
+    Ok((
+        json!({ "saved": rel }),
         vec![event(seq, "project.updated", project_id, json!({}))],
     ))
 }
@@ -1511,9 +1579,10 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 13] = [
+pub const READ_METHODS: [&str; 14] = [
     "project.list",
     "project.get",
+    "project.onboarding.artefacts",
     "task.get",
     "task.changes",
     "session.log",
