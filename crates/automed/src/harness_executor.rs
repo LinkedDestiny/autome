@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use autome_domain::attempt::AttemptOutcome;
 
+use crate::claude_transport::{self, ClaudeTransportError};
 use crate::codex_transport::{self, CodexSandboxMode, CodexTransportError};
 use crate::fs_guard::OwnedDirGuard;
 use crate::workspace::{self, DisposableClone, WorkspaceError};
@@ -28,6 +29,8 @@ pub enum HarnessExecutorError {
     Workspace(#[from] WorkspaceError),
     #[error("codex transport failed: {0}")]
     CodexTransport(#[from] CodexTransportError),
+    #[error("claude transport failed: {0}")]
+    ClaudeTransport(#[from] ClaudeTransportError),
     #[error("failed to compute the candidate tree hash: {0}")]
     TreeHash(String),
 }
@@ -158,6 +161,65 @@ pub async fn run_codex_turn_and_classify(
     })
 }
 
+/// The `turn_status` string this module records for a Claude turn that
+/// completed with no `is_error`. Claude's own wire shape has no separate
+/// status enum the way Codex's `turn/completed` does (see
+/// `claude_transport` module doc) -- `ClaudeResultSummary.is_error` is the
+/// only confirmed success/failure signal, so this module synthesizes a
+/// status string from it for symmetry with `TurnClassification.turn_status`.
+const CLAUDE_SUCCESS_TURN_STATUS: &str = "completed";
+const CLAUDE_FAILED_TURN_STATUS: &str = "failed";
+
+/// Symmetric to `run_codex_turn_and_classify`, for the Claude adapter.
+/// Classifies per §7.1 the same way: `ClaudeResultSummary.is_error == false`
+/// is the only confirmed positive success signal (see `claude_transport`
+/// module doc); anything else, including every failure mode not yet
+/// observed against a real credential, classifies as
+/// `AttemptOutcome::AttemptFailed` rather than defaulting to success.
+pub async fn run_claude_turn_and_classify(
+    claude_binary: &Path,
+    claude_config_dir: &OwnedDirGuard,
+    repo_path: &Path,
+    instruction: &str,
+    turn_completion_timeout: Duration,
+) -> Result<TurnClassification, HarnessExecutorError> {
+    let turn_outcome = claude_transport::probe_turn(
+        claude_binary,
+        claude_config_dir,
+        instruction,
+        turn_completion_timeout,
+    )
+    .await?;
+
+    let (turn_status, error_message, outcome) = if !turn_outcome.result.is_error {
+        let candidate_tree_hash = compute_candidate_tree_hash(repo_path)?;
+        (
+            CLAUDE_SUCCESS_TURN_STATUS.to_string(),
+            None,
+            AttemptOutcome::ProducedCandidate {
+                candidate_tree_hash,
+            },
+        )
+    } else {
+        (
+            turn_outcome
+                .result
+                .terminal_reason
+                .clone()
+                .unwrap_or_else(|| CLAUDE_FAILED_TURN_STATUS.to_string()),
+            turn_outcome.result.result_text,
+            AttemptOutcome::AttemptFailed,
+        )
+    };
+
+    Ok(TurnClassification {
+        turn_id: turn_outcome.session_id,
+        turn_status,
+        error_message,
+        outcome,
+    })
+}
+
 /// Drives the thinnest real Harness-to-Run execution path for the Codex
 /// adapter: clones `source_repo` into a disposable, single-purpose
 /// workspace, then runs `run_codex_turn_and_classify` against it. Standalone
@@ -178,6 +240,51 @@ pub async fn execute_codex_attempt(
     let classification = run_codex_turn_and_classify(
         request.codex_binary,
         request.codex_home,
+        &clone.repo_path,
+        request.instruction,
+        request.turn_completion_timeout,
+    )
+    .await?;
+
+    Ok(ExecutedAttempt {
+        clone,
+        turn_id: classification.turn_id,
+        turn_status: classification.turn_status,
+        error_message: classification.error_message,
+        outcome: classification.outcome,
+    })
+}
+
+/// Symmetric to `ExecuteCodexAttemptRequest`, for the Claude adapter.
+pub struct ExecuteClaudeAttemptRequest<'a> {
+    pub claude_binary: &'a Path,
+    pub claude_config_dir: &'a OwnedDirGuard,
+    pub runs_root: &'a OwnedDirGuard,
+    pub task_id: &'a str,
+    pub run_id: &'a str,
+    pub source_repo: &'a Path,
+    pub instruction: &'a str,
+    pub turn_completion_timeout: Duration,
+}
+
+/// Symmetric to `execute_codex_attempt`, for the Claude adapter. Standalone
+/// convenience for callers with no clone of their own yet (this module's
+/// own tests below); `dispatch::handle_execute_claude_attempt` calls
+/// `run_claude_turn_and_classify` directly instead, against a clone it
+/// already created and recorded itself.
+pub async fn execute_claude_attempt(
+    request: ExecuteClaudeAttemptRequest<'_>,
+) -> Result<ExecutedAttempt, HarnessExecutorError> {
+    let clone = workspace::create_disposable_clone(
+        request.runs_root,
+        request.task_id,
+        request.run_id,
+        request.source_repo,
+    )?;
+
+    let classification = run_claude_turn_and_classify(
+        request.claude_binary,
+        request.claude_config_dir,
         &clone.repo_path,
         request.instruction,
         request.turn_completion_timeout,
@@ -268,6 +375,41 @@ mod tests {
                 .error_message
                 .is_some_and(|msg| msg.contains("401"))
         );
+        assert!(matches!(executed.outcome, AttemptOutcome::AttemptFailed));
+        assert!(!executed.outcome.may_proceed_to_evaluation());
+        assert!(executed.clone.repo_path.join("README.md").is_file());
+    }
+
+    /// Symmetric to the Codex test above, for the Claude adapter: an
+    /// unauthenticated `claude --bare` turn (confirmed `authentication_failed`
+    /// / `terminal_reason:"api_error"`, see `claude_transport` module doc)
+    /// classifies as `AttemptOutcome::AttemptFailed` with no fabricated
+    /// `candidate_tree_hash`.
+    #[tokio::test]
+    async fn an_unauthenticated_claude_turn_classifies_as_attempt_failed_with_no_tree_hash() {
+        let source = fixture_source_repo();
+        let runs_root = scratch_dir("runs-root");
+        let claude_config_root = scratch_dir("claude-config-root");
+        let claude_config_dir =
+            fs_guard::create_owned_dir(&claude_config_root.canonical_path, "claude-config")
+                .unwrap();
+
+        let executed = execute_claude_attempt(ExecuteClaudeAttemptRequest {
+            claude_binary: Path::new("/Users/dannie/.local/bin/claude"),
+            claude_config_dir: &claude_config_dir,
+            runs_root: &runs_root,
+            task_id: "task-1",
+            run_id: "run-1",
+            source_repo: &source.canonical_path,
+            instruction: "say hi",
+            turn_completion_timeout: Duration::from_secs(30),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(executed.turn_status, "api_error");
+        assert!(executed.turn_id.is_some_and(|id| !id.is_empty()));
+        assert!(executed.error_message.is_some());
         assert!(matches!(executed.outcome, AttemptOutcome::AttemptFailed));
         assert!(!executed.outcome.may_proceed_to_evaluation());
         assert!(executed.clone.repo_path.join("README.md").is_file());

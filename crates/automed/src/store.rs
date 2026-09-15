@@ -3093,6 +3093,14 @@ impl EventStore {
         workspace::ensure_codex_home(&data_root_guard)
     }
 
+    /// Symmetric to `ensure_codex_home`, for the Claude adapter's
+    /// `CLAUDE_CONFIG_DIR`. Sole caller is
+    /// `dispatch::handle_execute_claude_attempt`.
+    pub fn ensure_claude_config_dir(&self) -> Result<fs_guard::OwnedDirGuard, WorkspaceError> {
+        let data_root_guard = self.data_root_guard()?;
+        workspace::ensure_claude_config_dir(&data_root_guard)
+    }
+
     pub fn create_disposable_clone_for_run(
         &mut self,
         task_id: &str,

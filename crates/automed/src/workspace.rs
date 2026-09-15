@@ -108,6 +108,14 @@ pub fn ensure_codex_home(data_root: &OwnedDirGuard) -> Result<OwnedDirGuard, Wor
     ensure_owned_dir(data_root, "codex-home").map_err(WorkspaceError::from)
 }
 
+/// Creates `data_root/claude-config` (or re-verifies it) as the owner-only
+/// `CLAUDE_CONFIG_DIR` every Claude-adapter turn runs under (see
+/// `claude_transport`'s D8 isolation discipline). Shared and reused across
+/// Runs, exactly like `ensure_codex_home` -- same rationale, same shape.
+pub fn ensure_claude_config_dir(data_root: &OwnedDirGuard) -> Result<OwnedDirGuard, WorkspaceError> {
+    ensure_owned_dir(data_root, "claude-config").map_err(WorkspaceError::from)
+}
+
 fn run_git(args: &[&str]) -> Result<Output, WorkspaceError> {
     Command::new("git")
         .args(args)

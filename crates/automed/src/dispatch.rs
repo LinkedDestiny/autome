@@ -259,13 +259,22 @@ pub enum DispatchError {
     /// §7.1 write path: `harness_executor::run_codex_turn_and_classify`'s
     /// failure modes -- the Codex transport itself failed
     /// (`CodexTransport`) or the post-turn `git write-tree` candidate-hash
-    /// computation failed (`TreeHash`); `Workspace` cannot actually occur
-    /// here (`handle_execute_codex_attempt` calls
+    /// computation failed (`TreeHash`); `Workspace`/`ClaudeTransport` cannot
+    /// actually occur here (`handle_execute_codex_attempt` calls
     /// `run_codex_turn_and_classify` directly against an already-created
-    /// clone, never `execute_codex_attempt`'s own clone-creating path) but
-    /// is matched exhaustively below anyway since it is part of
-    /// `HarnessExecutorError`'s public shape.
+    /// clone, never `execute_codex_attempt`'s own clone-creating path, and
+    /// never touches the Claude transport) but are matched exhaustively
+    /// below anyway since they're part of `HarnessExecutorError`'s public
+    /// shape. Constructed explicitly at its one call site rather than via
+    /// `From` -- `ExecuteClaudeAttempt` below wraps the same
+    /// `HarnessExecutorError` type, and only one `impl From<T>` per source
+    /// type is allowed, so both are built directly instead.
     ExecuteCodexAttempt(HarnessExecutorError),
+    /// Symmetric to `ExecuteCodexAttempt`, for
+    /// `handle_execute_claude_attempt`/`run_claude_turn_and_classify`.
+    /// `Workspace`/`CodexTransport` cannot actually occur here, for the
+    /// same reason `Workspace`/`ClaudeTransport` cannot occur above.
+    ExecuteClaudeAttempt(HarnessExecutorError),
     /// §5.6/§7.1 write path: `record_attempt_outcome`'s failure modes -- no
     /// `Attempt` was ever recorded for this `attempt_id` (`UnknownAttempt`,
     /// the outcome-side equivalent of `IssueCandidateCertificateError::ReadinessNotFound`),
@@ -429,11 +438,10 @@ impl From<RecordAttemptError> for DispatchError {
     }
 }
 
-impl From<HarnessExecutorError> for DispatchError {
-    fn from(value: HarnessExecutorError) -> Self {
-        DispatchError::ExecuteCodexAttempt(value)
-    }
-}
+// No `impl From<HarnessExecutorError> for DispatchError`: both
+// `ExecuteCodexAttempt` and `ExecuteClaudeAttempt` wrap this same type, and
+// only one `From<T>` impl per source type is allowed, so each call site
+// constructs its variant explicitly instead.
 
 impl From<RecordAttemptOutcomeError> for DispatchError {
     fn from(value: RecordAttemptOutcomeError) -> Self {
@@ -923,6 +931,17 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     // can't fit `dispatch`'s `Result<Event, _>` shape.
     if command.method == "harness.execute_codex_attempt" {
         let result = handle_execute_codex_attempt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // Symmetric to `harness.execute_codex_attempt` above, for the Claude
+    // adapter; shares the same `attempt_outcomes` storage and read
+    // counterpart (`harness.get_attempt_outcome`).
+    if command.method == "harness.execute_claude_attempt" {
+        let result = handle_execute_claude_attempt(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -1521,7 +1540,85 @@ fn handle_execute_codex_attempt(
         &instruction,
         turn_completion_timeout,
     ))
-    .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    .map_err(|e| dispatch_error_to_reply_error(DispatchError::ExecuteCodexAttempt(e)))?;
+
+    let outcome_record = store
+        .record_attempt_outcome(
+            &attempt_id,
+            &run_id,
+            &classification.outcome,
+            classification.turn_id.as_deref(),
+            &classification.turn_status,
+            classification.error_message.as_deref(),
+            &clone.repo_path,
+            &clone.head_commit,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+
+    Ok(attempt_outcome_json(&outcome_record))
+}
+
+/// Symmetric to `DEFAULT_CODEX_TURN_TIMEOUT`, for Claude turns.
+const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Symmetric to `codex_binary_path`, reading `AUTOMED_CLAUDE_BINARY`.
+/// Defaults to the path this repo's own `claude_transport`/`harness_executor`
+/// tests are empirically confirmed against.
+fn claude_binary_path() -> std::path::PathBuf {
+    std::env::var("AUTOMED_CLAUDE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/Users/dannie/.local/bin/claude"))
+}
+
+/// Symmetric to `handle_execute_codex_attempt`, for the Claude adapter: same
+/// param shape, same `record_attempt` -> `create_disposable_clone_for_run`
+/// -> `ensure_claude_config_dir` + `claude_binary_path()` ->
+/// `run_claude_turn_and_classify` -> `record_attempt_outcome` composition.
+/// `attempt_outcomes` is shared, harness-agnostic storage (see its schema
+/// doc) -- no separate table or read method was needed for this adapter.
+fn handle_execute_claude_attempt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let task_id = parse_string_param(command, "task_id").map_err(dispatch_error_to_reply_error)?;
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let source_repo =
+        parse_string_param(command, "source_repo").map_err(dispatch_error_to_reply_error)?;
+    let instruction =
+        parse_string_param(command, "instruction").map_err(dispatch_error_to_reply_error)?;
+    let attempt = parse_attempt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let permission_profile =
+        parse_attempt_permission_profile_param(command).map_err(dispatch_error_to_reply_error)?;
+    let turn_completion_timeout = parse_optional_u64_param(command, "turn_completion_timeout_secs")
+        .map_err(dispatch_error_to_reply_error)?
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_CLAUDE_TURN_TIMEOUT);
+
+    let attempt_record = store
+        .record_attempt(&run_id, &attempt, &permission_profile)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    let attempt_id = attempt_record.attempt.id.0.clone();
+
+    let clone = store
+        .create_disposable_clone_for_run(&task_id, &run_id, Path::new(&source_repo))
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+
+    let claude_config_dir = store
+        .ensure_claude_config_dir()
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(CreateDisposableCloneError::Workspace(e))))?;
+    let claude_binary = claude_binary_path();
+
+    let classification = block_on(harness_executor::run_claude_turn_and_classify(
+        &claude_binary,
+        &claude_config_dir,
+        Path::new(&clone.repo_path),
+        &instruction,
+        turn_completion_timeout,
+    ))
+    .map_err(|e| dispatch_error_to_reply_error(DispatchError::ExecuteClaudeAttempt(e)))?;
 
     let outcome_record = store
         .record_attempt_outcome(
@@ -4234,7 +4331,22 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::ExecuteCodexAttempt(HarnessExecutorError::CodexTransport(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::ExecuteCodexAttempt(HarnessExecutorError::ClaudeTransport(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
         DispatchError::ExecuteCodexAttempt(HarnessExecutorError::TreeHash(e)) => {
+            (ReplyErrorCode::Internal, e)
+        }
+        DispatchError::ExecuteClaudeAttempt(HarnessExecutorError::Workspace(e)) => {
+            (ReplyErrorCode::InvalidParams, e.to_string())
+        }
+        DispatchError::ExecuteClaudeAttempt(HarnessExecutorError::ClaudeTransport(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ExecuteClaudeAttempt(HarnessExecutorError::CodexTransport(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::ExecuteClaudeAttempt(HarnessExecutorError::TreeHash(e)) => {
             (ReplyErrorCode::Internal, e)
         }
         DispatchError::RecordAttemptOutcome(RecordAttemptOutcomeError::Sql(e)) => {
@@ -7836,6 +7948,60 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
             other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Symmetric to `handle_command_harness_execute_codex_attempt_records_attempt_failed_and_reads_back`,
+    /// for the Claude adapter: real-binary integration test against the
+    /// unauthenticated `/Users/dannie/.local/bin/claude --bare` binary
+    /// (same confirmed `authentication_failed`/`terminal_reason:"api_error"`
+    /// fixture as `claude_transport`/`harness_executor`'s own tests).
+    /// Asserts `harness.execute_claude_attempt` records an `AttemptFailed`
+    /// outcome and that `harness.get_attempt_outcome` (shared,
+    /// harness-agnostic storage) reads it back byte for byte.
+    #[test]
+    fn handle_command_harness_execute_claude_attempt_records_attempt_failed_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let mut params = well_formed_attempt_and_profile_json("attempt-1", vec!["/workdir"]);
+        params["task_id"] = json!("task-1");
+        params["source_repo"] = json!(repo.to_string_lossy());
+        params["instruction"] = json!("say hi");
+        params["turn_completion_timeout_secs"] = json!(30);
+        let cmd = command("harness.execute_claude_attempt", params);
+        let outcome = handle_command(&mut store, &cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("harness.execute_claude_attempt failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["attempt_id"], "attempt-1");
+        assert_eq!(payload["run_id"], "run-1");
+        assert_eq!(payload["turn_status"], "api_error");
+        assert_eq!(payload["outcome"], json!("AttemptFailed"));
+        assert!(payload["error_message"].is_string() || payload["error_message"].is_null());
+
+        let get_cmd = command(
+            "harness.get_attempt_outcome",
+            json!({ "attempt_id": "attempt-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("harness.get_attempt_outcome failed: {code:?} {message}")
+            }
         }
 
         std::fs::remove_dir_all(&root).ok();
