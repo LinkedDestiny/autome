@@ -33,6 +33,7 @@ use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
+use autome_domain::model_selection::QualificationReceipt;
 use autome_domain::node::{self, NodeEvent, NodeStatus, NodeTransitionError};
 use autome_domain::playbook::FrozenPlaybook;
 use autome_domain::policy_restart::{
@@ -357,6 +358,32 @@ pub enum RecordReadinessError {
 impl From<rusqlite::Error> for RecordReadinessError {
     fn from(value: rusqlite::Error) -> Self {
         RecordReadinessError::Sql(value)
+    }
+}
+
+/// A persisted §5.10 `QualificationReceipt` plus when it landed. Same shape
+/// as `ReadinessRecord` -- the domain type already carries its own natural
+/// key (`receipt_digest`), so the store layer adds nothing beyond
+/// `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualificationRecord {
+    pub receipt: QualificationReceipt,
+    pub created_at: String,
+}
+
+/// `record_qualification_receipt`'s only failure mode. Same reasoning as
+/// `RecordReadinessError`: `issue_qualification_receipt` already validated
+/// the receipt's validity window at construction time, so a duplicate
+/// `receipt_digest` -- surfaced as a primary-key violation -- is the only
+/// way recording can fail.
+#[derive(Debug)]
+pub enum RecordQualificationReceiptError {
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for RecordQualificationReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordQualificationReceiptError::Sql(value)
     }
 }
 
@@ -929,6 +956,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v14,
     migrate_v15,
     migrate_v16,
+    migrate_v17,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1358,6 +1386,29 @@ fn migrate_v16(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_project_initialization_receipts_project_id
             ON project_initialization_receipts(project_id);
+        ",
+    )
+}
+
+/// §5.10 `qualification_receipts`: one row per `issue_qualification_receipt`
+/// call. Same "write returns Value not Event, one-time fact record" shape as
+/// `readiness_receipts` -- `receipt_digest` is the domain-chosen primary
+/// key. `qualification_batch_id` (from `identity.qualification_batch_id`,
+/// not a top-level `QualificationReceipt` field) is indexed for the same
+/// reason `user_correction_receipts.run_id` is -- no `list`-by-batch read
+/// exists yet, but every other receipt/event table in this file indexes its
+/// natural lookup column rather than waiting for the read to justify it.
+fn migrate_v17(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS qualification_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            qualification_batch_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_qualification_receipts_batch_id
+            ON qualification_receipts(qualification_batch_id);
         ",
     )
 }
@@ -3553,6 +3604,59 @@ impl EventStore {
             let receipt: ReadinessReceipt = serde_json::from_str(&receipt_json)
                 .expect("readiness_receipts.receipt_json round-trips");
             ReadinessRecord { receipt, created_at }
+        }))
+    }
+
+    /// §5.10's write path: records a `QualificationReceipt` issued by
+    /// `issue_qualification_receipt`. Same shape as `record_readiness` -- a
+    /// fact recorded once, not a journaled event, since the receipt's
+    /// domain-level validity was already enforced at construction time.
+    pub fn record_qualification_receipt(
+        &mut self,
+        receipt: &QualificationReceipt,
+    ) -> Result<QualificationRecord, RecordQualificationReceiptError> {
+        let receipt_json =
+            serde_json::to_string(receipt).expect("QualificationReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO qualification_receipts (receipt_digest, qualification_batch_id, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.receipt_digest,
+                receipt.identity.qualification_batch_id,
+                receipt_json,
+                created_at,
+            ],
+        )?;
+
+        Ok(QualificationRecord {
+            receipt: receipt.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_qualification_receipt` -- looks up the
+    /// recorded `qualification_receipts` row for `receipt_digest`, if any.
+    pub fn load_qualification_receipt(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<QualificationRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM qualification_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: QualificationReceipt = serde_json::from_str(&receipt_json)
+                .expect("qualification_receipts.receipt_json round-trips");
+            QualificationRecord { receipt, created_at }
         }))
     }
 
@@ -5755,6 +5859,85 @@ mod tests {
         store.record_readiness(&receipt).unwrap();
         let err = store.record_readiness(&receipt).unwrap_err();
         assert!(matches!(err, RecordReadinessError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_qualification_receipt(receipt_digest: &str) -> QualificationReceipt {
+        use autome_domain::model_selection::{
+            issue_qualification_receipt, ModelSelectionIdentity, QualificationResult,
+        };
+        use time::OffsetDateTime;
+
+        let issued_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        issue_qualification_receipt(
+            ModelSelectionIdentity {
+                adapter_id: "claude-code".into(),
+                installation_id: "install-1".into(),
+                provider: "anthropic".into(),
+                cli_hash: "cli-hash".into(),
+                protocol_hash: "proto-hash".into(),
+                schema_hash: "schema-hash".into(),
+                model_id: "claude-sonnet-5".into(),
+                resolved_wire_name: Some("claude-sonnet-5-20260101".into()),
+                service_tier: None,
+                provider_native_effort: "medium".into(),
+                auth_mode: "oauth".into(),
+                account_fingerprint: "acct-1".into(),
+                exposed_snapshot_or_fingerprint: None,
+                qualification_batch_id: "batch-1".into(),
+                model_choice_key_hash: Some("hash-1".into()),
+                runtime_selection_hash: "runtime-1".into(),
+            },
+            "harness-digest".into(),
+            "account-digest".into(),
+            "canary-1".into(),
+            vec!["run-1".into()],
+            issued_at,
+            issued_at + time::Duration::days(1),
+            false,
+            QualificationResult::Qualified,
+            receipt_digest.to_string(),
+        )
+        .unwrap()
+    }
+
+    /// A well-formed `record_qualification_receipt` call lands one
+    /// `qualification_receipts` row, readable back via
+    /// `load_qualification_receipt`.
+    #[test]
+    fn record_qualification_receipt_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-qualification-receipt");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_qualification_receipt("QR-1");
+
+        assert!(store.load_qualification_receipt("QR-1").unwrap().is_none());
+
+        let record = store.record_qualification_receipt(&receipt).unwrap();
+        assert_eq!(record.receipt, receipt);
+
+        let loaded = store.load_qualification_receipt("QR-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `receipt_digest` must fail rather than
+    /// silently overwriting a prior qualification result.
+    #[test]
+    fn record_qualification_receipt_refuses_to_reuse_an_existing_receipt_digest() {
+        let root = temp_data_root("record-qualification-receipt-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_qualification_receipt("QR-1");
+
+        store.record_qualification_receipt(&receipt).unwrap();
+        let err = store.record_qualification_receipt(&receipt).unwrap_err();
+        assert!(
+            matches!(err, RecordQualificationReceiptError::Sql(_)),
+            "{err:?}"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

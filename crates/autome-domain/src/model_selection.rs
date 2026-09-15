@@ -193,7 +193,7 @@ pub const REQUIRED_MODEL_SEPARATION_PAIRS: &[(&str, &str)] = &[
     ("implementation", "final_audit"),
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSeparationViolation {
     pub step_a: LoopStepId,
     pub step_b: LoopStepId,

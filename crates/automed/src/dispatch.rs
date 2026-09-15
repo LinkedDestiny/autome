@@ -99,11 +99,11 @@ use crate::store::{
     IssueCandidateCertificateError, IssueCompletionCertificateError, NodeAppendError,
     PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
     ProjectIntentAmendmentRecord, ProjectIntentRevisionRecord,
-    ProjectInitializationReceiptRecord, ReadinessRecord, RecordAttemptError,
+    ProjectInitializationReceiptRecord, QualificationRecord, ReadinessRecord, RecordAttemptError,
     RecordBudgetGrantError, RecordCredentialError, RecordCredentialReceiptError,
     RecordEvidenceError, RecordPlanningPolicyRestartError,
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
-    RecordProjectInitializationReceiptError, RecordReadinessError,
+    RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
     RecordRunPolicyAmendmentError, RecordUserCorrectionError,
     RunPolicyAmendmentRecord, StartDeliveryChainError, TaskAppendError, TaskSummary,
     UserCorrectionRecord,
@@ -130,6 +130,7 @@ use autome_domain::historical_red_light::{self, HistoricalRedLightAssessment};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
+use autome_domain::model_selection::{self, ModelSelectionIdentity, QualificationResult};
 use autome_domain::node::NodeEvent;
 use autome_domain::playbook::{FrozenPlaybook, RoleOutput};
 use autome_domain::policy_restart::BudgetLimitGrant;
@@ -150,6 +151,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
+use time::OffsetDateTime;
 
 use crate::target_probe::{self, TargetProbeError};
 
@@ -198,6 +200,7 @@ pub enum DispatchError {
     RecordEvidence(RecordEvidenceError),
     /// §5.9 write path: `record_readiness`'s only failure mode (a duplicate
     /// `receipt_digest`, surfaced as a SQL primary-key violation).
+    RecordQualificationReceipt(RecordQualificationReceiptError),
     RecordReadiness(RecordReadinessError),
     /// §5.12 write path: `start_delivery_chain`'s only failure mode (a
     /// duplicate `run_id`, surfaced as a SQL primary-key violation).
@@ -384,6 +387,12 @@ impl From<RecordEvidenceError> for DispatchError {
 impl From<RecordReadinessError> for DispatchError {
     fn from(value: RecordReadinessError) -> Self {
         DispatchError::RecordReadiness(value)
+    }
+}
+
+impl From<RecordQualificationReceiptError> for DispatchError {
+    fn from(value: RecordQualificationReceiptError) -> Self {
+        DispatchError::RecordQualificationReceipt(value)
     }
 }
 
@@ -919,6 +928,18 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     }
     if command.method == "project_intent.record_initialization_receipt" {
         let result = handle_record_project_initialization_receipt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // §5.10: same shape again -- writes a `qualification_receipts` row (so
+    // it isn't a read) but appends no domain `Event` (a receipt is a fact
+    // issued once by a qualification batch, not an aggregate with a
+    // reducer).
+    if command.method == "model_selection.issue_qualification_receipt" {
+        let result = handle_issue_qualification_receipt(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -1970,6 +1991,184 @@ fn read_project_initialization_receipt_get(
     }
 }
 
+/// Dispatch-layer-only input for `model_selection.issue_qualification_receipt`
+/// -- mirrors `issue_qualification_receipt`'s own argument list rather than
+/// accepting a client-supplied `QualificationReceipt` directly. Every field
+/// of `QualificationReceipt` is `pub` with a derived `Deserialize`, so a
+/// caller who could hand in a whole receipt could set `valid_until` before
+/// `issued_at` or blow past the seven-day cap without an immutable snapshot,
+/// bypassing the one invariant `issue_qualification_receipt` exists to
+/// enforce -- the same derive-bypasses-the-constructor concern documented on
+/// `DollarBudgetInputParam`/`FrozenPolicySnapshotInputParam` in
+/// `bounded_failure`'s dispatch wiring. `identity` and `result` have no
+/// validating constructor of their own, so they're trusted as given.
+#[derive(Debug, Deserialize)]
+struct QualificationReceiptInputParam {
+    identity: ModelSelectionIdentity,
+    harness_capability_snapshot_digest: String,
+    account_capability_snapshot_digest: String,
+    canary_manifest_hash: String,
+    run_ids: Vec<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    issued_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    valid_until: OffsetDateTime,
+    provider_snapshot_is_immutable: bool,
+    result: QualificationResult,
+    receipt_digest: String,
+}
+
+fn parse_qualification_receipt_input_param(
+    command: &Command,
+) -> Result<QualificationReceiptInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid QualificationReceiptInputParam: {e}"
+        ))
+    })
+}
+
+/// Handles `model_selection.issue_qualification_receipt`: `{ input:
+/// QualificationReceiptInputParam }`. Calls `issue_qualification_receipt`
+/// server-side (so its validity-window invariant is actually enforced) and
+/// then records the resulting receipt, same "write returns Value not Event"
+/// shape as `handle_record_readiness` -- a receipt is a fact issued once by
+/// a qualification batch, not a state-machine transition. Refuses to run
+/// while the store is in its diagnostic state, same as every other write.
+fn handle_issue_qualification_receipt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_qualification_receipt_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let receipt = model_selection::issue_qualification_receipt(
+        input.identity,
+        input.harness_capability_snapshot_digest,
+        input.account_capability_snapshot_digest,
+        input.canary_manifest_hash,
+        input.run_ids,
+        input.issued_at,
+        input.valid_until,
+        input.provider_snapshot_is_immutable,
+        input.result,
+        input.receipt_digest,
+    )
+    .map_err(|e| {
+        (
+            ReplyErrorCode::TransitionRejected,
+            format!("qualification receipt rejected: {e:?}"),
+        )
+    })?;
+    let record = store
+        .record_qualification_receipt(&receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(qualification_record_json(&record))
+}
+
+fn qualification_record_json(record: &QualificationRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_issue_qualification_receipt` -- looks up the
+/// recorded `qualification_receipts` row for `receipt_digest`, if any.
+fn read_qualification_receipt_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_qualification_receipt(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(qualification_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no qualification receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
+/// §5.10: `{ first_run_at, second_run_at }` (RFC3339 strings) -- re-exercises
+/// `validate_sealed_pass_window` server-side. Returns `{ ok: bool, error:
+/// Option<SealedPassWindowError> }` rather than erroring the whole call on a
+/// window violation, matching the `bounded_failure.may_auto_retry`-style
+/// "check" convention of reporting a negative answer as data.
+fn read_model_selection_validate_sealed_pass_window(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let first_run_at =
+        parse_offset_date_time_param(command, "first_run_at").map_err(dispatch_error_to_reply_error)?;
+    let second_run_at =
+        parse_offset_date_time_param(command, "second_run_at").map_err(dispatch_error_to_reply_error)?;
+    match model_selection::validate_sealed_pass_window(first_run_at, second_run_at) {
+        Ok(()) => Ok(serde_json::json!({ "ok": true, "error": Value::Null })),
+        Err(err) => Ok(serde_json::json!({ "ok": false, "error": format!("{err:?}") })),
+    }
+}
+
+fn parse_offset_date_time_param(
+    command: &Command,
+    key: &str,
+) -> Result<OffsetDateTime, DispatchError> {
+    let value = command
+        .params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} is required")))?;
+    let raw: String = serde_json::from_value(value)
+        .map_err(|e| DispatchError::InvalidParams(format!("params.{key} is not a string: {e}")))?;
+    OffsetDateTime::parse(&raw, &time::format_description::well_known::Rfc3339).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.{key} is not a valid RFC3339 timestamp: {e}"))
+    })
+}
+
+/// §5.10: `{ model_choice_key_hash_by_step: HashMap<LoopStepId,
+/// Option<String>> }` -- re-exercises `validate_model_separation`
+/// server-side. Collects every violation rather than just the first,
+/// matching the `historical_red_light.evaluate`/`step_role.validate_schema`
+/// "check" convention.
+fn read_model_selection_validate_model_separation(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let by_step =
+        parse_model_choice_key_hash_by_step_param(command).map_err(dispatch_error_to_reply_error)?;
+    let violations = model_selection::validate_model_separation(&by_step);
+    Ok(serde_json::json!({
+        "ok": violations.is_empty(),
+        "violations": violations,
+    }))
+}
+
+fn parse_model_choice_key_hash_by_step_param(
+    command: &Command,
+) -> Result<std::collections::HashMap<LoopStepId, Option<String>>, DispatchError> {
+    let value = command
+        .params
+        .get("model_choice_key_hash_by_step")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams(
+                "params.model_choice_key_hash_by_step is required".to_string(),
+            )
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.model_choice_key_hash_by_step is not a valid HashMap<LoopStepId, Option<String>>: {e}"
+        ))
+    })
+}
+
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -2596,6 +2795,9 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::RecordQualificationReceipt(RecordQualificationReceiptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
         DispatchError::StartDeliveryChain(StartDeliveryChainError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -2721,6 +2923,15 @@ fn try_dispatch_read(
         ),
         "bounded_failure.has_exceeded_replan_limit" => {
             Some(read_bounded_failure_has_exceeded_replan_limit(command))
+        }
+        "model_selection.get_qualification_receipt" => {
+            Some(read_qualification_receipt_get(store, command))
+        }
+        "model_selection.validate_sealed_pass_window" => {
+            Some(read_model_selection_validate_sealed_pass_window(command))
+        }
+        "model_selection.validate_model_separation" => {
+            Some(read_model_selection_validate_model_separation(command))
         }
         _ => None,
     }
@@ -9578,6 +9789,416 @@ mod tests {
             "bounded_failure.has_exceeded_replan_limit",
             json!({ "snapshot": frozen_policy_snapshot_input_json(None) }),
         );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn model_selection_identity_json(model_choice_key_hash: Option<&str>) -> Value {
+        json!({
+            "adapter_id": "claude-code",
+            "installation_id": "install-1",
+            "provider": "anthropic",
+            "cli_hash": "cli-hash",
+            "protocol_hash": "proto-hash",
+            "schema_hash": "schema-hash",
+            "model_id": "claude-sonnet-5",
+            "resolved_wire_name": "claude-sonnet-5-20260101",
+            "service_tier": null,
+            "provider_native_effort": "medium",
+            "auth_mode": "oauth",
+            "account_fingerprint": "acct-1",
+            "exposed_snapshot_or_fingerprint": null,
+            "qualification_batch_id": "batch-1",
+            "model_choice_key_hash": model_choice_key_hash,
+            "runtime_selection_hash": "runtime-1",
+        })
+    }
+
+    fn qualification_receipt_input_json(
+        receipt_digest: &str,
+        issued_at: &str,
+        valid_until: &str,
+        provider_snapshot_is_immutable: bool,
+    ) -> Value {
+        json!({
+            "identity": model_selection_identity_json(Some("hash-1")),
+            "harness_capability_snapshot_digest": "harness-digest",
+            "account_capability_snapshot_digest": "account-digest",
+            "canary_manifest_hash": "canary-1",
+            "run_ids": ["run-1"],
+            "issued_at": issued_at,
+            "valid_until": valid_until,
+            "provider_snapshot_is_immutable": provider_snapshot_is_immutable,
+            "result": "Qualified",
+            "receipt_digest": receipt_digest,
+        })
+    }
+
+    /// §5.10: `model_selection.issue_qualification_receipt` follows the same
+    /// no-`Event`-produced shape as `readiness.record`, and its payload
+    /// round-trips through the `model_selection.get_qualification_receipt`
+    /// read command.
+    #[test]
+    fn handle_command_model_selection_issue_qualification_receipt_produces_no_event_and_reads_back(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "model_selection.issue_qualification_receipt",
+            json!({
+                "input": qualification_receipt_input_json(
+                    "QR-1",
+                    "2026-09-15T00:00:00Z",
+                    "2026-09-16T00:00:00Z",
+                    false,
+                ),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.issue_qualification_receipt failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_digest"], "QR-1");
+
+        let get_cmd = command(
+            "model_selection.get_qualification_receipt",
+            json!({ "receipt_digest": "QR-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.get_qualification_receipt failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_get_qualification_receipt_is_not_found_before_issuance() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "model_selection.get_qualification_receipt",
+            json!({ "receipt_digest": "no-such-receipt" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The domain constructor rejects `valid_until` before `issued_at`; the
+    /// rejected receipt must never land in the store, so a subsequent `get`
+    /// still reports `NotFound`.
+    #[test]
+    fn handle_command_model_selection_issue_qualification_receipt_rejects_valid_until_before_issued_at(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "model_selection.issue_qualification_receipt",
+            json!({
+                "input": qualification_receipt_input_json(
+                    "QR-1",
+                    "2026-09-15T00:00:00Z",
+                    "2026-09-14T00:00:00Z",
+                    false,
+                ),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "model_selection.get_qualification_receipt",
+            json!({ "receipt_digest": "QR-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Without an immutable provider snapshot, the domain constructor caps
+    /// the validity window at seven days.
+    #[test]
+    fn handle_command_model_selection_issue_qualification_receipt_rejects_validity_window_over_seven_days_without_immutable_snapshot(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "model_selection.issue_qualification_receipt",
+            json!({
+                "input": qualification_receipt_input_json(
+                    "QR-1",
+                    "2026-09-15T00:00:00Z",
+                    "2026-09-30T00:00:00Z",
+                    false,
+                ),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The same window is accepted when the provider snapshot is immutable.
+    #[test]
+    fn handle_command_model_selection_issue_qualification_receipt_allows_long_window_with_immutable_snapshot(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "model_selection.issue_qualification_receipt",
+            json!({
+                "input": qualification_receipt_input_json(
+                    "QR-1",
+                    "2026-09-15T00:00:00Z",
+                    "2026-09-30T00:00:00Z",
+                    true,
+                ),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { .. } => {}
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.issue_qualification_receipt failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_issue_qualification_receipt_is_invalid_params_without_input()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("model_selection.issue_qualification_receipt", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_sealed_pass_window_accepts_runs_within_twenty_four_hours(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_sealed_pass_window",
+            json!({
+                "first_run_at": "2026-09-15T00:00:00Z",
+                "second_run_at": "2026-09-15T23:00:00Z",
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.validate_sealed_pass_window failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["ok"], true);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_sealed_pass_window_rejects_runs_more_than_twenty_four_hours_apart_in_either_order(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        for (first, second) in [
+            ("2026-09-15T00:00:00Z", "2026-09-16T01:00:00Z"),
+            ("2026-09-16T01:00:00Z", "2026-09-15T00:00:00Z"),
+        ] {
+            let cmd = command(
+                "model_selection.validate_sealed_pass_window",
+                json!({ "first_run_at": first, "second_run_at": second }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            let payload = match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => payload,
+                ReplyOutcome::Error { code, message } => panic!(
+                    "model_selection.validate_sealed_pass_window failed: {code:?} {message}"
+                ),
+            };
+            assert_eq!(payload["ok"], false);
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_sealed_pass_window_is_invalid_params_without_first_run_at(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_sealed_pass_window",
+            json!({ "second_run_at": "2026-09-15T00:00:00Z" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_model_separation_passes_when_required_pairs_have_distinct_hashes(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_model_separation",
+            json!({
+                "model_choice_key_hash_by_step": {
+                    "contract_drafting": "a",
+                    "contract_review": "b",
+                    "task_graph_planning": "a",
+                    "graph_review": "b",
+                    "implementation": "a",
+                    "node_evaluation": "b",
+                    "final_audit": "c",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.validate_model_separation failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["violations"], json!([]));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_model_separation_flags_identical_hashes_on_a_required_pair(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_model_separation",
+            json!({
+                "model_choice_key_hash_by_step": {
+                    "contract_drafting": "same",
+                    "contract_review": "same",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.validate_model_separation failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["ok"], false);
+        assert_eq!(
+            payload["violations"],
+            json!([{ "step_a": "contract_drafting", "step_b": "contract_review" }])
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_model_separation_treats_unresolved_alias_as_a_violation(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_model_separation",
+            json!({
+                "model_choice_key_hash_by_step": {
+                    "contract_drafting": null,
+                    "contract_review": "b",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.validate_model_separation failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["violations"].as_array().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_model_separation_ignores_pairs_where_a_step_is_not_yet_routed(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "model_selection.validate_model_separation",
+            json!({
+                "model_choice_key_hash_by_step": {
+                    "contract_drafting": "a",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("model_selection.validate_model_separation failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["ok"], true);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_model_selection_validate_model_separation_is_invalid_params_without_map() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("model_selection.validate_model_separation", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
