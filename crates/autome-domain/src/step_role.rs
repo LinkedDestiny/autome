@@ -25,9 +25,11 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 use crate::attempt::LoopStepId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogicalRole {
     Analyst,
     Planner,
@@ -36,7 +38,7 @@ pub enum LogicalRole {
     Auditor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WriteAccess {
     ReadOnly,
     CandidateWrite,
@@ -86,7 +88,7 @@ pub fn canonical_step_role_bindings() -> [(LoopStepId, LogicalRole); 9] {
     ]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepScheduleError {
     MissingStep(LoopStepId),
     UnknownStep(LoopStepId),

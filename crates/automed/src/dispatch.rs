@@ -101,7 +101,7 @@ use crate::store::{
     RecordCredentialReceiptError, RecordEvidenceError, RecordReadinessError,
     StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
-use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
+use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
 use autome_domain::capability_broker::{
     self, BrokerActionError, BrokerActionOrigin, UserInitiatedOnlyActionKind,
 };
@@ -128,6 +128,7 @@ use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::{Requirement, RequirementId};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
+use autome_domain::step_role::{self, LogicalRole};
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -1780,6 +1781,9 @@ fn try_dispatch_read(
         }
         "credential.get" => Some(read_credential_get(store, command)),
         "credential.list_receipts" => Some(read_credential_list_receipts(store, command)),
+        "step_role.canonical_bindings" => Some(read_step_role_canonical_bindings()),
+        "step_role.validate_schema" => Some(read_step_role_validate_schema(command)),
+        "step_role.role_properties" => Some(read_step_role_role_properties(command)),
         _ => None,
     }
 }
@@ -2299,6 +2303,68 @@ fn parse_historical_red_light_assessment_param(
             "params.assessment is not a valid HistoricalRedLightAssessment: {e}"
         ))
     })
+}
+
+/// §10.1: no params -- the fixed nine-entry `LoopStepId`→`LogicalRole`
+/// table itself, so a caller assembling a candidate schema (or just
+/// inspecting the canonical mapping) doesn't need to hardcode it a second
+/// time. Stateless, same shape as `read_historical_red_light_classify_pre_existing_failure`.
+fn read_step_role_canonical_bindings() -> Result<Value, (ReplyErrorCode, String)> {
+    Ok(serde_json::json!({
+        "bindings": step_role::canonical_step_role_bindings(),
+    }))
+}
+
+/// §10.1: `{ candidate: [(LoopStepId, LogicalRole)] }` -- re-exercises
+/// `validate_step_schema` server-side against a caller-assembled schema
+/// rather than trusting the caller's own count of nine. Returns
+/// `{ may_start_scheduler: bool, errors: [StepScheduleError] }`, collecting
+/// every violation rather than just the first, matching the
+/// `historical_red_light.evaluate` "check" convention.
+fn read_step_role_validate_schema(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let candidate = parse_step_role_candidate_param(command).map_err(dispatch_error_to_reply_error)?;
+    let errors = step_role::validate_step_schema(&candidate);
+    Ok(serde_json::json!({
+        "may_start_scheduler": errors.is_empty(),
+        "errors": errors,
+    }))
+}
+
+fn parse_step_role_candidate_param(
+    command: &Command,
+) -> Result<Vec<(LoopStepId, LogicalRole)>, DispatchError> {
+    let value = command
+        .params
+        .get("candidate")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.candidate is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.candidate is not a valid Vec<(LoopStepId, LogicalRole)>: {e}"
+        ))
+    })
+}
+
+/// §10.1: `{ role: LogicalRole }` -- the role table's two derived
+/// properties (`write_access`/`requires_independent_model`) for a single
+/// role, so a caller doesn't need to hardcode the table's own read-only
+/// vs. candidate-write / independent-model columns a second time.
+fn read_step_role_role_properties(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let role = parse_step_role_role_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "write_access": role.write_access(),
+        "requires_independent_model": role.requires_independent_model(),
+    }))
+}
+
+fn parse_step_role_role_param(command: &Command) -> Result<LogicalRole, DispatchError> {
+    let value = command
+        .params
+        .get("role")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.role is required".to_string()))?;
+    serde_json::from_value(value)
+        .map_err(|e| DispatchError::InvalidParams(format!("params.role is not a valid LogicalRole: {e}")))
 }
 
 /// Read counterpart to `handle_record_credential`. Takes
@@ -6799,6 +6865,159 @@ mod tests {
         assert!(read_result.is_ok());
 
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_canonical_bindings_returns_all_nine_steps() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("step_role.canonical_bindings", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                let bindings = payload["bindings"].as_array().expect("bindings is an array");
+                assert_eq!(bindings.len(), 9);
+                assert_eq!(bindings[0], json!(["fact_analysis", "Analyst"]));
+                assert_eq!(bindings[5], json!(["implementation", "Implementer"]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("step_role.canonical_bindings failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn canonical_step_role_candidate_json() -> Value {
+        json!([
+            ["fact_analysis", "Analyst"],
+            ["contract_drafting", "Planner"],
+            ["contract_review", "ContractReviewer"],
+            ["task_graph_planning", "Planner"],
+            ["graph_review", "ContractReviewer"],
+            ["implementation", "Implementer"],
+            ["repair", "Implementer"],
+            ["node_evaluation", "Auditor"],
+            ["final_audit", "Auditor"],
+        ])
+    }
+
+    #[test]
+    fn handle_command_step_role_validate_schema_may_start_scheduler_on_the_canonical_schema() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "step_role.validate_schema",
+            json!({ "candidate": canonical_step_role_candidate_json() }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["may_start_scheduler"], true);
+                assert_eq!(payload["errors"], json!([]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("step_role.validate_schema failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_validate_schema_reports_a_missing_step_and_blocks_scheduler_start()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut candidate = canonical_step_role_candidate_json();
+        let array = candidate.as_array_mut().unwrap();
+        array.retain(|entry| entry[0] != json!("repair"));
+
+        let cmd = command("step_role.validate_schema", json!({ "candidate": candidate }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["may_start_scheduler"], false);
+                assert_eq!(
+                    payload["errors"],
+                    json!([{ "MissingStep": "repair" }])
+                );
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("step_role.validate_schema failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_validate_schema_is_invalid_params_without_candidate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("step_role.validate_schema", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_role_properties_marks_implementer_as_the_only_write_role() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "step_role.role_properties",
+            json!({ "role": "Implementer" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["write_access"], "CandidateWrite");
+                assert_eq!(payload["requires_independent_model"], false);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("step_role.role_properties failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_role_properties_marks_auditor_as_requiring_an_independent_model() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("step_role.role_properties", json!({ "role": "Auditor" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["write_access"], "ReadOnly");
+                assert_eq!(payload["requires_independent_model"], true);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("step_role.role_properties failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_step_role_role_properties_is_invalid_params_without_role() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("step_role.role_properties", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
         std::fs::remove_dir_all(&root).ok();
     }
 }
