@@ -1543,7 +1543,10 @@ mod tests {
         let wt = w.with_worktree(&task);
         std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
         git::commit_paths(&wt, &["feature.txt"], "feature").unwrap();
-        std::fs::write(w.repo.join("user-wip.txt"), "in progress\n").unwrap();
+        // Uncommitted work in a file this merge would also write. Dirt in an
+        // unrelated file deliberately no longer blocks: see
+        // `git::conflicting_dirty_paths`.
+        std::fs::write(w.repo.join("feature.txt"), "in progress\n").unwrap();
 
         w.set_state(
             "T-1",
@@ -1560,7 +1563,7 @@ mod tests {
             }
         );
         assert_eq!(
-            std::fs::read_to_string(w.repo.join("user-wip.txt")).unwrap(),
+            std::fs::read_to_string(w.repo.join("feature.txt")).unwrap(),
             "in progress\n",
             "the user's file is untouched"
         );

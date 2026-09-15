@@ -522,8 +522,20 @@ fn a_dirty_main_worktree_blocks_the_merge_and_leaves_the_users_file_alone() {
     w.settle();
     assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
 
-    // The user leaves work in progress.
-    std::fs::write(w.repo.join("wip.txt"), "half-finished\n").unwrap();
+    // The user leaves work in progress *in a file this merge would write* —
+    // dirt elsewhere no longer blocks a merge, since the merge would not
+    // disturb it (see git::conflicting_dirty_paths).
+    let touched = ok(&w.call("task.changes", json!({ "task_id": task_id })))["files"]
+        .as_array()
+        .unwrap()[0]["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let wip = w.repo.join(&touched);
+    if let Some(parent) = wip.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&wip, "half-finished\n").unwrap();
     let head_before = automed::git::head_sha(&w.repo).unwrap();
 
     let changes = w.call("task.changes", json!({ "task_id": task_id }));
@@ -549,7 +561,7 @@ fn a_dirty_main_worktree_blocks_the_merge_and_leaves_the_users_file_alone() {
         "the default branch did not move"
     );
     assert_eq!(
-        std::fs::read_to_string(w.repo.join("wip.txt")).unwrap(),
+        std::fs::read_to_string(&wip).unwrap(),
         "half-finished\n",
         "the user's file is byte-for-byte untouched"
     );

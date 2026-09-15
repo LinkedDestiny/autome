@@ -215,7 +215,7 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 | 创建任务 | `git worktree add .worktree/<slug> -b autome/<slug> <default>`；写 `docs/<slug>/attachments/`；在任务分支提交「chore(autome): T-n inputs」 | 任务分支上的提交由 Autome 与 Agent 共同产生 |
 | 会话提交 | Agent 在 worktree 内按协议自行提交；会话结束后 automed 兜底提交 worktree 内剩余的未提交改动 | 兜底提交只作用于该任务自己的 worktree，提交信息标注为「未提交的剩余改动」 |
 | rebase | `git -C .worktree/<slug> rebase <default>` | 冲突时 `rebase --abort`，记录冲突文件，转 Implement |
-| 合并前置 | 主工作树 `git status --porcelain` 为空；任务分支 `merge-base --is-ancestor <default> autome/<slug>` | 不满足即拒绝 |
+| 合并前置 | 主工作树中**本次合并会改动的文件**没有未提交改动；任务分支 `merge-base --is-ancestor <default> autome/<slug>` | 不满足即拒绝。判据不是「工作树干净」——界面改配置会留下未提交的 `.autome/config.toml`，按前者会让此后每次合并都被拒 |
 | 合并 | 在项目根 `git merge --no-ff autome/<slug> -m "merge(autome): T-n <title>"` | 主工作树随之更新 |
 | 清理 | `git worktree remove .worktree/<slug>`；`git branch -d autome/<slug>` | 失败时保留并提示 |
 | 取消 | 复制 `docs/<slug>/` 到项目根 `docs/.archive/<slug>/`；`worktree remove --force`；`branch -D` | 复制结果留在主工作树，不提交 |

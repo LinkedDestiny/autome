@@ -319,13 +319,17 @@ pub fn has_commits(repo: &Path) -> bool {
 /// (requirement T-07): Autome must never merge into a dirty checkout, because
 /// the merge would mix the user's uncommitted work into the result.
 pub fn is_clean(repo: &Path) -> Result<bool> {
-    let out = run_ok(repo, &["status", "--porcelain"])?;
-    Ok(out.stdout.trim().is_empty())
+    Ok(dirty_paths(repo)?.is_empty())
 }
 
 /// The list of dirty paths, for the message shown when a merge is refused.
+/// `--untracked-files=all` matters: by default Git collapses a wholly
+/// untracked directory to the directory name, so a new `文档/说明.md` reports
+/// as `文档/` and would never compare equal to the path the merge is about to
+/// write. Listing them individually is what makes the comparison in
+/// `conflicting_dirty_paths` sound.
 pub fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
-    let out = run_ok(repo, &["status", "--porcelain"])?;
+    let out = run_ok(repo, &["status", "--porcelain", "--untracked-files=all"])?;
     Ok(out
         .stdout
         .lines()
@@ -500,6 +504,86 @@ pub fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> Result<bool
     }
 }
 
+/// Uncommitted paths in the main worktree that this merge would also change.
+///
+/// The precondition is *not* "the worktree is clean". It is "the merge will
+/// not disturb work in progress", and those are different: Git itself only
+/// refuses a merge that needs to overwrite a locally-modified file.
+///
+/// Insisting on a wholly clean tree looked equivalent and was not. Changing a
+/// Loop setting in the UI writes `.autome/config.toml` and deliberately does
+/// not commit it — the user owns that commit (requirement C-11). Under the
+/// stricter rule, editing one model in the routing graph would have blocked
+/// *every* subsequent merge, in every task, with a message about a file that
+/// has nothing to do with the work being merged. A real run hit exactly that.
+pub fn conflicting_dirty_paths(repo: &Path, base: &str, branch: &str) -> Result<Vec<String>> {
+    let dirty = dirty_paths(repo)?;
+    if dirty.is_empty() {
+        return Ok(Vec::new());
+    }
+    let range = format!("{base}...{branch}");
+    let changed = run_ok(repo, &["diff", "--name-only", &range])?;
+    let changed: Vec<String> = changed
+        .stdout
+        .lines()
+        .map(|l| unquote_path(l.trim()))
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(dirty
+        .into_iter()
+        .map(|p| unquote_path(&p))
+        .filter(|p| changed.iter().any(|c| c == p))
+        .collect())
+}
+
+/// Git quotes a path containing non-ASCII bytes in its porcelain and
+/// `--name-only` output. Both sides of the comparison above must be unquoted
+/// the same way, or a Chinese path would never match itself.
+fn unquote_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
+        return trimmed.to_string();
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            // An octal escape, which is how Git writes a non-ASCII byte.
+            Some(d) if d.is_digit(8) => {
+                let mut octal = String::from(d);
+                for _ in 0..2 {
+                    match chars.clone().next() {
+                        Some(n) if n.is_digit(8) => {
+                            octal.push(n);
+                            chars.next();
+                        }
+                        _ => break,
+                    }
+                }
+                if let Ok(b) = u8::from_str_radix(&octal, 8) {
+                    bytes.push(b);
+                }
+            }
+            Some('n') => bytes.push(b'\n'),
+            Some('t') => bytes.push(b'\t'),
+            Some('"') => bytes.push(b'"'),
+            Some('\\') => bytes.push(b'\\'),
+            Some(other) => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeOutcome {
     Merged {
@@ -524,17 +608,19 @@ pub fn merge_task_branch(
     task_branch: &str,
     message: &str,
 ) -> Result<MergeOutcome> {
-    let dirty = dirty_paths(repo)?;
-    if !dirty.is_empty() {
-        let shown: Vec<&str> = dirty.iter().take(5).map(String::as_str).collect();
-        let more = dirty.len().saturating_sub(shown.len());
-        let suffix = if more > 0 {
-            format!(" 等 {} 个文件", dirty.len())
+    let conflicting = conflicting_dirty_paths(repo, default_branch, task_branch)?;
+    if !conflicting.is_empty() {
+        let shown: Vec<&str> = conflicting.iter().take(5).map(String::as_str).collect();
+        let suffix = if conflicting.len() > shown.len() {
+            format!(" 等 {} 个文件", conflicting.len())
         } else {
             String::new()
         };
         return Ok(MergeOutcome::Blocked {
-            detail: format!("主工作树有未提交改动：{}{suffix}", shown.join("、")),
+            detail: format!(
+                "主工作树里这些文件有未提交改动，而本次合并要改动它们：{}{suffix}",
+                shown.join("、")
+            ),
         });
     }
 
@@ -945,19 +1031,114 @@ mod tests {
         write(&wt, "feature.txt", "x\n");
         commit_paths(&wt, &["feature.txt"], "feature").unwrap();
 
-        write(repo.path(), "scratch.txt", "user work in progress\n");
+        // Uncommitted work in a file this merge would also write.
+        write(repo.path(), "feature.txt", "user work in progress\n");
         let before = head_sha(repo.path()).unwrap();
 
         match merge_task_branch(repo.path(), "main", "autome/f", "m").unwrap() {
-            MergeOutcome::Blocked { detail } => assert!(detail.contains("scratch.txt"), "{detail}"),
+            MergeOutcome::Blocked { detail } => assert!(detail.contains("feature.txt"), "{detail}"),
             other => panic!("expected blocked, got {other:?}"),
         }
         assert_eq!(head_sha(repo.path()).unwrap(), before, "main is untouched");
         assert_eq!(
-            fs::read_to_string(repo.path().join("scratch.txt")).unwrap(),
+            fs::read_to_string(repo.path().join("feature.txt")).unwrap(),
             "user work in progress\n",
             "the user's file is untouched"
         );
+    }
+
+    #[test]
+    fn unrelated_uncommitted_work_does_not_block_a_merge() {
+        // The trap this closes: changing a Loop setting writes
+        // `.autome/config.toml` and deliberately leaves it uncommitted, so a
+        // "the tree must be clean" rule would block every merge in every task
+        // from then on, citing a file the merge never touches.
+        needs_git!();
+        let repo = repo_with_commit("merge-unrelated-dirty");
+        worktree_add(repo.path(), ".worktree/f", "autome/f", "main").unwrap();
+        let wt = repo.path().join(".worktree/f");
+        write(&wt, "feature.txt", "x\n");
+        commit_paths(&wt, &["feature.txt"], "feature").unwrap();
+
+        // Something the user has not committed, which this merge will not
+        // touch.
+        write(
+            repo.path(),
+            ".autome/config.toml",
+            "[roles.impl]\nmodel = \"x\"\n",
+        );
+        assert!(!is_clean(repo.path()).unwrap(), "the tree really is dirty");
+
+        assert!(
+            conflicting_dirty_paths(repo.path(), "main", "autome/f")
+                .unwrap()
+                .is_empty()
+        );
+        match merge_task_branch(repo.path(), "main", "autome/f", "m").unwrap() {
+            MergeOutcome::Merged { .. } => {}
+            other => panic!("expected the merge to proceed, got {other:?}"),
+        }
+        // And the user's uncommitted file is exactly as they left it.
+        assert_eq!(
+            fs::read_to_string(repo.path().join(".autome/config.toml")).unwrap(),
+            "[roles.impl]\nmodel = \"x\"\n"
+        );
+    }
+
+    #[test]
+    fn uncommitted_work_in_a_file_the_merge_touches_still_blocks_it() {
+        needs_git!();
+        let repo = repo_with_commit("merge-overlapping-dirty");
+        worktree_add(repo.path(), ".worktree/f", "autome/f", "main").unwrap();
+        let wt = repo.path().join(".worktree/f");
+        write(&wt, "shared.txt", "from the branch\n");
+        commit_paths(&wt, &["shared.txt"], "branch edit").unwrap();
+
+        // The user is mid-edit on the same file.
+        write(repo.path(), "shared.txt", "the user was here\n");
+
+        let conflicting = conflicting_dirty_paths(repo.path(), "main", "autome/f").unwrap();
+        assert_eq!(conflicting, vec!["shared.txt".to_string()]);
+        match merge_task_branch(repo.path(), "main", "autome/f", "m").unwrap() {
+            MergeOutcome::Blocked { detail } => assert!(detail.contains("shared.txt"), "{detail}"),
+            other => panic!("expected blocked, got {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+            "the user was here\n",
+            "their work is untouched"
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_path_matches_itself_across_gits_two_output_formats() {
+        // `git status --porcelain` and `git diff --name-only` both quote a
+        // path containing non-ASCII bytes, and a mismatch here would mean a
+        // Chinese filename never compares equal to itself — so an overlapping
+        // edit would silently stop blocking the merge.
+        needs_git!();
+        let repo = repo_with_commit("merge-cjk");
+        worktree_add(repo.path(), ".worktree/f", "autome/f", "main").unwrap();
+        let wt = repo.path().join(".worktree/f");
+        write(&wt, "文档/说明.md", "branch\n");
+        commit_paths(&wt, &["文档/说明.md"], "branch edit").unwrap();
+        write(repo.path(), "文档/说明.md", "user\n");
+
+        let conflicting = conflicting_dirty_paths(repo.path(), "main", "autome/f").unwrap();
+        assert_eq!(
+            conflicting,
+            vec!["文档/说明.md".to_string()],
+            "the quoted and unquoted forms must compare equal"
+        );
+    }
+
+    #[test]
+    fn unquote_path_decodes_gits_octal_escapes() {
+        assert_eq!(unquote_path("plain.txt"), "plain.txt");
+        assert_eq!(unquote_path("\"a b.txt\""), "a b.txt");
+        // "中" is e4 b8 ad, which Git writes as \344\270\255.
+        assert_eq!(unquote_path("\"\\344\\270\\255.md\""), "中.md");
+        assert_eq!(unquote_path("\"a\\\"b\""), "a\"b");
     }
 
     #[test]
