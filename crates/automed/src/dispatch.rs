@@ -90,14 +90,15 @@
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
-    AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord,
-    BindPlaybookError, CandidateCertificateRecord, CompletionCertificateRecord,
-    ContractAppendError, CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
-    DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
-    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
-    IssueCandidateCertificateError, IssueCompletionCertificateError, ProjectAppendError,
-    ProjectSummary, ReadinessRecord, RecordAttemptError, RecordEvidenceError,
-    RecordReadinessError, StartDeliveryChainError, TaskAppendError, TaskSummary,
+    AppendedGraphEvent, AppendedNodeEvent, AppendedProjectEvent, AppendedRunEvent,
+    AppendedTaskEvent, AttemptRecord, BindPlaybookError, CandidateCertificateRecord,
+    CompletionCertificateRecord, ContractAppendError, CreateDisposableCloneError,
+    CreateFromTargetError, DeliveryChainRecord, DisposableCloneRecord,
+    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
+    FrozenPlaybookRecord, GraphAppendError, IssueCandidateCertificateError,
+    IssueCompletionCertificateError, NodeAppendError, ProjectAppendError, ProjectSummary,
+    ReadinessRecord, RecordAttemptError, RecordEvidenceError, RecordReadinessError,
+    StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
 use autome_domain::capability_broker::{
@@ -112,6 +113,7 @@ use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
+use autome_domain::node::NodeEvent;
 use autome_domain::playbook::{FrozenPlaybook, RoleOutput};
 use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
@@ -137,6 +139,9 @@ pub enum DispatchError {
     ContractStore(ContractAppendError),
     GraphStore(GraphAppendError),
     ExecutionQueueStore(ExecutionQueueAppendError),
+    /// §6.3 write path: `append_node_event`'s failure modes, same
+    /// Sql/Transition split as every other event-sourced aggregate above.
+    NodeStore(NodeAppendError),
     /// `ProjectIdentity::new`'s own validation (kind/locator mismatch,
     /// blank id/display_name/project_home/locator field) rejected the
     /// `project.create` params before any store call was even made.
@@ -307,6 +312,12 @@ impl From<GraphAppendError> for DispatchError {
 impl From<ExecutionQueueAppendError> for DispatchError {
     fn from(value: ExecutionQueueAppendError) -> Self {
         DispatchError::ExecutionQueueStore(value)
+    }
+}
+
+impl From<NodeAppendError> for DispatchError {
+    fn from(value: NodeAppendError) -> Self {
+        DispatchError::NodeStore(value)
     }
 }
 
@@ -522,6 +533,11 @@ pub fn dispatch(store: &mut EventStore, command: &Command) -> Result<Event, Disp
         let aggregate_id = require_aggregate_id(command)?;
         let appended = store.append_project_event(&aggregate_id, event)?;
         return Ok(project_event_envelope(aggregate_id, appended));
+    }
+    if let Some(event) = parameterless_node_event(&command.method) {
+        let aggregate_id = require_aggregate_id(command)?;
+        let appended = store.append_node_event(&aggregate_id, event)?;
+        return Ok(node_event_envelope(aggregate_id, appended));
     }
     Err(DispatchError::UnknownMethod(command.method.clone()))
 }
@@ -1453,6 +1469,12 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::ExecutionQueueStore(ExecutionQueueAppendError::Transition(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::NodeStore(NodeAppendError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::NodeStore(NodeAppendError::Transition(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::CreateFromTarget(CreateFromTargetError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -1586,6 +1608,7 @@ fn try_dispatch_read(
         "playbook.role_output_may_decide_state" => {
             Some(read_playbook_role_output_may_decide_state(command))
         }
+        "node.get" => Some(read_node_get(store, command)),
         _ => None,
     }
 }
@@ -2052,6 +2075,33 @@ fn parse_role_output_param(command: &Command) -> Result<RoleOutput, DispatchErro
     })
 }
 
+/// §6.3: `aggregate_id` is the caller-composed `"{run_id}:{node_id}"`
+/// string (see `store::migrate_v12`'s doc comment) -- this module imposes
+/// no structure on it, same as `require_aggregate_id` everywhere else.
+/// `NotFound` if no event has ever been journaled for it, rather than
+/// reporting the implicit `NodeStatus::Pending` default: unlike
+/// `run.get`/`graph.get` (which don't exist as read methods at all, since
+/// every write already returns the full state), a caller asking
+/// `node.get` for an id nothing ever wrote to almost always has a typo'd
+/// or stale id, not a legitimate "not yet started" query.
+fn read_node_get(store: &EventStore, command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let aggregate_id = require_aggregate_id(command).map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_node_status(&aggregate_id)
+        .map_err(internal_error)?
+    {
+        Some((revision, status)) => Ok(serde_json::json!({
+            "aggregate_id": aggregate_id,
+            "revision": revision,
+            "status": status,
+        })),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no node event ever journaled for {aggregate_id}"),
+        )),
+    }
+}
+
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
     (ReplyErrorCode::Internal, err.to_string())
 }
@@ -2129,6 +2179,45 @@ fn execution_queue_event_envelope(appended: AppendedExecutionQueueEvent) -> Even
         occurred_at: appended.occurred_at,
         payload: serde_json::to_value(appended.state).expect("ExecutionQueue always serializes"),
     }
+}
+
+/// Mirrors `graph_event_envelope`, except the payload is a bare
+/// `NodeStatus` rather than a struct -- see `store::migrate_v12`'s doc
+/// comment for why there is no wrapper type to serialize instead.
+fn node_event_envelope(aggregate_id: String, appended: AppendedNodeEvent) -> Event {
+    Event {
+        event_seq: appended.seq as u64,
+        event_id: appended.event_id,
+        aggregate_id,
+        aggregate_revision: appended.revision,
+        event_type: appended.event_type.to_string(),
+        occurred_at: appended.occurred_at,
+        payload: serde_json::to_value(appended.state).expect("NodeStatus always serializes"),
+    }
+}
+
+/// All 16 NodeEvent variants carry no payload.
+fn parameterless_node_event(method: &str) -> Option<NodeEvent> {
+    use NodeEvent as E;
+    Some(match method {
+        "node.become_ready" => E::BecomeReady,
+        "node.start_producing" => E::StartProducing,
+        "node.claim_submitted" => E::ClaimSubmitted,
+        "node.start_verifying" => E::StartVerifying,
+        "node.verification_passed" => E::VerificationPassed,
+        "node.verification_failed_repairable" => E::VerificationFailedRepairable,
+        "node.verification_inconclusive" => E::VerificationInconclusive,
+        "node.verification_protocol_violation" => E::VerificationProtocolViolation,
+        "node.evaluation_accepted" => E::EvaluationAccepted,
+        "node.evaluation_needs_repair" => E::EvaluationNeedsRepair,
+        "node.evaluation_needs_replan" => E::EvaluationNeedsReplan,
+        "node.evaluation_needs_human" => E::EvaluationNeedsHuman,
+        "node.repair_ready" => E::RepairReady,
+        "node.retry_after_inconclusive" => E::RetryAfterInconclusive,
+        "node.isolate_and_retry" => E::IsolateAndRetry,
+        "node.human_decision_recorded" => E::HumanDecisionRecorded,
+        _ => return None,
+    })
 }
 
 /// The 23 of 26 RunEvent variants that carry no payload. See the module
@@ -2670,6 +2759,38 @@ mod tests {
     }
 
     #[test]
+    fn every_parameterless_node_method_is_recognized() {
+        let methods = [
+            "node.become_ready",
+            "node.start_producing",
+            "node.claim_submitted",
+            "node.start_verifying",
+            "node.verification_passed",
+            "node.verification_failed_repairable",
+            "node.verification_inconclusive",
+            "node.verification_protocol_violation",
+            "node.evaluation_accepted",
+            "node.evaluation_needs_repair",
+            "node.evaluation_needs_replan",
+            "node.evaluation_needs_human",
+            "node.repair_ready",
+            "node.retry_after_inconclusive",
+            "node.isolate_and_retry",
+            "node.human_decision_recorded",
+        ];
+        for method in methods {
+            let (mut store, path) = temp_store();
+            let cmd = command(method, json!({ "aggregate_id": "run-1:node-1" }));
+            let outcome = dispatch(&mut store, &cmd);
+            assert!(
+                !matches!(outcome, Err(DispatchError::UnknownMethod(_))),
+                "{method} should be recognized by the lookup table"
+            );
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    #[test]
     fn unknown_method_is_rejected_without_touching_the_store() {
         let (mut store, path) = temp_store();
         let cmd = command("run.teleport", json!({ "aggregate_id": "run-1" }));
@@ -2703,6 +2824,105 @@ mod tests {
             err,
             DispatchError::Store(AppendError::Transition(_))
         ));
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- node.* -----------------------------------------------------------
+
+    #[test]
+    fn node_become_ready_appends_and_returns_matching_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command(
+            "node.become_ready",
+            json!({ "aggregate_id": "run-1:node-1" }),
+        );
+        let event = dispatch(&mut store, &cmd).unwrap();
+        assert_eq!(event.aggregate_id, "run-1:node-1");
+        assert_eq!(event.aggregate_revision, 1);
+        assert_eq!(event.event_type, "BecomeReady");
+        assert_eq!(event.event_seq, 1);
+        let (revision, state) = store.load_node_status("run-1:node-1").unwrap().unwrap();
+        assert_eq!(revision, event.aggregate_revision);
+        assert_eq!(serde_json::to_value(state).unwrap(), event.payload);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_sequential_events_advance_revision() {
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "node.become_ready",
+                json!({ "aggregate_id": "run-1:node-1" }),
+            ),
+        )
+        .unwrap();
+        let event = dispatch(
+            &mut store,
+            &command(
+                "node.start_producing",
+                json!({ "aggregate_id": "run-1:node-1" }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(event.aggregate_revision, 2);
+        assert_eq!(event.event_type, "StartProducing");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_illegal_transition_surfaces_as_store_error() {
+        let (mut store, path) = temp_store();
+        // Pending cannot jump straight to VerificationPassed (§6.3):
+        // BecomeReady/StartProducing/ClaimSubmitted/StartVerifying must
+        // each happen first.
+        let cmd = command(
+            "node.verification_passed",
+            json!({ "aggregate_id": "run-1:node-1" }),
+        );
+        let err = dispatch(&mut store, &cmd).unwrap_err();
+        assert!(matches!(
+            err,
+            DispatchError::NodeStore(NodeAppendError::Transition(_))
+        ));
+        assert!(store.load_node_status("run-1:node-1").unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_get_returns_current_status_for_a_known_node() {
+        let (mut store, path) = temp_store();
+        dispatch(
+            &mut store,
+            &command(
+                "node.become_ready",
+                json!({ "aggregate_id": "run-1:node-1" }),
+            ),
+        )
+        .unwrap();
+        let cmd = command("node.get", json!({ "aggregate_id": "run-1:node-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["aggregate_id"], "run-1:node-1");
+                assert_eq!(payload["revision"], 1);
+                assert_eq!(payload["status"], "Ready");
+            }
+            other => panic!("expected ReplyOutcome::Ok, got {other:?}"),
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_get_is_not_found_before_any_event() {
+        let (mut store, path) = temp_store();
+        let cmd = command("node.get", json!({ "aggregate_id": "run-1:node-1" }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected ReplyOutcome::Error, got {other:?}"),
+        }
         std::fs::remove_file(&path).ok();
     }
 

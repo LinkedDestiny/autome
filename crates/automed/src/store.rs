@@ -29,6 +29,7 @@ use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
+use autome_domain::node::{self, NodeEvent, NodeStatus, NodeTransitionError};
 use autome_domain::playbook::FrozenPlaybook;
 use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
@@ -569,6 +570,18 @@ impl From<rusqlite::Error> for ExecutionQueueAppendError {
     }
 }
 
+#[derive(Debug)]
+pub enum NodeAppendError {
+    Sql(rusqlite::Error),
+    Transition(NodeTransitionError),
+}
+
+impl From<rusqlite::Error> for NodeAppendError {
+    fn from(value: rusqlite::Error) -> Self {
+        NodeAppendError::Sql(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppendedProjectEvent {
     pub seq: i64,
@@ -628,6 +641,19 @@ pub struct AppendedExecutionQueueEvent {
     pub state: ExecutionQueue,
 }
 
+/// Mirrors `AppendedGraphEvent`, except `state` is a bare `NodeStatus`
+/// rather than a struct -- see `migrate_v12`'s doc comment for why there is
+/// no wrapper type to project into.
+#[derive(Debug, Clone)]
+pub struct AppendedNodeEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub revision: u64,
+    pub event_type: &'static str,
+    pub occurred_at: String,
+    pub state: NodeStatus,
+}
+
 /// Everything an IPC dispatcher needs to build an outgoing `Event` envelope
 /// after a successful append: the globally monotonic `seq` (the events
 /// table's own rowid — already unique and ordered across every aggregate),
@@ -663,6 +689,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v9,
     migrate_v10,
     migrate_v11,
+    migrate_v12,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -943,6 +970,29 @@ fn migrate_v11(conn: &Connection) -> rusqlite::Result<()> {
             run_id TEXT PRIMARY KEY,
             playbook_json TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+        ",
+    )
+}
+
+/// `node_projections`: current `NodeStatus` per node aggregate (plan §6.3).
+/// `NodeStatus` has no substructure to index on -- unlike `run_projections`/
+/// `project_projections`, which carry derived query columns alongside their
+/// JSON blob, there is a single `status_json` column that *is* the whole
+/// projection. Mirrors `graph_projections`'s reasoning for omitting a
+/// `status` column (see `migrate_v3`/`graph::apply`'s doc comment), just one
+/// step further since here there's no other field either. A node's
+/// `aggregate_id` is caller-composed (e.g. `"{run_id}:{node_id}"`) since a
+/// bare `NodeId` repeats across Runs whenever a graph re-executes from
+/// Pending (§6.6) -- this module imposes no structure on the string, same as
+/// every other per-`aggregate_id` aggregate here.
+fn migrate_v12(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS node_projections (
+            aggregate_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL,
+            status_json TEXT NOT NULL
         );
         ",
     )
@@ -2886,6 +2936,129 @@ impl EventStore {
                 created_at,
             }
         }))
+    }
+
+    /// Loads the current projected (revision, NodeStatus) for a node
+    /// aggregate, or `None` if no event has ever been journaled for it --
+    /// in which case callers should treat the aggregate as
+    /// `NodeStatus::Pending` at revision 0. Mirrors `load_run_state`.
+    pub fn load_node_status(&self, aggregate_id: &str) -> rusqlite::Result<Option<(u64, NodeStatus)>> {
+        self.conn
+            .query_row(
+                "SELECT revision, status_json FROM node_projections WHERE aggregate_id = ?1",
+                params![aggregate_id],
+                |row| {
+                    let revision: i64 = row.get(0)?;
+                    let status_json: String = row.get(1)?;
+                    Ok((revision, status_json))
+                },
+            )
+            .optional()?
+            .map(|(revision, status_json)| {
+                let status: NodeStatus = serde_json::from_str(&status_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                Ok((revision as u64, status))
+            })
+            .transpose()
+    }
+
+    /// Applies `event` to the current status of `aggregate_id`, and — in a
+    /// single transaction — appends the event and updates the projection.
+    /// Mirrors `append_run_event`: defaults to `NodeStatus::Pending` when
+    /// nothing has been journaled yet, same "default state, not `Option`"
+    /// shape as Run/Project (§6.3's nominal path starts a node at Pending
+    /// with no distinct "not yet created" state -- see `node.rs`'s own
+    /// tests). On an illegal transition, nothing is written.
+    pub fn append_node_event(
+        &mut self,
+        aggregate_id: &str,
+        event: NodeEvent,
+    ) -> Result<AppendedNodeEvent, NodeAppendError> {
+        let tx = self.conn.transaction()?;
+
+        let (revision, current_status) = {
+            let loaded = tx
+                .query_row(
+                    "SELECT revision, status_json FROM node_projections WHERE aggregate_id = ?1",
+                    params![aggregate_id],
+                    |row| {
+                        let revision: i64 = row.get(0)?;
+                        let status_json: String = row.get(1)?;
+                        Ok((revision, status_json))
+                    },
+                )
+                .optional()?;
+            match loaded {
+                Some((revision, status_json)) => {
+                    let status: NodeStatus = serde_json::from_str(&status_json).expect(
+                        "node_projections.status_json is only ever written by this module as valid NodeStatus JSON",
+                    );
+                    (revision as u64, status)
+                }
+                None => (0, NodeStatus::Pending),
+            }
+        };
+
+        let next_status =
+            node::apply(current_status, event).map_err(NodeAppendError::Transition)?;
+        let next_revision = revision + 1;
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let event_type = node_event_type_name(&event);
+        let payload = serde_json::to_string(&event).expect("NodeEvent always serializes");
+        let recorded_at = Self::now_rfc3339();
+        let status_json =
+            serde_json::to_string(&next_status).expect("NodeStatus always serializes");
+
+        tx.execute(
+            "INSERT INTO events (event_id, aggregate_id, aggregate_type, revision, event_type, payload, recorded_at)
+             VALUES (?1, ?2, 'Node', ?3, ?4, ?5, ?6)",
+            params![event_id, aggregate_id, next_revision as i64, event_type, payload, recorded_at],
+        )?;
+        let seq = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO node_projections (aggregate_id, revision, status_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(aggregate_id) DO UPDATE SET
+                revision = excluded.revision,
+                status_json = excluded.status_json",
+            params![aggregate_id, next_revision as i64, status_json],
+        )?;
+
+        tx.commit()?;
+        Ok(AppendedNodeEvent {
+            seq,
+            event_id,
+            revision: next_revision,
+            event_type,
+            occurred_at: recorded_at,
+            state: next_status,
+        })
+    }
+}
+
+fn node_event_type_name(event: &NodeEvent) -> &'static str {
+    match event {
+        NodeEvent::BecomeReady => "BecomeReady",
+        NodeEvent::StartProducing => "StartProducing",
+        NodeEvent::ClaimSubmitted => "ClaimSubmitted",
+        NodeEvent::StartVerifying => "StartVerifying",
+        NodeEvent::VerificationPassed => "VerificationPassed",
+        NodeEvent::VerificationFailedRepairable => "VerificationFailedRepairable",
+        NodeEvent::VerificationInconclusive => "VerificationInconclusive",
+        NodeEvent::VerificationProtocolViolation => "VerificationProtocolViolation",
+        NodeEvent::EvaluationAccepted => "EvaluationAccepted",
+        NodeEvent::EvaluationNeedsRepair => "EvaluationNeedsRepair",
+        NodeEvent::EvaluationNeedsReplan => "EvaluationNeedsReplan",
+        NodeEvent::EvaluationNeedsHuman => "EvaluationNeedsHuman",
+        NodeEvent::RepairReady => "RepairReady",
+        NodeEvent::RetryAfterInconclusive => "RetryAfterInconclusive",
+        NodeEvent::IsolateAndRetry => "IsolateAndRetry",
+        NodeEvent::HumanDecisionRecorded => "HumanDecisionRecorded",
     }
 }
 
@@ -4868,9 +5041,100 @@ mod tests {
     }
 
     #[test]
-    fn run_project_task_contract_graph_and_execution_queue_share_the_events_table_without_colliding()
+    fn unknown_node_aggregate_has_no_projection() {
+        let path = temp_db_path("unknown-node-aggregate");
+        let store = EventStore::open(&path).unwrap();
+        assert!(store.load_node_status("run-1:node-1").unwrap().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn first_legal_node_event_creates_revision_one() {
+        let path = temp_db_path("first-node-event");
+        let mut store = EventStore::open(&path).unwrap();
+        let appended = store
+            .append_node_event("run-1:node-1", NodeEvent::BecomeReady)
+            .unwrap();
+        assert_eq!(appended.state, NodeStatus::Ready);
+        assert_eq!(appended.revision, 1);
+        assert_eq!(appended.event_type, "BecomeReady");
+        assert_eq!(appended.seq, 1);
+        let (revision, loaded) = store.load_node_status("run-1:node-1").unwrap().unwrap();
+        assert_eq!(revision, 1);
+        assert_eq!(loaded, appended.state);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn sequential_node_events_advance_revision_and_state() {
+        let path = temp_db_path("sequential-node");
+        let mut store = EventStore::open(&path).unwrap();
+        let first = store
+            .append_node_event("run-1:node-1", NodeEvent::BecomeReady)
+            .unwrap();
+        let second = store
+            .append_node_event("run-1:node-1", NodeEvent::StartProducing)
+            .unwrap();
+        assert_eq!(second.state, NodeStatus::Producing);
+        assert_eq!(second.seq, first.seq + 1);
+        let (revision, _) = store.load_node_status("run-1:node-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(store.event_count("run-1:node-1"), 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn illegal_node_transition_writes_nothing() {
+        let path = temp_db_path("illegal-node");
+        let mut store = EventStore::open(&path).unwrap();
+        let err = store
+            .append_node_event("run-1:node-1", NodeEvent::VerificationPassed)
+            .unwrap_err();
+        assert!(matches!(err, NodeAppendError::Transition(_)));
+        assert!(store.load_node_status("run-1:node-1").unwrap().is_none());
+        assert_eq!(store.event_count("run-1:node-1"), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_state_survives_reconnect() {
+        let path = temp_db_path("node-reconnect");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            store
+                .append_node_event("run-1:node-1", NodeEvent::BecomeReady)
+                .unwrap();
+            store
+                .append_node_event("run-1:node-1", NodeEvent::StartProducing)
+                .unwrap();
+        }
+        let reopened = EventStore::open(&path).unwrap();
+        let (revision, state) = reopened.load_node_status("run-1:node-1").unwrap().unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(state, NodeStatus::Producing);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn node_aggregate_id_is_caller_composed_and_scoped_per_run() {
+        // Same bare NodeId string, different Run scope (§6.6 re-planning
+        // restarts a graph's nodes from Pending on a new Run): the two
+        // caller-composed aggregate_ids must not collide.
+        let path = temp_db_path("node-per-run-scoping");
+        let mut store = EventStore::open(&path).unwrap();
+        store
+            .append_node_event("run-1:node-a", NodeEvent::BecomeReady)
+            .unwrap();
+        assert!(store.load_node_status("run-2:node-a").unwrap().is_none());
+        let (_, state) = store.load_node_status("run-1:node-a").unwrap().unwrap();
+        assert_eq!(state, NodeStatus::Ready);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn run_project_task_contract_graph_execution_queue_and_node_share_the_events_table_without_colliding()
      {
-        let path = temp_db_path("shared-events-table-six-way");
+        let path = temp_db_path("shared-events-table-seven-way");
         let mut store = EventStore::open(&path).unwrap();
         store
             .append_run_event("same-id", RunEvent::AdvanceNominal)
@@ -4893,12 +5157,16 @@ mod tests {
                 enqueued_event_seq: 1,
             })
             .unwrap();
+        store
+            .append_node_event("same-id", NodeEvent::BecomeReady)
+            .unwrap();
         assert!(store.load_run_state("same-id").unwrap().is_some());
         assert!(store.load_project_state("same-id").unwrap().is_some());
         assert!(store.load_task_state("same-id").unwrap().is_some());
         assert!(store.load_contract_state("same-id").unwrap().is_some());
         assert!(store.load_graph_state("same-id").unwrap().is_some());
         assert!(store.load_execution_queue_state().unwrap().is_some());
+        assert!(store.load_node_status("same-id").unwrap().is_some());
         std::fs::remove_file(&path).ok();
     }
 
