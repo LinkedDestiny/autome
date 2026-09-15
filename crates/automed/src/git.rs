@@ -106,8 +106,21 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn run_with_extra_env(cwd: &Path, args: &[&str], extra: &[(&str, &str)]) -> Result<Output> {
+    run_with_binary(&git_binary(), cwd, args, extra)
+}
+
+/// The one place a Git process is actually spawned. Takes the binary
+/// explicitly so the "cannot start git" path is testable without mutating a
+/// process-global environment variable — which would otherwise leak into every
+/// other test running in parallel and make them fail at random.
+fn run_with_binary(
+    binary: &str,
+    cwd: &Path,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> Result<Output> {
     let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
-    let mut cmd = Command::new(git_binary());
+    let mut cmd = Command::new(binary);
     cmd.current_dir(cwd)
         .args(args)
         .env_clear()
@@ -1224,12 +1237,12 @@ mod tests {
 
     #[test]
     fn a_nonexistent_git_binary_is_an_error_not_a_panic() {
-        // Safety: single-threaded within this test, and the variable is
-        // restored before returning.
+        // The binary is a parameter rather than an environment variable
+        // precisely so this test cannot affect any other: an earlier version
+        // set AUTOMED_GIT_BINARY and unset it, and every test that happened to
+        // spawn git in that window failed with a spurious "cannot start git".
         let dir = TempDir::new("no-binary");
-        unsafe { std::env::set_var("AUTOMED_GIT_BINARY", "/nonexistent/git") };
-        let err = run(dir.path(), &["status"]).unwrap_err();
-        unsafe { std::env::remove_var("AUTOMED_GIT_BINARY") };
+        let err = run_with_binary("/nonexistent/git", dir.path(), &["status"], &[]).unwrap_err();
         assert!(err.detail.contains("无法启动"), "{err:?}");
     }
 }
