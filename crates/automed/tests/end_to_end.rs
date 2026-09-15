@@ -567,6 +567,57 @@ fn a_dirty_main_worktree_blocks_the_merge_and_leaves_the_users_file_alone() {
     );
 }
 
+/// The panel and the core must agree about whether a merge can proceed.
+///
+/// They did not: `merge_task_branch` was narrowed to "files this merge would
+/// also write" while `task.changes` still reported any dirt at all, so the
+/// panel showed 不可合并 for a merge the core would have performed. A real run
+/// stalled there, blamed on a config file edited twenty minutes earlier.
+#[test]
+fn the_merge_panel_reports_what_the_core_would_actually_do() {
+    needs_git!();
+    let mut w = World::new("panel-agrees");
+    let request = "panel agreement";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // Uncommitted work in a file this merge does not touch — exactly what
+    // changing a Loop setting leaves behind.
+    std::fs::write(
+        w.repo.join(".autome/config.toml"),
+        "[roles.impl]\neffort = \"low\"\n",
+    )
+    .unwrap();
+
+    let changes = w.call("task.changes", json!({ "task_id": task_id }));
+    assert_eq!(
+        ok(&changes)["mergeable"],
+        json!(true),
+        "the panel must not block on a file the merge never writes: {:#?}",
+        ok(&changes)["blocked_by"]
+    );
+
+    // And the core agrees.
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.state(&task_id), "done");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(".autome/config.toml")).unwrap(),
+        "[roles.impl]\neffort = \"low\"\n",
+        "the user's uncommitted config is untouched"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Scenario 9: rejecting a design sends it back with the user's words
 // ---------------------------------------------------------------------------

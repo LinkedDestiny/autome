@@ -1290,7 +1290,11 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     }
     let summary = git::change_summary(&repo, &project.default_branch, &task.branch())?;
     let subjects = git::commit_subjects(&repo, &project.default_branch, &task.branch())?;
-    let dirty = git::dirty_paths(&repo).unwrap_or_default();
+    // The same judgement `merge_task_branch` makes, not a stricter one: the
+    // panel must not tell the user a merge is blocked that the core would
+    // happily perform, nor the reverse.
+    let blocking = git::conflicting_dirty_paths(&repo, &project.default_branch, &task.branch())
+        .unwrap_or_default();
     let on_top = git::is_ancestor(&repo, &project.default_branch, &task.branch()).unwrap_or(false);
     Ok((
         json!({
@@ -1304,9 +1308,9 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "total_added": summary.total_added,
             "total_deleted": summary.total_deleted,
             "subjects": subjects,
-            "mergeable": dirty.is_empty() && on_top,
-            "blocked_by": if !dirty.is_empty() {
-                json!({ "kind": "dirty_worktree", "paths": dirty })
+            "mergeable": blocking.is_empty() && on_top,
+            "blocked_by": if !blocking.is_empty() {
+                json!({ "kind": "dirty_worktree", "paths": blocking })
             } else if !on_top {
                 json!({ "kind": "needs_rebase" })
             } else {

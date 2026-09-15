@@ -497,7 +497,7 @@ fn the_whole_loop_reaches_a_merge_commit_with_real_models() {
     eprintln!(
         "== {} commits, {} files, +{} -{} ==",
         payload["commits"],
-        payload["total_added"],
+        payload["files"].as_array().map(Vec::len).unwrap_or(0),
         payload["total_added"],
         payload["total_deleted"]
     );
