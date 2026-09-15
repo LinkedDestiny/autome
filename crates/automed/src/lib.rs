@@ -15,3 +15,4 @@ pub mod harness_probe;
 pub mod ipc;
 pub mod store;
 pub mod target_probe;
+pub mod workspace;
