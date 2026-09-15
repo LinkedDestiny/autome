@@ -551,25 +551,52 @@ pub struct CodexTurnOutcome {
     pub error_message: Option<String>,
 }
 
-/// Spawns, initializes, starts a fresh thread, then drives one `turn/start`
-/// on it all the way to its terminal `turn/completed` notification, then
-/// kills the probe child. `turn_completion_timeout` must budget for the
-/// full notification window after `turn/start`'s own (immediate,
-/// `status:"inProgress"`) response — confirmed empirically this can be
-/// 30-40 seconds for the one failure mode observed (repeated WS/HTTPS
-/// reconnect attempts against a 401, see module doc), not just a fast
-/// round trip.
+/// `thread/start`'s `sandbox` parameter. Empirically confirmed against the
+/// real `codex-cli 0.153.4` binary: the wire values are **kebab-case**
+/// (`"workspace-write"`, not camelCase `"workspaceWrite"` — the latter is
+/// rejected with a JSON-RPC -32600 listing these exact three variants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexSandboxMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl CodexSandboxMode {
+    fn as_wire(self) -> &'static str {
+        match self {
+            CodexSandboxMode::ReadOnly => "read-only",
+            CodexSandboxMode::WorkspaceWrite => "workspace-write",
+            CodexSandboxMode::DangerFullAccess => "danger-full-access",
+        }
+    }
+}
+
+/// Spawns, initializes, starts a fresh thread scoped to `cwd` under
+/// `sandbox`, then drives one `turn/start` on it all the way to its
+/// terminal `turn/completed` notification, then kills the probe child.
+/// `turn_completion_timeout` must budget for the full notification window
+/// after `turn/start`'s own (immediate, `status:"inProgress"`) response —
+/// confirmed empirically this can be 30-40 seconds for the one failure mode
+/// observed (repeated WS/HTTPS reconnect attempts against a 401, see module
+/// doc), not just a fast round trip.
 pub async fn probe_turn_to_completion(
     codex_binary: &Path,
     codex_home: &OwnedDirGuard,
+    cwd: &Path,
+    sandbox: CodexSandboxMode,
     text: &str,
     turn_completion_timeout: Duration,
 ) -> Result<CodexTurnOutcome, CodexTransportError> {
     let (mut transport, _initialize_result) =
         spawn_initialized(codex_binary, codex_home, Duration::from_secs(10)).await?;
 
+    let thread_start_params = serde_json::json!({
+        "cwd": cwd,
+        "sandbox": sandbox.as_wire(),
+    });
     let thread_id = match transport
-        .request("thread/start", serde_json::json!({}), Duration::from_secs(10))
+        .request("thread/start", thread_start_params, Duration::from_secs(10))
         .await
     {
         Ok((result, _skipped)) => {
@@ -736,9 +763,16 @@ mod tests {
     async fn probe_turn_to_completion_round_trips_the_unauthenticated_failure_mode_against_the_real_codex_binary(
     ) {
         let codex_home = real_codex_home();
+        let cwd = std::env::temp_dir().join(format!(
+            "automed-codex-transport-test-cwd-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&cwd).unwrap();
         let outcome = probe_turn_to_completion(
             Path::new("/opt/homebrew/bin/codex"),
             &codex_home,
+            &cwd,
+            CodexSandboxMode::WorkspaceWrite,
             "say hi",
             Duration::from_secs(90),
         )
@@ -752,6 +786,65 @@ mod tests {
             "expected the terminal turn error to mention the underlying 401"
         );
         std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(&cwd).ok();
+    }
+
+    /// `thread/start`'s `cwd`/`sandbox` params are honored by the real
+    /// binary — confirmed empirically (see module doc): the thread's
+    /// resolved `cwd` and `runtimeWorkspaceRoots` echo the requested path,
+    /// and `sandbox.type` echoes the requested mode with `networkAccess:
+    /// false` under `workspace-write`. This test drives that directly via
+    /// `thread/start` (not `probe_turn_to_completion`, which discards the
+    /// full thread envelope) so a regression in param wiring is caught even
+    /// without a real turn ever completing.
+    #[tokio::test]
+    async fn thread_start_honors_cwd_and_sandbox_against_the_real_codex_binary() {
+        let codex_home = real_codex_home();
+        let cwd = std::env::temp_dir().join(format!(
+            "automed-codex-transport-test-thread-cwd-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&cwd).unwrap();
+
+        let (mut transport, _initialize_result) = spawn_initialized(
+            Path::new("/opt/homebrew/bin/codex"),
+            &codex_home,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+
+        let params = serde_json::json!({
+            "cwd": &cwd,
+            "sandbox": CodexSandboxMode::WorkspaceWrite.as_wire(),
+        });
+        let request_result =
+            transport.request("thread/start", params, Duration::from_secs(10)).await;
+        kill_and_reap(&mut transport).await;
+        let (result, _skipped) = request_result.unwrap();
+
+        let expected_cwd = cwd.to_string_lossy().to_string();
+        assert_eq!(
+            result.get("thread").and_then(|t| t.get("cwd")).and_then(Value::as_str),
+            Some(expected_cwd.as_str())
+        );
+        assert_eq!(
+            result.get("runtimeWorkspaceRoots").and_then(Value::as_array).map(|roots| {
+                roots.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()
+            }),
+            Some(vec![expected_cwd])
+        );
+        assert_eq!(
+            result.get("sandbox").and_then(|s| s.get("type")).and_then(Value::as_str),
+            Some("workspaceWrite")
+        );
+        assert_eq!(
+            result.get("sandbox").and_then(|s| s.get("networkAccess")).and_then(Value::as_bool),
+            Some(false)
+        );
+
+        std::fs::remove_dir_all(codex_home.canonical_path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(&cwd).ok();
     }
 
     /// A stand-in binary that never writes a line and never exits must be

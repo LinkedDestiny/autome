@@ -11,6 +11,7 @@ pub mod claude_transport;
 pub mod codex_transport;
 pub mod dispatch;
 pub mod fs_guard;
+pub mod harness_executor;
 pub mod harness_probe;
 pub mod ipc;
 pub mod store;
