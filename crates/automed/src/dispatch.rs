@@ -39,13 +39,20 @@
 //! (a non-negative integer); `queue.try_acquire_lease` parses `params.task_id`
 //! and `params.lease_id`; `queue.release_via_safe_park` parses `params.receipt`
 //! (a full `SafeParkReceipt`); `queue.cancel` parses `params.task_id`.
+//! `workspace.create_disposable_clone` (§8.1) follows `project.register_target`'s
+//! shape exactly: handled in `handle_command` ahead of both `try_dispatch_read`
+//! and `dispatch`, since it writes a `run_workspaces` row but appends no
+//! `Event`. Parses `params.task_id`, `params.run_id`, `params.source_repo`
+//! (an OS path to a real git repo); its read counterpart `workspace.get`
+//! parses `params.task_id`/`params.run_id`.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
     AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, ContractAppendError,
-    CreateFromTargetError, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError,
-    GraphAppendError, ProjectAppendError, ProjectSummary, TaskAppendError, TaskSummary,
+    CreateDisposableCloneError, CreateFromTargetError, DisposableCloneRecord,
+    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError, GraphAppendError,
+    ProjectAppendError, ProjectSummary, TaskAppendError, TaskSummary,
 };
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
@@ -88,6 +95,11 @@ pub enum DispatchError {
     /// caller's fault (a bad or since-removed path), never an internal
     /// failure.
     TargetProbe(TargetProbeError),
+    /// §8.1 write path: `create_disposable_clone_for_run`'s failure modes
+    /// (a `git` failure, or `fs_guard`'s owner-only discipline rejecting
+    /// something under `runs/`), matched exhaustively below rather than
+    /// flattened -- same reasoning as `CreateFromTarget` above.
+    CreateDisposableClone(CreateDisposableCloneError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -105,6 +117,12 @@ impl From<CreateFromTargetError> for DispatchError {
 impl From<TargetProbeError> for DispatchError {
     fn from(value: TargetProbeError) -> Self {
         DispatchError::TargetProbe(value)
+    }
+}
+
+impl From<CreateDisposableCloneError> for DispatchError {
+    fn from(value: CreateDisposableCloneError) -> Self {
+        DispatchError::CreateDisposableClone(value)
     }
 }
 
@@ -409,6 +427,19 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §8.1: same shape as `project.register_target` above -- writes a
+    // `run_workspaces` row (so it isn't a read) but appends no domain
+    // `Event` (a disposable clone is a recorded fact, not an aggregate
+    // with a reducer), so it can't fit `dispatch`'s `Result<Event, _>`
+    // shape either.
+    if command.method == "workspace.create_disposable_clone" {
+        let result = handle_create_disposable_clone(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -494,6 +525,43 @@ fn handle_register_target(
     }))
 }
 
+/// §8.1: the sole caller of `EventStore::create_disposable_clone_for_run`.
+/// Takes `{ task_id, run_id, source_repo }` -- `source_repo` is an OS path
+/// to an already-materialized repository (a ProjectHome's worktree, in the
+/// real flow this will eventually be driven from; any absolute path
+/// pointing at a real git repo works for now, since the caller identity
+/// that path came from is out of scope for this increment). Clones it into
+/// `runs/<task_id>/<run_id>/repo` via `workspace::create_disposable_clone`
+/// and records the result. Refuses to run while the store is in its
+/// diagnostic state, same as every write in `dispatch` and
+/// `handle_register_target`.
+fn handle_create_disposable_clone(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let task_id = parse_string_param(command, "task_id").map_err(dispatch_error_to_reply_error)?;
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let source_repo =
+        parse_string_param(command, "source_repo").map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .create_disposable_clone_for_run(&task_id, &run_id, Path::new(&source_repo))
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(disposable_clone_record_json(&record))
+}
+
+fn disposable_clone_record_json(record: &DisposableCloneRecord) -> Value {
+    serde_json::json!({
+        "task_id": record.task_id,
+        "run_id": record.run_id,
+        "repo_path": record.repo_path,
+        "head_commit": record.head_commit,
+        "created_at": record.created_at,
+    })
+}
+
 /// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
 /// variants (genuine I/O/internal failures) become `Internal`;
 /// `Transition(_)` variants (a reducer rejecting the event given the
@@ -576,6 +644,12 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
             (ReplyErrorCode::InvalidParams, e.to_string())
         }
         DispatchError::TargetProbe(e) => (ReplyErrorCode::InvalidParams, e.to_string()),
+        DispatchError::CreateDisposableClone(CreateDisposableCloneError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::CreateDisposableClone(CreateDisposableCloneError::Workspace(e)) => {
+            (ReplyErrorCode::InvalidParams, e.to_string())
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -595,6 +669,7 @@ fn try_dispatch_read(
         "task.list" => Some(read_task_list(store, command)),
         "task.get" => Some(read_task_get(store, command)),
         "queue.get" => Some(read_queue_get(store)),
+        "workspace.get" => Some(read_workspace_get(store, command)),
         _ => None,
     }
 }
@@ -728,6 +803,27 @@ fn read_queue_get(store: &EventStore) -> Result<Value, (ReplyErrorCode, String)>
             }))
             .collect::<Vec<_>>(),
     }))
+}
+
+/// Read counterpart to `handle_create_disposable_clone`. Takes
+/// `{ task_id, run_id }`; `NotFound` if no clone has been recorded for that
+/// pair yet.
+fn read_workspace_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let task_id = parse_string_param(command, "task_id").map_err(dispatch_error_to_reply_error)?;
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_disposable_clone_for_run(&task_id, &run_id)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(disposable_clone_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no disposable clone recorded for task {task_id} run {run_id}"),
+        )),
+    }
 }
 
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
@@ -2584,6 +2680,78 @@ mod tests {
         );
         let outcome = handle_command(&mut store, &cmd);
         assert!(outcome.event.is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §8.1: `workspace.create_disposable_clone` follows the same
+    /// no-`Event`-produced shape as `project.register_target` above, and
+    /// its payload round-trips through the `workspace.get` read command.
+    #[test]
+    fn handle_command_workspace_create_disposable_clone_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo_with_one_commit(&repo);
+
+        let create_cmd = command(
+            "workspace.create_disposable_clone",
+            json!({
+                "task_id": "task-1",
+                "run_id": "run-1",
+                "source_repo": repo.to_string_lossy(),
+            }),
+        );
+        let outcome = handle_command(&mut store, &create_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("workspace.create_disposable_clone failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["task_id"], "task-1");
+        assert_eq!(payload["run_id"], "run-1");
+        let repo_path = payload["repo_path"]
+            .as_str()
+            .expect("repo_path must be a string");
+        assert!(std::path::Path::new(repo_path).join(".git").is_dir());
+
+        let get_cmd = command(
+            "workspace.get",
+            json!({ "task_id": "task-1", "run_id": "run-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("workspace.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `workspace.get` for a `(task_id, run_id)` pair with no recorded
+    /// clone is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_workspace_get_is_not_found_when_no_clone_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "workspace.get",
+            json!({ "task_id": "no-such-task", "run_id": "no-such-run" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
         std::fs::remove_dir_all(&root).ok();
     }
 

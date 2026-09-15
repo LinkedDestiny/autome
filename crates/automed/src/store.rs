@@ -24,6 +24,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::fs_guard::{self, FsGuardError};
 use crate::target_probe::TargetIdentityProbe;
+use crate::workspace::{self, WorkspaceError};
 
 /// `ExecutionQueue` is a single fleet-wide singleton (plan §6.2), not one
 /// instance per caller-chosen id like the five aggregates above it in this
@@ -203,6 +204,38 @@ pub struct CreatedProjectFromTarget {
     pub appended: AppendedProjectEvent,
 }
 
+/// One `runs/<task_id>/<run_id>/repo` disposable clone (plan §8.1), as
+/// persisted by `create_disposable_clone_for_run`. `repo_path`/`head_commit`
+/// mirror `workspace::DisposableClone` field-for-field; this is this row's
+/// SQL-backed twin, used once the clone has actually landed on disk and
+/// been recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisposableCloneRecord {
+    pub task_id: String,
+    pub run_id: String,
+    pub repo_path: String,
+    pub head_commit: String,
+    pub created_at: String,
+}
+
+#[derive(Debug)]
+pub enum CreateDisposableCloneError {
+    Sql(rusqlite::Error),
+    Workspace(WorkspaceError),
+}
+
+impl From<rusqlite::Error> for CreateDisposableCloneError {
+    fn from(value: rusqlite::Error) -> Self {
+        CreateDisposableCloneError::Sql(value)
+    }
+}
+
+impl From<WorkspaceError> for CreateDisposableCloneError {
+    fn from(value: WorkspaceError) -> Self {
+        CreateDisposableCloneError::Workspace(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -333,7 +366,8 @@ pub struct AppendedRunEvent {
 /// case, and later steps only add what is genuinely missing.
 type MigrationStep = fn(&Connection) -> rusqlite::Result<()>;
 
-const MIGRATIONS: &[MigrationStep] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
+const MIGRATIONS: &[MigrationStep] =
+    &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -453,6 +487,27 @@ fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
             inspection_json TEXT NOT NULL,
             trust_confirmed INTEGER NOT NULL DEFAULT 0,
             consumed_by_project_id TEXT
+        );
+        ",
+    )
+}
+
+/// `run_workspaces`: one row per `workspace::create_disposable_clone` call
+/// (plan §8.1), recorded by `create_disposable_clone_for_run` immediately
+/// after the clone lands on disk. `(task_id, run_id)` is the primary key —
+/// matching `workspace.rs`'s own "a second call for the same pair fails"
+/// discipline (`create_owned_dir` refuses to reuse the `run_id` directory),
+/// so a duplicate row could never legitimately occur here either.
+fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS run_workspaces (
+            task_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            repo_path TEXT NOT NULL,
+            head_commit TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, run_id)
         );
         ",
     )
@@ -1701,6 +1756,76 @@ impl EventStore {
             }
         }
     }
+
+    /// §8.1's write path: builds a fresh `runs/<task_id>/<run_id>/repo`
+    /// disposable clone of `source_repo` via `workspace::create_disposable_clone`,
+    /// then records the resulting `(repo_path, head_commit)` as one row in
+    /// `run_workspaces`. Unlike the five event-sourced aggregates, a
+    /// disposable clone has no state-machine transitions of its own — it is
+    /// a fact recorded once — so this is a plain SQL insert, not a journaled
+    /// event, mirroring how `register_target` records a `project_targets`
+    /// row rather than an `Event`. A second call for the same
+    /// `task_id`/`run_id` fails: `workspace::create_disposable_clone`
+    /// refuses to reuse an existing `<run_id>` directory, and the
+    /// `(task_id, run_id)` primary key would refuse the duplicate row even
+    /// if it somehow got that far.
+    pub fn create_disposable_clone_for_run(
+        &mut self,
+        task_id: &str,
+        run_id: &str,
+        source_repo: &std::path::Path,
+    ) -> Result<DisposableCloneRecord, CreateDisposableCloneError> {
+        let data_root = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let data_root_guard = fs_guard::verify_owned_dir(&data_root, &data_root)
+            .map_err(WorkspaceError::from)?;
+        let runs_root = workspace::ensure_runs_root(&data_root_guard)?;
+        let clone = workspace::create_disposable_clone(&runs_root, task_id, run_id, source_repo)?;
+
+        let repo_path = clone.repo_path.to_string_lossy().into_owned();
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO run_workspaces (task_id, run_id, repo_path, head_commit, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task_id, run_id, repo_path, clone.head_commit, created_at],
+        )?;
+
+        Ok(DisposableCloneRecord {
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+            repo_path,
+            head_commit: clone.head_commit,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `create_disposable_clone_for_run` — looks up the
+    /// recorded `run_workspaces` row for `(task_id, run_id)`, if any.
+    pub fn load_disposable_clone_for_run(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> rusqlite::Result<Option<DisposableCloneRecord>> {
+        self.conn
+            .query_row(
+                "SELECT task_id, run_id, repo_path, head_commit, created_at \
+                 FROM run_workspaces WHERE task_id = ?1 AND run_id = ?2",
+                rusqlite::params![task_id, run_id],
+                |row| {
+                    Ok(DisposableCloneRecord {
+                        task_id: row.get(0)?,
+                        run_id: row.get(1)?,
+                        repo_path: row.get(2)?,
+                        head_commit: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -2064,6 +2189,104 @@ mod tests {
         assert!(
             matches!(second, Err(CreateFromTargetError::TargetAlreadyConsumed)),
             "{second:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Builds a throwaway real Git repository (via the real `git` binary)
+    /// with one commit, to act as `source_repo` for
+    /// `create_disposable_clone_for_run` tests below. Mirrors
+    /// `workspace.rs`'s own `fixture_source_repo` test helper exactly,
+    /// since this is exercising the same `git` round trip one layer up.
+    fn fixture_source_repo(root: &std::path::Path) -> (std::path::PathBuf, String) {
+        let dir = root.join("source");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_str = dir.to_string_lossy().into_owned();
+        std::process::Command::new("git")
+            .args(["-C", &path_str, "init", "--quiet"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &path_str, "config", "user.email", "test@example.com"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &path_str, "config", "user.name", "Test"])
+            .status()
+            .unwrap();
+        std::fs::write(dir.join("README.md"), b"hello\n").unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &path_str, "add", "README.md"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &path_str, "commit", "--quiet", "-m", "initial"])
+            .status()
+            .unwrap();
+        let head = std::process::Command::new("git")
+            .args(["-C", &path_str, "rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let head_commit = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        (dir, head_commit)
+    }
+
+    /// §8.1: `create_disposable_clone_for_run` builds a real clone on disk
+    /// via `workspace::create_disposable_clone` and records exactly what
+    /// landed there as one `run_workspaces` row, readable back via
+    /// `load_disposable_clone_for_run`.
+    #[test]
+    fn create_disposable_clone_for_run_records_what_workspace_created_on_disk() {
+        let root = temp_data_root("disposable-clone");
+        let (source_repo, expected_head) = fixture_source_repo(&root);
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_disposable_clone_for_run("task-1", "run-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let record = store
+            .create_disposable_clone_for_run("task-1", "run-1", &source_repo)
+            .unwrap();
+        assert_eq!(record.task_id, "task-1");
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.head_commit, expected_head);
+        assert!(std::path::Path::new(&record.repo_path).join("README.md").is_file());
+
+        let loaded = store
+            .load_disposable_clone_for_run("task-1", "run-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call for the same `(task_id, run_id)` must fail rather than
+    /// silently reusing or overwriting the first clone -- mirrors
+    /// `workspace.rs`'s own `refuses_to_reuse_an_existing_run_directory`,
+    /// one layer up through the store.
+    #[test]
+    fn create_disposable_clone_for_run_refuses_to_reuse_an_existing_run_id() {
+        let root = temp_data_root("disposable-clone-reuse");
+        let (source_repo, _) = fixture_source_repo(&root);
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        store
+            .create_disposable_clone_for_run("task-1", "run-1", &source_repo)
+            .unwrap();
+        let err = store
+            .create_disposable_clone_for_run("task-1", "run-1", &source_repo)
+            .unwrap_err();
+        assert!(
+            matches!(err, CreateDisposableCloneError::Workspace(_)),
+            "{err:?}"
         );
 
         std::fs::remove_dir_all(&root).ok();
