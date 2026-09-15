@@ -186,9 +186,48 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         return Ok(true);
     }
 
+    // Sweep up anything the session left uncommitted, before reading the
+    // document (§6). A real run produced a correct README edit, a correct
+    // audit and a correct retro — and committed none of it, so the task
+    // branch was identical to its base and the merge would have brought
+    // nothing across. The prompt asks each round to commit; this is what
+    // makes forgetting recoverable rather than silent.
+    sweep_commit(&repo, &task, s)?;
+
     let outcome = read_outcome(&repo, &task, &lifecycle);
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
+}
+
+/// Commits whatever a session left behind in its own worktree.
+///
+/// Scoped to the worktree, so it can only ever pick up the task's own work.
+/// Labelled as a sweep, so a reader can tell it apart from a commit the agent
+/// made deliberately.
+fn sweep_commit(repo: &Path, task: &TaskRecord, session: &Session) -> Result<()> {
+    let worktree = worktree_path(repo, &task.slug);
+    if !worktree.exists() {
+        return Ok(());
+    }
+    match git::is_clean(&worktree) {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        // A worktree we cannot inspect is not one we should commit into.
+        Err(e) => {
+            tracing::warn!(task = %task.id, error = %e, "could not check the worktree");
+            return Ok(());
+        }
+    }
+    let label = session.kind.label();
+    let message = format!("chore(autome): {label} #{} 未提交的剩余改动", session.round);
+    match git::commit_paths(&worktree, &["."], &message) {
+        Ok(Some(sha)) => {
+            tracing::info!(task = %task.id, %sha, "swept up uncommitted session work");
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(task = %task.id, error = %e, "sweep commit failed"),
+    }
+    Ok(())
 }
 
 /// Seconds since the log was last written, for the heartbeat backstop
@@ -1250,6 +1289,136 @@ mod tests {
             ),
             "{:?}",
             w.state("T-1")
+        );
+    }
+
+    #[test]
+    fn a_session_that_forgot_to_commit_has_its_work_swept_up() {
+        // The failure this prevents: a round does all the work correctly,
+        // never commits, the task branch stays identical to its base, and the
+        // merge brings nothing across. Silent, and only visible at the end.
+        needs_git!();
+        let mut w = World::new("sweep");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        let wt = w.with_worktree(&task);
+
+        let before = git::head_sha(&wt).unwrap();
+        // The session's work, left uncommitted.
+        std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Pending)], ""),
+        );
+
+        let session = Session {
+            id: "s1".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Role { role: Role::Impl },
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 3,
+            started_at: now_iso(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+        };
+        w.ctx.store.insert_session(&session).unwrap();
+        let dir = w.repo.join(SessionPaths::dir("T-1"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s1.exit"),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+
+        reap_session(&mut w.ctx, &session).unwrap();
+
+        assert_ne!(
+            git::head_sha(&wt).unwrap(),
+            before,
+            "the branch must have moved"
+        );
+        assert!(
+            git::is_clean(&wt).unwrap(),
+            "nothing should be left uncommitted: {:?}",
+            git::dirty_paths(&wt).unwrap()
+        );
+        let subjects = git::commit_subjects(&w.repo, "main", &task.branch()).unwrap();
+        assert!(
+            subjects.iter().any(|s| s.contains("实现 #3")),
+            "the sweep commit names the round: {subjects:?}"
+        );
+    }
+
+    #[test]
+    fn a_session_that_committed_its_own_work_gets_no_extra_commit() {
+        needs_git!();
+        let mut w = World::new("no-sweep");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        let wt = w.with_worktree(&task);
+
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Pending)], ""),
+        );
+        std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
+        git::commit_paths(&wt, &["."], "feat: the round's own commit").unwrap();
+        let after_own_commit = git::head_sha(&wt).unwrap();
+
+        let session = Session {
+            id: "s2".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Role { role: Role::Impl },
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 1,
+            started_at: now_iso(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+        };
+        w.ctx.store.insert_session(&session).unwrap();
+        let dir = w.repo.join(SessionPaths::dir("T-1"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s2.exit"),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+
+        reap_session(&mut w.ctx, &session).unwrap();
+        assert_eq!(
+            git::head_sha(&wt).unwrap(),
+            after_own_commit,
+            "a clean worktree must not produce an empty sweep commit"
         );
     }
 

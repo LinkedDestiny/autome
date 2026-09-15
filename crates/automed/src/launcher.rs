@@ -303,6 +303,8 @@ fn role_prompt(role: Role, slug: &str) -> String {
     format!(
         "你是本任务的**{round}**。本轮在 worktree 内独立完成，完成后结束会话——\
          **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{body}\n\n\
+         结束前把本轮的改动提交到当前分支（`git add` + `git commit`）。\
+         任务文档和代码改动都要提交——没有提交的东西不会进入最终的合并。\n\n\
          状态块格式必须严格符合 `{task_file}` 中「Loop 协议」一节与 \
          `.autome/skill/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。\n",
         round = role.round_name()
@@ -836,6 +838,19 @@ mod tests {
                     "{role} does not name its own output document:\n{p}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_role_prompt_asks_for_a_commit() {
+        // A real run did all the work correctly and committed none of it, so
+        // the branch was identical to its base and the merge would have
+        // brought nothing. The core sweeps up afterwards, but a round that
+        // commits its own work produces a legible history.
+        for role in Role::ALL {
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            assert!(p.contains("git commit"), "{role}: {p}");
+            assert!(p.contains("不会进入最终的合并"), "{role}: {p}");
         }
     }
 

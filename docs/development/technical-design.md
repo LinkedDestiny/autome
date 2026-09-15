@@ -207,7 +207,7 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 | 识别默认分支 | `symbolic-ref refs/remotes/origin/HEAD`，无远端时取 `init.defaultBranch`，再无则当前 HEAD | 结果存 Project |
 | 初始化 | `git init -b <default>`（非 Git 目录）；追加 .gitignore；写 .autome | init commit 在 Onboarding 完成或跳过后创建 |
 | 创建任务 | `git worktree add .worktree/<slug> -b autome/<slug> <default>`；写 `docs/<slug>/attachments/`；在任务分支提交「chore(autome): T-n inputs」 | 任务分支上的提交由 Autome 与 Agent 共同产生 |
-| 会话提交 | Agent 在 worktree 内按协议自行提交 | automed 不替 Agent 提交 |
+| 会话提交 | Agent 在 worktree 内按协议自行提交；会话结束后 automed 兜底提交 worktree 内剩余的未提交改动 | 兜底提交只作用于该任务自己的 worktree，提交信息标注为「未提交的剩余改动」 |
 | rebase | `git -C .worktree/<slug> rebase <default>` | 冲突时 `rebase --abort`，记录冲突文件，转 Implement |
 | 合并前置 | 主工作树 `git status --porcelain` 为空；任务分支 `merge-base --is-ancestor <default> autome/<slug>` | 不满足即拒绝 |
 | 合并 | 在项目根 `git merge --no-ff autome/<slug> -m "merge(autome): T-n <title>"` | 主工作树随之更新 |
