@@ -81,13 +81,13 @@ budget_factor = 5       # 实现预算 N = budget_factor × 初始里程碑数
 [roles.plan]
 enabled = true
 runtime = "claude"      # claude | codex
-model = "claude-opus-5"
-effort = "high"         # 留空用 CLI 默认
+model = ""              # 留空 = 用该 CLI 自己的默认模型
+effort = "high"         # 留空 = 用该 CLI 的默认档位
 skills = ["island-shop-conventions"]
 
 [roles.review]
 runtime = "codex"
-model = "gpt-5.4"
+model = ""
 effort = "high"
 
 [roles.adjudicate]
@@ -137,19 +137,25 @@ Paused(resume_node) · Stopped(node) · Failed(reason) · Cancelled
 
 界面上的 13 个节点对应 Intake…Done；Queued、Paused、Stopped、Failed 以芯片叠加显示。
 
-### 5.2 角色与任务文件入口
+### 5.2 角色与会话 prompt
 
-沿用 1.x 任务文件协议的入口语句，automed 组装为会话 prompt：
+**不沿用 1.x 的入口语句。** 1.x 用「execute 任务文件 additional task 3」这样的句子派发轮次，任务文件里对应有编号小节——那层间接存在是因为 Agent 要自己判断轮次并接力。2.0 由内核调度，内核知道这是哪一轮，直接说出来即可。
 
-| 角色 | 入口 |
-|---|---|
-| plan | `Please execute docs/<slug>/<slug>-task.md Task 1.` |
-| review | `… Task 1 additional task 1.` |
-| adjudicate | `… Task 1 additional task 2.` |
-| impl | `… Task 1 additional task 3.` |
-| audit | `… Task 1 additional task 4.` |
+实测证明这层间接不能照搬：真实运行中生成的任务文件没有名为「Task 1」的小节，四个会话各自打开文件、找不到针对自己的内容，设计文档纹丝未动。
 
-任务文件模板相对 1.x 的唯一协议变化：删除「启动下一个会话」的条款，改为「完成本轮后结束会话，由 Autome 调度下一节点」。
+每个角色的 prompt 只说三件事：
+
+| 角色 | 本轮是什么 | 读 | 写 |
+|---|---|---|---|
+| plan | 设计轮 | 任务文件、设计文档、上轮评审与裁决 | 设计文档（含里程碑表） |
+| review | 评审轮 | 任务文件、设计文档 | `<slug>-review.md`（覆盖） |
+| adjudicate | 裁决轮 | 任务文件、设计文档、本轮评审、既有裁决 | `<slug>-adjudication.md`（追加）+ 设计文档 |
+| impl | 实现轮 | 任务文件、设计文档、上轮审计 | 代码、设计文档里程碑状态、`retro.md` |
+| audit | 审计轮 | 任务文件、设计文档 | `<slug>-audit.md`（覆盖）+ 里程碑状态、`retro.md` |
+
+规则本身不在 prompt 里，在任务文件内嵌的 Loop 协议全文里（`.autome/skill/loop-protocol.md`，由任务整理轮逐字复制进去）。
+
+三条每个 prompt 都带的固定条款：完成后结束会话、不要启动下一个会话、结束前提交本轮改动。
 
 ### 5.3 转换表
 
