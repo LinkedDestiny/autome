@@ -107,6 +107,13 @@
 //! `replan.get_contract_amendment_authorization` parses `params.new_run_id`
 //! alone (the one field `ContractAmendmentAuthorization` does carry that is
 //! naturally unique).
+//! §7/§0 `completion.evaluate` is the same stateless-check shape as
+//! `replan.evaluate_proposal`: `CompletionGate` is a plain all-bool struct
+//! with no validating constructor at all (deliberately -- its own doc
+//! comment forbids a `Default`/partial constructor that could start
+//! all-true), so it is trusted directly from `params.gate` and re-run
+//! through its own `is_complete`/`open_gates` rather than trusting a
+//! caller's own verdict. Returns `{ is_complete, open_gates }`.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
@@ -150,6 +157,7 @@ use autome_domain::config::{
 use autome_domain::clarification::{
     self, DefaultAssumptionCandidate, MandatoryClarificationTrigger, MaterialAssumption,
 };
+use autome_domain::completion::CompletionGate;
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
     DeliverySubject, ProjectTargetTransitionReceipt,
@@ -3361,6 +3369,32 @@ fn read_replan_evaluate_proposal(command: &Command) -> Result<Value, (ReplyError
     }))
 }
 
+fn parse_completion_gate_param(command: &Command) -> Result<CompletionGate, DispatchError> {
+    let value = command
+        .params
+        .get("gate")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.gate is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.gate is not a valid CompletionGate: {e}"))
+    })
+}
+
+/// §7/§0: `{ gate: CompletionGate }` -- re-exercises `CompletionGate`'s own
+/// `is_complete`/`open_gates` server-side against a caller-assembled gate
+/// rather than trusting the caller's own conjunction, matching the
+/// `replan.evaluate_proposal`/`step_role.validate_schema` "check"
+/// convention. Stateless: `CompletionGate` is not a stored fact, it is
+/// re-assembled by the caller from other subsystems' current state on
+/// every check.
+fn read_completion_evaluate(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let gate = parse_completion_gate_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "is_complete": gate.is_complete(),
+        "open_gates": gate.open_gates(),
+    }))
+}
+
 /// Dispatch-layer-only input for `replan.authorize_contract_amendment` --
 /// mirrors `authorize_contract_amendment`'s own argument list, same
 /// reasoning as `ReplanAuthorizationInputParam`.
@@ -4279,6 +4313,7 @@ fn try_dispatch_read(
         "replan.get_contract_amendment_authorization" => Some(
             read_replan_get_contract_amendment_authorization(store, command),
         ),
+        "completion.evaluate" => Some(read_completion_evaluate(command)),
         _ => None,
     }
 }
@@ -13411,6 +13446,129 @@ mod tests {
                 "mandatory_checks_by_requirement": {},
             }),
         );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn all_true_completion_gate_json() -> Value {
+        json!({
+            "contract_is_frozen": true,
+            "execution_run_origin_chain_is_valid_and_promoted_outputs_match_contract_graph": true,
+            "execution_run_spec_is_frozen_and_matches_current_run": true,
+            "project_is_active_initialized_and_identity_current": true,
+            "project_intent_revision_matches_contract_and_has_no_unapproved_conflict": true,
+            "resolved_project_config_matches_run_snapshot": true,
+            "every_step_route_matches_qualified_cli_model_effort": true,
+            "every_attempt_matches_its_frozen_permission_profile_and_provider_observation": true,
+            "skill_set_snapshot_is_unchanged_and_projection_verified": true,
+            "no_environment_or_skill_install_binding_transaction_affects_run_snapshot": true,
+            "original_source_coverage_is_100_percent": true,
+            "all_must_requirements_have_checks": true,
+            "applicable_project_rule_snapshot_matches_contract_and_base": true,
+            "no_unadjudicated_project_rule_change": true,
+            "supported_environment_profile_matches": true,
+            "current_readiness_receipt_is_ready": true,
+            "all_required_fact_receipts_are_current": true,
+            "every_must_requirement_is_satisfied_by_all_its_mandatory_checks_on_candidate_tree": true,
+            "all_receipts_match_current_contract_check_tree_and_environment": true,
+            "every_mandatory_process_check_matches_its_executable_oracle_snapshot": true,
+            "no_unexpected_skips_or_filtered_tests": true,
+            "test_inventory_not_silently_reduced": true,
+            "every_test_inventory_change_is_requirement_mapped_and_independently_accepted": true,
+            "all_required_negative_cases_pass": true,
+            "final_regression_policy_satisfied": true,
+            "final_audit_verdict_is_pass": true,
+            "producer_evaluator_model_choice_is_distinct_and_qualification_is_current": true,
+            "no_open_blocking_question_or_material_assumption": true,
+            "no_open_blocking_finding": true,
+            "no_open_human_review_finding": true,
+            "no_unexplained_out_of_scope_diff": true,
+            "candidate_working_tree_is_clean": true,
+            "all_required_artifacts_exist_with_matching_hash": true,
+            "required_human_decisions_have_receipts": true,
+            "all_configured_human_reviews_have_current_receipts": true,
+            "candidate_certificate_is_valid": true,
+            "delivery_tree_content_equals_candidate_tree": true,
+            "every_required_deliverable_is_present_at_approved_destination_with_matching_hash": true,
+            "delivery_chain_matches_task_kind": true,
+            "event_log_integrity_check_passes": true,
+        })
+    }
+
+    /// §7/§0: `completion.evaluate` is stateless -- same shape as
+    /// `replan.evaluate_proposal`/`step_role.validate_schema`.
+    #[test]
+    fn handle_command_completion_evaluate_reports_complete_when_every_gate_is_true() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "completion.evaluate",
+            json!({ "gate": all_true_completion_gate_json() }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["is_complete"], true);
+                assert_eq!(payload["open_gates"], json!([]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("completion.evaluate failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// This is the load-bearing property mirrored from
+    /// `completion::tests::any_single_false_field_blocks_completion`: there
+    /// is no field whose falseness the IPC-level check tolerates either.
+    #[test]
+    fn handle_command_completion_evaluate_reports_the_open_gate_when_one_field_is_false() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut gate = all_true_completion_gate_json();
+        gate["final_audit_verdict_is_pass"] = json!(false);
+        let cmd = command("completion.evaluate", json!({ "gate": gate }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["is_complete"], false);
+                assert_eq!(payload["open_gates"], json!(["final_audit_verdict_is_pass"]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("completion.evaluate failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_completion_evaluate_is_invalid_params_without_gate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("completion.evaluate", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_completion_evaluate_is_invalid_params_with_a_missing_field() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut gate = all_true_completion_gate_json();
+        gate.as_object_mut().unwrap().remove("final_audit_verdict_is_pass");
+        let cmd = command("completion.evaluate", json!({ "gate": gate }));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
