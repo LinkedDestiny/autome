@@ -95,13 +95,13 @@ use crate::store::{
     CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
     DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
-    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
+    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError, HumanReviewReceiptRecord,
     IssueCandidateCertificateError, IssueCompletionCertificateError, NodeAppendError,
     PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
     ProjectIntentAmendmentRecord, ProjectIntentRevisionRecord,
     ProjectInitializationReceiptRecord, QualificationRecord, ReadinessRecord, RecordAttemptError,
     RecordBudgetGrantError, RecordCredentialError, RecordCredentialReceiptError,
-    RecordEvidenceError, RecordPlanningPolicyRestartError,
+    RecordEvidenceError, RecordHumanReviewReceiptError, RecordPlanningPolicyRestartError,
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
     RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
     RecordRunPolicyAmendmentError, RecordSkillInstallReceiptError, RecordUserCorrectionError,
@@ -141,6 +141,7 @@ use autome_domain::project::{
 use autome_domain::project_intent::{InitializationResult, KeyDecision};
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::{Requirement, RequirementId};
+use autome_domain::review::{self, HumanReviewFinding, ReviewDecision, ReviewSpecSubject, ReviewSubject};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
 use autome_domain::skill::{self, GlobalSkillBinding, ProjectSkillBinding, SkillAuditOutcome, SkillDigest};
@@ -299,6 +300,11 @@ pub enum DispatchError {
     /// `SkillEvidenceLadder` rung-order check rejected the transition
     /// (`Ladder`), or a SQL failure (`Sql`).
     SkillLadderTransition(SkillLadderTransitionError),
+    /// §5.1 write path: `record_human_review_receipt`'s failure modes --
+    /// `issue_human_review_receipt`'s own reject-without-anchored-findings
+    /// checks, re-run server-side (`Receipt`), or a duplicate
+    /// `receipt_digest` surfaced as a SQL primary-key violation (`Sql`).
+    RecordHumanReviewReceipt(RecordHumanReviewReceiptError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -424,6 +430,12 @@ impl From<RecordSkillInstallReceiptError> for DispatchError {
 impl From<SkillLadderTransitionError> for DispatchError {
     fn from(value: SkillLadderTransitionError) -> Self {
         DispatchError::SkillLadderTransition(value)
+    }
+}
+
+impl From<RecordHumanReviewReceiptError> for DispatchError {
+    fn from(value: RecordHumanReviewReceiptError) -> Self {
+        DispatchError::RecordHumanReviewReceipt(value)
     }
 }
 
@@ -1027,6 +1039,18 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     }
     if command.method == "skill.record_project_binding" {
         let result = handle_record_project_skill_binding(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // §5.1: same shape again -- writes a `human_review_receipts` row (so
+    // it isn't a read) but appends no domain `Event` (a human review
+    // decision is a fact issued once by an operator, not an aggregate with
+    // a reducer).
+    if command.method == "review.issue_receipt" {
+        let result = handle_issue_human_review_receipt(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -2651,6 +2675,202 @@ fn read_skill_can_garbage_collect(command: &Command) -> Result<Value, (ReplyErro
     Ok(serde_json::json!({ "can_garbage_collect": can_garbage_collect }))
 }
 
+/// Dispatch-layer-only input for `review.issue_receipt` -- mirrors
+/// `issue_human_review_receipt`'s own argument list rather than accepting a
+/// client-supplied `HumanReviewReceipt` directly, same
+/// derive-bypasses-the-constructor reasoning as
+/// `QualificationReceiptInputParam`/`SkillInstallInputParam`: every field of
+/// `HumanReviewReceipt` is `pub` with a derived `Deserialize`, so a caller
+/// who could hand in a whole receipt could set `decision: Reject` with an
+/// empty `finding_ids` and bypass the one invariant
+/// `issue_human_review_receipt` exists to enforce. `findings` is a
+/// `Vec<HumanReviewFinding>` trusted as given -- unlike `HumanReviewReceipt`,
+/// `HumanReviewFinding` has no validating constructor of its own (only the
+/// separate, unwired `mark_resolved`/`mark_superseded` transitions), so
+/// there is nothing here for a client to bypass by constructing one
+/// directly.
+#[derive(Debug, Deserialize)]
+struct HumanReviewReceiptInputParam {
+    project_hash: String,
+    task_hash: String,
+    run_hash: String,
+    spec_subject: ReviewSpecSubject,
+    step_id: LoopStepId,
+    operator: String,
+    decided_at: String,
+    decision: ReviewDecision,
+    review_output_hash: String,
+    reason: String,
+    findings: Vec<HumanReviewFinding>,
+    subject: ReviewSubject,
+    receipt_digest: String,
+}
+
+fn parse_human_review_receipt_input_param(
+    command: &Command,
+) -> Result<HumanReviewReceiptInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid HumanReviewReceiptInputParam: {e}"
+        ))
+    })
+}
+
+/// Handles `review.issue_receipt`: `{ input: HumanReviewReceiptInputParam
+/// }`. Calls `record_human_review_receipt`, which itself calls
+/// `issue_human_review_receipt` server-side (so the reject-requires-findings
+/// invariant is actually enforced), same "write returns Value not Event"
+/// shape as `handle_issue_qualification_receipt` -- a human review decision
+/// is a fact issued once by an operator, not an aggregate with a reducer.
+fn handle_issue_human_review_receipt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_human_review_receipt_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_human_review_receipt(
+            &input.project_hash,
+            &input.task_hash,
+            &input.run_hash,
+            input.spec_subject,
+            input.step_id,
+            &input.operator,
+            &input.decided_at,
+            input.decision,
+            &input.review_output_hash,
+            &input.reason,
+            &input.findings,
+            input.subject,
+            &input.receipt_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(human_review_receipt_record_json(&record))
+}
+
+fn human_review_receipt_record_json(record: &HumanReviewReceiptRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_issue_human_review_receipt` -- looks up the
+/// recorded `human_review_receipts` row for `receipt_digest`, if any.
+fn read_human_review_receipt_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let receipt_digest =
+        parse_string_param(command, "receipt_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_human_review_receipt(&receipt_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(human_review_receipt_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no human review receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
+fn parse_human_review_findings_param(
+    command: &Command,
+    key: &str,
+) -> Result<Vec<HumanReviewFinding>, DispatchError> {
+    let value = command
+        .params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} is required")))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.{key} is not a valid array of HumanReviewFinding: {e}"
+        ))
+    })
+}
+
+/// §5.1: `{ subject_changed: bool, findings: [HumanReviewFinding] }` --
+/// re-exercises `can_resubmit_for_review` server-side. Pure -- no store
+/// lookup, the caller supplies the current finding statuses, mirroring how
+/// `read_skill_can_garbage_collect` takes both its sets as params rather
+/// than deriving them from recorded state.
+fn read_review_can_resubmit(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let subject_changed =
+        parse_bool_param(command, "subject_changed").map_err(dispatch_error_to_reply_error)?;
+    let findings = parse_human_review_findings_param(command, "findings")
+        .map_err(dispatch_error_to_reply_error)?;
+    let can_resubmit = review::can_resubmit_for_review(subject_changed, &findings);
+    Ok(serde_json::json!({ "can_resubmit": can_resubmit }))
+}
+
+fn parse_loop_step_id_vec_param(
+    command: &Command,
+    key: &str,
+) -> Result<Vec<LoopStepId>, DispatchError> {
+    let value = command
+        .params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams(format!("params.{key} is required")))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.{key} is not a valid array of LoopStepId: {e}"
+        ))
+    })
+}
+
+fn parse_fresh_receipt_ids_by_step_param(
+    command: &Command,
+) -> Result<std::collections::HashMap<LoopStepId, String>, DispatchError> {
+    let value = command
+        .params
+        .get("fresh_receipt_ids_by_step")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams(
+                "params.fresh_receipt_ids_by_step is required".to_string(),
+            )
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.fresh_receipt_ids_by_step is not a valid HashMap<LoopStepId, String>: {e}"
+        ))
+    })
+}
+
+/// §5.1: `{ required_step_ids: [LoopStepId], fresh_receipt_ids_by_step:
+/// HashMap<LoopStepId, String> }` -- re-exercises
+/// `validate_carried_planning_review_bundle` server-side. Pure -- no store
+/// lookup, mirroring `read_model_selection_validate_model_separation`
+/// taking its whole map as a param rather than deriving it from recorded
+/// state; collects every violation rather than just the first, matching the
+/// same "check" convention.
+fn read_review_validate_carried_planning_bundle(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let required_step_ids = parse_loop_step_id_vec_param(command, "required_step_ids")
+        .map_err(dispatch_error_to_reply_error)?;
+    let fresh_receipt_ids_by_step =
+        parse_fresh_receipt_ids_by_step_param(command).map_err(dispatch_error_to_reply_error)?;
+    let violations = review::validate_carried_planning_review_bundle(
+        &required_step_ids,
+        &fresh_receipt_ids_by_step,
+    );
+    Ok(serde_json::json!({
+        "ok": violations.is_empty(),
+        "violations": violations,
+    }))
+}
+
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -3300,6 +3520,13 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
             ReplyErrorCode::TransitionRejected,
             format!("skill ladder transition rejected: {e:?}"),
         ),
+        DispatchError::RecordHumanReviewReceipt(RecordHumanReviewReceiptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordHumanReviewReceipt(RecordHumanReviewReceiptError::Receipt(e)) => (
+            ReplyErrorCode::TransitionRejected,
+            format!("human review receipt rejected: {e:?}"),
+        ),
         DispatchError::StartDeliveryChain(StartDeliveryChainError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -3441,6 +3668,11 @@ fn try_dispatch_read(
         "skill.get_project_binding" => Some(read_project_skill_binding_get(store, command)),
         "skill.resolve_binding" => Some(read_skill_resolve_binding(store, command)),
         "skill.can_garbage_collect" => Some(read_skill_can_garbage_collect(command)),
+        "review.get_receipt" => Some(read_human_review_receipt_get(store, command)),
+        "review.can_resubmit" => Some(read_review_can_resubmit(command)),
+        "review.validate_carried_planning_bundle" => {
+            Some(read_review_validate_carried_planning_bundle(command))
+        }
         _ => None,
     }
 }
@@ -11246,6 +11478,368 @@ mod tests {
                 "currently_bound_digests": [],
                 "historically_referenced_digests": [],
             }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn human_review_finding_json(
+        id: &str,
+        status: &str,
+        with_anchor: bool,
+        expected_change: &str,
+    ) -> Value {
+        json!({
+            "id": id,
+            "review_receipt_id": "receipt-1",
+            "subject_hash": "output-1",
+            "step_id": "contract_review",
+            "anchor": if with_anchor {
+                json!({ "path": "contract.md" })
+            } else {
+                json!({})
+            },
+            "expected_change": expected_change,
+            "severity": "major",
+            "status": status,
+            "successor_attempt_id": null,
+            "resolution_subject_hash": null,
+            "finding_digest": format!("{id}-digest"),
+        })
+    }
+
+    fn human_review_receipt_input_json(
+        receipt_digest: &str,
+        decision: &str,
+        findings: Value,
+    ) -> Value {
+        json!({
+            "project_hash": "project-1",
+            "task_hash": "task-1",
+            "run_hash": "run-1",
+            "spec_subject": { "Planning": { "planning_spec_hash": "plan-1" } },
+            "step_id": "contract_review",
+            "operator": "operator-1",
+            "decided_at": "2026-09-15T00:00:00Z",
+            "decision": decision,
+            "review_output_hash": "review-output-1",
+            "reason": "looks good",
+            "findings": findings,
+            "subject": { "DocumentStep": { "input_snapshot_hash": "input-1", "output_hash": "output-1" } },
+            "receipt_digest": receipt_digest,
+        })
+    }
+
+    /// §5.1: `review.issue_receipt` follows the same no-`Event`-produced
+    /// shape as `model_selection.issue_qualification_receipt`, and its
+    /// payload round-trips through `review.get_receipt`.
+    #[test]
+    fn handle_command_review_issue_receipt_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "review.issue_receipt",
+            json!({
+                "input": human_review_receipt_input_json("HRR-1", "Pass", json!([])),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("review.issue_receipt failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["receipt_digest"], "HRR-1");
+
+        let get_cmd = command("review.get_receipt", json!({ "receipt_digest": "HRR-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("review.get_receipt failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_get_receipt_is_not_found_before_issuance() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command(
+            "review.get_receipt",
+            json!({ "receipt_digest": "no-such-receipt" }),
+        );
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The domain constructor refuses a `Reject` decision with no findings
+    /// at all; the rejected receipt must never land in the store.
+    #[test]
+    fn handle_command_review_issue_receipt_rejects_reject_without_findings() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "review.issue_receipt",
+            json!({
+                "input": human_review_receipt_input_json("HRR-1", "Reject", json!([])),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command("review.get_receipt", json!({ "receipt_digest": "HRR-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `Reject` decision with a finding that has no anchor is also
+    /// refused.
+    #[test]
+    fn handle_command_review_issue_receipt_rejects_reject_with_unanchored_finding() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let findings = json!([human_review_finding_json(
+            "finding-1",
+            "Open",
+            false,
+            "narrow the write scope",
+        )]);
+        let record_cmd = command(
+            "review.issue_receipt",
+            json!({
+                "input": human_review_receipt_input_json("HRR-1", "Reject", findings),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `Reject` decision with a finding that has an anchor but an empty
+    /// `expected_change` is also refused.
+    #[test]
+    fn handle_command_review_issue_receipt_rejects_reject_with_empty_expected_change() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let findings = json!([human_review_finding_json("finding-1", "Open", true, "")]);
+        let record_cmd = command(
+            "review.issue_receipt",
+            json!({
+                "input": human_review_receipt_input_json("HRR-1", "Reject", findings),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `Reject` decision with a well-formed, anchored finding is accepted.
+    #[test]
+    fn handle_command_review_issue_receipt_accepts_reject_with_well_formed_finding() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let findings = json!([human_review_finding_json(
+            "finding-1",
+            "Open",
+            true,
+            "narrow the write scope",
+        )]);
+        let record_cmd = command(
+            "review.issue_receipt",
+            json!({
+                "input": human_review_receipt_input_json("HRR-1", "Reject", findings),
+            }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { .. } => {}
+            ReplyOutcome::Error { code, message } => {
+                panic!("review.issue_receipt failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_issue_receipt_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("review.issue_receipt", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_can_resubmit_is_true_when_subject_changed() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let findings = json!([human_review_finding_json(
+            "finding-1",
+            "Open",
+            true,
+            "narrow the write scope",
+        )]);
+        let cmd = command(
+            "review.can_resubmit",
+            json!({ "subject_changed": true, "findings": findings }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("review.can_resubmit failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["can_resubmit"], true);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_can_resubmit_is_false_when_open_findings_remain_and_subject_unchanged(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let findings = json!([human_review_finding_json(
+            "finding-1",
+            "Open",
+            true,
+            "narrow the write scope",
+        )]);
+        let cmd = command(
+            "review.can_resubmit",
+            json!({ "subject_changed": false, "findings": findings }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("review.can_resubmit failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["can_resubmit"], false);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_can_resubmit_is_invalid_params_without_subject_changed() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("review.can_resubmit", json!({ "findings": [] }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_validate_carried_planning_bundle_ok_when_receipts_cover_all_steps() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "review.validate_carried_planning_bundle",
+            json!({
+                "required_step_ids": ["contract_drafting", "contract_review"],
+                "fresh_receipt_ids_by_step": {
+                    "contract_drafting": "HRR-1",
+                    "contract_review": "HRR-2",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => panic!(
+                "review.validate_carried_planning_bundle failed: {code:?} {message}"
+            ),
+        };
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["violations"], json!([]));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_validate_carried_planning_bundle_reports_missing_steps() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "review.validate_carried_planning_bundle",
+            json!({
+                "required_step_ids": ["contract_drafting", "contract_review"],
+                "fresh_receipt_ids_by_step": {
+                    "contract_drafting": "HRR-1",
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => panic!(
+                "review.validate_carried_planning_bundle failed: {code:?} {message}"
+            ),
+        };
+        assert_eq!(payload["ok"], false);
+        assert_eq!(
+            payload["violations"],
+            json!([{ "step": "contract_review" }])
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_review_validate_carried_planning_bundle_is_invalid_params_without_required_step_ids(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "review.validate_carried_planning_bundle",
+            json!({ "fresh_receipt_ids_by_step": {} }),
         );
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {

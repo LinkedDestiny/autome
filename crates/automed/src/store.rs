@@ -51,6 +51,7 @@ use autome_domain::project_intent::{
 };
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
 use autome_domain::requirement::RequirementId;
+use autome_domain::review::{self, HumanReviewFinding, HumanReviewReceipt, HumanReviewReceiptError, ReviewDecision, ReviewSpecSubject, ReviewSubject};
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::skill::{
     self, GlobalSkillBinding, ProjectSkillBinding, SkillAuditOutcome, SkillEvidenceError,
@@ -454,6 +455,34 @@ pub enum SkillLadderTransitionError {
 impl From<rusqlite::Error> for SkillLadderTransitionError {
     fn from(value: rusqlite::Error) -> Self {
         SkillLadderTransitionError::Sql(value)
+    }
+}
+
+/// A persisted §5.1 `HumanReviewReceipt` plus when it landed. Same shape as
+/// `QualificationRecord` -- the domain type already carries its own natural
+/// key (`receipt_digest`), so the store layer adds nothing beyond
+/// `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HumanReviewReceiptRecord {
+    pub receipt: HumanReviewReceipt,
+    pub created_at: String,
+}
+
+/// `record_human_review_receipt`'s failure modes. Re-runs
+/// `review::issue_human_review_receipt` server-side rather than trusting an
+/// already-built `HumanReviewReceipt` from the caller, same discipline as
+/// `record_skill_install_receipt`: `Receipt` is
+/// `issue_human_review_receipt`'s own reject-without-anchored-findings
+/// checks, `Sql` is a duplicate `receipt_digest`.
+#[derive(Debug)]
+pub enum RecordHumanReviewReceiptError {
+    Sql(rusqlite::Error),
+    Receipt(Vec<HumanReviewReceiptError>),
+}
+
+impl From<rusqlite::Error> for RecordHumanReviewReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordHumanReviewReceiptError::Sql(value)
     }
 }
 
@@ -1028,6 +1057,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v16,
     migrate_v17,
     migrate_v18,
+    migrate_v19,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1528,6 +1558,35 @@ fn migrate_v18(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL,
             PRIMARY KEY (project_id, skill_digest)
         );
+        ",
+    )
+}
+
+/// §5.1 `human_review_receipts`: one row per `issue_human_review_receipt`
+/// call. Same "write returns Value not Event, one-time fact record" shape as
+/// `qualification_receipts` -- `receipt_digest` is the domain-chosen primary
+/// key. `run_hash` is indexed for the same reason
+/// `qualification_receipts.qualification_batch_id` is -- no `list`-by-run
+/// read exists yet, but every other receipt table in this file indexes its
+/// natural lookup column rather than waiting for the read to justify it.
+/// `HumanReviewFinding` and `CarriedPlanningReviewBundle` get no table of
+/// their own: findings are supplied by the caller to
+/// `issue_human_review_receipt`/`can_resubmit_for_review` rather than
+/// tracked as current state here (see `review.rs`'s own module doc for why
+/// this increment stops at the receipt), and
+/// `validate_carried_planning_review_bundle` is a stateless check like
+/// `model_selection::validate_model_separation`.
+fn migrate_v19(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS human_review_receipts (
+            receipt_digest TEXT PRIMARY KEY,
+            run_hash TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_human_review_receipts_run_hash
+            ON human_review_receipts(run_hash);
         ",
     )
 }
@@ -4038,6 +4097,90 @@ impl EventStore {
         Ok(binding_json.map(|binding_json| {
             serde_json::from_str(&binding_json)
                 .expect("project_skill_bindings.binding_json round-trips")
+        }))
+    }
+
+    /// §5.1's write path: records a `HumanReviewReceipt` issued by
+    /// `issue_human_review_receipt`. Calls the real constructor server-side
+    /// (so a Reject decision without at least one anchored, actionable
+    /// finding is actually refused rather than trusted from the caller) and
+    /// then persists the result -- same "write returns Value not Event,
+    /// one-time fact record" shape as `record_qualification_receipt`, since
+    /// a human review decision is a fact issued once by an operator, not an
+    /// aggregate with a reducer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_human_review_receipt(
+        &mut self,
+        project_hash: &str,
+        task_hash: &str,
+        run_hash: &str,
+        spec_subject: ReviewSpecSubject,
+        step_id: attempt::LoopStepId,
+        operator: &str,
+        decided_at: &str,
+        decision: ReviewDecision,
+        review_output_hash: &str,
+        reason: &str,
+        findings: &[HumanReviewFinding],
+        subject: ReviewSubject,
+        receipt_digest: &str,
+    ) -> Result<HumanReviewReceiptRecord, RecordHumanReviewReceiptError> {
+        let receipt = review::issue_human_review_receipt(
+            project_hash,
+            task_hash,
+            run_hash,
+            spec_subject,
+            step_id,
+            operator,
+            decided_at,
+            decision,
+            review_output_hash,
+            reason,
+            findings,
+            subject,
+            receipt_digest,
+        )
+        .map_err(RecordHumanReviewReceiptError::Receipt)?;
+
+        let receipt_json =
+            serde_json::to_string(&receipt).expect("HumanReviewReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO human_review_receipts (receipt_digest, run_hash, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.receipt_digest,
+                receipt.run_hash,
+                receipt_json,
+                created_at,
+            ],
+        )?;
+
+        Ok(HumanReviewReceiptRecord { receipt, created_at })
+    }
+
+    /// Read counterpart to `record_human_review_receipt` -- looks up the
+    /// recorded `human_review_receipts` row for `receipt_digest`, if any.
+    pub fn load_human_review_receipt(
+        &self,
+        receipt_digest: &str,
+    ) -> rusqlite::Result<Option<HumanReviewReceiptRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM human_review_receipts WHERE receipt_digest = ?1",
+                rusqlite::params![receipt_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: HumanReviewReceipt = serde_json::from_str(&receipt_json)
+                .expect("human_review_receipts.receipt_json round-trips");
+            HumanReviewReceiptRecord { receipt, created_at }
         }))
     }
 
@@ -6572,6 +6715,164 @@ mod tests {
             .load_project_skill_binding("proj-2", "pkg-1")
             .unwrap()
             .is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_document_review_subject() -> ReviewSubject {
+        ReviewSubject::DocumentStep {
+            input_snapshot_hash: "input-1".into(),
+            output_hash: "output-1".into(),
+        }
+    }
+
+    fn fixture_anchored_finding() -> HumanReviewFinding {
+        use autome_domain::review::{FindingStatus, HumanReviewFindingAnchor};
+
+        HumanReviewFinding {
+            id: "finding-1".into(),
+            review_receipt_id: "receipt-1".into(),
+            subject_hash: "output-1".into(),
+            step_id: attempt::LoopStepId("contract_review".into()),
+            anchor: HumanReviewFindingAnchor {
+                path: Some("contract.md".into()),
+                ..Default::default()
+            },
+            expected_change: "narrow the write scope".into(),
+            severity: "major".into(),
+            status: FindingStatus::Open,
+            successor_attempt_id: None,
+            resolution_subject_hash: None,
+            finding_digest: "finding-digest-1".into(),
+        }
+    }
+
+    /// A well-formed `record_human_review_receipt` call lands one
+    /// `human_review_receipts` row, readable back via
+    /// `load_human_review_receipt`.
+    #[test]
+    fn record_human_review_receipt_records_a_well_formed_receipt_and_reads_it_back() {
+        let root = temp_data_root("record-human-review-receipt");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store
+            .load_human_review_receipt("HR-1")
+            .unwrap()
+            .is_none());
+
+        let record = store
+            .record_human_review_receipt(
+                "project-1",
+                "task-1",
+                "run-1",
+                ReviewSpecSubject::Planning {
+                    planning_spec_hash: "planning-1".into(),
+                },
+                attempt::LoopStepId("contract_review".into()),
+                "operator-1",
+                "2026-09-15T00:00:00Z",
+                ReviewDecision::Pass,
+                "review-output-1",
+                "reason",
+                &[],
+                fixture_document_review_subject(),
+                "HR-1",
+            )
+            .unwrap();
+        assert_eq!(record.receipt.receipt_digest, "HR-1");
+
+        let loaded = store.load_human_review_receipt("HR-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `issue_human_review_receipt`'s own invariant (a Reject decision needs
+    /// at least one anchored, actionable finding) is enforced server-side --
+    /// a caller cannot bypass it by handing in an already-built receipt.
+    #[test]
+    fn record_human_review_receipt_refuses_a_reject_decision_without_findings() {
+        let root = temp_data_root("record-human-review-receipt-reject-without-findings");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = store
+            .record_human_review_receipt(
+                "project-1",
+                "task-1",
+                "run-1",
+                ReviewSpecSubject::Planning {
+                    planning_spec_hash: "planning-1".into(),
+                },
+                attempt::LoopStepId("contract_review".into()),
+                "operator-1",
+                "2026-09-15T00:00:00Z",
+                ReviewDecision::Reject,
+                "review-output-1",
+                "reason",
+                &[],
+                fixture_document_review_subject(),
+                "HR-1",
+            )
+            .unwrap_err();
+        assert!(matches!(err, RecordHumanReviewReceiptError::Receipt(_)), "{err:?}");
+        assert!(store
+            .load_human_review_receipt("HR-1")
+            .unwrap()
+            .is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `receipt_digest` must fail rather than
+    /// silently overwriting a prior review decision.
+    #[test]
+    fn record_human_review_receipt_refuses_to_reuse_an_existing_receipt_digest() {
+        let root = temp_data_root("record-human-review-receipt-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let finding = fixture_anchored_finding();
+
+        store
+            .record_human_review_receipt(
+                "project-1",
+                "task-1",
+                "run-1",
+                ReviewSpecSubject::Planning {
+                    planning_spec_hash: "planning-1".into(),
+                },
+                attempt::LoopStepId("contract_review".into()),
+                "operator-1",
+                "2026-09-15T00:00:00Z",
+                ReviewDecision::Reject,
+                "review-output-1",
+                "reason",
+                std::slice::from_ref(&finding),
+                fixture_document_review_subject(),
+                "HR-1",
+            )
+            .unwrap();
+        let err = store
+            .record_human_review_receipt(
+                "project-1",
+                "task-1",
+                "run-1",
+                ReviewSpecSubject::Planning {
+                    planning_spec_hash: "planning-1".into(),
+                },
+                attempt::LoopStepId("contract_review".into()),
+                "operator-1",
+                "2026-09-15T00:00:00Z",
+                ReviewDecision::Reject,
+                "review-output-1",
+                "reason",
+                std::slice::from_ref(&finding),
+                fixture_document_review_subject(),
+                "HR-1",
+            )
+            .unwrap_err();
+        assert!(matches!(err, RecordHumanReviewReceiptError::Sql(_)), "{err:?}");
 
         std::fs::remove_dir_all(&root).ok();
     }
