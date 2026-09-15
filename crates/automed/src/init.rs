@@ -110,6 +110,12 @@ pub fn init(repo: &Path) -> Result<InitReport> {
         SESSION_PROTOCOL_MD,
         &mut report,
     )?;
+    write_owned(
+        repo,
+        ".autome/skill/loop-protocol.md",
+        LOOP_PROTOCOL_MD,
+        &mut report,
+    )?;
 
     // Owned by the user: created once, then never touched again.
     write_if_absent(
@@ -503,6 +509,182 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 不要把状态块放进代码块，不要用其它写法表达同一件事。
 "#;
 
+/// The Loop's own rules: what each round may conclude, what may force another
+/// round, and how a milestone closes.
+///
+/// This is the substance the five roles operate on, and it is deliberately a
+/// file in the repository rather than prose in a prompt. Three reasons:
+///
+/// 1. The intake session embeds it into the task file, so a task's rules are
+///    fixed at the moment it was created. A protocol change six weeks later
+///    cannot silently alter what a running task is being held to.
+/// 2. It is reviewable and diffable by the user, who is the one living with
+///    its consequences.
+/// 3. Prompts are per-session; this is shared by five roles that must agree.
+///
+/// The rules are inherited from 1.x, which arrived at them by running the loop
+/// for months. The changes for 2.0 are: no self-relay (the core schedules),
+/// and the milestone table has a fixed machine-read format.
+const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 1 -->
+# Loop 协议
+
+本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
+所以一个任务从创建那一刻起就固定了自己的规则版本。
+
+## 共同原则
+
+1. **产品结果优先。** 以上规范是为了让任务完成，不是为了让流程文件完善。
+   不得为了补全流程记录而推迟主要工作。
+2. **证据优先。** 涉及代码现状、运行行为或外部接口的判断，优先使用源码、
+   现有测试、实际命令或最小验证实验。纯逻辑矛盾可以用准确引用和具体反例证明。
+3. **一次处理同类问题。** 提出的问题必须说明根因和检查范围，并列出该范围内
+   全部同类问题。修复时再次检查同类位置，一次处理完毕。
+4. **不追求完美。** 设计阶段只消除会使方向失效、目标受损或里程碑不可执行的
+   问题；审计只以「产品行为不符合设计或任务」为缺陷。「还可以更好」一律进
+   Backlog。
+5. **验证用项目原有体系。** 优先使用项目已有的测试、契约、运行脚本和真实环境。
+   只有确有需要时才新增专用验证程序。
+6. **协议版本固定。** 本次运行始终使用任务文件内的这份规则，不得中途换版本。
+7. **会话自主。** 每轮在独立会话中完成，不得向用户提问如何继续。遇到未明确
+   规定的事项，依据任务目标、项目规则和已有证据作出决定并记录理由。
+8. **问题必须可追溯。** 每条评审或审计意见都必须写明它违反的任务要求编号、
+   设计条款或里程碑验收命令。建立不了这种追溯的意见一律进 Backlog，
+   不得触发复审、reopen 或额外轮次。
+
+## 角色
+
+| 角色 | 做什么 | 可以把里程碑标成 |
+|---|---|---|
+| 设计 plan | 写设计文档与里程碑；按评审与裁决的结论修改 | — |
+| 评审 review | 对设计提出问题，只限下列六类 | — |
+| 裁决 adjudicate | 逐条裁决评审意见，决定是否再评审一轮 | — |
+| 实现 impl | 推进最小编号的开放里程碑 | `待审` |
+| 审计 audit | 独立复验待审的里程碑 | `已完成` 或退回 `开放` |
+
+**实现轮不得把里程碑标成 `已完成`。** 只有审计轮独立复验通过才能关闭一个
+里程碑。这条是整个协议里最不能让步的一条：它是生成与评测分离在任务层面的
+体现，和 SAME-MODEL 是同一件事的两面。
+
+## 文件
+
+- 设计文档 `docs/<slug>/<slug>.md` —— 头部状态块 + 正文，覆盖式维护。
+- 设计评审 `docs/<slug>/<slug>-review.md` —— 每轮覆盖写，只保留当前结论。
+- 裁决记录 `docs/<slug>/<slug>-adjudication.md` —— **只增不改**，设计循环
+  唯一的跨轮记忆。
+- 实现审计 `docs/<slug>/<slug>-audit.md` —— 每轮覆盖写。
+- 运行记录 `docs/<slug>/retro.md` —— 每轮追加一行，任务结束时补总结。
+
+超过 5 行的命令输出和临时验证产物写进 `.autome/output/`，不要进任务目录。
+
+## 设计循环
+
+### 可以要求再评审一轮的六类问题
+
+只有这六类：
+
+1. **关键事实错误** —— 方案依赖的技术、接口、代码行为或运行条件与实际不符，
+   可能使方案整体失效。
+2. **内部逻辑矛盾** —— 两项要求不能同时满足、关键路径不可达，或里程碑按设计
+   无法通过验收。
+3. **违反项目规则** —— 违反 AGENTS.md 或 `.autome/rules/` 里的架构职责、
+   数据原则或工程约束。
+4. **违反任务目标** —— 偏离任务的目标、范围或硬性约束。
+5. **里程碑不可执行** —— 过大、依赖顺序错误、验收不明确，或明显不能在合理
+   轮次内完成。
+6. **必须提前验证的重大风险** —— 该风险无法在实现期及时验证，推迟会使后续
+   实现整体失效。
+
+「验证还可以更严格」「测试还可以更多」「命名可以更好」「说明可以更清楚」
+一律不得单独触发下一轮，进 Backlog。
+
+### 裁决与复提
+
+裁决轮逐条给出：稳定 ID（`Dd-Pxx`，d 为轮次）、主张摘要、设计位置、
+裁决（采纳 / 驳回 / 部分采纳 / 因重写失效）、证据或理由、修改落点、复提计数。
+
+与既有裁决重复且没有新证据的主张，可以引用原裁决驳回，但必须先核对它锚定的
+设计内容自那次裁决后未变更。此类复提使该主张的复提计数加 1。
+
+**复提计数达到 2 的主张冻结为争议项**，写进设计文档的 `## 争议项` 小节，
+退出复审阻塞集。争议项的存在不阻塞设计通过；双方不得再修改对应内容，
+等用户裁定。
+
+### 设计定稿
+
+裁决轮认为没有剩余的六类问题时，把状态块的 `status` 从 `设计中` 改为
+`实现中`，并写出完整的里程碑表。这就是设计定稿的信号——Autome 据此把任务
+停在「等待批准」。
+
+设计轮数 `d` 由裁决轮增加，评审轮不增加。`d` 达到上限时任务停下等用户。
+
+## 里程碑
+
+按依赖顺序编号 `M-01..M-N`。第一个里程碑应尽早消除最大的技术不确定性；
+跨组件的任务通常先建立最小端到端链路。
+
+每个里程碑必须有：可独立观察的结果、覆盖的任务要求编号、前置里程碑、
+验收命令（或明确说明实现期需要新增什么测试）。
+
+表格格式固定，Autome 按列读取：
+
+```markdown
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 已完成 | 购物车数据模型 | 0 | |
+| M-02 | 待审 | 结算接口 | 1 | promo-case |
+```
+
+状态只有 `开放` / `待审` / `已完成`。
+
+## 实现循环
+
+实现轮推进**最小编号的开放里程碑**，取得通过证据后标为 `待审`，然后结束会话。
+一轮只推进一个里程碑。
+
+审计轮独立复验：自己跑验收命令，自己构造能区分错误实现的检查，不看实现轮的
+推理过程。结论二选一：
+
+- **通过** —— 标为 `已完成`。
+- **实现缺陷** —— 退回 `开放`，`reopen` 加 1，并在 `领域` 列按稳定的行为领域
+  名归组。同一审计轮的同一领域只计一次；领域名按根因复用，不得改名规避升级。
+
+实现轮数 `k` 由实现轮增加，审计轮不增加。总预算 `N` 在设计定稿时按初始里程碑
+数计算，所有里程碑共享，不设单个里程碑预算。`k` 达到 `N` 时任务停下等用户。
+
+### 收敛模式
+
+- 同一领域第二次 reopen → `convergence-mode: domain-review`
+- 同一里程碑第三次 reopen → `convergence-mode: milestone-review`
+
+`milestone-review` 优先级更高。收敛模式一旦触发，直到该里程碑关闭前不得
+恢复为 `normal`。
+
+触发收敛模式的审计轮必须在审计文件顶部维护 `## Convergence Note`，固定四部分：
+未闭合的行为领域与当前失败证据；根因、同类检查范围以及前轮为何漏检；
+下一轮应完成的具体工作与完成条件；当前应红、完成应绿、不得退化的命令。
+后续审计轮覆盖写审计文件时必须保留并更新这个 Note，直到里程碑关闭。
+
+## Backlog 与争议项
+
+`## Backlog` 收非阻塞的改进建议：评审提出的有跨轮价值的实现注意事项由裁决轮
+追加，审计提出的非阻塞建议由审计轮追加。每条一行，以稳定 ID 开头。
+Backlog 条目**不触发轮次**，等用户处置。
+
+`## 争议项` 收复提两次冻结的主张，格式同上。
+
+用户在界面上对这两节作出的决定，会由 Autome 在下一个停顿点注入到会话的
+prompt 里。看到这类注入时，按其中写明的处置执行：纳入的 Backlog 条目要成为
+新的里程碑并实现；忽略的和已裁定的要写进 `retro.md`。
+
+## 终止
+
+任务结束时，`retro.md` 只记可核对的事实：终止状态和原因、设计轮数与实现轮数、
+各里程碑最终状态、各里程碑 reopen 次数与重复领域、收敛模式与关闭轮次、
+预算是否满足、未完成部分的明确阻塞。
+"##;
+
 const RULES_README_MD: &str = r#"# 项目规则
 
 本目录下的 Markdown 文件是本项目对 Agent 的规范，与仓库根的 `AGENTS.md` 同等效力。
@@ -578,6 +760,7 @@ mod tests {
         for rel in [
             ".autome/skill/run_session.sh",
             ".autome/skill/session-protocol.md",
+            ".autome/skill/loop-protocol.md",
             ".autome/rules/README.md",
             ".gitignore",
             "AGENTS.md",
@@ -830,6 +1013,25 @@ mod tests {
         assert!(!is_initialised(dir.path()));
         init(dir.path()).unwrap();
         assert!(is_initialised(dir.path()));
+    }
+
+    #[test]
+    fn the_loop_protocol_states_the_rules_the_five_roles_share() {
+        // Without these the review and audit rounds have nothing to apply.
+        // Each assertion names a rule a role would otherwise have to invent.
+        let p = LOOP_PROTOCOL_MD;
+        assert!(p.contains("实现轮不得把里程碑标成 `已完成`"));
+        assert!(p.contains("复提计数达到 2 的主张冻结为争议项"));
+        assert!(p.contains("domain-review"));
+        assert!(p.contains("milestone-review"));
+        assert!(p.contains("Convergence Note"));
+        // The six review conditions, numbered.
+        for n in 1..=6 {
+            assert!(p.contains(&format!("{n}. **")), "condition {n} is missing");
+        }
+        // The machine-read milestone format appears here too, so the design
+        // round has it in front of it.
+        assert!(p.contains("| ID | 状态 | 标题 | reopen | 领域 |"));
     }
 
     #[test]

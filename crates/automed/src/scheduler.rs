@@ -23,11 +23,13 @@ use std::path::{Path, PathBuf};
 use autome_domain::config::{self, ResolvedConfig};
 use autome_domain::project::Project;
 use autome_domain::role::Role;
-use autome_domain::session::{self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths};
+use autome_domain::session::{
+    self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths,
+};
 use autome_domain::status_block::{self, StatusBlock};
 use autome_domain::task::{
-    self, Action, CoreStepResult, FailureReason, Inject, Node, SessionOutcome, TaskState, Transition,
-    Trigger,
+    self, Action, CoreStepResult, FailureReason, Inject, Node, SessionOutcome, TaskState,
+    Transition, Trigger,
 };
 use serde_json::json;
 
@@ -199,10 +201,7 @@ fn log_idle_secs(log: &Path) -> u64 {
     let Ok(modified) = meta.modified() else {
         return 0;
     };
-    modified
-        .elapsed()
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    modified.elapsed().map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Turns a finished session into the outcome the transition table expects
@@ -357,7 +356,10 @@ fn resolve_budget(
     }
     .or_else(|| {
         if matches!(trigger, Trigger::Approve)
-            && transition.next == (TaskState::Active { node: Node::Implement })
+            && transition.next
+                == (TaskState::Active {
+                    node: Node::Implement,
+                })
             && current.is_none()
         {
             // Fall back to the factor alone when the design produced no
@@ -416,7 +418,9 @@ fn perform(
 ) -> Result<()> {
     match &transition.action {
         Action::None => Ok(()),
-        Action::StartIntake => start_session(ctx, task, project, resolved, SessionKind::Intake, None),
+        Action::StartIntake => {
+            start_session(ctx, task, project, resolved, SessionKind::Intake, None)
+        }
         Action::StartRole { role, inject } => start_session(
             ctx,
             task,
@@ -576,12 +580,7 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
         },
         Node::Merging => {
             let message = format!("merge(autome): {} {}", task.id, task.title);
-            match git::merge_task_branch(
-                &repo,
-                &project.default_branch,
-                &task.branch(),
-                &message,
-            ) {
+            match git::merge_task_branch(&repo, &project.default_branch, &task.branch(), &message) {
                 Ok(git::MergeOutcome::Merged { commit }) => {
                     ctx.store.complete_task(&task.id, Some(&commit))?;
                     CoreStepResult::Ok
@@ -603,11 +602,7 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
         }
     };
 
-    advance(
-        ctx,
-        &task.id,
-        &Trigger::CoreStepDone { node, result },
-    )?;
+    advance(ctx, &task.id, &Trigger::CoreStepDone { node, result })?;
     Ok(())
 }
 
@@ -688,10 +683,7 @@ fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
     let inventory = skills::scan(&ctx.home.to_string_lossy(), &project.path);
     let violations = config::validate(&resolved, &inventory);
     if !violations.is_empty() {
-        return Err(err(format!(
-            "配置无效，无法启动会话：{}",
-            violations.len()
-        )));
+        return Err(err(format!("配置无效，无法启动会话：{}", violations.len())));
     }
     Ok(resolved)
 }
@@ -975,7 +967,9 @@ mod tests {
         let table = if milestones.is_empty() {
             String::new()
         } else {
-            format!("\n## 里程碑\n\n| ID | 状态 | 标题 | reopen | 领域 |\n|---|---|---|---|---|\n{rows}")
+            format!(
+                "\n## 里程碑\n\n| ID | 状态 | 标题 | reopen | 领域 |\n|---|---|---|---|---|\n{rows}"
+            )
         };
         format!(
             "# 标题\n\nstatus: {status}\ndesign-round: 1/15\nimplementation-round: 1/25\n\
@@ -1039,7 +1033,12 @@ mod tests {
         assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Review });
 
         let _ = advance(&mut w.ctx, "T-1", &ended_ok(&designing));
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Adjudicate });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Adjudicate
+            }
+        );
 
         let final_doc = design_doc("实现中", &[("M-01", MilestoneState::Open)], "");
         let _ = advance(&mut w.ctx, "T-1", &ended_ok(&final_doc));
@@ -1056,7 +1055,12 @@ mod tests {
         needs_git!();
         let mut w = World::new("budget");
         let task = w.add_task("T-1", "a");
-        w.set_state("T-1", TaskState::Active { node: Node::Adjudicate });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Adjudicate,
+            },
+        );
         let doc = design_doc(
             "实现中",
             &[
@@ -1069,7 +1073,12 @@ mod tests {
         w.write_design(&task, &doc);
         let _ = advance(&mut w.ctx, "T-1", &ended_ok(&doc));
         let _ = advance(&mut w.ctx, "T-1", &Trigger::Approve);
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Implement });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
         // factor 5 × 3 milestones — but the transition table only knows the
         // fallback here, so assert it is at least the factor.
         let n = w.ctx.store.get_task("T-1").unwrap().budget_n.unwrap();
@@ -1126,7 +1135,10 @@ mod tests {
         w.ctx.store.set_task_budget("T-1", 25).unwrap();
         let doc = design_doc(
             "实现中",
-            &[("M-01", MilestoneState::Done), ("M-02", MilestoneState::Done)],
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Done),
+            ],
             "",
         );
         let _ = advance(&mut w.ctx, "T-1", &ended_ok(&doc));
@@ -1188,7 +1200,12 @@ mod tests {
         needs_git!();
         let mut w = World::new("crash");
         let task = w.add_task("T-1", "a");
-        w.set_state("T-1", TaskState::Active { node: Node::Implement });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
         // A perfectly good document that must NOT rescue a crashed session.
         w.write_design(
             &task,
@@ -1241,7 +1258,12 @@ mod tests {
         needs_git!();
         let mut w = World::new("still-running");
         w.add_task("T-1", "a");
-        w.set_state("T-1", TaskState::Active { node: Node::Implement });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
         let session = Session {
             id: "s1".into(),
             task_id: "T-1".into(),
@@ -1260,7 +1282,12 @@ mod tests {
         };
         w.ctx.store.insert_session(&session).unwrap();
         assert!(!reap_session(&mut w.ctx, &session).unwrap());
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Implement });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
     }
 
     // ---- core steps ------------------------------------------------------
@@ -1274,7 +1301,12 @@ mod tests {
         w.set_state("T-1", TaskState::Active { node: Node::Rebase });
         let t = w.ctx.store.get_task("T-1").unwrap();
         run_core_step(&mut w.ctx, &t, Node::Rebase).unwrap();
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::AwaitMerge });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
+        );
     }
 
     #[test]
@@ -1292,7 +1324,12 @@ mod tests {
         let t = w.ctx.store.get_task("T-1").unwrap();
         // The launch will fail (no CLI), but the state must have moved first.
         let _ = run_core_step(&mut w.ctx, &t, Node::Rebase);
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Implement });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
     }
 
     #[test]
@@ -1304,10 +1341,20 @@ mod tests {
         std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
         git::commit_paths(&wt, &["feature.txt"], "feature").unwrap();
 
-        w.set_state("T-1", TaskState::Active { node: Node::Merging });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Merging,
+            },
+        );
         let t = w.ctx.store.get_task("T-1").unwrap();
         run_core_step(&mut w.ctx, &t, Node::Merging).unwrap();
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Cleanup });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Cleanup
+            }
+        );
         assert!(w.ctx.store.get_task("T-1").unwrap().merge_commit.is_some());
         assert!(w.repo.join("feature.txt").exists());
 
@@ -1329,10 +1376,20 @@ mod tests {
         git::commit_paths(&wt, &["feature.txt"], "feature").unwrap();
         std::fs::write(w.repo.join("user-wip.txt"), "in progress\n").unwrap();
 
-        w.set_state("T-1", TaskState::Active { node: Node::Merging });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Merging,
+            },
+        );
         let t = w.ctx.store.get_task("T-1").unwrap();
         run_core_step(&mut w.ctx, &t, Node::Merging).unwrap();
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::AwaitMerge });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
+        );
         assert_eq!(
             std::fs::read_to_string(w.repo.join("user-wip.txt")).unwrap(),
             "in progress\n",
@@ -1365,7 +1422,12 @@ mod tests {
         needs_git!();
         let mut w = World::new("consume");
         w.add_task("T-1", "a");
-        w.set_state("T-1", TaskState::Active { node: Node::AwaitMerge });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+        );
         w.ctx.store.set_task_budget("T-1", 25).unwrap();
         w.ctx
             .store
@@ -1377,7 +1439,12 @@ mod tests {
             .unwrap();
 
         let _ = advance(&mut w.ctx, "T-1", &Trigger::Merge);
-        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Implement });
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
         assert_eq!(
             w.ctx.store.get_task("T-1").unwrap().budget_n,
@@ -1393,7 +1460,12 @@ mod tests {
         needs_git!();
         let mut w = World::new("pause");
         w.add_task("T-1", "a");
-        w.set_state("T-1", TaskState::Active { node: Node::Implement });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
         advance(&mut w.ctx, "T-1", &Trigger::Pause).unwrap();
         assert_eq!(
             w.state("T-1"),
@@ -1415,16 +1487,18 @@ mod tests {
         std::fs::create_dir_all(&doc_dir).unwrap();
         std::fs::write(doc_dir.join("a.md"), "设计内容\n").unwrap();
         git::commit_paths(&wt, &[&task.doc_dir()], "docs").unwrap();
-        w.set_state("T-1", TaskState::Active { node: Node::Implement });
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
 
         advance(&mut w.ctx, "T-1", &Trigger::Cancel).unwrap();
         assert_eq!(w.state("T-1"), TaskState::Cancelled);
         let archived = w.repo.join("docs/.archive/a/a.md");
         assert!(archived.exists(), "documents must survive a cancel");
-        assert_eq!(
-            std::fs::read_to_string(archived).unwrap(),
-            "设计内容\n"
-        );
+        assert_eq!(std::fs::read_to_string(archived).unwrap(), "设计内容\n");
         assert!(!w.repo.join(".worktree/a").exists());
         assert!(!git::branch_exists(&w.repo, "autome/a"));
     }
@@ -1440,7 +1514,12 @@ mod tests {
             w.add_task(&format!("T-{i}"), &format!("s{i}"));
         }
         // Two already running.
-        w.set_state("T-0", TaskState::Active { node: Node::Implement });
+        w.set_state(
+            "T-0",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
         w.set_state("T-1", TaskState::Active { node: Node::Audit });
         let started = fill_slots(&mut w.ctx).unwrap();
         assert!(started.is_empty(), "no free slots: {started:?}");

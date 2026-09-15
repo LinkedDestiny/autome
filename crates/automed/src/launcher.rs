@@ -103,7 +103,11 @@ pub fn adapter(runtime: Runtime) -> &'static RuntimeAdapter {
 /// the wrapper script receives them as distinct arguments.
 pub fn build_args(config: &RoleConfig) -> Vec<String> {
     let a = adapter(config.runtime);
-    let mut args: Vec<String> = a.autonomous_flags.iter().map(|s| (*s).to_string()).collect();
+    let mut args: Vec<String> = a
+        .autonomous_flags
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     if !config.model.trim().is_empty() {
         args.push(a.model_flag.to_string());
         args.push(config.model.clone());
@@ -218,9 +222,7 @@ fn render_decisions(decisions: &[DecisionRecord]) -> String {
         };
         out.push_str(&format!("- {} {} → {verdict}\n", d.item_id, d.text));
     }
-    out.push_str(
-        "\n纳入的条目要写进设计文档的里程碑表并实现；忽略与裁定要写进 retro.md。\n",
-    );
+    out.push_str("\n纳入的条目要写进设计文档的里程碑表并实现；忽略与裁定要写进 retro.md。\n");
     out
 }
 
@@ -256,9 +258,15 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> String {
     p.push_str(&format!(
         r#"请完成三件事：
 
-1. 调研本仓库，读 AGENTS.md 与 .autome/rules/ 下的规则。
-2. 生成任务文件 docs/{slug}/{slug}-task.md，包含完整的项目背景与循环协议。
-   协议要求见 .autome/skill/session-protocol.md，逐条遵守，尤其是状态块格式。
+1. 调研本仓库，读 AGENTS.md、docs/agent-project-profile.md（若存在）
+   与 .autome/rules/ 下的规则。
+2. 生成任务文件 docs/{slug}/{slug}-task.md。它必须是自包含的——执行后续各轮的
+   会话不会读到别的说明文件，所以任务文件里要有：
+   - 本任务的目标、范围与硬性约束（从上面那句需求和你的调研中得出）；
+   - 生成时的项目背景摘要（技术栈、布局、测试命令、权威规则文件）；
+   - **`.autome/skill/loop-protocol.md` 的全文，逐字复制**，不要只写路径、
+     不要概括、不要改写。任务目录归档多年后仍要能凭它复现当时的规则。
+   另见 .autome/skill/session-protocol.md 的会话边界，同样逐条遵守。
 3. 生成设计文档 docs/{slug}/{slug}.md 的骨架，头部写完整的状态块：
 
 ```text
@@ -360,7 +368,9 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     std::fs::write(&prompt_path, &spec.prompt)
         .map_err(|e| err(format!("无法写入 prompt 文件：{e}")))?;
 
-    let log_path = spec.repo.join(SessionPaths::log(spec.task_id, spec.session_id));
+    let log_path = spec
+        .repo
+        .join(SessionPaths::log(spec.task_id, spec.session_id));
     let wrapper = crate::init::wrapper_script(spec.repo);
     if !wrapper.exists() {
         return Err(err(format!(
@@ -638,7 +648,11 @@ mod tests {
         }
     }
 
-    fn spec<'a>(kind: SessionKind, skills: &'a [String], inject: Option<&'a Inject>) -> PromptSpec<'a> {
+    fn spec<'a>(
+        kind: SessionKind,
+        skills: &'a [String],
+        inject: Option<&'a Inject>,
+    ) -> PromptSpec<'a> {
         PromptSpec {
             kind,
             slug: "checkout-flow",
@@ -673,7 +687,10 @@ mod tests {
     fn codex_effort_is_passed_as_a_config_override() {
         let args = build_args(&role_config(Runtime::Codex, "gpt-5.4", Some("high")));
         let joined = args.join(" ");
-        assert!(joined.contains("--config model_reasoning_effort=high"), "{joined}");
+        assert!(
+            joined.contains("--config model_reasoning_effort=high"),
+            "{joined}"
+        );
         assert!(joined.contains("--full-auto"), "{joined}");
     }
 
@@ -722,7 +739,11 @@ mod tests {
         let inject = Inject::DesignFeedback {
             feedback: "确认邮件只发登录用户\n不要发给游客".into(),
         };
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Plan }, &[], Some(&inject)));
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Plan },
+            &[],
+            Some(&inject),
+        ));
         assert!(p.contains("确认邮件只发登录用户\n不要发给游客"), "{p}");
         assert!(p.contains("不要改写"), "{p}");
     }
@@ -732,7 +753,11 @@ mod tests {
         let inject = Inject::RebaseConflict {
             files: vec!["src/a.ts".into(), "src/b.ts".into()],
         };
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], Some(&inject)));
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            Some(&inject),
+        ));
         assert!(p.contains("- src/a.ts"), "{p}");
         assert!(p.contains("- src/b.ts"), "{p}");
         assert!(p.contains("冲突"), "{p}");
@@ -769,7 +794,11 @@ mod tests {
                 consumed_at: None,
             },
         ];
-        let mut s = spec(SessionKind::Role { role: Role::Impl }, &[], Some(&Inject::Decisions));
+        let mut s = spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            Some(&Inject::Decisions),
+        );
         s.decisions = &decisions;
         let p = build_prompt(&s);
         assert!(p.contains("B-01 优惠码次数上限 → 纳入"), "{p}");
@@ -788,7 +817,11 @@ mod tests {
             ruling: None,
             consumed_at: None,
         }];
-        let mut s = spec(SessionKind::Role { role: Role::Impl }, &[], Some(&Inject::Decisions));
+        let mut s = spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            Some(&Inject::Decisions),
+        );
         s.decisions = &decisions;
         assert!(!build_prompt(&s).contains("B-09"));
     }
@@ -799,8 +832,23 @@ mod tests {
         assert!(p.contains("加购物车结算"), "{p}");
         assert!(p.contains("不要改写，不要扩大范围"), "{p}");
         assert!(p.contains("status: 设计中"), "{p}");
-        assert!(p.contains("docs/checkout-flow/checkout-flow-task.md"), "{p}");
+        assert!(
+            p.contains("docs/checkout-flow/checkout-flow-task.md"),
+            "{p}"
+        );
         assert!(p.contains("不要启动别的会话"), "{p}");
+    }
+
+    #[test]
+    fn the_intake_prompt_demands_the_loop_protocol_be_embedded_not_referenced() {
+        // A task file that only *points* at the protocol stops being
+        // self-contained the moment the scaffold is refreshed — and the
+        // archived task directory would no longer explain its own history.
+        let p = build_prompt(&spec(SessionKind::Intake, &[], None));
+        assert!(p.contains("loop-protocol.md"), "{p}");
+        assert!(p.contains("逐字复制"), "{p}");
+        assert!(p.contains("不要只写路径"), "{p}");
+        assert!(p.contains("自包含"), "{p}");
     }
 
     #[test]
@@ -811,7 +859,10 @@ mod tests {
         s.attachments = &attachments;
         s.doc_refs = &refs;
         let p = build_prompt(&s);
-        assert!(p.contains("docs/checkout-flow/attachments/promo.csv"), "{p}");
+        assert!(
+            p.contains("docs/checkout-flow/attachments/promo.csv"),
+            "{p}"
+        );
         assert!(p.contains("- docs/notes.md"), "{p}");
     }
 
@@ -921,7 +972,10 @@ mod tests {
         // The embedded double quote must be escaped for AppleScript.
         assert!(script.contains(r#"\""#), "{script}");
         // And the title is quoted too.
-        assert!(script.contains(r#"set name to "autome · T-1 · 实现 #1""#), "{script}");
+        assert!(
+            script.contains(r#"set name to "autome · T-1 · 实现 #1""#),
+            "{script}"
+        );
     }
 
     // ---- which -----------------------------------------------------------
@@ -968,7 +1022,10 @@ mod tests {
     #[test]
     fn system_sessions_always_run_claude_regardless_of_config() {
         let codex = role_config(Runtime::Codex, "gpt-5.4", None);
-        assert_eq!(runtime_for(SessionKind::Intake, Some(&codex)), Runtime::Claude);
+        assert_eq!(
+            runtime_for(SessionKind::Intake, Some(&codex)),
+            Runtime::Claude
+        );
         assert_eq!(
             runtime_for(SessionKind::Onboarding, Some(&codex)),
             Runtime::Claude

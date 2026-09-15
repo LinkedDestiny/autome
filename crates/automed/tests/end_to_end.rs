@@ -223,8 +223,7 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
                 let node = v.get("node").and_then(Value::as_str).unwrap_or("");
                 // Queued tasks are waiting for a slot; core-step nodes are
                 // work the next tick performs. Both mean "not settled yet".
-                state == "queued"
-                    || matches!(node, "rebase" | "merging" | "cleanup")
+                state == "queued" || matches!(node, "rebase" | "merging" | "cleanup")
             })
     }
 
@@ -266,9 +265,10 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
             .running_session(task_id)
             .unwrap()
             .expect("a session should be running");
-        let marker = self.repo.join(
-            autome_domain::session::SessionPaths::exit(task_id, &session.id),
-        );
+        let marker = self.repo.join(autome_domain::session::SessionPaths::exit(
+            task_id,
+            &session.id,
+        ));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if std::fs::read_to_string(&marker)
@@ -568,7 +568,10 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
         prompt.contains("确认邮件只发登录用户"),
         "the feedback must reach the session verbatim:\n{prompt}"
     );
-    assert!(prompt.contains("Task 1."), "it is a design round:\n{prompt}");
+    assert!(
+        prompt.contains("Task 1."),
+        "it is a design round:\n{prompt}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -631,11 +634,7 @@ fn a_design_document_without_a_status_block_fails_the_task_once() {
     assert_eq!(w.state(&task_id), "failed");
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let reason = serde_json::to_value(&task.state).unwrap();
-    assert_eq!(
-        reason["reason"]["kind"],
-        json!("protocol"),
-        "{reason:#?}"
-    );
+    assert_eq!(reason["reason"]["kind"], json!("protocol"), "{reason:#?}");
     // And it stopped there rather than retrying.
     assert_eq!(w.sessions_run().len(), 1, "no retry");
 }
@@ -668,7 +667,11 @@ exit 3
 
     assert_eq!(w.state(&task_id), "failed");
     let state = serde_json::to_value(w.ctx.store.get_task(&task_id).unwrap().state).unwrap();
-    assert_eq!(state["reason"]["kind"], json!("session_crashed"), "{state:#?}");
+    assert_eq!(
+        state["reason"]["kind"],
+        json!("session_crashed"),
+        "{state:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -716,15 +719,19 @@ fn stopping_a_task_leaves_it_resumable() {
     w.settle();
 
     // Whatever node it reached, stopping must park it.
-    if w.ctx.store.get_task(&task_id).unwrap().state.node().is_some() {
+    if w.ctx
+        .store
+        .get_task(&task_id)
+        .unwrap()
+        .state
+        .node()
+        .is_some()
+    {
         let out = w.call("task.stop", json!({ "task_id": task_id }));
         if matches!(out.reply.outcome, ReplyOutcome::Ok { .. }) {
             assert_eq!(w.state(&task_id), "stopped");
             w.call("task.resume", json!({ "task_id": task_id }));
-            assert!(matches!(
-                w.state(&task_id).as_str(),
-                "queued" | "active"
-            ));
+            assert!(matches!(w.state(&task_id).as_str(), "queued" | "active"));
         }
     }
 }
@@ -747,11 +754,13 @@ fn a_same_model_collision_is_refused_and_the_fix_is_accepted() {
         }),
     );
     let message = error_message(&refused).to_string();
-    assert!(message.contains("审计") && message.contains("实现"), "{message}");
+    assert!(
+        message.contains("审计") && message.contains("实现"),
+        "{message}"
+    );
 
     // The file was not written.
-    let text =
-        std::fs::read_to_string(w.repo.join(".autome/config.toml")).unwrap_or_default();
+    let text = std::fs::read_to_string(w.repo.join(".autome/config.toml")).unwrap_or_default();
     assert!(!text.contains("[roles.audit]"), "{text}");
 
     // A different model on the same runtime is fine.
@@ -858,7 +867,11 @@ fn the_wrapper_writes_a_terminated_exit_marker_carrying_the_clis_code() {
         .current_dir(&w.repo)
         .output()
         .expect("wrapper runs");
-    assert_eq!(status.status.code(), Some(7), "the CLI's code is propagated");
+    assert_eq!(
+        status.status.code(),
+        Some(7),
+        "the CLI's code is propagated"
+    );
 
     let marker = std::fs::read_to_string(dir.join("s1.exit")).unwrap();
     let parsed = autome_domain::session::ExitMarker::parse(&marker)

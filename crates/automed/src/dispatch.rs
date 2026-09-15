@@ -213,8 +213,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         ),
         "task.rerun_from" => {
             let raw = str_param(p, "node")?;
-            let node = Node::parse(raw)
-                .ok_or_else(|| bad_params(format!("未知节点 `{raw}`")))?;
+            let node = Node::parse(raw).ok_or_else(|| bad_params(format!("未知节点 `{raw}`")))?;
             task_trigger(ctx, str_param(p, "task_id")?, Trigger::RerunFrom { node })
         }
         "task.decide" => task_decide(ctx, p),
@@ -559,7 +558,10 @@ fn onboarding_save(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let project_id = str_param(params, "project_id")?;
     let rel = str_param(params, "path")?;
     if !ONBOARDING_FILES.contains(&rel) {
-        return Err(bad_params(format!("只能编辑 {}", ONBOARDING_FILES.join(" 与 "))));
+        return Err(bad_params(format!(
+            "只能编辑 {}",
+            ONBOARDING_FILES.join(" 与 ")
+        )));
     }
     let content = str_param(params, "content")?;
     let project = ctx.store.get_project(project_id)?;
@@ -1016,7 +1018,10 @@ fn first_line(s: &str) -> String {
 }
 
 /// 1-based position in the project's queue, or `None` when not queued.
-fn queue_position(ctx: &Ctx, task: &crate::store::TaskRecord) -> std::result::Result<Option<usize>, DispatchError> {
+fn queue_position(
+    ctx: &Ctx,
+    task: &crate::store::TaskRecord,
+) -> std::result::Result<Option<usize>, DispatchError> {
     if !matches!(task.state, TaskState::Queued) {
         return Ok(None);
     }
@@ -1061,7 +1066,10 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 /// Reads the design document from the task's worktree. `None` when it does not
 /// exist yet or does not parse — the panel shows the node flow either way, and
 /// a parse failure has already failed the task through the normal path.
-fn read_status_block(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Option<StatusBlock> {
+fn read_status_block(
+    worktree: &std::path::Path,
+    task: &crate::store::TaskRecord,
+) -> Option<StatusBlock> {
     let text = std::fs::read_to_string(worktree.join(task.design_doc())).ok()?;
     status_block::parse(&text).ok()
 }
@@ -1147,7 +1155,10 @@ fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResul
     scheduler::tick(ctx);
     let seq = ctx.store.latest_seq()?;
     let (payload, _) = task_get(ctx, task_id)?;
-    Ok((payload, vec![event(seq, "task.updated", task_id, json!({}))]))
+    Ok((
+        payload,
+        vec![event(seq, "task.updated", task_id, json!({}))],
+    ))
 }
 
 /// Stop kills the running session first, then applies the trigger — the
@@ -1205,7 +1216,10 @@ fn task_decide(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         json!({ "item_id": item_id, "disposition": raw }),
     )?;
     let (payload, _) = task_get(ctx, task_id)?;
-    Ok((payload, vec![event(seq, "task.updated", task_id, json!({}))]))
+    Ok((
+        payload,
+        vec![event(seq, "task.updated", task_id, json!({}))],
+    ))
 }
 
 /// Archive moves the task's documents into `docs/.archive/` and takes it off
@@ -1230,8 +1244,7 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
     };
     if from.exists() {
         if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| internal(format!("无法创建目录：{e}")))?;
+            std::fs::create_dir_all(parent).map_err(|e| internal(format!("无法创建目录：{e}")))?;
         }
         if to.exists() {
             return Err(rejected(format!("目标已存在：{}", to.display())));
@@ -1240,7 +1253,11 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
     }
     ctx.store.set_task_archived(task_id, archive)?;
     let seq = ctx.store.append_event(
-        if archive { "task.archived" } else { "task.restored" },
+        if archive {
+            "task.archived"
+        } else {
+            "task.restored"
+        },
         task_id,
         json!({}),
     )?;
