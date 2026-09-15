@@ -35,6 +35,10 @@ use autome_domain::execution_queue::{
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
 use autome_domain::node::{self, NodeEvent, NodeStatus, NodeTransitionError};
 use autome_domain::playbook::FrozenPlaybook;
+use autome_domain::policy_restart::{
+    self, BudgetGrantError, BudgetGrantReceipt, BudgetLimitGrant, PlanningPolicyRestart,
+    PlanningPolicyRestartError, RunPolicyAmendment, RunPolicyAmendmentError,
+};
 use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
     TargetRejection,
@@ -608,6 +612,72 @@ impl From<rusqlite::Error> for RecordUserCorrectionError {
     }
 }
 
+/// A persisted §5.1 `PlanningPolicyRestart` plus when it landed. Same
+/// "no extra aggregate-linking key" reasoning as `UserCorrectionRecord` --
+/// `PlanningPolicyRestart` already carries its own `task_id`/`current_run_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningPolicyRestartRecord {
+    pub restart: PlanningPolicyRestart,
+    pub created_at: String,
+}
+
+/// `record_planning_policy_restart`'s failure modes. Re-runs
+/// `policy_restart::issue_planning_policy_restart` server-side, same
+/// discipline as `record_user_correction`.
+#[derive(Debug)]
+pub enum RecordPlanningPolicyRestartError {
+    Sql(rusqlite::Error),
+    Restart(Vec<PlanningPolicyRestartError>),
+}
+
+impl From<rusqlite::Error> for RecordPlanningPolicyRestartError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordPlanningPolicyRestartError::Sql(value)
+    }
+}
+
+/// A persisted §5.1 `RunPolicyAmendment` plus when it landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunPolicyAmendmentRecord {
+    pub amendment: RunPolicyAmendment,
+    pub created_at: String,
+}
+
+/// `record_run_policy_amendment`'s failure modes. Re-runs
+/// `policy_restart::issue_run_policy_amendment` server-side.
+#[derive(Debug)]
+pub enum RecordRunPolicyAmendmentError {
+    Sql(rusqlite::Error),
+    Amendment(Vec<RunPolicyAmendmentError>),
+}
+
+impl From<rusqlite::Error> for RecordRunPolicyAmendmentError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordRunPolicyAmendmentError::Sql(value)
+    }
+}
+
+/// A persisted §5.1 `BudgetGrantReceipt` plus when it landed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetGrantRecord {
+    pub receipt: BudgetGrantReceipt,
+    pub created_at: String,
+}
+
+/// `record_budget_grant`'s failure modes. Re-runs
+/// `policy_restart::issue_budget_grant_receipt` server-side.
+#[derive(Debug)]
+pub enum RecordBudgetGrantError {
+    Sql(rusqlite::Error),
+    Grant(Vec<BudgetGrantError>),
+}
+
+impl From<rusqlite::Error> for RecordBudgetGrantError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordBudgetGrantError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -778,6 +848,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v12,
     migrate_v13,
     migrate_v14,
+    migrate_v15,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1133,6 +1204,46 @@ fn migrate_v14(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_user_correction_receipts_run_id
             ON user_correction_receipts(run_id);
+        ",
+    )
+}
+
+/// `planning_policy_restarts`/`run_policy_amendments`/`budget_grant_receipts`:
+/// one row per issued §5.1 restart/amendment/grant. Same "write returns
+/// Value not Event, one-time fact record" shape as
+/// `user_correction_receipts` -- each digest is the domain-chosen primary
+/// key, `task_id`/`run_id` are indexed (same reasoning as `attempts`/
+/// `evidence_receipts`) even though no `list`-by-`task_id`/`run_id` read
+/// exists yet.
+fn migrate_v15(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS planning_policy_restarts (
+            restart_digest TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            restart_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_planning_policy_restarts_task_id
+            ON planning_policy_restarts(task_id);
+        CREATE TABLE IF NOT EXISTS run_policy_amendments (
+            amendment_digest TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            amendment_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_policy_amendments_run_id
+            ON run_policy_amendments(run_id);
+        CREATE TABLE IF NOT EXISTS budget_grant_receipts (
+            grant_digest TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_budget_grant_receipts_run_id
+            ON budget_grant_receipts(run_id);
         ",
     )
 }
@@ -2734,6 +2845,223 @@ impl EventStore {
         }))
     }
 
+    /// §5.1's write path for `PlanningPolicyRestart`: re-runs
+    /// `policy_restart::issue_planning_policy_restart` server-side, same
+    /// discipline as `record_user_correction`. `INSERT`s rather than
+    /// upserts -- a restart is a one-time fact, not current state to
+    /// overwrite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_planning_policy_restart(
+        &mut self,
+        task_id: &str,
+        current_run_id: &str,
+        old_planning_spec_hash: &str,
+        proposed_planning_spec_hash: &str,
+        trigger_revision_ref: &str,
+        config_revision_ref: &str,
+        skill_revision_ref: &str,
+        capability_revision_ref: &str,
+        invalidated_document_attempt_ids: Vec<String>,
+        approval_receipt: &str,
+        restart_digest: &str,
+    ) -> Result<PlanningPolicyRestartRecord, RecordPlanningPolicyRestartError> {
+        let restart = policy_restart::issue_planning_policy_restart(
+            task_id,
+            current_run_id,
+            old_planning_spec_hash,
+            proposed_planning_spec_hash,
+            trigger_revision_ref,
+            config_revision_ref,
+            skill_revision_ref,
+            capability_revision_ref,
+            invalidated_document_attempt_ids,
+            approval_receipt,
+            restart_digest,
+        )
+        .map_err(RecordPlanningPolicyRestartError::Restart)?;
+
+        let restart_json =
+            serde_json::to_string(&restart).expect("PlanningPolicyRestart is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO planning_policy_restarts (restart_digest, task_id, run_id, restart_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                restart.restart_digest,
+                restart.task_id,
+                restart.current_run_id,
+                restart_json,
+                created_at
+            ],
+        )?;
+
+        Ok(PlanningPolicyRestartRecord { restart, created_at })
+    }
+
+    /// Read counterpart to `record_planning_policy_restart`.
+    pub fn load_planning_policy_restart(
+        &self,
+        restart_digest: &str,
+    ) -> rusqlite::Result<Option<PlanningPolicyRestartRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT restart_json, created_at FROM planning_policy_restarts WHERE restart_digest = ?1",
+                rusqlite::params![restart_digest],
+                |row| {
+                    let restart_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((restart_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(restart_json, created_at)| {
+            let restart: PlanningPolicyRestart = serde_json::from_str(&restart_json)
+                .expect("planning_policy_restarts.restart_json round-trips");
+            PlanningPolicyRestartRecord { restart, created_at }
+        }))
+    }
+
+    /// §5.1's write path for `RunPolicyAmendment`: re-runs
+    /// `policy_restart::issue_run_policy_amendment` server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_run_policy_amendment(
+        &mut self,
+        task_id: &str,
+        current_run_id: &str,
+        old_execution_spec_hash: &str,
+        proposed_execution_spec_hash: &str,
+        unchanged_contract_hash: &str,
+        unchanged_graph_hash: &str,
+        unchanged_base_hash: &str,
+        policy_diff: &str,
+        invalidated_attempt_ids: Vec<String>,
+        invalidated_evidence_ids: Vec<String>,
+        invalidated_audit_ids: Vec<String>,
+        invalidated_candidate_ids: Vec<String>,
+        approval_receipt: &str,
+        amendment_digest: &str,
+    ) -> Result<RunPolicyAmendmentRecord, RecordRunPolicyAmendmentError> {
+        let amendment = policy_restart::issue_run_policy_amendment(
+            task_id,
+            current_run_id,
+            old_execution_spec_hash,
+            proposed_execution_spec_hash,
+            unchanged_contract_hash,
+            unchanged_graph_hash,
+            unchanged_base_hash,
+            policy_diff,
+            invalidated_attempt_ids,
+            invalidated_evidence_ids,
+            invalidated_audit_ids,
+            invalidated_candidate_ids,
+            approval_receipt,
+            amendment_digest,
+        )
+        .map_err(RecordRunPolicyAmendmentError::Amendment)?;
+
+        let amendment_json =
+            serde_json::to_string(&amendment).expect("RunPolicyAmendment is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO run_policy_amendments (amendment_digest, task_id, run_id, amendment_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                amendment.amendment_digest,
+                amendment.task_id,
+                amendment.current_run_id,
+                amendment_json,
+                created_at
+            ],
+        )?;
+
+        Ok(RunPolicyAmendmentRecord { amendment, created_at })
+    }
+
+    /// Read counterpart to `record_run_policy_amendment`.
+    pub fn load_run_policy_amendment(
+        &self,
+        amendment_digest: &str,
+    ) -> rusqlite::Result<Option<RunPolicyAmendmentRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT amendment_json, created_at FROM run_policy_amendments WHERE amendment_digest = ?1",
+                rusqlite::params![amendment_digest],
+                |row| {
+                    let amendment_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((amendment_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(amendment_json, created_at)| {
+            let amendment: RunPolicyAmendment = serde_json::from_str(&amendment_json)
+                .expect("run_policy_amendments.amendment_json round-trips");
+            RunPolicyAmendmentRecord { amendment, created_at }
+        }))
+    }
+
+    /// §5.1's write path for `BudgetGrantReceipt`: re-runs
+    /// `policy_restart::issue_budget_grant_receipt` server-side.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_budget_grant(
+        &mut self,
+        run_id: &str,
+        current_budget_hash: &str,
+        added_limits: Vec<BudgetLimitGrant>,
+        reason: &str,
+        operator: &str,
+        expiry: Option<&str>,
+        grant_digest: &str,
+    ) -> Result<BudgetGrantRecord, RecordBudgetGrantError> {
+        let receipt = policy_restart::issue_budget_grant_receipt(
+            run_id,
+            current_budget_hash,
+            added_limits,
+            reason,
+            operator,
+            expiry,
+            grant_digest,
+        )
+        .map_err(RecordBudgetGrantError::Grant)?;
+
+        let receipt_json =
+            serde_json::to_string(&receipt).expect("BudgetGrantReceipt is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO budget_grant_receipts (grant_digest, run_id, receipt_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![receipt.grant_digest, receipt.run_id, receipt_json, created_at],
+        )?;
+
+        Ok(BudgetGrantRecord { receipt, created_at })
+    }
+
+    /// Read counterpart to `record_budget_grant`.
+    pub fn load_budget_grant(
+        &self,
+        grant_digest: &str,
+    ) -> rusqlite::Result<Option<BudgetGrantRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT receipt_json, created_at FROM budget_grant_receipts WHERE grant_digest = ?1",
+                rusqlite::params![grant_digest],
+                |row| {
+                    let receipt_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((receipt_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(receipt_json, created_at)| {
+            let receipt: BudgetGrantReceipt = serde_json::from_str(&receipt_json)
+                .expect("budget_grant_receipts.receipt_json round-trips");
+            BudgetGrantRecord { receipt, created_at }
+        }))
+    }
+
     /// §5.7's write path: records an `EvidenceReceipt` produced by a
     /// verifier run. Like `record_attempt`, this is a fact recorded once,
     /// not a journaled event -- staleness is a query-time property
@@ -4289,6 +4617,267 @@ mod tests {
             "{err:?}"
         );
         assert!(store.load_user_correction("UC-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn record_fixture_planning_policy_restart(
+        store: &mut EventStore,
+        restart_digest: &str,
+        old_planning_spec_hash: &str,
+    ) -> Result<PlanningPolicyRestartRecord, RecordPlanningPolicyRestartError> {
+        store.record_planning_policy_restart(
+            "task-1",
+            "run-1",
+            old_planning_spec_hash,
+            "new-planning-spec-hash",
+            "trigger-rev-1",
+            "config-rev-1",
+            "skill-rev-1",
+            "capability-rev-1",
+            vec!["doc-attempt-1".into()],
+            "approval-1",
+            restart_digest,
+        )
+    }
+
+    #[test]
+    fn record_planning_policy_restart_records_a_well_formed_restart_and_reads_it_back() {
+        let root = temp_data_root("record-planning-policy-restart-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_planning_policy_restart("RESTART-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let record =
+            record_fixture_planning_policy_restart(&mut store, "RESTART-1", "old-hash").unwrap();
+        assert_eq!(record.restart.restart_digest, "RESTART-1");
+
+        let loaded = store
+            .load_planning_policy_restart("RESTART-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_planning_policy_restart_refuses_to_reuse_an_existing_restart_digest() {
+        let root = temp_data_root("record-planning-policy-restart-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_planning_policy_restart(&mut store, "RESTART-1", "old-hash").unwrap();
+        let err =
+            record_fixture_planning_policy_restart(&mut store, "RESTART-1", "another-old-hash")
+                .unwrap_err();
+        assert!(
+            matches!(err, RecordPlanningPolicyRestartError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_planning_policy_restart_rejects_an_unchanged_spec_without_writing_anything() {
+        let root = temp_data_root("record-planning-policy-restart-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = record_fixture_planning_policy_restart(
+            &mut store,
+            "RESTART-1",
+            "new-planning-spec-hash",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordPlanningPolicyRestartError::Restart(errors)
+                    if errors.contains(&PlanningPolicyRestartError::PlanningSpecUnchanged)
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_planning_policy_restart("RESTART-1")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn record_fixture_run_policy_amendment(
+        store: &mut EventStore,
+        amendment_digest: &str,
+        old_execution_spec_hash: &str,
+    ) -> Result<RunPolicyAmendmentRecord, RecordRunPolicyAmendmentError> {
+        store.record_run_policy_amendment(
+            "task-1",
+            "run-1",
+            old_execution_spec_hash,
+            "new-execution-spec-hash",
+            "contract-hash-1",
+            "graph-hash-1",
+            "base-hash-1",
+            "final_audit switched from claude-a to claude-b",
+            vec!["attempt-1".into()],
+            vec!["evidence-1".into()],
+            vec!["audit-1".into()],
+            vec!["candidate-1".into()],
+            "approval-1",
+            amendment_digest,
+        )
+    }
+
+    #[test]
+    fn record_run_policy_amendment_records_a_well_formed_amendment_and_reads_it_back() {
+        let root = temp_data_root("record-run-policy-amendment-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(
+            store
+                .load_run_policy_amendment("AMEND-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let record =
+            record_fixture_run_policy_amendment(&mut store, "AMEND-1", "old-hash").unwrap();
+        assert_eq!(record.amendment.amendment_digest, "AMEND-1");
+
+        let loaded = store.load_run_policy_amendment("AMEND-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_run_policy_amendment_refuses_to_reuse_an_existing_amendment_digest() {
+        let root = temp_data_root("record-run-policy-amendment-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_run_policy_amendment(&mut store, "AMEND-1", "old-hash").unwrap();
+        let err = record_fixture_run_policy_amendment(&mut store, "AMEND-1", "another-old-hash")
+            .unwrap_err();
+        assert!(
+            matches!(err, RecordRunPolicyAmendmentError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_run_policy_amendment_rejects_an_unchanged_spec_without_writing_anything() {
+        let root = temp_data_root("record-run-policy-amendment-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = record_fixture_run_policy_amendment(
+            &mut store,
+            "AMEND-1",
+            "new-execution-spec-hash",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordRunPolicyAmendmentError::Amendment(errors)
+                    if errors.contains(&RunPolicyAmendmentError::ExecutionSpecUnchanged)
+            ),
+            "{err:?}"
+        );
+        assert!(
+            store
+                .load_run_policy_amendment("AMEND-1")
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn record_fixture_budget_grant(
+        store: &mut EventStore,
+        grant_digest: &str,
+        added_limits: Vec<BudgetLimitGrant>,
+    ) -> Result<BudgetGrantRecord, RecordBudgetGrantError> {
+        store.record_budget_grant(
+            "run-1",
+            "budget-hash-1",
+            added_limits,
+            "extra retries needed after flaky environment",
+            "dannie",
+            None,
+            grant_digest,
+        )
+    }
+
+    #[test]
+    fn record_budget_grant_records_a_well_formed_grant_and_reads_it_back() {
+        let root = temp_data_root("record-budget-grant-well-formed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_budget_grant("GRANT-1").unwrap().is_none());
+
+        let record = record_fixture_budget_grant(
+            &mut store,
+            "GRANT-1",
+            vec![BudgetLimitGrant::Soft(10)],
+        )
+        .unwrap();
+        assert_eq!(record.receipt.grant_digest, "GRANT-1");
+
+        let loaded = store.load_budget_grant("GRANT-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_budget_grant_refuses_to_reuse_an_existing_grant_digest() {
+        let root = temp_data_root("record-budget-grant-reuse-refused");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        record_fixture_budget_grant(&mut store, "GRANT-1", vec![BudgetLimitGrant::Soft(10)])
+            .unwrap();
+        let err =
+            record_fixture_budget_grant(&mut store, "GRANT-1", vec![BudgetLimitGrant::Hard(5)])
+                .unwrap_err();
+        assert!(matches!(err, RecordBudgetGrantError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn record_budget_grant_rejects_no_limits_added_without_writing_anything() {
+        let root = temp_data_root("record-budget-grant-domain-rejected");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = record_fixture_budget_grant(&mut store, "GRANT-1", vec![]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RecordBudgetGrantError::Grant(errors)
+                    if errors.contains(&BudgetGrantError::NoLimitsAdded)
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_budget_grant("GRANT-1").unwrap().is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }

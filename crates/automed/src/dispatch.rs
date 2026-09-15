@@ -91,15 +91,17 @@ use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
     AppendedGraphEvent, AppendedNodeEvent, AppendedProjectEvent, AppendedRunEvent,
-    AppendedTaskEvent, AttemptRecord, BindPlaybookError, CandidateCertificateRecord,
-    CompletionCertificateRecord, ContractAppendError, CreateDisposableCloneError,
-    CreateFromTargetError, DeliveryChainRecord, DisposableCloneRecord,
-    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
-    FrozenPlaybookRecord, GraphAppendError, IssueCandidateCertificateError,
-    IssueCompletionCertificateError, NodeAppendError, ProjectAppendError, ProjectSummary,
-    CredentialRecordRow, ReadinessRecord, RecordAttemptError, RecordCredentialError,
-    RecordCredentialReceiptError, RecordEvidenceError, RecordReadinessError,
-    RecordUserCorrectionError, StartDeliveryChainError, TaskAppendError, TaskSummary,
+    AppendedTaskEvent, AttemptRecord, BindPlaybookError, BudgetGrantRecord,
+    CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
+    CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
+    DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
+    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
+    IssueCandidateCertificateError, IssueCompletionCertificateError, NodeAppendError,
+    PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
+    ReadinessRecord, RecordAttemptError, RecordBudgetGrantError, RecordCredentialError,
+    RecordCredentialReceiptError, RecordEvidenceError, RecordPlanningPolicyRestartError,
+    RecordReadinessError, RecordRunPolicyAmendmentError, RecordUserCorrectionError,
+    RunPolicyAmendmentRecord, StartDeliveryChainError, TaskAppendError, TaskSummary,
     UserCorrectionRecord,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
@@ -122,6 +124,7 @@ use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
 use autome_domain::node::NodeEvent;
 use autome_domain::playbook::{FrozenPlaybook, RoleOutput};
+use autome_domain::policy_restart::BudgetLimitGrant;
 use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
 };
@@ -229,6 +232,26 @@ pub enum DispatchError {
     /// than trusting the caller (`Receipt`), or a duplicate `receipt_digest`
     /// surfaced as a SQL primary-key violation (`Sql`).
     RecordUserCorrection(RecordUserCorrectionError),
+    /// §5.1 write path: `record_planning_policy_restart`'s failure modes --
+    /// `policy_restart::issue_planning_policy_restart`'s own mechanical
+    /// rules (planning spec unchanged, missing approval receipt), re-run
+    /// server-side rather than trusting the caller (`Restart`), or a
+    /// duplicate `restart_digest` surfaced as a SQL primary-key violation
+    /// (`Sql`).
+    RecordPlanningPolicyRestart(RecordPlanningPolicyRestartError),
+    /// §5.1 write path: `record_run_policy_amendment`'s failure modes --
+    /// `policy_restart::issue_run_policy_amendment`'s own mechanical rules
+    /// (execution spec unchanged, missing policy diff/approval receipt, no
+    /// invalidated Attempts), re-run server-side (`Amendment`), or a
+    /// duplicate `amendment_digest` surfaced as a SQL primary-key violation
+    /// (`Sql`).
+    RecordRunPolicyAmendment(RecordRunPolicyAmendmentError),
+    /// §5.1 write path: `record_budget_grant`'s failure modes --
+    /// `policy_restart::issue_budget_grant_receipt`'s own mechanical rules
+    /// (no limits added, missing reason/operator), re-run server-side
+    /// (`Grant`), or a duplicate `grant_digest` surfaced as a SQL
+    /// primary-key violation (`Sql`).
+    RecordBudgetGrant(RecordBudgetGrantError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -282,6 +305,24 @@ impl From<RecordCredentialReceiptError> for DispatchError {
 impl From<RecordUserCorrectionError> for DispatchError {
     fn from(value: RecordUserCorrectionError) -> Self {
         DispatchError::RecordUserCorrection(value)
+    }
+}
+
+impl From<RecordPlanningPolicyRestartError> for DispatchError {
+    fn from(value: RecordPlanningPolicyRestartError) -> Self {
+        DispatchError::RecordPlanningPolicyRestart(value)
+    }
+}
+
+impl From<RecordRunPolicyAmendmentError> for DispatchError {
+    fn from(value: RecordRunPolicyAmendmentError) -> Self {
+        DispatchError::RecordRunPolicyAmendment(value)
+    }
+}
+
+impl From<RecordBudgetGrantError> for DispatchError {
+    fn from(value: RecordBudgetGrantError) -> Self {
+        DispatchError::RecordBudgetGrant(value)
     }
 }
 
@@ -788,6 +829,30 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.1: same shape again -- each of these three issues a one-time fact
+    // record (a restart/amendment/grant), not a domain `Event`.
+    if command.method == "policy_restart.issue_planning_restart" {
+        let result = handle_record_planning_policy_restart(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "policy_restart.issue_run_amendment" {
+        let result = handle_record_run_policy_amendment(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "policy_restart.issue_budget_grant" {
+        let result = handle_record_budget_grant(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -1250,6 +1315,284 @@ fn read_user_correction_get(
         None => Err((
             ReplyErrorCode::NotFound,
             format!("no user correction receipt recorded with digest {receipt_digest}"),
+        )),
+    }
+}
+
+/// The raw field bundle `policy_restart.issue_planning_restart` takes as
+/// `params.input` -- every argument
+/// `policy_restart::issue_planning_policy_restart` needs, same "IPC-parsing
+/// convenience, not a new domain concept" reasoning as
+/// `UserCorrectionInputParam`.
+#[derive(Debug, Deserialize)]
+struct PlanningPolicyRestartInputParam {
+    task_id: String,
+    current_run_id: String,
+    old_planning_spec_hash: String,
+    proposed_planning_spec_hash: String,
+    trigger_revision_ref: String,
+    config_revision_ref: String,
+    skill_revision_ref: String,
+    capability_revision_ref: String,
+    #[serde(default)]
+    invalidated_document_attempt_ids: Vec<String>,
+    approval_receipt: String,
+    restart_digest: String,
+}
+
+fn parse_planning_policy_restart_input_param(
+    command: &Command,
+) -> Result<PlanningPolicyRestartInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid policy_restart planning-restart input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_planning_policy_restart`.
+/// Takes `{ input: <PlanningPolicyRestartInputParam> }` and re-validates
+/// server-side via `policy_restart::issue_planning_policy_restart` rather
+/// than trusting an already-built restart from the caller, same discipline
+/// as `handle_record_user_correction`. Refuses to run while the store is in
+/// its diagnostic state, same as every other write.
+fn handle_record_planning_policy_restart(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input =
+        parse_planning_policy_restart_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_planning_policy_restart(
+            &input.task_id,
+            &input.current_run_id,
+            &input.old_planning_spec_hash,
+            &input.proposed_planning_spec_hash,
+            &input.trigger_revision_ref,
+            &input.config_revision_ref,
+            &input.skill_revision_ref,
+            &input.capability_revision_ref,
+            input.invalidated_document_attempt_ids,
+            &input.approval_receipt,
+            &input.restart_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(planning_policy_restart_record_json(&record))
+}
+
+fn planning_policy_restart_record_json(record: &PlanningPolicyRestartRecord) -> Value {
+    serde_json::json!({
+        "restart": record.restart,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_planning_policy_restart` -- looks up
+/// the recorded `planning_policy_restarts` row for `restart_digest`, if any.
+fn read_planning_policy_restart_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let restart_digest =
+        parse_string_param(command, "restart_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_planning_policy_restart(&restart_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(planning_policy_restart_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no planning policy restart recorded with digest {restart_digest}"),
+        )),
+    }
+}
+
+/// The raw field bundle `policy_restart.issue_run_amendment` takes as
+/// `params.input` -- every argument `policy_restart::issue_run_policy_amendment`
+/// needs, same reasoning as `PlanningPolicyRestartInputParam`.
+#[derive(Debug, Deserialize)]
+struct RunPolicyAmendmentInputParam {
+    task_id: String,
+    current_run_id: String,
+    old_execution_spec_hash: String,
+    proposed_execution_spec_hash: String,
+    unchanged_contract_hash: String,
+    unchanged_graph_hash: String,
+    unchanged_base_hash: String,
+    policy_diff: String,
+    #[serde(default)]
+    invalidated_attempt_ids: Vec<String>,
+    #[serde(default)]
+    invalidated_evidence_ids: Vec<String>,
+    #[serde(default)]
+    invalidated_audit_ids: Vec<String>,
+    #[serde(default)]
+    invalidated_candidate_ids: Vec<String>,
+    approval_receipt: String,
+    amendment_digest: String,
+}
+
+fn parse_run_policy_amendment_input_param(
+    command: &Command,
+) -> Result<RunPolicyAmendmentInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid policy_restart run-amendment input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_run_policy_amendment`.
+/// Takes `{ input: <RunPolicyAmendmentInputParam> }` and re-validates
+/// server-side via `policy_restart::issue_run_policy_amendment`.
+fn handle_record_run_policy_amendment(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input =
+        parse_run_policy_amendment_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_run_policy_amendment(
+            &input.task_id,
+            &input.current_run_id,
+            &input.old_execution_spec_hash,
+            &input.proposed_execution_spec_hash,
+            &input.unchanged_contract_hash,
+            &input.unchanged_graph_hash,
+            &input.unchanged_base_hash,
+            &input.policy_diff,
+            input.invalidated_attempt_ids,
+            input.invalidated_evidence_ids,
+            input.invalidated_audit_ids,
+            input.invalidated_candidate_ids,
+            &input.approval_receipt,
+            &input.amendment_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(run_policy_amendment_record_json(&record))
+}
+
+fn run_policy_amendment_record_json(record: &RunPolicyAmendmentRecord) -> Value {
+    serde_json::json!({
+        "amendment": record.amendment,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_run_policy_amendment` -- looks up the
+/// recorded `run_policy_amendments` row for `amendment_digest`, if any.
+fn read_run_policy_amendment_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let amendment_digest =
+        parse_string_param(command, "amendment_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_run_policy_amendment(&amendment_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(run_policy_amendment_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no run policy amendment recorded with digest {amendment_digest}"),
+        )),
+    }
+}
+
+/// The raw field bundle `policy_restart.issue_budget_grant` takes as
+/// `params.input` -- every argument `policy_restart::issue_budget_grant_receipt`
+/// needs, same reasoning as `PlanningPolicyRestartInputParam`.
+#[derive(Debug, Deserialize)]
+struct BudgetGrantInputParam {
+    run_id: String,
+    current_budget_hash: String,
+    #[serde(default)]
+    added_limits: Vec<BudgetLimitGrant>,
+    reason: String,
+    operator: String,
+    expiry: Option<String>,
+    grant_digest: String,
+}
+
+fn parse_budget_grant_input_param(
+    command: &Command,
+) -> Result<BudgetGrantInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid policy_restart budget-grant input: {e}"
+        ))
+    })
+}
+
+/// §5.1: the sole caller of `EventStore::record_budget_grant`. Takes
+/// `{ input: <BudgetGrantInputParam> }` and re-validates server-side via
+/// `policy_restart::issue_budget_grant_receipt`.
+fn handle_record_budget_grant(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input = parse_budget_grant_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_budget_grant(
+            &input.run_id,
+            &input.current_budget_hash,
+            input.added_limits,
+            &input.reason,
+            &input.operator,
+            input.expiry.as_deref(),
+            &input.grant_digest,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(budget_grant_record_json(&record))
+}
+
+fn budget_grant_record_json(record: &BudgetGrantRecord) -> Value {
+    serde_json::json!({
+        "receipt": record.receipt,
+        "created_at": record.created_at,
+    })
+}
+
+/// Read counterpart to `handle_record_budget_grant` -- looks up the
+/// recorded `budget_grant_receipts` row for `grant_digest`, if any.
+fn read_budget_grant_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let grant_digest =
+        parse_string_param(command, "grant_digest").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_budget_grant(&grant_digest)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(budget_grant_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no budget grant receipt recorded with digest {grant_digest}"),
         )),
     }
 }
@@ -1835,6 +2178,24 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordUserCorrection(RecordUserCorrectionError::Receipt(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::RecordPlanningPolicyRestart(RecordPlanningPolicyRestartError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordPlanningPolicyRestart(RecordPlanningPolicyRestartError::Restart(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::RecordRunPolicyAmendment(RecordRunPolicyAmendmentError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordRunPolicyAmendment(RecordRunPolicyAmendmentError::Amendment(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::RecordBudgetGrant(RecordBudgetGrantError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordBudgetGrant(RecordBudgetGrantError::Grant(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -1939,6 +2300,11 @@ fn try_dispatch_read(
         "step_role.validate_schema" => Some(read_step_role_validate_schema(command)),
         "step_role.role_properties" => Some(read_step_role_role_properties(command)),
         "user_correction.get" => Some(read_user_correction_get(store, command)),
+        "policy_restart.get_planning_restart" => {
+            Some(read_planning_policy_restart_get(store, command))
+        }
+        "policy_restart.get_run_amendment" => Some(read_run_policy_amendment_get(store, command)),
+        "policy_restart.get_budget_grant" => Some(read_budget_grant_get(store, command)),
         _ => None,
     }
 }
@@ -7322,6 +7688,370 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("user_correction.record", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_planning_policy_restart_input_json() -> Value {
+        json!({
+            "task_id": "task-1",
+            "current_run_id": "run-1",
+            "old_planning_spec_hash": "old-planning-spec-hash",
+            "proposed_planning_spec_hash": "new-planning-spec-hash",
+            "trigger_revision_ref": "trigger-rev-1",
+            "config_revision_ref": "config-rev-1",
+            "skill_revision_ref": "skill-rev-1",
+            "capability_revision_ref": "capability-rev-1",
+            "invalidated_document_attempt_ids": ["doc-attempt-1"],
+            "approval_receipt": "approval-1",
+            "restart_digest": "RESTART-1",
+        })
+    }
+
+    /// §5.1: `policy_restart.issue_planning_restart` follows the same
+    /// no-`Event`-produced shape as `user_correction.record`, and its
+    /// payload round-trips through `policy_restart.get_planning_restart`.
+    #[test]
+    fn handle_command_policy_restart_issue_planning_restart_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_planning_restart",
+            json!({ "input": well_formed_planning_policy_restart_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.issue_planning_restart failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["restart"]["restart_digest"], "RESTART-1");
+
+        let get_cmd = command(
+            "policy_restart.get_planning_restart",
+            json!({ "restart_digest": "RESTART-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.get_planning_restart failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_planning_restart_refuses_to_reuse_an_existing_restart_digest()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_planning_restart",
+            json!({ "input": well_formed_planning_policy_restart_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_planning_restart_rejects_an_unchanged_spec() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_planning_policy_restart_input_json();
+        input["proposed_planning_spec_hash"] = json!("old-planning-spec-hash");
+        let record_cmd = command(
+            "policy_restart.issue_planning_restart",
+            json!({ "input": input }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "policy_restart.get_planning_restart",
+            json!({ "restart_digest": "RESTART-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_planning_restart_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("policy_restart.issue_planning_restart", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_run_policy_amendment_input_json() -> Value {
+        json!({
+            "task_id": "task-1",
+            "current_run_id": "run-1",
+            "old_execution_spec_hash": "old-execution-spec-hash",
+            "proposed_execution_spec_hash": "new-execution-spec-hash",
+            "unchanged_contract_hash": "contract-hash-1",
+            "unchanged_graph_hash": "graph-hash-1",
+            "unchanged_base_hash": "base-hash-1",
+            "policy_diff": "final_audit switched from claude-a to claude-b",
+            "invalidated_attempt_ids": ["attempt-1"],
+            "invalidated_evidence_ids": ["evidence-1"],
+            "invalidated_audit_ids": ["audit-1"],
+            "invalidated_candidate_ids": ["candidate-1"],
+            "approval_receipt": "approval-1",
+            "amendment_digest": "AMEND-1",
+        })
+    }
+
+    /// §5.1: `policy_restart.issue_run_amendment` follows the same
+    /// no-`Event`-produced shape, and its payload round-trips through
+    /// `policy_restart.get_run_amendment`.
+    #[test]
+    fn handle_command_policy_restart_issue_run_amendment_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_run_amendment",
+            json!({ "input": well_formed_run_policy_amendment_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.issue_run_amendment failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["amendment"]["amendment_digest"], "AMEND-1");
+
+        let get_cmd = command(
+            "policy_restart.get_run_amendment",
+            json!({ "amendment_digest": "AMEND-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.get_run_amendment failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_run_amendment_refuses_to_reuse_an_existing_amendment_digest()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_run_amendment",
+            json!({ "input": well_formed_run_policy_amendment_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_run_amendment_rejects_no_invalidated_attempts() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_run_policy_amendment_input_json();
+        input["invalidated_attempt_ids"] = json!([]);
+        let record_cmd = command(
+            "policy_restart.issue_run_amendment",
+            json!({ "input": input }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "policy_restart.get_run_amendment",
+            json!({ "amendment_digest": "AMEND-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_run_amendment_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("policy_restart.issue_run_amendment", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_budget_grant_input_json() -> Value {
+        json!({
+            "run_id": "run-1",
+            "current_budget_hash": "budget-hash-1",
+            "added_limits": [{ "Soft": 10 }],
+            "reason": "extra retries needed after flaky environment",
+            "operator": "dannie",
+            "expiry": null,
+            "grant_digest": "GRANT-1",
+        })
+    }
+
+    /// §5.1: `policy_restart.issue_budget_grant` follows the same
+    /// no-`Event`-produced shape, and its payload round-trips through
+    /// `policy_restart.get_budget_grant`.
+    #[test]
+    fn handle_command_policy_restart_issue_budget_grant_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_budget_grant",
+            json!({ "input": well_formed_budget_grant_input_json() }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.issue_budget_grant failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["receipt"]["grant_digest"], "GRANT-1");
+
+        let get_cmd = command(
+            "policy_restart.get_budget_grant",
+            json!({ "grant_digest": "GRANT-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("policy_restart.get_budget_grant failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_budget_grant_refuses_to_reuse_an_existing_grant_digest() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "policy_restart.issue_budget_grant",
+            json!({ "input": well_formed_budget_grant_input_json() }),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_budget_grant_rejects_no_limits_added() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input = well_formed_budget_grant_input_json();
+        input["added_limits"] = json!([]);
+        let record_cmd = command(
+            "policy_restart.issue_budget_grant",
+            json!({ "input": input }),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command(
+            "policy_restart.get_budget_grant",
+            json!({ "grant_digest": "GRANT-1" }),
+        );
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_policy_restart_issue_budget_grant_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("policy_restart.issue_budget_grant", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
