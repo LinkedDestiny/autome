@@ -156,6 +156,25 @@ impl World {
         std::fs::write(path, script).unwrap();
     }
 
+    /// Like `doc_step`, with a shell prelude that runs before the document is
+    /// written — used to hold a session open while the test checks something.
+    fn doc_step_with_prelude(&self, n: u32, slug: &str, body: &str, prelude: &str) {
+        self.step(
+            n,
+            &format!(
+                r#"set -e
+{prelude}
+mkdir -p "docs/{slug}"
+cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
+{body}
+AUTOME_EOF
+git add -A docs >/dev/null 2>&1 || true
+git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
+"#
+            ),
+        );
+    }
+
     /// A step that writes a design document into the task's worktree and
     /// commits it, which is what every real session does.
     fn doc_step(&self, n: u32, slug: &str, body: &str) {
@@ -568,10 +587,7 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
         prompt.contains("确认邮件只发登录用户"),
         "the feedback must reach the session verbatim:\n{prompt}"
     );
-    assert!(
-        prompt.contains("Task 1."),
-        "it is a design round:\n{prompt}"
-    );
+    assert!(prompt.contains("设计轮"), "it is a design round:\n{prompt}");
 }
 
 // ---------------------------------------------------------------------------
@@ -587,15 +603,26 @@ fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
         json!({ "project_id": w.project_id.clone(), "parallel": 2 }),
     );
 
-    // Every session parks at the design-approval stopping point, which does
-    // not hold a slot — so drive the first two only far enough to occupy one.
-    let mut ids = Vec::new();
-    for i in 0..3 {
-        ids.push(create_task(&mut w, &format!("task number {i}")));
+    // Each session sleeps, so it holds its slot while the next task is
+    // created. Without this the stand-in would exit immediately, the task
+    // would fail, the slot would free, and all three would legitimately run —
+    // which tests nothing about the limit.
+    let requests = ["alpha task", "beta task", "gamma task"];
+    for request in requests {
+        w.doc_step_with_prelude(1, &slug_for(request), &doc("设计中", 0, 0, &[]), "sleep 3");
     }
 
-    // No step scripts: the stand-in exits non-zero, which fails the task. That
-    // is fine for this test — what matters is how many were *started*.
+    let mut ids = Vec::new();
+    for request in requests {
+        ids.push(create_task(&mut w, request));
+    }
+
+    let running = w.ctx.store.all_running_sessions().unwrap().len();
+    assert!(
+        running <= 2,
+        "the parallel limit must hold: {running} running"
+    );
+
     let queued: Vec<String> = w
         .ctx
         .store
@@ -604,17 +631,12 @@ fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
         .into_iter()
         .map(|t| t.id)
         .collect();
-    let started = 3 - queued.len();
-    assert!(
-        started <= 2,
-        "at most the parallel limit may start at once; started {started}, queued {queued:?}"
-    );
-    assert!(!queued.is_empty(), "the third task waits");
+    assert_eq!(queued.len(), 1, "the third task waits: {queued:?}");
+    assert_eq!(queued[0], ids[2], "the queue is first-come-first-served");
 
-    // The queue is first-come-first-served.
+    // A queued task reports its position.
     let panel = w.call("task.get", json!({ "task_id": ids[2].clone() }));
-    let pos = ok(&panel)["queue_position"].as_u64();
-    assert!(pos.is_some(), "a queued task reports its position");
+    assert_eq!(ok(&panel)["queue_position"], json!(1));
 }
 
 // ---------------------------------------------------------------------------
@@ -744,13 +766,14 @@ fn stopping_a_task_leaves_it_resumable() {
 fn a_same_model_collision_is_refused_and_the_fix_is_accepted() {
     needs_git!();
     let mut w = World::new("samemodel");
+    // The shipped defaults leave models unnamed, so moving audit onto Claude
+    // puts it on exactly the session impl already runs.
     let refused = w.call(
         "config.set_role",
         json!({
             "project_id": w.project_id.clone(),
             "role": "audit",
-            "runtime": "claude",
-            "model": "claude-opus-5"
+            "runtime": "claude"
         }),
     );
     let message = error_message(&refused).to_string();
@@ -763,14 +786,14 @@ fn a_same_model_collision_is_refused_and_the_fix_is_accepted() {
     let text = std::fs::read_to_string(w.repo.join(".autome/config.toml")).unwrap_or_default();
     assert!(!text.contains("[roles.audit]"), "{text}");
 
-    // A different model on the same runtime is fine.
+    // Naming a different model on the same runtime resolves it.
     let accepted = w.call(
         "config.set_role",
         json!({
             "project_id": w.project_id.clone(),
             "role": "audit",
             "runtime": "claude",
-            "model": "claude-sonnet-5"
+            "model": "sonnet"
         }),
     );
     assert!(matches!(accepted.reply.outcome, ReplyOutcome::Ok { .. }));

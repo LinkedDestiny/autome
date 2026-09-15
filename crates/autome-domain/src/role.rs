@@ -48,17 +48,34 @@ impl Role {
         Role::ALL.into_iter().find(|r| r.as_str() == s)
     }
 
-    /// The entry sentence appended to `docs/<slug>/<slug>-task.md` when this
-    /// role's session starts (design §5.2). The task-file protocol inherited
-    /// from 1.x numbers the four follow-up roles as "additional task 1..4";
-    /// `plan` is the unnumbered Task 1.
-    pub const fn task_file_entry(self) -> &'static str {
+    /// Human-facing name of the round, used in the prompt's first line and in
+    /// the terminal tab title.
+    pub const fn round_name(self) -> &'static str {
         match self {
-            Role::Plan => "Task 1",
-            Role::Review => "Task 1 additional task 1",
-            Role::Adjudicate => "Task 1 additional task 2",
-            Role::Impl => "Task 1 additional task 3",
-            Role::Audit => "Task 1 additional task 4",
+            Role::Plan => "设计轮",
+            Role::Review => "评审轮",
+            Role::Adjudicate => "裁决轮",
+            Role::Impl => "实现轮",
+            Role::Audit => "审计轮",
+        }
+    }
+
+    /// The document this round owns and writes. `None` for the two rounds that
+    /// write the design document itself rather than one of their own.
+    ///
+    /// 1.x dispatched each round through an entry sentence — "execute the task
+    /// file, additional task 3" — and the task file carried a section per
+    /// round. 2.0 does not: the core knows which round it is dispatching, so
+    /// the prompt says so directly. The indirection bought nothing once the
+    /// agent stopped choosing its own successor, and it failed silently when
+    /// the generated task file did not happen to contain the section the
+    /// sentence named.
+    pub const fn output_document(self) -> Option<&'static str> {
+        match self {
+            Role::Review => Some("review"),
+            Role::Adjudicate => Some("adjudication"),
+            Role::Audit => Some("audit"),
+            Role::Plan | Role::Impl => None,
         }
     }
 
@@ -159,11 +176,20 @@ mod tests {
     }
 
     #[test]
-    fn task_file_entries_are_distinct_and_cover_all_five_roles() {
-        let mut entries: Vec<&str> = Role::ALL.iter().map(|r| r.task_file_entry()).collect();
-        entries.sort_unstable();
-        entries.dedup();
-        assert_eq!(entries.len(), 5);
+    fn round_names_are_distinct_and_cover_all_five_roles() {
+        let mut names: Vec<&str> = Role::ALL.iter().map(|r| r.round_name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn exactly_the_three_reviewing_rounds_own_a_document() {
+        let with_doc: Vec<Role> = Role::ALL
+            .into_iter()
+            .filter(|r| r.output_document().is_some())
+            .collect();
+        assert_eq!(with_doc, vec![Role::Review, Role::Adjudicate, Role::Audit]);
     }
 
     #[test]

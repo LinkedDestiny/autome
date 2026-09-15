@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use autome_domain::config::RoleConfig;
+use autome_domain::role::Role;
 use autome_domain::role::Runtime;
 use autome_domain::session::{SessionKind, SessionPaths};
 use autome_domain::task::Inject;
@@ -72,22 +73,39 @@ pub struct RuntimeAdapter {
     pub effort_flag: Option<&'static str>,
 }
 
+/// Verified against Claude Code 2.1.261 and Codex 0.153.4 on 2026-09-15 by
+/// running each form and checking both the effect and the exit code. The
+/// details that cost the most to get wrong:
+///
+/// - **`claude` needs `-p`.** Without it the CLI starts an *interactive*
+///   session and never exits, so the wrapper never writes its marker and the
+///   task sits at its node forever. This is not a flag that merely changes
+///   output formatting; it is the difference between a session and a hang.
+/// - **`codex exec` has no `--full-auto`.** Its approval policy is
+///   `--sandbox <read-only|workspace-write|danger-full-access>`;
+///   `workspace-write` is what lets a session edit its own worktree.
+/// - Both take the prompt on stdin when it is not given as an argument.
 pub const ADAPTERS: [RuntimeAdapter; 2] = [
     RuntimeAdapter {
         runtime: Runtime::Claude,
         binary: "claude",
-        // 2.0 deliberately does not add a sandbox layer of its own (design
-        // §17): the session is confined to its worktree by the working
-        // directory, and the protocol tells it not to leave.
-        autonomous_flags: &["--permission-mode", "acceptEdits"],
+        // `-p` is non-interactive mode; `acceptEdits` lets the session edit
+        // files and run commands inside its worktree without prompting, which
+        // it must be able to do since nobody is watching for a prompt.
+        //
+        // 2.0 deliberately adds no sandbox of its own (design §17): the
+        // confinement is the working directory and the protocol.
+        autonomous_flags: &["-p", "--permission-mode", "acceptEdits"],
         model_flag: "--model",
-        effort_flag: None,
+        effort_flag: Some("--effort"),
     },
     RuntimeAdapter {
         runtime: Runtime::Codex,
         binary: "codex",
-        autonomous_flags: &["exec", "--full-auto"],
+        autonomous_flags: &["exec", "--sandbox", "workspace-write"],
         model_flag: "--model",
+        // Codex takes reasoning effort as a config override rather than a
+        // dedicated flag.
         effort_flag: Some("--config"),
     },
 ];
@@ -160,11 +178,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
             return p;
         }
         SessionKind::Role { role } => {
-            p.push_str(&format!(
-                "Please execute docs/{slug}/{slug}-task.md {entry}.\n",
-                slug = spec.slug,
-                entry = role.task_file_entry()
-            ));
+            p.push_str(&role_prompt(role, spec.slug));
         }
     }
 
@@ -202,6 +216,97 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
     }
 
     p
+}
+
+/// What a role session is told to do.
+///
+/// 1.x dispatched each round with an entry sentence — "execute the task file,
+/// additional task 3" — and the task file carried a numbered section per
+/// round. That indirection existed because the *agent* had to work out which
+/// round it was and hand off to the next one.
+///
+/// 2.0 does not work that way: the core knows which round it is dispatching,
+/// so it says so. Carrying the indirection across cost a real run — the
+/// generated task file had no section called "Task 1", every round opened it,
+/// found nothing addressed to itself, and did nothing. Four sessions ran and
+/// the design document was untouched.
+///
+/// Each prompt therefore states three things and nothing else: which round
+/// this is, which files to read and write, and where the rules are. The rules
+/// themselves stay in the task file, which the intake round embedded them into.
+fn role_prompt(role: Role, slug: &str) -> String {
+    let task_file = format!("docs/{slug}/{slug}-task.md");
+    let design = format!("docs/{slug}/{slug}.md");
+    let review = format!("docs/{slug}/{slug}-review.md");
+    let adjudication = format!("docs/{slug}/{slug}-adjudication.md");
+    let audit = format!("docs/{slug}/{slug}-audit.md");
+    let retro = format!("docs/{slug}/retro.md");
+
+    let body = match role {
+        Role::Plan => format!(
+            "先读 `{task_file}`（任务目标、范围、约束和 Loop 协议全文都在里面），\
+             再读 `{design}`。如果存在 `{review}` 与 `{adjudication}`，也要读——\
+             它们是上一轮评审提出的问题和对这些问题的裁决，本轮必须按裁决修改设计。\n\n\
+             本轮产出：更新 `{design}`。写清背景、目标与非目标、方案、风险与验证安排，\
+             并把工作拆成里程碑表（格式见协议「里程碑」一节，Autome 按列读取）。\n\n\
+             不要写实现代码，不要改 `{review}` 或 `{adjudication}`。"
+        ),
+        Role::Review => format!(
+            "先读 `{task_file}`，再独立复核 `{design}`。\n\n\
+             本轮产出：覆盖写 `{review}`，逐条列出问题。\
+             **只有协议「可以要求再评审一轮的六类问题」里的六类才能提**，\
+             每条必须写明它违反的任务要求编号、设计条款或里程碑验收命令；\
+             追溯不了的一律写进「非阻塞建议」，由裁决轮决定是否进 Backlog。\
+             没有问题时也要写出这个结论。\n\n\
+             不要修改 `{design}`，不要实现代码。"
+        ),
+        Role::Adjudicate => format!(
+            "先读 `{task_file}`、`{design}` 和本轮的 `{review}`；\
+             如果 `{adjudication}` 已存在，读它了解此前的裁决与复提计数。\n\n\
+             本轮产出三件事：\n\n\
+             1. **追加**（不是覆盖）到 `{adjudication}`：本轮轮次、评审结论，\
+                以及逐条裁决记录（稳定 ID、主张摘要、设计位置、裁决、证据或理由、\
+                修改落点、复提计数）。复提计数达到 2 的主张冻结为争议项，\
+                写进 `{design}` 的「## 争议项」小节。\n\
+             2. 按采纳的裁决修改 `{design}`，并把 `design-round` 加 1。\n\
+             3. **判断设计是否定稿。** 若已没有剩余的六类问题：把 `{design}` 状态块的 \
+                `status` 从 `设计中` 改为 `实现中`，并填好完整的里程碑表——\
+                这是 Autome 判断「可以停下来等用户批准」的唯一信号。\
+                若仍有问题，`status` 保持 `设计中`。\n\n\
+             注意：状态块里的 `design-round` 只由本轮增加，评审轮不增加。"
+        ),
+        Role::Impl => format!(
+            "先读 `{task_file}` 和 `{design}`；如果 `{audit}` 存在，读它——\
+             上一轮审计退回的里程碑和原因在里面，本轮要先处理。\n\n\
+             本轮产出：推进**编号最小的「开放」里程碑**，取得该里程碑验收命令的通过证据，\
+             把它在里程碑表里标成 `待审`，并更新状态块的 `implementation-round`（加 1）\
+             与 `next-action`。一轮只推进一个里程碑。\
+             在 `{retro}` 追加一行本轮记录。\n\n\
+             **不得把里程碑标成 `已完成`**——只有审计轮独立复验通过才能关闭它。\
+             超过 5 行的命令输出写进 `.autome/output/`，不要进任务目录。"
+        ),
+        Role::Audit => format!(
+            "先读 `{task_file}` 和 `{design}`，找出状态为 `待审` 的里程碑。\n\n\
+             本轮产出：**独立复验**——自己跑该里程碑的验收命令，\
+             自己构造能区分错误实现的检查，不要以实现轮的说法为准。\
+             结论覆盖写进 `{audit}`，并在 `{retro}` 追加一行。\n\n\
+             结论二选一：\n\n\
+             - **通过** → 在里程碑表里标成 `已完成`。\n\
+             - **有实现缺陷** → 退回 `开放`，`reopen` 加 1，在「领域」列按稳定的行为领域名归组，\
+               并按协议「收敛模式」更新 `convergence-mode`。\n\n\
+             只以「产品行为不符合设计或任务」为缺陷。代码风格、超出验收范围的健壮性、\
+             性能微优化、测试还可以更多等属于改进建议，写进 `{design}` 的「## Backlog」，\
+             不得据此退回实现轮。"
+        ),
+    };
+
+    format!(
+        "你是本任务的**{round}**。本轮在 worktree 内独立完成，完成后结束会话——\
+         **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{body}\n\n\
+         状态块格式必须严格符合 `{task_file}` 中「Loop 协议」一节与 \
+         `.autome/skill/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。\n",
+        round = role.round_name()
+    )
 }
 
 fn render_decisions(decisions: &[DecisionRecord]) -> String {
@@ -635,7 +740,6 @@ pub fn system_role_config() -> RoleConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autome_domain::role::Role;
     use autome_domain::task::Disposition;
 
     fn role_config(runtime: Runtime, model: &str, effort: Option<&str>) -> RoleConfig {
@@ -676,28 +780,17 @@ mod tests {
     }
 
     #[test]
-    fn claude_args_carry_the_model_and_the_autonomous_flags() {
-        let args = build_args(&role_config(Runtime::Claude, "claude-opus-5", Some("high")));
-        assert!(args.contains(&"--model".to_string()));
-        assert!(args.contains(&"claude-opus-5".to_string()));
-        assert!(args.contains(&"--permission-mode".to_string()));
-    }
-
-    #[test]
-    fn codex_effort_is_passed_as_a_config_override() {
-        let args = build_args(&role_config(Runtime::Codex, "gpt-5.4", Some("high")));
-        let joined = args.join(" ");
+    fn an_absent_effort_adds_no_flag_on_either_runtime() {
         assert!(
-            joined.contains("--config model_reasoning_effort=high"),
-            "{joined}"
+            !build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None))
+                .join(" ")
+                .contains("reasoning_effort")
         );
-        assert!(joined.contains("--full-auto"), "{joined}");
-    }
-
-    #[test]
-    fn an_absent_effort_adds_no_flag() {
-        let args = build_args(&role_config(Runtime::Codex, "gpt-5.4", None));
-        assert!(!args.join(" ").contains("reasoning_effort"));
+        assert!(
+            !build_args(&role_config(Runtime::Claude, "opus", None))
+                .join(" ")
+                .contains("--effort")
+        );
     }
 
     #[test]
@@ -709,15 +802,80 @@ mod tests {
     // ---- prompts ---------------------------------------------------------
 
     #[test]
-    fn a_role_prompt_opens_with_the_verbatim_entry_sentence() {
+    fn a_role_prompt_names_the_round_it_is() {
+        // The bug this replaced: every round was handed the same sentence
+        // pointing at a task-file section that did not exist, so four real
+        // sessions ran and produced nothing.
         for role in Role::ALL {
             let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
-            let expected = format!(
-                "Please execute docs/checkout-flow/checkout-flow-task.md {}.",
-                role.task_file_entry()
+            assert!(
+                p.contains(role.round_name()),
+                "{role} prompt does not say which round it is:\n{p}"
             );
-            assert!(p.starts_with(&expected), "{role}: {p}");
+            assert!(
+                !p.contains("additional task"),
+                "{role} prompt still uses the old indirection:\n{p}"
+            );
         }
+    }
+
+    #[test]
+    fn every_role_prompt_names_the_files_it_reads_and_writes() {
+        for role in Role::ALL {
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            // Every round reads the task file and the design document.
+            assert!(p.contains("checkout-flow-task.md"), "{role}: {p}");
+            assert!(
+                p.contains("docs/checkout-flow/checkout-flow.md"),
+                "{role}: {p}"
+            );
+            // The three reviewing rounds each own an output document.
+            if let Some(kind) = role.output_document() {
+                assert!(
+                    p.contains(&format!("checkout-flow-{kind}.md")),
+                    "{role} does not name its own output document:\n{p}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_role_prompt_forbids_starting_the_next_session() {
+        // The core schedules; a round that relays would bypass the parallel
+        // limit, pause, the role toggles and the budgets.
+        for role in Role::ALL {
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            assert!(p.contains("不要启动下一个会话"), "{role}: {p}");
+        }
+    }
+
+    #[test]
+    fn the_adjudication_round_is_told_it_owns_the_design_final_signal() {
+        // Nothing else flips `status` off 设计中, and that flip is the only
+        // thing that moves the task to the approval stop.
+        let p = build_prompt(&spec(
+            SessionKind::Role {
+                role: Role::Adjudicate,
+            },
+            &[],
+            None,
+        ));
+        assert!(p.contains("实现中"), "{p}");
+        assert!(p.contains("里程碑表"), "{p}");
+        assert!(p.contains("design-round"), "{p}");
+    }
+
+    #[test]
+    fn the_implement_round_is_forbidden_from_closing_a_milestone() {
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None));
+        assert!(p.contains("不得把里程碑标成 `已完成`"), "{p}");
+    }
+
+    #[test]
+    fn the_audit_round_is_told_to_verify_independently() {
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &[], None));
+        assert!(p.contains("独立复验"), "{p}");
+        assert!(p.contains("不要以实现轮的说法为准"), "{p}");
     }
 
     #[test]

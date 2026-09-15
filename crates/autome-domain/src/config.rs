@@ -126,30 +126,33 @@ pub struct GlobalConfig {
 }
 
 impl Default for GlobalConfig {
-    /// The first-run defaults: Claude generates, Codex evaluates. Chosen so
-    /// that a fresh install already satisfies SAME-MODEL rather than opening
-    /// on a blocked configuration the user has to fix before doing anything.
+    /// The first-run defaults: Claude generates, Codex evaluates.
+    ///
+    /// Every model is left empty, meaning "whatever that CLI defaults to".
+    /// Naming specific models here would be guessing: the set a given account
+    /// can actually use is not knowable from this side, model names change
+    /// faster than releases, and a default that names an unavailable model
+    /// fails at the first session with an error about billing rather than
+    /// about configuration. The user picks models in the routing graph, where
+    /// the list is theirs.
+    ///
+    /// SAME-MODEL still holds on a fresh install, because the two evaluating
+    /// roles sit on the other runtime: `codex:` and `claude:` differ even when
+    /// both models are unset.
     fn default() -> Self {
-        let claude = |model: &str, effort: Option<&str>| RoleConfig {
+        let role = |runtime: Runtime, effort: Option<&str>| RoleConfig {
             enabled: true,
-            runtime: Runtime::Claude,
-            model: model.to_string(),
-            effort: effort.map(str::to_string),
-            skills: Vec::new(),
-        };
-        let codex = |model: &str, effort: Option<&str>| RoleConfig {
-            enabled: true,
-            runtime: Runtime::Codex,
-            model: model.to_string(),
+            runtime,
+            model: String::new(),
             effort: effort.map(str::to_string),
             skills: Vec::new(),
         };
         let mut roles = BTreeMap::new();
-        roles.insert(Role::Plan, claude("claude-opus-5", Some("high")));
-        roles.insert(Role::Review, codex("gpt-5.4", Some("high")));
-        roles.insert(Role::Adjudicate, claude("claude-opus-5", None));
-        roles.insert(Role::Impl, claude("claude-opus-5", Some("high")));
-        roles.insert(Role::Audit, codex("gpt-5.4", Some("high")));
+        roles.insert(Role::Plan, role(Runtime::Claude, Some("high")));
+        roles.insert(Role::Review, role(Runtime::Codex, Some("high")));
+        roles.insert(Role::Adjudicate, role(Runtime::Claude, None));
+        roles.insert(Role::Impl, role(Runtime::Claude, Some("high")));
+        roles.insert(Role::Audit, role(Runtime::Codex, Some("high")));
         Self {
             loop_defaults: LoopDefaults::default(),
             roles,
@@ -335,11 +338,12 @@ pub enum ConfigViolation {
     BudgetFactorOutOfRange {
         value: u32,
     },
-    /// A role with an empty model string would launch a CLI with no model
-    /// argument and silently get its default, which SAME-MODEL could not then
-    /// compare meaningfully.
-    EmptyModel {
-        role: Role,
+    /// Two roles in a SAME-MODEL pair both left on their CLI's default, on the
+    /// same runtime. Distinct from `SameModel` only in the message: there is no
+    /// model name to show, and the fix is to name one on either side.
+    BothDefaultModels {
+        evaluator: Role,
+        generator: Role,
     },
 }
 
@@ -349,8 +353,8 @@ impl ConfigViolation {
         match self {
             ConfigViolation::SameModel { evaluator, .. } => Some(*evaluator),
             ConfigViolation::SkillNotVisible { role, .. }
-            | ConfigViolation::SkillNotFound { role, .. }
-            | ConfigViolation::EmptyModel { role } => Some(*role),
+            | ConfigViolation::SkillNotFound { role, .. } => Some(*role),
+            ConfigViolation::BothDefaultModels { evaluator, .. } => Some(*evaluator),
             _ => None,
         }
     }
@@ -406,10 +410,6 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
         let role = resolved_role.role;
         let cfg = &resolved_role.config;
 
-        if cfg.model.trim().is_empty() {
-            violations.push(ConfigViolation::EmptyModel { role });
-        }
-
         for skill in &cfg.skills {
             match skills.visible_to(skill) {
                 None => violations.push(ConfigViolation::SkillNotFound {
@@ -433,11 +433,21 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
                 && generator_cfg.enabled
                 && cfg.model_identity() == generator_cfg.model_identity()
             {
-                violations.push(ConfigViolation::SameModel {
-                    evaluator: role,
-                    generator,
-                    identity: cfg.model_identity(),
-                });
+                // Same runtime and both on the CLI default reads differently
+                // to the user: there is no model name to point at, and the fix
+                // is to name one rather than to change one.
+                if cfg.model.trim().is_empty() {
+                    violations.push(ConfigViolation::BothDefaultModels {
+                        evaluator: role,
+                        generator,
+                    });
+                } else {
+                    violations.push(ConfigViolation::SameModel {
+                        evaluator: role,
+                        generator,
+                        identity: cfg.model_identity(),
+                    });
+                }
             }
         }
     }
@@ -471,6 +481,21 @@ mod tests {
 
     fn resolved_default() -> ResolvedConfig {
         resolve(&GlobalConfig::default(), &ProjectConfig::default())
+    }
+
+    /// A global config with every model named, for the overlay tests. The
+    /// shipped defaults deliberately leave models empty (each CLI's own
+    /// default), which is right for a first run but makes a poor fixture for
+    /// testing inheritance — an empty string cannot be distinguished from a
+    /// value that failed to propagate.
+    fn named_global() -> GlobalConfig {
+        let mut g = GlobalConfig::default();
+        g.roles.get_mut(&Role::Plan).unwrap().model = "opus".into();
+        g.roles.get_mut(&Role::Review).unwrap().model = "gpt-5.6-sol".into();
+        g.roles.get_mut(&Role::Adjudicate).unwrap().model = "opus".into();
+        g.roles.get_mut(&Role::Impl).unwrap().model = "opus".into();
+        g.roles.get_mut(&Role::Audit).unwrap().model = "gpt-5.6-sol".into();
+        g
     }
 
     #[test]
@@ -507,7 +532,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         assert_eq!(resolved.role(Role::Impl).config.model, "claude-sonnet-5");
         assert_eq!(resolved.role(Role::Impl).provenance, Provenance::Project);
         // Untouched roles keep inheriting.
@@ -524,11 +549,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         let plan = &resolved.role(Role::Plan).config;
         assert_eq!(plan.effort.as_deref(), Some("xhigh"));
         assert_eq!(plan.runtime, Runtime::Claude);
-        assert_eq!(plan.model, "claude-opus-5");
+        assert_eq!(plan.model, "opus");
     }
 
     #[test]
@@ -562,21 +587,21 @@ mod tests {
             },
         );
         assert_eq!(
-            resolve(&GlobalConfig::default(), &project)
+            resolve(&named_global(), &project)
                 .role(Role::Audit)
                 .config
                 .model,
             "gpt-5.9"
         );
         project.roles.remove(&Role::Audit);
-        let resolved = resolve(&GlobalConfig::default(), &project);
-        assert_eq!(resolved.role(Role::Audit).config.model, "gpt-5.4");
+        let resolved = resolve(&named_global(), &project);
+        assert_eq!(resolved.role(Role::Audit).config.model, "gpt-5.6-sol");
         assert_eq!(resolved.role(Role::Audit).provenance, Provenance::Global);
     }
 
     #[test]
     fn a_later_global_change_propagates_to_non_overridden_fields() {
-        let mut global = GlobalConfig::default();
+        let mut global = named_global();
         let mut project = ProjectConfig::default();
         project.roles.insert(
             Role::Impl,
@@ -585,10 +610,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        global.roles.get_mut(&Role::Impl).unwrap().model = "claude-opus-6".into();
+        global.roles.get_mut(&Role::Impl).unwrap().model = "opus-next".into();
         let resolved = resolve(&global, &project);
         // Model follows the new global; effort stays overridden.
-        assert_eq!(resolved.role(Role::Impl).config.model, "claude-opus-6");
+        assert_eq!(resolved.role(Role::Impl).config.model, "opus-next");
         assert_eq!(
             resolved.role(Role::Impl).config.effort.as_deref(),
             Some("low")
@@ -602,18 +627,18 @@ mod tests {
             Role::Audit,
             RoleOverrides {
                 runtime: Some(Runtime::Claude),
-                model: Some("claude-opus-5".into()),
+                model: Some("opus".into()),
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         let violations = validate(&resolved, &NoSkills);
         assert_eq!(
             violations,
             vec![ConfigViolation::SameModel {
                 evaluator: Role::Audit,
                 generator: Role::Impl,
-                identity: "claude:claude-opus-5".into(),
+                identity: "claude:opus".into(),
             }]
         );
     }
@@ -625,11 +650,11 @@ mod tests {
             Role::Review,
             RoleOverrides {
                 runtime: Some(Runtime::Claude),
-                model: Some("claude-opus-5".into()),
+                model: Some("opus".into()),
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         let violations = validate(&resolved, &NoSkills);
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].role(), Some(Role::Review));
@@ -642,11 +667,11 @@ mod tests {
             Role::Audit,
             RoleOverrides {
                 runtime: Some(Runtime::Claude),
-                model: Some("claude-sonnet-5".into()),
+                model: Some("sonnet".into()),
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         assert!(validate(&resolved, &NoSkills).is_empty());
     }
 
@@ -654,7 +679,7 @@ mod tests {
     fn adjudicate_may_share_a_model_with_anything() {
         // adjudicate == plan == impl, all Claude opus-5 by default; only the
         // two evaluator pairs are constrained.
-        let resolved = resolved_default();
+        let resolved = resolve(&named_global(), &ProjectConfig::default());
         assert_eq!(
             resolved.role(Role::Adjudicate).config.model_identity(),
             resolved.role(Role::Plan).config.model_identity()
@@ -670,11 +695,11 @@ mod tests {
             RoleOverrides {
                 enabled: Some(false),
                 runtime: Some(Runtime::Claude),
-                model: Some("claude-opus-5".into()),
+                model: Some("opus".into()),
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         assert!(validate(&resolved, &NoSkills).is_empty());
     }
 
@@ -815,31 +840,61 @@ mod tests {
             Role::Audit,
             RoleOverrides {
                 runtime: Some(Runtime::Claude),
-                model: Some("claude-opus-5".into()),
+                model: Some("opus".into()),
                 skills: Some(vec!["ghost".into()]),
                 ..Default::default()
             },
         );
-        let resolved = resolve(&GlobalConfig::default(), &project);
+        let resolved = resolve(&named_global(), &project);
         let violations = validate(&resolved, &NoSkills);
         assert_eq!(violations.len(), 3, "{violations:#?}");
     }
 
     #[test]
-    fn an_empty_model_is_rejected() {
+    fn an_empty_model_means_the_cli_default_and_is_not_a_violation_on_its_own() {
+        // Naming no model is the shipped default, and it is legitimate: each
+        // CLI has one, and the set a given account may use is not knowable
+        // from here.
+        let resolved = resolve(&GlobalConfig::default(), &ProjectConfig::default());
+        assert!(resolved.role(Role::Plan).config.model.is_empty());
+        assert!(validate(&resolved, &NoSkills).is_empty());
+    }
+
+    #[test]
+    fn two_default_models_on_the_same_runtime_are_reported_distinctly() {
+        // review on Claude with no model named is the same session as plan.
+        // The user needs to be told to *name* one, not to change one.
         let mut project = ProjectConfig::default();
         project.roles.insert(
-            Role::Plan,
+            Role::Review,
             RoleOverrides {
-                model: Some("   ".into()),
+                runtime: Some(Runtime::Claude),
                 ..Default::default()
             },
         );
         let resolved = resolve(&GlobalConfig::default(), &project);
-        assert!(
-            validate(&resolved, &NoSkills)
-                .contains(&ConfigViolation::EmptyModel { role: Role::Plan })
+        assert_eq!(
+            validate(&resolved, &NoSkills),
+            vec![ConfigViolation::BothDefaultModels {
+                evaluator: Role::Review,
+                generator: Role::Plan,
+            }]
         );
+    }
+
+    #[test]
+    fn naming_a_model_on_one_side_resolves_the_default_collision() {
+        let mut project = ProjectConfig::default();
+        project.roles.insert(
+            Role::Review,
+            RoleOverrides {
+                runtime: Some(Runtime::Claude),
+                model: Some("sonnet".into()),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve(&GlobalConfig::default(), &project);
+        assert!(validate(&resolved, &NoSkills).is_empty());
     }
 
     #[test]
@@ -866,6 +921,7 @@ mod tests {
         global.roles.remove(&Role::Audit);
         global.repair();
         assert_eq!(global.role(Role::Audit).runtime, Runtime::Codex);
+        assert!(global.role(Role::Audit).model.is_empty());
     }
 
     #[test]

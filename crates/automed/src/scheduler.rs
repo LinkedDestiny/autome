@@ -1625,10 +1625,11 @@ mod tests {
         let mut w = World::new("bad-config");
         w.add_task("T-1", "a");
         w.set_state("T-1", TaskState::Active { node: Node::Design });
-        // Make audit match impl — a SAME-MODEL violation.
+        // Move audit onto Claude, where impl already sits with the same
+        // (unnamed) model — a SAME-MODEL violation.
         std::fs::write(
             w.repo.join(".autome/config.toml"),
-            "[roles.audit]\nruntime = \"claude\"\nmodel = \"claude-opus-5\"\n",
+            "[roles.audit]\nruntime = \"claude\"\n",
         )
         .unwrap();
         let doc = design_doc("设计中", &[], "");

@@ -1,23 +1,41 @@
 'use strict';
 
-// Electron main-process harness for real-DOM assertions (plan §"测试":
-// "不引入 Playwright...Electron 自带 Chromium，测试就跑在应用真正使用的
-// 那个内核上"). Opens a hidden BrowserWindow, registers the real
-// `autome://` protocol via src/app-protocol.js, loads the real
-// index.html/app.js/nav.js, drives it with webContents.executeJavaScript()
-// against the real DOM, and prints one JSON array of {name, pass, detail}
-// to stdout before exiting. No sidecar is started — these assertions only
-// touch the renderer, never automed or the user's real DB.
+// Electron main-process harness for real-DOM assertions.
 //
-// Not a *.test.js file itself: it must run under the `electron` binary
-// (it needs app/BrowserWindow), not under plain `node --test`. See
-// dom.test.js, which spawns this file as a child process and asserts on
-// its JSON output.
+// The renderer is plain ES modules served from the packaged `autome://app`
+// origin under a real CSP, and it is laid out against a real font and a real
+// stylesheet. None of that survives a simulated DOM, and two of the things
+// this suite has to prove are specifically about the real one: that every
+// screen fits 1512x944 without vertical scroll (requirement U-11 and the
+// non-functional section 5), and that nothing in the renderer trips the CSP.
+// So the assertions run under the actual Electron binary, in a hidden window,
+// driven through `webContents.executeJavaScript`.
+//
+// No sidecar is started, so `window.autome.read.*` exists (the preload always
+// runs) but every call through it rejects with "No handler registered". That
+// is the disconnected case, and the harness leans on it: the first checks
+// below are what the app does when the core never came up.
+//
+// Screens are exercised by importing the module and calling `render()` with a
+// fixture, rather than by letting the router read — there is nothing to read
+// from. `import()` inside `executeJavaScript` returns the *same* module
+// instance the page already loaded, so these are the real modules with their
+// real state, not fresh copies.
+//
+// Not a *.test.js file: it needs `app`/`BrowserWindow`, so it runs under
+// `electron`, not `node --test`. See dom.test.js, which spawns it.
 
+const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const appProtocol = require('../src/app-protocol');
+const { FIXTURES, TASK_AT_MERGE, TASK_FAILED_PANEL, TASK_APPROVE_PANEL, SCREEN_IDS } = require('./fixtures');
 
 appProtocol.registerSchemeAsPrivileged();
+
+// The design's reference viewport (requirement U-11). `useContentSize` makes
+// these the dimensions of the web page, not of the window plus its chrome —
+// otherwise the measurement would be of a viewport nobody ships.
+const VIEWPORT = { width: 1512, height: 944 };
 
 const results = [];
 const consoleMessages = [];
@@ -31,10 +49,11 @@ async function run() {
 
   const win = new BrowserWindow({
     show: false,
-    width: 1100,
-    height: 720,
+    useContentSize: true,
+    width: VIEWPORT.width,
+    height: VIEWPORT.height,
     webPreferences: {
-      preload: require('node:path').join(__dirname, '..', 'preload.js'),
+      preload: path.join(__dirname, '..', 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -43,163 +62,443 @@ async function run() {
     },
   });
 
-  win.webContents.on('console-message', (_event, _level, message) => {
-    consoleMessages.push(message);
+  // Electron has moved this signature around; accept either shape.
+  win.webContents.on('console-message', (...args) => {
+    const first = args[0];
+    if (first && typeof first === 'object' && typeof first.message === 'string') {
+      consoleMessages.push(first.message);
+    } else if (typeof args[2] === 'string') {
+      consoleMessages.push(args[2]);
+    }
   });
 
   await win.loadURL('autome://app/index.html');
+  await win.webContents.executeJavaScript(fixtureInjector());
 
-  const evaluate = (fn) => win.webContents.executeJavaScript(`(${fn.toString()})()`);
+  // `executeJavaScript` evaluates a classic script; an async IIFE gives the
+  // body `await`, and dynamic `import()` reaches the page's module registry.
+  const evaluate = (fn, ...args) =>
+    win.webContents.executeJavaScript(
+      `(async () => { const ARGS = ${JSON.stringify(args)}; return await (${fn.toString()})(...ARGS); })()`
+    );
 
-  const execBarVisible = await evaluate(() => {
-    const bar = document.getElementById('exec-bar');
-    return Boolean(bar && bar.querySelector('.ac-exec-bar'));
-  });
-  check('exec bar renders with no data (never hidden)', execBarVisible);
+  // ---- the shell renders at all -----------------------------------------
+  const shell = await evaluate(() => ({
+    nav: document.querySelectorAll('#nav .nav__item').length,
+    main: Boolean(document.getElementById('main')),
+    sprite: document.querySelectorAll('.sprite symbol').length,
+  }));
+  check(
+    'the shell renders: five sidebar items, a screen host and the icon sprite',
+    shell.nav === 5 && shell.main && shell.sprite > 10,
+    shell
+  );
 
-  const writeDisabled = await evaluate(() => {
-    const bar = document.getElementById('exec-bar');
-    return Boolean(bar && bar.querySelector('.ac-exec-bar__write-disabled'));
-  });
-  check('exec bar shows write-disabled when disconnected', writeDisabled);
-
-  const tabCount = await evaluate(() => document.querySelectorAll('#top-nav .ac-tab').length);
-  check('all 4 top-level tabs render', tabCount === 4, tabCount);
-
-  const ctaState = await evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('.ac-cta-row .ac-btn'));
-    return { count: buttons.length, allDisabled: buttons.every((b) => b.disabled) };
-  });
-  check('the two no-project CTAs render and are both disabled', ctaState.count === 2 && ctaState.allDisabled, ctaState);
-
-  // §8.2: contextBridge exposes only named functions, never a generic
-  // invoke -- checked directly on the bridge shape, not inferred from
-  // behavior, so a future accidental widening (e.g. adding `invoke`
-  // alongside the two named functions) fails loudly here.
-  const automeWriteShape = await evaluate(() => {
-    const aw = window.automeWrite;
-    if (!aw || typeof aw !== 'object') return null;
+  // ---- disconnected: no read ever answered, so no write is offered ------
+  await evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const disconnected = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
     return {
-      keys: Object.keys(aw).sort(),
-      pickIsFn: typeof aw.pickProjectTarget === 'function',
-      createIsFn: typeof aw.createProject === 'function',
-      hasInvoke: typeof aw.invoke === 'function',
+      connected: api.isConnected(),
+      bodyOffline: document.body.classList.contains('offline'),
+      bannerVisible: getComputedStyle(document.querySelector('.offline-banner')).display !== 'none',
     };
   });
   check(
-    'automeWrite bridge exposes exactly pickProjectTarget and createProject, never a generic invoke',
-    automeWriteShape !== null &&
-      automeWriteShape.keys.length === 2 &&
-      automeWriteShape.keys.join(',') === 'createProject,pickProjectTarget' &&
-      automeWriteShape.pickIsFn &&
-      automeWriteShape.createIsFn &&
-      !automeWriteShape.hasInvoke,
-    automeWriteShape
+    'with no core answering, the renderer reports disconnected and shows the banner rather than an empty-looking screen',
+    disconnected.connected === false && disconnected.bodyOffline && disconnected.bannerVisible,
+    disconnected
   );
 
-  // §9.3: a disconnected write affordance must say so, not fail silently.
-  // This harness never connects (no sidecar, no ipcMain.handle('autome:write',
-  // ...)), so the no-project CTAs above stay disabled forever -- the reason
-  // for that must be visibly rendered text, not merely an invisible title
-  // attribute a user would have to hover to find.
-  const ctaDisabledReason = await evaluate(() => {
-    const reason = document.querySelector('.ac-cta-row__reason');
-    return reason ? reason.textContent : null;
-  });
-  check(
-    'disconnected no-project CTAs render an explicit disabled reason, not silently',
-    ctaDisabledReason === 'Core 不可达，写操作已禁用',
-    ctaDisabledReason
-  );
-
-  const railCount = await evaluate(() => document.querySelectorAll('.ac-phase-rail__step').length);
-  check('the 17-step task phase rail renders in full', railCount === 17, railCount);
-
-  const gateCount = await evaluate(() => document.querySelectorAll('.ac-gate-list__item').length);
-  check('the 40-gate completion checklist renders in full', gateCount === 40, gateCount);
-
-  const allUnobservedOnFirstLoad = await evaluate(() => {
-    const chips = Array.from(document.querySelectorAll('.ac-chip'));
-    return chips.length > 0 && chips.every((c) => !c.classList.contains('ac-chip--ok'));
-  });
-  check('no chip on the zero-data no-project screen claims tone "ok"', allUnobservedOnFirstLoad);
-
-  const unobservedIsDashed = await evaluate(() => {
-    const chips = Array.from(document.querySelectorAll('.ac-chip--unobserved'));
-    return chips.length > 0 && chips.every((c) => c.classList.contains('ac-chip--dashed'));
-  });
-  check('every unobserved chip carries the dashed shape cue, not color alone', unobservedIsDashed);
-
-  // This harness never starts a sidecar or registers `ipcMain.handle`
-  // ('autome:read', ...) — unlike the real app, so the preload's
-  // `automeRead` bridge is present (preload always runs) but every call
-  // through it rejects with "No handler registered". app.js's async
-  // refresh must treat "absent" and "present-but-rejecting" identically:
-  // both fall back to the default fully-unobserved render. Waits one
-  // macrotask so the rejected getQueue() promise chain has settled before
-  // asserting nothing changed.
-  const stillUnobservedDespiteBridgePresent = await evaluate(() => {
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const hasBridge = typeof window.automeRead === 'object' && typeof window.automeRead.getQueue === 'function';
-        const chips = Array.from(document.querySelectorAll('.ac-chip'));
-        const noneOk = chips.length > 0 && chips.every((c) => !c.classList.contains('ac-chip--ok'));
-        const barStillRenders = Boolean(document.getElementById('exec-bar').querySelector('.ac-exec-bar'));
-        resolve(hasBridge && noneOk && barStillRenders);
-      }, 50);
+  // Requirement: never render unverified state as verified — every write
+  // control must be genuinely disabled, not merely dimmed by CSS.
+  const writesDisabled = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    const projects = await import('autome://app/screens/projects.js');
+    const host = document.getElementById('main');
+    api.setConnected(false);
+    api.resetWriteControls();
+    host.replaceChildren();
+    projects.render(host, JSON.parse(document.getElementById('fx-projects').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: false,
     });
-  });
-  check(
-    'automeRead bridge is present but unanswered in this harness, so the screen still renders fully unobserved (absence and rejection fall back identically)',
-    stillUnobservedDespiteBridgePresent
-  );
-
-  // §5.1: pins the precondition check #7 above depends on. If a future
-  // change ever registers `ipcMain.handle('autome:read', ...)` in this
-  // harness, `listProjects()` would resolve instead of reject, `projects`
-  // would leave `null`, and the no-project screen (with its "no chip is
-  // ok" assertion) could silently stop being what's on screen after the
-  // async refresh runs. Asserting the rejection directly, rather than only
-  // its downstream effect, makes that change loud instead of silent.
-  const listProjectsRejectsInThisHarness = await evaluate(() => {
-    return new Promise((resolve) => {
-      window.automeRead
-        .listProjects()
-        .then(() => resolve(false))
-        .catch(() => resolve(true));
-    });
-  });
-  check(
-    'listProjects() rejects in this harness (no ipcMain handler registered), which is why projects stays null and check #7 still holds',
-    listProjectsRejectsInThisHarness
-  );
-
-  const environmentPanel = await evaluate(() => {
-    const before = Array.from(document.querySelectorAll('#top-nav .ac-tab')).find((b) => b.textContent === '本地环境');
-    before.click();
-    // renderNav() replaces #top-nav's children on every render, so the
-    // pre-click node reference is now detached — re-query after the click.
-    const after = Array.from(document.querySelectorAll('#top-nav .ac-tab')).find((b) => b.textContent === '本地环境');
+    const controls = Array.from(host.querySelectorAll('.write'));
     return {
-      active: after.classList.contains('ac-tab--active'),
-      axisCells: document.querySelectorAll('.ac-axis-vocab__axis').length,
-      reason: (document.querySelector('.ac-empty-reason') || {}).textContent || '',
+      count: controls.length,
+      allDisabled: controls.every(
+        (el) => el.disabled === true || el.getAttribute('aria-disabled') === 'true'
+      ),
+      reasons: controls.every((el) => Boolean(el.title)),
     };
   });
   check(
-    'clicking 本地环境 switches tabs and renders the 5-axis vocabulary with a non-empty reason',
-    environmentPanel.active && environmentPanel.axisCells === 5 && environmentPanel.reason.length > 0,
-    environmentPanel
+    'while disconnected every registered write control is actually disabled and says why',
+    writesDisabled.count > 0 && writesDisabled.allDisabled && writesDisabled.reasons,
+    writesDisabled
   );
 
-  const cspViolations = consoleMessages.filter((m) => /content security policy|refused to/i.test(m));
+  const reconnectEnables = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    api.setConnected(true);
+    const controls = Array.from(document.querySelectorAll('#main .write'));
+    const allEnabled = controls.every((el) => el.disabled !== true);
+    api.setConnected(false);
+    api.setConnected(true);
+    return { count: controls.length, allEnabled };
+  });
+  check(
+    'a reconnect re-enables the same controls, so the gate is state, not a one-way render',
+    reconnectEnables.count > 0 && reconnectEnables.allEnabled,
+    reconnectEnables
+  );
+
+  // ---- a failed write shows the core's own sentence ----------------------
+  const writeFailure = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    document.getElementById('notif-stack').replaceChildren();
+    // Exactly how Electron wraps a rejected ipcRenderer.invoke.
+    const wrapped = new Error(
+      "Error invoking remote method 'autome:write': Error: 主工作树有未提交改动，合并已取消"
+    );
+    const outcome = await api.attempt({
+      label: '合并到 main',
+      run: () => Promise.reject(wrapped),
+    });
+    const notif = document.querySelector('.notif--error');
+    return {
+      ok: outcome.ok,
+      title: notif ? notif.querySelector('.notif__title').textContent : null,
+      description: notif ? notif.querySelector('.notif__desc').textContent : null,
+    };
+  });
+  check(
+    "a rejected write surfaces a notification carrying the core's message verbatim, and reports failure to the caller",
+    writeFailure.ok === false &&
+      writeFailure.title === '合并到 main' &&
+      writeFailure.description === '主工作树有未提交改动，合并已取消',
+    writeFailure
+  );
+
+  const writeFailureNotSwallowed = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    document.getElementById('notif-stack').replaceChildren();
+    let ran = false;
+    const outcome = await api.attempt({
+      label: '归档 T-012',
+      run: () => Promise.reject(new Error('任务还没有合并，不能归档')),
+      onDone: () => {
+        ran = true;
+      },
+    });
+    return {
+      ok: outcome.ok,
+      onDoneRan: ran,
+      description: (document.querySelector('.notif--error .notif__desc') || {}).textContent || null,
+      errorsPersist: document.querySelectorAll('.notif--error').length,
+    };
+  });
+  check(
+    'a failed write does not run its success continuation, and the error notification stays on screen',
+    writeFailureNotSwallowed.ok === false &&
+      writeFailureNotSwallowed.onDoneRan === false &&
+      writeFailureNotSwallowed.description === '任务还没有合并，不能归档' &&
+      writeFailureNotSwallowed.errorsPersist === 1,
+    writeFailureNotSwallowed
+  );
+
+  // ---- every screen renders from a representative payload ---------------
+  for (const id of SCREEN_IDS) {
+    const outcome = await evaluate(async (screenId) => {
+      const api = await import('autome://app/lib/api.js');
+      api.setConnected(true);
+      api.resetWriteControls();
+      const module = await import(`autome://app/screens/${screenId === 'dash' ? 'dashboard' : screenId}.js`);
+      const host = document.getElementById('main');
+      host.replaceChildren();
+      const data = JSON.parse(document.getElementById(`fx-${screenId}`).textContent);
+      try {
+        module.render(host, data, {
+          params: { projectId: 'prj_island', taskId: 'T-015' },
+          navigate() {},
+          refresh() {},
+          connected: true,
+        });
+      } catch (err) {
+        return { threw: String((err && err.stack) || err) };
+      }
+      const screen = host.querySelector('.screen');
+      return {
+        threw: null,
+        screen: screen ? screen.dataset.screen : null,
+        cards: host.querySelectorAll('.card, .lnode, .empty').length,
+        // A screen that renders nothing but placeholders would pass a
+        // "did not throw" check; require it to have put real text on screen.
+        textLength: host.textContent.replace(/\s/g, '').length,
+      };
+    }, id);
+    check(
+      `screen ${id} renders from a representative payload without throwing`,
+      outcome.threw === null && outcome.screen === id && outcome.cards > 0 && outcome.textLength > 80,
+      outcome
+    );
+  }
+
+  // ---- the task panel's other three stopping faces ----------------------
+  for (const [name, fixtureId, expected] of [
+    ['approve', 'fx-task-approve', '批准设计'],
+    ['merge', 'fx-task-merge', '合并到 main'],
+    ['failed', 'fx-task-failed', '停在失败上，怎么办'],
+  ]) {
+    const outcome = await evaluate(async (elementId) => {
+      const api = await import('autome://app/lib/api.js');
+      api.setConnected(true);
+      api.resetWriteControls();
+      const module = await import('autome://app/screens/task.js');
+      const host = document.getElementById('main');
+      host.replaceChildren();
+      try {
+        module.render(host, JSON.parse(document.getElementById(elementId).textContent), {
+          params: { taskId: 'T-013' },
+          navigate() {},
+          refresh() {},
+          connected: true,
+        });
+      } catch (err) {
+        return { threw: String((err && err.stack) || err) };
+      }
+      const titles = Array.from(host.querySelectorAll('.card__title')).map((t) => t.textContent);
+      const mergeButton = Array.from(host.querySelectorAll('button')).find((b) =>
+        b.textContent.startsWith('合并到')
+      );
+      return {
+        threw: null,
+        titles,
+        mergeBlocked: mergeButton ? mergeButton.disabled : null,
+        stones: host.querySelectorAll('.stone').length,
+      };
+    }, fixtureId);
+    check(
+      `the stopping panel shows the ${name} face, and the 13-node flow renders in full`,
+      outcome.threw === null && outcome.titles.includes(expected) && outcome.stones === 13,
+      outcome
+    );
+  }
+
+  // T-07: the merge fixture's main worktree is dirty, so the button that
+  // cannot succeed must not be offered as if it could.
+  const mergeBlocked = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-merge').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    const button = Array.from(host.querySelectorAll('button')).find((b) =>
+      b.textContent.startsWith('合并到')
+    );
+    return { found: Boolean(button), disabled: button ? button.disabled : null, title: button ? button.title : null };
+  });
+  check(
+    'with the main worktree dirty, the merge button is present but disabled and states the blocker',
+    mergeBlocked.found && mergeBlocked.disabled === true && /未提交改动/.test(mergeBlocked.title || ''),
+    mergeBlocked
+  );
+
+  // ---- C-06: SAME-MODEL paints the node red and disables save ------------
+  const sameModel = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    api.setConnected(true);
+    api.resetWriteControls();
+    const routing = await import('autome://app/screens/routing.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    routing.render(host, JSON.parse(document.getElementById('fx-routing').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    const audit = host.querySelector('[data-node="audit"]');
+    const impl = host.querySelector('[data-node="impl"]');
+    const save = Array.from(host.querySelectorAll('button')).find((b) => b.textContent.startsWith('保存'));
+    return {
+      auditRed: audit ? audit.classList.contains('lnode--err') : null,
+      implRed: impl ? impl.classList.contains('lnode--err') : null,
+      saveDisabled: save ? save.disabled : null,
+      saveReason: save ? save.title : null,
+      banner: Boolean(host.querySelector('.alertbar')),
+      roleNodes: host.querySelectorAll('.lnode--ai').length,
+      fixedNodes: host.querySelectorAll('.lnode--rust').length,
+      humanNodes: host.querySelectorAll('.lnode--human').length,
+    };
+  });
+  check(
+    'a SAME-MODEL collision paints both role nodes red, raises the banner and disables 保存 (C-06)',
+    sameModel.auditRed === true &&
+      sameModel.implRed === true &&
+      sameModel.saveDisabled === true &&
+      sameModel.banner === true,
+    sameModel
+  );
+  check(
+    'the routing graph has five configurable role nodes, four grey fixed steps and two yellow human stops (C-04, U-08)',
+    sameModel.roleNodes === 5 && sameModel.fixedNodes === 4 && sameModel.humanNodes === 2,
+    sameModel
+  );
+
+  // ---- the router maps each nav item to its screen -----------------------
+  const routerMap = await evaluate(async () => {
+    const appModule = await import('autome://app/app.js');
+    const out = [];
+    for (const button of Array.from(document.querySelectorAll('#nav .nav__item'))) {
+      const label = button.textContent;
+      // Reads reject in this harness, so the router renders the screen's
+      // error face — which still carries `data-screen`, by design.
+      // eslint-disable-next-line no-await-in-loop
+      await appModule.navigate(button.dataset.nav === 'dash' ? 'dash' : button.dataset.nav);
+      const screen = document.querySelector('#main .screen');
+      const active = document.querySelector('#nav .nav__item.active');
+      out.push({
+        label,
+        nav: button.dataset.nav,
+        screen: screen ? screen.dataset.screen : null,
+        activeNav: active ? active.dataset.nav : null,
+      });
+    }
+    // The three screens without a sidebar entry are reached by navigation.
+    for (const id of ['project', 'task', 'routing']) {
+      // eslint-disable-next-line no-await-in-loop
+      await appModule.navigate(id, { projectId: 'prj_island', taskId: 'T-015' });
+      const screen = document.querySelector('#main .screen');
+      const active = document.querySelector('#nav .nav__item.active');
+      out.push({
+        label: id,
+        nav: appModule.SCREENS[id].nav,
+        screen: screen ? screen.dataset.screen : null,
+        activeNav: active ? active.dataset.nav : null,
+      });
+    }
+    return out;
+  });
+  check(
+    'every nav item and every deep screen routes to its own screen and lights the right sidebar entry',
+    routerMap.length === 8 &&
+      routerMap.map((r) => r.screen).join(',') === 'dash,projects,env,skills,settings,project,task,routing' &&
+      routerMap.every((row) => row.activeNav === row.nav),
+    routerMap
+  );
+
+  // ---- U-11: one screen, no vertical scroll -----------------------------
+  for (const id of SCREEN_IDS) {
+    const fit = await evaluate(async (screenId) => {
+      const api = await import('autome://app/lib/api.js');
+      api.setConnected(true);
+      api.resetWriteControls();
+      const module = await import(`autome://app/screens/${screenId === 'dash' ? 'dashboard' : screenId}.js`);
+      const host = document.getElementById('main');
+      host.replaceChildren();
+      module.render(host, JSON.parse(document.getElementById(`fx-${screenId}`).textContent), {
+        params: { projectId: 'prj_island', taskId: 'T-015' },
+        navigate() {},
+        refresh() {},
+        connected: true,
+      });
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return {
+        scrollHeight: host.scrollHeight,
+        clientHeight: host.clientHeight,
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+      };
+    }, id);
+    check(
+      `screen ${id} fits 1512x944 with no vertical scroll (U-11)`,
+      fit.viewport.w === VIEWPORT.width &&
+        fit.viewport.h === VIEWPORT.height &&
+        fit.scrollHeight <= fit.clientHeight,
+      fit
+    );
+  }
+
+  // ---- the security boundary --------------------------------------------
+  const noInlineStyle = await evaluate(async () => {
+    const dom = await import('autome://app/lib/dom.js');
+    try {
+      dom.h('div', { style: 'color:red' });
+      return { rejected: false };
+    } catch (err) {
+      return { rejected: true, message: err.message };
+    }
+  });
+  check(
+    'h() refuses an inline style attribute, which the CSP would block anyway',
+    noInlineStyle.rejected === true,
+    noInlineStyle
+  );
+
+  const textNotMarkup = await evaluate(async () => {
+    const dom = await import('autome://app/lib/dom.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    // A title an agent could have written into a repository document.
+    const hostile = '<img src=x onerror="window.__pwned=true">';
+    host.appendChild(dom.h('div.taskcard__t', { text: hostile }));
+    host.appendChild(dom.tag(hostile, 'outlined'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return {
+      pwned: Boolean(window.__pwned),
+      images: host.querySelectorAll('img').length,
+      renderedAsText: host.textContent.includes('onerror'),
+    };
+  });
+  check(
+    'hostile text from a payload is rendered as text, never parsed as markup',
+    textNotMarkup.pwned === false && textNotMarkup.images === 0 && textNotMarkup.renderedAsText,
+    textNotMarkup
+  );
+
+  const cspViolations = consoleMessages.filter((m) =>
+    /content security policy|refused to/i.test(String(m))
+  );
   check('no CSP violations logged to the console', cspViolations.length === 0, cspViolations);
 
   process.stdout.write(JSON.stringify(results));
   app.exit(0);
 }
 
-app.whenReady().then(run).catch((err) => {
-  process.stderr.write(String((err && err.stack) || err));
-  app.exit(1);
-});
+/**
+ * The fixtures reach the page as `<script type="application/json">` blobs.
+ * Passing them through `executeJavaScript` arguments would work too, but the
+ * payloads are large and would be re-serialised into every evaluated snippet;
+ * parking them in the document once keeps each snippet readable.
+ */
+function fixtureInjector() {
+  const blobs = Object.assign({}, FIXTURES, {
+    'task-merge': TASK_AT_MERGE,
+    'task-failed': TASK_FAILED_PANEL,
+    'task-approve': TASK_APPROVE_PANEL,
+  });
+  return `(() => {
+    const blobs = ${JSON.stringify(blobs)};
+    for (const [key, value] of Object.entries(blobs)) {
+      const el = document.createElement('script');
+      el.type = 'application/json';
+      el.id = 'fx-' + key;
+      el.textContent = JSON.stringify(value);
+      document.body.appendChild(el);
+    }
+    return true;
+  })()`;
+}
+
+app.whenReady()
+  .then(run)
+  .catch((err) => {
+    process.stderr.write(String((err && err.stack) || err));
+    app.exit(1);
+  });

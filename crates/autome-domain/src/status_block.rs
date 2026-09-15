@@ -244,8 +244,9 @@ pub enum ParseError {
     UnknownCurrentMilestone {
         id: String,
     },
-    /// `## 里程碑` heading present but no data rows under it.
-    EmptyMilestoneTable,
+    /// The document says it has finished designing, but lists no milestones.
+    /// The implementation loop would have nothing to advance.
+    NoMilestonesAfterDesign,
 }
 
 impl std::fmt::Display for ParseError {
@@ -263,7 +264,9 @@ impl std::fmt::Display for ParseError {
             ParseError::UnknownCurrentMilestone { id } => {
                 write!(f, "current-milestone 指向表中不存在的里程碑 `{id}`")
             }
-            ParseError::EmptyMilestoneTable => write!(f, "里程碑小节存在但没有数据行"),
+            ParseError::NoMilestonesAfterDesign => {
+                write!(f, "status 已离开「设计中」，但里程碑表是空的")
+            }
         }
     }
 }
@@ -564,8 +567,18 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
     let convergence_mode = convergence.ok_or_else(|| require("convergence-mode"))?;
     let next_action = next_action.ok_or_else(|| require("next-action"))?;
 
-    if saw_milestone_heading && milestones.is_empty() {
-        return Err(ParseError::EmptyMilestoneTable);
+    // An empty milestone table is normal while the design is still being
+    // written: the intake round creates the document with the table's header
+    // and nothing under it, which is exactly right — there are no milestones
+    // yet. What is *not* acceptable is claiming the design is finished with
+    // nothing to implement.
+    //
+    // Tying the rule to `status` rather than to the heading's presence is the
+    // difference between a parser that rejects a correct intake document and
+    // one that catches a design round which forgot to decompose the work.
+    let _ = saw_milestone_heading;
+    if milestones.is_empty() && matches!(status, DocStatus::Implementing | DocStatus::Done) {
+        return Err(ParseError::NoMilestonesAfterDesign);
     }
     if let Some(id) = &current_milestone
         && !milestones.is_empty()
@@ -853,15 +866,51 @@ next-action: 补 promo.spec.ts 大小写用例，跑 vitest src/checkout/promo
     }
 
     #[test]
-    fn a_milestone_heading_with_no_rows_is_rejected() {
+    fn an_empty_milestone_table_is_fine_while_the_design_is_still_being_written() {
+        // This is what a real intake round produces: the table's header with
+        // nothing under it. Rejecting it would fail every task at its first
+        // node.
+        let doc =
+            minimal("\n## 里程碑\n\n| ID | 状态 | 标题 | reopen | 领域 |\n|---|---|---|---|---|\n");
+        let b = parse(&doc).unwrap();
+        assert!(b.milestones.is_empty());
+    }
+
+    #[test]
+    fn a_milestone_heading_with_only_prose_is_also_fine_while_designing() {
         let doc = minimal("\n## 里程碑\n\n还没有拆分。\n");
-        assert_eq!(parse(&doc).unwrap_err(), ParseError::EmptyMilestoneTable);
+        assert!(parse(&doc).unwrap().milestones.is_empty());
     }
 
     #[test]
     fn no_milestone_section_at_all_is_allowed_before_the_first_design_round() {
         let b = parse(&minimal("")).unwrap();
         assert!(b.milestones.is_empty());
+    }
+
+    #[test]
+    fn claiming_the_design_is_finished_with_no_milestones_is_rejected() {
+        // The implementation loop would have nothing to advance, and the
+        // budget would be computed from an empty list.
+        for status in ["实现中", "已完成"] {
+            let doc = format!(
+                "status: {status}\ndesign-round: 3/15\nimplementation-round: 0/0\n\
+                 current-milestone: 无\ncurrent-milestone-reopens: 0\n\
+                 convergence-mode: normal\nnext-action: 无\n"
+            );
+            assert_eq!(
+                parse(&doc).unwrap_err(),
+                ParseError::NoMilestonesAfterDesign,
+                "{status} with no milestones should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn an_infeasible_document_needs_no_milestones() {
+        // A task that cannot be done never got as far as decomposing it.
+        let doc = "status: 不可实现\ndesign-round: 2/15\nimplementation-round: 0/0\ncurrent-milestone: 无\ncurrent-milestone-reopens: 0\nconvergence-mode: normal\nnext-action: 无\n";
+        assert!(parse(doc).is_ok());
     }
 
     #[test]

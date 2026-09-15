@@ -43,8 +43,36 @@ function registerAppProtocol() {
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       return new Response('not found', { status: 404 });
     }
-    return new Response(fs.readFileSync(resolved));
+    // A Content-Type is mandatory, not cosmetic: the HTML spec requires a
+    // JavaScript MIME type for `<script type="module">` and Chromium enforces
+    // it strictly, so a response without one makes every ES module in the
+    // renderer fail to load. The map is deliberately tiny — this handler
+    // serves exactly the file types the packaged renderer contains.
+    return new Response(fs.readFileSync(resolved), {
+      headers: { 'Content-Type': contentTypeFor(resolved) },
+    });
   });
 }
 
-module.exports = { RENDERER_DIR, registerSchemeAsPrivileged, registerAppProtocol };
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ttf': 'font/ttf',
+  '.woff2': 'font/woff2',
+  '.png': 'image/png',
+};
+
+function contentTypeFor(filePath) {
+  return CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+}
+
+module.exports = {
+  RENDERER_DIR,
+  registerSchemeAsPrivileged,
+  registerAppProtocol,
+  contentTypeFor,
+};

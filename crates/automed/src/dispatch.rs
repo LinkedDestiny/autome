@@ -898,7 +898,14 @@ fn describe_violation(v: &ConfigViolation) -> String {
         ConfigViolation::BudgetFactorOutOfRange { value } => {
             format!("预算系数 {value} 必须大于 0")
         }
-        ConfigViolation::EmptyModel { role } => format!("{} 没有填模型", role_label(*role)),
+        ConfigViolation::BothDefaultModels {
+            evaluator,
+            generator,
+        } => format!(
+            "{} 与 {} 都没有指定模型，会用同一个 CLI 的同一个默认模型；请至少给一边指定模型",
+            role_label(*evaluator),
+            role_label(*generator)
+        ),
     }
 }
 
@@ -2056,17 +2063,41 @@ mod tests {
     #[test]
     fn a_same_model_collision_is_refused_with_a_readable_message() {
         let mut sb = Sandbox::new("cfg-samemodel");
+        // Both sides naming the same model on the same runtime.
+        handle_command(
+            sb.ctx(),
+            &cmd("config.set_role", json!({"role": "impl", "model": "opus"})),
+        );
         let out = handle_command(
             sb.ctx(),
             &cmd(
                 "config.set_role",
-                json!({"role": "audit", "runtime": "claude", "model": "claude-opus-5"}),
+                json!({"role": "audit", "runtime": "claude", "model": "opus"}),
             ),
         );
         let message = err_message(&out);
         assert!(message.contains("审计"), "{message}");
         assert!(message.contains("实现"), "{message}");
         assert!(message.contains("不同模型"), "{message}");
+    }
+
+    #[test]
+    fn two_unnamed_models_on_one_runtime_are_refused_with_their_own_message() {
+        // The shipped defaults leave models empty, so the collision a user is
+        // most likely to create is "I moved review onto Claude" — and the fix
+        // is to name a model, not to change one. The message must say so.
+        let mut sb = Sandbox::new("cfg-bothdefault");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "config.set_role",
+                json!({"role": "review", "runtime": "claude"}),
+            ),
+        );
+        let message = err_message(&out);
+        assert!(message.contains("评审"), "{message}");
+        assert!(message.contains("设计"), "{message}");
+        assert!(message.contains("指定模型"), "{message}");
     }
 
     #[test]
@@ -2078,7 +2109,7 @@ mod tests {
             sb.ctx(),
             &cmd(
                 "config.set_role",
-                json!({"role": "review", "runtime": "claude", "model": "claude-opus-5"}),
+                json!({"role": "review", "runtime": "claude"}),
             ),
         );
         assert_eq!(config_io::load_global(&home).unwrap(), before);
@@ -2327,7 +2358,10 @@ mod tests {
             },
             ConfigViolation::DesignRoundsOutOfRange { value: 0 },
             ConfigViolation::BudgetFactorOutOfRange { value: 0 },
-            ConfigViolation::EmptyModel { role: Role::Plan },
+            ConfigViolation::BothDefaultModels {
+                evaluator: Role::Review,
+                generator: Role::Plan,
+            },
         ];
         for v in variants {
             let s = describe_violation(&v);

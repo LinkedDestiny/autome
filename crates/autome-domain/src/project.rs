@@ -233,13 +233,34 @@ pub fn slugify(input: &str) -> String {
     if slug.is_empty() {
         "task".to_string()
     } else {
-        truncate_chars(&slug, 48)
+        truncate_chars(&slug, SLUG_MAX_CHARS)
     }
 }
 
+/// How long a slug may be.
+///
+/// A real run produced `在-readme-md-末尾加一行-hello-from-autome-只改这一个文件`
+/// from a one-line request — a valid path and a valid Git ref, and unusable as
+/// either. The slug names a branch the user reads in `git log`, a directory
+/// they `cd` into, and a docs path that ends up in the merge commit. Short
+/// matters more than complete, and the task id is the stable identifier
+/// anyway.
+pub const SLUG_MAX_CHARS: usize = 24;
+
+/// Truncates to `max` characters, then back to the last word boundary so the
+/// slug does not end mid-word. Falls back to the hard cut when there is no
+/// boundary to fall back to.
 fn truncate_chars(s: &str, max: usize) -> String {
-    let truncated: String = s.chars().take(max).collect();
-    truncated.trim_end_matches('-').to_string()
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    match cut.rfind('-') {
+        // Only honour a boundary that leaves something substantial; otherwise
+        // a request beginning with a long word would collapse to nothing.
+        Some(i) if i >= max / 2 => cut[..i].to_string(),
+        _ => cut.trim_end_matches('-').to_string(),
+    }
 }
 
 /// Appends `-2`, `-3`, … until the slug is unused. The caller supplies the
@@ -376,8 +397,34 @@ mod tests {
     #[test]
     fn slugify_truncates_long_input_without_a_trailing_dash() {
         let slug = slugify(&"word ".repeat(40));
-        assert!(slug.chars().count() <= 48);
+        assert!(slug.chars().count() <= SLUG_MAX_CHARS);
         assert!(!slug.ends_with('-'));
+    }
+
+    #[test]
+    fn a_whole_sentence_does_not_become_the_branch_name() {
+        // From a real run: the entire request became the slug, and therefore
+        // the branch, the worktree directory and the docs path.
+        let slug = slugify("在 README.md 末尾加一行「hello from autome」。只改这一个文件。");
+        assert!(
+            slug.chars().count() <= SLUG_MAX_CHARS,
+            "{slug} is {} chars",
+            slug.chars().count()
+        );
+        assert!(!slug.ends_with('-'), "{slug}");
+        assert!(!slug.is_empty());
+    }
+
+    #[test]
+    fn truncation_prefers_a_word_boundary_but_never_yields_nothing() {
+        assert_eq!(
+            slugify("add cart checkout flow with promo codes and stock checks"),
+            "add-cart-checkout-flow"
+        );
+        // A single long word has no boundary to fall back to; a hard cut is
+        // better than an empty slug.
+        let one_word = slugify(&"x".repeat(60));
+        assert_eq!(one_word.chars().count(), SLUG_MAX_CHARS);
     }
 
     #[test]

@@ -1,33 +1,90 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'" />
+<!--
+  The packaged origin's CSP. `style-src 'self'` means no inline <style> and no
+  `style` content attributes: the renderer therefore never calls
+  setAttribute('style', ...). Setting properties through CSSOM
+  (element.style.setProperty) is not an inline style and stays allowed, which
+  is how the staggered-reveal index and the progress widths are applied.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'" />
 <title>Autome</title>
-<link rel="stylesheet" href="tokens.css" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!--
-    Plan §9's fixed 4-tab top nav, rendered by nav.js/app.js. Only the
-    "project" tab has real content, and even that is just the §9.3
-    no-project empty state — there is no project.list-style read IPC yet
-    (see nav.js), and no preload-exposed API to call it through even if
-    there were. The other 3 tabs render a designed empty state carrying
-    the real domain vocabulary rather than pretending to be functional.
-  -->
-  <header>
-    <h1>Autome</h1>
+
+<!--
+  The hand-drawn icon sprite and the modal blob clip-path, lifted from the
+  design document. Static markup on purpose: every icon in the app is a
+  <use href="#i-..."> into this sprite, so no screen ever needs to build an
+  SVG path from data it received.
+-->
+  <svg class="sprite" aria-hidden="true">
+    <defs>
+      <clipPath id="animal-modal-clip" clipPathUnits="objectBoundingBox">
+        <path d="M0.501,0.005 L0.501,0.005 L0.523,0.005 L0.549,0.006 C0.704,0.01,0.796,0.017,0.825,0.027 L0.827,0.028 C0.872,0.045,0.939,0.044,0.978,0.17 C1,0.254,1,0.365,0.99,0.505 L0.988,0.513 C0.979,0.558,0.971,0.598,0.965,0.633 C0.956,0.689,0.979,0.77,0.964,0.865 C0.953,0.928,0.921,0.966,0.869,0.979 C0.821,0.986,0.773,0.992,0.726,0.995 L0.712,0.996 L0.694,0.997 C0.648,1,0.586,1,0.507,1 L0.501,1 L0.464,1 C0.385,1,0.325,0.998,0.283,0.995 C0.234,0.992,0.184,0.987,0.133,0.979 C0.081,0.966,0.05,0.928,0.039,0.865 C0.023,0.77,0.047,0.689,0.037,0.633 C0.031,0.595,0.023,0.552,0.013,0.505 C-0.006,0.365,-0.002,0.254,0.024,0.17 C0.064,0.045,0.13,0.045,0.174,0.028 L0.175,0.028 C0.204,0.017,0.303,0.009,0.474,0.005 L0.501,0.005"/>
+      </clipPath>
+      <!-- cute stroke icons, 48×48 viewBox, stroke 3.5, round caps -->
+      <symbol id="i-island" viewBox="0 0 48 48"><path d="M6 34 C12 20 36 20 42 34"/><path d="M4 40 q5 -4 10 0 t10 0 t10 0 t10 0"/><circle cx="36" cy="12" r="5"/><path d="M24 24 v-8 M24 16 q-8 -6 -12 2 M24 16 q8 -6 12 2"/></symbol>
+      <symbol id="i-plug" viewBox="0 0 48 48"><rect x="12" y="18" width="24" height="16" rx="6"/><path d="M18 18 v-8 M30 18 v-8 M24 34 v8"/></symbol>
+      <symbol id="i-bag" viewBox="0 0 48 48"><rect x="8" y="16" width="32" height="26" rx="8"/><path d="M16 16 v-4 a8 8 0 0 1 16 0 v4"/><path d="M8 28 h32"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 48 48"><circle cx="24" cy="24" r="7"/><path d="M24 6 v6 M24 36 v6 M6 24 h6 M36 24 h6 M11.3 11.3 l4.2 4.2 M32.5 32.5 l4.2 4.2 M11.3 36.7 l4.2 -4.2 M32.5 15.5 l4.2 -4.2"/></symbol>
+      <symbol id="i-play" viewBox="0 0 48 48"><path d="M16 10 L38 24 L16 38 Z"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 48 48"><path d="M16 10 v28 M32 10 v28"/></symbol>
+      <symbol id="i-flag" viewBox="0 0 48 48"><path d="M12 42 V8"/><path d="M12 10 h22 l-6 8 6 8 H12"/></symbol>
+      <symbol id="i-check" viewBox="0 0 48 48"><path d="M10 25 L20 35 L38 14"/></symbol>
+      <symbol id="i-warn" viewBox="0 0 48 48"><path d="M24 8 L42 40 H6 Z"/><path d="M24 20 v9"/><circle cx="24" cy="34" r="1" fill="currentColor"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><path d="M24 14 v10 l7 5"/></symbol>
+      <symbol id="i-branch" viewBox="0 0 48 48"><circle cx="14" cy="10" r="4"/><circle cx="14" cy="38" r="4"/><circle cx="34" cy="16" r="4"/><path d="M14 14 v20"/><path d="M34 20 c0 10 -20 6 -20 14"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 48 48"><path d="M24 6 L40 12 v12 c0 9 -7 15 -16 18 c-9 -3 -16 -9 -16 -18 V12 Z"/><path d="M17 24 l5 5 l9 -10"/></symbol>
+      <symbol id="i-coin" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="8"/><path d="M24 12 v4 M24 32 v4"/></symbol>
+      <symbol id="i-leaf" viewBox="0 0 48 48"><path d="M10 38 C8 20 20 8 40 8 C40 28 28 40 10 38 Z"/><path d="M10 38 L30 18"/></symbol>
+      <symbol id="i-search" viewBox="0 0 48 48"><circle cx="21" cy="21" r="12"/><path d="M30 30 L40 40"/></symbol>
+      <symbol id="i-x" viewBox="0 0 48 48"><path d="M12 12 L36 36 M36 12 L12 36"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 48 48"><path d="M8 24 h30 M28 12 l12 12 -12 12"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 48 48"><rect x="10" y="20" width="28" height="20" rx="6"/><path d="M16 20 v-4 a8 8 0 0 1 16 0 v4"/><circle cx="24" cy="30" r="2" fill="currentColor"/></symbol>
+      <symbol id="i-doc" viewBox="0 0 48 48"><path d="M12 6 h16 l10 10 v26 H12 Z"/><path d="M28 6 v10 h10"/><path d="M18 26 h12 M18 34 h12"/></symbol>
+      <symbol id="i-mail" viewBox="0 0 48 48"><rect x="6" y="12" width="36" height="26" rx="6"/><path d="M8 16 L24 28 L40 16"/></symbol>
+      <symbol id="i-term" viewBox="0 0 48 48"><rect x="6" y="10" width="36" height="28" rx="6"/><path d="M14 20 l6 5 -6 5 M24 30 h10"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 48 48"><path d="M24 10 v28 M10 24 h28"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 48 48"><path d="M12 32 c0 -14 4 -20 12 -20 s12 6 12 20 H12 Z"/><path d="M20 38 a4 4 0 0 0 8 0"/><path d="M24 8 v4"/></symbol>
+      <symbol id="i-git" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><path d="M14 18 h20 M14 30 h20 M20 8 c-6 10 -6 22 0 32 M28 8 c6 10 6 22 0 32"/></symbol>
+      <symbol id="i-hand" viewBox="0 0 48 48"><path d="M14 26 V12 a3 3 0 0 1 6 0 v10 M20 20 V8 a3 3 0 0 1 6 0 v12 M26 22 V10 a3 3 0 0 1 6 0 v14"/><path d="M14 26 c-6 0 -6 8 -2 12 c4 4 10 4 20 4 c4 0 8 -4 8 -10 v-8 a3 3 0 0 0 -6 0 v6"/></symbol>
+    </defs>
+  </svg>
+
+<div id="window">
+  <header class="titlebar">
+    <div class="titlebar__left">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="brand"><span class="brand__mark"><svg class="ic"><use href="#i-island"/></svg></span>Autome</div>
+    </div>
+    <!-- U-01's 顶栏: 运行中 N / 等待我 N. Filled by app.js from dashboard.get. -->
+    <div class="execbar" id="exec-bar" aria-label="全局执行条"></div>
+    <div class="titlebar__right"><span class="corepill" id="core-pill"><span class="dot"></span><span id="core-pill-text">连接内核…</span></span></div>
   </header>
-  <div id="exec-bar"></div>
-  <nav id="top-nav"></nav>
-  <main id="panel"></main>
-  <script src="vocabulary.js"></script>
-  <script src="axis.js"></script>
-  <script src="status.js"></script>
-  <script src="exec-bar.js"></script>
-  <script src="state-catalog.js"></script>
-  <script src="nav.js"></script>
-  <script src="app.js"></script>
+
+  <aside class="sidebar">
+    <nav class="nav" id="nav" aria-label="主导航"></nav>
+    <div class="sidebar__sec">最近的项目</div>
+    <div class="recent" id="recent"></div>
+    <div class="sidebar__foot">
+      <div><b>Autome</b> 2.0.0 · macOS</div>
+      <div><b>全局配置</b> ~/.autome · <b>终端</b> iTerm2</div>
+    </div>
+  </aside>
+
+  <!-- One screen host. app.js swaps its contents; there is no hidden screen. -->
+  <main class="main bg-dots" id="main"></main>
+</div>
+
+<div class="drawer-mask" id="drawer-mask"></div>
+<aside class="drawer" id="drawer" aria-label="侧边面板"></aside>
+<div class="modal-mask" id="modal-mask"><div class="modal" id="modal"></div></div>
+<div class="notif-root"><div class="position-topRight" id="notif-stack"></div></div>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>
