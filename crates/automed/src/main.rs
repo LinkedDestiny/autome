@@ -11,12 +11,9 @@
 //! unknown, so the `Reply` carries empty strings for both and the failure
 //! is also logged to stderr).
 
-use automed::dispatch::handle_command;
-use automed::ipc::{
-    Command, FrameError, Outbound, PROTOCOL_VERSION, Reply, ReplyErrorCode, ReplyOutcome,
-    read_frame, write_frame,
-};
-use automed::store::EventStore;
+use automed::dispatch::{Ctx, handle_command, protocol_error_reply};
+use automed::ipc::{Command, FrameError, Outbound, read_frame, write_frame};
+use automed::store::Store;
 use std::io;
 
 fn write_outbound(writer: &mut impl io::Write, outbound: &Outbound) -> Result<(), FrameError> {
@@ -33,13 +30,16 @@ fn main() {
 
     let db_path =
         std::env::var("AUTOMED_DB_PATH").unwrap_or_else(|_| "automed.sqlite3".to_string());
-    let mut store = match EventStore::open(&db_path) {
+    let store = match Store::open(&db_path) {
         Ok(store) => store,
         Err(e) => {
-            tracing::error!(error = %e, db_path, "failed to open event store");
+            tracing::error!(error = %e, db_path, "failed to open the store");
             std::process::exit(1);
         }
     };
+    let autome_home = automed::config_io::default_global_dir();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let mut ctx = Ctx::new(store, autome_home, home);
 
     tracing::info!(db_path, "automed core starting, reading commands on stdin");
 
@@ -65,15 +65,7 @@ fn main() {
             Ok(command) => command,
             Err(e) => {
                 tracing::error!(error = %e, "received a frame that is not a valid Command");
-                let reply = Reply {
-                    request_id: String::new(),
-                    command_id: String::new(),
-                    protocol_version: PROTOCOL_VERSION,
-                    outcome: ReplyOutcome::Error {
-                        code: ReplyErrorCode::InvalidParams,
-                        message: format!("frame is not a valid Command: {e}"),
-                    },
-                };
+                let reply = protocol_error_reply(format!("frame is not a valid Command: {e}"));
                 if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Reply(reply)) {
                     tracing::error!(?e, "failed to write reply frame to stdout");
                     break;
@@ -82,15 +74,20 @@ fn main() {
             }
         };
 
-        let outcome = handle_command(&mut store, &command);
+        let outcome = handle_command(&mut ctx, &command);
         if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Reply(outcome.reply)) {
             tracing::error!(?e, "failed to write reply frame to stdout");
             break;
         }
-        if let Some(event) = outcome.event
-            && let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Event(event))
-        {
-            tracing::error!(?e, "failed to write event frame to stdout");
+        let mut write_failed = false;
+        for event in outcome.events {
+            if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Event(event)) {
+                tracing::error!(?e, "failed to write event frame to stdout");
+                write_failed = true;
+                break;
+            }
+        }
+        if write_failed {
             break;
         }
     }
