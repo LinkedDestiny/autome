@@ -68,17 +68,40 @@
 //! than collapsing them into one -- a receipt can be current but not ready
 //! (missing programs) or ready but stale (environment moved on since it was
 //! observed), and a caller needs to tell those apart.
+//! `delivery.*` (§5.12) is a different shape from every write method above:
+//! a `DeliveryChain` is a five-rung append-only sequence, not a single fact
+//! recorded once, so it gets six write methods instead of one, all handled
+//! in `handle_command` ahead of both `try_dispatch_read` and `dispatch`
+//! (same reason as `attempt.record` etc -- each writes a `delivery_chains`
+//! row but appends no `Event`). `delivery.start` parses `params.run_id` and
+//! `params.subject` (a full `DeliverySubject`) and fixes the chain's subject
+//! once. `delivery.append_rehearsal`/`delivery.append_approval`/
+//! `delivery.append_delivery`/`delivery.append_tree_check`/
+//! `delivery.append_project_target_transition` each parse `params.run_id`
+//! and `params.receipt` (the matching receipt type) and call the domain
+//! `DeliveryChain`'s own `append_*` method -- re-using its order/outcome
+//! checks rather than reimplementing them, surfaced as
+//! `ReplyErrorCode::TransitionRejected` on rejection. `delivery.get` parses
+//! `params.run_id`. `delivery.check_completion` re-exercises
+//! `DeliveryChain::is_ready_for_completion` against the currently recorded
+//! chain, reporting `{ ready, reason }` rather than trusting a caller's own
+//! judgment of whether every rung is in place.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
-    AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
-    AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord, ContractAppendError,
-    CreateDisposableCloneError, CreateFromTargetError, DisposableCloneRecord,
-    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
-    GraphAppendError, ProjectAppendError, ProjectSummary, ReadinessRecord, RecordAttemptError,
-    RecordEvidenceError, RecordReadinessError, TaskAppendError, TaskSummary,
+    AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
+    AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord,
+    ContractAppendError, CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
+    DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
+    ExecutionQueueAppendError, GraphAppendError, ProjectAppendError, ProjectSummary,
+    ReadinessRecord, RecordAttemptError, RecordEvidenceError, RecordReadinessError,
+    StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
+use autome_domain::delivery::{
+    DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
+    DeliverySubject, ProjectTargetTransitionReceipt,
+};
 use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
@@ -139,6 +162,15 @@ pub enum DispatchError {
     /// §5.9 write path: `record_readiness`'s only failure mode (a duplicate
     /// `receipt_digest`, surfaced as a SQL primary-key violation).
     RecordReadiness(RecordReadinessError),
+    /// §5.12 write path: `start_delivery_chain`'s only failure mode (a
+    /// duplicate `run_id`, surfaced as a SQL primary-key violation).
+    StartDeliveryChain(StartDeliveryChainError),
+    /// §5.12 write path: any `append_delivery_*` method's failure modes --
+    /// either `run_id` was never started (`NotFound`) or the domain
+    /// `DeliveryChain`'s own order/outcome check rejected the rung
+    /// (`Chain`), matched exhaustively below -- same reasoning as
+    /// `CreateDisposableClone` above.
+    AppendDeliveryReceipt(AppendDeliveryReceiptError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -180,6 +212,18 @@ impl From<RecordEvidenceError> for DispatchError {
 impl From<RecordReadinessError> for DispatchError {
     fn from(value: RecordReadinessError) -> Self {
         DispatchError::RecordReadiness(value)
+    }
+}
+
+impl From<StartDeliveryChainError> for DispatchError {
+    fn from(value: StartDeliveryChainError) -> Self {
+        DispatchError::StartDeliveryChain(value)
+    }
+}
+
+impl From<AppendDeliveryReceiptError> for DispatchError {
+    fn from(value: AppendDeliveryReceiptError) -> Self {
+        DispatchError::AppendDeliveryReceipt(value)
     }
 }
 
@@ -532,6 +576,52 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.12: the six `delivery.*` write methods -- same shape again, but a
+    // `DeliveryChain` is a five-rung append-only sequence rather than one
+    // fact recorded once, so there are six of them instead of one.
+    if command.method == "delivery.start" {
+        let result = handle_start_delivery_chain(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "delivery.append_rehearsal" {
+        let result = handle_append_delivery_rehearsal(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "delivery.append_approval" {
+        let result = handle_append_delivery_approval(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "delivery.append_delivery" {
+        let result = handle_append_delivery_delivery(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "delivery.append_tree_check" {
+        let result = handle_append_delivery_tree_check(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "delivery.append_project_target_transition" {
+        let result = handle_append_delivery_project_target_transition(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -818,6 +908,219 @@ fn parse_readiness_fingerprint_param(
     })
 }
 
+/// Handles `delivery.start`: `{ run_id, subject: DeliverySubject }`. Same
+/// "write returns Value not Event" shape as `handle_record_attempt` -- fixes
+/// a `DeliveryChain`'s subject once, not a state-machine transition.
+/// Refuses to run while the store is in its diagnostic state, same as every
+/// other write.
+fn handle_start_delivery_chain(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let subject = parse_delivery_subject_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .start_delivery_chain(&run_id, &subject)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn delivery_chain_record_json(record: &DeliveryChainRecord) -> Value {
+    serde_json::json!({
+        "run_id": record.run_id,
+        "subject": record.subject,
+        "rehearsal": record.rehearsal,
+        "approval": record.approval,
+        "delivery": record.delivery,
+        "tree_check": record.tree_check,
+        "project_target_transition": record.project_target_transition,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    })
+}
+
+fn parse_delivery_subject_param(command: &Command) -> Result<DeliverySubject, DispatchError> {
+    let value = command
+        .params
+        .get("subject")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.subject is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.subject is not a valid DeliverySubject: {e}"
+        ))
+    })
+}
+
+/// Handles `delivery.append_rehearsal`: `{ run_id, receipt: DeliveryRehearsalReceipt }`.
+fn handle_append_delivery_rehearsal(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let receipt =
+        parse_delivery_rehearsal_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .append_delivery_rehearsal(&run_id, &receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn parse_delivery_rehearsal_receipt_param(
+    command: &Command,
+) -> Result<DeliveryRehearsalReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid DeliveryRehearsalReceipt: {e}"
+        ))
+    })
+}
+
+/// Handles `delivery.append_approval`: `{ run_id, receipt: DeliveryApprovalReceipt }`.
+/// Rejects (via `AppendDeliveryReceiptError::Chain`) if `run_id`'s chain has
+/// no rehearsal recorded yet.
+fn handle_append_delivery_approval(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let receipt =
+        parse_delivery_approval_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .append_delivery_approval(&run_id, &receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn parse_delivery_approval_receipt_param(
+    command: &Command,
+) -> Result<DeliveryApprovalReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid DeliveryApprovalReceipt: {e}"
+        ))
+    })
+}
+
+/// Handles `delivery.append_delivery`: `{ run_id, receipt: DeliveryReceipt }`
+/// -- the outcome of actually performing the delivery. Rejects if `run_id`'s
+/// chain has no approval recorded yet, or a delivery was already recorded.
+fn handle_append_delivery_delivery(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let receipt = parse_delivery_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .append_delivery_delivery(&run_id, &receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn parse_delivery_receipt_param(command: &Command) -> Result<DeliveryReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid DeliveryReceipt: {e}"
+        ))
+    })
+}
+
+/// Handles `delivery.append_tree_check`: `{ run_id, receipt: DeliveredTreeCheckReceipt }`.
+/// Rejects if `run_id`'s chain has no successful delivery recorded yet, or a
+/// tree check was already recorded.
+fn handle_append_delivery_tree_check(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let receipt =
+        parse_delivered_tree_check_receipt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .append_delivery_tree_check(&run_id, &receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn parse_delivered_tree_check_receipt_param(
+    command: &Command,
+) -> Result<DeliveredTreeCheckReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid DeliveredTreeCheckReceipt: {e}"
+        ))
+    })
+}
+
+/// Handles `delivery.append_project_target_transition`:
+/// `{ run_id, receipt: ProjectTargetTransitionReceipt }`. Rejects unless
+/// `run_id`'s chain subject is `Greenfield` and a matching tree check is
+/// already recorded.
+fn handle_append_delivery_project_target_transition(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let receipt = parse_project_target_transition_receipt_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .append_delivery_project_target_transition(&run_id, &receipt)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(delivery_chain_record_json(&record))
+}
+
+fn parse_project_target_transition_receipt_param(
+    command: &Command,
+) -> Result<ProjectTargetTransitionReceipt, DispatchError> {
+    let value = command
+        .params
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.receipt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.receipt is not a valid ProjectTargetTransitionReceipt: {e}"
+        ))
+    })
+}
+
 /// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
 /// variants (genuine I/O/internal failures) become `Internal`;
 /// `Transition(_)` variants (a reducer rejecting the event given the
@@ -924,6 +1227,19 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::StartDeliveryChain(StartDeliveryChainError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::AppendDeliveryReceipt(AppendDeliveryReceiptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::AppendDeliveryReceipt(AppendDeliveryReceiptError::NotFound) => (
+            ReplyErrorCode::NotFound,
+            "no delivery chain started for this run_id".to_string(),
+        ),
+        DispatchError::AppendDeliveryReceipt(AppendDeliveryReceiptError::Chain(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -949,6 +1265,8 @@ fn try_dispatch_read(
         "evidence.check" => Some(read_evidence_check(store, command)),
         "readiness.get" => Some(read_readiness_get(store, command)),
         "readiness.check" => Some(read_readiness_check(store, command)),
+        "delivery.get" => Some(read_delivery_get(store, command)),
+        "delivery.check_completion" => Some(read_delivery_check_completion(store, command)),
         _ => None,
     }
 }
@@ -1218,6 +1536,52 @@ fn read_readiness_check(
         "current": current,
         "ready": ready,
     }))
+}
+
+/// §5.12: `{ run_id }` -- returns the full stored chain (subject plus every
+/// rung recorded so far). `NotFound` if `delivery.start` was never called
+/// for `run_id`.
+fn read_delivery_get(store: &EventStore, command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_delivery_chain(&run_id).map_err(internal_error)? {
+        Some(record) => Ok(delivery_chain_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no delivery chain started for run {run_id}"),
+        )),
+    }
+}
+
+/// §5.12: `{ run_id }` -- rebuilds the live `DeliveryChain` from its stored
+/// rungs and re-exercises `DeliveryChain::is_ready_for_completion` against
+/// it, rather than trusting a caller's own judgment of whether every rung is
+/// in place. `NotFound` if `delivery.start` was never called for `run_id`.
+fn read_delivery_check_completion(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .load_delivery_chain(&run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                format!("no delivery chain started for run {run_id}"),
+            )
+        })?;
+    match record.rebuild().is_ready_for_completion() {
+        Ok(()) => Ok(serde_json::json!({
+            "run_id": run_id,
+            "ready": true,
+            "reason": Value::Null,
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "run_id": run_id,
+            "ready": false,
+            "reason": format!("{e:?}"),
+        })),
+    }
 }
 
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
@@ -3739,6 +4103,247 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
             other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_existing_repo_subject_json() -> Value {
+        json!({
+            "ExistingRepo": {
+                "repository_identity_hash": "repo-hash",
+                "target_head": "head",
+                "target_worktree_fingerprint": "wt-1",
+                "new_ref": "refs/heads/delivered",
+            },
+        })
+    }
+
+    fn well_formed_delivery_envelope_json() -> Value {
+        json!({
+            "run_id": "run-1",
+            "contract_hash": "contract-1",
+            "candidate_certificate_hash": "candidate-1",
+            "policy_hash": "policy-1",
+            "nonce": "nonce-1",
+            "issued_at": "2026-09-15T00:00:00Z",
+            "receipt_digest": "digest-1",
+        })
+    }
+
+    fn well_formed_rehearsal_receipt_json() -> Value {
+        json!({
+            "envelope": well_formed_delivery_envelope_json(),
+            "subject": well_formed_existing_repo_subject_json(),
+            "target_head_or_parent": "head",
+            "delivery_tree_hash": "tree-1",
+            "check_receipt_ids": ["check-1"],
+        })
+    }
+
+    fn well_formed_approval_receipt_json() -> Value {
+        json!({
+            "envelope": well_formed_delivery_envelope_json(),
+            "rehearsal_receipt_digest": "digest-1",
+            "display_summary": "summary",
+            "destination_or_new_ref": "refs/heads/delivered",
+            "artifact_destinations": [],
+            "valid_until": "2026-09-16T00:00:00Z",
+            "operator_decision_ref": "decision:1",
+        })
+    }
+
+    fn well_formed_delivery_receipt_json(outcome: &str) -> Value {
+        json!({
+            "envelope": well_formed_delivery_envelope_json(),
+            "approval_receipt_digest": "digest-1",
+            "before_identity_hash": "before-1",
+            "after_identity_hash": "after-1",
+            "outcome": outcome,
+        })
+    }
+
+    fn well_formed_tree_check_receipt_json(matches_delivery: bool) -> Value {
+        json!({
+            "envelope": well_formed_delivery_envelope_json(),
+            "delivery_receipt_digest": "digest-1",
+            "observed_ref_or_tree": "refs/heads/delivered",
+            "artifact_hashes": [],
+            "worktree_fingerprint": "wt-1",
+            "matches_delivery": matches_delivery,
+        })
+    }
+
+    /// §5.12: `delivery.start` followed by `delivery.append_rehearsal`,
+    /// `delivery.append_approval`, `delivery.append_delivery` and
+    /// `delivery.append_tree_check` in order, for an `ExistingRepo` subject
+    /// (no `project_target_transition` rung required). `delivery.get` reads
+    /// back the same payload every append returned, and
+    /// `delivery.check_completion` reports ready.
+    #[test]
+    fn handle_command_delivery_chain_full_existing_repo_happy_path_reads_back_and_completes() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let start_cmd = command(
+            "delivery.start",
+            json!({ "run_id": "run-1", "subject": well_formed_existing_repo_subject_json() }),
+        );
+        let start_outcome = handle_command(&mut store, &start_cmd);
+        assert!(start_outcome.event.is_none());
+        match start_outcome.reply.outcome {
+            ReplyOutcome::Ok { .. } => {}
+            ReplyOutcome::Error { code, message } => {
+                panic!("delivery.start failed: {code:?} {message}")
+            }
+        }
+
+        let rehearsal_cmd = command(
+            "delivery.append_rehearsal",
+            json!({ "run_id": "run-1", "receipt": well_formed_rehearsal_receipt_json() }),
+        );
+        let rehearsal_outcome = handle_command(&mut store, &rehearsal_cmd);
+        assert!(rehearsal_outcome.event.is_none());
+        if let ReplyOutcome::Error { code, message } = rehearsal_outcome.reply.outcome {
+            panic!("delivery.append_rehearsal failed: {code:?} {message}")
+        }
+
+        let approval_cmd = command(
+            "delivery.append_approval",
+            json!({ "run_id": "run-1", "receipt": well_formed_approval_receipt_json() }),
+        );
+        let approval_outcome = handle_command(&mut store, &approval_cmd);
+        if let ReplyOutcome::Error { code, message } = approval_outcome.reply.outcome {
+            panic!("delivery.append_approval failed: {code:?} {message}")
+        }
+
+        let delivery_cmd = command(
+            "delivery.append_delivery",
+            json!({ "run_id": "run-1", "receipt": well_formed_delivery_receipt_json("Succeeded") }),
+        );
+        let delivery_outcome = handle_command(&mut store, &delivery_cmd);
+        if let ReplyOutcome::Error { code, message } = delivery_outcome.reply.outcome {
+            panic!("delivery.append_delivery failed: {code:?} {message}")
+        }
+
+        let tree_check_cmd = command(
+            "delivery.append_tree_check",
+            json!({ "run_id": "run-1", "receipt": well_formed_tree_check_receipt_json(true) }),
+        );
+        let tree_check_outcome = handle_command(&mut store, &tree_check_cmd);
+        let tree_check_payload = match tree_check_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("delivery.append_tree_check failed: {code:?} {message}")
+            }
+        };
+
+        let get_cmd = command("delivery.get", json!({ "run_id": "run-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload, tree_check_payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("delivery.get failed: {code:?} {message}")
+            }
+        }
+
+        let check_cmd = command("delivery.check_completion", json!({ "run_id": "run-1" }));
+        let check_outcome = handle_command(&mut store, &check_cmd);
+        match check_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ready"], true);
+                assert_eq!(payload["reason"], Value::Null);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("delivery.check_completion failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `delivery.append_approval` before any `delivery.append_rehearsal`
+    /// call is rejected by the domain chain's own ordering rule, surfaced
+    /// as `TransitionRejected`, not a silent no-op.
+    #[test]
+    fn handle_command_delivery_append_approval_before_rehearsal_is_transition_rejected() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let start_cmd = command(
+            "delivery.start",
+            json!({ "run_id": "run-1", "subject": well_formed_existing_repo_subject_json() }),
+        );
+        handle_command(&mut store, &start_cmd);
+
+        let approval_cmd = command(
+            "delivery.append_approval",
+            json!({ "run_id": "run-1", "receipt": well_formed_approval_receipt_json() }),
+        );
+        let outcome = handle_command(&mut store, &approval_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `delivery.append_rehearsal` for a `run_id` that was never passed to
+    /// `delivery.start` is `NotFound`, and `delivery.get` /
+    /// `delivery.check_completion` are likewise `NotFound` for an unstarted
+    /// chain.
+    #[test]
+    fn handle_command_delivery_methods_are_not_found_for_an_unstarted_chain() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let rehearsal_cmd = command(
+            "delivery.append_rehearsal",
+            json!({ "run_id": "no-such-run", "receipt": well_formed_rehearsal_receipt_json() }),
+        );
+        match handle_command(&mut store, &rehearsal_cmd).reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        let get_cmd = command("delivery.get", json!({ "run_id": "no-such-run" }));
+        match handle_command(&mut store, &get_cmd).reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        let check_cmd = command("delivery.check_completion", json!({ "run_id": "no-such-run" }));
+        match handle_command(&mut store, &check_cmd).reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `delivery.check_completion` reports `ready: false` with a reason
+    /// while a chain has a delivery+tree_check but (for a `Greenfield`
+    /// subject) still needs `project_target_transition` -- not an error,
+    /// since asking "are we done yet" on an in-progress chain is a normal
+    /// read, not a protocol violation.
+    #[test]
+    fn handle_command_delivery_check_completion_reports_not_ready_before_all_rungs_are_appended() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let start_cmd = command(
+            "delivery.start",
+            json!({ "run_id": "run-1", "subject": well_formed_existing_repo_subject_json() }),
+        );
+        handle_command(&mut store, &start_cmd);
+
+        let check_cmd = command("delivery.check_completion", json!({ "run_id": "run-1" }));
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["ready"], false);
+                assert!(payload["reason"].is_string());
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("delivery.check_completion failed: {code:?} {message}")
+            }
         }
 
         std::fs::remove_dir_all(&root).ok();

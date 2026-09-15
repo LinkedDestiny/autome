@@ -14,6 +14,10 @@ use autome_domain::attempt::{
     PlanningWriteViolation,
 };
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
+use autome_domain::delivery::{
+    DeliveryApprovalReceipt, DeliveryChain, DeliveryChainError, DeliveredTreeCheckReceipt,
+    DeliveryReceipt, DeliveryRehearsalReceipt, DeliverySubject, ProjectTargetTransitionReceipt,
+};
 use autome_domain::evidence::EvidenceReceipt;
 use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
@@ -330,6 +334,100 @@ impl From<rusqlite::Error> for RecordReadinessError {
     }
 }
 
+/// A persisted §5.12 `DeliveryChain`. Unlike `AttemptRecord`/`EvidenceRecord`/
+/// `ReadinessRecord` above, `DeliveryChain` itself has no
+/// `Serialize`/`Deserialize` -- its five rungs are only reachable through the
+/// fixed-order `append_*` methods, by design (see `delivery.rs`'s module
+/// doc: which actor may call which append method is an authorization
+/// concern the data-only domain crate deliberately can't enforce, so nothing
+/// here should make it easy to reconstruct a chain except by replaying those
+/// same methods). So the store keeps each rung's receipt in its own
+/// nullable column and this record is the plain data shape read back;
+/// `rebuild()` is what turns it back into a live `DeliveryChain` whenever an
+/// append or a read needs to ask the domain object a question (is the next
+/// rung reachable, is the chain ready for completion).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryChainRecord {
+    pub run_id: String,
+    pub subject: DeliverySubject,
+    pub rehearsal: Option<DeliveryRehearsalReceipt>,
+    pub approval: Option<DeliveryApprovalReceipt>,
+    pub delivery: Option<DeliveryReceipt>,
+    pub tree_check: Option<DeliveredTreeCheckReceipt>,
+    pub project_target_transition: Option<ProjectTargetTransitionReceipt>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl DeliveryChainRecord {
+    /// Replays whichever rungs are already recorded, in the chain's own
+    /// fixed order, through the real `append_*` methods -- never constructs
+    /// a `DeliveryChain` by any other means. Each `.expect()` below can only
+    /// fire if a row this method reads back was never actually valid
+    /// through the append path in the first place, which would be a store
+    /// bug (writing a rung that didn't pass its own domain check), not a
+    /// reachable runtime condition.
+    pub fn rebuild(&self) -> DeliveryChain {
+        let mut chain = DeliveryChain::new(self.subject.clone());
+        if let Some(r) = &self.rehearsal {
+            chain.append_rehearsal(r.clone());
+        }
+        if let Some(a) = &self.approval {
+            chain
+                .append_approval(a.clone())
+                .expect("a previously-recorded approval replays cleanly");
+        }
+        if let Some(d) = &self.delivery {
+            chain
+                .append_delivery(d.clone())
+                .expect("a previously-recorded delivery replays cleanly");
+        }
+        if let Some(t) = &self.tree_check {
+            chain
+                .append_tree_check(t.clone())
+                .expect("a previously-recorded tree check replays cleanly");
+        }
+        if let Some(p) = &self.project_target_transition {
+            chain
+                .append_project_target_transition(p.clone())
+                .expect("a previously-recorded project target transition replays cleanly");
+        }
+        chain
+    }
+}
+
+/// `start_delivery_chain`'s only failure mode: a duplicate `run_id`,
+/// surfaced as a SQL primary-key violation -- one chain per run, matching
+/// `DeliveryChain::new` fixing its subject exactly once.
+#[derive(Debug)]
+pub enum StartDeliveryChainError {
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for StartDeliveryChainError {
+    fn from(value: rusqlite::Error) -> Self {
+        StartDeliveryChainError::Sql(value)
+    }
+}
+
+/// Every `delivery.append_*` write's failure modes: either the `run_id`
+/// never had `start_delivery_chain` called for it (`NotFound`), or the
+/// domain's own `DeliveryChain::append_*` rejected the rung out of order
+/// (`Chain`) -- re-using `autome_domain::delivery`'s own validation rather
+/// than reimplementing "rehearsal required before approval" etc. here.
+#[derive(Debug)]
+pub enum AppendDeliveryReceiptError {
+    Sql(rusqlite::Error),
+    NotFound,
+    Chain(DeliveryChainError),
+}
+
+impl From<rusqlite::Error> for AppendDeliveryReceiptError {
+    fn from(value: rusqlite::Error) -> Self {
+        AppendDeliveryReceiptError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -469,6 +567,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v6,
     migrate_v7,
     migrate_v8,
+    migrate_v9,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -679,6 +778,33 @@ fn migrate_v8(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_readiness_receipts_profile_hash ON readiness_receipts(profile_hash);
+        ",
+    )
+}
+
+/// `delivery_chains`: one row per `start_delivery_chain` call (plan §5.12).
+/// `run_id` is the primary key -- one `DeliveryChain` per run, matching
+/// `DeliveryChain::new` fixing `subject` exactly once for the run's whole
+/// delivery lifecycle. `subject_json` is fixed at `start_delivery_chain`
+/// time; the five `*_json` rung columns start NULL and are each set exactly
+/// once by the matching `append_delivery_*` method -- `DeliveryChain` itself
+/// has no `Serialize`/`Deserialize` (see `DeliveryChainRecord`'s doc
+/// comment), so each rung's own receipt type is what gets persisted, not
+/// the chain object.
+fn migrate_v9(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS delivery_chains (
+            run_id TEXT PRIMARY KEY,
+            subject_json TEXT NOT NULL,
+            rehearsal_json TEXT,
+            approval_json TEXT,
+            delivery_json TEXT,
+            tree_check_json TEXT,
+            project_target_transition_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         ",
     )
 }
@@ -2185,6 +2311,241 @@ impl EventStore {
             ReadinessRecord { receipt, created_at }
         }))
     }
+
+    /// §5.12's write path: fixes a `DeliveryChain`'s `subject` for the rest
+    /// of a run's delivery lifecycle. Like `record_attempt`, this is a fact
+    /// recorded once, not a journaled event -- every subsequent
+    /// `append_delivery_*` call mutates this row's rung columns, not a new
+    /// row.
+    pub fn start_delivery_chain(
+        &mut self,
+        run_id: &str,
+        subject: &DeliverySubject,
+    ) -> Result<DeliveryChainRecord, StartDeliveryChainError> {
+        let subject_json =
+            serde_json::to_string(subject).expect("DeliverySubject is serializable");
+        let now = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO delivery_chains (run_id, subject_json, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?3)",
+            rusqlite::params![run_id, subject_json, now],
+        )?;
+        Ok(DeliveryChainRecord {
+            run_id: run_id.to_string(),
+            subject: subject.clone(),
+            rehearsal: None,
+            approval: None,
+            delivery: None,
+            tree_check: None,
+            project_target_transition: None,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    /// Read counterpart to `start_delivery_chain` -- looks up the recorded
+    /// `delivery_chains` row for `run_id`, if any, deserializing whichever
+    /// rung columns are non-NULL.
+    pub fn load_delivery_chain(
+        &self,
+        run_id: &str,
+    ) -> rusqlite::Result<Option<DeliveryChainRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT subject_json, rehearsal_json, approval_json, delivery_json, \
+                        tree_check_json, project_target_transition_json, created_at, updated_at \
+                 FROM delivery_chains WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row.map(
+            |(
+                subject_json,
+                rehearsal_json,
+                approval_json,
+                delivery_json,
+                tree_check_json,
+                project_target_transition_json,
+                created_at,
+                updated_at,
+            )| DeliveryChainRecord {
+                run_id: run_id.to_string(),
+                subject: serde_json::from_str(&subject_json)
+                    .expect("delivery_chains.subject_json round-trips"),
+                rehearsal: rehearsal_json.map(|j| {
+                    serde_json::from_str(&j).expect("delivery_chains.rehearsal_json round-trips")
+                }),
+                approval: approval_json.map(|j| {
+                    serde_json::from_str(&j).expect("delivery_chains.approval_json round-trips")
+                }),
+                delivery: delivery_json.map(|j| {
+                    serde_json::from_str(&j).expect("delivery_chains.delivery_json round-trips")
+                }),
+                tree_check: tree_check_json.map(|j| {
+                    serde_json::from_str(&j).expect("delivery_chains.tree_check_json round-trips")
+                }),
+                project_target_transition: project_target_transition_json.map(|j| {
+                    serde_json::from_str(&j).expect(
+                        "delivery_chains.project_target_transition_json round-trips",
+                    )
+                }),
+                created_at,
+                updated_at,
+            },
+        ))
+    }
+
+    /// §5.12 rung 1: appends a `DeliveryRehearsalReceipt`. Unlike the four
+    /// rungs below, `DeliveryChain::append_rehearsal` is infallible -- it
+    /// has no prerequisite rung -- so there is no domain error to propagate
+    /// here, only `NotFound` if `run_id` was never started.
+    pub fn append_delivery_rehearsal(
+        &mut self,
+        run_id: &str,
+        receipt: &DeliveryRehearsalReceipt,
+    ) -> Result<DeliveryChainRecord, AppendDeliveryReceiptError> {
+        let mut record = self
+            .load_delivery_chain(run_id)?
+            .ok_or(AppendDeliveryReceiptError::NotFound)?;
+        let receipt_json =
+            serde_json::to_string(receipt).expect("DeliveryRehearsalReceipt is serializable");
+        let updated_at = Self::now_rfc3339();
+        self.conn.execute(
+            "UPDATE delivery_chains SET rehearsal_json = ?1, updated_at = ?2 WHERE run_id = ?3",
+            rusqlite::params![receipt_json, updated_at, run_id],
+        )?;
+        record.rehearsal = Some(receipt.clone());
+        record.updated_at = updated_at;
+        Ok(record)
+    }
+
+    /// §5.12 rung 2: appends a `DeliveryApprovalReceipt`, rejecting via
+    /// `DeliveryChainError::RehearsalRequiredBeforeApproval` if rung 1 is
+    /// missing -- re-using `DeliveryChain::append_approval`'s own check
+    /// rather than reimplementing it here.
+    pub fn append_delivery_approval(
+        &mut self,
+        run_id: &str,
+        receipt: &DeliveryApprovalReceipt,
+    ) -> Result<DeliveryChainRecord, AppendDeliveryReceiptError> {
+        let mut record = self
+            .load_delivery_chain(run_id)?
+            .ok_or(AppendDeliveryReceiptError::NotFound)?;
+        record
+            .rebuild()
+            .append_approval(receipt.clone())
+            .map_err(AppendDeliveryReceiptError::Chain)?;
+        let receipt_json =
+            serde_json::to_string(receipt).expect("DeliveryApprovalReceipt is serializable");
+        let updated_at = Self::now_rfc3339();
+        self.conn.execute(
+            "UPDATE delivery_chains SET approval_json = ?1, updated_at = ?2 WHERE run_id = ?3",
+            rusqlite::params![receipt_json, updated_at, run_id],
+        )?;
+        record.approval = Some(receipt.clone());
+        record.updated_at = updated_at;
+        Ok(record)
+    }
+
+    /// §5.12 rung 3: appends the `DeliveryReceipt` itself (the outcome of
+    /// actually performing the delivery), rejecting out-of-order or
+    /// repeated calls via `DeliveryChain::append_delivery`'s own checks. A
+    /// `Failed` or `UnknownOutcome` receipt is still recorded permanently --
+    /// see `append_delivery`'s doc comment in `delivery.rs` -- it just
+    /// blocks `append_delivery_tree_check` from proceeding.
+    pub fn append_delivery_delivery(
+        &mut self,
+        run_id: &str,
+        receipt: &DeliveryReceipt,
+    ) -> Result<DeliveryChainRecord, AppendDeliveryReceiptError> {
+        let mut record = self
+            .load_delivery_chain(run_id)?
+            .ok_or(AppendDeliveryReceiptError::NotFound)?;
+        record
+            .rebuild()
+            .append_delivery(receipt.clone())
+            .map_err(AppendDeliveryReceiptError::Chain)?;
+        let receipt_json =
+            serde_json::to_string(receipt).expect("DeliveryReceipt is serializable");
+        let updated_at = Self::now_rfc3339();
+        self.conn.execute(
+            "UPDATE delivery_chains SET delivery_json = ?1, updated_at = ?2 WHERE run_id = ?3",
+            rusqlite::params![receipt_json, updated_at, run_id],
+        )?;
+        record.delivery = Some(receipt.clone());
+        record.updated_at = updated_at;
+        Ok(record)
+    }
+
+    /// §5.12 rung 4: appends a `DeliveredTreeCheckReceipt`, rejecting via
+    /// `DeliveryChain::append_tree_check`'s own checks (delivery missing,
+    /// delivery didn't succeed, or a tree check already recorded).
+    pub fn append_delivery_tree_check(
+        &mut self,
+        run_id: &str,
+        receipt: &DeliveredTreeCheckReceipt,
+    ) -> Result<DeliveryChainRecord, AppendDeliveryReceiptError> {
+        let mut record = self
+            .load_delivery_chain(run_id)?
+            .ok_or(AppendDeliveryReceiptError::NotFound)?;
+        record
+            .rebuild()
+            .append_tree_check(receipt.clone())
+            .map_err(AppendDeliveryReceiptError::Chain)?;
+        let receipt_json =
+            serde_json::to_string(receipt).expect("DeliveredTreeCheckReceipt is serializable");
+        let updated_at = Self::now_rfc3339();
+        self.conn.execute(
+            "UPDATE delivery_chains SET tree_check_json = ?1, updated_at = ?2 WHERE run_id = ?3",
+            rusqlite::params![receipt_json, updated_at, run_id],
+        )?;
+        record.tree_check = Some(receipt.clone());
+        record.updated_at = updated_at;
+        Ok(record)
+    }
+
+    /// §5.12 rung 5 (Greenfield-only): appends a
+    /// `ProjectTargetTransitionReceipt`, rejecting via
+    /// `DeliveryChain::append_project_target_transition`'s own checks
+    /// (subject isn't Greenfield, tree check missing, or tree check didn't
+    /// match).
+    pub fn append_delivery_project_target_transition(
+        &mut self,
+        run_id: &str,
+        receipt: &ProjectTargetTransitionReceipt,
+    ) -> Result<DeliveryChainRecord, AppendDeliveryReceiptError> {
+        let mut record = self
+            .load_delivery_chain(run_id)?
+            .ok_or(AppendDeliveryReceiptError::NotFound)?;
+        record
+            .rebuild()
+            .append_project_target_transition(receipt.clone())
+            .map_err(AppendDeliveryReceiptError::Chain)?;
+        let receipt_json = serde_json::to_string(receipt)
+            .expect("ProjectTargetTransitionReceipt is serializable");
+        let updated_at = Self::now_rfc3339();
+        self.conn.execute(
+            "UPDATE delivery_chains SET project_target_transition_json = ?1, updated_at = ?2 \
+             WHERE run_id = ?3",
+            rusqlite::params![receipt_json, updated_at, run_id],
+        )?;
+        record.project_target_transition = Some(receipt.clone());
+        record.updated_at = updated_at;
+        Ok(record)
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -2927,6 +3288,261 @@ mod tests {
         store.record_readiness(&receipt).unwrap();
         let err = store.record_readiness(&receipt).unwrap_err();
         assert!(matches!(err, RecordReadinessError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_existing_repo_delivery_subject() -> DeliverySubject {
+        use autome_domain::delivery::ExistingRepoDelivery;
+
+        DeliverySubject::ExistingRepo(ExistingRepoDelivery {
+            repository_identity_hash: "repo-hash".into(),
+            target_head: "head".into(),
+            target_worktree_fingerprint: "wt-1".into(),
+            new_ref: "refs/heads/delivered".into(),
+        })
+    }
+
+    fn fixture_greenfield_delivery_subject() -> DeliverySubject {
+        use autome_domain::delivery::GreenfieldDelivery;
+
+        DeliverySubject::Greenfield(GreenfieldDelivery {
+            parent_directory_identity_hash: "parent-hash".into(),
+            destination: "dest".into(),
+            destination_absent_proof: "absent-proof".into(),
+            template_hash: "template-hash".into(),
+        })
+    }
+
+    fn fixture_delivery_envelope() -> autome_domain::delivery::DeliveryEnvelope {
+        autome_domain::delivery::DeliveryEnvelope {
+            run_id: "run-1".into(),
+            contract_hash: "contract-1".into(),
+            candidate_certificate_hash: "candidate-1".into(),
+            policy_hash: "policy-1".into(),
+            nonce: "nonce-1".into(),
+            issued_at: "2026-09-15T00:00:00Z".into(),
+            receipt_digest: "digest-1".into(),
+        }
+    }
+
+    fn fixture_rehearsal(subject: DeliverySubject) -> DeliveryRehearsalReceipt {
+        DeliveryRehearsalReceipt {
+            envelope: fixture_delivery_envelope(),
+            subject,
+            target_head_or_parent: "head".into(),
+            delivery_tree_hash: "tree-1".into(),
+            check_receipt_ids: vec!["check-1".into()],
+        }
+    }
+
+    fn fixture_approval() -> DeliveryApprovalReceipt {
+        DeliveryApprovalReceipt {
+            envelope: fixture_delivery_envelope(),
+            rehearsal_receipt_digest: "digest-1".into(),
+            display_summary: "summary".into(),
+            destination_or_new_ref: "refs/heads/delivered".into(),
+            artifact_destinations: vec![],
+            valid_until: "2026-09-16T00:00:00Z".into(),
+            operator_decision_ref: "decision:1".into(),
+        }
+    }
+
+    fn fixture_delivery_receipt(
+        outcome: autome_domain::delivery::DeliveryOutcome,
+    ) -> DeliveryReceipt {
+        DeliveryReceipt {
+            envelope: fixture_delivery_envelope(),
+            approval_receipt_digest: "digest-1".into(),
+            before_identity_hash: "before-1".into(),
+            after_identity_hash: "after-1".into(),
+            outcome,
+        }
+    }
+
+    fn fixture_tree_check(matches_delivery: bool) -> DeliveredTreeCheckReceipt {
+        DeliveredTreeCheckReceipt {
+            envelope: fixture_delivery_envelope(),
+            delivery_receipt_digest: "digest-1".into(),
+            observed_ref_or_tree: "refs/heads/delivered".into(),
+            artifact_hashes: vec![],
+            worktree_fingerprint: "wt-1".into(),
+            matches_delivery,
+        }
+    }
+
+    fn fixture_project_target_transition() -> ProjectTargetTransitionReceipt {
+        ProjectTargetTransitionReceipt {
+            envelope: fixture_delivery_envelope(),
+            greenfield_destination: "dest".into(),
+            delivered_tree_hash: "tree-1".into(),
+            new_repository_identity_hash: "new-repo-hash".into(),
+            pre_transition_project_revision: 1,
+            post_transition_project_revision: 2,
+        }
+    }
+
+    /// A well-formed `start_delivery_chain` call lands one `delivery_chains`
+    /// row with every rung still `None`, readable back via
+    /// `load_delivery_chain`.
+    #[test]
+    fn start_delivery_chain_records_a_new_chain_and_reads_it_back() {
+        let root = temp_data_root("start-delivery-chain");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let subject = fixture_existing_repo_delivery_subject();
+
+        assert!(store.load_delivery_chain("run-1").unwrap().is_none());
+
+        let record = store.start_delivery_chain("run-1", &subject).unwrap();
+        assert_eq!(record.subject, subject);
+        assert!(record.rehearsal.is_none());
+
+        let loaded = store.load_delivery_chain("run-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second `start_delivery_chain` call for the same `run_id` must fail
+    /// rather than silently replacing the chain's subject.
+    #[test]
+    fn start_delivery_chain_refuses_to_reuse_an_existing_run_id() {
+        let root = temp_data_root("start-delivery-chain-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let subject = fixture_existing_repo_delivery_subject();
+
+        store.start_delivery_chain("run-1", &subject).unwrap();
+        let err = store
+            .start_delivery_chain("run-1", &subject)
+            .unwrap_err();
+        assert!(matches!(err, StartDeliveryChainError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Appending any rung to a `run_id` that was never started is
+    /// `NotFound`, not a domain chain-order rejection -- there is no chain
+    /// to check an order against yet.
+    #[test]
+    fn append_delivery_rehearsal_is_not_found_for_an_unstarted_chain() {
+        let root = temp_data_root("append-rehearsal-not-found");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let receipt = fixture_rehearsal(fixture_existing_repo_delivery_subject());
+
+        let err = store
+            .append_delivery_rehearsal("no-such-run", &receipt)
+            .unwrap_err();
+        assert!(matches!(err, AppendDeliveryReceiptError::NotFound), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.12: approval before rehearsal is rejected by the domain chain's
+    /// own order check, surfaced here as `AppendDeliveryReceiptError::Chain`
+    /// rather than reimplemented at the store layer.
+    #[test]
+    fn append_delivery_approval_before_rehearsal_is_rejected_by_the_domain_chain() {
+        let root = temp_data_root("append-approval-before-rehearsal");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let subject = fixture_existing_repo_delivery_subject();
+        store.start_delivery_chain("run-1", &subject).unwrap();
+
+        let err = store
+            .append_delivery_approval("run-1", &fixture_approval())
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppendDeliveryReceiptError::Chain(
+                    DeliveryChainError::RehearsalRequiredBeforeApproval
+                )
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.12 end to end for an `ExistingRepo` subject: rehearsal -> approval
+    /// -> delivery (Succeeded) -> tree check (matches) reaches
+    /// `is_ready_for_completion() == Ok(())` without any project target
+    /// transition, matching `delivery.rs`'s own
+    /// `successful_chain_for_existing_repo_is_ready_for_completion_without_transition`.
+    #[test]
+    fn full_existing_repo_chain_is_ready_for_completion_without_transition() {
+        let root = temp_data_root("full-chain-existing-repo");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let subject = fixture_existing_repo_delivery_subject();
+        store.start_delivery_chain("run-1", &subject).unwrap();
+
+        store
+            .append_delivery_rehearsal("run-1", &fixture_rehearsal(subject.clone()))
+            .unwrap();
+        store
+            .append_delivery_approval("run-1", &fixture_approval())
+            .unwrap();
+        store
+            .append_delivery_delivery(
+                "run-1",
+                &fixture_delivery_receipt(autome_domain::delivery::DeliveryOutcome::Succeeded),
+            )
+            .unwrap();
+        let record = store
+            .append_delivery_tree_check("run-1", &fixture_tree_check(true))
+            .unwrap();
+
+        assert!(record.rebuild().is_ready_for_completion().is_ok());
+
+        let loaded = store.load_delivery_chain("run-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.12: a `Greenfield` subject's chain is only ready for completion
+    /// once a `ProjectTargetTransitionReceipt` has also been appended --
+    /// matching `delivery.rs`'s own
+    /// `greenfield_completion_requires_project_target_transition`.
+    #[test]
+    fn greenfield_chain_requires_project_target_transition_before_completion() {
+        let root = temp_data_root("greenfield-chain-transition");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let subject = fixture_greenfield_delivery_subject();
+        store.start_delivery_chain("run-1", &subject).unwrap();
+
+        store
+            .append_delivery_rehearsal("run-1", &fixture_rehearsal(subject.clone()))
+            .unwrap();
+        store
+            .append_delivery_approval("run-1", &fixture_approval())
+            .unwrap();
+        store
+            .append_delivery_delivery(
+                "run-1",
+                &fixture_delivery_receipt(autome_domain::delivery::DeliveryOutcome::Succeeded),
+            )
+            .unwrap();
+        let record = store
+            .append_delivery_tree_check("run-1", &fixture_tree_check(true))
+            .unwrap();
+        assert_eq!(
+            record.rebuild().is_ready_for_completion().unwrap_err(),
+            DeliveryChainError::GreenfieldCompletionRequiresProjectTargetTransition
+        );
+
+        let record = store
+            .append_delivery_project_target_transition(
+                "run-1",
+                &fixture_project_target_transition(),
+            )
+            .unwrap();
+        assert!(record.rebuild().is_ready_for_completion().is_ok());
 
         std::fs::remove_dir_all(&root).ok();
     }
