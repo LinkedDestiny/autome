@@ -255,7 +255,7 @@ pub struct CarriedPlanningReviewBundle {
     pub bundle_digest: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CarriedPlanningReviewError {
     pub step: LoopStepId,
 }
