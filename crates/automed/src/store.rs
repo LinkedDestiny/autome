@@ -9,6 +9,10 @@
 //! exercised directly by `state_survives_reconnect` below: there is no
 //! in-memory cache that could diverge from what was actually committed.
 
+use autome_domain::attempt::{
+    self, Attempt, AttemptPermissionProfile, AttemptShapeError, PermissionProfileViolation,
+    PlanningWriteViolation,
+};
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
 use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
@@ -236,6 +240,40 @@ impl From<WorkspaceError> for CreateDisposableCloneError {
     }
 }
 
+/// One `attempts` row (plan §5.6), as persisted by `record_attempt`: the
+/// `Attempt` this step was, the `AttemptPermissionProfile` it was bound to
+/// before it ran, and which `run_id` it belongs to. `run_id` is kept as an
+/// explicit column rather than a field on `Attempt` itself, mirroring how
+/// `DisposableCloneRecord` above adds `task_id`/`run_id` at the store layer
+/// instead of the pure `autome_domain::attempt::Attempt` type carrying
+/// aggregate-linking keys it has no business knowing about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptRecord {
+    pub run_id: String,
+    pub attempt: Attempt,
+    pub permission_profile: AttemptPermissionProfile,
+    pub created_at: String,
+}
+
+/// `record_attempt`'s failure modes. The three domain variants
+/// (`Shape`/`PermissionViolations`/`PlanningWrite`) all come from
+/// `autome_domain::attempt` validation that already exists and is already
+/// tested there -- this type exists only so `record_attempt` can refuse to
+/// write anything until all three pass, not to reimplement the checks.
+#[derive(Debug)]
+pub enum RecordAttemptError {
+    Sql(rusqlite::Error),
+    Shape(AttemptShapeError),
+    PermissionViolations(Vec<PermissionProfileViolation>),
+    PlanningWrite(PlanningWriteViolation),
+}
+
+impl From<rusqlite::Error> for RecordAttemptError {
+    fn from(value: rusqlite::Error) -> Self {
+        RecordAttemptError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -366,8 +404,14 @@ pub struct AppendedRunEvent {
 /// case, and later steps only add what is genuinely missing.
 type MigrationStep = fn(&Connection) -> rusqlite::Result<()>;
 
-const MIGRATIONS: &[MigrationStep] =
-    &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5];
+const MIGRATIONS: &[MigrationStep] = &[
+    migrate_v1,
+    migrate_v2,
+    migrate_v3,
+    migrate_v4,
+    migrate_v5,
+    migrate_v6,
+];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -509,6 +553,31 @@ fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL,
             PRIMARY KEY (task_id, run_id)
         );
+        ",
+    )
+}
+
+/// `attempts`: one row per `record_attempt` call (plan §5.6). `attempt_id`
+/// is the primary key -- `Attempt::id` is caller-chosen and globally unique
+/// by construction (see `record_attempt`'s doc comment), so a duplicate row
+/// could only mean the caller tried to reuse an id, which must fail rather
+/// than silently overwrite what a step was actually permitted to do.
+/// `loop_step_id`/`purpose` are denormalized out of `attempt_json` for the
+/// same reason `migrate_v4`'s `project_targets` denormalizes `kind`:
+/// `attempt_json`/`profile_json` remain the authoritative values.
+fn migrate_v6(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS attempts (
+            attempt_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            loop_step_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            attempt_json TEXT NOT NULL,
+            profile_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attempts_run_id ON attempts(run_id);
         ",
     )
 }
@@ -1826,6 +1895,90 @@ impl EventStore {
             )
             .optional()
     }
+
+    /// §5.6's write path: records an `Attempt` bound to the
+    /// `AttemptPermissionProfile` it must run under, before the step is
+    /// ever dispatched to a Harness. Like `create_disposable_clone_for_run`,
+    /// this is a fact recorded once, not a journaled event: nothing here
+    /// transitions any aggregate's state, it fixes what a step was
+    /// permitted to do so any later drift (in tool surface, filesystem
+    /// scope, etc.) can be checked against a durable record instead of a
+    /// Prompt's suggestion. Every §5.6 invariant already proven in
+    /// `autome_domain::attempt` is re-checked here rather than trusted from
+    /// the caller -- `attempt.validate_shape()`, `profile.validate()` and
+    /// `validate_planning_attempt_is_read_only` must all pass before
+    /// anything is written; the first failure short-circuits with no write.
+    pub fn record_attempt(
+        &mut self,
+        run_id: &str,
+        attempt: &Attempt,
+        profile: &AttemptPermissionProfile,
+    ) -> Result<AttemptRecord, RecordAttemptError> {
+        attempt.validate_shape().map_err(RecordAttemptError::Shape)?;
+        let violations = profile.validate();
+        if !violations.is_empty() {
+            return Err(RecordAttemptError::PermissionViolations(violations));
+        }
+        attempt::validate_planning_attempt_is_read_only(attempt, profile)
+            .map_err(RecordAttemptError::PlanningWrite)?;
+
+        let attempt_json = serde_json::to_string(attempt).expect("Attempt is serializable");
+        let profile_json =
+            serde_json::to_string(profile).expect("AttemptPermissionProfile is serializable");
+        let purpose = format!("{:?}", attempt.purpose);
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO attempts (attempt_id, run_id, loop_step_id, purpose, attempt_json, profile_json, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                attempt.id.0,
+                run_id,
+                attempt.loop_step_id.0,
+                purpose,
+                attempt_json,
+                profile_json,
+                created_at,
+            ],
+        )?;
+
+        Ok(AttemptRecord {
+            run_id: run_id.to_string(),
+            attempt: attempt.clone(),
+            permission_profile: profile.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `record_attempt` — looks up the recorded
+    /// `attempts` row for `attempt_id`, if any.
+    pub fn load_attempt(&self, attempt_id: &str) -> rusqlite::Result<Option<AttemptRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT run_id, attempt_json, profile_json, created_at FROM attempts WHERE attempt_id = ?1",
+                rusqlite::params![attempt_id],
+                |row| {
+                    let run_id: String = row.get(0)?;
+                    let attempt_json: String = row.get(1)?;
+                    let profile_json: String = row.get(2)?;
+                    let created_at: String = row.get(3)?;
+                    Ok((run_id, attempt_json, profile_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(run_id, attempt_json, profile_json, created_at)| {
+            let attempt: Attempt =
+                serde_json::from_str(&attempt_json).expect("attempts.attempt_json round-trips");
+            let permission_profile: AttemptPermissionProfile = serde_json::from_str(&profile_json)
+                .expect("attempts.profile_json round-trips");
+            AttemptRecord {
+                run_id,
+                attempt,
+                permission_profile,
+                created_at,
+            }
+        }))
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -2288,6 +2441,158 @@ mod tests {
             matches!(err, CreateDisposableCloneError::Workspace(_)),
             "{err:?}"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A minimal well-formed `Attempt`/`AttemptPermissionProfile` pair,
+    /// mirroring `attempt.rs`'s own `base_attempt`/`base_profile` test
+    /// helpers exactly (same field values), so a test here that expects
+    /// `record_attempt` to accept it is exercising the same "valid input"
+    /// shape already proven valid one layer down.
+    fn fixture_attempt_and_profile(
+        attempt_id: &str,
+    ) -> (Attempt, AttemptPermissionProfile) {
+        let attempt = Attempt {
+            id: attempt::AttemptId(attempt_id.to_string()),
+            loop_step_id: attempt::LoopStepId("step-1".into()),
+            node_id: None,
+            purpose: attempt::AttemptPurpose::Execution,
+            spec_binding: attempt::SpecBinding::Execution(attempt::SpecHash("exec-hash".into())),
+            agent_execution_profile_hash: "hash-agent".into(),
+            permission_profile_id: attempt::PermissionProfileId("perm-1".into()),
+            harness_id: "claude-code".into(),
+            model_selection_identity_ref: attempt::Ref("model-1".into()),
+            qualification_receipt_ref: attempt::Ref("qual-1".into()),
+            input_commit: "deadbeef".into(),
+            input_tree_hash: "treehash".into(),
+            skill_projection_fingerprint: "skillfp".into(),
+            provider_session_id: "session-1".into(),
+        };
+        let profile = AttemptPermissionProfile {
+            id: attempt::PermissionProfileId("perm-1".into()),
+            loop_step_id: attempt::LoopStepId("step-1".into()),
+            node_id: None,
+            adapter_id: "claude-code".into(),
+            installation_id: "install-1".into(),
+            subject_scope_hash: "scope".into(),
+            skill_set_snapshot_hash: "skillset".into(),
+            tool_surface: attempt::ToolSurface {
+                provider_available_tools: vec!["Read".into(), "Bash".into()],
+                provider_allowed_tools: vec!["Read".into()],
+                provider_denied_tools: vec!["Bash".into()],
+                autome_control_tools: vec![],
+                dynamic_tool_or_mcp_allowlist: vec![],
+            },
+            filesystem_policy: attempt::FilesystemPolicy {
+                read_roots: vec!["/project".into()],
+                write_roots: vec!["/workdir".into()],
+                deny_roots: vec![],
+                nofollow: true,
+            },
+            command_policy: attempt::CommandPolicy::default(),
+            network_policy: attempt::NetworkPolicy {
+                mode: attempt::NetworkMode::Denied,
+                allowed_brokers: vec![],
+                allowed_destinations: vec![],
+            },
+            sandbox_policy: attempt::SandboxPolicy {
+                mechanism: "seatbelt".into(),
+                required_capabilities: vec![],
+                fail_closed: true,
+            },
+            secret_policy_hash: "secret".into(),
+            safety_policy_hash: "safety".into(),
+            profile_hash: "profile".into(),
+        };
+        (attempt, profile)
+    }
+
+    /// A well-formed `record_attempt` call lands one `attempts` row,
+    /// readable back via `load_attempt`.
+    #[test]
+    fn record_attempt_records_a_well_formed_attempt_and_reads_it_back() {
+        let root = temp_data_root("record-attempt");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let (attempt, profile) = fixture_attempt_and_profile("attempt-1");
+
+        assert!(store.load_attempt("attempt-1").unwrap().is_none());
+
+        let record = store.record_attempt("run-1", &attempt, &profile).unwrap();
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.attempt, attempt);
+        assert_eq!(record.permission_profile, profile);
+
+        let loaded = store.load_attempt("attempt-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `attempt_id` must fail rather than
+    /// silently overwriting what the step was actually permitted to do.
+    #[test]
+    fn record_attempt_refuses_to_reuse_an_existing_attempt_id() {
+        let root = temp_data_root("record-attempt-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let (attempt, profile) = fixture_attempt_and_profile("attempt-1");
+
+        store.record_attempt("run-1", &attempt, &profile).unwrap();
+        let err = store
+            .record_attempt("run-1", &attempt, &profile)
+            .unwrap_err();
+        assert!(matches!(err, RecordAttemptError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.6: a `Planning`-purpose Attempt paired with a profile that grants
+    /// filesystem writes must be refused before anything is written -- the
+    /// same invariant `attempt.rs::validate_planning_attempt_is_read_only`
+    /// already proves, re-checked here at the store boundary.
+    #[test]
+    fn record_attempt_refuses_a_planning_attempt_with_write_roots() {
+        let root = temp_data_root("record-attempt-planning-write");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let (mut attempt, profile) = fixture_attempt_and_profile("attempt-1");
+        attempt.purpose = attempt::AttemptPurpose::Planning;
+        attempt.spec_binding = attempt::SpecBinding::Planning(attempt::SpecHash("plan-hash".into()));
+
+        let err = store
+            .record_attempt("run-1", &attempt, &profile)
+            .unwrap_err();
+        assert!(matches!(err, RecordAttemptError::PlanningWrite(_)), "{err:?}");
+        assert!(store.load_attempt("attempt-1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.6: a profile whose `provider_allowed_tools` exceeds
+    /// `provider_available_tools`, or overlaps `provider_denied_tools`,
+    /// must be refused -- the same invariant
+    /// `AttemptPermissionProfile::validate` already proves.
+    #[test]
+    fn record_attempt_refuses_a_self_contradictory_permission_profile() {
+        let root = temp_data_root("record-attempt-bad-profile");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let (attempt, mut profile) = fixture_attempt_and_profile("attempt-1");
+        profile
+            .tool_surface
+            .provider_allowed_tools
+            .push("Write".into());
+
+        let err = store
+            .record_attempt("run-1", &attempt, &profile)
+            .unwrap_err();
+        assert!(
+            matches!(err, RecordAttemptError::PermissionViolations(_)),
+            "{err:?}"
+        );
+        assert!(store.load_attempt("attempt-1").unwrap().is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }

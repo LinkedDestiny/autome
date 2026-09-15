@@ -45,15 +45,22 @@
 //! `Event`. Parses `params.task_id`, `params.run_id`, `params.source_repo`
 //! (an OS path to a real git repo); its read counterpart `workspace.get`
 //! parses `params.task_id`/`params.run_id`.
+//! `attempt.record` (§5.6) follows the same shape again: writes an
+//! `attempts` row but appends no `Event`, since a recorded Attempt is a
+//! fact fixed before a step runs, not an aggregate with a reducer. Parses
+//! `params.run_id`, `params.attempt` (a full `autome_domain::attempt::Attempt`)
+//! and `params.permission_profile` (a full `AttemptPermissionProfile`); its
+//! read counterpart `attempt.get` parses `params.attempt_id`.
 
 use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendError, AppendedContractEvent, AppendedExecutionQueueEvent, AppendedGraphEvent,
-    AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, ContractAppendError,
+    AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord, ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DisposableCloneRecord,
     EXECUTION_QUEUE_AGGREGATE_ID, EventStore, ExecutionQueueAppendError, GraphAppendError,
-    ProjectAppendError, ProjectSummary, TaskAppendError, TaskSummary,
+    ProjectAppendError, ProjectSummary, RecordAttemptError, TaskAppendError, TaskSummary,
 };
+use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
@@ -100,6 +107,12 @@ pub enum DispatchError {
     /// something under `runs/`), matched exhaustively below rather than
     /// flattened -- same reasoning as `CreateFromTarget` above.
     CreateDisposableClone(CreateDisposableCloneError),
+    /// §5.6 write path: `record_attempt`'s failure modes (a shape mismatch
+    /// between `purpose` and `spec_binding`, a self-contradictory
+    /// `AttemptPermissionProfile`, or a Planning attempt paired with a
+    /// write-granting profile), matched exhaustively below -- same
+    /// reasoning as `CreateDisposableClone` above.
+    RecordAttempt(RecordAttemptError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -123,6 +136,12 @@ impl From<TargetProbeError> for DispatchError {
 impl From<CreateDisposableCloneError> for DispatchError {
     fn from(value: CreateDisposableCloneError) -> Self {
         DispatchError::CreateDisposableClone(value)
+    }
+}
+
+impl From<RecordAttemptError> for DispatchError {
+    fn from(value: RecordAttemptError) -> Self {
+        DispatchError::RecordAttempt(value)
     }
 }
 
@@ -440,6 +459,19 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.6: same shape as `workspace.create_disposable_clone` above --
+    // writes an `attempts` row (so it isn't a read) but appends no domain
+    // `Event` (an Attempt is a fact fixed once before a step runs, not an
+    // aggregate with a reducer), so it can't fit `dispatch`'s
+    // `Result<Event, _>` shape either.
+    if command.method == "attempt.record" {
+        let result = handle_record_attempt(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -562,6 +594,68 @@ fn disposable_clone_record_json(record: &DisposableCloneRecord) -> Value {
     })
 }
 
+/// §5.6: the sole caller of `EventStore::record_attempt`. Takes
+/// `{ run_id, attempt, permission_profile }` -- `attempt`/`permission_profile`
+/// are full JSON objects matching `autome_domain::attempt::{Attempt,
+/// AttemptPermissionProfile}`. Same "write returns Value not Event" shape
+/// as `handle_register_target`/`handle_create_disposable_clone`: a recorded
+/// Attempt is a fact fixed before the step runs, not a state-machine
+/// transition. Refuses to run while the store is in its diagnostic state,
+/// same as every other write.
+fn handle_record_attempt(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let attempt = parse_attempt_param(command).map_err(dispatch_error_to_reply_error)?;
+    let permission_profile =
+        parse_attempt_permission_profile_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .record_attempt(&run_id, &attempt, &permission_profile)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(attempt_record_json(&record))
+}
+
+fn attempt_record_json(record: &AttemptRecord) -> Value {
+    serde_json::json!({
+        "run_id": record.run_id,
+        "attempt": record.attempt,
+        "permission_profile": record.permission_profile,
+        "created_at": record.created_at,
+    })
+}
+
+fn parse_attempt_param(command: &Command) -> Result<Attempt, DispatchError> {
+    let value = command
+        .params
+        .get("attempt")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.attempt is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.attempt is not a valid Attempt: {e}"))
+    })
+}
+
+fn parse_attempt_permission_profile_param(
+    command: &Command,
+) -> Result<AttemptPermissionProfile, DispatchError> {
+    let value = command
+        .params
+        .get("permission_profile")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.permission_profile is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.permission_profile is not a valid AttemptPermissionProfile: {e}"
+        ))
+    })
+}
+
 /// Maps every `DispatchError` variant to a `ReplyErrorCode`. `Sql(_)`
 /// variants (genuine I/O/internal failures) become `Internal`;
 /// `Transition(_)` variants (a reducer rejecting the event given the
@@ -650,6 +744,18 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::CreateDisposableClone(CreateDisposableCloneError::Workspace(e)) => {
             (ReplyErrorCode::InvalidParams, e.to_string())
         }
+        DispatchError::RecordAttempt(RecordAttemptError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::RecordAttempt(RecordAttemptError::Shape(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::RecordAttempt(RecordAttemptError::PermissionViolations(v)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{v:?}"))
+        }
+        DispatchError::RecordAttempt(RecordAttemptError::PlanningWrite(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -670,6 +776,7 @@ fn try_dispatch_read(
         "task.get" => Some(read_task_get(store, command)),
         "queue.get" => Some(read_queue_get(store)),
         "workspace.get" => Some(read_workspace_get(store, command)),
+        "attempt.get" => Some(read_attempt_get(store, command)),
         _ => None,
     }
 }
@@ -822,6 +929,23 @@ fn read_workspace_get(
         None => Err((
             ReplyErrorCode::NotFound,
             format!("no disposable clone recorded for task {task_id} run {run_id}"),
+        )),
+    }
+}
+
+/// Read counterpart to `handle_record_attempt`. Takes `{ attempt_id }`;
+/// `NotFound` if no Attempt has been recorded with that id yet.
+fn read_attempt_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let attempt_id =
+        parse_string_param(command, "attempt_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_attempt(&attempt_id).map_err(internal_error)? {
+        Some(record) => Ok(attempt_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no attempt recorded with id {attempt_id}"),
         )),
     }
 }
@@ -2750,6 +2874,178 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
             other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A minimal well-formed `Attempt`/`AttemptPermissionProfile` JSON pair
+    /// -- exercises the real IPC-boundary `serde_json` round trip (a raw
+    /// JSON literal, not a typed Rust value handed straight in), same
+    /// field-for-field values as `store.rs`'s own `fixture_attempt_and_profile`
+    /// test helper.
+    fn well_formed_attempt_and_profile_json(attempt_id: &str, write_roots: Vec<&str>) -> Value {
+        json!({
+            "run_id": "run-1",
+            "attempt": {
+                "id": attempt_id,
+                "loop_step_id": "step-1",
+                "node_id": null,
+                "purpose": "Execution",
+                "spec_binding": { "Execution": "exec-hash" },
+                "agent_execution_profile_hash": "hash-agent",
+                "permission_profile_id": "perm-1",
+                "harness_id": "claude-code",
+                "model_selection_identity_ref": "model-1",
+                "qualification_receipt_ref": "qual-1",
+                "input_commit": "deadbeef",
+                "input_tree_hash": "treehash",
+                "skill_projection_fingerprint": "skillfp",
+                "provider_session_id": "session-1",
+            },
+            "permission_profile": {
+                "id": "perm-1",
+                "loop_step_id": "step-1",
+                "node_id": null,
+                "adapter_id": "claude-code",
+                "installation_id": "install-1",
+                "subject_scope_hash": "scope",
+                "skill_set_snapshot_hash": "skillset",
+                "tool_surface": {
+                    "provider_available_tools": ["Read", "Bash"],
+                    "provider_allowed_tools": ["Read"],
+                    "provider_denied_tools": ["Bash"],
+                    "autome_control_tools": [],
+                    "dynamic_tool_or_mcp_allowlist": [],
+                },
+                "filesystem_policy": {
+                    "read_roots": ["/project"],
+                    "write_roots": write_roots,
+                    "deny_roots": [],
+                    "nofollow": true,
+                },
+                "command_policy": {
+                    "qualified_runner_ids": [],
+                    "argv_policy_hash": "",
+                    "shell_allowed": false,
+                },
+                "network_policy": {
+                    "mode": "Denied",
+                    "allowed_brokers": [],
+                    "allowed_destinations": [],
+                },
+                "sandbox_policy": {
+                    "mechanism": "seatbelt",
+                    "required_capabilities": [],
+                    "fail_closed": true,
+                },
+                "secret_policy_hash": "secret",
+                "safety_policy_hash": "safety",
+                "profile_hash": "profile",
+            },
+        })
+    }
+
+    /// §5.6: `attempt.record` follows the same no-`Event`-produced shape as
+    /// `workspace.create_disposable_clone` above, and its payload round-trips
+    /// through the `attempt.get` read command.
+    #[test]
+    fn handle_command_attempt_record_produces_no_event_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "attempt.record",
+            well_formed_attempt_and_profile_json("attempt-1", vec!["/workdir"]),
+        );
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("attempt.record failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["run_id"], "run-1");
+        assert_eq!(payload["attempt"]["id"], "attempt-1");
+
+        let get_cmd = command("attempt.get", json!({ "attempt_id": "attempt-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(get_outcome.event.is_none());
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("attempt.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `attempt.get` for an `attempt_id` with no recorded Attempt is
+    /// `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_attempt_get_is_not_found_when_no_attempt_was_recorded() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("attempt.get", json!({ "attempt_id": "no-such-attempt" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.6: a Planning-purpose Attempt paired with a write-granting profile
+    /// must be rejected as `TransitionRejected`, not written.
+    #[test]
+    fn handle_command_attempt_record_rejects_a_planning_attempt_with_write_roots() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut params = well_formed_attempt_and_profile_json("attempt-1", vec!["/workdir"]);
+        params["attempt"]["purpose"] = json!("Planning");
+        params["attempt"]["spec_binding"] = json!({ "Planning": "plan-hash" });
+        let record_cmd = command("attempt.record", params);
+        let outcome = handle_command(&mut store, &record_cmd);
+        assert!(outcome.event.is_none());
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let get_cmd = command("attempt.get", json!({ "attempt_id": "attempt-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        assert!(matches!(
+            get_outcome.reply.outcome,
+            ReplyOutcome::Error {
+                code: ReplyErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.6: a self-contradictory `AttemptPermissionProfile` (an allowed
+    /// tool the provider never exposed) must be rejected as
+    /// `TransitionRejected`, not written.
+    #[test]
+    fn handle_command_attempt_record_rejects_a_self_contradictory_permission_profile() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut params = well_formed_attempt_and_profile_json("attempt-1", vec![]);
+        params["permission_profile"]["tool_surface"]["provider_allowed_tools"] =
+            json!(["Read", "Write"]);
+        let record_cmd = command("attempt.record", params);
+        let outcome = handle_command(&mut store, &record_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
