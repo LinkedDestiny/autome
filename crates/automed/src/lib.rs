@@ -16,6 +16,9 @@
 //! - [`git`] — the operations table from design §6, and nothing else.
 //! - [`init`] — the `.autome/` scaffold, including the session wrapper script.
 //! - [`env_probe`] — the four local components.
+//! - [`launcher`] — prompt construction, the CLI adapter table, and starting
+//!   a session in a visible terminal.
+//! - [`scheduler`] — the one place a transition is applied and acted on.
 //! - [`skills`] — the read-only skill inventory scan.
 
 pub mod config_io;
@@ -24,5 +27,7 @@ pub mod env_probe;
 pub mod git;
 pub mod init;
 pub mod ipc;
+pub mod launcher;
+pub mod scheduler;
 pub mod skills;
 pub mod store;

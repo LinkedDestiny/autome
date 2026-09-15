@@ -430,13 +430,16 @@ if [ ! -f "$prompt_file" ]; then
 fi
 
 # CLI 的 stdout/stderr 同时进日志和终端，用户能实时看到，Autome 事后能读到。
-"$binary" "$@" < "$prompt_file" 2>&1 | tee -a "$log"
-code=$?
-
-# 管道的退出码取第一段（CLI），不是 tee 的。
-if [ -n "${{PIPESTATUS:-}}" ]; then
-  code=${{PIPESTATUS}}
-fi
+#
+# 退出码必须取 CLI 的，不是 tee 的。POSIX sh 没有 bash 的管道状态数组，
+# 所以把 CLI 的退出码写进一个临时文件再读回来——这是可移植的写法。
+# 这里错了的后果是：崩溃的会话会被当成正常结束，内核会去解析一份不存在或半截的
+# 设计文档，然后把协议失败归错到文档头上。
+code_file="$out_dir/$session_id.code"
+rm -f "$code_file"
+{{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} | tee -a "$log"
+code=$(cat "$code_file" 2>/dev/null || echo 70)
+rm -f "$code_file"
 
 printf '=== autome session %s finished, exit %s ===\n' "$session_id" "$code" >> "$log"
 write_marker "$code"
@@ -790,6 +793,22 @@ mod tests {
     #[test]
     fn the_wrapper_script_refuses_a_missing_prompt_file_with_its_own_code() {
         assert!(run_session_sh().contains("write_marker 66"));
+    }
+
+    #[test]
+    fn the_wrapper_script_uses_no_bash_only_constructs() {
+        // The shebang is /bin/sh, so anything bash-only is a latent bug on a
+        // machine where /bin/sh is dash. PIPESTATUS in particular silently
+        // yields tee's exit code instead of the CLI's, which would make every
+        // crashed session look successful.
+        let script = run_session_sh();
+        for bashism in ["PIPESTATUS", "[[", "function ", "local ", "$'"] {
+            assert!(
+                !script.contains(bashism),
+                "wrapper uses the bash-only construct {bashism:?}"
+            );
+        }
+        assert!(script.starts_with("#!/bin/sh"));
     }
 
     #[test]

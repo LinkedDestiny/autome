@@ -17,11 +17,13 @@ use autome_domain::config::{self, ConfigViolation, ProjectConfig, RoleOverrides}
 use autome_domain::environment::{self, Component};
 use autome_domain::project::{self, AddDisposition, Onboarding, Project};
 use autome_domain::role::{Role, Runtime};
+use autome_domain::status_block::{self, StatusBlock};
+use autome_domain::task::{Disposition, Node, TaskState, Trigger};
 use serde_json::{Value, json};
 
 use crate::ipc::{Command, Event, PROTOCOL_VERSION, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{Store, StoreError, new_id, now_iso};
-use crate::{config_io, env_probe, git, init, skills};
+use crate::{config_io, env_probe, git, init, scheduler, skills};
 
 /// What a dispatched command produced.
 pub struct Outcome {
@@ -159,6 +161,17 @@ impl From<init::InitError> for DispatchError {
     }
 }
 
+impl From<scheduler::SchedulerError> for DispatchError {
+    fn from(e: scheduler::SchedulerError) -> Self {
+        // A rejected trigger is the common case here — "任务不在运行中",
+        // "驳回必须附意见" — and the UI renders it as a refusal, not a bug.
+        DispatchError {
+            code: ReplyErrorCode::TransitionRejected,
+            message: e.to_string(),
+        }
+    }
+}
+
 type DispatchResult = std::result::Result<(Value, Vec<Event>), DispatchError>;
 
 fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
@@ -171,6 +184,45 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "project.remove" => project_remove(ctx, str_param(p, "project_id")?),
         "project.onboarding.advance" => onboarding_step(ctx, str_param(p, "project_id")?, true),
         "project.onboarding.skip" => onboarding_step(ctx, str_param(p, "project_id")?, false),
+
+        // ---- tasks -------------------------------------------------------
+        "task.create" => task_create(ctx, p),
+        "task.get" => task_get(ctx, str_param(p, "task_id")?),
+        "task.approve" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Approve),
+        "task.reject" => task_trigger(
+            ctx,
+            str_param(p, "task_id")?,
+            Trigger::Reject {
+                feedback: str_param(p, "feedback")?.to_string(),
+            },
+        ),
+        "task.merge" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Merge),
+        "task.pause" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Pause),
+        "task.resume" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Resume),
+        "task.stop" => task_stop(ctx, str_param(p, "task_id")?),
+        "task.cancel" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Cancel),
+        "task.extend_budget" => task_trigger(
+            ctx,
+            str_param(p, "task_id")?,
+            Trigger::ExtendBudget {
+                extra_rounds: u32_param(p, "extra_rounds")?,
+            },
+        ),
+        "task.rerun_from" => {
+            let raw = str_param(p, "node")?;
+            let node = Node::parse(raw)
+                .ok_or_else(|| bad_params(format!("未知节点 `{raw}`")))?;
+            task_trigger(ctx, str_param(p, "task_id")?, Trigger::RerunFrom { node })
+        }
+        "task.decide" => task_decide(ctx, p),
+        "task.archive" => task_archive(ctx, str_param(p, "task_id")?, true),
+        "task.restore" => task_archive(ctx, str_param(p, "task_id")?, false),
+        "task.changes" => task_changes(ctx, str_param(p, "task_id")?),
+        "session.log" => session_log(ctx, str_param(p, "session_id")?),
+        "dashboard.get" => dashboard_get(ctx),
+
+        // ---- scheduler ---------------------------------------------------
+        "scheduler.tick" => scheduler_tick(ctx),
 
         // ---- config ------------------------------------------------------
         "config.get" => config_get(ctx, opt_str_param(p, "project_id")),
@@ -210,6 +262,14 @@ fn str_param<'a>(params: &'a Value, key: &str) -> std::result::Result<&'a str, D
 
 fn opt_str_param<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str)
+}
+
+fn u32_param(params: &Value, key: &str) -> std::result::Result<u32, DispatchError> {
+    params
+        .get(key)
+        .and_then(Value::as_u64)
+        .map(|v| v as u32)
+        .ok_or_else(|| bad_params(format!("缺少参数 `{key}`")))
 }
 
 fn role_param(params: &Value, key: &str) -> std::result::Result<Role, DispatchError> {
@@ -783,6 +843,507 @@ fn role_label(role: Role) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+
+/// Creates a task and puts it in the queue (requirements T-01, T-02).
+///
+/// Submission starts the work: there is no second confirmation, because the
+/// first stopping point (design approval) is close enough that an extra one
+/// would only add friction.
+fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let project_id = str_param(params, "project_id")?;
+    let request = str_param(params, "request")?.trim().to_string();
+    if request.is_empty() {
+        return Err(bad_params("需求不能为空"));
+    }
+    let project = ctx.store.get_project(project_id)?;
+    if !project.is_active() {
+        return Err(rejected("项目已移除"));
+    }
+
+    let attachments: Vec<String> = params
+        .get("attachments")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    for a in &attachments {
+        if !std::path::Path::new(a).is_file() {
+            return Err(bad_params(format!("附件不存在：{a}")));
+        }
+    }
+    let doc_refs: Vec<String> = params
+        .get("doc_refs")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let base = autome_domain::project::slugify(&request);
+    let slug = {
+        let taken: Vec<String> = ctx
+            .store
+            .list_tasks(project_id)?
+            .into_iter()
+            .map(|t| t.slug)
+            .collect();
+        autome_domain::project::unique_slug(&base, |s| taken.iter().any(|t| t == s))
+    };
+    let id = ctx.store.next_task_id(project_id)?;
+
+    let task = crate::store::TaskRecord {
+        id: id.clone(),
+        project_id: project_id.to_string(),
+        slug,
+        // The intake session writes the real title; until then the request
+        // itself is the most informative thing to show.
+        title: first_line(&request),
+        request,
+        attachments,
+        doc_refs,
+        state: TaskState::Queued,
+        budget_n: None,
+        created_at: now_iso(),
+        completed_at: None,
+        merge_commit: None,
+        archived_at: None,
+    };
+    ctx.store.insert_task(&task)?;
+    let seq = ctx
+        .store
+        .append_event("task.created", &id, json!({ "project_id": project_id }))?;
+
+    // Start it immediately if the project has a free slot.
+    let report = scheduler::tick(ctx);
+    let started = report.tasks_started.contains(&id);
+
+    let task = ctx.store.get_task(&id)?;
+    Ok((
+        json!({
+            "task": task_json(&task),
+            "started": started,
+            "queue_position": queue_position(ctx, &task)?,
+        }),
+        vec![event(seq, "task.created", &id, json!({}))],
+    ))
+}
+
+fn first_line(s: &str) -> String {
+    let line = s.lines().next().unwrap_or(s).trim();
+    let truncated: String = line.chars().take(40).collect();
+    if truncated.chars().count() < line.chars().count() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+/// 1-based position in the project's queue, or `None` when not queued.
+fn queue_position(ctx: &Ctx, task: &crate::store::TaskRecord) -> std::result::Result<Option<usize>, DispatchError> {
+    if !matches!(task.state, TaskState::Queued) {
+        return Ok(None);
+    }
+    Ok(ctx
+        .store
+        .queued_tasks(&task.project_id)?
+        .iter()
+        .position(|t| t.id == task.id)
+        .map(|i| i + 1))
+}
+
+/// The whole task panel in one call (requirement U-06): state, progress from
+/// the design document, sessions, decisions and produced files.
+fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let worktree = repo.join(".worktree").join(&task.slug);
+
+    let status = read_status_block(&worktree, &task);
+    let sessions = ctx.store.list_sessions(task_id)?;
+    let decisions = ctx.store.list_decisions(task_id)?;
+
+    Ok((
+        json!({
+            "task": task_json(&task),
+            "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
+            "queue_position": queue_position(ctx, &task)?,
+            "status_block": status.as_ref().map(status_json),
+            "status_error": status.is_none(),
+            "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
+            "decisions": decisions.iter().map(decision_json).collect::<Vec<_>>(),
+            "pending_decisions": ctx.store.pending_decisions(task_id)?,
+            "documents": documents(&worktree, &task),
+            "worktree": worktree.to_string_lossy(),
+            "next_role": scheduler::next_role(&task.state),
+        }),
+        vec![],
+    ))
+}
+
+/// Reads the design document from the task's worktree. `None` when it does not
+/// exist yet or does not parse — the panel shows the node flow either way, and
+/// a parse failure has already failed the task through the normal path.
+fn read_status_block(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Option<StatusBlock> {
+    let text = std::fs::read_to_string(worktree.join(task.design_doc())).ok()?;
+    status_block::parse(&text).ok()
+}
+
+fn status_json(s: &StatusBlock) -> Value {
+    json!({
+        "status": s.status,
+        "design_round": s.design_round,
+        "design_round_limit": s.design_round_limit,
+        "impl_round": s.impl_round,
+        "impl_round_limit": s.impl_round_limit,
+        "current_milestone": s.current_milestone,
+        "current_milestone_reopens": s.current_milestone_reopens,
+        "convergence_mode": s.convergence_mode,
+        "next_action": s.next_action,
+        "milestones": s.milestones,
+        "milestones_done": s.milestones_done(),
+        "milestones_total": s.milestones.len(),
+    })
+}
+
+fn session_json(s: &autome_domain::session::Session) -> Value {
+    json!({
+        "id": s.id,
+        "kind": s.kind,
+        "label": s.kind.label(),
+        "runtime": s.runtime,
+        "model": s.model,
+        "effort": s.effort,
+        "skills": s.skills,
+        "round": s.round,
+        "started_at": s.started_at,
+        "ended_at": s.ended_at,
+        "lifecycle": s.lifecycle,
+        "running": s.is_running(),
+    })
+}
+
+fn decision_json(d: &crate::store::DecisionRecord) -> Value {
+    json!({
+        "kind": d.kind,
+        "item_id": d.item_id,
+        "text": d.text,
+        "disposition": d.disposition,
+        "ruling": d.ruling,
+        "consumed": d.consumed_at.is_some(),
+    })
+}
+
+/// The five protocol documents plus the task file, with their timestamps —
+/// the panel's "产物" card (requirement T-13).
+fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec<Value> {
+    let dir = task.doc_dir();
+    let slug = &task.slug;
+    let names = [
+        (format!("{slug}.md"), "设计文档"),
+        (format!("{slug}-task.md"), "任务文件"),
+        (format!("{slug}-review.md"), "评审"),
+        (format!("{slug}-adjudication.md"), "裁决"),
+        (format!("{slug}-audit.md"), "审计"),
+        ("retro.md".to_string(), "运行记录"),
+    ];
+    names
+        .iter()
+        .filter_map(|(name, label)| {
+            let path = worktree.join(&dir).join(name);
+            let meta = std::fs::metadata(&path).ok()?;
+            Some(json!({
+                "name": name,
+                "label": label,
+                "path": format!("{dir}/{name}"),
+                "absolute": path.to_string_lossy(),
+                "size": meta.len(),
+            }))
+        })
+        .collect()
+}
+
+/// Applies a trigger and returns the refreshed panel.
+fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResult {
+    scheduler::apply_trigger(ctx, task_id, &trigger)?;
+    // A trigger often unblocks a slot or leaves a core step to run.
+    scheduler::tick(ctx);
+    let seq = ctx.store.latest_seq()?;
+    let (payload, _) = task_get(ctx, task_id)?;
+    Ok((payload, vec![event(seq, "task.updated", task_id, json!({}))]))
+}
+
+/// Stop kills the running session first, then applies the trigger — the
+/// reverse order would leave a process writing to a log for a task the store
+/// has already moved on from (requirement T-08).
+fn task_stop(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    if let Some(session) = ctx.store.running_session(task_id)? {
+        if let Some(pid) = session.pid {
+            let _ = crate::launcher::stop_session(pid);
+        }
+        ctx.store.finish_session(
+            &session.id,
+            &autome_domain::session::SessionLifecycle::Killed,
+            &now_iso(),
+        )?;
+    }
+    task_trigger(ctx, task_id, Trigger::Stop)
+}
+
+/// Records the user's disposition of one Backlog item or dispute
+/// (requirement T-09). Does not itself advance anything: the decision is
+/// consumed at the next stopping point.
+fn task_decide(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let task_id = str_param(params, "task_id")?;
+    let kind = str_param(params, "kind")?;
+    if kind != "backlog" && kind != "dispute" {
+        return Err(bad_params("kind 只能是 backlog 或 dispute"));
+    }
+    let item_id = str_param(params, "item_id")?;
+    let raw = str_param(params, "disposition")?;
+    let disposition = match raw {
+        "none" => Disposition::None,
+        "include" => Disposition::Include,
+        "ignore" => Disposition::Ignore,
+        "ruled" => Disposition::Ruled,
+        other => return Err(bad_params(format!("未知处置 `{other}`"))),
+    };
+    // The two vocabularies do not overlap: a dispute cannot be "included" as
+    // a milestone, and a Backlog item is not something to rule on.
+    match (kind, disposition) {
+        ("backlog", Disposition::Ruled) => {
+            return Err(bad_params("Backlog 条目只能纳入或忽略"));
+        }
+        ("dispute", Disposition::Include | Disposition::Ignore) => {
+            return Err(bad_params("争议项只能裁定"));
+        }
+        _ => {}
+    }
+    let ruling = params.get("ruling").and_then(Value::as_str);
+    ctx.store
+        .set_disposition(task_id, kind, item_id, disposition, ruling)?;
+    let seq = ctx.store.append_event(
+        "task.decided",
+        task_id,
+        json!({ "item_id": item_id, "disposition": raw }),
+    )?;
+    let (payload, _) = task_get(ctx, task_id)?;
+    Ok((payload, vec![event(seq, "task.updated", task_id, json!({}))]))
+}
+
+/// Archive moves the task's documents into `docs/.archive/` and takes it off
+/// the list; restore moves them back (requirement T-12).
+///
+/// Only a completed task can be archived: an unfinished one still owns a
+/// worktree whose documents are on its own branch.
+fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
+    let task = ctx.store.get_task(task_id)?;
+    if archive && task.state != TaskState::Done {
+        return Err(rejected("只有已完成的任务可以归档"));
+    }
+    let project = ctx.store.get_project(&task.project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let live = repo.join(task.doc_dir());
+    let archived = repo.join(autome_domain::project::Project::archive_dir(&task.slug));
+
+    let (from, to) = if archive {
+        (&live, &archived)
+    } else {
+        (&archived, &live)
+    };
+    if from.exists() {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| internal(format!("无法创建目录：{e}")))?;
+        }
+        if to.exists() {
+            return Err(rejected(format!("目标已存在：{}", to.display())));
+        }
+        std::fs::rename(from, to).map_err(|e| internal(format!("无法移动任务目录：{e}")))?;
+    }
+    ctx.store.set_task_archived(task_id, archive)?;
+    let seq = ctx.store.append_event(
+        if archive { "task.archived" } else { "task.restored" },
+        task_id,
+        json!({}),
+    )?;
+    Ok((
+        json!({
+            "task_id": task_id,
+            "archived": archive,
+            "moved": from.exists() || to.exists(),
+            "note": "目录移动只落在默认分支工作树，提交由你自己做",
+        }),
+        vec![event(seq, "task.updated", task_id, json!({}))],
+    ))
+}
+
+/// The merge panel's file list and statistics (requirement T-05). Not a
+/// line-level diff: the design sends the user to their editor for that.
+fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    if !git::branch_exists(&repo, &task.branch()) {
+        return Ok((json!({ "available": false }), vec![]));
+    }
+    let summary = git::change_summary(&repo, &project.default_branch, &task.branch())?;
+    let subjects = git::commit_subjects(&repo, &project.default_branch, &task.branch())?;
+    let dirty = git::dirty_paths(&repo).unwrap_or_default();
+    let on_top = git::is_ancestor(&repo, &project.default_branch, &task.branch()).unwrap_or(false);
+    Ok((
+        json!({
+            "available": true,
+            "branch": task.branch(),
+            "into": project.default_branch,
+            "commits": summary.commits,
+            "files": summary.files.iter().map(|f| json!({
+                "path": f.path, "added": f.added, "deleted": f.deleted
+            })).collect::<Vec<_>>(),
+            "total_added": summary.total_added,
+            "total_deleted": summary.total_deleted,
+            "subjects": subjects,
+            "mergeable": dirty.is_empty() && on_top,
+            "blocked_by": if !dirty.is_empty() {
+                json!({ "kind": "dirty_worktree", "paths": dirty })
+            } else if !on_top {
+                json!({ "kind": "needs_rebase" })
+            } else {
+                Value::Null
+            },
+        }),
+        vec![],
+    ))
+}
+
+/// The tail of a session's log (requirement T-14). Bounded, because a long
+/// implementation round can produce megabytes and the panel only shows a tail.
+fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
+    let mut found = None;
+    for task in ctx.store.list_unfinished()?.into_iter().chain(
+        ctx.store
+            .list_projects()?
+            .into_iter()
+            .flat_map(|p| ctx.store.list_tasks(&p.id).unwrap_or_default()),
+    ) {
+        if let Some(s) = ctx
+            .store
+            .list_sessions(&task.id)?
+            .into_iter()
+            .find(|s| s.id == session_id)
+        {
+            found = Some(s);
+            break;
+        }
+    }
+    let session = found.ok_or_else(|| DispatchError {
+        code: ReplyErrorCode::NotFound,
+        message: format!("找不到会话 {session_id}"),
+    })?;
+
+    const MAX_BYTES: usize = 256 * 1024;
+    let text = std::fs::read_to_string(&session.log_path).unwrap_or_default();
+    let truncated = text.len() > MAX_BYTES;
+    let shown = if truncated {
+        // Cut on a character boundary, then on a line boundary, so the panel
+        // never renders a broken multi-byte sequence.
+        let start = text.len() - MAX_BYTES;
+        let start = (start..text.len())
+            .find(|i| text.is_char_boundary(*i))
+            .unwrap_or(text.len());
+        let tail = &text[start..];
+        tail.find('\n').map(|i| &tail[i + 1..]).unwrap_or(tail)
+    } else {
+        &text
+    };
+    Ok((
+        json!({
+            "session": session_json(&session),
+            "log": shown,
+            "truncated": truncated,
+            "path": session.log_path,
+        }),
+        vec![],
+    ))
+}
+
+/// The dashboard: everything waiting on the user, and everything running,
+/// across every project (requirement U-02).
+fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
+    let mut waiting = Vec::new();
+    let mut running = Vec::new();
+
+    for project in ctx.store.list_projects()? {
+        for task in ctx.store.list_tasks(&project.id)? {
+            if task.state.is_terminal() {
+                continue;
+            }
+            let pending = ctx.store.pending_decisions(&task.id)?;
+            let entry = json!({
+                "project_id": project.id,
+                "project_name": project.display_name,
+                "task": task_json(&task),
+                "pending_decisions": pending,
+                "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
+            });
+            if task.state.awaits_user() {
+                waiting.push(entry);
+            } else if task.state.occupies_slot() {
+                running.push(entry);
+            }
+        }
+    }
+
+    if ctx.environment.is_none() {
+        ctx.environment = Some(env_probe::probe_all());
+    }
+    let env = ctx.environment.as_ref().expect("just probed");
+
+    Ok((
+        json!({
+            "waiting": waiting,
+            "running": running,
+            "environment": {
+                "severity": env.severity(),
+                "problems": env.problems().iter().map(|c| json!({
+                    "component": c.component,
+                    "name": c.component.display_name(),
+                    "present": c.present,
+                    "login": c.login,
+                })).collect::<Vec<_>>(),
+            },
+        }),
+        vec![],
+    ))
+}
+
+/// Runs one scheduling pass on demand. The Electron shell calls this on a
+/// timer; exposing it keeps the polling interval a UI decision rather than a
+/// constant baked into the core.
+fn scheduler_tick(ctx: &mut Ctx) -> DispatchResult {
+    let report = scheduler::tick(ctx);
+    Ok((
+        json!({
+            "sessions_reaped": report.sessions_reaped,
+            "tasks_advanced": report.tasks_advanced,
+            "tasks_started": report.tasks_started,
+            "errors": report.errors,
+            "latest_seq": ctx.store.latest_seq()?,
+        }),
+        vec![],
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Environment and skills
 // ---------------------------------------------------------------------------
 
@@ -950,9 +1511,13 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 9] = [
+pub const READ_METHODS: [&str; 13] = [
     "project.list",
     "project.get",
+    "task.get",
+    "task.changes",
+    "session.log",
+    "dashboard.get",
     "config.get",
     "config.validate",
     "env.get",
