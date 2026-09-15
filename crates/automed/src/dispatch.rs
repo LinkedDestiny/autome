@@ -105,6 +105,9 @@ use autome_domain::capability_broker::{
     self, BrokerActionError, BrokerActionOrigin, UserInitiatedOnlyActionKind,
 };
 use autome_domain::certificate::AuditVerdict;
+use autome_domain::clarification::{
+    self, DefaultAssumptionCandidate, MandatoryClarificationTrigger, MaterialAssumption,
+};
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
     DeliverySubject, ProjectTargetTransitionReceipt,
@@ -1609,6 +1612,14 @@ fn try_dispatch_read(
             Some(read_playbook_role_output_may_decide_state(command))
         }
         "node.get" => Some(read_node_get(store, command)),
+        "clarification.may_proceed_with_default_assumption" => {
+            Some(read_clarification_may_proceed_with_default_assumption(
+                command,
+            ))
+        }
+        "clarification.no_unresolved_material_assumptions" => Some(
+            read_clarification_no_unresolved_material_assumptions(command),
+        ),
         _ => None,
     }
 }
@@ -1993,6 +2004,89 @@ fn read_capability_broker_validate_action_origin(
             }))
         }
     }
+}
+
+/// §6.4: `{ candidate, mandatory_triggers }` -- stateless gate, same shape
+/// as `read_capability_broker_validate_action_origin`: `clarification.rs`
+/// records no facts, it just answers whether Core may proceed on a
+/// default assumption instead of pausing to ask. Returns
+/// `{ may_proceed: bool }` rather than erroring when the answer is no.
+fn read_clarification_may_proceed_with_default_assumption(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let candidate =
+        parse_default_assumption_candidate_param(command).map_err(dispatch_error_to_reply_error)?;
+    let mandatory_triggers =
+        parse_mandatory_triggers_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "may_proceed": clarification::may_proceed_with_default_assumption(
+            &candidate,
+            &mandatory_triggers,
+        ),
+    }))
+}
+
+fn parse_default_assumption_candidate_param(
+    command: &Command,
+) -> Result<DefaultAssumptionCandidate, DispatchError> {
+    let value = command.params.get("candidate").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.candidate is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.candidate is not a valid DefaultAssumptionCandidate: {e}"
+        ))
+    })
+}
+
+fn parse_mandatory_triggers_param(
+    command: &Command,
+) -> Result<Vec<MandatoryClarificationTrigger>, DispatchError> {
+    let value = command
+        .params
+        .get("mandatory_triggers")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.mandatory_triggers is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.mandatory_triggers is not a valid Vec<MandatoryClarificationTrigger>: {e}"
+        ))
+    })
+}
+
+/// §7: `{ assumptions }` -- re-exercises
+/// `no_unresolved_material_assumptions` (the completion gate's
+/// `no_open_blocking_question_or_material_assumption` condition) against a
+/// caller-supplied list rather than trusting the caller's own count of
+/// what's still open. Returns `{ no_unresolved_material_assumptions: bool }`.
+fn read_clarification_no_unresolved_material_assumptions(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let assumptions =
+        parse_material_assumptions_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "no_unresolved_material_assumptions":
+            clarification::no_unresolved_material_assumptions(&assumptions),
+    }))
+}
+
+fn parse_material_assumptions_param(
+    command: &Command,
+) -> Result<Vec<MaterialAssumption>, DispatchError> {
+    let value = command
+        .params
+        .get("assumptions")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.assumptions is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.assumptions is not a valid Vec<MaterialAssumption>: {e}"
+        ))
+    })
 }
 
 /// Read counterpart to `handle_bind_playbook`. Takes `{ run_id }`;
@@ -5494,6 +5588,143 @@ mod tests {
             "capability_broker.validate_action_origin",
             json!({ "action": "Delivery" }),
         );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn all_conditions_met_candidate_json() -> Value {
+        json!({
+            "reversible": true,
+            "locally_scoped": true,
+            "preserves_user_goal": true,
+            "preserves_acceptance_criteria": true,
+            "no_high_risk_external_action": true,
+            "verifiable_within_this_run": true,
+            "has_stable_convention_support": true,
+        })
+    }
+
+    #[test]
+    fn handle_command_clarification_may_proceed_when_every_condition_holds_and_no_trigger_fired() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "clarification.may_proceed_with_default_assumption",
+            json!({
+                "candidate": all_conditions_met_candidate_json(),
+                "mandatory_triggers": [],
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["may_proceed"], true),
+            ReplyOutcome::Error { code, message } => {
+                panic!("clarification.may_proceed_with_default_assumption failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_clarification_may_not_proceed_when_a_mandatory_trigger_fired() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "clarification.may_proceed_with_default_assumption",
+            json!({
+                "candidate": all_conditions_met_candidate_json(),
+                "mandatory_triggers": ["ContradictoryUserRequirements"],
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["may_proceed"], false),
+            ReplyOutcome::Error { code, message } => {
+                panic!("clarification.may_proceed_with_default_assumption failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_clarification_may_proceed_is_invalid_params_without_candidate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "clarification.may_proceed_with_default_assumption",
+            json!({ "mandatory_triggers": [] }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_clarification_no_unresolved_material_assumptions_is_true_for_an_empty_list()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "clarification.no_unresolved_material_assumptions",
+            json!({ "assumptions": [] }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["no_unresolved_material_assumptions"], true)
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("clarification.no_unresolved_material_assumptions failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_clarification_no_unresolved_material_assumptions_is_false_when_one_is_open()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "clarification.no_unresolved_material_assumptions",
+            json!({
+                "assumptions": [
+                    { "id": "assumption-1", "statement": "Assumed default port 8080", "resolved": true },
+                    { "id": "assumption-2", "statement": "Assumed SQLite over Postgres", "resolved": false },
+                ],
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["no_unresolved_material_assumptions"], false)
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("clarification.no_unresolved_material_assumptions failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_clarification_no_unresolved_material_assumptions_is_invalid_params_without_assumptions(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("clarification.no_unresolved_material_assumptions", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
