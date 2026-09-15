@@ -25,7 +25,9 @@
 //! turns a `KnownBaselineFailure` classification into permission to
 //! disclose-and-proceed instead of blocking.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureClassification {
     Unreproduced,
     KnownBaselineFailure,
@@ -54,7 +56,7 @@ pub fn classify_pre_existing_failure(
 /// 判断不够", so there is deliberately no field here for a bare LLM
 /// opinion; only `impact_scope_check_confirmed_by_independent_reviewer`
 /// (a real Check confirmed by a real independent reviewer) counts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HistoricalRedLightAssessment {
     pub failure_captured_by_core_before_change: bool,
     pub final_fingerprint_matches_baseline: bool,
@@ -65,7 +67,7 @@ pub struct HistoricalRedLightAssessment {
     pub completion_certificate_fully_discloses: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HistoricalRedLightViolation {
     FailureNotCapturedBeforeChange,
     FingerprintDiffersFromBaseline,

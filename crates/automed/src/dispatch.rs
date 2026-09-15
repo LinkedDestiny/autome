@@ -113,6 +113,7 @@ use autome_domain::delivery::{
     DeliverySubject, ProjectTargetTransitionReceipt,
 };
 use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
+use autome_domain::historical_red_light::{self, HistoricalRedLightAssessment};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
@@ -1620,6 +1621,12 @@ fn try_dispatch_read(
         "clarification.no_unresolved_material_assumptions" => Some(
             read_clarification_no_unresolved_material_assumptions(command),
         ),
+        "historical_red_light.classify_pre_existing_failure" => Some(
+            read_historical_red_light_classify_pre_existing_failure(command),
+        ),
+        "historical_red_light.evaluate" => {
+            Some(read_historical_red_light_evaluate(command))
+        }
         _ => None,
     }
 }
@@ -2085,6 +2092,58 @@ fn parse_material_assumptions_param(
     serde_json::from_value(value).map_err(|e| {
         DispatchError::InvalidParams(format!(
             "params.assumptions is not a valid Vec<MaterialAssumption>: {e}"
+        ))
+    })
+}
+
+/// §7.2: `{ reproduced_under_specified_conditions, final_fingerprint_matches_baseline }`
+/// -- stateless gate, same shape as `read_capability_broker_validate_action_origin`:
+/// `historical_red_light.rs` records no facts, it just classifies a
+/// pre-existing failure relative to a baseline. Returns
+/// `{ classification: FailureClassification }`.
+fn read_historical_red_light_classify_pre_existing_failure(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let reproduced =
+        parse_bool_param(command, "reproduced_under_specified_conditions")
+            .map_err(dispatch_error_to_reply_error)?;
+    let fingerprint_matches =
+        parse_bool_param(command, "final_fingerprint_matches_baseline")
+            .map_err(dispatch_error_to_reply_error)?;
+    let classification =
+        historical_red_light::classify_pre_existing_failure(reproduced, fingerprint_matches);
+    Ok(serde_json::json!({ "classification": classification }))
+}
+
+/// §7.2: `{ assessment }` -- re-exercises `evaluate_historical_red_light`
+/// (all seven conditions gating whether a task may complete while a
+/// historical red light is present) against a caller-supplied assessment
+/// rather than trusting the caller's own tally. Returns
+/// `{ may_complete: bool, violations: [HistoricalRedLightViolation] }`
+/// rather than erroring when the answer is no, collecting every unmet
+/// condition rather than just the first, matching the
+/// `delivery.check_completion` "check" convention.
+fn read_historical_red_light_evaluate(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let assessment =
+        parse_historical_red_light_assessment_param(command).map_err(dispatch_error_to_reply_error)?;
+    let violations = historical_red_light::evaluate_historical_red_light(&assessment);
+    Ok(serde_json::json!({
+        "may_complete": violations.is_empty(),
+        "violations": violations,
+    }))
+}
+
+fn parse_historical_red_light_assessment_param(
+    command: &Command,
+) -> Result<HistoricalRedLightAssessment, DispatchError> {
+    let value = command.params.get("assessment").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.assessment is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.assessment is not a valid HistoricalRedLightAssessment: {e}"
         ))
     })
 }
@@ -5725,6 +5784,173 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("clarification.no_unresolved_material_assumptions", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_classify_not_reproduced_is_unreproduced() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "historical_red_light.classify_pre_existing_failure",
+            json!({
+                "reproduced_under_specified_conditions": false,
+                "final_fingerprint_matches_baseline": true,
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["classification"], "Unreproduced")
+            }
+            ReplyOutcome::Error { code, message } => panic!(
+                "historical_red_light.classify_pre_existing_failure failed: {code:?} {message}"
+            ),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_classify_reproduced_with_matching_fingerprint_is_known_baseline_failure(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "historical_red_light.classify_pre_existing_failure",
+            json!({
+                "reproduced_under_specified_conditions": true,
+                "final_fingerprint_matches_baseline": true,
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["classification"], "KnownBaselineFailure")
+            }
+            ReplyOutcome::Error { code, message } => panic!(
+                "historical_red_light.classify_pre_existing_failure failed: {code:?} {message}"
+            ),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_classify_reproduced_with_differing_fingerprint_is_new_regression(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "historical_red_light.classify_pre_existing_failure",
+            json!({
+                "reproduced_under_specified_conditions": true,
+                "final_fingerprint_matches_baseline": false,
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["classification"], "NewRegression")
+            }
+            ReplyOutcome::Error { code, message } => panic!(
+                "historical_red_light.classify_pre_existing_failure failed: {code:?} {message}"
+            ),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_classify_is_invalid_params_without_reproduced_flag() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "historical_red_light.classify_pre_existing_failure",
+            json!({ "final_fingerprint_matches_baseline": true }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn all_satisfied_historical_red_light_assessment_json() -> Value {
+        json!({
+            "failure_captured_by_core_before_change": true,
+            "final_fingerprint_matches_baseline": true,
+            "no_new_failures_skips_or_filtered": true,
+            "impact_scope_check_confirmed_by_independent_reviewer": true,
+            "impact_scope_check_passes_on_final_tree": true,
+            "final_auditor_explicitly_accepted": true,
+            "completion_certificate_fully_discloses": true,
+        })
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_evaluate_may_complete_when_all_conditions_satisfied() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "historical_red_light.evaluate",
+            json!({ "assessment": all_satisfied_historical_red_light_assessment_json() }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["may_complete"], true);
+                assert_eq!(payload["violations"], json!([]));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("historical_red_light.evaluate failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_evaluate_collects_every_unmet_condition() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut assessment = all_satisfied_historical_red_light_assessment_json();
+        assessment["final_auditor_explicitly_accepted"] = json!(false);
+        assessment["completion_certificate_fully_discloses"] = json!(false);
+        let cmd = command("historical_red_light.evaluate", json!({ "assessment": assessment }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["may_complete"], false);
+                assert_eq!(
+                    payload["violations"],
+                    json!([
+                        "FinalAuditorDidNotExplicitlyAccept",
+                        "CompletionCertificateDoesNotFullyDisclose",
+                    ])
+                );
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("historical_red_light.evaluate failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_historical_red_light_evaluate_is_invalid_params_without_assessment() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("historical_red_light.evaluate", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
