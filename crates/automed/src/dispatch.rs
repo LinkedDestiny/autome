@@ -95,7 +95,7 @@ use crate::store::{
     CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
     CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
     DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
-    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
+    ExecutionQueueAppendError, FrozenPlaybookRecord, GlobalConfigRevisionRecord, GraphAppendError,
     IssueCandidateCertificateError, IssueCompletionCertificateError, NodeAppendError,
     PlanningPolicyRestartRecord, ProjectAppendError, ProjectSummary, CredentialRecordRow,
     ProjectIntentAmendmentRecord, ProjectIntentRevisionRecord,
@@ -105,9 +105,9 @@ use crate::store::{
     RecordProjectIntentAmendmentError, RecordProjectIntentRevisionError,
     RecordProjectInitializationReceiptError, RecordQualificationReceiptError, RecordReadinessError,
     RecordRunPolicyAmendmentError, RecordSkillInstallReceiptError, RecordUserCorrectionError,
-    RunPolicyAmendmentRecord, SkillEvidenceLadderRecord, SkillInstallRecord,
-    SkillLadderTransitionError, StartDeliveryChainError, TaskAppendError, TaskSummary,
-    UserCorrectionRecord,
+    RunPolicyAmendmentRecord, SaveGlobalConfigRevisionError, SkillEvidenceLadderRecord,
+    SkillInstallRecord, SkillLadderTransitionError, StartDeliveryChainError, TaskAppendError,
+    TaskSummary, UserCorrectionRecord,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
 use autome_domain::bounded_failure::{
@@ -118,6 +118,10 @@ use autome_domain::capability_broker::{
     self, BrokerActionError, BrokerActionOrigin, UserInitiatedOnlyActionKind,
 };
 use autome_domain::certificate::AuditVerdict;
+use autome_domain::config::{
+    self, AgentExecutionProfile, GlobalConfigImpactPreview, GlobalConfigRevision,
+    ProjectConfigPatch,
+};
 use autome_domain::clarification::{
     self, DefaultAssumptionCandidate, MandatoryClarificationTrigger, MaterialAssumption,
 };
@@ -299,6 +303,12 @@ pub enum DispatchError {
     /// `SkillEvidenceLadder` rung-order check rejected the transition
     /// (`Ladder`), or a SQL failure (`Sql`).
     SkillLadderTransition(SkillLadderTransitionError),
+    /// config.rs write path: `save_global_config_revision`'s failure modes --
+    /// `config::validate_save_global_config_revision`'s own preview-hash/
+    /// project-set/expiry/second-confirmation checks, re-run server-side
+    /// against the caller-supplied preview (`Rejected`), or a duplicate
+    /// `revision` surfaced as a SQL primary-key violation (`Sql`).
+    SaveGlobalConfigRevision(SaveGlobalConfigRevisionError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -424,6 +434,12 @@ impl From<RecordSkillInstallReceiptError> for DispatchError {
 impl From<SkillLadderTransitionError> for DispatchError {
     fn from(value: SkillLadderTransitionError) -> Self {
         DispatchError::SkillLadderTransition(value)
+    }
+}
+
+impl From<SaveGlobalConfigRevisionError> for DispatchError {
+    fn from(value: SaveGlobalConfigRevisionError) -> Self {
+        DispatchError::SaveGlobalConfigRevision(value)
     }
 }
 
@@ -1027,6 +1043,26 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
     }
     if command.method == "skill.record_project_binding" {
         let result = handle_record_project_skill_binding(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
+    // config.rs: writes a `global_config_revisions`/`project_config_patches`
+    // row but appends no domain `Event` -- same shape as `skill.*` above. A
+    // saved `GlobalConfigRevision` and a project's current
+    // `ProjectConfigPatch` are both current-state facts (the revision log
+    // and the patch upsert respectively), not aggregates with a reducer.
+    if command.method == "config.save_global_revision" {
+        let result = handle_save_global_config_revision(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "config.save_project_patch" {
+        let result = handle_record_project_config_patch(store, command);
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
             event: None,
@@ -2651,6 +2687,230 @@ fn read_skill_can_garbage_collect(command: &Command) -> Result<Value, (ReplyErro
     Ok(serde_json::json!({ "can_garbage_collect": can_garbage_collect }))
 }
 
+/// `config.save_global_revision`'s params. `GlobalConfigRevision` itself
+/// has no validating constructor of its own in `config.rs` -- what needs
+/// gating is the *save*, not the revision's shape -- but the save is
+/// gated by `config::validate_save_global_config_revision`, which takes a
+/// `preview` plus the freshness/confirmation facts it is checked against.
+/// Bundling all of that into one `input` object (rather than a bare
+/// `revision` param) mirrors `SkillInstallInputParam`: every field here is
+/// required for `save_global_config_revision` to even attempt the write.
+#[derive(Debug, Deserialize)]
+struct SaveGlobalConfigRevisionInputParam {
+    revision: GlobalConfigRevision,
+    preview: GlobalConfigImpactPreview,
+    submitted_preview_hash: String,
+    current_project_set_hash: String,
+    second_confirmation_acquired: bool,
+}
+
+fn parse_save_global_config_revision_input_param(
+    command: &Command,
+) -> Result<SaveGlobalConfigRevisionInputParam, DispatchError> {
+    let value = command
+        .params
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.input is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.input is not a valid SaveGlobalConfigRevisionInputParam: {e}"
+        ))
+    })
+}
+
+fn global_config_revision_record_json(record: &GlobalConfigRevisionRecord) -> Value {
+    serde_json::json!({
+        "revision": record.revision,
+        "created_at": record.created_at,
+    })
+}
+
+/// Handles `config.save_global_revision`: `{ input:
+/// SaveGlobalConfigRevisionInputParam }`. Calls `save_global_config_revision`,
+/// which re-runs `config::validate_save_global_config_revision` server-side
+/// (so the preview-freshness/second-confirmation invariants are actually
+/// enforced) before appending the new revision row.
+fn handle_save_global_config_revision(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let input =
+        parse_save_global_config_revision_input_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .save_global_config_revision(
+            input.revision,
+            &input.preview,
+            &input.submitted_preview_hash,
+            &input.current_project_set_hash,
+            input.second_confirmation_acquired,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(global_config_revision_record_json(&record))
+}
+
+/// Read counterpart to `handle_save_global_config_revision` for one exact
+/// `revision` number.
+fn read_global_config_revision_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let revision = parse_u32_param(command, "revision").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_global_config_revision(revision)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(global_config_revision_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no global config revision recorded for revision {revision}"),
+        )),
+    }
+}
+
+/// The derived "current global config" read: the highest `revision` ever
+/// recorded, not a separately stored value -- takes no params, matching
+/// `read_step_role_canonical_bindings`'s shape.
+fn read_current_global_config_revision_get(
+    store: &EventStore,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    match store
+        .load_current_global_config_revision()
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(global_config_revision_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            "no global config revision recorded yet".to_string(),
+        )),
+    }
+}
+
+fn parse_project_config_patch_param(command: &Command) -> Result<ProjectConfigPatch, DispatchError> {
+    let value = command
+        .params
+        .get("patch")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.patch is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.patch is not a valid ProjectConfigPatch: {e}"
+        ))
+    })
+}
+
+/// Handles `config.save_project_patch`: `{ patch: ProjectConfigPatch }`.
+/// `ProjectConfigPatch` has no validating constructor of its own, so it is
+/// trusted directly -- same reasoning as `handle_record_global_skill_binding`
+/// trusting a whole client-supplied `GlobalSkillBinding`. Upserts the
+/// project's current patch row; `patch.project_id` supplies the key, unlike
+/// `skill.record_project_binding` where the key's second half has to come
+/// from a separate param.
+fn handle_record_project_config_patch(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let patch = parse_project_config_patch_param(command).map_err(dispatch_error_to_reply_error)?;
+    let created_at = store
+        .record_project_config_patch(&patch)
+        .map_err(internal_error)?;
+    Ok(serde_json::json!({ "patch": patch, "created_at": created_at }))
+}
+
+/// Read counterpart to `handle_record_project_config_patch` -- the current
+/// snapshot for `project_id`, if one has ever been recorded.
+fn read_project_config_patch_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let project_id =
+        parse_string_param(command, "project_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_project_config_patch(&project_id)
+        .map_err(internal_error)?
+    {
+        Some(patch) => Ok(serde_json::json!({ "patch": patch })),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no project config patch recorded for project_id {project_id}"),
+        )),
+    }
+}
+
+/// `config.resolve_project_config`: `{ project_id: Option<String>,
+/// valid_model_ids: [String], skill_binding_revision_ref, snapshot_hash }`
+/// -- re-exercises `config::resolve_project_config` server-side against
+/// whatever global revision and project patch are actually recorded,
+/// rather than trusting a caller's own merge of the two (mirrors
+/// `read_skill_resolve_binding`). No `project_id` is pure inheritance from
+/// the global revision, same as passing `None` to `resolve_project_config`
+/// directly. `valid_model_ids` stands in for the "real
+/// qualification/capability facts" `resolve_project_config`'s own doc
+/// comment says its `is_profile_valid` predicate must come from -- there is
+/// no qualification/capability store wired up yet for this read to consult
+/// instead, so the caller supplies the already-qualified set directly, same
+/// trust boundary as `read_skill_can_garbage_collect` taking its
+/// bound/referenced sets as plain params rather than store lookups.
+fn read_config_resolve_project_config(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let global = store
+        .load_current_global_config_revision()
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                "no global config revision recorded".to_string(),
+            )
+        })?
+        .revision;
+    let project_id = parse_optional_string_param(command, "project_id")
+        .map_err(dispatch_error_to_reply_error)?;
+    let patch = match &project_id {
+        Some(project_id) => store
+            .load_project_config_patch(project_id)
+            .map_err(internal_error)?,
+        None => None,
+    };
+    let valid_model_ids_value = command.params.get("valid_model_ids").cloned().ok_or_else(|| {
+        (
+            ReplyErrorCode::InvalidParams,
+            "params.valid_model_ids is required".to_string(),
+        )
+    })?;
+    let valid_model_ids: HashSet<String> = serde_json::from_value(valid_model_ids_value)
+        .map_err(|e| {
+            (
+                ReplyErrorCode::InvalidParams,
+                format!("params.valid_model_ids is not a valid array of strings: {e}"),
+            )
+        })?;
+    let skill_binding_revision_ref = parse_string_param(command, "skill_binding_revision_ref")
+        .map_err(dispatch_error_to_reply_error)?;
+    let snapshot_hash =
+        parse_string_param(command, "snapshot_hash").map_err(dispatch_error_to_reply_error)?;
+    match config::resolve_project_config(
+        &global,
+        patch.as_ref(),
+        |profile: &AgentExecutionProfile| valid_model_ids.contains(&profile.model_id),
+        &skill_binding_revision_ref,
+        &snapshot_hash,
+    ) {
+        Ok(resolved) => Ok(serde_json::json!({ "resolved": resolved })),
+        Err(errors) => Err((
+            ReplyErrorCode::TransitionRejected,
+            format!("project config resolution rejected: {errors:?}"),
+        )),
+    }
+}
+
 fn parse_evidence_receipt_param(command: &Command) -> Result<EvidenceReceipt, DispatchError> {
     let value = command
         .params
@@ -3300,6 +3560,15 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
             ReplyErrorCode::TransitionRejected,
             format!("skill ladder transition rejected: {e:?}"),
         ),
+        DispatchError::SaveGlobalConfigRevision(SaveGlobalConfigRevisionError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::SaveGlobalConfigRevision(SaveGlobalConfigRevisionError::Rejected(
+            errors,
+        )) => (
+            ReplyErrorCode::TransitionRejected,
+            format!("global config revision save rejected: {errors:?}"),
+        ),
         DispatchError::StartDeliveryChain(StartDeliveryChainError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -3441,6 +3710,12 @@ fn try_dispatch_read(
         "skill.get_project_binding" => Some(read_project_skill_binding_get(store, command)),
         "skill.resolve_binding" => Some(read_skill_resolve_binding(store, command)),
         "skill.can_garbage_collect" => Some(read_skill_can_garbage_collect(command)),
+        "config.get_global_revision" => Some(read_global_config_revision_get(store, command)),
+        "config.get_current_global_revision" => {
+            Some(read_current_global_config_revision_get(store))
+        }
+        "config.get_project_patch" => Some(read_project_config_patch_get(store, command)),
+        "config.resolve_project_config" => Some(read_config_resolve_project_config(store, command)),
         _ => None,
     }
 }
@@ -11251,6 +11526,467 @@ mod tests {
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
             other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn config_profile_json(model_id: &str) -> Value {
+        json!({
+            "adapter_id": "codex",
+            "installation_id": "install-1",
+            "model_id": model_id,
+            "effort_id": "medium",
+            "skill_policy_ref": "skill-policy-1",
+        })
+    }
+
+    /// A fully-populated `GlobalConfigRevision` JSON -- every
+    /// `CONFIGURABLE_AI_STEPS` entry gets a `step_defaults` and
+    /// `human_review_default` row, since `resolve_project_config` refuses
+    /// to resolve at all when any configurable step lacks a global default.
+    fn global_config_revision_json(revision: u32, model_id: &str) -> Value {
+        use autome_domain::config::CONFIGURABLE_AI_STEPS;
+
+        let mut step_defaults = serde_json::Map::new();
+        let mut human_review_default = serde_json::Map::new();
+        for step in CONFIGURABLE_AI_STEPS {
+            step_defaults.insert((*step).to_string(), config_profile_json(model_id));
+            human_review_default.insert((*step).to_string(), json!("Off"));
+        }
+        json!({
+            "revision": revision,
+            "step_defaults": step_defaults,
+            "human_review_default": human_review_default,
+            "environment_defaults_ref": "env-default",
+            "budget_defaults_ref": "budget-default",
+            "skill_policy_default_ref": "skill-policy-default",
+            "safety_policy_hash": "safety-floor-1",
+            "content_hash": format!("global-content-{revision}"),
+        })
+    }
+
+    fn global_config_impact_preview_json(
+        expires_at: &str,
+        requires_second_confirmation: bool,
+    ) -> Value {
+        json!({
+            "base_global_revision": 1,
+            "proposed_config_hash": "proposed-1",
+            "observed_project_set_hash": "project-set-1",
+            "affected_projects": [],
+            "blocking_project_ids": [],
+            "requires_second_confirmation": requires_second_confirmation,
+            "expires_at": expires_at,
+            "preview_hash": "preview-1",
+        })
+    }
+
+    fn save_global_config_revision_input_json(
+        revision: u32,
+        model_id: &str,
+        expires_at: &str,
+        requires_second_confirmation: bool,
+        second_confirmation_acquired: bool,
+    ) -> Value {
+        json!({
+            "revision": global_config_revision_json(revision, model_id),
+            "preview": global_config_impact_preview_json(expires_at, requires_second_confirmation),
+            "submitted_preview_hash": "preview-1",
+            "current_project_set_hash": "project-set-1",
+            "second_confirmation_acquired": second_confirmation_acquired,
+        })
+    }
+
+    fn issue_config_save_global_revision(
+        store: &mut EventStore,
+        revision: u32,
+        model_id: &str,
+    ) {
+        let cmd = command(
+            "config.save_global_revision",
+            json!({
+                "input": save_global_config_revision_input_json(
+                    revision,
+                    model_id,
+                    "2099-01-01T00:00:00Z",
+                    false,
+                    false,
+                ),
+            }),
+        );
+        let outcome = handle_command(store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("config.save_global_revision failed: {code:?} {message}")
+        }
+    }
+
+    /// A well-formed `config.save_global_revision` call lands a
+    /// `global_config_revisions` row, readable back both by exact
+    /// `revision` and as the "current" one.
+    #[test]
+    fn handle_command_config_save_global_revision_persists_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        issue_config_save_global_revision(&mut store, 1, "global-model");
+
+        let get = command("config.get_global_revision", json!({ "revision": 1 }));
+        let outcome = handle_command(&mut store, &get);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["revision"]["revision"], 1);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("config.get_global_revision failed: {code:?} {message}")
+            }
+        }
+
+        let get_current = command("config.get_current_global_revision", json!({}));
+        let outcome = handle_command(&mut store, &get_current);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["revision"]["revision"], 1);
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("config.get_current_global_revision failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_save_global_revision_is_invalid_params_without_input() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("config.save_global_revision", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `config::validate_save_global_config_revision` is re-run
+    /// server-side -- a preview-hash mismatch is `TransitionRejected`, not
+    /// silently accepted.
+    #[test]
+    fn handle_command_config_save_global_revision_rejects_a_preview_hash_mismatch() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let mut input =
+            save_global_config_revision_input_json(1, "global-model", "2099-01-01T00:00:00Z", false, false);
+        input["submitted_preview_hash"] = json!("wrong-hash");
+        let cmd = command("config.save_global_revision", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A preview that demands a second confirmation is refused without one,
+    /// then accepted once `second_confirmation_acquired` is true.
+    #[test]
+    fn handle_command_config_save_global_revision_requires_second_confirmation_then_succeeds() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let input = save_global_config_revision_input_json(
+            1,
+            "global-model",
+            "2099-01-01T00:00:00Z",
+            true,
+            false,
+        );
+        let cmd = command("config.save_global_revision", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        let input = save_global_config_revision_input_json(
+            1,
+            "global-model",
+            "2099-01-01T00:00:00Z",
+            true,
+            true,
+        );
+        let cmd = command("config.save_global_revision", json!({ "input": input }));
+        let outcome = handle_command(&mut store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("config.save_global_revision failed: {code:?} {message}")
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_get_global_revision_is_not_found_before_saving() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("config.get_global_revision", json!({ "revision": 1 }));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_get_current_global_revision_is_not_found_before_saving() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("config.get_current_global_revision", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn project_config_patch_json(project_id: &str, model_id_override: Option<&str>) -> Value {
+        let step_overrides = match model_id_override {
+            Some(model_id) => json!({
+                "contract_review": { "Replace": config_profile_json(model_id) },
+            }),
+            None => json!({}),
+        };
+        json!({
+            "project_id": project_id,
+            "revision": 1,
+            "step_overrides": step_overrides,
+            "human_review_overrides": {},
+            "environment_override_ref": null,
+            "budget_override_ref": null,
+            "skill_policy_override_ref": null,
+            "content_hash": "patch-content-1",
+        })
+    }
+
+    /// `config.save_project_patch` upserts the current-state row for a
+    /// `project_id` -- no server-side re-validation since
+    /// `ProjectConfigPatch` has no validating constructor to re-run, same
+    /// reasoning as `skill.record_project_binding`.
+    #[test]
+    fn handle_command_config_save_project_patch_upserts_and_reads_back() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "config.save_project_patch",
+            json!({ "patch": project_config_patch_json("proj-1", None) }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        if let ReplyOutcome::Error { code, message } = outcome.reply.outcome {
+            panic!("config.save_project_patch failed: {code:?} {message}")
+        }
+
+        let get = command(
+            "config.get_project_patch",
+            json!({ "project_id": "proj-1" }),
+        );
+        let outcome = handle_command(&mut store, &get);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["patch"]["project_id"], "proj-1");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("config.get_project_patch failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_save_project_patch_is_invalid_params_without_patch() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("config.save_project_patch", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_get_project_patch_is_not_found_before_saving() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "config.get_project_patch",
+            json!({ "project_id": "proj-1" }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.1: `config.resolve_project_config` re-exercises
+    /// `resolve_project_config` server-side. No `project_id` is pure
+    /// inheritance from the global revision; a project patch overriding one
+    /// step's profile changes just that step's provenance, leaving the rest
+    /// inherited.
+    #[test]
+    fn handle_command_config_resolve_project_config_inherits_without_a_project_id_and_overrides_with_one()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        issue_config_save_global_revision(&mut store, 1, "global-model");
+
+        let resolve_without_project = command(
+            "config.resolve_project_config",
+            json!({
+                "valid_model_ids": ["global-model", "project-model"],
+                "skill_binding_revision_ref": "binding-1",
+                "snapshot_hash": "snap-1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &resolve_without_project);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert!(payload["resolved"]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|s| s["provenance"] == "Global"));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("config.resolve_project_config failed: {code:?} {message}")
+            }
+        }
+
+        let cmd = command(
+            "config.save_project_patch",
+            json!({ "patch": project_config_patch_json("proj-1", Some("project-model")) }),
+        );
+        handle_command(&mut store, &cmd);
+
+        let resolve_with_project = command(
+            "config.resolve_project_config",
+            json!({
+                "project_id": "proj-1",
+                "valid_model_ids": ["global-model", "project-model"],
+                "skill_binding_revision_ref": "binding-1",
+                "snapshot_hash": "snap-1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &resolve_with_project);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                let steps = payload["resolved"]["steps"].as_array().unwrap();
+                let contract_review = steps
+                    .iter()
+                    .find(|s| s["step_id"] == "contract_review")
+                    .unwrap();
+                assert_eq!(contract_review["profile"]["model_id"], "project-model");
+                assert_eq!(contract_review["provenance"], "Project");
+                let other = steps
+                    .iter()
+                    .find(|s| s["step_id"] == "final_audit")
+                    .unwrap();
+                assert_eq!(other["profile"]["model_id"], "global-model");
+                assert_eq!(other["provenance"], "Global");
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("config.resolve_project_config failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_resolve_project_config_is_not_found_without_a_global_revision() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "config.resolve_project_config",
+            json!({
+                "valid_model_ids": ["global-model"],
+                "skill_binding_revision_ref": "binding-1",
+                "snapshot_hash": "snap-1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_config_resolve_project_config_is_invalid_params_without_valid_model_ids() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        issue_config_save_global_revision(&mut store, 1, "global-model");
+
+        let cmd = command(
+            "config.resolve_project_config",
+            json!({
+                "skill_binding_revision_ref": "binding-1",
+                "snapshot_hash": "snap-1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A project override that fails `is_profile_valid` is refused outright
+    /// -- not silently clamped back to the global default.
+    #[test]
+    fn handle_command_config_resolve_project_config_rejects_an_invalid_override_without_falling_back()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        issue_config_save_global_revision(&mut store, 1, "global-model");
+        let cmd = command(
+            "config.save_project_patch",
+            json!({ "patch": project_config_patch_json("proj-1", Some("unqualified-model")) }),
+        );
+        handle_command(&mut store, &cmd);
+
+        let cmd = command(
+            "config.resolve_project_config",
+            json!({
+                "project_id": "proj-1",
+                "valid_model_ids": ["global-model"],
+                "skill_binding_revision_ref": "binding-1",
+                "snapshot_hash": "snap-1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => {
+                assert_eq!(code, ReplyErrorCode::TransitionRejected)
+            }
+            other => panic!("expected TransitionRejected, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();

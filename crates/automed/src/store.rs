@@ -19,6 +19,9 @@ use autome_domain::certificate::{
     self, AuditVerdict, CandidateCertificate, CandidateCertificateError, CompletionCertificate,
     CompletionCertificateError,
 };
+use autome_domain::config::{
+    self, GlobalConfigImpactPreview, GlobalConfigRevision, ProjectConfigPatch, SaveGlobalConfigError,
+};
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
 use autome_domain::credential::{
     self, CredentialEvent, CredentialReceipt, CredentialReceiptError, CredentialRecord,
@@ -854,6 +857,34 @@ impl From<rusqlite::Error> for RecordProjectInitializationReceiptError {
     }
 }
 
+/// A persisted §5.1 `GlobalConfigRevision` plus when it landed. Unlike
+/// `ProjectIntentRevisionRecord`, there is no separate "amendment" concept
+/// here -- a new `GlobalConfigRevision` row *is* the amendment, gated
+/// entirely by `save_global_config_revision`'s preview re-check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalConfigRevisionRecord {
+    pub revision: GlobalConfigRevision,
+    pub created_at: String,
+}
+
+/// `save_global_config_revision`'s failure modes: the SQL layer (a
+/// duplicate `revision`, surfaced as a primary-key violation), or
+/// `config::validate_save_global_config_revision`'s own preview-hash/
+/// project-set/expiry/second-confirmation checks rejecting the save
+/// (`Rejected`, carrying every violation found rather than just the
+/// first -- same multi-error shape the domain function itself returns).
+#[derive(Debug)]
+pub enum SaveGlobalConfigRevisionError {
+    Sql(rusqlite::Error),
+    Rejected(Vec<SaveGlobalConfigError>),
+}
+
+impl From<rusqlite::Error> for SaveGlobalConfigRevisionError {
+    fn from(value: rusqlite::Error) -> Self {
+        SaveGlobalConfigRevisionError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -1028,6 +1059,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v16,
     migrate_v17,
     migrate_v18,
+    migrate_v21,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -1527,6 +1559,39 @@ fn migrate_v18(conn: &Connection) -> rusqlite::Result<()> {
             binding_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (project_id, skill_digest)
+        );
+        ",
+    )
+}
+
+/// config.rs's two tables (this file's 19th wired module, and -- along with
+/// its `review`/`replan` siblings landing in parallel worktrees -- the last
+/// of the pure-logic modules with zero real callers). `global_config_revisions`
+/// is append-only keyed by `revision` alone (not a composite key like
+/// `project_intent_revisions`'s `(project_id, revision)`): §5.1's config
+/// model has exactly one global lineage, not one per project, so `revision`
+/// on its own is already a natural, globally-unique identity -- same
+/// reasoning as `qualification_receipts`/`skill_install_receipts` using
+/// their own single natural key. `project_config_patches` is a
+/// *current-state* row per project (`PRIMARY KEY (project_id)`, `INSERT OR
+/// REPLACE`d), not append-only -- unlike `GlobalConfigRevision`, nothing in
+/// `config.rs` treats old `ProjectConfigPatch` revisions as still
+/// addressable once superseded, matching `global_skill_bindings`'s
+/// current-row reasoning rather than `project_intent_revisions`'s
+/// append-only one.
+fn migrate_v21(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS global_config_revisions (
+            revision INTEGER PRIMARY KEY,
+            revision_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_config_patches (
+            project_id TEXT PRIMARY KEY,
+            patch_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
         ",
     )
@@ -4038,6 +4103,153 @@ impl EventStore {
         Ok(binding_json.map(|binding_json| {
             serde_json::from_str(&binding_json)
                 .expect("project_skill_bindings.binding_json round-trips")
+        }))
+    }
+
+    /// config.rs's write path for `GlobalConfigRevision`: re-runs
+    /// `config::validate_save_global_config_revision` server-side against
+    /// the caller-supplied `preview` (rather than trusting the caller's own
+    /// judgment that the preview is still fresh and matches), and only then
+    /// appends the new revision row. `GlobalConfigRevision` itself has no
+    /// validating constructor of its own in `config.rs` -- the *save*
+    /// operation is what's gated, not the shape of the revision being
+    /// saved -- so it is otherwise trusted directly, same reasoning as
+    /// `record_global_skill_binding` trusting a whole client-supplied
+    /// `GlobalSkillBinding`.
+    pub fn save_global_config_revision(
+        &mut self,
+        revision: GlobalConfigRevision,
+        preview: &GlobalConfigImpactPreview,
+        submitted_preview_hash: &str,
+        current_project_set_hash: &str,
+        second_confirmation_acquired: bool,
+    ) -> Result<GlobalConfigRevisionRecord, SaveGlobalConfigRevisionError> {
+        let now = time::OffsetDateTime::now_utc();
+        let errors = config::validate_save_global_config_revision(
+            preview,
+            submitted_preview_hash,
+            current_project_set_hash,
+            now,
+            second_confirmation_acquired,
+        );
+        if !errors.is_empty() {
+            return Err(SaveGlobalConfigRevisionError::Rejected(errors));
+        }
+
+        let revision_json =
+            serde_json::to_string(&revision).expect("GlobalConfigRevision is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO global_config_revisions (revision, revision_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![revision.revision, revision_json, created_at],
+        )?;
+
+        Ok(GlobalConfigRevisionRecord {
+            revision,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `save_global_config_revision` for one exact
+    /// `revision` number.
+    pub fn load_global_config_revision(
+        &self,
+        revision: u32,
+    ) -> rusqlite::Result<Option<GlobalConfigRevisionRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT revision_json, created_at FROM global_config_revisions WHERE revision = ?1",
+                rusqlite::params![revision],
+                |row| {
+                    let revision_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((revision_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(revision_json, created_at)| {
+            let revision: GlobalConfigRevision = serde_json::from_str(&revision_json)
+                .expect("global_config_revisions.revision_json round-trips");
+            GlobalConfigRevisionRecord {
+                revision,
+                created_at,
+            }
+        }))
+    }
+
+    /// The derived "current global config" read: the highest `revision`
+    /// ever recorded, not a separately stored value -- same reasoning as
+    /// `load_current_project_intent_revision`. `resolve_project_config`
+    /// always resolves against this one.
+    pub fn load_current_global_config_revision(
+        &self,
+    ) -> rusqlite::Result<Option<GlobalConfigRevisionRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT revision_json, created_at FROM global_config_revisions \
+                 ORDER BY revision DESC LIMIT 1",
+                [],
+                |row| {
+                    let revision_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((revision_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(revision_json, created_at)| {
+            let revision: GlobalConfigRevision = serde_json::from_str(&revision_json)
+                .expect("global_config_revisions.revision_json round-trips");
+            GlobalConfigRevisionRecord {
+                revision,
+                created_at,
+            }
+        }))
+    }
+
+    /// config.rs's write path for the *current-state* `project_config_patches`
+    /// row. `ProjectConfigPatch` has no validating constructor of its own
+    /// either (unlike `GlobalConfigRevision`'s save, which is gated by
+    /// `validate_save_global_config_revision`), so it is trusted directly
+    /// and upserted (`INSERT OR REPLACE`) -- a project has exactly one
+    /// *current* patch, and a new one amending it is expected to replace the
+    /// row, not conflict with it, same reasoning as
+    /// `record_global_skill_binding`. Unlike `project_skill_bindings`,
+    /// `ProjectConfigPatch` already carries its own `project_id` field, so
+    /// there is no separate caller-supplied key half to thread through.
+    pub fn record_project_config_patch(
+        &mut self,
+        patch: &ProjectConfigPatch,
+    ) -> rusqlite::Result<String> {
+        let patch_json = serde_json::to_string(patch).expect("ProjectConfigPatch is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO project_config_patches (project_id, patch_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![patch.project_id, patch_json, created_at],
+        )?;
+        Ok(created_at)
+    }
+
+    /// Read counterpart to `record_project_config_patch` -- the current
+    /// snapshot for `project_id`, if one has ever been recorded.
+    pub fn load_project_config_patch(
+        &self,
+        project_id: &str,
+    ) -> rusqlite::Result<Option<ProjectConfigPatch>> {
+        let patch_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT patch_json FROM project_config_patches WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(patch_json.map(|patch_json| {
+            serde_json::from_str(&patch_json)
+                .expect("project_config_patches.patch_json round-trips")
         }))
     }
 
@@ -6572,6 +6784,365 @@ mod tests {
             .load_project_skill_binding("proj-2", "pkg-1")
             .unwrap()
             .is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_config_profile(model_id: &str) -> autome_domain::config::AgentExecutionProfile {
+        autome_domain::config::AgentExecutionProfile {
+            adapter_id: "codex".into(),
+            installation_id: "install-1".into(),
+            model_id: model_id.into(),
+            effort_id: "medium".into(),
+            skill_policy_ref: "skill-policy-1".into(),
+        }
+    }
+
+    /// A fully-populated `GlobalConfigRevision` -- every
+    /// `CONFIGURABLE_AI_STEPS` entry gets a `step_defaults` and
+    /// `human_review_default` row, matching `config.rs`'s own test fixture
+    /// shape (`resolve_project_config` requires every configurable step to
+    /// have a global default or it refuses to resolve at all).
+    fn fixture_global_config_revision(revision: u32) -> GlobalConfigRevision {
+        use autome_domain::config::{HumanReviewSetting, CONFIGURABLE_AI_STEPS};
+        use std::collections::HashMap;
+
+        let mut step_defaults = HashMap::new();
+        let mut human_review_default = HashMap::new();
+        for step in CONFIGURABLE_AI_STEPS {
+            step_defaults.insert(
+                attempt::LoopStepId((*step).to_string()),
+                fixture_config_profile("global-model"),
+            );
+            human_review_default.insert(
+                attempt::LoopStepId((*step).to_string()),
+                HumanReviewSetting::Off,
+            );
+        }
+        GlobalConfigRevision {
+            revision,
+            step_defaults,
+            human_review_default,
+            environment_defaults_ref: "env-default".into(),
+            budget_defaults_ref: "budget-default".into(),
+            skill_policy_default_ref: "skill-policy-default".into(),
+            safety_policy_hash: "safety-floor-1".into(),
+            content_hash: format!("global-content-{revision}"),
+        }
+    }
+
+    fn fixture_config_preview(
+        expires_at: time::OffsetDateTime,
+        requires_second_confirmation: bool,
+    ) -> GlobalConfigImpactPreview {
+        GlobalConfigImpactPreview {
+            base_global_revision: 1,
+            proposed_config_hash: "proposed-1".into(),
+            observed_project_set_hash: "project-set-1".into(),
+            affected_projects: vec![],
+            blocking_project_ids: vec![],
+            requires_second_confirmation,
+            expires_at,
+            preview_hash: "preview-1".into(),
+        }
+    }
+
+    fn fixture_project_config_patch(project_id: &str) -> ProjectConfigPatch {
+        ProjectConfigPatch {
+            project_id: project_id.into(),
+            revision: 1,
+            step_overrides: std::collections::HashMap::new(),
+            human_review_overrides: std::collections::HashMap::new(),
+            environment_override_ref: None,
+            budget_override_ref: None,
+            skill_policy_override_ref: None,
+            content_hash: "patch-content-1".into(),
+        }
+    }
+
+    /// A well-formed `save_global_config_revision` call, with a
+    /// non-expired, hash-matching, no-second-confirmation-needed preview,
+    /// lands one `global_config_revisions` row readable back both by exact
+    /// `revision` and as the "current" one.
+    #[test]
+    fn save_global_config_revision_persists_a_matching_preview() {
+        let root = temp_data_root("save-global-config-revision");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_global_config_revision(1).unwrap().is_none());
+        assert!(store.load_current_global_config_revision().unwrap().is_none());
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        let record = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap();
+        assert_eq!(record.revision.revision, 1);
+
+        assert_eq!(
+            store.load_global_config_revision(1).unwrap().unwrap().revision,
+            record.revision
+        );
+        assert_eq!(
+            store
+                .load_current_global_config_revision()
+                .unwrap()
+                .unwrap()
+                .revision,
+            record.revision
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `load_current_global_config_revision` tracks the highest `revision`
+    /// ever recorded, not insertion order or a separately stored pointer.
+    #[test]
+    fn load_current_global_config_revision_is_the_highest_revision_recorded() {
+        let root = temp_data_root("current-global-config-revision");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap();
+        store
+            .save_global_config_revision(
+                fixture_global_config_revision(2),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .load_current_global_config_revision()
+                .unwrap()
+                .unwrap()
+                .revision
+                .revision,
+            2
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `save_global_config_revision` re-runs
+    /// `config::validate_save_global_config_revision` server-side -- a
+    /// preview-hash mismatch is refused and leaves no row behind, same as
+    /// the domain-level test in `config.rs`.
+    #[test]
+    fn save_global_config_revision_rejects_a_preview_hash_mismatch() {
+        let root = temp_data_root("save-global-config-revision-hash-mismatch");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        let err = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "wrong-hash",
+                "project-set-1",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveGlobalConfigRevisionError::Rejected(ref errors)
+                    if errors == &vec![SaveGlobalConfigError::PreviewHashMismatch]
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_global_config_revision(1).unwrap().is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A project-set hash that no longer matches what the preview observed
+    /// is refused, same reasoning as the hash-mismatch case.
+    #[test]
+    fn save_global_config_revision_rejects_a_changed_project_set() {
+        let root = temp_data_root("save-global-config-revision-project-set-changed");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        let err = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "different-project-set",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveGlobalConfigRevisionError::Rejected(ref errors)
+                    if errors == &vec![SaveGlobalConfigError::ProjectSetChanged]
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An expired preview is refused even if the hash and project set both
+    /// still match.
+    #[test]
+    fn save_global_config_revision_rejects_an_expired_preview() {
+        let root = temp_data_root("save-global-config-revision-expired");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let already_expired = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+        let err = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(already_expired, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveGlobalConfigRevisionError::Rejected(ref errors)
+                    if errors == &vec![SaveGlobalConfigError::PreviewExpired]
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A preview that demands a second confirmation is refused without one,
+    /// then accepted once `second_confirmation_acquired` is true.
+    #[test]
+    fn save_global_config_revision_requires_second_confirmation_then_succeeds() {
+        let root = temp_data_root("save-global-config-revision-second-confirmation");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        let err = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, true),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveGlobalConfigRevisionError::Rejected(ref errors)
+                    if errors == &vec![SaveGlobalConfigError::SecondConfirmationRequired]
+            ),
+            "{err:?}"
+        );
+        assert!(store.load_global_config_revision(1).unwrap().is_none());
+
+        let record = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, true),
+                "preview-1",
+                "project-set-1",
+                true,
+            )
+            .unwrap();
+        assert_eq!(record.revision.revision, 1);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Saving the same `revision` number twice hits the `revision INTEGER
+    /// PRIMARY KEY` constraint and surfaces as `Sql`, not a silent
+    /// overwrite -- `global_config_revisions` is an append-only lineage,
+    /// unlike `project_config_patches`'s upsert.
+    #[test]
+    fn save_global_config_revision_rejects_a_duplicate_revision_number() {
+        let root = temp_data_root("save-global-config-revision-duplicate");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+        store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap();
+
+        let err = store
+            .save_global_config_revision(
+                fixture_global_config_revision(1),
+                &fixture_config_preview(far_future, false),
+                "preview-1",
+                "project-set-1",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, SaveGlobalConfigRevisionError::Sql(_)),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `record_project_config_patch` upserts the current-state row for a
+    /// `project_id` -- a second call for the same project replaces the
+    /// row, and a different project's row is untouched.
+    #[test]
+    fn record_project_config_patch_upserts_by_project_id() {
+        let root = temp_data_root("record-project-config-patch");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        assert!(store.load_project_config_patch("proj-1").unwrap().is_none());
+
+        let patch = fixture_project_config_patch("proj-1");
+        store.record_project_config_patch(&patch).unwrap();
+        assert_eq!(
+            store.load_project_config_patch("proj-1").unwrap().unwrap(),
+            patch
+        );
+
+        let mut updated = patch.clone();
+        updated.revision = 2;
+        updated.environment_override_ref = Some("env-override-1".into());
+        store.record_project_config_patch(&updated).unwrap();
+        assert_eq!(
+            store.load_project_config_patch("proj-1").unwrap().unwrap(),
+            updated
+        );
+
+        assert!(store.load_project_config_patch("proj-2").unwrap().is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }
