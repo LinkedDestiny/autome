@@ -13,12 +13,14 @@
 //! contract version" is already structurally impossible, not something a
 //! new predicate here would add value by re-checking.
 
+use serde::{Deserialize, Serialize};
+
 use crate::run::RunHold;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureFingerprint(pub String);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureOccurrence {
     pub fingerprint: FailureFingerprint,
     pub introduces_new_fact: bool,
@@ -44,13 +46,13 @@ pub fn evaluate_stall(history: &[FailureOccurrence]) -> Option<RunHold> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureCategory {
     TransientHarnessError,
     BusinessFailure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundedBackoffPolicy {
     base_delay_ms: u64,
     max_delay_ms: u64,
@@ -93,7 +95,7 @@ pub fn may_auto_retry(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DollarBudgetKind {
     Hard,
     Soft,
@@ -142,7 +144,7 @@ pub struct FrozenPolicySnapshot {
     pub dollar_budget: Option<DollarBudget>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BudgetUsage {
     pub wall_clock_seconds: u64,
     pub turns: u32,
@@ -150,7 +152,7 @@ pub struct BudgetUsage {
     pub dollars_spent_cents: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BudgetLimitKind {
     WallClockSeconds,
     Turns,
@@ -158,7 +160,7 @@ pub enum BudgetLimitKind {
     Dollars,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BudgetCheckOutcome {
     pub hard_exhausted: Vec<BudgetLimitKind>,
     pub soft_alerts: Vec<BudgetLimitKind>,

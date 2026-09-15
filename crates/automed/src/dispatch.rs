@@ -109,6 +109,10 @@ use crate::store::{
     UserCorrectionRecord,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile, LoopStepId};
+use autome_domain::bounded_failure::{
+    self, BoundedBackoffPolicy, BudgetUsage, DollarBudget, FailureCategory, FailureOccurrence,
+    FrozenPolicySnapshot,
+};
 use autome_domain::capability_broker::{
     self, BrokerActionError, BrokerActionOrigin, UserInitiatedOnlyActionKind,
 };
@@ -2706,6 +2710,18 @@ fn try_dispatch_read(
         "project_intent.get_initialization_receipt" => {
             Some(read_project_initialization_receipt_get(store, command))
         }
+        "bounded_failure.evaluate_stall" => Some(read_bounded_failure_evaluate_stall(command)),
+        "bounded_failure.may_auto_retry" => Some(read_bounded_failure_may_auto_retry(command)),
+        "bounded_failure.backoff_delay_ms" => {
+            Some(read_bounded_failure_backoff_delay_ms(command))
+        }
+        "bounded_failure.check_budget" => Some(read_bounded_failure_check_budget(command)),
+        "bounded_failure.has_exceeded_node_attempt_limit" => Some(
+            read_bounded_failure_has_exceeded_node_attempt_limit(command),
+        ),
+        "bounded_failure.has_exceeded_replan_limit" => {
+            Some(read_bounded_failure_has_exceeded_replan_limit(command))
+        }
         _ => None,
     }
 }
@@ -3437,6 +3453,219 @@ fn read_node_get(store: &EventStore, command: &Command) -> Result<Value, (ReplyE
             format!("no node event ever journaled for {aggregate_id}"),
         )),
     }
+}
+
+/// §6.7 dispatch-layer-only mirror of `FrozenPolicySnapshot`'s
+/// `dollar_budget` field. Unlike `BoundedBackoffPolicy` (whose fields are
+/// private but carry no invariant beyond what `new` itself copies -- see
+/// its own `Deserialize` derive above), `DollarBudget` deliberately has no
+/// `Deserialize` impl: its only constructor is
+/// `DollarBudget::classify(limit_cents, provider_usage_is_streamable_or_server_enforced)`,
+/// and a `#[derive(Deserialize)]` placed directly on `DollarBudget` would
+/// generate code in the same module that can set its private `kind` field
+/// straight from JSON, bypassing `classify` entirely and letting a caller
+/// self-label a locally-estimated cost `Hard`. This struct carries only the
+/// fact `classify` actually accepts; `build_frozen_policy_snapshot` below
+/// is the only place a `DollarBudget` gets constructed from IPC input.
+#[derive(Debug, Clone, Deserialize)]
+struct DollarBudgetInputParam {
+    limit_cents: u64,
+    provider_usage_is_streamable_or_server_enforced: bool,
+}
+
+/// §6.7 dispatch-layer-only mirror of `FrozenPolicySnapshot`, for the same
+/// reason as `DollarBudgetInputParam`: `FrozenPolicySnapshot` transitively
+/// contains `Option<DollarBudget>`, so it cannot get a direct `Deserialize`
+/// derive either without the same bypass.
+#[derive(Debug, Clone, Deserialize)]
+struct FrozenPolicySnapshotInputParam {
+    max_attempts_per_node: u32,
+    max_replan_count: u32,
+    max_wall_clock_seconds: u64,
+    max_turns: u32,
+    max_tokens: u64,
+    #[serde(default)]
+    dollar_budget: Option<DollarBudgetInputParam>,
+}
+
+fn build_frozen_policy_snapshot(input: FrozenPolicySnapshotInputParam) -> FrozenPolicySnapshot {
+    FrozenPolicySnapshot {
+        max_attempts_per_node: input.max_attempts_per_node,
+        max_replan_count: input.max_replan_count,
+        max_wall_clock_seconds: input.max_wall_clock_seconds,
+        max_turns: input.max_turns,
+        max_tokens: input.max_tokens,
+        dollar_budget: input.dollar_budget.map(|d| {
+            DollarBudget::classify(
+                d.limit_cents,
+                d.provider_usage_is_streamable_or_server_enforced,
+            )
+        }),
+    }
+}
+
+/// §6.7: `{ history: [FailureOccurrence] }` -- stateless gate, same shape
+/// as `read_historical_red_light_classify_pre_existing_failure`. Returns
+/// `{ hold: Option<RunHold> }`.
+fn read_bounded_failure_evaluate_stall(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let history =
+        parse_failure_occurrence_history_param(command).map_err(dispatch_error_to_reply_error)?;
+    let hold = bounded_failure::evaluate_stall(&history);
+    Ok(serde_json::json!({ "hold": hold }))
+}
+
+fn parse_failure_occurrence_history_param(
+    command: &Command,
+) -> Result<Vec<FailureOccurrence>, DispatchError> {
+    let value = command
+        .params
+        .get("history")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.history is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.history is not a valid Vec<FailureOccurrence>: {e}"
+        ))
+    })
+}
+
+/// §6.7: `{ category, attempt_index, policy }` -- re-exercises
+/// `may_auto_retry` (transient errors retry within a bounded exponential
+/// backoff; business failures never auto-retry) server-side. Returns
+/// `{ may_retry: bool }`.
+fn read_bounded_failure_may_auto_retry(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let category =
+        parse_failure_category_param(command).map_err(dispatch_error_to_reply_error)?;
+    let attempt_index =
+        parse_u32_param(command, "attempt_index").map_err(dispatch_error_to_reply_error)?;
+    let policy =
+        parse_bounded_backoff_policy_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "may_retry": bounded_failure::may_auto_retry(category, attempt_index, &policy),
+    }))
+}
+
+fn parse_failure_category_param(command: &Command) -> Result<FailureCategory, DispatchError> {
+    let value = command
+        .params
+        .get("category")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.category is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.category is not a valid FailureCategory: {e}"
+        ))
+    })
+}
+
+fn parse_bounded_backoff_policy_param(
+    command: &Command,
+) -> Result<BoundedBackoffPolicy, DispatchError> {
+    let value = command
+        .params
+        .get("policy")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.policy is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.policy is not a valid BoundedBackoffPolicy: {e}"
+        ))
+    })
+}
+
+/// §6.7: `{ policy, attempt_index }` -- the same bounded exponential
+/// backoff `may_auto_retry` uses internally, exposed directly so a caller
+/// can show/schedule the delay without reimplementing the capped-growth
+/// formula. Returns `{ delay_ms: u64 }`.
+fn read_bounded_failure_backoff_delay_ms(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let policy =
+        parse_bounded_backoff_policy_param(command).map_err(dispatch_error_to_reply_error)?;
+    let attempt_index =
+        parse_u32_param(command, "attempt_index").map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "delay_ms": policy.delay_ms_for_attempt(attempt_index),
+    }))
+}
+
+/// §6.7: `{ snapshot: FrozenPolicySnapshotInputParam, usage: BudgetUsage }`
+/// -- re-exercises `check_budget` (wall-clock/turns/tokens always hard;
+/// the dollar limit's hardness is whatever `DollarBudget::classify`
+/// already determined) server-side. Returns
+/// `{ hard_exhausted: [BudgetLimitKind], soft_alerts: [BudgetLimitKind],
+/// hold: Option<RunHold> }`, collecting every violation rather than just
+/// the first, matching the `historical_red_light.evaluate` "check"
+/// convention.
+fn read_bounded_failure_check_budget(command: &Command) -> Result<Value, (ReplyErrorCode, String)> {
+    let snapshot =
+        parse_frozen_policy_snapshot_param(command).map_err(dispatch_error_to_reply_error)?;
+    let usage = parse_budget_usage_param(command).map_err(dispatch_error_to_reply_error)?;
+    let outcome = bounded_failure::check_budget(&snapshot, &usage);
+    Ok(serde_json::json!({
+        "hard_exhausted": outcome.hard_exhausted,
+        "soft_alerts": outcome.soft_alerts,
+        "hold": outcome.into_run_hold(),
+    }))
+}
+
+fn parse_frozen_policy_snapshot_param(
+    command: &Command,
+) -> Result<FrozenPolicySnapshot, DispatchError> {
+    let value = command
+        .params
+        .get("snapshot")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.snapshot is required".to_string()))?;
+    let input: FrozenPolicySnapshotInputParam = serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.snapshot is not a valid FrozenPolicySnapshotInputParam: {e}"
+        ))
+    })?;
+    Ok(build_frozen_policy_snapshot(input))
+}
+
+fn parse_budget_usage_param(command: &Command) -> Result<BudgetUsage, DispatchError> {
+    let value = command
+        .params
+        .get("usage")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.usage is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.usage is not a valid BudgetUsage: {e}"))
+    })
+}
+
+/// §6.7: `{ snapshot: FrozenPolicySnapshotInputParam, attempts_for_node }`
+/// -- re-exercises `has_exceeded_node_attempt_limit` server-side. Returns
+/// `{ exceeded: bool }`.
+fn read_bounded_failure_has_exceeded_node_attempt_limit(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let snapshot =
+        parse_frozen_policy_snapshot_param(command).map_err(dispatch_error_to_reply_error)?;
+    let attempts_for_node =
+        parse_u32_param(command, "attempts_for_node").map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "exceeded": bounded_failure::has_exceeded_node_attempt_limit(attempts_for_node, &snapshot),
+    }))
+}
+
+/// §6.7: `{ snapshot: FrozenPolicySnapshotInputParam, replan_count }` --
+/// re-exercises `has_exceeded_replan_limit` server-side. Returns
+/// `{ exceeded: bool }`.
+fn read_bounded_failure_has_exceeded_replan_limit(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let snapshot =
+        parse_frozen_policy_snapshot_param(command).map_err(dispatch_error_to_reply_error)?;
+    let replan_count =
+        parse_u32_param(command, "replan_count").map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "exceeded": bounded_failure::has_exceeded_replan_limit(replan_count, &snapshot),
+    }))
 }
 
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
@@ -8914,6 +9143,441 @@ mod tests {
         let (mut store, root) = temp_store_with_isolated_root();
 
         let cmd = command("project_intent.record_initialization_receipt", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn failure_occurrence_json(fingerprint: &str, introduces_new_fact: bool) -> Value {
+        json!({
+            "fingerprint": fingerprint,
+            "introduces_new_fact": introduces_new_fact,
+        })
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_evaluate_stall_detects_three_identical_fingerprints_with_no_new_facts()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.evaluate_stall",
+            json!({
+                "history": [
+                    failure_occurrence_json("fp-1", false),
+                    failure_occurrence_json("fp-1", false),
+                    failure_occurrence_json("fp-1", false),
+                ],
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["hold"], json!("Stalled")),
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.evaluate_stall failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_evaluate_stall_is_none_with_fewer_than_three_occurrences() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.evaluate_stall",
+            json!({
+                "history": [
+                    failure_occurrence_json("fp-1", false),
+                    failure_occurrence_json("fp-1", false),
+                ],
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["hold"], json!(null)),
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.evaluate_stall failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_evaluate_stall_is_invalid_params_without_history() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("bounded_failure.evaluate_stall", json!({}));
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn bounded_backoff_policy_json(base_delay_ms: u64, max_delay_ms: u64, max_retries: u32) -> Value {
+        json!({
+            "base_delay_ms": base_delay_ms,
+            "max_delay_ms": max_delay_ms,
+            "max_retries": max_retries,
+        })
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_may_auto_retry_allows_transient_errors_within_the_bound() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.may_auto_retry",
+            json!({
+                "category": "TransientHarnessError",
+                "attempt_index": 0,
+                "policy": bounded_backoff_policy_json(100, 1000, 3),
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["may_retry"], true),
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.may_auto_retry failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_may_auto_retry_never_retries_business_failures() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.may_auto_retry",
+            json!({
+                "category": "BusinessFailure",
+                "attempt_index": 0,
+                "policy": bounded_backoff_policy_json(100, 1000, 10),
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => assert_eq!(payload["may_retry"], false),
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.may_auto_retry failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_may_auto_retry_is_invalid_params_without_category() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.may_auto_retry",
+            json!({
+                "attempt_index": 0,
+                "policy": bounded_backoff_policy_json(100, 1000, 3),
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_backoff_delay_ms_grows_exponentially_but_is_capped() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let policy = bounded_backoff_policy_json(100, 450, 10);
+        let expected = [(0u32, 100u64), (1, 200), (2, 400), (3, 450)];
+        for (attempt_index, delay_ms) in expected {
+            let cmd = command(
+                "bounded_failure.backoff_delay_ms",
+                json!({ "policy": policy.clone(), "attempt_index": attempt_index }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => {
+                    assert_eq!(payload["delay_ms"], json!(delay_ms))
+                }
+                ReplyOutcome::Error { code, message } => {
+                    panic!("bounded_failure.backoff_delay_ms failed: {code:?} {message}")
+                }
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_backoff_delay_ms_is_invalid_params_without_policy() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.backoff_delay_ms",
+            json!({ "attempt_index": 0 }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn frozen_policy_snapshot_input_json(dollar_budget: Option<Value>) -> Value {
+        json!({
+            "max_attempts_per_node": 5,
+            "max_replan_count": 2,
+            "max_wall_clock_seconds": 3600,
+            "max_turns": 100,
+            "max_tokens": 1_000_000,
+            "dollar_budget": dollar_budget,
+        })
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_check_budget_is_not_exhausted_within_all_limits() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.check_budget",
+            json!({
+                "snapshot": frozen_policy_snapshot_input_json(Some(json!({
+                    "limit_cents": 1000,
+                    "provider_usage_is_streamable_or_server_enforced": true,
+                }))),
+                "usage": {
+                    "wall_clock_seconds": 10,
+                    "turns": 1,
+                    "tokens": 10,
+                    "dollars_spent_cents": 1,
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["hard_exhausted"], json!([]));
+                assert_eq!(payload["soft_alerts"], json!([]));
+                assert_eq!(payload["hold"], json!(null));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.check_budget failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_check_budget_wall_clock_turn_and_token_caps_are_always_hard() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.check_budget",
+            json!({
+                "snapshot": frozen_policy_snapshot_input_json(None),
+                "usage": {
+                    "wall_clock_seconds": 3600,
+                    "turns": 100,
+                    "tokens": 1_000_000,
+                    "dollars_spent_cents": null,
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(
+                    payload["hard_exhausted"],
+                    json!(["WallClockSeconds", "Turns", "Tokens"])
+                );
+                assert_eq!(payload["hold"], json!("BudgetExhausted"));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.check_budget failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_check_budget_a_hard_dollar_budget_exhausts_but_a_soft_one_only_alerts()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let usage = json!({
+            "wall_clock_seconds": 0,
+            "turns": 0,
+            "tokens": 0,
+            "dollars_spent_cents": 500,
+        });
+
+        let hard_cmd = command(
+            "bounded_failure.check_budget",
+            json!({
+                "snapshot": frozen_policy_snapshot_input_json(Some(json!({
+                    "limit_cents": 500,
+                    "provider_usage_is_streamable_or_server_enforced": true,
+                }))),
+                "usage": usage,
+            }),
+        );
+        let hard_outcome = handle_command(&mut store, &hard_cmd);
+        match hard_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["hard_exhausted"], json!(["Dollars"]));
+                assert_eq!(payload["hold"], json!("BudgetExhausted"));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.check_budget failed: {code:?} {message}")
+            }
+        }
+
+        let soft_cmd = command(
+            "bounded_failure.check_budget",
+            json!({
+                "snapshot": frozen_policy_snapshot_input_json(Some(json!({
+                    "limit_cents": 500,
+                    "provider_usage_is_streamable_or_server_enforced": false,
+                }))),
+                "usage": usage,
+            }),
+        );
+        let soft_outcome = handle_command(&mut store, &soft_cmd);
+        match soft_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["hard_exhausted"], json!([]));
+                assert_eq!(payload["soft_alerts"], json!(["Dollars"]));
+                assert_eq!(payload["hold"], json!(null));
+            }
+            ReplyOutcome::Error { code, message } => {
+                panic!("bounded_failure.check_budget failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_check_budget_is_invalid_params_without_snapshot() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.check_budget",
+            json!({
+                "usage": {
+                    "wall_clock_seconds": 0,
+                    "turns": 0,
+                    "tokens": 0,
+                    "dollars_spent_cents": null,
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_has_exceeded_node_attempt_limit_checks_the_boundary() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        for (attempts_for_node, expected) in [(4u32, false), (5, true)] {
+            let cmd = command(
+                "bounded_failure.has_exceeded_node_attempt_limit",
+                json!({
+                    "snapshot": frozen_policy_snapshot_input_json(None),
+                    "attempts_for_node": attempts_for_node,
+                }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => {
+                    assert_eq!(payload["exceeded"], json!(expected))
+                }
+                ReplyOutcome::Error { code, message } => panic!(
+                    "bounded_failure.has_exceeded_node_attempt_limit failed: {code:?} {message}"
+                ),
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_has_exceeded_node_attempt_limit_is_invalid_params_without_attempts_for_node()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.has_exceeded_node_attempt_limit",
+            json!({ "snapshot": frozen_policy_snapshot_input_json(None) }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_has_exceeded_replan_limit_checks_the_boundary() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        for (replan_count, expected) in [(1u32, false), (2, true)] {
+            let cmd = command(
+                "bounded_failure.has_exceeded_replan_limit",
+                json!({
+                    "snapshot": frozen_policy_snapshot_input_json(None),
+                    "replan_count": replan_count,
+                }),
+            );
+            let outcome = handle_command(&mut store, &cmd);
+            match outcome.reply.outcome {
+                ReplyOutcome::Ok { payload, .. } => {
+                    assert_eq!(payload["exceeded"], json!(expected))
+                }
+                ReplyOutcome::Error { code, message } => {
+                    panic!("bounded_failure.has_exceeded_replan_limit failed: {code:?} {message}")
+                }
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_bounded_failure_has_exceeded_replan_limit_is_invalid_params_without_replan_count()
+     {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "bounded_failure.has_exceeded_replan_limit",
+            json!({ "snapshot": frozen_policy_snapshot_input_json(None) }),
+        );
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
