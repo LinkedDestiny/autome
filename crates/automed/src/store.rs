@@ -9,16 +9,22 @@
 //! exercised directly by `state_survives_reconnect` below: there is no
 //! in-memory cache that could diverge from what was actually committed.
 
+use std::collections::HashSet;
+
 use autome_domain::attempt::{
     self, Attempt, AttemptPermissionProfile, AttemptShapeError, PermissionProfileViolation,
     PlanningWriteViolation,
+};
+use autome_domain::certificate::{
+    self, AuditVerdict, CandidateCertificate, CandidateCertificateError, CompletionCertificate,
+    CompletionCertificateError,
 };
 use autome_domain::contract::{self, ContractEvent, ContractEventError, TaskContract};
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveryChain, DeliveryChainError, DeliveredTreeCheckReceipt,
     DeliveryReceipt, DeliveryRehearsalReceipt, DeliverySubject, ProjectTargetTransitionReceipt,
 };
-use autome_domain::evidence::EvidenceReceipt;
+use autome_domain::evidence::{EvidenceReceipt, ReceiptId};
 use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
@@ -27,7 +33,8 @@ use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
     TargetRejection,
 };
-use autome_domain::readiness::ReadinessReceipt;
+use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
+use autome_domain::requirement::RequirementId;
 use autome_domain::run::{self, RunEvent, RunState, TransitionError};
 use autome_domain::task::{self, Task, TaskEvent, TaskEventError};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -428,6 +435,65 @@ impl From<rusqlite::Error> for AppendDeliveryReceiptError {
     }
 }
 
+/// A persisted §5.8 `CandidateCertificate`. Like `ReadinessRecord`, the
+/// domain type already carries its own `run_id`, so this record adds only
+/// `created_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateCertificateRecord {
+    pub certificate: CandidateCertificate,
+    pub created_at: String,
+}
+
+/// `issue_candidate_certificate`'s failure modes: the referenced readiness
+/// receipt was never recorded (`ReadinessNotFound`), or the domain's own
+/// `issue_candidate_certificate` rejected the certificate -- re-using
+/// `autome_domain::certificate`'s own validation (missing verdicts, stale
+/// readiness, etc.) rather than reimplementing it here.
+#[derive(Debug)]
+pub enum IssueCandidateCertificateError {
+    Sql(rusqlite::Error),
+    ReadinessNotFound,
+    Domain(Vec<CandidateCertificateError>),
+}
+
+impl From<rusqlite::Error> for IssueCandidateCertificateError {
+    fn from(value: rusqlite::Error) -> Self {
+        IssueCandidateCertificateError::Sql(value)
+    }
+}
+
+/// A persisted §5.8 `CompletionCertificate`. Unlike `CandidateCertificate`,
+/// `CompletionCertificate` carries no `run_id` field of its own -- it's
+/// composed from a candidate certificate and a delivery chain, neither of
+/// which it references by id once built -- so this record wraps `run_id`
+/// alongside the certificate, the same convention `AttemptRecord` uses for
+/// a domain type that doesn't carry its own key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionCertificateRecord {
+    pub run_id: String,
+    pub certificate: CompletionCertificate,
+    pub created_at: String,
+}
+
+/// `issue_completion_certificate`'s failure modes: no candidate certificate
+/// was ever issued for this `run_id` (`CandidateNotFound`), no delivery
+/// chain was ever started for it (`DeliveryChainNotFound`), or the domain's
+/// own `issue_completion_certificate` rejected it (chain not ready, missing
+/// approval decision).
+#[derive(Debug)]
+pub enum IssueCompletionCertificateError {
+    Sql(rusqlite::Error),
+    CandidateNotFound,
+    DeliveryChainNotFound,
+    Domain(CompletionCertificateError),
+}
+
+impl From<rusqlite::Error> for IssueCompletionCertificateError {
+    fn from(value: rusqlite::Error) -> Self {
+        IssueCompletionCertificateError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -568,6 +634,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v7,
     migrate_v8,
     migrate_v9,
+    migrate_v10,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -804,6 +871,30 @@ fn migrate_v9(conn: &Connection) -> rusqlite::Result<()> {
             project_target_transition_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        ",
+    )
+}
+
+/// `candidate_certificates`/`completion_certificates`: one row per
+/// `issue_candidate_certificate`/`issue_completion_certificate` call (plan
+/// §5.8). Both are keyed by `run_id` -- at most one of each certificate
+/// per run, matching the domain's own one-shot issuance functions (issuing
+/// again for the same run would mean re-litigating a decision that was
+/// already made, so a duplicate write is refused as a primary-key
+/// violation, same convention as `delivery_chains`/`readiness_receipts`).
+fn migrate_v10(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS candidate_certificates (
+            run_id TEXT PRIMARY KEY,
+            certificate_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS completion_certificates (
+            run_id TEXT PRIMARY KEY,
+            certificate_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
         ",
     )
@@ -2546,6 +2637,157 @@ impl EventStore {
         record.updated_at = updated_at;
         Ok(record)
     }
+
+    /// §5.8's first write path: issues a `CandidateCertificate` by composing
+    /// an already-recorded readiness receipt (looked up by digest via
+    /// `load_readiness`, the same record `readiness.record` produced)
+    /// rather than requiring the caller to resupply the whole receipt
+    /// blob -- callers only need to still be holding the digest they got
+    /// back from `readiness.record`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_candidate_certificate(
+        &mut self,
+        run_id: &str,
+        contract_version: u32,
+        candidate_commit: &str,
+        candidate_tree_hash: &str,
+        must_requirement_ids: &[RequirementId],
+        verdicts: &[AuditVerdict],
+        valid_receipt_ids: &HashSet<ReceiptId>,
+        readiness_receipt_digest: &str,
+        current_environment_fingerprint: &ReadinessFingerprint,
+    ) -> Result<CandidateCertificateRecord, IssueCandidateCertificateError> {
+        let readiness = self
+            .load_readiness(readiness_receipt_digest)?
+            .ok_or(IssueCandidateCertificateError::ReadinessNotFound)?;
+        let certificate = certificate::issue_candidate_certificate(
+            run_id,
+            contract_version,
+            candidate_commit,
+            candidate_tree_hash,
+            must_requirement_ids,
+            verdicts,
+            valid_receipt_ids,
+            &readiness.receipt,
+            current_environment_fingerprint,
+        )
+        .map_err(IssueCandidateCertificateError::Domain)?;
+
+        let certificate_json =
+            serde_json::to_string(&certificate).expect("CandidateCertificate is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO candidate_certificates (run_id, certificate_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![run_id, certificate_json, created_at],
+        )?;
+
+        Ok(CandidateCertificateRecord {
+            certificate,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `issue_candidate_certificate` -- looks up the
+    /// recorded `candidate_certificates` row for `run_id`, if any.
+    pub fn load_candidate_certificate(
+        &self,
+        run_id: &str,
+    ) -> rusqlite::Result<Option<CandidateCertificateRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT certificate_json, created_at FROM candidate_certificates \
+                 WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| {
+                    let certificate_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((certificate_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(certificate_json, created_at)| {
+            let certificate: CandidateCertificate = serde_json::from_str(&certificate_json)
+                .expect("candidate_certificates.certificate_json round-trips");
+            CandidateCertificateRecord {
+                certificate,
+                created_at,
+            }
+        }))
+    }
+
+    /// §5.8's second write path: issues a `CompletionCertificate` by
+    /// composing the already-recorded `CandidateCertificate` for this run
+    /// and the already-recorded `DeliveryChainRecord` (rebuilt into a live
+    /// `DeliveryChain`) -- the caller supplies only what neither of those
+    /// records already carries: the delivered tree's hash and a reference
+    /// to the human approval decision.
+    pub fn issue_completion_certificate(
+        &mut self,
+        run_id: &str,
+        delivery_tree_hash: &str,
+        user_approval_decision_ref: &str,
+    ) -> Result<CompletionCertificateRecord, IssueCompletionCertificateError> {
+        let candidate = self
+            .load_candidate_certificate(run_id)?
+            .ok_or(IssueCompletionCertificateError::CandidateNotFound)?;
+        let delivery_chain = self
+            .load_delivery_chain(run_id)?
+            .ok_or(IssueCompletionCertificateError::DeliveryChainNotFound)?;
+        let certificate = certificate::issue_completion_certificate(
+            &candidate.certificate,
+            &delivery_chain.rebuild(),
+            delivery_tree_hash,
+            user_approval_decision_ref,
+        )
+        .map_err(IssueCompletionCertificateError::Domain)?;
+
+        let certificate_json =
+            serde_json::to_string(&certificate).expect("CompletionCertificate is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO completion_certificates (run_id, certificate_json, created_at) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![run_id, certificate_json, created_at],
+        )?;
+
+        Ok(CompletionCertificateRecord {
+            run_id: run_id.to_string(),
+            certificate,
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `issue_completion_certificate` -- looks up the
+    /// recorded `completion_certificates` row for `run_id`, if any.
+    pub fn load_completion_certificate(
+        &self,
+        run_id: &str,
+    ) -> rusqlite::Result<Option<CompletionCertificateRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT certificate_json, created_at FROM completion_certificates \
+                 WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| {
+                    let certificate_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((certificate_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(certificate_json, created_at)| {
+            let certificate: CompletionCertificate = serde_json::from_str(&certificate_json)
+                .expect("completion_certificates.certificate_json round-trips");
+            CompletionCertificateRecord {
+                run_id: run_id.to_string(),
+                certificate,
+                created_at,
+            }
+        }))
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -3543,6 +3785,383 @@ mod tests {
             )
             .unwrap();
         assert!(record.rebuild().is_ready_for_completion().is_ok());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_readiness_fingerprint() -> ReadinessFingerprint {
+        use autome_domain::readiness::{ExistingRepoSubject, ReadinessSubject};
+
+        ReadinessFingerprint {
+            profile_hash: "profile-1".into(),
+            environment_relevant_inputs_digest: "env-digest-1".into(),
+            subject: ReadinessSubject::ExistingRepo(ExistingRepoSubject {
+                repository_identity_hash: "repo-hash".into(),
+                base_commit: "base".into(),
+                target_head: "head".into(),
+                worktree_fingerprint: "wt-1".into(),
+            }),
+        }
+    }
+
+    fn fixture_audit_verdict(
+        requirement_id: &str,
+        outcome: autome_domain::certificate::AuditOutcome,
+        receipt_ids: Vec<&str>,
+    ) -> AuditVerdict {
+        AuditVerdict::new(
+            RequirementId(requirement_id.into()),
+            outcome,
+            receipt_ids.into_iter().map(|id| ReceiptId(id.into())).collect(),
+        )
+        .unwrap()
+    }
+
+    fn record_ready_readiness(store: &mut EventStore, digest: &str) {
+        let mut receipt = fixture_readiness_receipt(digest);
+        receipt.profile_hash = "profile-1".into();
+        receipt.environment_relevant_inputs_digest = "env-digest-1".into();
+        store.record_readiness(&receipt).unwrap();
+    }
+
+    /// A well-formed `issue_candidate_certificate` call composes an
+    /// already-recorded readiness receipt (looked up by digest) with a
+    /// satisfied verdict for every `must` requirement, lands one
+    /// `candidate_certificates` row, and is readable back via
+    /// `load_candidate_certificate`.
+    #[test]
+    fn issue_candidate_certificate_issues_a_well_formed_certificate_and_reads_it_back() {
+        let root = temp_data_root("issue-candidate-certificate");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        let must = vec![RequirementId("R-001".into())];
+        let verdicts = vec![fixture_audit_verdict(
+            "R-001",
+            autome_domain::certificate::AuditOutcome::Satisfied,
+            vec!["EV-1"],
+        )];
+        let mut valid_receipt_ids = HashSet::new();
+        valid_receipt_ids.insert(ReceiptId("EV-1".into()));
+
+        assert!(store.load_candidate_certificate("run-1").unwrap().is_none());
+
+        let record = store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &must,
+                &verdicts,
+                &valid_receipt_ids,
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+        assert_eq!(record.certificate.run_id, "run-1");
+        assert_eq!(record.certificate.covered_requirement_ids, must);
+
+        let loaded = store.load_candidate_certificate("run-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Referencing a `readiness_receipt_digest` that was never recorded is
+    /// `ReadinessNotFound`, not a domain rejection -- there is no receipt to
+    /// even check readiness/currency against yet.
+    #[test]
+    fn issue_candidate_certificate_is_readiness_not_found_for_an_unrecorded_digest() {
+        let root = temp_data_root("issue-candidate-certificate-readiness-not-found");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+
+        let err = store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "no-such-digest",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, IssueCandidateCertificateError::ReadinessNotFound),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `must` requirement with no verdict at all is rejected by the
+    /// domain's own `issue_candidate_certificate`, surfaced here as
+    /// `IssueCandidateCertificateError::Domain` rather than reimplemented at
+    /// the store layer.
+    #[test]
+    fn issue_candidate_certificate_passes_through_a_domain_rejection() {
+        let root = temp_data_root("issue-candidate-certificate-domain-rejection");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        let must = vec![RequirementId("R-001".into())];
+
+        let err = store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &must,
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                IssueCandidateCertificateError::Domain(errors)
+                    if errors == &vec![CandidateCertificateError::MissingVerdict {
+                        requirement: RequirementId("R-001".into())
+                    }]
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second `issue_candidate_certificate` call for the same `run_id`
+    /// must fail rather than silently replacing a prior candidate
+    /// certificate.
+    #[test]
+    fn issue_candidate_certificate_refuses_to_reuse_an_existing_run_id() {
+        let root = temp_data_root("issue-candidate-certificate-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+
+        store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+        let err = store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, IssueCandidateCertificateError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn build_ready_delivery_chain(store: &mut EventStore, run_id: &str) {
+        let subject = fixture_existing_repo_delivery_subject();
+        store.start_delivery_chain(run_id, &subject).unwrap();
+        store
+            .append_delivery_rehearsal(run_id, &fixture_rehearsal(subject.clone()))
+            .unwrap();
+        store
+            .append_delivery_approval(run_id, &fixture_approval())
+            .unwrap();
+        store
+            .append_delivery_delivery(
+                run_id,
+                &fixture_delivery_receipt(autome_domain::delivery::DeliveryOutcome::Succeeded),
+            )
+            .unwrap();
+        store
+            .append_delivery_tree_check(run_id, &fixture_tree_check(true))
+            .unwrap();
+    }
+
+    /// A well-formed `issue_completion_certificate` call composes an
+    /// already-issued candidate certificate with an already-ready delivery
+    /// chain, lands one `completion_certificates` row, and is readable back
+    /// via `load_completion_certificate`.
+    #[test]
+    fn issue_completion_certificate_issues_a_well_formed_certificate_and_reads_it_back() {
+        let root = temp_data_root("issue-completion-certificate");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+        build_ready_delivery_chain(&mut store, "run-1");
+
+        assert!(store.load_completion_certificate("run-1").unwrap().is_none());
+
+        let record = store
+            .issue_completion_certificate("run-1", "tree-2", "decision:1")
+            .unwrap();
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.certificate.delivery_tree_hash, "tree-2");
+
+        let loaded = store.load_completion_certificate("run-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issuing a completion certificate for a `run_id` with no candidate
+    /// certificate is `CandidateNotFound`, not a domain rejection.
+    #[test]
+    fn issue_completion_certificate_is_candidate_not_found_without_a_candidate_certificate() {
+        let root = temp_data_root("issue-completion-certificate-candidate-not-found");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        build_ready_delivery_chain(&mut store, "run-1");
+
+        let err = store
+            .issue_completion_certificate("run-1", "tree-2", "decision:1")
+            .unwrap_err();
+        assert!(
+            matches!(err, IssueCompletionCertificateError::CandidateNotFound),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issuing a completion certificate for a `run_id` with no delivery
+    /// chain started is `DeliveryChainNotFound`, not a domain rejection.
+    #[test]
+    fn issue_completion_certificate_is_delivery_chain_not_found_without_a_started_chain() {
+        let root = temp_data_root("issue-completion-certificate-chain-not-found");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+
+        let err = store
+            .issue_completion_certificate("run-1", "tree-2", "decision:1")
+            .unwrap_err();
+        assert!(
+            matches!(err, IssueCompletionCertificateError::DeliveryChainNotFound),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A blank `user_approval_decision_ref` is rejected by the domain's own
+    /// `issue_completion_certificate`, surfaced here as
+    /// `IssueCompletionCertificateError::Domain` rather than reimplemented
+    /// at the store layer.
+    #[test]
+    fn issue_completion_certificate_passes_through_a_domain_rejection() {
+        let root = temp_data_root("issue-completion-certificate-domain-rejection");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+        build_ready_delivery_chain(&mut store, "run-1");
+
+        let err = store
+            .issue_completion_certificate("run-1", "tree-2", "  ")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IssueCompletionCertificateError::Domain(
+                    CompletionCertificateError::MissingUserApprovalDecision
+                )
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second `issue_completion_certificate` call for the same `run_id`
+    /// must fail rather than silently replacing a prior completion
+    /// certificate.
+    #[test]
+    fn issue_completion_certificate_refuses_to_reuse_an_existing_run_id() {
+        let root = temp_data_root("issue-completion-certificate-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        record_ready_readiness(&mut store, "RD-1");
+        store
+            .issue_candidate_certificate(
+                "run-1",
+                1,
+                "commit-1",
+                "tree-1",
+                &[],
+                &[],
+                &HashSet::new(),
+                "RD-1",
+                &fixture_readiness_fingerprint(),
+            )
+            .unwrap();
+        build_ready_delivery_chain(&mut store, "run-1");
+
+        store
+            .issue_completion_certificate("run-1", "tree-2", "decision:1")
+            .unwrap();
+        let err = store
+            .issue_completion_certificate("run-1", "tree-2", "decision:1")
+            .unwrap_err();
+        assert!(matches!(err, IssueCompletionCertificateError::Sql(_)), "{err:?}");
 
         std::fs::remove_dir_all(&root).ok();
     }

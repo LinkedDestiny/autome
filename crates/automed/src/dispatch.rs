@@ -91,18 +91,20 @@ use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
     AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord,
-    ContractAppendError, CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
-    DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
-    ExecutionQueueAppendError, GraphAppendError, ProjectAppendError, ProjectSummary,
-    ReadinessRecord, RecordAttemptError, RecordEvidenceError, RecordReadinessError,
-    StartDeliveryChainError, TaskAppendError, TaskSummary,
+    CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
+    CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord, DisposableCloneRecord,
+    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
+    GraphAppendError, IssueCandidateCertificateError, IssueCompletionCertificateError,
+    ProjectAppendError, ProjectSummary, ReadinessRecord, RecordAttemptError, RecordEvidenceError,
+    RecordReadinessError, StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
+use autome_domain::certificate::AuditVerdict;
 use autome_domain::delivery::{
     DeliveryApprovalReceipt, DeliveredTreeCheckReceipt, DeliveryReceipt, DeliveryRehearsalReceipt,
     DeliverySubject, ProjectTargetTransitionReceipt,
 };
-use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt};
+use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
@@ -110,11 +112,12 @@ use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
 };
 use autome_domain::readiness::{ReadinessFingerprint, ReadinessReceipt};
-use autome_domain::requirement::Requirement;
+use autome_domain::requirement::{Requirement, RequirementId};
 use autome_domain::run::{GraphReviewOrigin, ReadinessOrigin, RunEvent, RunState, RunTerminal};
 use autome_domain::safe_park::SafeParkReceipt;
 use autome_domain::task::{DispatchState, QueueEntry, TaskEvent};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::target_probe::{self, TargetProbeError};
@@ -171,6 +174,17 @@ pub enum DispatchError {
     /// (`Chain`), matched exhaustively below -- same reasoning as
     /// `CreateDisposableClone` above.
     AppendDeliveryReceipt(AppendDeliveryReceiptError),
+    /// §5.8 write path: `issue_candidate_certificate`'s failure modes --
+    /// the referenced readiness receipt was never recorded
+    /// (`ReadinessNotFound`) or the domain's own `issue_candidate_certificate`
+    /// rejected the certificate (`Domain`), matched exhaustively below --
+    /// same reasoning as `CreateDisposableClone` above.
+    IssueCandidateCertificate(IssueCandidateCertificateError),
+    /// §5.8 write path: `issue_completion_certificate`'s failure modes --
+    /// no candidate certificate or delivery chain was ever recorded for
+    /// this `run_id` (`CandidateNotFound`/`DeliveryChainNotFound`), or the
+    /// domain's own `issue_completion_certificate` rejected it (`Domain`).
+    IssueCompletionCertificate(IssueCompletionCertificateError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -224,6 +238,18 @@ impl From<StartDeliveryChainError> for DispatchError {
 impl From<AppendDeliveryReceiptError> for DispatchError {
     fn from(value: AppendDeliveryReceiptError) -> Self {
         DispatchError::AppendDeliveryReceipt(value)
+    }
+}
+
+impl From<IssueCandidateCertificateError> for DispatchError {
+    fn from(value: IssueCandidateCertificateError) -> Self {
+        DispatchError::IssueCandidateCertificate(value)
+    }
+}
+
+impl From<IssueCompletionCertificateError> for DispatchError {
+    fn from(value: IssueCompletionCertificateError) -> Self {
+        DispatchError::IssueCompletionCertificate(value)
     }
 }
 
@@ -622,6 +648,26 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §5.8: the two `certificate.*` write methods -- same shape again.
+    // Each composes already-recorded pieces (a readiness receipt, or a
+    // candidate certificate plus a delivery chain) rather than accepting
+    // them again, and appends no domain `Event` (a certificate is a fact
+    // issued once, not an aggregate with a reducer).
+    if command.method == "certificate.issue_candidate" {
+        let result = handle_issue_candidate_certificate(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+    if command.method == "certificate.issue_completion" {
+        let result = handle_issue_completion_certificate(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -905,6 +951,138 @@ fn parse_readiness_fingerprint_param(
         DispatchError::InvalidParams(format!(
             "params.fingerprint is not a valid ReadinessFingerprint: {e}"
         ))
+    })
+}
+
+/// Handles `certificate.issue_candidate`: `{ run_id, contract_version,
+/// candidate_commit, candidate_tree_hash, must_requirement_ids, verdicts,
+/// valid_receipt_ids, readiness_receipt_digest, fingerprint }`. Composes
+/// the already-recorded readiness receipt (looked up by
+/// `readiness_receipt_digest`, the digest `readiness.record` returned)
+/// rather than accepting the whole receipt again -- callers only need to
+/// still be holding the digest. Refuses to run while the store is in its
+/// diagnostic state, same as every other write.
+fn handle_issue_candidate_certificate(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let contract_version =
+        parse_u32_param(command, "contract_version").map_err(dispatch_error_to_reply_error)?;
+    let candidate_commit =
+        parse_string_param(command, "candidate_commit").map_err(dispatch_error_to_reply_error)?;
+    let candidate_tree_hash = parse_string_param(command, "candidate_tree_hash")
+        .map_err(dispatch_error_to_reply_error)?;
+    let must_requirement_ids =
+        parse_must_requirement_ids_param(command).map_err(dispatch_error_to_reply_error)?;
+    let verdicts = parse_audit_verdicts_param(command).map_err(dispatch_error_to_reply_error)?;
+    let valid_receipt_ids =
+        parse_valid_receipt_ids_param(command).map_err(dispatch_error_to_reply_error)?;
+    let readiness_receipt_digest = parse_string_param(command, "readiness_receipt_digest")
+        .map_err(dispatch_error_to_reply_error)?;
+    let fingerprint =
+        parse_readiness_fingerprint_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .issue_candidate_certificate(
+            &run_id,
+            contract_version,
+            &candidate_commit,
+            &candidate_tree_hash,
+            &must_requirement_ids,
+            &verdicts,
+            &valid_receipt_ids,
+            &readiness_receipt_digest,
+            &fingerprint,
+        )
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(candidate_certificate_record_json(&record))
+}
+
+fn candidate_certificate_record_json(record: &CandidateCertificateRecord) -> Value {
+    serde_json::json!({
+        "certificate": record.certificate,
+        "created_at": record.created_at,
+    })
+}
+
+fn parse_must_requirement_ids_param(
+    command: &Command,
+) -> Result<Vec<RequirementId>, DispatchError> {
+    let value = command
+        .params
+        .get("must_requirement_ids")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.must_requirement_ids is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.must_requirement_ids is not a valid Vec<RequirementId>: {e}"
+        ))
+    })
+}
+
+fn parse_audit_verdicts_param(command: &Command) -> Result<Vec<AuditVerdict>, DispatchError> {
+    let value = command
+        .params
+        .get("verdicts")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.verdicts is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.verdicts is not a valid Vec<AuditVerdict>: {e}"
+        ))
+    })
+}
+
+fn parse_valid_receipt_ids_param(command: &Command) -> Result<HashSet<ReceiptId>, DispatchError> {
+    let value = command
+        .params
+        .get("valid_receipt_ids")
+        .cloned()
+        .ok_or_else(|| {
+            DispatchError::InvalidParams("params.valid_receipt_ids is required".to_string())
+        })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!(
+            "params.valid_receipt_ids is not a valid HashSet<ReceiptId>: {e}"
+        ))
+    })
+}
+
+/// Handles `certificate.issue_completion`: `{ run_id, delivery_tree_hash,
+/// user_approval_decision_ref }`. Composes the already-issued candidate
+/// certificate and the already-recorded delivery chain for `run_id` (via
+/// `load_candidate_certificate`/`load_delivery_chain`) rather than
+/// accepting either again -- the caller supplies only what neither record
+/// already carries. Refuses to run while the store is in its diagnostic
+/// state, same as every other write.
+fn handle_issue_completion_certificate(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let delivery_tree_hash =
+        parse_string_param(command, "delivery_tree_hash").map_err(dispatch_error_to_reply_error)?;
+    let user_approval_decision_ref = parse_string_param(command, "user_approval_decision_ref")
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .issue_completion_certificate(&run_id, &delivery_tree_hash, &user_approval_decision_ref)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(completion_certificate_record_json(&record))
+}
+
+fn completion_certificate_record_json(record: &CompletionCertificateRecord) -> Value {
+    serde_json::json!({
+        "run_id": record.run_id,
+        "certificate": record.certificate,
+        "created_at": record.created_at,
     })
 }
 
@@ -1240,6 +1418,36 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::AppendDeliveryReceipt(AppendDeliveryReceiptError::Chain(e)) => {
             (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
         }
+        DispatchError::IssueCandidateCertificate(IssueCandidateCertificateError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::IssueCandidateCertificate(
+            IssueCandidateCertificateError::ReadinessNotFound,
+        ) => (
+            ReplyErrorCode::NotFound,
+            "no readiness receipt recorded with this digest".to_string(),
+        ),
+        DispatchError::IssueCandidateCertificate(IssueCandidateCertificateError::Domain(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
+        DispatchError::IssueCompletionCertificate(IssueCompletionCertificateError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
+        DispatchError::IssueCompletionCertificate(
+            IssueCompletionCertificateError::CandidateNotFound,
+        ) => (
+            ReplyErrorCode::NotFound,
+            "no candidate certificate issued for this run_id".to_string(),
+        ),
+        DispatchError::IssueCompletionCertificate(
+            IssueCompletionCertificateError::DeliveryChainNotFound,
+        ) => (
+            ReplyErrorCode::NotFound,
+            "no delivery chain started for this run_id".to_string(),
+        ),
+        DispatchError::IssueCompletionCertificate(IssueCompletionCertificateError::Domain(e)) => {
+            (ReplyErrorCode::TransitionRejected, format!("{e:?}"))
+        }
         DispatchError::Diagnostic(reason) => (ReplyErrorCode::ProtocolViolation, reason),
     }
 }
@@ -1267,6 +1475,8 @@ fn try_dispatch_read(
         "readiness.check" => Some(read_readiness_check(store, command)),
         "delivery.get" => Some(read_delivery_get(store, command)),
         "delivery.check_completion" => Some(read_delivery_check_completion(store, command)),
+        "certificate.get_candidate" => Some(read_certificate_get_candidate(store, command)),
+        "certificate.get_completion" => Some(read_certificate_get_completion(store, command)),
         _ => None,
     }
 }
@@ -1581,6 +1791,46 @@ fn read_delivery_check_completion(
             "ready": false,
             "reason": format!("{e:?}"),
         })),
+    }
+}
+
+/// §5.8: `{ run_id }` -- returns the recorded `CandidateCertificate` for
+/// `run_id`. `NotFound` if `certificate.issue_candidate` was never called
+/// for it.
+fn read_certificate_get_candidate(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_candidate_certificate(&run_id)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(candidate_certificate_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no candidate certificate issued for run {run_id}"),
+        )),
+    }
+}
+
+/// §5.8: `{ run_id }` -- returns the recorded `CompletionCertificate` for
+/// `run_id`. `NotFound` if `certificate.issue_completion` was never called
+/// for it.
+fn read_certificate_get_completion(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    match store
+        .load_completion_certificate(&run_id)
+        .map_err(internal_error)?
+    {
+        Some(record) => Ok(completion_certificate_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no completion certificate issued for run {run_id}"),
+        )),
     }
 }
 
@@ -4344,6 +4594,378 @@ mod tests {
             ReplyOutcome::Error { code, message } => {
                 panic!("delivery.check_completion failed: {code:?} {message}")
             }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn well_formed_readiness_fingerprint_json() -> Value {
+        json!({
+            "profile_hash": "profile-1",
+            "environment_relevant_inputs_digest": "env-digest-1",
+            "subject": {
+                "ExistingRepo": {
+                    "repository_identity_hash": "repo-hash",
+                    "base_commit": "base",
+                    "target_head": "head",
+                    "worktree_fingerprint": "wt-1",
+                },
+            },
+        })
+    }
+
+    fn well_formed_audit_verdict_json(
+        requirement_id: &str,
+        outcome: &str,
+        evidence_receipt_ids: &[&str],
+    ) -> Value {
+        json!({
+            "requirement_id": requirement_id,
+            "outcome": outcome,
+            "evidence_receipt_ids": evidence_receipt_ids,
+        })
+    }
+
+    fn issue_candidate_certificate_cmd(run_id: &str) -> Command {
+        command(
+            "certificate.issue_candidate",
+            json!({
+                "run_id": run_id,
+                "contract_version": 1,
+                "candidate_commit": "commit-1",
+                "candidate_tree_hash": "tree-1",
+                "must_requirement_ids": ["R-001"],
+                "verdicts": [well_formed_audit_verdict_json("R-001", "Satisfied", &["EV-1"])],
+                "valid_receipt_ids": ["EV-1"],
+                "readiness_receipt_digest": "RD-1",
+                "fingerprint": well_formed_readiness_fingerprint_json(),
+            }),
+        )
+    }
+
+    fn build_ready_delivery_chain_via_commands(store: &mut EventStore, run_id: &str) {
+        let start_cmd = command(
+            "delivery.start",
+            json!({ "run_id": run_id, "subject": well_formed_existing_repo_subject_json() }),
+        );
+        if let ReplyOutcome::Error { code, message } = handle_command(store, &start_cmd).reply.outcome
+        {
+            panic!("delivery.start failed: {code:?} {message}")
+        }
+
+        let rehearsal_cmd = command(
+            "delivery.append_rehearsal",
+            json!({ "run_id": run_id, "receipt": well_formed_rehearsal_receipt_json() }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(store, &rehearsal_cmd).reply.outcome
+        {
+            panic!("delivery.append_rehearsal failed: {code:?} {message}")
+        }
+
+        let approval_cmd = command(
+            "delivery.append_approval",
+            json!({ "run_id": run_id, "receipt": well_formed_approval_receipt_json() }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(store, &approval_cmd).reply.outcome
+        {
+            panic!("delivery.append_approval failed: {code:?} {message}")
+        }
+
+        let delivery_cmd = command(
+            "delivery.append_delivery",
+            json!({ "run_id": run_id, "receipt": well_formed_delivery_receipt_json("Succeeded") }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(store, &delivery_cmd).reply.outcome
+        {
+            panic!("delivery.append_delivery failed: {code:?} {message}")
+        }
+
+        let tree_check_cmd = command(
+            "delivery.append_tree_check",
+            json!({ "run_id": run_id, "receipt": well_formed_tree_check_receipt_json(true) }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(store, &tree_check_cmd).reply.outcome
+        {
+            panic!("delivery.append_tree_check failed: {code:?} {message}")
+        }
+    }
+
+    /// §5.8: `certificate.issue_candidate` composes an already-recorded
+    /// readiness receipt (looked up by digest) with a satisfied verdict for
+    /// every `must` requirement, produces no `Event`, and its payload reads
+    /// back byte-for-byte through `certificate.get_candidate`.
+    #[test]
+    fn handle_command_certificate_candidate_issues_and_reads_back_a_well_formed_certificate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(&mut store, &record_cmd).reply.outcome
+        {
+            panic!("readiness.record failed: {code:?} {message}")
+        }
+
+        let issue_cmd = issue_candidate_certificate_cmd("run-1");
+        let issue_outcome = handle_command(&mut store, &issue_cmd);
+        assert!(issue_outcome.event.is_none());
+        let payload = match issue_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("certificate.issue_candidate failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["certificate"]["run_id"], "run-1");
+
+        let get_cmd = command("certificate.get_candidate", json!({ "run_id": "run-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("certificate.get_candidate failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Referencing a `readiness_receipt_digest` that was never recorded is
+    /// `NotFound` -- there is no receipt to even check readiness/currency
+    /// against yet.
+    #[test]
+    fn handle_command_certificate_issue_candidate_is_not_found_for_an_unrecorded_readiness_digest()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let issue_cmd = issue_candidate_certificate_cmd("run-1");
+        let outcome = handle_command(&mut store, &issue_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A `must` requirement with no verdict at all is rejected by the
+    /// domain's own `issue_candidate_certificate`, surfaced as
+    /// `TransitionRejected` rather than silently dropped.
+    #[test]
+    fn handle_command_certificate_issue_candidate_is_transition_rejected_for_a_missing_verdict() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+
+        let issue_cmd = command(
+            "certificate.issue_candidate",
+            json!({
+                "run_id": "run-1",
+                "contract_version": 1,
+                "candidate_commit": "commit-1",
+                "candidate_tree_hash": "tree-1",
+                "must_requirement_ids": ["R-001"],
+                "verdicts": [],
+                "valid_receipt_ids": [],
+                "readiness_receipt_digest": "RD-1",
+                "fingerprint": well_formed_readiness_fingerprint_json(),
+            }),
+        );
+        let outcome = handle_command(&mut store, &issue_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `certificate.get_candidate` for a `run_id` with no issued candidate
+    /// certificate is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_certificate_get_candidate_is_not_found_when_none_was_issued() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("certificate.get_candidate", json!({ "run_id": "no-such-run" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// §5.8: `certificate.issue_completion` composes an already-issued
+    /// candidate certificate with an already-ready delivery chain, produces
+    /// no `Event`, and its payload reads back through
+    /// `certificate.get_completion`.
+    #[test]
+    fn handle_command_certificate_completion_issues_and_reads_back_a_well_formed_certificate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+        let issue_candidate_outcome =
+            handle_command(&mut store, &issue_candidate_certificate_cmd("run-1"));
+        if let ReplyOutcome::Error { code, message } = issue_candidate_outcome.reply.outcome {
+            panic!("certificate.issue_candidate failed: {code:?} {message}")
+        }
+        build_ready_delivery_chain_via_commands(&mut store, "run-1");
+
+        let issue_completion_cmd = command(
+            "certificate.issue_completion",
+            json!({
+                "run_id": "run-1",
+                "delivery_tree_hash": "tree-1",
+                "user_approval_decision_ref": "decision:1",
+            }),
+        );
+        let issue_outcome = handle_command(&mut store, &issue_completion_cmd);
+        assert!(issue_outcome.event.is_none());
+        let payload = match issue_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("certificate.issue_completion failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["run_id"], "run-1");
+
+        let get_cmd = command("certificate.get_completion", json!({ "run_id": "run-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("certificate.get_completion failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `certificate.issue_completion` for a `run_id` with no issued
+    /// candidate certificate is `NotFound` -- there is nothing to compose
+    /// the completion certificate from.
+    #[test]
+    fn handle_command_certificate_issue_completion_is_not_found_without_a_candidate_certificate() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let issue_completion_cmd = command(
+            "certificate.issue_completion",
+            json!({
+                "run_id": "run-1",
+                "delivery_tree_hash": "tree-1",
+                "user_approval_decision_ref": "decision:1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &issue_completion_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `certificate.issue_completion` for a `run_id` with a candidate
+    /// certificate but no started delivery chain is `NotFound`.
+    #[test]
+    fn handle_command_certificate_issue_completion_is_not_found_without_a_delivery_chain() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+        let issue_candidate_outcome =
+            handle_command(&mut store, &issue_candidate_certificate_cmd("run-1"));
+        if let ReplyOutcome::Error { code, message } = issue_candidate_outcome.reply.outcome {
+            panic!("certificate.issue_candidate failed: {code:?} {message}")
+        }
+
+        let issue_completion_cmd = command(
+            "certificate.issue_completion",
+            json!({
+                "run_id": "run-1",
+                "delivery_tree_hash": "tree-1",
+                "user_approval_decision_ref": "decision:1",
+            }),
+        );
+        let outcome = handle_command(&mut store, &issue_completion_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A blank `user_approval_decision_ref` is rejected by the domain's own
+    /// `issue_completion_certificate`, surfaced as `TransitionRejected`.
+    #[test]
+    fn handle_command_certificate_issue_completion_is_transition_rejected_for_a_blank_approval_decision_ref(
+    ) {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let record_cmd = command(
+            "readiness.record",
+            well_formed_readiness_receipt_json("RD-1", "Ready"),
+        );
+        handle_command(&mut store, &record_cmd);
+        let issue_candidate_outcome =
+            handle_command(&mut store, &issue_candidate_certificate_cmd("run-1"));
+        if let ReplyOutcome::Error { code, message } = issue_candidate_outcome.reply.outcome {
+            panic!("certificate.issue_candidate failed: {code:?} {message}")
+        }
+        build_ready_delivery_chain_via_commands(&mut store, "run-1");
+
+        let issue_completion_cmd = command(
+            "certificate.issue_completion",
+            json!({
+                "run_id": "run-1",
+                "delivery_tree_hash": "tree-1",
+                "user_approval_decision_ref": "   ",
+            }),
+        );
+        let outcome = handle_command(&mut store, &issue_completion_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::TransitionRejected),
+            other => panic!("expected TransitionRejected, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `certificate.get_completion` for a `run_id` with no issued
+    /// completion certificate is `NotFound`, not a silently empty payload.
+    #[test]
+    fn handle_command_certificate_get_completion_is_not_found_when_none_was_issued() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("certificate.get_completion", json!({ "run_id": "no-such-run" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&root).ok();
