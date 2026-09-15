@@ -29,6 +29,7 @@ use autome_domain::execution_queue::{
     self, ExecutionQueue, ExecutionQueueError, ExecutionQueueEvent,
 };
 use autome_domain::graph::{self, GraphEvent, GraphEventError, TaskGraph};
+use autome_domain::playbook::FrozenPlaybook;
 use autome_domain::project::{
     self, ProjectEvent, ProjectIdentity, ProjectKind, ProjectState, TargetInspection,
     TargetRejection,
@@ -494,6 +495,32 @@ impl From<rusqlite::Error> for IssueCompletionCertificateError {
     }
 }
 
+/// A persisted §10.3 `FrozenPlaybook` plus which run it's bound to and when.
+/// `FrozenPlaybook` has no `run_id` field of its own, mirroring
+/// `AttemptRecord`'s reasoning: the pure domain type has no business knowing
+/// about aggregate-linking keys, so the store layer adds `run_id` explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenPlaybookRecord {
+    pub run_id: String,
+    pub playbook: FrozenPlaybook,
+    pub created_at: String,
+}
+
+/// `bind_playbook`'s only failure mode: a duplicate `run_id`, surfaced as a
+/// SQL primary-key violation -- a Run binds exactly one playbook for its
+/// whole lifetime, so there is no domain-level shape check to re-run here
+/// (any `PlaybookId`+hash combination is already well-formed).
+#[derive(Debug)]
+pub enum BindPlaybookError {
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for BindPlaybookError {
+    fn from(value: rusqlite::Error) -> Self {
+        BindPlaybookError::Sql(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskAppendError {
     Sql(rusqlite::Error),
@@ -635,6 +662,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_v8,
     migrate_v9,
     migrate_v10,
+    migrate_v11,
 ];
 
 fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
@@ -894,6 +922,26 @@ fn migrate_v10(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS completion_certificates (
             run_id TEXT PRIMARY KEY,
             certificate_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        ",
+    )
+}
+
+/// `frozen_playbooks`: one row per `bind_playbook` call (plan §10.3). `run_id`
+/// is the primary key -- a Run binds exactly one playbook for its whole
+/// lifetime ("运行时固定内容哈希"), so binding again for the same run would
+/// mean silently swapping the playbook out from under an in-progress Run;
+/// that is refused as a primary-key violation, same convention as
+/// `delivery_chains`/`candidate_certificates`. `FrozenPlaybook` itself has no
+/// `run_id` field (mirrors `Attempt` in `migrate_v6`), so `run_id` is an
+/// explicit column here, not something pulled out of `playbook_json`.
+fn migrate_v11(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS frozen_playbooks (
+            run_id TEXT PRIMARY KEY,
+            playbook_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
         ",
@@ -2788,6 +2836,57 @@ impl EventStore {
             }
         }))
     }
+
+    /// §10.3's write path: binds a `FrozenPlaybook` to `run_id` for the
+    /// whole Run lifetime. Like `record_evidence`/`record_readiness`, this
+    /// is a fact recorded once, not a journaled event -- currency
+    /// (`FrozenPlaybook::is_current_against`) is a query-time property this
+    /// method doesn't decide, so there is nothing to validate beyond what
+    /// the primary key already enforces.
+    pub fn bind_playbook(
+        &mut self,
+        run_id: &str,
+        playbook: &FrozenPlaybook,
+    ) -> Result<FrozenPlaybookRecord, BindPlaybookError> {
+        let playbook_json = serde_json::to_string(playbook).expect("FrozenPlaybook is serializable");
+        let created_at = Self::now_rfc3339();
+        self.conn.execute(
+            "INSERT INTO frozen_playbooks (run_id, playbook_json, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![run_id, playbook_json, created_at],
+        )?;
+
+        Ok(FrozenPlaybookRecord {
+            run_id: run_id.to_string(),
+            playbook: playbook.clone(),
+            created_at,
+        })
+    }
+
+    /// Read counterpart to `bind_playbook` -- looks up the bound
+    /// `frozen_playbooks` row for `run_id`, if any.
+    pub fn load_playbook(&self, run_id: &str) -> rusqlite::Result<Option<FrozenPlaybookRecord>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT playbook_json, created_at FROM frozen_playbooks WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| {
+                    let playbook_json: String = row.get(0)?;
+                    let created_at: String = row.get(1)?;
+                    Ok((playbook_json, created_at))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(playbook_json, created_at)| {
+            let playbook: FrozenPlaybook = serde_json::from_str(&playbook_json)
+                .expect("frozen_playbooks.playbook_json round-trips");
+            FrozenPlaybookRecord {
+                run_id: run_id.to_string(),
+                playbook,
+                created_at,
+            }
+        }))
+    }
 }
 
 fn event_type_name(event: &RunEvent) -> &'static str {
@@ -4162,6 +4261,52 @@ mod tests {
             .issue_completion_certificate("run-1", "tree-2", "decision:1")
             .unwrap_err();
         assert!(matches!(err, IssueCompletionCertificateError::Sql(_)), "{err:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn fixture_frozen_playbook(hash: &str) -> FrozenPlaybook {
+        use autome_domain::playbook::PlaybookId;
+
+        FrozenPlaybook {
+            playbook_id: PlaybookId::ExistingRepoChange,
+            manifest_content_hash: hash.to_string(),
+        }
+    }
+
+    /// A well-formed `bind_playbook` call lands one `frozen_playbooks` row,
+    /// readable back via `load_playbook`.
+    #[test]
+    fn bind_playbook_records_a_well_formed_playbook_and_reads_it_back() {
+        let root = temp_data_root("bind-playbook");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let playbook = fixture_frozen_playbook("hash-1");
+
+        assert!(store.load_playbook("run-1").unwrap().is_none());
+
+        let record = store.bind_playbook("run-1", &playbook).unwrap();
+        assert_eq!(record.run_id, "run-1");
+        assert_eq!(record.playbook, playbook);
+
+        let loaded = store.load_playbook("run-1").unwrap().unwrap();
+        assert_eq!(loaded, record);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A second call reusing the same `run_id` must fail rather than
+    /// silently swapping the playbook a Run is bound to mid-flight.
+    #[test]
+    fn bind_playbook_refuses_to_reuse_an_existing_run_id() {
+        let root = temp_data_root("bind-playbook-reuse");
+        let db_path = root.join("db.sqlite3").to_string_lossy().into_owned();
+        let mut store = EventStore::open(&db_path).unwrap();
+        let playbook = fixture_frozen_playbook("hash-1");
+
+        store.bind_playbook("run-1", &playbook).unwrap();
+        let err = store.bind_playbook("run-1", &playbook).unwrap_err();
+        assert!(matches!(err, BindPlaybookError::Sql(_)), "{err:?}");
 
         std::fs::remove_dir_all(&root).ok();
     }

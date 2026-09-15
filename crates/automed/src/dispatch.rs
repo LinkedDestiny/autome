@@ -91,11 +91,12 @@ use crate::ipc::{Command, Event, Reply, ReplyErrorCode, ReplyOutcome};
 use crate::store::{
     AppendDeliveryReceiptError, AppendError, AppendedContractEvent, AppendedExecutionQueueEvent,
     AppendedGraphEvent, AppendedProjectEvent, AppendedRunEvent, AppendedTaskEvent, AttemptRecord,
-    CandidateCertificateRecord, CompletionCertificateRecord, ContractAppendError,
-    CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord, DisposableCloneRecord,
-    EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord, ExecutionQueueAppendError,
-    GraphAppendError, IssueCandidateCertificateError, IssueCompletionCertificateError,
-    ProjectAppendError, ProjectSummary, ReadinessRecord, RecordAttemptError, RecordEvidenceError,
+    BindPlaybookError, CandidateCertificateRecord, CompletionCertificateRecord,
+    ContractAppendError, CreateDisposableCloneError, CreateFromTargetError, DeliveryChainRecord,
+    DisposableCloneRecord, EXECUTION_QUEUE_AGGREGATE_ID, EventStore, EvidenceRecord,
+    ExecutionQueueAppendError, FrozenPlaybookRecord, GraphAppendError,
+    IssueCandidateCertificateError, IssueCompletionCertificateError, ProjectAppendError,
+    ProjectSummary, ReadinessRecord, RecordAttemptError, RecordEvidenceError,
     RecordReadinessError, StartDeliveryChainError, TaskAppendError, TaskSummary,
 };
 use autome_domain::attempt::{Attempt, AttemptPermissionProfile};
@@ -111,6 +112,7 @@ use autome_domain::evidence::{EvidenceFingerprint, EvidenceReceipt, ReceiptId};
 use autome_domain::contract::{AcceptanceCheck, ContractAmendment, ContractEvent};
 use autome_domain::execution_queue::{ExecutionQueue, ExecutionQueueEvent};
 use autome_domain::graph::{GraphEvent, GraphNode};
+use autome_domain::playbook::{FrozenPlaybook, RoleOutput};
 use autome_domain::project::{
     ProjectEvent, ProjectIdentity, ProjectIdentityError, ProjectKind, ProjectLocator, ProjectState,
 };
@@ -188,6 +190,10 @@ pub enum DispatchError {
     /// this `run_id` (`CandidateNotFound`/`DeliveryChainNotFound`), or the
     /// domain's own `issue_completion_certificate` rejected it (`Domain`).
     IssueCompletionCertificate(IssueCompletionCertificateError),
+    /// §10.3 write path: `bind_playbook`'s only failure mode (a duplicate
+    /// `run_id`, surfaced as a SQL primary-key violation -- a Run binds
+    /// exactly one playbook for its whole lifetime).
+    BindPlaybook(BindPlaybookError),
     /// §8.3:1362 diagnostic state: `EventStore::open`'s own disk-layout
     /// re-verification failed and every write is refused until the
     /// underlying filesystem problem is fixed. Read methods are
@@ -217,6 +223,12 @@ impl From<CreateDisposableCloneError> for DispatchError {
 impl From<RecordAttemptError> for DispatchError {
     fn from(value: RecordAttemptError) -> Self {
         DispatchError::RecordAttempt(value)
+    }
+}
+
+impl From<BindPlaybookError> for DispatchError {
+    fn from(value: BindPlaybookError) -> Self {
+        DispatchError::BindPlaybook(value)
     }
 }
 
@@ -671,6 +683,18 @@ pub fn handle_command(store: &mut EventStore, command: &Command) -> DispatchOutc
         };
     }
 
+    // §10.3: same shape again -- writes a `frozen_playbooks` row (so it
+    // isn't a read) but appends no domain `Event` (a bound playbook is a
+    // fact fixed once for a Run's whole lifetime, not an aggregate with a
+    // reducer).
+    if command.method == "playbook.bind" {
+        let result = handle_bind_playbook(store, command);
+        return DispatchOutcome {
+            reply: reply_for(command, value_outcome(store, result)),
+            event: None,
+        };
+    }
+
     if let Some(result) = try_dispatch_read(store, command) {
         return DispatchOutcome {
             reply: reply_for(command, value_outcome(store, result)),
@@ -878,6 +902,47 @@ fn evidence_record_json(record: &EvidenceRecord) -> Value {
     serde_json::json!({
         "receipt": record.receipt,
         "created_at": record.created_at,
+    })
+}
+
+/// §10.3: the sole caller of `EventStore::bind_playbook`. Takes
+/// `{ run_id, playbook }` -- `playbook` is a full JSON object matching
+/// `autome_domain::playbook::FrozenPlaybook`. Same "write returns Value not
+/// Event" shape as `handle_record_attempt`/`handle_record_evidence`: a
+/// bound playbook is a fact fixed once for a Run's whole lifetime, not a
+/// state-machine transition. Refuses to run while the store is in its
+/// diagnostic state, same as every other write.
+fn handle_bind_playbook(
+    store: &mut EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    if let Some(reason) = store.diagnostic_reason() {
+        return Err((ReplyErrorCode::ProtocolViolation, reason.to_string()));
+    }
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let playbook = parse_frozen_playbook_param(command).map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .bind_playbook(&run_id, &playbook)
+        .map_err(|e| dispatch_error_to_reply_error(DispatchError::from(e)))?;
+    Ok(frozen_playbook_record_json(&record))
+}
+
+fn frozen_playbook_record_json(record: &FrozenPlaybookRecord) -> Value {
+    serde_json::json!({
+        "run_id": record.run_id,
+        "playbook": record.playbook,
+        "created_at": record.created_at,
+    })
+}
+
+fn parse_frozen_playbook_param(command: &Command) -> Result<FrozenPlaybook, DispatchError> {
+    let value = command
+        .params
+        .get("playbook")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.playbook is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.playbook is not a valid FrozenPlaybook: {e}"))
     })
 }
 
@@ -1435,6 +1500,9 @@ fn dispatch_error_to_reply_error(err: DispatchError) -> (ReplyErrorCode, String)
         DispatchError::RecordEvidence(RecordEvidenceError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
+        DispatchError::BindPlaybook(BindPlaybookError::Sql(e)) => {
+            (ReplyErrorCode::Internal, e.to_string())
+        }
         DispatchError::RecordReadiness(RecordReadinessError::Sql(e)) => {
             (ReplyErrorCode::Internal, e.to_string())
         }
@@ -1512,6 +1580,11 @@ fn try_dispatch_read(
         "certificate.get_completion" => Some(read_certificate_get_completion(store, command)),
         "capability_broker.validate_action_origin" => {
             Some(read_capability_broker_validate_action_origin(command))
+        }
+        "playbook.get" => Some(read_playbook_get(store, command)),
+        "playbook.check_current" => Some(read_playbook_check_current(store, command)),
+        "playbook.role_output_may_decide_state" => {
+            Some(read_playbook_role_output_may_decide_state(command))
         }
         _ => None,
     }
@@ -1897,6 +1970,86 @@ fn read_capability_broker_validate_action_origin(
             }))
         }
     }
+}
+
+/// Read counterpart to `handle_bind_playbook`. Takes `{ run_id }`;
+/// `NotFound` if no playbook has been bound for that Run yet.
+fn read_playbook_get(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    match store.load_playbook(&run_id).map_err(internal_error)? {
+        Some(record) => Ok(frozen_playbook_record_json(&record)),
+        None => Err((
+            ReplyErrorCode::NotFound,
+            format!("no playbook bound for run {run_id}"),
+        )),
+    }
+}
+
+/// §10.3: `{ run_id, current }` -- re-exercises
+/// `FrozenPlaybook::is_current_against` against the caller-supplied
+/// *current* playbook, rather than trusting the caller's own staleness
+/// judgment. `NotFound` if `run_id` never had a playbook bound (there is
+/// nothing to check currency of).
+fn read_playbook_check_current(
+    store: &EventStore,
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let run_id = parse_string_param(command, "run_id").map_err(dispatch_error_to_reply_error)?;
+    let current = parse_current_frozen_playbook_param(command)
+        .map_err(dispatch_error_to_reply_error)?;
+    let record = store
+        .load_playbook(&run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                ReplyErrorCode::NotFound,
+                format!("no playbook bound for run {run_id}"),
+            )
+        })?;
+    let is_current = record.playbook.is_current_against(&current);
+    Ok(serde_json::json!({
+        "run_id": run_id,
+        "current": is_current,
+    }))
+}
+
+fn parse_current_frozen_playbook_param(command: &Command) -> Result<FrozenPlaybook, DispatchError> {
+    let value = command
+        .params
+        .get("current")
+        .cloned()
+        .ok_or_else(|| DispatchError::InvalidParams("params.current is required".to_string()))?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.current is not a valid FrozenPlaybook: {e}"))
+    })
+}
+
+/// §10.3: `{ role_output }` -- stateless gate, same shape as
+/// `read_capability_broker_validate_action_origin`. `RoleOutput::Narrative`
+/// has no path to a decision payload; only `Structured` does, so this
+/// answers "may this output decide state" without the caller having to
+/// duplicate `RoleOutput`'s own match logic.
+fn read_playbook_role_output_may_decide_state(
+    command: &Command,
+) -> Result<Value, (ReplyErrorCode, String)> {
+    let role_output =
+        parse_role_output_param(command).map_err(dispatch_error_to_reply_error)?;
+    Ok(serde_json::json!({
+        "may_decide_state": role_output.may_decide_state(),
+        "structured_payload": role_output.structured_payload(),
+    }))
+}
+
+fn parse_role_output_param(command: &Command) -> Result<RoleOutput, DispatchError> {
+    let value = command.params.get("role_output").cloned().ok_or_else(|| {
+        DispatchError::InvalidParams("params.role_output is required".to_string())
+    })?;
+    serde_json::from_value(value).map_err(|e| {
+        DispatchError::InvalidParams(format!("params.role_output is not a valid RoleOutput: {e}"))
+    })
 }
 
 fn internal_error(err: rusqlite::Error) -> (ReplyErrorCode, String) {
@@ -5121,6 +5274,242 @@ mod tests {
             "capability_broker.validate_action_origin",
             json!({ "action": "Delivery" }),
         );
+        let outcome = handle_command(&mut store, &cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn frozen_playbook_json(playbook_id: &str, hash: &str) -> Value {
+        json!({ "playbook_id": playbook_id, "manifest_content_hash": hash })
+    }
+
+    #[test]
+    fn handle_command_playbook_binds_and_reads_back_a_well_formed_playbook() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let bind_cmd = command(
+            "playbook.bind",
+            json!({
+                "run_id": "run-1",
+                "playbook": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        let bind_outcome = handle_command(&mut store, &bind_cmd);
+        assert!(bind_outcome.event.is_none());
+        let payload = match bind_outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.bind failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["run_id"], "run-1");
+
+        let get_cmd = command("playbook.get", json!({ "run_id": "run-1" }));
+        let get_outcome = handle_command(&mut store, &get_cmd);
+        match get_outcome.reply.outcome {
+            ReplyOutcome::Ok {
+                payload: read_payload,
+                ..
+            } => assert_eq!(read_payload, payload),
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.get failed: {code:?} {message}")
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_bind_refuses_to_reuse_an_existing_run_id() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let bind_cmd = command(
+            "playbook.bind",
+            json!({
+                "run_id": "run-1",
+                "playbook": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(&mut store, &bind_cmd).reply.outcome
+        {
+            panic!("first playbook.bind failed: {code:?} {message}")
+        }
+
+        let outcome = handle_command(&mut store, &bind_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::Internal),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_get_is_not_found_when_none_was_bound() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let get_cmd = command("playbook.get", json!({ "run_id": "no-such-run" }));
+        let outcome = handle_command(&mut store, &get_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_check_current_is_true_for_an_identical_playbook() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let bind_cmd = command(
+            "playbook.bind",
+            json!({
+                "run_id": "run-1",
+                "playbook": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(&mut store, &bind_cmd).reply.outcome
+        {
+            panic!("playbook.bind failed: {code:?} {message}")
+        }
+
+        let check_cmd = command(
+            "playbook.check_current",
+            json!({
+                "run_id": "run-1",
+                "current": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.check_current failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["current"], true);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_check_current_is_false_for_a_drifted_content_hash() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let bind_cmd = command(
+            "playbook.bind",
+            json!({
+                "run_id": "run-1",
+                "playbook": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        if let ReplyOutcome::Error { code, message } =
+            handle_command(&mut store, &bind_cmd).reply.outcome
+        {
+            panic!("playbook.bind failed: {code:?} {message}")
+        }
+
+        let check_cmd = command(
+            "playbook.check_current",
+            json!({
+                "run_id": "run-1",
+                "current": frozen_playbook_json("ExistingRepoChange", "hash-2"),
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.check_current failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["current"], false);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_check_current_is_not_found_when_none_was_bound() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let check_cmd = command(
+            "playbook.check_current",
+            json!({
+                "run_id": "no-such-run",
+                "current": frozen_playbook_json("ExistingRepoChange", "hash-1"),
+            }),
+        );
+        let outcome = handle_command(&mut store, &check_cmd);
+        match outcome.reply.outcome {
+            ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_role_output_structured_may_decide_state() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "playbook.role_output_may_decide_state",
+            json!({
+                "role_output": {
+                    "Structured": {
+                        "schema_id": "contract_drafting.v1",
+                        "payload": { "requirements": [] },
+                    },
+                },
+            }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.role_output_may_decide_state failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["may_decide_state"], true);
+        assert_eq!(payload["structured_payload"], json!({ "requirements": [] }));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_role_output_narrative_may_not_decide_state() {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command(
+            "playbook.role_output_may_decide_state",
+            json!({ "role_output": { "Narrative": "I think this looks about right." } }),
+        );
+        let outcome = handle_command(&mut store, &cmd);
+        let payload = match outcome.reply.outcome {
+            ReplyOutcome::Ok { payload, .. } => payload,
+            ReplyOutcome::Error { code, message } => {
+                panic!("playbook.role_output_may_decide_state failed: {code:?} {message}")
+            }
+        };
+        assert_eq!(payload["may_decide_state"], false);
+        assert_eq!(payload["structured_payload"], Value::Null);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn handle_command_playbook_role_output_may_decide_state_is_invalid_params_without_role_output()
+    {
+        let (mut store, root) = temp_store_with_isolated_root();
+
+        let cmd = command("playbook.role_output_may_decide_state", json!({}));
         let outcome = handle_command(&mut store, &cmd);
         match outcome.reply.outcome {
             ReplyOutcome::Error { code, .. } => assert_eq!(code, ReplyErrorCode::InvalidParams),
