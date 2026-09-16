@@ -82,10 +82,12 @@ b, strong { font-weight: 700; }
 #window.recessed { transform: translateY(24px) scale(.96); filter: brightness(.85) saturate(.9); }
 
 .titlebar { grid-column: 1 / -1; display: grid; grid-template-columns: 224px 1fr auto; align-items: center; background: var(--animal-bg-content); border-bottom: 2px solid var(--animal-border); -webkit-app-region: drag; user-select: none; }
-.titlebar__left { display: flex; align-items: center; gap: 14px; padding-left: 14px; }
-.lights { display: flex; gap: 8px; }
-.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; border: .5px solid rgba(0,0,0,.12); }
-.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+/* The left padding reserves the strip macOS draws its own close/minimise/zoom
+   buttons into under `titleBarStyle: 'hiddenInset'`. The mock painted three
+   fake circles there; they were decoration over the real controls, and they
+   were also what happened to hold this space open. Deleting them without this
+   padding slides the brand under the real buttons. */
+.titlebar__left { display: flex; align-items: center; gap: 14px; padding-left: 82px; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 900; font-size: 15px; color: var(--animal-text); letter-spacing: .04em; }
 .brand__mark { width: 26px; height: 26px; border-radius: 9px; background: var(--animal-primary); display: grid; place-items: center; color: #fff9e3; box-shadow: 0 3px 0 0 var(--animal-primary-active); }
 .brand__mark .ic { width: 16px; height: 16px; stroke: #fff9e3; }
@@ -671,7 +673,7 @@ code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, m
 body { font-size: 13px; }
 #window { grid-template-rows: 46px 1fr; grid-template-columns: 196px 1fr; }
 .titlebar { grid-template-columns: 196px 1fr auto; }
-.titlebar__left { gap: 12px; padding-left: 12px; } .brand { font-size: 14px; } .brand__mark { width: 24px; height: 24px; }
+.titlebar__left { gap: 12px; padding-left: 82px; } .brand { font-size: 14px; } .brand__mark { width: 24px; height: 24px; }
 .exec { height: 30px; font-size: 12px; padding: 0 12px 0 8px; } .exec__k { font-size: 10.5px; padding: 2px 7px; }
 .corepill { height: 28px; font-size: 11.5px; padding: 0 10px; }
 .sidebar { padding: 12px 10px 12px; } .nav__item { height: 38px; font-size: 13px; padding: 0 10px; border-radius: 12px; } .nav__item .ic { width: 20px; height: 20px; }

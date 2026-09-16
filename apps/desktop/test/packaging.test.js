@@ -129,3 +129,25 @@ test('the window accepts the click that activates it', () => {
   const options = main.slice(main.indexOf('new BrowserWindow('));
   assert.match(options.slice(0, options.indexOf('webPreferences')), /acceptFirstMouse:\s*true/);
 });
+
+test('the window chrome does not paint its own macOS buttons', () => {
+  // The mock drew three circles where macOS draws close/minimise/zoom. Under
+  // `titleBarStyle: 'hiddenInset'` the real ones are there too, so the fakes
+  // were decoration sitting on top of working controls. They were also the
+  // only thing holding that strip open — hence the padding assertion.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const dir = path.join(__dirname, '..', 'renderer');
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(dir, 'style.css'), 'utf8');
+
+  assert.equal(/class="lights"/.test(html), false, 'fake traffic lights are back in the markup');
+  assert.equal(/^\.lights\b/m.test(css), false, 'fake traffic-light styles are back');
+
+  const rule = /\.titlebar__left\s*\{[^}]*padding-left:\s*(\d+)px/.exec(css);
+  assert.ok(rule, '.titlebar__left must set a left padding');
+  assert.ok(
+    Number(rule[1]) >= 72,
+    `padding-left ${rule[1]}px puts the brand under the real macOS buttons`
+  );
+});
