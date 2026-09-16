@@ -108,7 +108,20 @@ struct EnvState {
     /// Bumped on every completed probe, so a poller can tell a fresh result
     /// from the same one it already has.
     generation: u64,
+    /// When the last probe finished. Drives the rate limit below.
+    last_finished: Option<std::time::Instant>,
 }
+
+/// How stale the environment may get before an unforced probe runs again.
+///
+/// The desktop asks for a probe whenever its window regains focus, and a probe
+/// spawns four subprocesses and takes seconds. Without a floor here, a user
+/// switching between the app and a terminal re-probed every few seconds, and
+/// each landing probe pushed a change event that made the renderer rebuild the
+/// whole screen under their cursor. The environment changes when someone
+/// installs a CLI or a login lapses — minutes, not seconds. E-04's button
+/// forces a probe for the case where the user just did install something.
+const ENV_PROBE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl EnvCache {
     pub fn snapshot(&self) -> Option<autome_domain::environment::Environment> {
@@ -123,15 +136,34 @@ impl EnvCache {
         self.inner.lock().map(|s| s.probing).unwrap_or(false)
     }
 
-    /// Starts a probe unless one is already running. Returns whether it
-    /// started one, so a caller can say "probing" rather than "unknown".
+    /// Starts a probe unless one is already running or the last one finished
+    /// less than `ENV_PROBE_MIN_INTERVAL` ago. Returns whether it started one,
+    /// so a caller can say "probing" rather than "unknown".
     pub fn start_probe(&self) -> bool {
+        self.start_probe_inner(false)
+    }
+
+    /// E-04's manual re-probe: ignores the rate limit, because the user
+    /// pressing "重新检测" has usually just changed something and is waiting
+    /// to see it.
+    pub fn force_probe(&self) -> bool {
+        self.start_probe_inner(true)
+    }
+
+    fn start_probe_inner(&self, force: bool) -> bool {
         {
             let mut state = match self.inner.lock() {
                 Ok(s) => s,
                 Err(_) => return false,
             };
             if state.probing {
+                return false;
+            }
+            if !force
+                && state
+                    .last_finished
+                    .is_some_and(|t| t.elapsed() < ENV_PROBE_MIN_INTERVAL)
+            {
                 return false;
             }
             state.probing = true;
@@ -143,6 +175,7 @@ impl EnvCache {
                 state.snapshot = Some(observed);
                 state.probing = false;
                 state.generation += 1;
+                state.last_finished = Some(std::time::Instant::now());
             }
         });
         true
@@ -155,6 +188,7 @@ impl EnvCache {
             state.snapshot = Some(observed);
             state.probing = false;
             state.generation += 1;
+            state.last_finished = Some(std::time::Instant::now());
         }
     }
 }
@@ -332,7 +366,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
 
         // ---- environment -------------------------------------------------
         "env.get" => env_get(ctx),
-        "env.detect" => env_detect(ctx),
+        "env.detect" => env_detect(ctx, bool_param(p, "force")),
         "env.install_recipe" => env_install_recipe(p),
 
         // ---- skills ------------------------------------------------------
@@ -361,6 +395,13 @@ fn str_param<'a>(params: &'a Value, key: &str) -> std::result::Result<&'a str, D
 
 fn opt_str_param<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str)
+}
+
+/// An absent or non-boolean value is `false`. Only `env.detect`'s `force`
+/// uses this, and defaulting it to "do the expensive thing" would defeat the
+/// rate limit for any caller that forgot to send it.
+fn bool_param(params: &Value, key: &str) -> bool {
+    params.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn u32_param(params: &Value, key: &str) -> std::result::Result<u32, DispatchError> {
@@ -1563,14 +1604,31 @@ fn env_get(ctx: &mut Ctx) -> DispatchResult {
 /// Asks for a fresh probe. Returns immediately with what is currently known;
 /// the caller learns the new result from the next `env.get`, which the UI
 /// issues when a tick reports the generation moved.
-fn env_detect(ctx: &mut Ctx) -> DispatchResult {
-    let started = ctx.environment.start_probe();
-    let seq =
-        ctx.store
-            .append_event("env.changed", "environment", json!({ "started": started }))?;
+fn env_detect(ctx: &mut Ctx, force: bool) -> DispatchResult {
+    let started = if force {
+        ctx.environment.force_probe()
+    } else {
+        ctx.environment.start_probe()
+    };
+
+    // An event here means "the environment changed". Emitting one when no
+    // probe even started was a lie with a visible cost: the desktop calls this
+    // on every window focus, the renderer rebuilds the whole screen on any
+    // event, and the user's first click after returning to the app landed on a
+    // screen that was being replaced underneath it.
+    //
+    // A probe that *did* start reports itself when it lands, through the
+    // generation counter the tick already carries. So there is nothing to
+    // announce here either way.
+    if !started {
+        return Ok((env_json(&ctx.environment), Vec::new()));
+    }
+    let seq = ctx
+        .store
+        .append_event("env.probing", "environment", json!({}))?;
     Ok((
         env_json(&ctx.environment),
-        vec![event(seq, "env.changed", "environment", json!({}))],
+        vec![event(seq, "env.probing", "environment", json!({}))],
     ))
 }
 
@@ -2377,7 +2435,54 @@ mod tests {
             "env.detect took {:?}",
             started.elapsed()
         );
-        assert_eq!(out.events.len(), 1);
+        assert_eq!(out.events.len(), 1, "the first call does start a probe");
+    }
+
+    #[test]
+    fn env_detect_announces_nothing_when_it_did_not_start_a_probe() {
+        // The desktop calls this on every window focus. It used to emit an
+        // `env.changed` event unconditionally; the renderer rebuilds the whole
+        // screen on any event, so returning to the app replaced the screen
+        // under the user's cursor and ate their first click.
+        let mut sb = Sandbox::new("env-detect-quiet");
+        let first = handle_command(sb.ctx(), &cmd("env.detect", json!({})));
+        assert_eq!(first.events.len(), 1);
+
+        // A probe is already running, so nothing started and nothing is said.
+        for _ in 0..5 {
+            let out = handle_command(sb.ctx(), &cmd("env.detect", json!({})));
+            assert!(
+                out.events.is_empty(),
+                "a call that started no probe must announce nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_completed_probe_is_not_repeated_until_the_rate_limit_lapses() {
+        let cache = EnvCache::default();
+        cache.probe_blocking();
+        let before = cache.generation();
+        assert!(before > 0);
+
+        assert!(
+            !cache.start_probe(),
+            "an unforced probe must respect the interval"
+        );
+        assert!(
+            cache.force_probe(),
+            "E-04's button must not be rate limited"
+        );
+    }
+
+    #[test]
+    fn the_probe_interval_is_long_enough_to_survive_window_switching() {
+        // The failure this guards against is a user alt-tabbing between the
+        // app and a terminal: at a few seconds, every switch re-probed.
+        assert!(
+            ENV_PROBE_MIN_INTERVAL >= std::time::Duration::from_secs(60),
+            "an interval this short does not stop focus-driven re-probing"
+        );
     }
 
     #[test]

@@ -586,7 +586,15 @@ pub fn shell_command(argv: &[String], cwd: &Path) -> String {
             .collect::<Vec<_>>()
             .join(" "),
     );
-    parts.join(" && ")
+    // The wrapper exiting is not enough: the interactive shell the terminal
+    // started is still sitting there at a prompt, so the window stays open and
+    // the next session opens another one. A day's work left a dozen dead tabs
+    // behind, and each new one stole focus from the app.
+    //
+    // `;` rather than `&&` — the shell must exit whether the session succeeded
+    // or not. Nothing is lost by closing: the wrapper tees the CLI's stdout and
+    // stderr to the session log, which the task panel opens.
+    format!("{}; exit $?", parts.join(" && "))
 }
 
 /// POSIX single-quoting: wrap in `'`, and replace each embedded `'` with
@@ -1161,6 +1169,21 @@ mod tests {
         assert_eq!(as_quote("plain"), "\"plain\"");
         assert_eq!(as_quote(r#"say "hi""#), r#""say \"hi\"""#);
         assert_eq!(as_quote(r"a\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn the_shell_exits_so_the_terminal_window_closes() {
+        // Without this the wrapper finishes and the interactive shell sits at
+        // a prompt forever: every session left a window open, and each new one
+        // stole focus from the app. `;` not `&&` — a failed session must close
+        // too, and its output is in the session log either way.
+        let argv = vec!["/repo/.autome/skill/run_session.sh".to_string()];
+        let line = shell_command(&argv, Path::new("/repo/.worktree/x"));
+        assert!(line.ends_with("; exit $?"), "{line}");
+        assert!(
+            !line.contains("&& exit"),
+            "a crashed session must still close its window: {line}"
+        );
     }
 
     #[test]

@@ -118,3 +118,14 @@ test('build outputs are not committed', () => {
     );
   }
 });
+
+test('the window accepts the click that activates it', () => {
+  // macOS eats that click by default. Sessions open terminals that steal
+  // focus, so the user is constantly clicking back into an inactive window;
+  // without this every first click is a no-op and the app feels broken.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const options = main.slice(main.indexOf('new BrowserWindow('));
+  assert.match(options.slice(0, options.indexOf('webPreferences')), /acceptFirstMouse:\s*true/);
+});

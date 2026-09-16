@@ -103,7 +103,9 @@ contextBridge.exposeInMainWorld('autome', {
       return write('config.set_loop')(params);
     },
 
-    detectEnvironment: () => write('env.detect')(),
+    // `force` is E-04's button: the user just changed something and is
+    // waiting to see it, so it skips the core's probe rate limit.
+    detectEnvironment: (force) => write('env.detect')({ force: Boolean(force) }),
     install: (component) => write('env.install')({ component }),
     login: (component) => write('env.login')({ component }),
 

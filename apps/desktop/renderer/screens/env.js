@@ -170,7 +170,7 @@ function recheck(button, ctx) {
   return attempt({
     label: '检测完成',
     success: false,
-    run: (write) => write.detectEnvironment(),
+    run: (write) => write.detectEnvironment(true),
     onDone: async () => {
       button.classList.remove('btn--loading');
       await ctx.refresh();

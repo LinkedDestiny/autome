@@ -58,6 +58,13 @@ function createMainWindow() {
     minHeight: 700,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#f8f8f0',
+    // macOS swallows the click that activates a background window. Autome's
+    // windows lose focus constantly — every session opens a terminal that
+    // activates itself — so without this the user's first click on any control
+    // does nothing and they have to click it again. Every destructive action
+    // here is behind a modal confirmation, so acting on the activating click
+    // cannot merge or cancel anything by accident.
+    acceptFirstMouse: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
