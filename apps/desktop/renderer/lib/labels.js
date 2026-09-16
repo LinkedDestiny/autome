@@ -79,7 +79,7 @@ export const COMPONENT_NOTE = {
   git: '所有任务必需',
   claude: '设计 · 裁决 · 实现 · 任务整理 · Onboarding',
   codex: '评审 · 审计',
-  iterm2: '任务会话与 Onboarding 在其中运行',
+  iterm2: '一键安装与登录命令在其中执行',
 };
 
 export const MILESTONE_LABELS = { open: '开放', pending: '待审', done: '已完成' };

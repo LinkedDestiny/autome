@@ -44,9 +44,10 @@ pub struct Ctx {
     pub home: std::path::PathBuf,
     /// The environment as last observed, updated by a background thread.
     pub environment: EnvCache,
-    /// Where sessions are started. Production opens a terminal; the test
-    /// suites set this rather than a process-global switch (see
-    /// `launcher::LaunchMode`).
+    /// Where sessions are started. Production runs them headless — a Loop
+    /// opens six or more sessions and a window each would interrupt the user
+    /// every time. The test suites set this rather than a process-global
+    /// switch (see `launcher::LaunchMode`).
     pub launch_mode: crate::launcher::LaunchMode,
 }
 
@@ -61,7 +62,7 @@ impl Ctx {
             autome_home: autome_home.into(),
             home: home.into(),
             environment: EnvCache::default(),
-            launch_mode: crate::launcher::LaunchMode::Terminal,
+            launch_mode: crate::launcher::LaunchMode::Headless,
         }
     }
 
@@ -72,10 +73,17 @@ impl Ctx {
         self
     }
 
-    /// Runs the wrapper directly, with no window. For the end-to-end suites,
-    /// where everything up to and including the wrapper is real.
+    /// Runs the wrapper directly, with no window — now the default, so this
+    /// only states the end-to-end suites' intent explicitly.
     pub fn headless(mut self) -> Self {
         self.launch_mode = crate::launcher::LaunchMode::Headless;
+        self
+    }
+
+    /// Opens a visible terminal per session. Nothing in the product does this
+    /// any more; it exists so the mode stays reachable and tested.
+    pub fn with_terminal(mut self) -> Self {
+        self.launch_mode = crate::launcher::LaunchMode::Terminal;
         self
     }
 }
@@ -2423,6 +2431,19 @@ mod tests {
             started.elapsed()
         );
         assert!(ok_payload(&out)["environment"]["probed"].is_boolean());
+    }
+
+    #[test]
+    fn a_production_context_never_opens_a_window() {
+        // The desktop builds its Ctx with `Ctx::new` and nothing else. If the
+        // default drifts back to `Terminal`, every session in a Loop pops a
+        // terminal in front of whatever the user was doing.
+        let ctx = Ctx::new(Store::open_in_memory().unwrap(), "/tmp/ah", "/tmp/home");
+        assert_eq!(
+            ctx.launch_mode,
+            crate::launcher::LaunchMode::Headless,
+            "Ctx::new is what the desktop uses; it must not open windows"
+        );
     }
 
     #[test]

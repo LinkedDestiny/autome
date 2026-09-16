@@ -239,7 +239,7 @@ function renderCorePill() {
   const label = document.getElementById('core-pill-text');
   if (!label) return;
   label.textContent = isConnected()
-    ? `${lastCounts.running} 个任务运行中 · iTerm2`
+    ? `${lastCounts.running} 个任务运行中 · 后台`
     : '内核不可达';
 }
 

@@ -2,7 +2,7 @@
 //
 // C-08 fixes what is adjustable globally: the five-role routing, the default
 // project parallelism, the design round cap and the implementation budget
-// factor. The terminal is iTerm2 and is not a setting. Anything else on this
+// factor. Sessions run headless and that is not a setting. Anything else on this
 // screen would be a setting the requirement says does not exist.
 //
 // The routing itself is not edited here — it has a screen of its own, because
@@ -160,10 +160,10 @@ function saveLoop(patch, ctx) {
 }
 
 function terminalCard(ctx) {
-  const card = h('div.card.card--pad.col', [cardHead('终端', tag('固定 iTerm2', 'outlined'))]);
+  const card = h('div.card.card--pad.col', [cardHead('会话', tag('后台运行', 'outlined'))]);
   card.appendChild(
     h('div.quiet', {
-      text: '任务会话、Onboarding 与一键安装都在 iTerm2 可见终端里运行，不内嵌到应用。iTerm2 缺失时暂用系统 Terminal。',
+      text: '任务会话与 Onboarding 在后台运行，不开终端窗口——一次 Loop 会起六个以上会话，每个都弹窗会一直打断你手上的事。CLI 的全部输出照样写进会话日志，任务面板里点开就能看，也可以 tail -f 跟实时输出。只有一键安装与登录命令会开 iTerm2 可见终端，因为那是你主动按的、需要看到 sudo 提示。',
     })
   );
   card.appendChild(

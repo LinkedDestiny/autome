@@ -433,12 +433,21 @@ fn onboarding_prompt() -> String {
 /// binary). Third time: make it an argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LaunchMode {
-    /// Hand the command to iTerm2 or Terminal, where the user can watch it.
+    /// Run the wrapper directly, with no window at all. **The default, and
+    /// what the desktop uses.**
+    ///
+    /// A session used to open a visible terminal so the user could watch it.
+    /// In practice a Loop opens six or more of them and every one steals
+    /// focus, which interrupts whatever the user was doing — the opposite of
+    /// what a background worker should do. The wrapper tees the CLI's stdout
+    /// and stderr to the session log either way, so nothing is lost: the task
+    /// panel opens that log, and `tail -f` follows it live.
     #[default]
-    Terminal,
-    /// Run the wrapper directly, with no window. The end-to-end suites use
-    /// this: everything up to and including the wrapper is real.
     Headless,
+    /// Hand the command to iTerm2 or Terminal, where the user can watch it.
+    /// No longer used by the desktop; kept because it is a real mode and the
+    /// only way to put a session in front of someone deliberately.
+    Terminal,
     /// Write the prompt and record the launch, but start nothing. Unit tests
     /// that only care about the state transition use this.
     Dry,
@@ -1326,7 +1335,11 @@ mod tests {
     fn the_default_launch_mode_is_a_terminal() {
         // Production shows the user what is happening (design §1). The tests
         // opt out explicitly; nothing opts in by forgetting.
-        assert_eq!(LaunchMode::default(), LaunchMode::Terminal);
+        assert_eq!(
+            LaunchMode::default(),
+            LaunchMode::Headless,
+            "a session must not open a window unless someone asked for one"
+        );
     }
 
     #[test]

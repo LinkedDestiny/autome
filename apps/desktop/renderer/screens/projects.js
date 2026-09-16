@@ -165,7 +165,7 @@ function openOnboarding(project, ctx) {
   const steps = [
     ['选择目录', project.path || ''],
     ['初始化 .autome', '脚手架已写入 · init commit 已提交'],
-    ['Claude Code 起草画像与 AGENTS.md', '在 iTerm2 可见终端中运行'],
+    ['Claude Code 起草画像与 AGENTS.md', '在后台运行，日志可随时打开'],
     ['确认产物', 'docs/agent-project-profile.md 与 AGENTS.md'],
     ['Loop 配置', '从全局默认复制一份，按这个项目改'],
   ];
