@@ -188,3 +188,27 @@ test('every op on the write allowlist reaches the core or a handler in Main', ()
     assert.ok(inMain || inCore, `${op} is allowed but nothing implements it`);
   }
 });
+
+test('taking a stance refreshes the decide drawer instead of closing it', () => {
+  // Structural, not behavioural: exercising this needs a live core, and the
+  // real check was run against one. What it pins is the specific regression —
+  // `onDone` used to call `close()`, so triaging nine Backlog items meant
+  // reopening the drawer nine times.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'screens', 'task.js'), 'utf8');
+
+  const start = src.indexOf('function decideRow(');
+  assert.ok(start > 0, 'decideRow must exist');
+  const body = src.slice(start, src.indexOf('\nfunction ', start + 10));
+
+  assert.ok(
+    body.includes('refreshDecideDrawer('),
+    'a stance must rebuild the drawer body from a fresh read'
+  );
+  assert.equal(
+    /onDone:[\s\S]{0,200}?\bclose\(\)/.test(body),
+    false,
+    'a stance must not close the drawer'
+  );
+});

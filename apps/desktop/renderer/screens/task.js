@@ -16,7 +16,7 @@
 
 import {
   h, icon, text, reveal, tag, spinnerTag, progress, repoList, cardHead,
-  empty, activateOnKey,
+  empty, activateOnKey, clear,
 } from '../lib/dom.js';
 import { read, readOr, attempt, registerWrite } from '../lib/api.js';
 import { openDrawer, openModal, closeButton, close } from '../lib/overlay.js';
@@ -414,6 +414,10 @@ function decisionsCard(data, ctx) {
  * effect.
  */
 function openDecideDrawer(data, ctx) {
+  openDrawer({ title: '待你决定', body: decideBody(data, ctx), footer: [closeButton('关闭')] });
+}
+
+function decideBody(data, ctx) {
   const task = (data && data.task) || {};
   const decisions = ((data && data.decisions) || []).filter((d) => !d.consumed);
 
@@ -430,8 +434,30 @@ function openDecideDrawer(data, ctx) {
     for (const item of decisions) stack.appendChild(decideRow(task, item, ctx));
     body.push(stack);
   }
+  return body;
+}
 
-  openDrawer({ title: '待你决定', body, footer: [closeButton('关闭')] });
+/**
+ * Re-reads the task and rebuilds the drawer's *body* after a stance is saved.
+ *
+ * Taking a stance used to close the drawer, which made triaging a list of
+ * Backlog items one at a time: decide, drawer shuts, find the button, open it
+ * again. Nothing about a stance requires the drawer to close — it is consumed
+ * at the next stopping point, not now.
+ *
+ * Only the body is replaced, not the drawer: `openDrawer` would rebuild the
+ * panel and replay its slide-in. And it is replaced from a fresh read rather
+ * than by marking the clicked pill locally, so the drawer still shows the
+ * core's answer and not our assumption about it.
+ */
+async function refreshDecideDrawer(taskId, ctx) {
+  if (!document.querySelector('#drawer .drawer__body')) return;
+  const fresh = await readOr(null, 'getTask', taskId);
+  // The read is awaited, so the user may have closed the drawer meanwhile.
+  const bodyEl = document.querySelector('#drawer .drawer__body');
+  if (!fresh || !bodyEl) return;
+  clear(bodyEl);
+  for (const node of decideBody(fresh, ctx)) bodyEl.appendChild(node);
 }
 
 function decideRow(task, item, ctx) {
@@ -465,9 +491,12 @@ function decideRow(task, item, ctx) {
         success: '到下一个停顿点时消费。',
         run: (write) =>
           write.decide({ taskId: task.id, kind: item.kind, itemId: item.item_id, disposition }),
-        onDone: () => {
-          close();
-          return ctx.refresh();
+        onDone: async () => {
+          // Screen first, then the drawer: the screen render calls
+          // `resetWriteControls`, so the drawer's new pills must be built
+          // after it or they would not be registered as write controls.
+          await ctx.refresh();
+          await refreshDecideDrawer(task.id, ctx);
         },
       });
     });
@@ -507,9 +536,14 @@ function promptRuling(task, item, ctx) {
                   disposition: 'ruled',
                   ruling,
                 }),
-              onDone: () => {
+              onDone: async () => {
+                // The modal replaced the drawer, so this reopens it rather
+                // than refreshing it — a ruling is usually one of several
+                // items to work through.
                 close();
-                return ctx.refresh();
+                await ctx.refresh();
+                const fresh = await readOr(null, 'getTask', task.id);
+                if (fresh) openDecideDrawer(fresh, ctx);
               },
             });
           },
