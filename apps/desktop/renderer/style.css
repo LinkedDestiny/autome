@@ -409,7 +409,11 @@ body.offline .btn--primary, body.offline .btn--danger, body.offline .btn--yellow
 .kv dt { color: var(--animal-text-secondary); font-weight: 600; white-space: nowrap; } .kv dd { margin: 0; font-weight: 600; color: var(--animal-text-body); }
 
 /* staggered reveal */
-.reveal { animation: ac-fade-up .35s var(--animal-ease) both; animation-delay: calc(var(--i, 0) * 60ms); }
+/* Scoped to `#main.entering`, which app.js sets when you arrive at a screen
+   and not when it refreshes. Unscoped, every repaint replayed the stagger —
+   with `both` fill each card sits at opacity 0 until its turn, so the whole
+   page visibly re-assembled every time any event arrived. */
+#main.entering .reveal { animation: ac-fade-up .35s var(--animal-ease) both; animation-delay: calc(var(--i, 0) * 60ms); }
 @keyframes ac-fade-up { from { opacity: 0; transform: translateY(8px);} to { opacity: 1; transform: translateY(0);} }
 
 /* Project tile */
@@ -619,7 +623,8 @@ code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, m
 .live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 900; letter-spacing: .08em; color: var(--animal-error); }
 .live::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--animal-error); animation: pulse2 1.2s infinite; }
 .stream { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; max-height: 372px; overflow: auto; scrollbar-width: thin; padding-right: 2px; }
-.stream__item { display: grid; grid-template-columns: 46px 1fr; gap: 8px; padding: 8px 10px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); animation: ac-fade-up .3s var(--animal-ease) both; line-height: 1.45; color: var(--animal-text-body); }
+.stream__item { display: grid; grid-template-columns: 46px 1fr; gap: 8px; padding: 8px 10px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); line-height: 1.45; color: var(--animal-text-body); }
+#main.entering .stream__item { animation: ac-fade-up .3s var(--animal-ease) both; }
 .stream__item time { font-weight: 800; color: var(--animal-text-secondary); font-size: 11px; padding-top: 1px; }
 .stream__item .who { font-size: 10px; font-weight: 900; letter-spacing: .06em; padding: 1px 6px; border-radius: 50px; margin-right: 6px; background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
 .stream__item.verifier .who { background: #e0f2f1; color: #00695c; } .stream__item.harness .who { background: #e6f0ff; color: #1565c0; } .stream__item.auditor .who { background: #f3e5f5; color: #7b1fa2; } .stream__item.core .who { background: #f0e8d8; color: #6b5a3a; }

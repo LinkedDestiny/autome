@@ -10,6 +10,14 @@
 // *something changed*, and the response is to re-run the current screen's
 // `load()`. Patching the current render from an event payload would mean two
 // code paths producing a screen, one of them exercised only in production.
+//
+// What that left out is that "something changed" is frequently false for the
+// screen you are looking at, and rebuilding it anyway is visible: every card
+// carries a staggered fade-up, so a repaint makes the whole page re-assemble.
+// So the render is still all-or-nothing and still has one code path, but it
+// only runs when the data it would render actually differs from what is on
+// screen. The comparison is on the payload the core returned, not on a guess
+// about which event affects which screen.
 
 import { h, clear, icon, text } from './lib/dom.js';
 import {
@@ -51,6 +59,11 @@ export const SCREENS = {
 let currentScreen = 'dash';
 let currentParams = {};
 let refreshQueued = false;
+// What is currently painted, as the exact bytes that produced it. `null` means
+// nothing has been painted yet.
+let paintedSignature = null;
+let chromeSignature = null;
+let enterTimer = null;
 // Guards against two refreshes racing: the later render must win, and the
 // earlier one must not paint over it after its read finally returns.
 let renderToken = 0;
@@ -68,11 +81,14 @@ export function navigate(screenId, params) {
   currentScreen = screenId;
   currentParams = params || {};
   renderNav();
-  return show();
+  // Arriving at a screen is when its entry animation belongs. A refresh of the
+  // screen you are already on is not an arrival, and replaying the stagger
+  // there is the flicker.
+  return show({ entering: true });
 }
 
 export function refresh() {
-  return show();
+  return show({ entering: false });
 }
 
 /** The object every screen's `load`/`render` receives. Deliberately small. */
@@ -86,7 +102,7 @@ function context() {
   };
 }
 
-async function show() {
+async function show({ entering = false } = {}) {
   const host = mainHost();
   if (!host) return;
   const screen = SCREENS[currentScreen];
@@ -102,6 +118,20 @@ async function show() {
   }
   if (token !== renderToken) return;
 
+  // Everything the render is a function of. If none of it moved, the DOM we
+  // would build is the DOM already there, and replacing it only costs the user
+  // their scroll position, their hover, and a screen-wide re-animation.
+  const signature = renderSignature(data, failure);
+  if (!entering && signature === paintedSignature && host.firstChild) {
+    await refreshChrome();
+    return;
+  }
+  // A failed load is never memoised. The error block it paints carries a 重试
+  // button that calls `refresh()`; if the second attempt failed the same way,
+  // the signature would match and the button would do nothing at all.
+  paintedSignature = failure ? null : signature;
+
+  markEntering(host, entering);
   resetWriteControls();
   clear(host);
   host.appendChild(connectionBanner());
@@ -122,6 +152,46 @@ async function show() {
 
   await refreshChrome();
 }
+
+/**
+ * A stable string for everything the current render depends on. The payload
+ * goes in verbatim: the core serialises structs, so equal state produces equal
+ * bytes — verified against the live core, whose `dashboard.get` and
+ * `project.list` answers are byte-identical between ticks when nothing moved.
+ */
+function renderSignature(data, failure) {
+  return JSON.stringify({
+    screen: currentScreen,
+    params: currentParams,
+    connected: isConnected(),
+    failure: failure ? String((failure && failure.message) || failure) : null,
+    data,
+  });
+}
+
+/**
+ * Entry animations are scoped to `#main.entering` in the stylesheet, so they
+ * run when you arrive at a screen and not when it refreshes underneath you.
+ * The class is removed on a timer because the elements it applies to are built
+ * fresh on the next render, and a class left behind would animate them.
+ */
+function markEntering(host, entering) {
+  if (enterTimer) {
+    clearTimeout(enterTimer);
+    enterTimer = null;
+  }
+  host.classList.toggle('entering', Boolean(entering));
+  if (entering) {
+    enterTimer = setTimeout(() => {
+      enterTimer = null;
+      host.classList.remove('entering');
+    }, ENTER_ANIMATION_WINDOW_MS);
+  }
+}
+
+// Long enough for the last staggered card (`--i` × 60ms + .35s) on a full
+// screen, short enough that a refresh arriving afterwards does not animate.
+const ENTER_ANIMATION_WINDOW_MS = 1400;
 
 function loadFailure(screen, err) {
   // Keeps `data-screen` equal to the screen id even when the read failed, so
@@ -198,12 +268,28 @@ async function refreshChrome() {
   } else {
     lastCounts = { running: 0, waiting: 0, env: 0 };
   }
+
+  const list = await readOr(null, 'listProjects');
+  const projectEntries = list ? list.projects || [] : [];
+
+  // Same rule as the screen: rebuilding the sidebar and the exec bar every
+  // three seconds throws away whatever the pointer was hovering, for a result
+  // that is usually identical.
+  const signature = JSON.stringify({
+    counts: lastCounts,
+    observed: Boolean(dashboardData),
+    connected: isConnected(),
+    recent: projectEntries
+      .slice(0, 4)
+      .map((e) => [(e.project || {}).id, (e.project || {}).display_name]),
+  });
+  if (signature === chromeSignature) return;
+  chromeSignature = signature;
+
   renderExecBar(Boolean(dashboardData));
   applyBadges();
   renderCorePill();
-
-  const list = await readOr(null, 'listProjects');
-  renderRecent(list ? list.projects || [] : []);
+  renderRecent(projectEntries);
 }
 
 function renderExecBar(observed) {

@@ -94,6 +94,31 @@ async function run() {
     shell
   );
 
+  // ---- entry animations do not replay on a refresh -----------------------
+  // The screen is rebuilt whenever its data changes, and every card carries a
+  // staggered fade-up with `both` fill — so an unscoped rule made the whole
+  // page re-assemble from opacity 0 on every repaint. Measured in a real
+  // browser because this is a computed-style question, not a source-text one.
+  const revealAnimation = await evaluate(() => {
+    const main = document.getElementById('main');
+    const probe = document.createElement('div');
+    probe.className = 'reveal';
+    main.appendChild(probe);
+    const wasEntering = main.classList.contains('entering');
+    main.classList.remove('entering');
+    const idle = getComputedStyle(probe).animationName;
+    main.classList.add('entering');
+    const entering = getComputedStyle(probe).animationName;
+    main.classList.toggle('entering', wasEntering);
+    probe.remove();
+    return { idle, entering };
+  });
+  check(
+    'a card animates when you arrive at a screen and not when it refreshes under you',
+    revealAnimation.idle === 'none' && revealAnimation.entering === 'ac-fade-up',
+    revealAnimation
+  );
+
   // ---- disconnected: no read ever answered, so no write is offered ------
   await evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
   const disconnected = await evaluate(async () => {

@@ -617,3 +617,70 @@ fn the_terminal_hop_starts_the_wrapper() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The implementation round must be able to run a command.
+///
+/// This is the test that was missing. `every_adapter_flag_exists_in_the_cli_it_
+/// is_passed_to` passed the whole time the product was broken: every flag in
+/// the Claude adapter existed, and `--permission-mode acceptEdits` was spelled
+/// correctly. It simply did not permit Bash, so an implementation round could
+/// write code and never compile it. Flag existence is not flag meaning.
+#[test]
+fn a_claude_session_can_actually_run_a_command() {
+    needs_real_cli!();
+
+    let config = autome_domain::config::RoleConfig {
+        runtime: autome_domain::role::Runtime::Claude,
+        model: String::new(),
+        effort: None,
+        enabled: true,
+        skills: Vec::new(),
+    };
+    let args = automed::launcher::build_args(&config);
+    let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
+
+    let dir = std::env::temp_dir().join(format!("automed-realcli-bash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // The command has to be one the CLI does not wave through on its own.
+    // `echo` is on Claude Code's built-in read-only allowlist and runs even
+    // under the broken configuration — a first version of this test used it
+    // and passed against the very bug it was written for. Running a script is
+    // the shape that actually failed: the blocked session's own log lists
+    // `bash scripts/verify.sh` as denied.
+    let marker = "AUTOME-BASH-9F3C2";
+    std::fs::write(dir.join("probe.sh"), format!("#!/bin/sh\necho {marker}\n")).unwrap();
+    let prompt = "运行 `bash ./probe.sh`，然后把它的输出原样贴回来。不要做别的。".to_string();
+
+    let mut child = std::process::Command::new(adapter.binary)
+        .args(&args)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("claude must be on PATH");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(prompt.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        text.contains(marker),
+        "the session could not run a command, so it cannot implement anything.\n\
+         argv: {} {}\noutput:\n{text}",
+        adapter.binary,
+        args.join(" ")
+    );
+}

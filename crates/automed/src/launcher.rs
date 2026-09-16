@@ -89,13 +89,38 @@ pub const ADAPTERS: [RuntimeAdapter; 2] = [
     RuntimeAdapter {
         runtime: Runtime::Claude,
         binary: "claude",
-        // `-p` is non-interactive mode; `acceptEdits` lets the session edit
-        // files and run commands inside its worktree without prompting, which
-        // it must be able to do since nobody is watching for a prompt.
+        // `-p` is non-interactive mode.
+        //
+        // `acceptEdits` alone was wrong, and the comment here used to claim it
+        // "lets the session edit files and run commands" — only the first half
+        // was true. Bash was denied, so an implementation round could write
+        // Swift but never compile it, never run a test, never commit. The
+        // first real implementation round declared a protocol failure rather
+        // than burn its budget producing no evidence, which was the right call
+        // and is how this was found.
+        //
+        // `--allowedTools Bash` is what unlocks command execution. A pattern
+        // like `Bash(swift *)` looks narrower but is not: tested against 2.1.261,
+        // an `rm -rf` outside the pattern still ran. So the honest choice is
+        // between "no commands" and "all commands", and a tool that cannot run
+        // a build cannot implement anything.
+        //
+        // `--permission-mode auto` is the other candidate and was rejected: it
+        // asks a classifier about each command, which adds latency and a new
+        // failure mode — during testing it was rate-limited and refused every
+        // command, exactly the failure being fixed.
         //
         // 2.0 deliberately adds no sandbox of its own (design §17): the
-        // confinement is the working directory and the protocol.
-        autonomous_flags: &["-p", "--permission-mode", "acceptEdits"],
+        // confinement is the working directory and the protocol. Note that
+        // Bash is not confined by either — Codex's `workspace-write` is a real
+        // OS sandbox, this is not.
+        autonomous_flags: &[
+            "-p",
+            "--permission-mode",
+            "acceptEdits",
+            "--allowedTools",
+            "Bash",
+        ],
         model_flag: "--model",
         effort_flag: Some("--effort"),
     },
