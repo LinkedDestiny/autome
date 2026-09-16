@@ -241,6 +241,38 @@ async function runInTerminal(command, title) {
   return { terminal: useITerm ? 'iTerm2' : 'Terminal' };
 }
 
+/**
+ * The "open a terminal for this task" button.
+ *
+ * It used to promise "在 iTerm 中查看", meaning the tab the session was running
+ * in — and it was never implemented, so pressing it threw
+ * `openTerminal is not defined`. Sessions are headless now, so there is no tab
+ * to switch to and the original promise is gone. What is useful instead: a
+ * terminal sitting in the task's worktree, following the live session log if
+ * one is running. This is the one terminal the user asked for by name, so it
+ * is deliberately visible.
+ */
+async function openTerminal(params) {
+  const payload = await callCore('task.get', { task_id: params.task_id });
+  const worktree = payload.worktree;
+  if (typeof worktree !== 'string' || worktree.length === 0) {
+    throw new Error('这个任务还没有 worktree');
+  }
+  let command = `cd ${shellQuote(worktree)}`;
+  const running = (payload.sessions || []).find((s) => s.running);
+  if (running) {
+    const log = await callCore('session.log', { session_id: running.id });
+    if (log && log.path) command += ` && tail -f ${shellQuote(log.path)}`;
+  }
+  const result = await runInTerminal(command, `autome · ${params.task_id}`);
+  return { ...result, command, worktree };
+}
+
+/** POSIX single-quoting, the same rule as the core's `sh_quote`. */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\''`)}'`;
+}
+
 async function runInstall(params) {
   const payload = await callCore('env.install_recipe', { component: params.component });
   if (!payload.prerequisite_ok) {

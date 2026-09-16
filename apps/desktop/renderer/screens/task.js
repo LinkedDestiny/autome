@@ -188,11 +188,11 @@ function heroActions(data, ctx) {
           type: 'button',
           onClick: () =>
             attempt({
-              label: '已切到终端',
-              success: false,
+              label: '已打开终端',
+              success: '终端停在这个任务的 worktree；有会话在跑时会跟它的日志。',
               run: (write) => write.openTerminal(task.id),
             }),
-        }, [icon('term'), text('在 iTerm 中查看')])
+        }, [icon('term'), text('打开终端')])
       )
     );
   }

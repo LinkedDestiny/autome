@@ -151,3 +151,40 @@ test('the window chrome does not paint its own macOS buttons', () => {
     `padding-left ${rule[1]}px puts the brand under the real macOS buttons`
   );
 });
+
+test('every write op Main intercepts has a function behind it', () => {
+  // `open.terminal` was on the write allowlist, wired to `openTerminal(params)`
+  // in the write handler, and that function did not exist anywhere. Pressing
+  // the button threw `openTerminal is not defined` — a reference error that no
+  // test saw, because main.js needs Electron to load and nothing read it as
+  // text either.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
+  const intercepts = [...main.matchAll(/if \(op === '([\w.]+)'\) return (\w+)\(/g)];
+  assert.ok(intercepts.length >= 5, `expected Main to intercept several ops, saw ${intercepts.length}`);
+  for (const [, op, fn] of intercepts) {
+    assert.ok(
+      new RegExp(`(async )?function ${fn}\\s*\\(`).test(main),
+      `${op} is routed to ${fn}(), which is not defined in main.js`
+    );
+  }
+});
+
+test('every op on the write allowlist reaches the core or a handler in Main', () => {
+  // The other half: an op allowed by the gate that Main neither intercepts nor
+  // the core implements would fail only when someone pressed it.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..', '..', '..');
+  const gate = require('../src/write-gate');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const dispatch = fs.readFileSync(path.join(root, 'crates', 'automed', 'src', 'dispatch.rs'), 'utf8');
+
+  for (const op of gate.ALLOWED_WRITE_OPS) {
+    const inMain = main.includes(`op === '${op}'`);
+    const inCore = dispatch.includes(`"${op}"`);
+    assert.ok(inMain || inCore, `${op} is allowed but nothing implements it`);
+  }
+});

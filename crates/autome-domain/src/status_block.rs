@@ -278,13 +278,30 @@ impl std::error::Error for ParseError {}
 enum TableRegion {
     /// Not in a table. A pipe-bearing line here is prose.
     Outside,
-    /// The previous line could have been a header row. Only a separator
-    /// immediately below it makes that true.
-    AfterCandidateHeader,
-    /// Inside the body. Every pipe line here is a row and must parse — a
-    /// typo in a real row is still an error, which is the point of not
-    /// simply skipping anything that fails to look like a milestone.
+    /// The previous line could have been a header row; `milestone` records
+    /// whether it was *the milestone table's* header. Only a separator
+    /// immediately below makes either answer real.
+    AfterCandidateHeader { milestone: bool },
+    /// Inside the milestone table's body. Every pipe line here is a row and
+    /// must parse — a typo in a real row is still an error, which is the
+    /// point of not simply skipping anything that fails to look like a
+    /// milestone.
     Body,
+    /// Inside some *other* table in the same section. The section holds prose
+    /// and, as of the first real implementation round, an acceptance-evidence
+    /// table per milestone. Its rows are skipped, not parsed: `| 验收项 | 结果
+    /// | 证据 |` has a header and a separator like any table, and reading its
+    /// `通过` as a milestone state failed the task.
+    OtherTable,
+}
+
+/// Whether a header row belongs to the milestone table. The first column is
+/// the discriminator: the milestone table's is `ID` (or `里程碑`, or blank),
+/// and every other table in this section names something else.
+fn is_milestone_header(cells: &[&str]) -> bool {
+    cells
+        .first()
+        .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑" || c.is_empty())
 }
 
 /// `d/N` — the shape both round fields use.
@@ -512,17 +529,26 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                 }
                 let cells = table_cells(trimmed);
                 if is_separator_row(&cells) {
-                    // Only a separator under a header opens a table body.
+                    // Only a separator under a header opens a body, and only
+                    // the milestone table's header opens *the* body.
                     table = match table {
-                        TableRegion::AfterCandidateHeader => TableRegion::Body,
+                        TableRegion::AfterCandidateHeader { milestone: true } => TableRegion::Body,
+                        TableRegion::AfterCandidateHeader { milestone: false } => {
+                            TableRegion::OtherTable
+                        }
                         _ => TableRegion::Outside,
                     };
+                    continue;
+                }
+                if table == TableRegion::OtherTable {
                     continue;
                 }
                 if table != TableRegion::Body {
                     // The header line, or prose that happens to hold pipes.
                     // Which of the two it was is decided by the next line.
-                    table = TableRegion::AfterCandidateHeader;
+                    table = TableRegion::AfterCandidateHeader {
+                        milestone: is_milestone_header(&cells),
+                    };
                     continue;
                 }
                 if cells.len() < 3 {
@@ -672,6 +698,72 @@ next-action: 交评审
         assert_eq!(parsed.milestones.len(), 2);
         assert_eq!(parsed.milestones[0].id, "M-01");
         assert_eq!(parsed.milestones[1].id, "M-02");
+    }
+
+    #[test]
+    fn another_table_in_the_milestone_section_is_not_the_milestone_table() {
+        // From the implementation round of 2026-09-16. It wrote an
+        // acceptance-evidence table under `#### M-01 验收证据`, inside the
+        // 里程碑 section. Anchoring only on the separator row read its `通过`
+        // as a milestone state and failed a task whose evidence was complete.
+        let doc = "\
+<!-- autome:status
+status: 实现中
+design-round: 1/15
+implementation-round: 3/14
+current-milestone: M-01
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交审计
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 待审 | 工程骨架 | 0 | |
+| M-02 | 开放 | 权限与识别 | 0 | |
+
+#### M-01 验收证据
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| `bash scripts/verify.sh` 退出码 0 | 通过 | 末行 `VERIFY OK` |
+| `bash scripts/test.sh` 退出码 0 | 通过 | `passed=11 failed=0` |
+| 人工：Dock 无图标 | 通过 | `LSUIElement` 为 true |
+";
+        let parsed = parse(doc).expect("the evidence table is not the milestone table");
+        assert_eq!(parsed.milestones.len(), 2);
+        assert_eq!(parsed.milestones[0].state, MilestoneState::Pending);
+        assert_eq!(parsed.milestones[1].id, "M-02");
+    }
+
+    #[test]
+    fn the_milestone_table_is_still_read_when_it_comes_after_another_table() {
+        let doc = "\
+<!-- autome:status
+status: 实现中
+design-round: 1/15
+implementation-round: 1/14
+current-milestone: M-01
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 继续
+-->
+
+## 里程碑
+
+| 验收项 | 结果 |
+|---|---|
+| 某项 | 通过 |
+
+| ID | 状态 | 标题 |
+|---|---|---|
+| M-01 | 开放 | 骨架 |
+";
+        let parsed = parse(doc).unwrap();
+        assert_eq!(parsed.milestones.len(), 1);
+        assert_eq!(parsed.milestones[0].id, "M-01");
     }
 
     #[test]
