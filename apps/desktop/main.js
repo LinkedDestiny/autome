@@ -258,15 +258,42 @@ async function openTerminal(params) {
   if (typeof worktree !== 'string' || worktree.length === 0) {
     throw new Error('这个任务还没有 worktree');
   }
-  let command = `cd ${shellQuote(worktree)}`;
-  const running = (payload.sessions || []).find((s) => s.running);
-  if (running) {
-    const log = await callCore('session.log', { session_id: running.id });
-    if (log && log.path) command += ` && tail -f ${shellQuote(log.path)}`;
+
+  // Follow the running session if there is one; otherwise show the last one
+  // that ran. The first version only tailed a *running* session, so opening a
+  // terminal on a task that had stopped gave a bare prompt and no sign that
+  // anything had ever happened — which, with sessions headless, is the only
+  // place the user would have looked.
+  // `task.get` returns sessions newest first (`ORDER BY started_at DESC` in
+  // store.rs), so the most recent one is at index 0, not at the end.
+  const sessions = payload.sessions || [];
+  const session = sessions.find((s) => s.running) || sessions[0];
+
+  const parts = [`cd ${shellQuote(worktree)}`];
+  if (session) {
+    const log = await callCore('session.log', { session_id: session.id });
+    const path = log && log.path;
+    if (path) {
+      const label = `${session.label || '会话'} #${session.round}`;
+      parts.push(`echo ${shellQuote(`== ${label} · ${path} ==`)}`);
+      parts.push(
+        session.running
+          ? `tail -f -n +1 ${shellQuote(path)}`
+          : `tail -n ${TERMINAL_LOG_LINES} ${shellQuote(path)}`
+      );
+    }
+  } else {
+    parts.push(`echo ${shellQuote('这个任务还没有跑过会话。')}`);
   }
+
+  const command = parts.join(' && ');
   const result = await runInTerminal(command, `autome · ${params.task_id}`);
-  return { ...result, command, worktree };
+  return { ...result, command, worktree, session: session ? session.id : null };
 }
+
+// Enough to see how a round ended without flooding the scrollback. The whole
+// file is named on the line above it, and the task panel shows it in full.
+const TERMINAL_LOG_LINES = 500;
 
 /** POSIX single-quoting, the same rule as the core's `sh_quote`. */
 function shellQuote(value) {

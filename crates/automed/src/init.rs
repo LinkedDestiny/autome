@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
 /// clearly taken them over.
-pub const SCAFFOLD_VERSION: u32 = 3;
+pub const SCAFFOLD_VERSION: u32 = 4;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 
@@ -381,13 +381,16 @@ fn run_session_sh() -> String {
 # （下次初始化会按版本号刷新；删掉上面的版本标记行即可接管本文件）。
 #
 # 用法：
-#   run_session.sh <session-id> <output-dir> <runtime> <binary> <prompt-file> [extra-args...]
+#   run_session.sh <session-id> <output-dir> <runtime> <renderer> <binary> <prompt-file> [extra-args...]
+#
+# <renderer> 是 automed 自己的可执行文件路径，用来把 Claude 的 stream-json 输出
+# 渲染成人能读的日志；传 `-` 或传一个不可执行的路径即跳过渲染。
 #
 # 职责：写 pid → 执行 CLI 并把输出 tee 到日志 → 无论如何都写退出标记。
 
 set -u
 
-if [ $# -lt 5 ]; then
+if [ $# -lt 6 ]; then
   echo "run_session.sh: 参数不足" >&2
   exit 64
 fi
@@ -395,6 +398,7 @@ fi
 session_id="$1"; shift
 out_dir="$1"; shift
 runtime="$1"; shift
+renderer="$1"; shift
 binary="$1"; shift
 prompt_file="$1"; shift
 
@@ -454,7 +458,27 @@ fi
 # 设计文档，然后把协议失败归错到文档头上。
 code_file="$out_dir/$session_id.code"
 rm -f "$code_file"
-{{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} | tee -a "$log"
+
+# Claude 用 --output-format stream-json 跑，因为 text 模式只打印收尾的那段总结：
+# 会话已经不开窗口了，日志是唯一能看到这一轮干了什么的地方，而 text 模式下它
+# 只有几 KB。stream-json 是完整的，但一行一个 JSON，人读不了，所以经 automed
+# 自己渲染一遍。原始流另存 .jsonl，渲染只影响展示、不丢东西。
+#
+# Codex 的输出本来就是给人看的，原样通过。
+render() {{
+  if [ "$runtime" = "claude" ] && [ -n "$renderer" ] && [ "$renderer" != "-" ] && [ -x "$renderer" ]; then
+    "$renderer" render-stream
+  else
+    cat
+  fi
+}}
+
+if [ "$runtime" = "claude" ] && [ -n "$renderer" ] && [ "$renderer" != "-" ] && [ -x "$renderer" ]; then
+  {{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} \
+    | tee -a "$out_dir/$session_id.jsonl" | render | tee -a "$log"
+else
+  {{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} | tee -a "$log"
+fi
 code=$(cat "$code_file" 2>/dev/null || echo 70)
 rm -f "$code_file"
 
@@ -466,7 +490,7 @@ exit "$code"
     )
 }
 
-const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 3 -->
+const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 4 -->
 # 会话协议
 
 本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
@@ -554,7 +578,7 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 /// The rules are inherited from 1.x, which arrived at them by running the loop
 /// for months. The changes for 2.0 are: no self-relay (the core schedules),
 /// and the milestone table has a fixed machine-read format.
-const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 3 -->
+const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 4 -->
 # Loop 协议
 
 本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
@@ -1026,6 +1050,10 @@ mod tests {
             // A path under a directory that does not exist and cannot be made.
             .arg("/dev/null/nowhere")
             .arg("claude")
+            // The renderer slot. `-` means "pipe the stream through
+            // unchanged", which is what this test wants: its subject is the
+            // wrapper's refusal, not the rendering.
+            .arg("-")
             .arg("/bin/echo")
             .arg("/tmp/whatever")
             .output()

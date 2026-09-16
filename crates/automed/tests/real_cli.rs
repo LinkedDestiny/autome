@@ -684,3 +684,71 @@ fn a_claude_session_can_actually_run_a_command() {
         args.join(" ")
     );
 }
+
+/// The session log must contain the work, not just its closing paragraph.
+///
+/// With `--output-format text` — what this project shipped first — a round that
+/// edited a dozen files left a 3 KB log holding only the model's summary. The
+/// user's report was exact: "只有一个启动内容，没有 AI 实际执行的内容". Nothing
+/// in the stand-in suite could see it: the stand-in's output is whatever the
+/// step script echoes.
+#[test]
+fn a_claude_session_log_records_the_tools_it_ran() {
+    needs_real_cli!();
+
+    let config = autome_domain::config::RoleConfig {
+        runtime: autome_domain::role::Runtime::Claude,
+        model: String::new(),
+        effort: None,
+        enabled: true,
+        skills: Vec::new(),
+    };
+    let args = automed::launcher::build_args(&config);
+    let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
+
+    let dir = std::env::temp_dir().join(format!("automed-realcli-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("probe.sh"), "#!/bin/sh\necho RENDERED-OK\n").unwrap();
+
+    let mut child = std::process::Command::new(adapter.binary)
+        .args(&args)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("claude must be on PATH");
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all("运行 `bash ./probe.sh`，然后贴回输出。".as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let raw = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Render it the way the wrapper does.
+    let mut rendered = Vec::new();
+    automed::stream_render::render_stream(std::io::BufReader::new(raw.as_bytes()), &mut rendered)
+        .unwrap();
+    let text = String::from_utf8(rendered).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        text.contains("→ Bash"),
+        "the log records no tool call, so it is not a record of the work.\n\
+         argv: {} {}\nrendered:\n{text}",
+        adapter.binary,
+        args.join(" ")
+    );
+    assert!(
+        text.contains("==="),
+        "the log has no init/result marker:\n{text}"
+    );
+}

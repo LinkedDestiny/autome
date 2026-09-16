@@ -26,6 +26,20 @@ fn write_outbound(writer: &mut impl io::Write, outbound: &Outbound) -> Result<()
 const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 
 fn main() {
+    // `automed render-stream` is a filter, not the daemon: the session wrapper
+    // pipes a CLI's `stream-json` output through it so the log a human opens
+    // is readable. It must produce no tracing noise on stderr — stderr is
+    // merged into the same pipe it is rendering.
+    if std::env::args().nth(1).as_deref() == Some("render-stream") {
+        let stdin = io::stdin();
+        let mut stdout = io::stdout();
+        if let Err(e) = automed::stream_render::render_stream(stdin.lock(), &mut stdout) {
+            eprintln!("render-stream: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     tracing_subscriber::fmt().with_writer(io::stderr).init();
 
     let db_path =

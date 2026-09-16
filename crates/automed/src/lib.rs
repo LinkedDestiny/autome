@@ -31,3 +31,4 @@ pub mod launcher;
 pub mod scheduler;
 pub mod skills;
 pub mod store;
+pub mod stream_render;

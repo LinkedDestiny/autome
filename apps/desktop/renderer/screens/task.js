@@ -189,7 +189,7 @@ function heroActions(data, ctx) {
           onClick: () =>
             attempt({
               label: '已打开终端',
-              success: '终端停在这个任务的 worktree；有会话在跑时会跟它的日志。',
+              success: '终端停在这个任务的 worktree，并显示最近一次会话的日志；正在跑的会话会实时跟。',
               run: (write) => write.openTerminal(task.id),
             }),
         }, [icon('term'), text('打开终端')])

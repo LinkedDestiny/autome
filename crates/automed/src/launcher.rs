@@ -114,12 +114,24 @@ pub const ADAPTERS: [RuntimeAdapter; 2] = [
         // confinement is the working directory and the protocol. Note that
         // Bash is not confined by either — Codex's `workspace-write` is a real
         // OS sandbox, this is not.
+        //
+        // `--output-format stream-json` (with the `--verbose` it requires) is
+        // what makes the session log a record of the work rather than of its
+        // closing paragraph. In `text` mode `claude -p` prints only the final
+        // summary: a round that edited a dozen files left a 3 KB log, against
+        // 300 KB for the same work on Codex, which streams its execution. With
+        // sessions headless that log is the only place to see what happened.
+        // The wrapper pipes the stream through `automed render-stream` to make
+        // it readable and keeps the raw JSONL beside it.
         autonomous_flags: &[
             "-p",
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
             "Bash",
+            "--output-format",
+            "stream-json",
+            "--verbose",
         ],
         model_flag: "--model",
         effort_flag: Some("--effort"),
@@ -572,6 +584,7 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
         spec.session_id.to_string(),
         session_dir.to_string_lossy().into_owned(),
         spec.runtime.as_str().to_string(),
+        renderer_path(),
         resolved_binary,
         prompt_path.to_string_lossy().into_owned(),
     ];
@@ -588,6 +601,19 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
 
 /// Which terminal to use. iTerm2 when present, Terminal otherwise
 /// (requirement E-02).
+/// This executable's own path, which the wrapper invokes as
+/// `automed render-stream` to turn Claude's `stream-json` into a readable log.
+///
+/// `-` when the path cannot be determined: the wrapper then pipes the stream
+/// through unchanged. A raw JSONL log is ugly but complete, and that is a far
+/// better failure than a session that will not start.
+fn renderer_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "-".to_string())
+}
+
 fn run_in_terminal(mode: LaunchMode, argv: &[String], cwd: &Path, title: &str) -> Result<Terminal> {
     if mode == LaunchMode::Headless || cfg!(test) {
         // `cfg!(test)` is a backstop, not the mechanism: a unit test inside

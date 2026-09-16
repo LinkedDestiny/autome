@@ -987,6 +987,10 @@ fn the_wrapper_writes_a_terminated_exit_marker_carrying_the_clis_code() {
         .arg("s1")
         .arg(&dir)
         .arg("claude")
+        // The renderer slot; `-` pipes the stream through unchanged, which is
+        // what these two tests want — their subject is the wrapper's exit
+        // handling, not the rendering.
+        .arg("-")
         .arg("/bin/sh")
         .arg(&prompt)
         .arg("-c")
@@ -1023,6 +1027,7 @@ fn the_wrapper_refuses_a_missing_prompt_file_and_still_writes_a_marker() {
         .arg("s2")
         .arg(&dir)
         .arg("claude")
+        .arg("-")
         .arg("/bin/echo")
         .arg(dir.join("does-not-exist"))
         .current_dir(&w.repo)
