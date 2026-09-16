@@ -43,6 +43,12 @@ common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || e
 repo=$(dirname "$common")
 fake="$repo/.autome/fake"
 [ -d "$fake" ] || exit 91
+# The counter is per-repository by default, which is what a single-task test
+# wants: steps 1,2,3... are that task's successive rounds. A test running
+# several tasks in one repository needs one counter each, or task A consumes
+# task B's step. Such a test creates `$fake/<slug>/` and we use it instead.
+slug=$(basename "$PWD")
+[ -d "$fake/$slug" ] && fake="$fake/$slug"
 n=$(cat "$fake/next" 2>/dev/null || echo 1)
 step="$fake/$n.sh"
 echo "$n" >> "$fake/history"
@@ -163,13 +169,26 @@ impl World {
         std::fs::write(path, script).unwrap();
     }
 
-    /// Like `doc_step`, with a shell prelude that runs before the document is
-    /// written — used to hold a session open while the test checks something.
-    fn doc_step_with_prelude(&self, n: u32, slug: &str, body: &str, prelude: &str) {
-        self.step(
-            n,
-            &format!(
-                r#"set -e
+    /// Queues the Nth script for *one task's* worktree rather than for the
+    /// repository. Needed only by tests that run several tasks at once: they
+    /// share a repository, so they would otherwise share a step counter and
+    /// consume each other's scripts.
+    fn step_for(&self, slug: &str, n: u32, script: &str) {
+        let dir = self.repo.join(format!(".autome/fake/{slug}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("next"), "1").unwrap();
+        std::fs::write(dir.join(format!("{n}.sh")), script).unwrap();
+    }
+
+    /// `doc_step_with_prelude`, scoped to one task's worktree.
+    fn doc_step_for(&self, slug: &str, n: u32, body: &str, prelude: &str) {
+        self.step_for(slug, n, &Self::doc_script(slug, n, body, prelude));
+    }
+
+    /// What a session writes: the design document for its task, committed.
+    fn doc_script(slug: &str, n: u32, body: &str, prelude: &str) -> String {
+        format!(
+            r#"set -e
 {prelude}
 mkdir -p "docs/{slug}"
 cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
@@ -178,8 +197,7 @@ AUTOME_EOF
 git add -A docs >/dev/null 2>&1 || true
 git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
 "#
-            ),
-        );
+        )
     }
 
     /// A step that writes a design document into the task's worktree and
@@ -679,7 +697,8 @@ fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
     // which tests nothing about the limit.
     let requests = ["alpha task", "beta task", "gamma task"];
     for request in requests {
-        w.doc_step_with_prelude(1, &slug_for(request), &doc("设计中", 0, 0, &[]), "sleep 3");
+        let slug = slug_for(request);
+        w.doc_step_for(&slug, 1, &doc("设计中", 0, 0, &[]), "sleep 3");
     }
 
     let mut ids = Vec::new();
@@ -687,11 +706,20 @@ fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
         ids.push(create_task(&mut w, request));
     }
 
+    // A crashed session frees its slot, so a task that dies for an unrelated
+    // reason makes the rest of this test pass for the wrong reason. That is
+    // exactly what a shared step counter in the stand-in used to cause.
+    for id in &ids {
+        let panel = w.call("task.get", json!({ "task_id": id.clone() }));
+        let state = &ok(&panel)["task"]["state"];
+        assert_ne!(
+            state["state"], "failed",
+            "{id} must not have crashed: {state}"
+        );
+    }
+
     let running = w.ctx.store.all_running_sessions().unwrap().len();
-    assert!(
-        running <= 2,
-        "the parallel limit must hold: {running} running"
-    );
+    assert_eq!(running, 2, "both slots are held: {running} running");
 
     let queued: Vec<String> = w
         .ctx

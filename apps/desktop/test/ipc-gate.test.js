@@ -8,6 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const gate = require('../src/ipc-gate');
+const labels = require('../renderer/lib/labels.js');
 
 test('the allowlist is frozen, so nothing can extend it at runtime', () => {
   assert.ok(Object.isFrozen(gate.ALLOWED_READ_METHODS));
@@ -113,5 +114,42 @@ test('only the packaged origin is trusted', () => {
     undefined,
   ]) {
     assert.equal(gate.isTrustedSenderUrl(url), false, `${url} must not be trusted`);
+  }
+});
+
+test('the component names here are the ones the core puts on the wire', () => {
+  // This guard exists because the two disagreed in a shipped build. The core
+  // derived Serde on `Component`, which spelled `ITerm2` as `i_term2`, while
+  // everything on this side says `iterm2`. The lookup never matched and the
+  // environment screen reported iTerm2 as missing on a machine that had it.
+  // Every desktop test passed throughout, because the fixtures used the name
+  // the renderer wanted rather than the one the core sent.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'crates', 'autome-domain', 'src', 'environment.rs'),
+    'utf8'
+  );
+  const block = source.slice(source.indexOf('fn as_str'));
+  const wireNames = [...block.slice(0, block.indexOf('\n    }')).matchAll(/=> "([a-z0-9_]+)"/g)].map(
+    (m) => m[1]
+  );
+
+  // `as_str` is only the wire form because the core serialises through it.
+  // Checking the names without checking that is the same mistake again: a
+  // `rename_all` derive would put a different string on the wire and this
+  // test would still pass.
+  const decl = source.slice(source.indexOf('pub enum Component'));
+  const attrs = source.slice(source.lastIndexOf('#[derive', source.indexOf('pub enum Component')), source.indexOf('pub enum Component'));
+  assert.equal(
+    /rename_all|Serialize|Deserialize/.test(attrs),
+    false,
+    'Component must serialise through as_str, not a derive'
+  );
+  assert.match(decl, /serialize_str\(self\.as_str\(\)\)/);
+
+  assert.equal(wireNames.length, labels.COMPONENT_ORDER.length, 'component count差异');
+  for (const name of labels.COMPONENT_ORDER) {
+    assert.ok(wireNames.includes(name), `renderer 用 ${name}，核心发的是 ${wireNames.join(', ')}`);
   }
 });

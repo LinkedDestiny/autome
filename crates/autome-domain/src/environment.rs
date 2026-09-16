@@ -12,13 +12,35 @@ use serde::{Deserialize, Serialize};
 use crate::role::Runtime;
 
 /// The four checked components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// Serde goes through `as_str`/`parse` rather than a derive, so the enum has
+/// exactly one name on the wire. `rename_all = "snake_case"` turned `ITerm2`
+/// into `i_term2` while `as_str()` said `iterm2`, and the renderer — which
+/// matched on `as_str`'s spelling — could never find the component. iTerm2
+/// showed as missing on a machine that had it installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Component {
     Git,
     Claude,
     Codex,
     ITerm2,
+}
+
+impl Serialize for Component {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Component {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Component::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown component `{raw}`; expected one of git, claude, codex, iterm2"
+            ))
+        })
+    }
 }
 
 impl Component {
@@ -365,6 +387,33 @@ mod tests {
             assert_eq!(Component::parse(c.as_str()), Some(c));
             assert!(!c.display_name().is_empty());
         }
+    }
+
+    #[test]
+    fn a_component_has_exactly_one_name_on_the_wire() {
+        // The bug: a serde derive spelled `ITerm2` as `i_term2` while
+        // `as_str()` said `iterm2`. The renderer matched on `as_str`'s
+        // spelling and never found it, so iTerm2 read as missing on a machine
+        // that had it.
+        for c in Component::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", c.as_str()),
+                "{c:?} serialises differently from as_str()"
+            );
+            assert_eq!(serde_json::from_str::<Component>(&json).unwrap(), c);
+        }
+        assert_eq!(
+            serde_json::to_string(&Component::ITerm2).unwrap(),
+            "\"iterm2\""
+        );
+    }
+
+    #[test]
+    fn an_unknown_component_name_names_the_real_ones() {
+        let err = serde_json::from_str::<Component>("\"i_term2\"").unwrap_err();
+        assert!(err.to_string().contains("iterm2"), "{err}");
     }
 
     #[test]

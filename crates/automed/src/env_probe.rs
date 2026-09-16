@@ -308,6 +308,10 @@ fn probe_login(component: Component, binary_path: &Path) -> Login {
                 match classify_login(&capture.stdout, &capture.stderr, capture.exit_code) {
                     LoginVerdict::LoggedIn { account_hint } => return Login::Ok { account_hint },
                     LoginVerdict::LoggedOut => return Login::Expired,
+                    LoginVerdict::NotRequired { detail } => {
+                        let _ = detail;
+                        return Login::NotApplicable;
+                    }
                     LoginVerdict::Unrecognised => tried.push(rendered),
                 }
             }
@@ -316,12 +320,41 @@ fn probe_login(component: Component, binary_path: &Path) -> Login {
         }
     }
 
+    // Every probe failed to answer. Before reporting "cannot tell", check
+    // whether an API key is configured in the environment: with one, there is
+    // no login to have, and the honest answer is "不适用" rather than a
+    // shrug. This is a fallback only — a CLI that answers is always believed
+    // over an inherited variable.
+    if let Some(var) = api_key_env_var(component, |name| std::env::var(name).ok()) {
+        let _ = var;
+        return Login::NotApplicable;
+    }
+
     Login::Unknown {
         detail: format!(
             "无法判定登录态，已尝试：{}。CLI 参数可能已变更，请更新 env_probe 的 LOGIN_PROBES 表（§7.2）。",
             tried.join("; ")
         ),
     }
+}
+
+/// The environment variable, if any, that configures `component` with an API
+/// key instead of a login. `lookup` is a parameter so this is testable
+/// without touching the process environment — a process-global read is how
+/// three earlier defects in this codebase started.
+fn api_key_env_var(
+    component: Component,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<&'static str> {
+    let names: &[&str] = match component {
+        Component::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        Component::Codex => &["OPENAI_API_KEY"],
+        _ => &[],
+    };
+    names
+        .iter()
+        .copied()
+        .find(|name| lookup(name).is_some_and(|v| !v.trim().is_empty()))
 }
 
 // ---------------------------------------------------------------------------
@@ -418,8 +451,16 @@ fn version_in(text: &str) -> Option<String> {
 /// the next form" answer and is what everything ambiguous collapses to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoginVerdict {
-    LoggedIn { account_hint: Option<String> },
+    LoggedIn {
+        account_hint: Option<String>,
+    },
     LoggedOut,
+    /// There is no login to have: the CLI is driven by an API key. Pressing
+    /// "登录" would be the wrong advice, so this maps to `Login::NotApplicable`
+    /// rather than to `Expired`.
+    NotRequired {
+        detail: String,
+    },
     Unrecognised,
 }
 
@@ -437,6 +478,15 @@ enum LoginVerdict {
 /// 4. anything left — silence, a novel phrasing, a bare non-zero exit — is
 ///    `Unrecognised`, never `Expired` (see the module header).
 fn classify_login(stdout: &str, stderr: &str, exit_code: Option<i32>) -> LoginVerdict {
+    // A structured answer beats every heuristic below, and `claude auth
+    // status` gives one. Reading it as prose was the original defect: the
+    // JSON says `"loggedIn": true`, the marker table looks for "logged in"
+    // with a space, nothing matched, and a logged-in machine was reported as
+    // "无法判定登录态".
+    if let Some(verdict) = structured_login(stdout).or_else(|| structured_login(stderr)) {
+        return verdict;
+    }
+
     let combined = format!("{stdout}\n{stderr}").to_lowercase();
 
     if contains_any(&combined, UNRECOGNISED_MARKERS) {
@@ -455,6 +505,73 @@ fn classify_login(stdout: &str, stderr: &str, exit_code: Option<i32>) -> LoginVe
     // the same "we cannot tell".
     let _ = exit_code;
     LoginVerdict::Unrecognised
+}
+
+/// Reads a CLI's JSON answer, if it gave one.
+///
+/// Only a top-level object counts, and only these keys: a CLI that prints
+/// unrelated JSON is not answering this question. `None` means "not a
+/// structured answer", which sends the caller back to the marker tables.
+fn structured_login(text: &str) -> Option<LoginVerdict> {
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let object = value.as_object()?;
+
+    let logged_in = ["loggedIn", "logged_in", "isLoggedIn", "authenticated"]
+        .iter()
+        .find_map(|k| object.get(*k).and_then(serde_json::Value::as_bool));
+
+    let auth_method = ["authMethod", "auth_method", "authType", "auth_type"]
+        .iter()
+        .find_map(|k| object.get(*k).and_then(serde_json::Value::as_str));
+
+    // An API key is a configuration, not a session. It cannot expire from the
+    // CLI's point of view and there is nothing to log in to.
+    let api_key_configured = auth_method.is_some_and(is_api_key_method);
+
+    match (logged_in, api_key_configured) {
+        (_, true) if logged_in != Some(true) => Some(LoginVerdict::NotRequired {
+            detail: format!(
+                "使用 API key 认证（{}），无需登录。",
+                auth_method.unwrap_or("api_key")
+            ),
+        }),
+        (Some(true), _) => Some(LoginVerdict::LoggedIn {
+            account_hint: structured_account_hint(object, auth_method),
+        }),
+        (Some(false), _) => Some(LoginVerdict::LoggedOut),
+        (None, _) => None,
+    }
+}
+
+fn is_api_key_method(method: &str) -> bool {
+    let lower = method.to_lowercase();
+    lower.contains("api_key") || lower.contains("apikey") || lower.contains("api key")
+}
+
+/// A hint for the dashboard card. Never a token: only these keys are read,
+/// and a value long enough to be a secret is dropped.
+fn structured_account_hint(
+    object: &serde_json::Map<String, serde_json::Value>,
+    auth_method: Option<&str>,
+) -> Option<String> {
+    const HINT_KEYS: &[&str] = &[
+        "email",
+        "account",
+        "accountEmail",
+        "organization",
+        "org",
+        "user",
+    ];
+    const MAX_HINT_CHARS: usize = 64;
+    for key in HINT_KEYS {
+        if let Some(hint) = object.get(*key).and_then(serde_json::Value::as_str) {
+            let hint = hint.trim();
+            if !hint.is_empty() && hint.chars().count() <= MAX_HINT_CHARS {
+                return Some(hint.to_string());
+            }
+        }
+    }
+    auth_method.map(str::to_string)
 }
 
 fn contains_any(haystack_lowercase: &str, markers: &[&str]) -> bool {
@@ -947,6 +1064,117 @@ mod tests {
     #[test]
     fn silence_and_novel_phrasings_are_unrecognised() {
         assert_eq!(classify_login("", "", Some(0)), LoginVerdict::Unrecognised);
+    }
+
+    #[test]
+    fn the_real_claude_auth_status_json_reads_as_logged_in() {
+        // Verbatim from `claude auth status` on 2.1.261. Read as prose this
+        // matched nothing: the JSON key is `loggedIn`, the marker table looks
+        // for "logged in" with a space. A logged-in machine reported
+        // "无法判定登录态".
+        let stdout = r#"{
+  "loggedIn": true,
+  "authMethod": "oauth_token",
+  "apiProvider": "firstParty",
+  "analyticsDisabled": true,
+  "projectsDirectory": "/Users/dannie/.claude/projects"
+}"#;
+        assert_eq!(
+            classify_login(stdout, "", Some(0)),
+            LoginVerdict::LoggedIn {
+                account_hint: Some("oauth_token".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn an_api_key_configuration_is_not_an_expired_login() {
+        // There is no session to renew, so offering a 登录 button would send
+        // the user somewhere that cannot help them.
+        let stdout = r#"{"loggedIn": false, "authMethod": "api_key"}"#;
+        assert!(matches!(
+            classify_login(stdout, "", Some(0)),
+            LoginVerdict::NotRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn a_structured_answer_prefers_an_email_over_the_auth_method() {
+        let stdout = r#"{"loggedIn": true, "authMethod": "oauth_token", "email": "a@b.com"}"#;
+        assert_eq!(
+            classify_login(stdout, "", Some(0)),
+            LoginVerdict::LoggedIn {
+                account_hint: Some("a@b.com".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn a_structured_answer_never_carries_something_token_shaped() {
+        // The hint goes on a dashboard card. Only known keys are read, and a
+        // value long enough to be a secret is dropped.
+        let stdout = format!(
+            r#"{{"loggedIn": true, "token": "sk-{}", "account": "{}"}}"#,
+            "a".repeat(64),
+            "b".repeat(200)
+        );
+        let LoginVerdict::LoggedIn { account_hint } = classify_login(&stdout, "", Some(0)) else {
+            panic!("expected LoggedIn");
+        };
+        assert_eq!(account_hint, None, "an oversized value must be dropped");
+    }
+
+    #[test]
+    fn json_that_is_not_about_logging_in_falls_through_to_the_markers() {
+        assert_eq!(
+            classify_login(r#"{"version": "2.1.261"}"#, "", Some(0)),
+            LoginVerdict::Unrecognised
+        );
+        assert_eq!(
+            classify_login(
+                r#"{"version": "1", "status": "Not logged in"}"#,
+                "",
+                Some(0)
+            ),
+            LoginVerdict::LoggedOut
+        );
+    }
+
+    #[test]
+    fn a_help_dump_is_still_unrecognised_even_next_to_json_like_text() {
+        assert_eq!(
+            classify_login("Usage: claude auth [command]\n{ }", "", Some(2)),
+            LoginVerdict::Unrecognised
+        );
+    }
+
+    #[test]
+    fn only_the_two_cli_backed_components_have_an_api_key_variable() {
+        let set_all = |_: &str| Some("value".to_string());
+        assert_eq!(
+            api_key_env_var(Component::Claude, set_all),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(
+            api_key_env_var(Component::Codex, set_all),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(api_key_env_var(Component::Git, set_all), None);
+        assert_eq!(api_key_env_var(Component::ITerm2, set_all), None);
+    }
+
+    #[test]
+    fn an_empty_api_key_variable_does_not_count_as_configured() {
+        assert_eq!(
+            api_key_env_var(Component::Claude, |_| Some("   ".to_string())),
+            None
+        );
+        assert_eq!(api_key_env_var(Component::Claude, |_| None), None);
+        assert_eq!(
+            api_key_env_var(Component::Claude, |n| (n == "ANTHROPIC_AUTH_TOKEN")
+                .then(|| "t".to_string())),
+            Some("ANTHROPIC_AUTH_TOKEN")
+        );
         assert_eq!(
             classify_login("session vault sealed\n", "", Some(3)),
             LoginVerdict::Unrecognised,
