@@ -328,8 +328,13 @@ fn role_prompt(role: Role, slug: &str) -> String {
     format!(
         "你是本任务的**{round}**。本轮在 worktree 内独立完成，完成后结束会话——\
          **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{body}\n\n\
-         结束前把本轮的改动提交到当前分支（`git add` + `git commit`）。\
-         任务文档和代码改动都要提交——没有提交的东西不会进入最终的合并。\n\n\
+         结束前把本轮的改动提交到当前分支（`git add` + `git commit`）。\n\
+         **如果提交被拒绝——权限模式不允许、或沙箱不让写 `.git`——那不是协议失败。**\
+         Autome 会在会话结束后把工作区里剩下的改动一并提交，前几轮的提交记录就是这么来的。\
+         把改动留在工作区、在本轮记录里写一句「提交由 Autome 兜底」，然后照常结束会话。\n\n\
+         `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。\
+         环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——\
+         该记录就记录、该退回里程碑就退回，让 Loop 继续走。\n\n\
          状态块格式必须严格符合 `{task_file}` 中「Loop 协议」一节与 \
          `.autome/skill/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。\n",
         round = role.round_name()
@@ -924,6 +929,39 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_commit_is_explicitly_not_a_protocol_failure() {
+        // An audit round did its job — found a real defect, reopened the
+        // milestone, updated the tests — and then wrote `status: 协议失败`
+        // because Codex's `workspace-write` sandbox would not let it write
+        // `.git/index.lock`. The prompt had told it "没有提交的东西不会进入
+        // 最终的合并", which is false: the core sweeps up what a session
+        // leaves behind. A sentence that is not true about the system will be
+        // acted on as if it were.
+        for role in Role::ALL {
+            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            assert!(
+                prompt.contains("不是协议失败"),
+                "{role:?} is not told that a refused commit is survivable"
+            );
+            assert!(
+                !prompt.contains("没有提交的东西不会进入最终的合并"),
+                "{role:?} still carries the claim that made an audit stop the task"
+            );
+        }
+    }
+
+    #[test]
+    fn every_role_prompt_says_what_protocol_failure_is_for() {
+        for role in Role::ALL {
+            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            assert!(
+                prompt.contains("`协议失败` 只用于一种情况"),
+                "{role:?} does not narrow what 协议失败 means"
+            );
+        }
+    }
+
+    #[test]
     fn every_role_prompt_asks_for_a_commit() {
         // A real run did all the work correctly and committed none of it, so
         // the branch was identical to its base and the merge would have
@@ -932,7 +970,6 @@ mod tests {
         for role in Role::ALL {
             let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
             assert!(p.contains("git commit"), "{role}: {p}");
-            assert!(p.contains("不会进入最终的合并"), "{role}: {p}");
         }
     }
 

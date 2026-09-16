@@ -758,9 +758,36 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
 
     // A worktree registration whose directory is gone would block re-creating
     // the same path; clearing them is safe and cheap.
+    //
+    // The scaffold is refreshed in the same pass. `SCAFFOLD_VERSION` exists so
+    // that a fix to `run_session.sh` or to the session protocol reaches
+    // projects that were added before it, and `write_owned` already knows how
+    // to rewrite a file carrying an older marker — but nothing ever called it
+    // again: `init::init` ran on `project.add` and never afterwards, so
+    // bumping the version did nothing to any project that already existed.
+    // The launcher reads the wrapper from the repository root, so this is
+    // where a wrapper fix has to land.
     if let Ok(projects) = ctx.store.list_projects() {
         for p in projects {
-            let _ = git::worktree_prune(Path::new(&p.path));
+            let path = Path::new(&p.path);
+            if !path.is_dir() {
+                continue;
+            }
+            let _ = git::worktree_prune(path);
+            match crate::init::init(path) {
+                Ok(done) => {
+                    for step in done
+                        .steps
+                        .iter()
+                        .filter(|s| s.action == crate::init::Action::Refreshed)
+                    {
+                        tracing::info!(project = %p.id, file = %step.path, "scaffold refreshed");
+                    }
+                }
+                Err(e) => report
+                    .errors
+                    .push(format!("{}：刷新脚手架失败 {e}", p.display_name)),
+            }
         }
     }
 
@@ -900,6 +927,52 @@ pub fn next_role(state: &TaskState) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn recovery_brings_an_existing_project_scaffold_up_to_date() {
+        // `SCAFFOLD_VERSION` was a mechanism with no trigger: `init::init` ran
+        // once on `project.add`, so bumping the version fixed nothing for any
+        // project that already existed — including the wrapper script, which
+        // the launcher reads from the repository root.
+        let mut w = World::new("scaffold-refresh");
+        let wrapper = w.repo.join(".autome/skill/run_session.sh");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n# autome-scaffold-version: 0\necho stale\n",
+        )
+        .unwrap();
+
+        recover(&mut w.ctx);
+
+        let after = std::fs::read_to_string(&wrapper).unwrap();
+        assert!(
+            !after.contains("echo stale"),
+            "the stale wrapper survived recovery"
+        );
+        assert!(
+            after.contains(&format!(
+                "autome-scaffold-version: {}",
+                crate::init::SCAFFOLD_VERSION
+            )),
+            "the wrapper was not brought to the current version"
+        );
+    }
+
+    #[test]
+    fn recovery_leaves_a_scaffold_file_the_user_has_taken_over() {
+        // No marker means the user owns the file; the refresh must not stamp
+        // over it. That escape hatch is the reason the marker exists.
+        let mut w = World::new("scaffold-owned");
+        let wrapper = w.repo.join(".autome/skill/run_session.sh");
+        std::fs::write(&wrapper, "#!/bin/sh\necho mine\n").unwrap();
+
+        recover(&mut w.ctx);
+
+        assert_eq!(
+            std::fs::read_to_string(&wrapper).unwrap(),
+            "#!/bin/sh\necho mine\n"
+        );
+    }
     use super::*;
     use autome_domain::status_block::MilestoneState;
     use autome_domain::task::Disposition;

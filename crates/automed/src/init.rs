@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
 /// clearly taken them over.
-pub const SCAFFOLD_VERSION: u32 = 2;
+pub const SCAFFOLD_VERSION: u32 = 3;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 
@@ -466,7 +466,7 @@ exit "$code"
     )
 }
 
-const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 2 -->
+const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 3 -->
 # 会话协议
 
 本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
@@ -518,6 +518,24 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 
 **任一字段缺失或格式错误，Autome 一次即判协议失败并停下等人。** 不要猜测格式，
 不要把状态块放进代码块，不要用其它写法表达同一件事。
+
+## `协议失败` 是什么，不是什么
+
+`status: 协议失败` 只有一个含义：**你无法让这份文档符合上面的格式**。它会让任务
+立刻停下等人，所以不要用它来表达别的意思。
+
+下面这些都**不是**协议失败：
+
+- **提交不上。** 权限模式拒绝 `git commit`，或沙箱不让写 `.git`（Codex 的
+  `workspace-write` 就是如此）。Autome 会在会话结束后把工作区里剩下的改动一并提交。
+  把改动留着，在本轮记录里写一句，正常结束。
+- **拿不到某条验收证据。** 需要真实鼠标、需要系统授权弹窗、需要装没装的工具——
+  照实写「未取证」和原因，把里程碑留在它该在的状态，让审计轮或人去复验。
+- **发现了实现缺陷。** 那是退回里程碑（`开放` + `reopen` 加 1），Loop 会继续跑。
+- **工具链与设计假设不符。** 就地更新设计并说明理由，继续做。
+
+会话卡住时，问自己一句：停下等人是不是唯一出路？如果换一轮、换个人、或者仅仅是
+把情况写清楚就能继续，那就不是协议失败。
 "#;
 
 /// The Loop's own rules: what each round may conclude, what may force another
@@ -536,7 +554,7 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 /// The rules are inherited from 1.x, which arrived at them by running the loop
 /// for months. The changes for 2.0 are: no self-relay (the core schedules),
 /// and the milestone table has a fixed machine-read format.
-const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 2 -->
+const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 3 -->
 # Loop 协议
 
 本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
@@ -852,9 +870,12 @@ mod tests {
     #[test]
     fn embedded_version_reads_the_marker_and_ignores_everything_else() {
         assert_eq!(embedded_version("# autome-scaffold-version: 7\n"), Some(7));
+        // Deliberately not the current SCAFFOLD_VERSION: this is about the
+        // parser, and a literal that tracks the constant invites a blanket
+        // find-and-replace to "fix" it into meaninglessness.
         assert_eq!(
-            embedded_version("<!-- autome-scaffold-version: 2 -->"),
-            Some(2)
+            embedded_version("<!-- autome-scaffold-version: 41 -->"),
+            Some(41)
         );
         assert_eq!(embedded_version("no marker here"), None);
         assert_eq!(embedded_version("# autome-scaffold-version: abc"), None);
@@ -1079,6 +1100,21 @@ mod tests {
     #[test]
     fn the_session_protocol_states_the_strict_status_block_rule() {
         assert!(SESSION_PROTOCOL_MD.contains("一次即判协议失败"));
+        // And what it is *not* for. An audit round stopped a healthy task by
+        // writing `协议失败` when its sandbox refused a `git commit`; the
+        // protocol said what the status meant for formatting and said nothing
+        // about everything else a session might be tempted to use it for.
+        for line in [
+            "`协议失败` 是什么，不是什么",
+            "提交不上",
+            "拿不到某条验收证据",
+            "发现了实现缺陷",
+        ] {
+            assert!(
+                SESSION_PROTOCOL_MD.contains(line),
+                "the protocol must rule out `{line}` as a protocol failure"
+            );
+        }
         assert!(SESSION_PROTOCOL_MD.contains("不要启动下一个会话"));
         assert!(SESSION_PROTOCOL_MD.contains("| ID | 状态 | 标题 | reopen | 领域 |"));
     }
