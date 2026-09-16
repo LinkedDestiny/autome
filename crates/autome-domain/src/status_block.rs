@@ -273,6 +273,20 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Where the scanner sits relative to a Markdown table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableRegion {
+    /// Not in a table. A pipe-bearing line here is prose.
+    Outside,
+    /// The previous line could have been a header row. Only a separator
+    /// immediately below it makes that true.
+    AfterCandidateHeader,
+    /// Inside the body. Every pipe line here is a row and must parse — a
+    /// typo in a real row is still an error, which is the point of not
+    /// simply skipping anything that fails to look like a milestone.
+    Body,
+}
+
 /// `d/N` — the shape both round fields use.
 fn parse_fraction(field: &str, raw: &str) -> Result<(u32, u32), ParseError> {
     let bad = || ParseError::BadValue {
@@ -381,6 +395,12 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
     let mut section = Section::Preamble;
     let mut in_fence = false;
+    // Where we are relative to the milestone table. A `##里程碑` section
+    // holds prose as well as the table, and prose contains pipes: an inline
+    // `grep "a\|b"`, a shell alternation, a sentence with a vertical bar.
+    // Treating every pipe-bearing line as a row rejected a correct design
+    // document on a line that was an acceptance bullet.
+    let mut table = TableRegion::Outside;
 
     for (idx, raw_line) in doc.lines().enumerate() {
         let line = raw_line.trim_end();
@@ -478,21 +498,31 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                 }
             }
             Section::Milestones => {
-                // GitHub-flavoured Markdown allows a table without outer
-                // pipes, so a row is anything with at least two separators —
-                // i.e. three columns, the minimum a milestone row has.
+                // A row is a row because of where it sits, not because it
+                // contains pipes. GitHub-flavoured Markdown defines a table
+                // as a header line, a `|---|` separator, then body lines
+                // until the first line that is not one. Anchoring on the
+                // separator is what keeps prose out: an acceptance bullet
+                // containing `grep "import AppKit\|import Speech"` has three
+                // pipes and no separator above it, and used to be read as a
+                // malformed milestone row.
                 if trimmed.matches('|').count() < 2 {
+                    table = TableRegion::Outside;
                     continue;
                 }
                 let cells = table_cells(trimmed);
                 if is_separator_row(&cells) {
+                    // Only a separator under a header opens a table body.
+                    table = match table {
+                        TableRegion::AfterCandidateHeader => TableRegion::Body,
+                        _ => TableRegion::Outside,
+                    };
                     continue;
                 }
-                // Header row: first cell is a column name, not a milestone id.
-                if cells
-                    .first()
-                    .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑" || c.is_empty())
-                {
+                if table != TableRegion::Body {
+                    // The header line, or prose that happens to hold pipes.
+                    // Which of the two it was is decided by the next line.
+                    table = TableRegion::AfterCandidateHeader;
                     continue;
                 }
                 if cells.len() < 3 {
@@ -605,6 +635,96 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// From a design document a real session wrote on 2026-09-16. It was
+    /// rejected with "里程碑表第 286 行格式错误：状态 `import AVFoundation\`
+    /// 不是 开放 / 待审 / 已完成" — the line was an acceptance bullet, not a
+    /// row. Prose in the milestone section is normal and must stay readable.
+    #[test]
+    fn prose_with_pipes_in_the_milestone_section_is_not_a_row() {
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/3
+implementation-round: 0/6
+current-milestone:
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交评审
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 开放 | 工程骨架 | 0 | |
+| M-02 | 开放 | 权限与识别 | 0 | |
+
+### 里程碑明细
+
+**M-01 工程骨架** — 前置：无
+
+验收：
+- `grep -rn \"import AppKit\\|import AVFoundation\\|import Speech\" Sources/` 无输出。
+- 管道也可能出现在散文里：a | b | c。
+";
+        let parsed = parse(doc).expect("the bullet is prose, not a malformed row");
+        assert_eq!(parsed.milestones.len(), 2);
+        assert_eq!(parsed.milestones[0].id, "M-01");
+        assert_eq!(parsed.milestones[1].id, "M-02");
+    }
+
+    #[test]
+    fn a_malformed_row_inside_the_table_is_still_an_error() {
+        // The fix must not become "skip anything that does not parse": a typo
+        // in a real row has to be reported, or a session could silently lose
+        // a milestone.
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/3
+implementation-round: 0/6
+current-milestone:
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交评审
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 开放 | 工程骨架 | 0 | |
+| M-02 | 进行中 | 权限与识别 | 0 | |
+";
+        let err = parse(doc).unwrap_err();
+        assert!(
+            matches!(err, ParseError::BadMilestoneRow { .. }),
+            "expected a bad-row error, got {err}"
+        );
+    }
+
+    #[test]
+    fn a_table_without_a_separator_row_yields_no_milestones() {
+        // GFM requires the separator. Without it there is no table, and the
+        // scanner must not guess — guessing is what let prose in.
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/3
+implementation-round: 0/6
+current-milestone:
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交评审
+-->
+
+## 里程碑
+
+| M-01 | 开放 | 工程骨架 | 0 | |
+";
+        assert!(parse(doc).unwrap().milestones.is_empty());
+    }
     use super::*;
 
     const FULL: &str = r#"# 购物车结算流程
