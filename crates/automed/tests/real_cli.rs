@@ -57,11 +57,6 @@ struct World {
 
 impl World {
     fn new(tag: &str) -> Self {
-        // Headless: the wrapper is run directly rather than handed to a
-        // terminal. Everything else is the production path. The terminal hop
-        // itself is covered by `the_terminal_hop_starts_the_wrapper` below.
-        unsafe { std::env::set_var("AUTOMED_HEADLESS", "1") };
-
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let root =
             std::env::temp_dir().join(format!("automed-real-{tag}-{}-{n}", std::process::id()));
@@ -74,7 +69,10 @@ impl World {
         }
 
         let store = Store::open_in_memory().unwrap();
-        let mut ctx = Ctx::new(store, &autome_home, &home);
+        // Headless: the wrapper runs directly rather than being handed to a
+        // terminal. Everything else is the production path; the terminal hop
+        // itself has its own test.
+        let mut ctx = Ctx::new(store, &autome_home, &home).headless();
 
         automed::git::init(&repo, "main").unwrap();
         std::fs::write(

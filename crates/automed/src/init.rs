@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
 /// clearly taken them over.
-pub const SCAFFOLD_VERSION: u32 = 1;
+pub const SCAFFOLD_VERSION: u32 = 2;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 
@@ -402,8 +402,19 @@ log="$out_dir/$session_id.log"
 pid_file="$out_dir/$session_id.pid"
 exit_file="$out_dir/$session_id.exit"
 
-mkdir -p "$out_dir"
-: > "$log"
+# If the output directory cannot be created there is nowhere to write the log,
+# the pid or the marker, and every later line would fail in turn — five
+# cascading errors that say nothing about the cause. Stop here instead.
+if ! mkdir -p "$out_dir" 2>/dev/null || [ ! -d "$out_dir" ]; then
+  echo "run_session.sh: 会话目录不存在且无法创建：$out_dir" >&2
+  echo "run_session.sh: 项目可能已被移动或删除。" >&2
+  exit 65
+fi
+if ! : > "$log" 2>/dev/null; then
+  echo "run_session.sh: 无法写入日志 $log" >&2
+  echo "run_session.sh: 项目可能已被移动或删除。" >&2
+  exit 65
+fi
 
 # 退出标记：无论正常结束、被 kill 还是脚本出错都要写出。
 # 先写到临时文件再 mv，保证读取方不会看到写了一半的标记。
@@ -455,7 +466,7 @@ exit "$code"
     )
 }
 
-const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 1 -->
+const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 2 -->
 # 会话协议
 
 本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
@@ -525,7 +536,7 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 /// The rules are inherited from 1.x, which arrived at them by running the loop
 /// for months. The changes for 2.0 are: no self-relay (the core schedules),
 /// and the milestone table has a fixed machine-read format.
-const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 1 -->
+const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 2 -->
 # Loop 协议
 
 本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
@@ -976,6 +987,37 @@ mod tests {
     #[test]
     fn the_wrapper_script_refuses_a_missing_prompt_file_with_its_own_code() {
         assert!(run_session_sh().contains("write_marker 66"));
+    }
+
+    #[test]
+    fn the_wrapper_refuses_to_run_when_its_session_directory_is_gone() {
+        // Observed for real: a terminal window opened by a test ran after the
+        // test had deleted its sandbox, and produced five cascading "No such
+        // file or directory" errors — one per later line — none of which named
+        // the cause.
+        let dir = std::env::temp_dir().join(format!("automed-nodir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        init(&dir).unwrap();
+        let wrapper = wrapper_script(&dir);
+        let out = std::process::Command::new("sh")
+            .arg(&wrapper)
+            .arg("s1")
+            // A path under a directory that does not exist and cannot be made.
+            .arg("/dev/null/nowhere")
+            .arg("claude")
+            .arg("/bin/echo")
+            .arg("/tmp/whatever")
+            .output()
+            .expect("wrapper runs");
+        assert_eq!(out.status.code(), Some(65));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("会话目录"), "{stderr}");
+        assert_eq!(
+            stderr.lines().count(),
+            2,
+            "one cause and one hint, not a cascade:\n{stderr}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

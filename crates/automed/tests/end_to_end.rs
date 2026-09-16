@@ -61,7 +61,11 @@ fn install_fake_cli() -> PathBuf {
     use std::sync::OnceLock;
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("automed-e2e-bin-{}", std::process::id()));
+        // A fixed name rather than one per process: the directory is shared by
+        // every test here, so it cannot be removed when any one of them
+        // finishes. Reusing the name means the next run overwrites it instead
+        // of the suite leaving one behind each time.
+        let dir = std::env::temp_dir().join("automed-e2e-bin");
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake-cli");
         std::fs::write(&script, FAKE_CLI).unwrap();
@@ -73,11 +77,11 @@ fn install_fake_cli() -> PathBuf {
             std::fs::set_permissions(&script, p).unwrap();
         }
         // Safety: set once, before any test spawns a session, and never
-        // changed afterwards.
+        // changed afterwards. The launch *mode* is no longer an environment
+        // variable — it is a field on Ctx (see `World::new`).
         unsafe {
             std::env::set_var("AUTOMED_CLAUDE_BINARY", &script);
             std::env::set_var("AUTOMED_CODEX_BINARY", &script);
-            std::env::set_var("AUTOMED_HEADLESS", "1");
         }
         script
     })
@@ -110,7 +114,10 @@ impl World {
         }
 
         let store = Store::open_in_memory().unwrap();
-        let mut ctx = Ctx::new(store, &autome_home, &home);
+        // Headless: the wrapper runs directly rather than being handed to a
+        // terminal. Everything else is the production path; the terminal hop
+        // itself has its own test.
+        let mut ctx = Ctx::new(store, &autome_home, &home).headless();
 
         // Seed the repository with a commit, then register it the way the UI
         // would: through the real `project.add` command.

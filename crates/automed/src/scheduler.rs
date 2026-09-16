@@ -544,6 +544,7 @@ fn start_session(
         args: launcher::build_args(&role_config),
         prompt,
         title: launcher::tab_title(&task.id, kind, round),
+        mode: ctx.launch_mode,
     })?;
 
     let pid = read_pid(&repo, &task.id, &session_id);
@@ -851,6 +852,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         args: launcher::build_args(&role_config),
         prompt,
         title: format!("autome · {} · Onboarding", project.display_name),
+        mode: ctx.launch_mode,
     })?;
 
     ctx.store.append_event(
@@ -951,7 +953,7 @@ mod tests {
                 removed_at: None,
             };
             store.insert_project(&project).unwrap();
-            let ctx = Ctx::new(store, &autome_home, &home);
+            let ctx = Ctx::new(store, &autome_home, &home).dry();
             World {
                 root,
                 repo,

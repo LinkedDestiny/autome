@@ -1021,6 +1021,17 @@ mod tests {
         Store::open_in_memory().unwrap()
     }
 
+    /// WAL mode leaves `-wal` and `-shm` siblings next to the database.
+    /// Removing only the `.sqlite3` leaves two files behind per run, which is
+    /// how a test suite quietly fills a temp directory.
+    fn remove_db(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_os_string();
+            p.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(p));
+        }
+    }
+
     fn project(id: &str, path: &str) -> Project {
         Project {
             id: id.into(),
@@ -1609,7 +1620,7 @@ mod tests {
     fn migrating_an_already_migrated_database_is_a_no_op() {
         let path =
             std::env::temp_dir().join(format!("automed-store-mig-{}.sqlite3", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        remove_db(&path);
         Store::open(&path).unwrap();
         Store::open(&path).unwrap();
         let s = Store::open(&path).unwrap();
@@ -1618,6 +1629,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 1);
-        let _ = std::fs::remove_file(&path);
+        drop(s);
+        remove_db(&path);
     }
 }

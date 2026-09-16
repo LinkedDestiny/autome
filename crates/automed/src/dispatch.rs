@@ -44,6 +44,10 @@ pub struct Ctx {
     pub home: std::path::PathBuf,
     /// The environment as last observed, updated by a background thread.
     pub environment: EnvCache,
+    /// Where sessions are started. Production opens a terminal; the test
+    /// suites set this rather than a process-global switch (see
+    /// `launcher::LaunchMode`).
+    pub launch_mode: crate::launcher::LaunchMode,
 }
 
 impl Ctx {
@@ -57,7 +61,22 @@ impl Ctx {
             autome_home: autome_home.into(),
             home: home.into(),
             environment: EnvCache::default(),
+            launch_mode: crate::launcher::LaunchMode::Terminal,
         }
+    }
+
+    /// Starts nothing: the prompt is written and the launch recorded. For
+    /// tests whose subject is the state transition.
+    pub fn dry(mut self) -> Self {
+        self.launch_mode = crate::launcher::LaunchMode::Dry;
+        self
+    }
+
+    /// Runs the wrapper directly, with no window. For the end-to-end suites,
+    /// where everything up to and including the wrapper is real.
+    pub fn headless(mut self) -> Self {
+        self.launch_mode = crate::launcher::LaunchMode::Headless;
+        self
     }
 }
 
@@ -1755,7 +1774,7 @@ mod tests {
             let home = root.join("home");
             std::fs::create_dir_all(&autome_home).unwrap();
             std::fs::create_dir_all(&home).unwrap();
-            let ctx = Ctx::new(Store::open_in_memory().unwrap(), &autome_home, &home);
+            let ctx = Ctx::new(Store::open_in_memory().unwrap(), &autome_home, &home).dry();
             Sandbox { root, ctx }
         }
         fn path(&self, rel: &str) -> PathBuf {

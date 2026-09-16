@@ -419,6 +419,31 @@ fn onboarding_prompt() -> String {
 // Launching
 // ---------------------------------------------------------------------------
 
+/// Where a session is started.
+///
+/// This is a parameter rather than an environment variable, and that is not a
+/// style preference. It used to be `AUTOMED_HEADLESS`, which meant the default
+/// was "open a real terminal window" for anything that did not set it — and
+/// the scheduler's own unit tests did not set it. On a machine with the CLIs
+/// installed, `cargo test` opened a Terminal window per test, each running a
+/// wrapper script against a sandbox the test had already deleted.
+///
+/// A process-global switch also cannot be right for two things at once, and
+/// this crate already fixed that same defect twice (the config root, the git
+/// binary). Third time: make it an argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LaunchMode {
+    /// Hand the command to iTerm2 or Terminal, where the user can watch it.
+    #[default]
+    Terminal,
+    /// Run the wrapper directly, with no window. The end-to-end suites use
+    /// this: everything up to and including the wrapper is real.
+    Headless,
+    /// Write the prompt and record the launch, but start nothing. Unit tests
+    /// that only care about the state transition use this.
+    Dry,
+}
+
 /// Everything needed to start one session.
 pub struct LaunchSpec<'a> {
     pub session_id: &'a str,
@@ -432,6 +457,7 @@ pub struct LaunchSpec<'a> {
     pub args: Vec<String>,
     pub prompt: String,
     pub title: String,
+    pub mode: LaunchMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,9 +473,10 @@ pub struct Launched {
 pub enum Terminal {
     ITerm2,
     Terminal,
-    /// Used by the test suite and by a headless run: the wrapper is executed
-    /// directly rather than handed to a terminal.
+    /// The wrapper was executed directly, with no window.
     Headless,
+    /// Nothing was started.
+    Dry,
 }
 
 impl Terminal {
@@ -458,6 +485,7 @@ impl Terminal {
             Terminal::ITerm2 => "iTerm2",
             Terminal::Terminal => "Terminal",
             Terminal::Headless => "headless",
+            Terminal::Dry => "dry",
         }
     }
 }
@@ -486,6 +514,16 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
         )));
     }
 
+    // A dry launch stops here: the prompt is on disk, which is what a caller
+    // inspecting the launch wants, and nothing has been started.
+    if spec.mode == LaunchMode::Dry {
+        return Ok(Launched {
+            log_path: log_path.to_string_lossy().into_owned(),
+            prompt_path: prompt_path.to_string_lossy().into_owned(),
+            terminal: Terminal::Dry,
+        });
+    }
+
     let binary = adapter(spec.runtime).binary;
     let resolved_binary = resolve_binary(spec.runtime)
         .ok_or_else(|| err(format!("PATH 中找不到 {binary}，请先在本地环境页安装")))?;
@@ -500,7 +538,7 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     ];
     argv.extend(spec.args.iter().cloned());
 
-    let terminal = run_in_terminal(&argv, spec.cwd, &spec.title)?;
+    let terminal = run_in_terminal(spec.mode, &argv, spec.cwd, &spec.title)?;
 
     Ok(Launched {
         log_path: log_path.to_string_lossy().into_owned(),
@@ -510,10 +548,12 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
 }
 
 /// Which terminal to use. iTerm2 when present, Terminal otherwise
-/// (requirement E-02). `AUTOMED_HEADLESS=1` runs the wrapper directly, which
-/// is how the automated end-to-end tests drive a whole task without a GUI.
-fn run_in_terminal(argv: &[String], cwd: &Path, title: &str) -> Result<Terminal> {
-    if std::env::var("AUTOMED_HEADLESS").as_deref() == Ok("1") {
+/// (requirement E-02).
+fn run_in_terminal(mode: LaunchMode, argv: &[String], cwd: &Path, title: &str) -> Result<Terminal> {
+    if mode == LaunchMode::Headless || cfg!(test) {
+        // `cfg!(test)` is a backstop, not the mechanism: a unit test inside
+        // this crate that forgets to pass `Dry` still must not open a window
+        // on the developer's machine.
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .current_dir(cwd)
@@ -1226,6 +1266,47 @@ mod tests {
     }
 
     #[test]
+    fn a_dry_launch_writes_the_prompt_and_starts_nothing() {
+        // What this guards: the scheduler's unit tests reach the launcher, and
+        // with the old environment-variable switch they opened a real Terminal
+        // window each — on the developer's machine, running a wrapper against
+        // a sandbox the test had already deleted.
+        let dir = std::env::temp_dir().join(format!("automed-dry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::init::init(&dir).unwrap();
+        let launched = launch(&LaunchSpec {
+            session_id: "s-dry",
+            task_id: "T-1",
+            cwd: &dir,
+            repo: &dir,
+            runtime: Runtime::Claude,
+            args: vec![],
+            prompt: "the prompt".into(),
+            title: "t".into(),
+            mode: LaunchMode::Dry,
+        })
+        .unwrap();
+        assert_eq!(launched.terminal, Terminal::Dry);
+        assert_eq!(
+            std::fs::read_to_string(&launched.prompt_path).unwrap(),
+            "the prompt",
+            "the prompt is still written, so a caller can inspect the launch"
+        );
+        assert!(
+            !std::fs::exists(dir.join(".autome/output/sessions/T-1/s-dry.pid")).unwrap_or(false),
+            "nothing was started"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_default_launch_mode_is_a_terminal() {
+        // Production shows the user what is happening (design §1). The tests
+        // opt out explicitly; nothing opts in by forgetting.
+        assert_eq!(LaunchMode::default(), LaunchMode::Terminal);
+    }
+
+    #[test]
     fn launching_without_a_wrapper_script_fails_with_a_useful_message() {
         let dir = std::env::temp_dir().join(format!("automed-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1239,6 +1320,7 @@ mod tests {
             args: vec![],
             prompt: "hello".into(),
             title: "t".into(),
+            mode: LaunchMode::Dry,
         };
         let err = launch(&spec).unwrap_err();
         assert!(err.detail.contains("包装脚本"), "{err}");
@@ -1259,6 +1341,7 @@ mod tests {
             args: vec![],
             prompt: "hello prompt".into(),
             title: "t".into(),
+            mode: LaunchMode::Dry,
         };
         // The launch itself may fail (no `claude` on PATH in CI), but the
         // prompt must already be on disk by then.
