@@ -89,6 +89,15 @@ pub struct TickReport {
 }
 
 impl TickReport {
+    /// Folds another pass's findings in. Used by the first tick, which runs
+    /// recovery before its own work and must report both.
+    pub fn merge(&mut self, other: TickReport) {
+        self.sessions_reaped.extend(other.sessions_reaped);
+        self.tasks_advanced.extend(other.tasks_advanced);
+        self.tasks_started.extend(other.tasks_started);
+        self.errors.extend(other.errors);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sessions_reaped.is_empty()
             && self.tasks_advanced.is_empty()
@@ -105,6 +114,16 @@ impl TickReport {
 /// is idempotent, so a tick that races with another finds nothing to do.
 pub fn tick(ctx: &mut Ctx) -> TickReport {
     let mut report = TickReport::default();
+
+    // The first tick of a process recovers first. Doing it here rather than
+    // asking the shell to call `scheduler.recover` is deliberate: the shell
+    // was never asked, `recover()` sat unreferenced outside its own tests, and
+    // a lifecycle step that depends on a caller remembering is a step that
+    // eventually does not happen.
+    if !ctx.recovered {
+        ctx.recovered = true;
+        report.merge(recover(ctx));
+    }
 
     // 1. Reap finished sessions and advance the tasks behind them.
     let running = match ctx.store.all_running_sessions() {
@@ -927,6 +946,46 @@ pub fn next_role(state: &TaskState) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_first_tick_recovers_and_later_ticks_do_not() {
+        // `recover()` had no production caller: the desktop called
+        // `scheduler.tick` at startup and nothing else, so a stale scaffold
+        // was never refreshed and a session that ended while the app was
+        // closed was only picked up incidentally. Recovery now rides the
+        // first tick, and must not repeat on every one.
+        let mut w = World::new("first-tick-recovers");
+        let wrapper = w.repo.join(".autome/skill/run_session.sh");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n# autome-scaffold-version: 0\necho stale\n",
+        )
+        .unwrap();
+
+        assert!(!w.ctx.recovered);
+        tick(&mut w.ctx);
+        assert!(w.ctx.recovered, "the first tick must have recovered");
+        assert!(
+            !std::fs::read_to_string(&wrapper)
+                .unwrap()
+                .contains("echo stale")
+        );
+
+        // A later tick must not redo it: write the stale file back and check
+        // it is left alone.
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n# autome-scaffold-version: 0\necho stale\n",
+        )
+        .unwrap();
+        tick(&mut w.ctx);
+        assert!(
+            std::fs::read_to_string(&wrapper)
+                .unwrap()
+                .contains("echo stale"),
+            "recovery ran twice"
+        );
+    }
 
     #[test]
     fn recovery_brings_an_existing_project_scaffold_up_to_date() {

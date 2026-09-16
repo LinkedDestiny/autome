@@ -49,6 +49,13 @@ pub struct Ctx {
     /// every time. The test suites set this rather than a process-global
     /// switch (see `launcher::LaunchMode`).
     pub launch_mode: crate::launcher::LaunchMode,
+    /// Whether this process has run its one-time recovery pass yet. The core
+    /// owns this rather than the shell: `recover()` had no production caller
+    /// at all, so the reconciliation the design promises after a restart —
+    /// pruning dead worktree registrations, reaping a session that ended while
+    /// the app was closed, bringing the scaffold up to `SCAFFOLD_VERSION` —
+    /// never ran outside the tests.
+    pub recovered: bool,
 }
 
 impl Ctx {
@@ -63,6 +70,7 @@ impl Ctx {
             home: home.into(),
             environment: EnvCache::default(),
             launch_mode: crate::launcher::LaunchMode::Headless,
+            recovered: false,
         }
     }
 
