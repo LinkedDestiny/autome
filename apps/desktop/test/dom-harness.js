@@ -59,6 +59,13 @@ async function run() {
       sandbox: true,
       webSecurity: true,
       webviewTag: false,
+      // A hidden window is throttled, and a throttled one hands back stale
+      // *used* values: after switching the theme, `getComputedStyle(el)
+      // .getPropertyValue('--token')` reported the new colour while
+      // `.backgroundColor` on the same element still reported the old one.
+      // The measurements below are of used values, so they would be measuring
+      // the previous theme.
+      backgroundThrottling: false,
     },
   });
 
@@ -92,6 +99,100 @@ async function run() {
     'the shell renders: five sidebar items, a screen host and the icon sprite',
     shell.nav === 5 && shell.main && shell.sprite > 10,
     shell
+  );
+
+  // ---- dark mode actually goes dark --------------------------------------
+  // The hazard with a retrofitted theme is a half-dark window: the tokens flip
+  // but colours written as literals in individual rules do not, leaving cream
+  // cards on a dark page.
+  //
+  // The discriminator is chroma, not saturation. A cream like #fffbe7 has an
+  // HSL saturation near 1.0 because it is a pure tint at high lightness, so a
+  // saturation threshold calls it "vivid" and lets it through — the first
+  // version of this check reported zero offenders on a stylesheet with
+  // twenty-three of them. `max - min` separates a cream (0.09) from the brand
+  // teal (0.69) cleanly.
+  //
+  // Brand accents are supposed to stay bright in the dark: a teal button is
+  // still teal at night.
+  const darkness = await evaluate(async () => {
+    const t = await import('autome://app/lib/theme.js');
+    // `color-mix()` computes to `color(srgb 0.22 0.21 0.26)`, whose components
+    // are 0..1 — reading those as 0..255 makes every mixed colour look
+    // near-black, which is the safe direction and therefore the direction a
+    // check silently stops testing in.
+    const rgb = (value) => {
+      const parts = value.match(/[\d.]+/g).map(Number);
+      return value.startsWith('color(')
+        ? parts.slice(0, 3).map((c) => c * 255)
+        : parts.slice(0, 3);
+    };
+    const luminance = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+    const chroma = (c) => (Math.max(...c) - Math.min(...c)) / 255;
+    // Transitions are switched off for the measurement rather than waited
+    // out. Every attempt to wait was wrong in a different way: the window is
+    // hidden so its timers are throttled and `transition: all .25s` takes far
+    // longer than 250ms of wall clock; a fixed 450ms read rgb(173,168,153), a
+    // colour in neither theme because it is 38% of the way between them; and
+    // settling on "two equal reads" returned before the transition had even
+    // started. Inserting a rule into the page's own same-origin stylesheet is
+    // allowed by the CSP, unlike an injected <style>.
+    const sheet = document.styleSheets[0];
+    const frozenRule = sheet.insertRule(
+      '*, *::before, *::after { transition: none !important; animation: none !important; }',
+      sheet.cssRules.length
+    );
+    const settle = async () => {
+      void document.documentElement.offsetHeight;
+      await new Promise((r) => setTimeout(r, 60));
+    };
+    const measure = () => {
+      const out = { lightSurfaces: [], sampled: 0 };
+      for (const el of document.querySelectorAll('#window *')) {
+        const bg = getComputedStyle(el).backgroundColor;
+        if (!bg || bg.startsWith('rgba(0, 0, 0, 0)')) continue;
+        // A translucent fill takes its colour from what is under it: 3% white
+        // over a dark page is dark, however white the declared value looks.
+        const parts = bg.match(/[\d.]+/g).map(Number);
+        const alpha = bg.startsWith('rgba') || bg.startsWith('color(') ? (parts[3] ?? 1) : 1;
+        if (alpha < 0.5) continue;
+        const box = el.getBoundingClientRect();
+        if (box.width < 24 || box.height < 16) continue;
+        out.sampled++;
+        const c = rgb(bg);
+        if (luminance(c) > 0.6 && chroma(c) < 0.3) {
+          out.lightSurfaces.push(`${el.className || el.tagName}:${bg}`);
+        }
+      }
+      return out;
+    };
+    t.apply('dark');
+    await settle();
+    const dark = measure();
+    const attr = document.documentElement.dataset.theme;
+    t.apply('light');
+    await settle();
+    const light = measure();
+    t.apply('system');
+    // Put motion back: the next check measures whether an entry animation
+    // runs, and a leftover freeze here would answer it for them.
+    sheet.deleteRule(frozenRule);
+    return { dark, light, attr, systemAttr: document.documentElement.dataset.theme };
+  });
+  check(
+    'dark mode leaves no cream surface behind',
+    darkness.attr === 'dark' && darkness.dark.lightSurfaces.length === 0,
+    { sampled: darkness.dark.sampled, offenders: darkness.dark.lightSurfaces.slice(0, 8) }
+  );
+  check(
+    'light mode is still cream, so the switch goes both ways',
+    darkness.light.lightSurfaces.length > 0,
+    { creamSurfaces: darkness.light.lightSurfaces.length }
+  );
+  check(
+    'following the system resolves to a real theme, never to the word "system"',
+    darkness.systemAttr === 'light' || darkness.systemAttr === 'dark',
+    darkness.systemAttr
   );
 
   // ---- entry animations do not replay on a refresh -----------------------

@@ -123,6 +123,54 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub loop_defaults: LoopDefaults,
     pub roles: BTreeMap<Role, RoleConfig>,
+    /// Presentation, not Loop behaviour — but it lives here for the same
+    /// reason everything else does: the core owns state, and a preference the
+    /// renderer kept to itself would be one more place state can disagree
+    /// with the core about what is true.
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub theme: Theme,
+}
+
+/// Which appearance the window uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    /// Follow macOS. The default, and what an app on this platform is expected
+    /// to do unless the user says otherwise.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Theme> {
+        Theme::ALL.into_iter().find(|t| t.as_str() == raw)
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Theme::System => "跟随系统",
+            Theme::Light => "浅色",
+            Theme::Dark => "深色",
+        }
+    }
 }
 
 impl Default for GlobalConfig {
@@ -156,6 +204,7 @@ impl Default for GlobalConfig {
         Self {
             loop_defaults: LoopDefaults::default(),
             roles,
+            ui: UiConfig::default(),
         }
     }
 }

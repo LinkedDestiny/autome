@@ -13,6 +13,7 @@ import {
   h, icon, text, reveal, tag, kvList, cardHead, activateOnKey,
 } from '../lib/dom.js';
 import { read, attempt, registerWrite } from '../lib/api.js';
+import * as theme from '../lib/theme.js';
 import * as labels from '../lib/labels.js';
 
 export const id = 'settings';
@@ -43,7 +44,8 @@ export function render(host, data, ctx) {
       reveal(routingCard(data, ctx), 1),
       reveal(loopCard(data, ctx), 2),
       reveal(terminalCard(ctx), 3),
-      reveal(aboutCard(), 4),
+      reveal(appearanceCard(data, ctx), 4),
+      reveal(aboutCard(), 5),
     ])
   );
 
@@ -157,6 +159,44 @@ function saveLoop(patch, ctx) {
     run: (write) => write.setLoop(patch),
     onDone: () => ctx.refresh(),
   });
+}
+
+/** The appearance switch. `跟随系统` is the default and tracks macOS live. */
+function appearanceCard(data, ctx) {
+  const current = (((data && data.global) || {}).ui || {}).theme || 'system';
+  const card = h('div.card.card--pad.col', [
+    cardHead('外观', tag(labels.themeLabel(current), 'outlined')),
+  ]);
+  card.appendChild(
+    h('div.quiet', {
+      text: '跟随系统时，macOS 切换深浅色，应用立刻跟着切，不需要重启。',
+    })
+  );
+
+  const pick = h('div.pick.mt-12');
+  for (const value of theme.THEMES) {
+    const pill = tag(labels.themeLabel(value), 'outlined');
+    if (value === current) pill.classList.add('on');
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.addEventListener('keydown', activateOnKey);
+    pill.addEventListener('click', () =>
+      attempt({
+        label: '外观已切换',
+        success: false,
+        run: (write) => write.setTheme(value),
+        onDone: () => {
+          // Painted here rather than waiting for the refresh below, so the
+          // window changes on the click instead of a tick later.
+          theme.apply(value);
+          return ctx.refresh();
+        },
+      })
+    );
+    pick.appendChild(registerWrite(pill));
+  }
+  card.appendChild(pick);
+  return card;
 }
 
 function terminalCard(ctx) {

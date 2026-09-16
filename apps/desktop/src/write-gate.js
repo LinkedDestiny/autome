@@ -42,6 +42,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'config.set_role',
   'config.reset_role',
   'config.set_loop',
+  'config.set_theme',
   'env.detect',
   'env.install',
   'env.login',
@@ -160,6 +161,9 @@ function validateOpSpecific(op, params) {
         return { ok: false, message: `${key} must not contain a path` };
       }
     }
+  }
+  if (op === 'config.set_theme' && !['system', 'light', 'dark'].includes(params.theme)) {
+    return { ok: false, message: 'theme must be one of system, light, dark' };
   }
   if (op === 'env.install' || op === 'env.login') {
     if (!['git', 'claude', 'codex', 'iterm2'].includes(params.component)) {

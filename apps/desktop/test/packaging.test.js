@@ -212,3 +212,63 @@ test('taking a stance refreshes the decide drawer instead of closing it', () => 
     'a stance must not close the drawer'
   );
 });
+
+test('every cream surface in the stylesheet has a dark counterpart', () => {
+  // The runtime check in dom-harness.js only sees what a screen happens to
+  // render with no core answering — eleven elements. This reads the stylesheet
+  // instead, so a component nobody rendered during the test is still covered.
+  //
+  // Chroma, not saturation: a cream like #fffbe7 has an HSL saturation near
+  // 1.0 (a pure tint at high lightness), so a saturation threshold calls it
+  // vivid and waves it through. `max - min` puts the cream at 0.09 and the
+  // brand teal at 0.69.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs
+    .readFileSync(path.join(__dirname, '..', 'renderer', 'style.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
+  const parse = (literal) => {
+    if (literal.startsWith('#')) {
+      let hex = literal.slice(1);
+      if (hex.length === 3) hex = [...hex].map((c) => c + c).join('');
+      if (hex.length < 6) return null;
+      return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    }
+    const parts = literal.match(/[\d.]+/g);
+    return parts && parts.length >= 3 ? parts.slice(0, 3).map(Number) : null;
+  };
+
+  const themed = new Set();
+  const offenders = [];
+  for (const [, selector, block] of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const sel = selector.replace(/\s+/g, ' ').trim();
+    if (sel.includes('data-theme')) {
+      for (const one of sel.split(',')) {
+        themed.add(one.replace('[data-theme="dark"]', '').trim());
+      }
+      continue;
+    }
+    for (const decl of block.split(';')) {
+      const [prop, value] = decl.split(':');
+      if (!value || !prop.includes('background')) continue;
+      for (const literal of value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []) {
+        const rgb = parse(literal);
+        if (!rgb) continue;
+        const luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+        const chroma = (Math.max(...rgb) - Math.min(...rgb)) / 255;
+        if (luminance <= 0.6 || chroma >= 0.3) continue;
+        for (const one of sel.split(',')) {
+          const name = one.trim();
+          if (!themed.has(name)) offenders.push(`${name} { background: ${literal} }`);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(
+    [...new Set(offenders)],
+    [],
+    'these rules paint a cream surface with no dark override'
+  );
+});

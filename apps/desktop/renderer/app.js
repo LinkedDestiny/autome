@@ -25,6 +25,7 @@ import {
   readOr, resetWriteControls,
 } from './lib/api.js';
 import { notify } from './lib/notify.js';
+import * as theme from './lib/theme.js';
 import { installOverlayHandlers, closeForNavigation } from './lib/overlay.js';
 
 import * as dashboard from './screens/dashboard.js';
@@ -394,6 +395,13 @@ function queueRefresh() {
 
 export function start() {
   installOverlayHandlers();
+  theme.watchSystem();
+  // Painted from the core's answer as soon as one arrives. Until then the
+  // stylesheet's own default (light) stands: guessing dark and correcting a
+  // moment later is a flash, and the core is one read away.
+  readOr(null, 'getConfig').then((config) => {
+    if (config) theme.apply(((config.global || {}).ui || {}).theme);
+  });
   applyConnection(isConnected());
   onConnectionChange(applyConnection);
 

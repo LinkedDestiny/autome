@@ -134,6 +134,18 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
         }
     }
 
+    // An unrecognised value falls back to the default rather than failing the
+    // load: a typo in the appearance must not stop the app from starting,
+    // which is what refusing the whole file would do.
+    if let Some(v) = doc
+        .get("ui")
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get("theme"))
+        .and_then(toml::Value::as_str)
+    {
+        config.ui.theme = autome_domain::config::Theme::parse(v).unwrap_or_default();
+    }
+
     if let Some(roles) = doc.get("roles").and_then(toml::Value::as_table) {
         for (name, table) in roles {
             let Some(role) = Role::parse(name) else {
@@ -312,6 +324,9 @@ pub fn save_global(autome_home: &Path, config: &GlobalConfig) -> Result<()> {
     loop_table["parallel"] = value(config.loop_defaults.parallel as i64);
     loop_table["design_rounds"] = value(config.loop_defaults.design_rounds as i64);
     loop_table["budget_factor"] = value(config.loop_defaults.budget_factor as i64);
+
+    let ui_table = ensure_table(doc.as_table_mut(), "ui");
+    ui_table["theme"] = value(config.ui.theme.as_str());
 
     let roles_table = ensure_table(doc.as_table_mut(), "roles");
     roles_table.set_implicit(true);

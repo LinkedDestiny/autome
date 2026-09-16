@@ -260,3 +260,10 @@ export function runtimeSummary(config) {
   parts.push(config.effort ? config.effort : '默认 Effort');
   return parts.join(' · ');
 }
+
+/** The three appearance choices, mirroring `Theme::display_name` in the core. */
+const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' };
+
+export function themeLabel(value) {
+  return THEME_LABELS[value] || value || '跟随系统';
+}

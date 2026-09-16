@@ -379,6 +379,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "config.set_role" => config_set_role(ctx, p),
         "config.reset_role" => config_reset_role(ctx, p),
         "config.set_loop" => config_set_loop(ctx, p),
+        "config.set_theme" => config_set_theme(ctx, p),
 
         // ---- environment -------------------------------------------------
         "env.get" => env_get(ctx),
@@ -760,6 +761,26 @@ fn init_commit(project: &Project) -> std::result::Result<Option<String>, Dispatc
 /// returning the resolved view, the provenance of each field, and any
 /// violations. One call, because the UI needs all three together and deriving
 /// them separately invites them to disagree.
+/// The window's appearance. Global only — it is not a per-project idea, and a
+/// project that could repaint the app when you opened it would be a surprise.
+fn config_set_theme(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let raw = str_param(params, "theme")?;
+    let theme = autome_domain::config::Theme::parse(raw)
+        .ok_or_else(|| bad_params(format!("未知外观 `{raw}`，只能是 system / light / dark")))?;
+    let mut global = config_io::load_global(&ctx.autome_home)?;
+    global.ui.theme = theme;
+    config_io::save_global(&ctx.autome_home, &global)?;
+    let seq = ctx.store.append_event(
+        "config.updated",
+        "global",
+        json!({ "theme": theme.as_str() }),
+    )?;
+    Ok((
+        json!({ "theme": theme.as_str() }),
+        vec![event(seq, "config.updated", "global", json!({}))],
+    ))
+}
+
 fn config_get(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
     let global = config_io::load_global(&ctx.autome_home)?;
     let (project_config, repo) = match project_id {
@@ -2439,6 +2460,45 @@ mod tests {
             started.elapsed()
         );
         assert!(ok_payload(&out)["environment"]["probed"].is_boolean());
+    }
+
+    #[test]
+    fn setting_a_theme_persists_it_and_refuses_an_unknown_one() {
+        let mut sb = Sandbox::new("theme");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("config.set_theme", json!({ "theme": "dark" })),
+        );
+        assert_eq!(ok_payload(&out)["theme"], json!("dark"));
+
+        let got = handle_command(sb.ctx(), &cmd("config.get", json!({})));
+        assert_eq!(ok_payload(&got)["global"]["ui"]["theme"], json!("dark"));
+
+        let bad = handle_command(
+            sb.ctx(),
+            &cmd("config.set_theme", json!({ "theme": "midnight" })),
+        );
+        assert!(matches!(bad.reply.outcome, ReplyOutcome::Error { .. }));
+    }
+
+    #[test]
+    fn the_theme_survives_a_reload_and_defaults_to_following_the_system() {
+        let mut sb = Sandbox::new("theme-reload");
+        let fresh = handle_command(sb.ctx(), &cmd("config.get", json!({})));
+        assert_eq!(
+            ok_payload(&fresh)["global"]["ui"]["theme"],
+            json!("system"),
+            "an app on macOS follows the system until told otherwise"
+        );
+
+        handle_command(
+            sb.ctx(),
+            &cmd("config.set_theme", json!({ "theme": "light" })),
+        );
+        // Read it back off disk rather than out of memory: the point of
+        // putting this in the global config is that it outlives the process.
+        let on_disk = config_io::load_global(&sb.ctx.autome_home).unwrap();
+        assert_eq!(on_disk.ui.theme, autome_domain::config::Theme::Light);
     }
 
     #[test]
