@@ -33,7 +33,13 @@ use autome_domain::protocol::ProtocolFiles;
 /// 6: the protocol left the binary. The rule text now lives in
 /// `~/.autome/protocol/` and arrives here as an argument, with
 /// `<!-- kernel-contract: … -->` markers around the regions the core parses.
-pub const SCAFFOLD_VERSION: u32 = 6;
+///
+/// 7: the deterministic guards. Evidence filenames gained a role suffix —
+/// without it the audit round and the implementation round of the same `k`
+/// wrote to the same path and the second one won — and the clauses the core
+/// now checks say so, so that the rules a round has to remember are
+/// distinguishable from the ones it does not.
+pub const SCAFFOLD_VERSION: u32 = 7;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 

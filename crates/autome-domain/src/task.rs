@@ -281,6 +281,17 @@ pub enum SessionOutcome {
     MissingArtifact {
         path: String,
     },
+    /// The document parsed, and the core's own checks rejected what the round
+    /// did (plan §4.D): an implementation round claiming a milestone closed,
+    /// or a loop round that left no evidence file.
+    ///
+    /// Separate from `Unparseable` because the two are fixed differently — one
+    /// is a format error on a specific line, the other is a round having done
+    /// something the protocol reserves for a different round — and because a
+    /// person reading the failure panel needs to be told which.
+    GuardFailed {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -630,6 +641,14 @@ pub fn apply(
                         node,
                         FailureReason::Protocol {
                             detail: format!("缺少产物 {path}"),
+                        },
+                    ));
+                }
+                SessionOutcome::GuardFailed { detail } => {
+                    return Ok(Transition::fail(
+                        node,
+                        FailureReason::Protocol {
+                            detail: detail.clone(),
                         },
                     ));
                 }

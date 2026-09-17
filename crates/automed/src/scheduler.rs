@@ -35,6 +35,7 @@ use autome_domain::task::{
 use serde_json::json;
 
 use crate::dispatch::Ctx;
+use crate::guards;
 use crate::store::{TaskRecord, now_iso};
 use crate::{config_io, git, launcher, skills};
 
@@ -225,9 +226,178 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // makes forgetting recoverable rather than silent.
     sweep_commit(&repo, &task, s)?;
 
-    let outcome = read_outcome(&repo, &task, &lifecycle);
+    let outcome = apply_guards(ctx, s, &repo, &task, read_outcome(&repo, &task, &lifecycle))?;
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
+}
+
+/// The one place a round's output is admitted (plan §4.D).
+///
+/// Only a document that parsed is checked: a round that could not produce a
+/// readable status block has already failed, and piling a second complaint on
+/// top would bury the one a person can act on.
+fn apply_guards(
+    ctx: &mut Ctx,
+    session: &Session,
+    repo: &Path,
+    task: &TaskRecord,
+    outcome: SessionOutcome,
+) -> Result<SessionOutcome> {
+    let SessionOutcome::Ok { status } = &outcome else {
+        return Ok(outcome);
+    };
+    let Some(role) = session.kind.role() else {
+        return Ok(outcome);
+    };
+
+    let worktree = worktree_path(repo, &task.slug);
+    let before: Option<guards::Snapshot> = ctx
+        .store
+        .last_event(&task.id, "task.snapshot")?
+        .and_then(|v| serde_json::from_value(v).ok());
+
+    let retro_path = worktree.join(format!("{}/retro.md", task.doc_dir()));
+    let retro = std::fs::read_to_string(&retro_path).unwrap_or_default();
+    let retro_lines: Vec<&str> = retro.lines().filter(|l| !l.trim().is_empty()).collect();
+    let retro_added = match &before {
+        Some(b) if retro_lines.len() > b.retro_lines => {
+            retro_lines[b.retro_lines..].iter().map(|l| l.to_string()).collect()
+        }
+        _ => vec![],
+    };
+
+    let design_bytes = std::fs::metadata(worktree.join(task.design_doc()))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let round = guards::Round {
+        role,
+        status,
+        before: before.as_ref(),
+        retro_lines: retro_lines.len(),
+        retro_added,
+        design_bytes,
+        evidence_files: evidence_filenames(&worktree, &task.doc_dir()),
+        changed_paths: vec![],
+        design_changed_outside_milestones: design_changed_outside_milestones(
+            &worktree,
+            task,
+            before.as_ref(),
+            ctx,
+        ),
+    };
+    let findings = guards::check(&round);
+
+    // Before the snapshot is replaced: a milestone that was closed and has
+    // just been taken back can only be seen by comparing the two, and the
+    // finished document shows it as open with nothing to say it was ever
+    // closed.
+    if let Some(b) = &before {
+        for id in crate::task_metrics::newly_contradicted(&b.milestones, status) {
+            ctx.store.append_event(
+                "milestone.contradicted",
+                &task.id,
+                json!({ "milestone": id }),
+            )?;
+        }
+    }
+
+    // The snapshot is written whatever the verdict: the next round has to be
+    // compared against what this one actually left, not against what it would
+    // have left had it behaved.
+    ctx.store.append_event(
+        "task.snapshot",
+        &task.id,
+        json!(guards::Snapshot {
+            milestones: crate::task_metrics::snapshot(status),
+            retro_lines: round.retro_lines,
+            design_bytes,
+        }),
+    )?;
+    if let Ok(head) = git::head_sha(&worktree) {
+        ctx.store
+            .append_event("task.head", &task.id, json!({ "sha": head }))?;
+    }
+
+    for f in &findings {
+        ctx.store.append_event(
+            match f.level {
+                guards::Level::Error => "guard.failed",
+                guards::Level::Warning => "guard.warning",
+            },
+            &task.id,
+            json!({ "code": f.code, "detail": f.detail, "role": role.as_str() }),
+        )?;
+    }
+
+    match findings.iter().find(|f| f.level == guards::Level::Error) {
+        Some(f) => Ok(SessionOutcome::GuardFailed {
+            detail: f.detail.clone(),
+        }),
+        None => Ok(outcome),
+    }
+}
+
+fn evidence_filenames(worktree: &Path, doc_dir: &str) -> Vec<String> {
+    let dir = worktree.join(doc_dir).join("evidence");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
+    let mut out: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Whether the session changed the design document beyond its milestone table.
+///
+/// Answered from the commit history rather than by storing the previous
+/// document: a design document runs to hundreds of kilobytes, and keeping a
+/// copy of each one in the event stream to diff against would cost more than
+/// the check is worth. `None` when there is nothing to diff against — the
+/// first round, or a worktree git cannot read — because a guess here would
+/// warn about rounds that did nothing wrong.
+fn design_changed_outside_milestones(
+    worktree: &Path,
+    task: &TaskRecord,
+    before: Option<&guards::Snapshot>,
+    ctx: &Ctx,
+) -> Option<bool> {
+    before?;
+    let head = ctx
+        .store
+        .last_event(&task.id, "task.head")
+        .ok()??
+        .get("sha")?
+        .as_str()?
+        .to_string();
+    let design = task.design_doc();
+    let diff = git::run(
+        worktree,
+        &["diff", "--unified=0", &format!("{head}..HEAD"), "--", &design],
+    )
+    .ok()?;
+    if !diff.ok() {
+        return None;
+    }
+    // Changed lines only, and only the ones that are not milestone-table rows.
+    // A table row is `| M-01 | 待审 | … |`; anything else the audit touched is
+    // prose it was not asked to touch.
+    let touched_prose = diff
+        .stdout
+        .lines()
+        .filter(|l| {
+            (l.starts_with('+') || l.starts_with('-'))
+                && !l.starts_with("+++")
+                && !l.starts_with("---")
+        })
+        .map(|l| l[1..].trim())
+        .filter(|l| !l.is_empty())
+        .any(|l| !(l.starts_with("| M-") || l.starts_with("最新证据：")));
+    Some(touched_prose)
 }
 
 /// Reads what the session cost out of its raw stream and records it.
@@ -441,7 +611,6 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     } = trigger
     {
         sync_decisions(ctx, &task, status)?;
-        record_contradictions(ctx, &task, status)?;
     }
 
     let decisions = ctx.store.pending_decisions(task_id)?;
@@ -516,33 +685,6 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     perform(ctx, &task, &project, &resolved, &transition)?;
     Ok(true)
-}
-
-/// Notes any milestone that was closed and has just been taken back.
-///
-/// Counted as it happens because it cannot be recovered afterwards: the
-/// document ends up showing the milestone as open, with nothing to say it was
-/// ever closed. This is the direct measurement of an audit going soft, and the
-/// heuristic it replaces — "defects down *and* reopens down" — would have
-/// flagged a protocol that had genuinely improved.
-fn record_contradictions(ctx: &mut Ctx, task: &TaskRecord, status: &StatusBlock) -> Result<()> {
-    let before: Vec<(String, autome_domain::status_block::MilestoneState)> = ctx
-        .store
-        .last_event(&task.id, "task.milestones")?
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-
-    for id in crate::task_metrics::newly_contradicted(&before, status) {
-        ctx.store.append_event(
-            "milestone.contradicted",
-            &task.id,
-            json!({ "milestone": id }),
-        )?;
-    }
-    let snapshot = crate::task_metrics::snapshot(status);
-    ctx.store
-        .append_event("task.milestones", &task.id, json!(snapshot))?;
-    Ok(())
 }
 
 /// Folds a finished task into `TaskMetrics` and stores it.

@@ -1,4 +1,4 @@
-<!-- autome-scaffold-version: 6 -->
+<!-- autome-scaffold-version: 7 -->
 # 会话协议
 
 本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
@@ -19,6 +19,16 @@
 - 不切换分支，不操作其它 worktree，不推送远端。
 - 不修改用户主工作树（`.worktree/` 之外的仓库根目录内容）。
 <!-- /kernel-contract -->
+
+## 读文件的开销
+
+工具返回的内容会进上下文，并且此后每一次往返都带着它。一份读过两次的
+300 行文件，占的是两份的位置。
+
+- 同一个文件一轮之内只读一次。需要回头看，回到你已经读到的内容里去找。
+- 超过 200 行的文件分段读（`sed -n '120,200p'`），不要整份拉进来。
+- 会产出大量输出的命令，全文重定向到 `.autome/output/`，只读头尾：
+  `cargo test > .autome/output/t.txt 2>&1; tail -20 .autome/output/t.txt`
 
 ## 状态块
 

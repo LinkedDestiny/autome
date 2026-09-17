@@ -12,7 +12,8 @@
 ## protocol/v1
 
 v1 是把 1.x 跑了几个月得到的规则原样出仓，加上 2026-09-16 那次协议审计当天落地的
-七条（S1–S7）。证据来自三次真实运行：`dashboard-mvp`（2026-08，1.x）、
+七条（S1–S7），再加上出仓这件事本身带来的两条：证据文件名加角色后缀（C-09，
+原来同一个 `k` 的实现轮和审计轮会写到同一个路径），以及读文件的开销（C-10）。证据来自三次真实运行：`dashboard-mvp`（2026-08，1.x）、
 `island-workbench`（1.x）、`voice-schedule`（2026-09-16，2.0 内核 + v1 协议）。
 这些条目的 `realized_impact` 永远是 `null`：它们落地时内核还不记录任何指标，
 补不出一个诚实的数来。这本身就是把观测层排在第一位的理由。
@@ -73,5 +74,19 @@ v1 是把 1.x 跑了几个月得到的规则原样出仓，加上 2026-09-16 那
   evidence: [voice-schedule 状态块空表头, island-workbench 设计文档体积]
   predicted_impact: {metric: protocol_failures, direction: down, scope: project, horizon: 5}
   eval: evals/plan-milestone-section-holds-one-table/
+  realized_impact: null
+- id: C-09
+  kind: behavioral
+  clause: loop-protocol.md#文件
+  evidence: [voice-schedule 证据撞名, island-workbench 证据撞名]
+  predicted_impact: {metric: impl_defects, direction: down, scope: task, horizon: 3}
+  eval: evals/impl-writes-evidence-not-design/
+  realized_impact: null
+- id: C-10
+  kind: behavioral
+  clause: session-protocol.md#读文件的开销
+  evidence: [voice-schedule 每轮上下文, dashboard-mvp 每轮上下文]
+  predicted_impact: {metric: mean_request_input, direction: down, scope: task, horizon: 3}
+  eval: evals/impl-writes-evidence-not-design/
   realized_impact: null
 ```

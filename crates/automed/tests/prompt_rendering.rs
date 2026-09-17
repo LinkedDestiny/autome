@@ -1,19 +1,17 @@
-//! The protocol left the binary; the prompts did not change.
+//! Nothing changes a prompt except a protocol version, deliberately.
 //!
-//! Moving four hundred lines of Chinese prose out of two `&'static str`
-//! constants and into template files is exactly the kind of change that loses
-//! a sentence, a blank line or a trailing space without anyone noticing —
-//! and every one of those sentences is a rule some round previously invented
-//! wrongly in a real run.
+//! `tests/golden/prompts/` started as what the two compiled-in constants
+//! rendered on 2026-09-17, immediately before the protocol left the binary —
+//! moving four hundred lines of Chinese prose into template files is exactly
+//! the kind of change that loses a sentence or a trailing space without anyone
+//! noticing, and every one of those sentences is a rule some round previously
+//! invented wrongly in a real run. It passed byte for byte.
 //!
-//! `tests/golden/prompts/` holds what the constants rendered on 2026-09-17,
-//! immediately before the move, with `{slug}`, `{request}` and `{budget_line}`
-//! put back where the core substitutes them. These tests render the same
-//! prompts from the protocol seed and compare byte for byte.
-//!
-//! When a protocol version deliberately changes a prompt, this goes red. That
-//! is the point: read the diff, then update the golden file in the same
-//! commit. See `tests/golden/README.md`.
+//! Since then the baseline moves when the protocol does. When a version
+//! deliberately changes a prompt this goes red, and that is the point: read
+//! the diff, then refresh the baseline in the same commit with
+//! `AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering`.
+//! See `tests/golden/README.md`.
 
 use autome_domain::protocol::ProtocolFiles;
 use autome_domain::role::Role;
@@ -27,6 +25,19 @@ const REQUEST: &str = "\u{2}";
 fn golden(name: &str) -> String {
     let path = format!("{}/tests/golden/prompts/{name}.md", env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// Rewrites a baseline. Deliberately opt-in through the environment rather
+/// than automatic: the value of this test is entirely in someone looking at
+/// the diff before accepting it, and a baseline that updates itself is a test
+/// that always passes.
+fn maybe_update_golden(name: &str, got: &str) -> bool {
+    if std::env::var("AUTOME_UPDATE_GOLDEN").is_err() {
+        return false;
+    }
+    let path = format!("{}/tests/golden/prompts/{name}.md", env!("CARGO_MANIFEST_DIR"));
+    std::fs::write(&path, got).unwrap();
+    true
 }
 
 fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
@@ -85,6 +96,12 @@ fn every_role_prompt_renders_exactly_what_the_constants_did() {
         // The golden files were captured with no budget, so the budget line
         // renders empty — which is also the case for three of these roles in
         // production, and the placeholder's position is what is being checked.
+        // The baseline for a role is the template itself: the frame lives in
+        // it too, so a rendered prompt with no budget differs from the
+        // template by exactly the one placeholder.
+        if maybe_update_golden(name, automed::protocol::seed().prompt(name).unwrap()) {
+            continue;
+        }
         let got = rendered(SessionKind::Role { role }).replace("{budget_line}", "");
         let want = golden(name).replace("{budget_line}", "");
         assert_eq!(got, want, "{}", diff_report(name, &got, &want));
@@ -120,6 +137,9 @@ fn the_budget_placeholder_sits_where_the_core_used_to_write_the_budget_line() {
 #[test]
 fn the_intake_prompt_renders_exactly_what_the_constant_did() {
     let got = rendered(SessionKind::Intake);
+    if maybe_update_golden("intake", &got) {
+        return;
+    }
     let want = golden("intake");
     assert_eq!(got, want, "{}", diff_report("intake", &got, &want));
 }
@@ -127,6 +147,9 @@ fn the_intake_prompt_renders_exactly_what_the_constant_did() {
 #[test]
 fn the_onboarding_prompt_renders_exactly_what_the_constant_did() {
     let got = rendered(SessionKind::Onboarding);
+    if maybe_update_golden("onboarding", &got) {
+        return;
+    }
     let want = golden("onboarding");
     assert_eq!(got, want, "{}", diff_report("onboarding", &got, &want));
 }

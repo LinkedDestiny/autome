@@ -34,7 +34,7 @@ use crate::git;
 
 /// Bumped whenever any seed file changes. Drives the `-upstream` tag an
 /// existing repository gets offered after an upgrade.
-pub const SEED_VERSION: u32 = 1;
+pub const SEED_VERSION: u32 = 2;
 
 /// Directory under `~/.autome`.
 pub const DIRNAME: &str = "protocol";

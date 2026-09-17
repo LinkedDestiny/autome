@@ -16,6 +16,8 @@
 //! - [`config_io`] — the two TOML files, with sparse project overrides
 //!   preserved across a write.
 //! - [`git`] — the operations table from design §6, and nothing else.
+//! - [`guards`] — what the core checks after a session, instead of asking a
+//!   round to remember.
 //! - [`init`] — the `.autome/` scaffold, including the session wrapper script.
 //! - [`env_probe`] — the four local components.
 //! - [`launcher`] — prompt construction, the CLI adapter table, and starting
@@ -35,6 +37,7 @@ pub mod dispatch;
 pub mod dispatch_protocol;
 pub mod env_probe;
 pub mod git;
+pub mod guards;
 pub mod init;
 pub mod ipc;
 pub mod launcher;

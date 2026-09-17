@@ -164,6 +164,25 @@ impl World {
     }
 
     /// Queues the script the Nth session will run.
+    /// What every loop round leaves behind, which the core now checks for
+    /// (plan §4.D): `docs/<slug>/evidence/M-xx-r<k>-<role>.md`, where `k` is
+    /// the implementation round in the status block the session just wrote.
+    ///
+    /// Both suffixes, because a step script does not know which role is
+    /// running it — the same script stands in for the implementation round and
+    /// the audit round of the same `k`, and writing only one of the two names
+    /// is exactly the collision the suffix exists to prevent.
+    const EVIDENCE: &'static str = r#"
+k=$(grep -m1 '^implementation-round:' "docs/$SLUG/$SLUG.md" 2>/dev/null \
+  | sed 's#[^0-9]*\([0-9]*\)/.*#\1#')
+if [ -n "${k:-}" ]; then
+  mkdir -p "docs/$SLUG/evidence"
+  printf '命令：fake\n结果：通过\n' > "docs/$SLUG/evidence/M-01-r$k-impl.md"
+  printf '复验：fake\n结论：通过\n' > "docs/$SLUG/evidence/M-01-r$k-audit.md"
+  printf '轮次 | M-01 | 通过 | e | 无\n' >> "docs/$SLUG/retro.md"
+fi
+"#;
+
     fn step(&self, n: u32, script: &str) {
         let path = self.repo.join(format!(".autome/fake/{n}.sh"));
         std::fs::write(path, script).unwrap();
@@ -187,13 +206,16 @@ impl World {
 
     /// What a session writes: the design document for its task, committed.
     fn doc_script(slug: &str, n: u32, body: &str, prelude: &str) -> String {
+        let evidence = Self::EVIDENCE;
         format!(
             r#"set -e
+SLUG={slug}
 {prelude}
 mkdir -p "docs/{slug}"
 cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
 {body}
 AUTOME_EOF
+{evidence}
 git add -A docs >/dev/null 2>&1 || true
 git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
 "#
@@ -231,17 +253,8 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
         self.step(
             n,
             &format!(
-                r#"set -e
-mkdir -p "docs/{slug}"
-cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
-{body}
-AUTOME_EOF
-git add -A docs >/dev/null 2>&1 || true
-git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
-cat <<'AUTOME_USAGE'
-{usage}
-AUTOME_USAGE
-"#
+                "{}cat <<'AUTOME_USAGE'\n{usage}\nAUTOME_USAGE\n",
+                Self::doc_script(slug, n, body, "")
             ),
         );
     }
@@ -282,6 +295,12 @@ AUTOME_USAGE
     /// A step that writes a design document into the task's worktree and
     /// commits it, which is what every real session does.
     fn doc_step(&self, n: u32, slug: &str, body: &str) {
+        self.step(n, &Self::doc_script(slug, n, body, ""));
+    }
+
+    /// A round that writes its document and leaves no evidence file. What
+    /// every round did before the core started checking.
+    fn doc_step_without_evidence(&self, n: u32, slug: &str, body: &str) {
         self.step(
             n,
             &format!(
@@ -1262,4 +1281,112 @@ fn a_milestone_closed_and_then_reopened_is_counted_as_contradicted() {
         metrics.closed_then_contradicted, 1,
         "M-01 was closed and then taken back"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the deterministic guards (plan §4.D)
+// ---------------------------------------------------------------------------
+
+/// Reads the failure reason a task stopped with.
+fn failure_detail(w: &World, task_id: &str) -> String {
+    let state = w.ctx.store.get_task(task_id).unwrap().state;
+    serde_json::to_value(&state)
+        .unwrap()
+        .get("reason")
+        .and_then(|r| r.get("detail"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The one rule the whole generation/evaluation split rests on. It was a
+/// sentence in the protocol and nothing else; now the core checks it.
+#[test]
+fn an_implementation_round_that_closes_a_milestone_stops_the_task() {
+    needs_git!();
+    let mut w = World::new("guard-close");
+    let request = "close it yourself";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // The implementation round claims the thing only an audit may claim.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert_eq!(w.state(&task_id), "failed");
+    let detail = failure_detail(&w, &task_id);
+    assert!(detail.contains("M-01"), "{detail}");
+    assert!(detail.contains("只有审计轮"), "{detail}");
+
+    // And the core did not quietly put the cell back: doing that would leave
+    // the commit history and the session log telling different stories.
+    let design = w
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/{slug}.md"));
+    let text = std::fs::read_to_string(&design).unwrap();
+    assert!(text.contains("| M-01 | 已完成"), "{text}");
+}
+
+/// A loop round with no evidence file has left nothing for the next round to
+/// read, and the audit nothing to check against.
+#[test]
+fn a_loop_round_that_leaves_no_evidence_stops_the_task() {
+    needs_git!();
+    let mut w = World::new("guard-evidence");
+    let request = "no evidence";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step_without_evidence(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert_eq!(w.state(&task_id), "failed");
+    let detail = failure_detail(&w, &task_id);
+    assert!(detail.contains("-r1-impl.md"), "{detail}");
+}
+
+/// A design document that keeps growing is a warning, not a failure: it is a
+/// trend worth seeing, and stopping a task over it would cost more than it
+/// saves.
+#[test]
+fn a_design_document_that_balloons_is_warned_about_and_the_loop_keeps_going() {
+    needs_git!();
+    let mut w = World::new("guard-size");
+    let request = "grow the doc";
+    let slug = slug_for(request);
+    // 12KB of padding in one round, over the 10KB step warning.
+    let padding = "证据正文。".repeat(3000);
+    let fat = format!(
+        "{}\n\n## 附录\n\n{padding}\n",
+        doc("实现中", 2, 1, &[("M-01", "待审")])
+    );
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &fat);
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    // The Loop reached the merge gate regardless.
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    let warnings = w.ctx.store.count_events(&task_id, "guard.warning").unwrap();
+    assert!(warnings > 0, "the growth was not recorded");
 }
