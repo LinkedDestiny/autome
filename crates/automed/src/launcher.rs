@@ -73,6 +73,62 @@ pub struct RuntimeAdapter {
     pub effort_flag: Option<&'static str>,
 }
 
+impl RuntimeAdapter {
+    /// Args that add one more directory to the CLI's own sandbox, for the
+    /// runtimes that have one.
+    ///
+    /// Only Codex does. `claude` is given no OS sandbox by 2.0 (design §17),
+    /// so there is nothing to widen and nothing to return.
+    fn extra_writable_root(&self, root: &Path) -> Vec<String> {
+        match self.runtime {
+            Runtime::Codex => vec![
+                "--config".to_string(),
+                format!(
+                    "sandbox_workspace_write.writable_roots=[\"{}\"]",
+                    toml_escape(&root.to_string_lossy())
+                ),
+            ],
+            Runtime::Claude => vec![],
+        }
+    }
+}
+
+/// Escapes a path for a TOML basic string. Paths with a quote or a backslash
+/// in them are rare, and silently producing invalid TOML when one shows up
+/// would fail as "Codex rejected the config" a long way from the cause.
+fn toml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The repository's real Git directory, when it is *not* inside `cwd`.
+///
+/// For a worktree it never is: `git rev-parse --absolute-git-dir` in
+/// `<repo>/.worktree/<slug>/` answers `<repo>/.git/worktrees/<slug>/`, which
+/// is outside the directory the session is allowed to write. Codex's
+/// `workspace-write` sandbox therefore refuses to create `index.lock`, and
+/// every `git add` in a worktree session exits 128.
+///
+/// A real run did that on every audit round for thirty rounds. Nothing was
+/// lost — the core sweeps the leftover changes into a commit of its own — but
+/// each round still spent a doomed commit attempt and a paragraph explaining
+/// it, and the branch history ended up narrated by two different voices.
+///
+/// Returns `None` when the Git directory is already inside `cwd` (the
+/// onboarding session runs in the repository itself, where nothing needs
+/// widening) and when Git cannot answer at all — a guessed path would be worse
+/// than the status quo.
+fn git_dir_outside(cwd: &Path) -> Option<PathBuf> {
+    let out = crate::git::run(cwd, &["rev-parse", "--absolute-git-dir"]).ok()?;
+    if !out.ok() {
+        return None;
+    }
+    let dir = PathBuf::from(out.line());
+    if dir.as_os_str().is_empty() || dir.starts_with(cwd) {
+        return None;
+    }
+    Some(dir)
+}
+
 /// Verified against Claude Code 2.1.261 and Codex 0.153.4 on 2026-09-15 by
 /// running each form and checking both the effect and the exit code. The
 /// details that cost the most to get wrong:
@@ -162,13 +218,16 @@ pub fn adapter(runtime: Runtime) -> &'static RuntimeAdapter {
 
 /// Builds the argv after the binary. Returned separately from the binary so
 /// the wrapper script receives them as distinct arguments.
-pub fn build_args(config: &RoleConfig) -> Vec<String> {
+pub fn build_args(config: &RoleConfig, cwd: &Path) -> Vec<String> {
     let a = adapter(config.runtime);
     let mut args: Vec<String> = a
         .autonomous_flags
         .iter()
         .map(|s| (*s).to_string())
         .collect();
+    if let Some(root) = git_dir_outside(cwd) {
+        args.extend(a.extra_writable_root(&root));
+    }
     if !config.model.trim().is_empty() {
         args.push(a.model_flag.to_string());
         args.push(config.model.clone());
@@ -940,15 +999,21 @@ mod tests {
         assert_eq!(ADAPTERS.len(), Runtime::ALL.len());
     }
 
+    /// A directory Git cannot answer about, so `build_args` adds no writable
+    /// root and these tests see only the flags they are about.
+    fn no_repo() -> &'static Path {
+        Path::new("/nonexistent-so-git-cannot-answer")
+    }
+
     #[test]
     fn an_absent_effort_adds_no_flag_on_either_runtime() {
         assert!(
-            !build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None))
+            !build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), no_repo())
                 .join(" ")
                 .contains("reasoning_effort")
         );
         assert!(
-            !build_args(&role_config(Runtime::Claude, "opus", None))
+            !build_args(&role_config(Runtime::Claude, "opus", None), no_repo())
                 .join(" ")
                 .contains("--effort")
         );
@@ -956,8 +1021,52 @@ mod tests {
 
     #[test]
     fn an_empty_model_adds_no_model_flag() {
-        let args = build_args(&system_role_config());
+        let args = build_args(&system_role_config(), no_repo());
         assert!(!args.contains(&"--model".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn a_worktree_session_on_codex_may_write_the_repositorys_git_directory() {
+        // Without this, `git add` inside a worktree exits 128: the real Git
+        // directory is `<repo>/.git/worktrees/<slug>`, outside the worktree
+        // that `workspace-write` allows.
+        let repo = std::env::temp_dir().join(format!(
+            "automed-writable-root-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let repo = repo.as_path();
+        crate::git::run(repo, &["init", "-q"]).unwrap();
+        let worktree = repo.join("wt");
+        crate::git::run(repo, &["commit", "-q", "--allow-empty", "-m", "base"]).unwrap();
+        crate::git::run(
+            repo,
+            &["worktree", "add", "-q", worktree.to_str().unwrap(), "-b", "t"],
+        )
+        .unwrap();
+
+        let args = build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), &worktree)
+            .join(" ");
+        assert!(args.contains("sandbox_workspace_write.writable_roots"), "{args}");
+        assert!(args.contains("worktrees"), "{args}");
+
+        // In the repository itself the Git directory is already inside the
+        // sandbox, so nothing is widened.
+        let at_repo = build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), repo).join(" ");
+        assert!(!at_repo.contains("writable_roots"), "{at_repo}");
+
+        // Claude has no sandbox of its own to widen.
+        let claude = build_args(&role_config(Runtime::Claude, "opus", None), &worktree).join(" ");
+        assert!(!claude.contains("writable_roots"), "{claude}");
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn a_path_with_a_quote_in_it_does_not_break_the_toml() {
+        assert_eq!(toml_escape(r#"/a"b\c"#), r#"/a\"b\\c"#);
     }
 
     // ---- prompts ---------------------------------------------------------

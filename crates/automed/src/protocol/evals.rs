@@ -5,7 +5,14 @@
 //! than walked at build time so that a case which stops being embedded fails
 //! here rather than on a user's machine.
 
-pub const SEED: [(&str, &str); 71] = [
+pub const SEED: [(&str, &str); 78] = [
+    ("evals/audit-manual-only-milestone-goes-to-checklist/case.yaml", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/case.yaml")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/eval-case-task.md", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/eval-case-task.md")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/eval-case.md", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/eval-case.md")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/evidence/M-05-r7-impl.md", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/evidence/M-05-r7-impl.md")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/gate.sh", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/fixture/eval-case/gate.sh")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/graders/manual-items-move-and-the-milestone-closes.md", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/graders/manual-items-move-and-the-milestone-closes.md")),
+    ("evals/audit-manual-only-milestone-goes-to-checklist/scaffold.sh", include_str!("seed/evals/audit-manual-only-milestone-goes-to-checklist/scaffold.sh")),
     ("evals/audit-no-history-rerun/case.yaml", include_str!("seed/evals/audit-no-history-rerun/case.yaml")),
     ("evals/audit-no-history-rerun/fixture/eval-case/eval-case-task.md", include_str!("seed/evals/audit-no-history-rerun/fixture/eval-case/eval-case-task.md")),
     ("evals/audit-no-history-rerun/fixture/eval-case/eval-case.md", include_str!("seed/evals/audit-no-history-rerun/fixture/eval-case/eval-case.md")),

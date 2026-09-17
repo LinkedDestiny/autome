@@ -271,7 +271,7 @@ fn each_cli_exits_on_its_own_when_invoked_the_way_the_launcher_invokes_it() {
             effort: None,
             skills: vec![],
         };
-        let args = automed::launcher::build_args(&config);
+        let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
 
         let dir = std::env::temp_dir().join(format!(
             "automed-exit-{}-{}",
@@ -636,7 +636,7 @@ fn a_claude_session_can_actually_run_a_command() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config);
+    let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-bash-{}", std::process::id()));
@@ -703,7 +703,7 @@ fn a_claude_session_log_records_the_tools_it_ran() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config);
+    let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-log-{}", std::process::id()));

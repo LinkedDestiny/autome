@@ -106,10 +106,12 @@ pub fn check(round: &Round<'_>) -> Vec<Finding> {
         Role::Impl => {
             out.extend(evidence_file(round, "impl"));
             out.extend(no_closing_a_milestone(round));
+            out.extend(impl_had_a_target(round));
             out.extend(retro_one_line(round));
         }
         Role::Audit => {
             out.extend(evidence_file(round, "audit"));
+            out.extend(audit_moved_the_table(round));
             out.extend(retro_one_line(round));
             out.extend(audit_stayed_in_its_column(round));
         }
@@ -182,6 +184,94 @@ fn no_closing_a_milestone(round: &Round<'_>) -> Option<Finding> {
              Autome 不会替你把这一格改回去：改回去会让提交记录和会话日志说两套话。",
             closed.join("、")
         ),
+    ))
+}
+
+/// An audit round has to move the milestone table.
+///
+/// Each of the three verdicts moves it: 通过 closes the milestone, 实现缺陷
+/// reopens it, 验证缺口 closes it too (the audit strengthens the checks itself
+/// and re-verifies). A table that came out of an audit unchanged means the
+/// round reached a fourth verdict the protocol does not have.
+///
+/// A real run reached it eleven times. `M-07 端到端链路真机验收` needed a real
+/// mouse, a real microphone and a person looking at a banner, so no session
+/// could ever produce the evidence; the audit had no defect to point at either,
+/// so it could not reopen the milestone. It invented "stays `待审`" instead.
+/// The next implementation round then found no `开放` milestone, advanced
+/// nothing, and the pair repeated — thirteen rounds and about two thirds of the
+/// budget, all of it spent adding checks to a milestone nobody could close.
+///
+/// The way out is in the protocol already: acceptance a session cannot run does
+/// not belong to a milestone, it belongs in `## 人工验收清单`, which the user
+/// confirms before the merge. So this stops the task where it can still be
+/// fixed cheaply, and the detail names both exits.
+fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
+    let before = round.before?;
+    let after: Vec<(&str, MilestoneState)> = round
+        .status
+        .milestones
+        .iter()
+        .map(|m| (m.id.as_str(), m.state))
+        .collect();
+    let was: Vec<(&str, MilestoneState)> = before
+        .milestones
+        .iter()
+        .map(|(id, s)| (id.as_str(), *s))
+        .collect();
+    if after != was {
+        return None;
+    }
+    let stuck: Vec<&str> = round
+        .status
+        .milestones
+        .iter()
+        .filter(|m| m.state == MilestoneState::Pending)
+        .map(|m| m.id.as_str())
+        .collect();
+    Some(Finding::error(
+        "audit_made_no_progress",
+        format!(
+            "审计轮结束时里程碑表和本轮开始时一模一样{}。审计结论只有三种，每一种都会动这张表：\
+             通过就标 `已完成`，实现缺陷就退回 `开放`，验证缺口是审计当场补强检查再复验、\
+             通过后照常关闭。表没动，说明本轮落在了协议里不存在的第四种结论上，\
+             而下一个实现轮会发现没有 `开放` 的里程碑、无事可做——这一对会一直空转到预算耗尽。\
+             两条出路：要么拿出产品行为错了的证据，退回 `开放`；\
+             要么这个里程碑剩下的验收项本来就要真人（真实鼠标、麦克风、系统弹窗、肉眼看横幅），\
+             那它就不该是里程碑的验收条件——把它们逐条移进设计文档的 `## 人工验收清单`，\
+             由用户在合并前确认，然后关闭这个里程碑。",
+            if stuck.is_empty() {
+                String::new()
+            } else {
+                format!("（{} 仍是 `待审`）", stuck.join("、"))
+            }
+        ),
+    ))
+}
+
+/// An implementation round needs something to advance.
+///
+/// The question is about the table the round *started* from, not the one it
+/// left: a round that did its job turns the one `开放` milestone into `待审`,
+/// so by the end there is legitimately nothing open. Only `before` can answer
+/// it.
+///
+/// With `audit_made_no_progress` in place the loop stops one round earlier and
+/// this never fires. It is the second line: a task resumed by hand, or a design
+/// round that left every milestone `待审`, arrives here too.
+fn impl_had_a_target(round: &Round<'_>) -> Option<Finding> {
+    let before = round.before?;
+    if before.milestones.is_empty()
+        || before.milestones.iter().any(|(_, s)| *s == MilestoneState::Open)
+        || before.milestones.iter().all(|(_, s)| *s == MilestoneState::Done)
+    {
+        return None;
+    }
+    Some(Finding::error(
+        "impl_had_no_target",
+        "本轮开始时里程碑表里没有 `开放` 的里程碑，实现轮没有推进对象。\
+         实现轮推进的是编号最小的 `开放` 里程碑；剩下的都卡在 `待审` 时，\
+         该动的是审计轮，不是再开一个实现轮。",
     ))
 }
 
@@ -334,8 +424,10 @@ mod tests {
 
     #[test]
     fn an_implementation_round_closing_a_milestone_stops_the_task() {
+        // `开放` is what the round actually starts from: it is the state an
+        // implementation round is given something to advance in.
         let s = status(3, &[("M-01", MilestoneState::Done)]);
-        let before = snapshot(&[("M-01", MilestoneState::Pending)], 4, 20_000);
+        let before = snapshot(&[("M-01", MilestoneState::Open)], 4, 20_000);
         let r = round(Role::Impl, &s, &before, &["M-01-r3-impl.md"]);
         let f = check(&r);
         assert_eq!(codes(&f), vec!["impl_closed_milestone"]);
@@ -366,6 +458,80 @@ mod tests {
         let s = status(3, &[("M-01", MilestoneState::Done)]);
         let before = snapshot(&[("M-01", MilestoneState::Pending)], 4, 20_000);
         let r = round(Role::Audit, &s, &before, &["M-01-r3-audit.md"]);
+        assert_eq!(check(&r), vec![]);
+    }
+
+    /// The shape a real run got stuck in: six closed milestones and a seventh
+    /// whose acceptance needed a person. Eleven audits in a row left this table
+    /// exactly as they found it.
+    fn stuck_at_m07() -> [(&'static str, MilestoneState); 7] {
+        [
+            ("M-01", MilestoneState::Done),
+            ("M-02", MilestoneState::Done),
+            ("M-03", MilestoneState::Done),
+            ("M-04", MilestoneState::Done),
+            ("M-05", MilestoneState::Done),
+            ("M-06", MilestoneState::Done),
+            ("M-07", MilestoneState::Pending),
+        ]
+    }
+
+    #[test]
+    fn an_audit_that_leaves_the_milestone_table_untouched_stops_the_task() {
+        let s = status(31, &stuck_at_m07());
+        let before = snapshot(&stuck_at_m07(), 56, 60_000);
+        let r = round(Role::Audit, &s, &before, &["M-07-r31-audit.md"]);
+        let f = check(&r);
+        assert_eq!(codes(&f), vec!["audit_made_no_progress"]);
+        assert_eq!(f[0].level, Level::Error);
+        // The detail has to name the milestone and both ways out, or the
+        // person who gets the stopped task has to go read the protocol.
+        assert!(f[0].detail.contains("M-07"), "{}", f[0].detail);
+        assert!(f[0].detail.contains("人工验收清单"), "{}", f[0].detail);
+        assert!(f[0].detail.contains("开放"), "{}", f[0].detail);
+    }
+
+    #[test]
+    fn an_audit_that_reopens_a_milestone_is_progress() {
+        let mut after = stuck_at_m07();
+        after[6].1 = MilestoneState::Open;
+        let s = status(31, &after);
+        let before = snapshot(&stuck_at_m07(), 56, 60_000);
+        let r = round(Role::Audit, &s, &before, &["M-07-r31-audit.md"]);
+        assert_eq!(check(&r), vec![]);
+    }
+
+    #[test]
+    fn an_audit_that_closes_the_last_milestone_is_progress() {
+        let mut after = stuck_at_m07();
+        after[6].1 = MilestoneState::Done;
+        let s = status(31, &after);
+        let before = snapshot(&stuck_at_m07(), 56, 60_000);
+        let r = round(Role::Audit, &s, &before, &["M-07-r31-audit.md"]);
+        assert_eq!(check(&r), vec![]);
+    }
+
+    #[test]
+    fn an_implementation_round_with_nothing_open_stops_the_task() {
+        let s = status(31, &stuck_at_m07());
+        let before = snapshot(&stuck_at_m07(), 56, 60_000);
+        let r = round(Role::Impl, &s, &before, &["M-07-r31-impl.md"]);
+        let f = check(&r);
+        assert_eq!(codes(&f), vec!["impl_had_no_target"]);
+        assert_eq!(f[0].level, Level::Error);
+    }
+
+    #[test]
+    fn a_finished_table_is_not_a_missing_target() {
+        // Every milestone closed is how the implementation loop ends, not a
+        // round that had nothing to do.
+        let done = [
+            ("M-01", MilestoneState::Done),
+            ("M-02", MilestoneState::Done),
+        ];
+        let s = status(9, &done);
+        let before = snapshot(&done, 12, 20_000);
+        let r = round(Role::Impl, &s, &before, &["M-02-r9-impl.md"]);
         assert_eq!(check(&r), vec![]);
     }
 

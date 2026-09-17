@@ -67,16 +67,22 @@ pub fn count_verdicts(worktree: &Path, doc_dir: &str) -> (u32, u32) {
 /// Both `- [ ]` checkboxes and bare `- H-01 …` lines count as open; the
 /// protocol asks for one line per item and does not mandate a checkbox, and a
 /// list the user has not touched is exactly the thing being measured.
+///
+/// The heading is matched at the start of a line, not anywhere in the text.
+/// Searching the whole string found the *first* mention instead — and a
+/// document that names the section in prose before it reaches it (a
+/// `next-action` saying "由用户逐条确认 `## 人工验收清单`" is the obvious way)
+/// would have its body bounded by the next heading after that sentence, and
+/// report zero open items however many it really had. That count is what the
+/// merge gate is meant to lean on.
 pub fn count_manual_items(design: &str) -> u32 {
-    let Some(start) = design.find("## 人工验收清单") else {
+    const HEADING: &str = "## 人工验收清单";
+    let mut lines = design.lines().skip_while(|l| l.trim_end() != HEADING);
+    if lines.next().is_none() {
         return 0;
-    };
-    let rest = &design[start..];
-    let body = match rest[1..].find("\n## ") {
-        Some(i) => &rest[..i + 1],
-        None => rest,
-    };
-    body.lines()
+    }
+    lines
+        .take_while(|l| !l.starts_with("## "))
         .map(str::trim)
         .filter(|l| l.starts_with("- ") || l.starts_with("* "))
         .filter(|l| !l.contains("[x]") && !l.contains("[X]"))
@@ -294,6 +300,17 @@ mod tests {
         // the rest of the document as an unconfirmed manual check.
         let doc = "## 人工验收清单\n\n- H-01\n\n## Backlog\n\n- B-01\n- B-02\n- B-03\n";
         assert_eq!(count_manual_items(doc), 1);
+    }
+
+    #[test]
+    fn naming_the_section_in_prose_does_not_shadow_the_real_one() {
+        // A real document did exactly this: `next-action` said "由用户逐条确认
+        // `## 人工验收清单`", which is the first match in the file. Bounding
+        // the body from there ends at the next heading — the four real items
+        // were reported as zero.
+        let doc = "# T\n\nnext-action: 由用户逐条确认 `## 人工验收清单` 后合并。\n\n\
+                   ## 任务\n\n略\n\n## 人工验收清单\n\n- H-01 长按\n- H-02 横幅\n\n## Backlog\n\n- B-01\n";
+        assert_eq!(count_manual_items(doc), 2);
     }
 
     #[test]

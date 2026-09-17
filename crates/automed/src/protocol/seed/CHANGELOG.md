@@ -104,4 +104,32 @@ v1 是把 1.x 跑了几个月得到的规则原样出仓，加上 2026-09-16 那
   predicted_impact: {metric: mean_request_input, direction: down, scope: task, horizon: 3}
   eval: evals/impl-writes-evidence-not-design/
   realized_impact: null
+- id: C-13
+  kind: behavioral
+  clause: loop-protocol.md#审计轮
+  evidence: [voice-schedule M-07 空转十三轮, island-workbench S6]
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+  eval: evals/audit-manual-only-milestone-goes-to-checklist/
+  realized_impact: null
+- id: C-14
+  kind: clarify
+  clause: loop-protocol.md#里程碑/验收必须是会话自己能跑的
+  evidence: [voice-schedule M-07 空转十三轮, island-workbench S6]
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
 ```
+
+## 关于 C-13 / C-14
+
+C-06 已经写过「要真人才能看到的结果不作为里程碑验收条件」，但它只对设计轮说。
+`voice-schedule` 的 M-07 是在那条规则落地之前就立好的里程碑，后面每一轮都照着它跑，
+没有任何角色被授权去改它——规则到得太晚，对在途的任务不回填。
+
+于是审计轮落在了三选一之外：既拿不到真机证据关闭 M-07，又没有产品缺陷可以退回它，
+只好保持 `待审`。下一个实现轮发现没有 `开放` 的里程碑，无事可做，就去给已经通过的
+东西加检查。这一对连续跑了十三轮，烧掉三分之二预算，里程碑表一个字没动。
+
+C-13 把出口写进审计轮的结论一节并点明「没有第四种结论」，C-14 把 C-06 的适用范围
+从设计轮扩到任何轮次。配套的内核守卫是 `guards::audit_moved_the_table` 与
+`guards::impl_had_a_target`：条文靠自觉的那一半，这次由代码兜住。
