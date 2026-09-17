@@ -874,6 +874,7 @@ body { font-size: 13px; }
 .docrow:hover { border-color: #d4c4a8; transform: translateY(-1px); }
 .docrow .ic { width: 16px; height: 16px; color: var(--animal-text-secondary); } .docrow small { color: var(--animal-text-secondary); font-weight: 600; }
 .lane--7 { grid-template-columns: repeat(7, minmax(0,1fr)); }
+.lane--8 { grid-template-columns: repeat(8, minmax(0,1fr)); }
 .lgraph .lane:last-child { margin-bottom: 44px; }
 .repo--wrap dd { white-space: normal; line-height: 1.45; }
 .lnode--err { border-color: var(--animal-error) !important; background: #fff0f0 !important; }

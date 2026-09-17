@@ -20,6 +20,7 @@ export const NODE_LABELS = {
   await_design_approval: '设计批准',
   implement: '实现',
   audit: '审计',
+  retro: '复盘',
   rebase: 'rebase',
   await_merge: '待合并',
   merging: '合并',
@@ -27,10 +28,10 @@ export const NODE_LABELS = {
 };
 
 /**
- * The 13 stones of requirement T-03's node flow. `received` and `done` are
- * not `Node` values — the first is the moment before intake, the last is
- * `TaskState::Done` — but the user sees one line, so the flow carries all
- * thirteen and the two synthetic ones are marked as such.
+ * The stones of requirement T-03's node flow. `received` and `done` are not
+ * `Node` values — the first is the moment before intake, the last is
+ * `TaskState::Done` — but the user sees one line, so the flow carries them
+ * too, marked as synthetic.
  */
 export const FLOW = [
   { key: 'received', label: '已接收', synthetic: true },
@@ -41,6 +42,7 @@ export const FLOW = [
   { key: 'await_design_approval', label: '设计批准' },
   { key: 'implement', label: '实现' },
   { key: 'audit', label: '审计' },
+  { key: 'retro', label: '复盘' },
   { key: 'rebase', label: 'rebase' },
   { key: 'await_merge', label: '待合并' },
   { key: 'merging', label: '合并' },
@@ -54,6 +56,7 @@ export const ROLE_LABELS = {
   adjudicate: '裁决',
   impl: '实现',
   audit: '审计',
+  retro: '复盘',
 };
 
 /** The role a node runs, mirroring `Node::role()`. `null` = system or human. */
@@ -63,6 +66,7 @@ export const NODE_ROLE = {
   adjudicate: 'adjudicate',
   implement: 'impl',
   audit: 'audit',
+  retro: 'retro',
 };
 
 export const RUNTIME_LABELS = { claude: 'Claude Code', codex: 'Codex' };
@@ -162,6 +166,7 @@ export function taskStatus(task) {
         return { label: nodeLabel(node), variant: 'solid-blue', spinning: true };
       }
       if (node === 'audit') return { label: '审计', variant: 'solid-purple', spinning: true };
+      if (node === 'retro') return { label: '复盘', variant: 'solid-purple', spinning: true };
       if (node === 'implement') return { label: '实现', variant: 'solid-teal', spinning: true };
       return { label: nodeLabel(node), variant: 'solid-teal', spinning: true };
     }

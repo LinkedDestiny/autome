@@ -37,6 +37,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'task.decide',
   'task.extend_budget',
   'task.rerun_from',
+  'task.retro',
   'task.archive',
   'task.restore',
   'config.set_role',

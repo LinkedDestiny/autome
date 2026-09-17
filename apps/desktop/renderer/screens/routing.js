@@ -1,8 +1,8 @@
 // 路由图 — requirements C-04 … C-07, U-08.
 //
-// The Loop as a picture: two lanes, thirteen boxes, and edges drawn between
-// them. Five boxes are roles and open a configuration drawer; the rest are
-// grey fixed system steps or yellow human stops and are deliberately inert,
+// The Loop as a picture: two lanes of boxes with edges drawn between them.
+// Six boxes are roles and open a configuration drawer; the rest are grey
+// fixed system steps or yellow human stops and are deliberately inert,
 // because the requirement says they are not configurable and a box that looks
 // clickable but is not is worse than one that looks fixed.
 //
@@ -40,7 +40,8 @@ const EDGES = [
   ['design_approval', 'impl', { gy: 40, t: 0.2, label: '批准' }],
   ['impl', 'audit'],
   ['audit', 'impl', { rej: 1, via: 'bottom', d: 26, label: 'reopen' }],
-  ['audit', 'rebase'],
+  ['audit', 'retro'],
+  ['retro', 'rebase'],
   ['rebase', 'impl', { rej: 1, via: 'top', d: 26, ex: 10, label: '冲突' }],
   ['rebase', 'merge_wait'],
   ['merge_wait', 'merge'],
@@ -64,6 +65,7 @@ const ROLE_NODES = {
   adjudicate: ['裁决', 'adjudicate · 逐条采纳或驳回'],
   impl: ['实现', 'impl · 推进里程碑至待审'],
   audit: ['审计', 'audit · 独立复验，reopen 或关闭'],
+  retro: ['复盘', 'retro · 读完整轮运行，写下教训'],
 };
 
 export async function load(ctx) {
@@ -212,10 +214,11 @@ function graph(data, draft, localViolations, paint, ctx) {
     humanNode('design_approval'),
   ]);
 
-  const laneTwo = h('div.lane.lane--7', { dataset: { lane: '2' } }, [
+  const laneTwo = h('div.lane.lane--8', { dataset: { lane: '2' } }, [
     h('span.lane__lbl', { text: `实现循环 · 预算 ${((data.resolved || {}).loop_defaults || {}).budget_factor ?? '—'} × 里程碑` }),
     roleNode('impl', draft, badRoles, data, paint, ctx),
     roleNode('audit', draft, badRoles, data, paint, ctx),
+    roleNode('retro', draft, badRoles, data, paint, ctx),
     fixedNode('rebase'),
     humanNode('merge_wait'),
     fixedNode('merge'),

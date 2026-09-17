@@ -218,6 +218,18 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         return Ok(true);
     }
 
+    // A retro run from the failure panel is not part of the Loop. The task is
+    // already terminal, it stays where it is, and the transition table would
+    // rightly reject a `SessionEnded` against a finished task. Handling it
+    // here rather than adding a state to the machine is deliberate: "read the
+    // run and write down what it taught us" changes nothing about where the
+    // task is, and a state that exists only to come back from is a state.
+    if s.kind.role() == Some(Role::Retro) && !matches!(task.state, TaskState::Active { .. }) {
+        sweep_commit(&repo, &task, s)?;
+        check_lessons(ctx, &task, &repo)?;
+        return Ok(true);
+    }
+
     // Sweep up anything the session left uncommitted, before reading the
     // document (§6). A real run produced a correct README edit, a correct
     // audit and a correct retro — and committed none of it, so the task
@@ -330,12 +342,62 @@ fn apply_guards(
         )?;
     }
 
+    if role == Role::Retro {
+        check_lessons(ctx, task, repo)?;
+    }
+
     match findings.iter().find(|f| f.level == guards::Level::Error) {
         Some(f) => Ok(SessionOutcome::GuardFailed {
             detail: f.detail.clone(),
         }),
         None => Ok(outcome),
     }
+}
+
+/// Reads `docs/<slug>/lessons.md` and records whether it parsed.
+///
+/// A malformed lessons file does not fail the task — the task is over, and
+/// failing it now would be punishing the wrong round for the wrong thing. But
+/// it does have to be visible: a lesson the core cannot read is a lesson that
+/// silently never reaches a rule, and "we wrote it down" would be false.
+fn check_lessons(ctx: &mut Ctx, task: &TaskRecord, repo: &Path) -> Result<()> {
+    let path = worktree_path(repo, &task.slug)
+        .join(task.doc_dir())
+        .join("lessons.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        ctx.store.append_event(
+            "guard.warning",
+            &task.id,
+            json!({
+                "code": "lessons_missing",
+                "detail": format!("复盘轮没有写 {}/lessons.md。", task.doc_dir()),
+            }),
+        )?;
+        return Ok(());
+    };
+    match autome_domain::lesson::parse(&text) {
+        Ok(lessons) => {
+            ctx.store.append_event(
+                "task.lessons",
+                &task.id,
+                json!({
+                    "count": lessons.len(),
+                    "lessons": lessons,
+                }),
+            )?;
+        }
+        Err(e) => {
+            ctx.store.append_event(
+                "guard.warning",
+                &task.id,
+                json!({
+                    "code": "lessons_unparseable",
+                    "detail": format!("lessons.md 读不出来：{e}"),
+                }),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn evidence_filenames(worktree: &Path, doc_dir: &str) -> Vec<String> {
@@ -1356,6 +1418,44 @@ fn redispatch(ctx: &mut Ctx, task_id: &str, node: Node) -> Result<()> {
         },
     };
     start_session(ctx, &task, &project, &resolved, kind, None)
+}
+
+/// Starts a retro round on a task that has already stopped.
+///
+/// The user's button on the failure panel. A task that failed or was cancelled
+/// is the most informative kind there is, and it is also the kind that never
+/// reaches the retro node — so the only way its lessons get written is if
+/// someone asks. Deliberately manual rather than automatic: a failed task has
+/// often failed for a reason the user already understands, and spending a
+/// session to have it explained back is not always worth it.
+pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+    let task = ctx.store.get_task(task_id)?;
+    if matches!(task.state, TaskState::Active { .. } | TaskState::Queued) {
+        return Err(err("任务还在跑，复盘轮会在它停下时自己跑一次"));
+    }
+    if ctx.store.running_session(task_id)?.is_some() {
+        return Err(err("这个任务已经有一个会话在跑了"));
+    }
+    let project = ctx.store.get_project(&task.project_id)?;
+    let resolved = resolve_config(ctx, &project)?;
+    if !resolved.is_enabled(Role::Retro) {
+        return Err(err("复盘轮在这个项目里是关着的"));
+    }
+    let worktree = worktree_path(Path::new(&project.path), &task.slug);
+    if !worktree.exists() {
+        // Cleanup removes the worktree after a merge, and the evidence the
+        // retro round reads lives in it. Saying so beats starting a session
+        // that finds an empty directory.
+        return Err(err("任务的 worktree 已经清理掉了，复盘轮读不到证据"));
+    }
+    start_session(
+        ctx,
+        &task,
+        &project,
+        &resolved,
+        SessionKind::Role { role: Role::Retro },
+        None,
+    )
 }
 
 /// Starts the Onboarding session (design §10, requirement C-02 step 3).

@@ -25,6 +25,7 @@
 // Not a *.test.js file: it needs `app`/`BrowserWindow`, so it runs under
 // `electron`, not `node --test`. See dom.test.js, which spawns it.
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const appProtocol = require('../src/app-protocol');
@@ -43,6 +44,24 @@ appProtocol.registerSchemeAsPrivileged();
 // these the dimensions of the web page, not of the window plus its chrome —
 // otherwise the measurement would be of a viewport nobody ships.
 const VIEWPORT = { width: 1512, height: 944 };
+
+// The node flow's length, read from the renderer's own table rather than
+// written down here. A hard-coded 13 meant that adding the retro round made
+// four unrelated assertions fail while saying nothing about what broke.
+// Likewise for the role count: the graph draws one box per role, and writing
+// the number here again means adding a role fails this test rather than the
+// one that would have said what broke.
+const ROLE_COUNT = (() => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/screens/routing.js'), 'utf8');
+  const block = src.slice(src.indexOf('const ROLE_NODES'));
+  return block.slice(0, block.indexOf('};')).match(/^\s+\w+: \[/gm).length;
+})();
+
+const FLOW_STONES = (() => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/lib/labels.js'), 'utf8');
+  const block = src.slice(src.indexOf('export const FLOW'));
+  return block.slice(0, block.indexOf('];')).match(/\{ key:/g).length;
+})();
 
 const results = [];
 const consoleMessages = [];
@@ -414,8 +433,8 @@ async function run() {
       };
     }, fixtureId);
     check(
-      `the stopping panel shows the ${name} face, and the 13-node flow renders in full`,
-      outcome.threw === null && outcome.titles.includes(expected) && outcome.stones === 13,
+      `the stopping panel shows the ${name} face, and the whole node flow renders`,
+      outcome.threw === null && outcome.titles.includes(expected) && outcome.stones === FLOW_STONES,
       outcome
     );
   }
@@ -440,7 +459,7 @@ async function run() {
   });
   check(
     'an unreadable status block names the offending line in the milestone card',
-    unreadable.stones === 13 &&
+    unreadable.stones === FLOW_STONES &&
       unreadable.texts.some((t) => t.includes('第 2124 行') && t.includes('读不出来')),
     unreadable
   );
@@ -505,9 +524,9 @@ async function run() {
     sameModel
   );
   check(
-    'the routing graph has five configurable role nodes, four grey fixed steps and two yellow human stops (C-04, U-08)',
-    sameModel.roleNodes === 5 && sameModel.fixedNodes === 4 && sameModel.humanNodes === 2,
-    sameModel
+    'every role in the config gets a configurable node, and the fixed steps and human stops stay inert (C-04, U-08)',
+    sameModel.roleNodes === ROLE_COUNT && sameModel.fixedNodes === 4 && sameModel.humanNodes === 2,
+    { ...sameModel, expectedRoleNodes: ROLE_COUNT }
   );
 
   // ---- the router maps each nav item to its screen -----------------------

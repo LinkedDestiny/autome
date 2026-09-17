@@ -367,6 +367,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
                 extra_rounds: u32_param(p, "extra_rounds")?,
             },
         ),
+        "task.retro" => task_retro(ctx, str_param(p, "task_id")?),
         "task.rerun_from" => {
             let raw = str_param(p, "node")?;
             let node = Node::parse(raw).ok_or_else(|| bad_params(format!("未知节点 `{raw}`")))?;
@@ -1249,6 +1250,18 @@ fn queue_position(
 
 /// The whole task panel in one call (requirement U-06): state, progress from
 /// the design document, sessions, decisions and produced files.
+/// `task.retro` — run a retro round on a task that has already stopped.
+fn task_retro(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    scheduler::start_retro(ctx, task_id)?;
+    let seq = ctx
+        .store
+        .append_event("task.retro_started", task_id, json!({}))?;
+    Ok((
+        json!({ "started": true }),
+        vec![event(seq, "task.retro_started", task_id, json!({}))],
+    ))
+}
+
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;

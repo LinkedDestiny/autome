@@ -1390,3 +1390,117 @@ fn a_design_document_that_balloons_is_warned_about_and_the_loop_keeps_going() {
     let warnings = w.ctx.store.count_events(&task_id, "guard.warning").unwrap();
     assert!(warnings > 0, "the growth was not recorded");
 }
+
+// ---------------------------------------------------------------------------
+// Scenario: the retro round (plan §E1)
+// ---------------------------------------------------------------------------
+
+/// What a task learned used to die in its directory. Now the loop ends with a
+/// round whose whole job is to write it down in a form the core can read.
+#[test]
+fn the_loop_ends_with_a_retro_round_whose_lessons_the_core_can_read() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.kind == autome_domain::session::SessionKind::Role { role: autome_domain::role::Role::Retro }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+}
+
+/// A failed task never reaches the retro node, and a failed task is the most
+/// informative kind there is. The user can ask for one.
+#[test]
+fn a_stopped_task_can_be_sent_through_a_retro_round_by_hand() {
+    needs_git!();
+    let mut w = World::new("retro-manual");
+    let request = "fail then learn";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // The implementation round claims the milestone closed; the core stops.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(6, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.state(&task_id), "failed");
+
+    let before = w.ctx.store.get_task(&task_id).unwrap().state;
+    let out = w.call("task.retro", json!({ "task_id": task_id }));
+    assert!(
+        matches!(out.reply.outcome, ReplyOutcome::Ok { .. }),
+        "{:?}",
+        out.reply.outcome
+    );
+    w.settle();
+
+    // The task is exactly where it was: a retro changes nothing about where a
+    // task stands, it only records what the run taught.
+    assert_eq!(w.ctx.store.get_task(&task_id).unwrap().state, before);
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+}
+
+#[test]
+fn a_running_task_refuses_a_retro_by_hand() {
+    needs_git!();
+    let mut w = World::new("retro-running");
+    let request = "still going";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let task_id = create_task(&mut w, request);
+    w.settle();
+
+    // Waiting for approval is still a running task; the retro round will get
+    // its turn at the end of the loop.
+    let out = w.call("task.retro", json!({ "task_id": task_id }));
+    assert!(
+        matches!(out.reply.outcome, ReplyOutcome::Error { .. }),
+        "{:?}",
+        out.reply.outcome
+    );
+}
