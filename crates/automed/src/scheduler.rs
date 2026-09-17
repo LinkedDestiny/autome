@@ -541,9 +541,20 @@ fn start_session(
     };
 
     let decisions = ctx.store.decisions_for_prompt(&task.id)?;
+    // Read before the prompt is built, not after: the two rounds of the
+    // implementation loop are told which round they are and what `N` is,
+    // because neither is derivable inside the session (see launcher::BudgetLine).
+    let round = ctx.store.next_round(&task.id, &kind)?;
+    let budget = match (kind.role(), task.budget_n) {
+        (Some(Role::Impl | Role::Audit), Some(limit)) => {
+            Some(launcher::BudgetLine { round, limit })
+        }
+        _ => None,
+    };
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         slug: &task.slug,
+        budget,
         request: &task.request,
         skills: &role_config.skills,
         inject,
@@ -552,7 +563,6 @@ fn start_session(
         doc_refs: &task.doc_refs,
     });
 
-    let round = ctx.store.next_round(&task.id, &kind)?;
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id: &session_id,
@@ -880,6 +890,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
         slug: "onboarding",
+        budget: None,
         request: "",
         skills: &[],
         inject: None,

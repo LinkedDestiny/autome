@@ -19,7 +19,15 @@ use std::path::{Path, PathBuf};
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
 /// clearly taken them over.
-pub const SCAFFOLD_VERSION: u32 = 4;
+///
+/// 5: the protocol audit of 2026-09-16, which read three complete runs. Its
+/// seven changes are all rule text — evidence leaves the design document,
+/// `retro.md` is one line a round, the implementation round self-checks before
+/// claiming `待审`, the audit's discriminating checks become regression tests,
+/// the budget denominator comes from the core, results only a human can see
+/// stop being milestone acceptance, and the audit may again conclude
+/// "验证缺口".
+pub const SCAFFOLD_VERSION: u32 = 5;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 
@@ -490,7 +498,7 @@ exit "$code"
     )
 }
 
-const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 4 -->
+const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 5 -->
 # 会话协议
 
 本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
@@ -538,6 +546,11 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 状态只有 `开放` / `待审` / `已完成` 三种。实现轮不得把里程碑标为 `已完成`，
 只有审计轮独立复验通过才能关闭。
 
+**`## 里程碑` 一节里只放这一张表格。** Autome 在这一节里按位置读表，多一张
+表就可能读错——2026-09-16 有一轮在这一节中间写了张对比表，表头第一格是空的，
+整份文档被判协议失败，任务停摆。逐轮证据写进 `docs/<slug>/evidence/`，
+对比与说明写进那里，不要放在里程碑表所在的这一节。
+
 `## Backlog` 与 `## 争议项` 两节用无序列表，每条以稳定 ID 开头。
 
 **任一字段缺失或格式错误，Autome 一次即判协议失败并停下等人。** 不要猜测格式，
@@ -578,7 +591,7 @@ next-action: <下一实现轮首先完成的具体工作；没有时写"无">
 /// The rules are inherited from 1.x, which arrived at them by running the loop
 /// for months. The changes for 2.0 are: no self-relay (the core schedules),
 /// and the milestone table has a fixed machine-read format.
-const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 4 -->
+const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 5 -->
 # Loop 协议
 
 本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
@@ -625,9 +638,43 @@ const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 4 -->
 - 裁决记录 `docs/<slug>/<slug>-adjudication.md` —— **只增不改**，设计循环
   唯一的跨轮记忆。
 - 实现审计 `docs/<slug>/<slug>-audit.md` —— 每轮覆盖写。
-- 运行记录 `docs/<slug>/retro.md` —— 每轮追加一行，任务结束时补总结。
+- 证据文件 `docs/<slug>/evidence/M-xx-r<k>.md` —— 每轮为本轮推进或复验的
+  里程碑写一份，**只增不改**。验收证据、自审清单、修复说明、审计的独立复验
+  结论都写在这里。
+- 运行记录 `docs/<slug>/retro.md` —— 每轮追加**一行**，任务结束时补总结。
 
-超过 5 行的命令输出和临时验证产物写进 `.autome/output/`，不要进任务目录。
+超过 5 行的命令原始输出和临时验证产物写进 `.autome/output/`，不要进任务目录。
+证据文件写的是结论与判据，不是原始输出的转存。
+
+### 证据不写进设计文档
+
+设计文档是**当前状态**，不是日志。每个里程碑在设计文档里只留一行指针：
+
+`最新证据：docs/<slug>/evidence/M-03-r7.md · 通过 · 审计 #4`
+
+展开的内容——命令与结果、逐条对照表、修复说明、审计结论——写进那一轮的
+证据文件。设计文档的其它小节同样不得追加轮次记录：背景与现状写的是现状，
+方案写的是当前方案，事实变了就地改写，不要在后面接一段「实现轮 #7 记录」。
+审计结论只写进 `<slug>-audit.md` 与证据文件，不再抄进设计文档。
+
+这条有可核对的来历：三次真实运行的设计文档分别长到 335KB、323KB、230KB，
+其中约七成是逐轮追加的证据块。每个会话开场都要读它，之后每一次往返还会
+带着它。2026-09-16 的一次协议失败也出在这里——一张写在里程碑节中间的
+对比表被当成了里程碑表，整份文档读不出来，任务停摆。
+
+### 运行记录只有一行
+
+`retro.md` 每轮**一行**，固定五段，不超过 200 字：
+
+`轮次 | 里程碑 | 结果 | 证据 | 阻塞`
+
+- 轮次：`裁决 #1` / `实现 #7` / `审计 #4`
+- 结果：`设计定稿` / `待审` / `通过` / `退回 + 领域名`
+- 证据：本轮证据文件的路径
+- 阻塞：没有就写「无」
+
+叙述、理由、命令输出都在证据文件里，不在这里重复。只有任务终止时的那段
+总结可以成段。
 
 ## 设计循环
 
@@ -691,20 +738,98 @@ const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 4 -->
 
 状态只有 `开放` / `待审` / `已完成`。
 
+**`## 里程碑` 一节里只放这一张表格。** 别的表格、对比说明、逐轮证据都放到
+别处——Autome 在这一节里按位置读表，多一张表就可能读错。
+
+### 验收必须是会话自己能跑的
+
+一个里程碑的验收命令必须是本轮会话能执行、能读到结果的。需要真实鼠标、
+真实麦克风、系统授权弹窗、肉眼确认横幅或截图的结果，**不作为里程碑的验收
+条件**，写进设计文档固定小节 `## 人工验收清单`，每条一行：
+
+`- H-01 长按面板按钮 3 秒，松手后面板出现「已创建：…」`
+
+这一节只进不出。设计轮建立它，实现轮与审计轮可以往里加条目，但其中任何一条
+都不阻塞里程碑关闭、不触发轮次、不算未取证的缺陷。它由用户在按合并之前
+逐条确认。
+
+理由：一次真实运行把「端到端真机验收」做成了最后一个里程碑，它要真实鼠标和
+麦克风，会话永远拿不到证据，于是这个里程碑谁也关不上，预算耗尽仍停在那里。
+
 ## 实现循环
 
 实现轮推进**最小编号的开放里程碑**，取得通过证据后标为 `待审`，然后结束会话。
 一轮只推进一个里程碑。
 
+### 标 `待审` 之前的自审清单
+
+验收命令通过之后、把里程碑标成 `待审` 之前，实现轮必须在本轮证据文件里写下
+这四项并逐项执行：
+
+1. **情形表逐行** —— 对照设计里本里程碑的情形表或落法表，逐行列出检查与结果。
+2. **失败分支** —— 设计点名的每条失败分支各跑一个检查：拒绝授权、读盘失败、
+   超时、空输入、外部服务不可达。
+3. **全部迁移** —— 有状态机或多通道的，列出全部迁移（状态 × 事件、通道 ×
+   方向）并各跑一次，不只跑正路径那一条。
+4. **域边界** —— 有输入域声明的，跑它的边界：前导零、闰日、跨年、空串、
+   最大值、单元素。
+
+某一项不适用就写「不适用」并说明一句，不要跳过不写。
+
+这不替代审计，也不是要把审计的活提前干完。它挡的是「拿着设计就能列出来」的
+那一类漏洞：一次真实运行的 9 个实现缺陷，全部落在上面四类里，而每一个都花掉
+了一对实现轮与审计轮。
+
+### 验收结果报什么
+
+报**用例总数，以及它与上一轮基线的差**，并说明这个差是从哪来的。只报
+「通过 / 失败 / 跳过」三个数不够。
+
+证据：一次真实运行里，同一份代码的两次全量，一次 736 个用例、一次 822 个，
+两次的「跳过」都是 0——整层被跳过时这个 0 是瞎的，少掉 86 个用例它藏得住，
+用例总数藏不住。
+
+### 审计轮
+
 审计轮独立复验：自己跑验收命令，自己构造能区分错误实现的检查，不看实现轮的
-推理过程。结论二选一：
+推理过程。结论三选一：
 
 - **通过** —— 标为 `已完成`。
-- **实现缺陷** —— 退回 `开放`，`reopen` 加 1，并在 `领域` 列按稳定的行为领域
-  名归组。同一审计轮的同一领域只计一次；领域名按根因复用，不得改名规避升级。
+- **实现缺陷** —— 产品行为不符合设计或任务。退回 `开放`，`reopen` 加 1，
+  并在 `领域` 列按稳定的行为领域名归组。同一审计轮的同一领域只计一次；
+  领域名按根因复用，不得改名规避升级。
+- **验证缺口** —— 现有验收可能放过错误的实现，但当前产品实现**没有被证明
+  是错的**。审计轮当场加强验收或补检查，把临时的缺陷注入完全还原，然后立即
+  复验。复验通过则里程碑照常关闭：**不计 reopen，不退回实现轮**。
 
-实现轮数 `k` 由实现轮增加，审计轮不增加。总预算 `N` 在设计定稿时按初始里程碑
-数计算，所有里程碑共享，不设单个里程碑预算。`k` 达到 `N` 时任务停下等用户。
+三者的分界只有一条：产品行为错了没有。错了是实现缺陷；没错但证明不住是验证
+缺口；都没有是通过。代码风格、超出验收范围的健壮性、性能微优化、测试还可以
+更多，一律进 Backlog。
+
+**复现不了不等于不存在。** 审计怀疑有缺陷却复现不出来时，不得就此结案：
+要么给出「为什么复现不出来」的机制性解释，要么用时序或因果证据替代复现。
+在并发与时序问题上，「复现不了就放过」会系统性地漏报。
+
+### 审计造的检查归谁
+
+审计**发现实现缺陷**时所用的判别检查，由下一轮实现轮逐字搬进项目测试体系，
+作为这个缺陷的回归用例。搬之前先原样跑一遍复现（应为红），修复后再跑（应为
+绿），两次都记进证据文件。
+
+审计**通过**时新造的检查可以丢弃，只在审计文件里记一行：构造了什么、结果如何。
+
+审计轮不重跑前几轮留在 `.autome/output/` 里的临时检查。复验范围就三样：项目
+测试体系、本里程碑的验收命令、本轮自己新造的检查。已经闭合的缺陷由回归用例
+守住，不靠一轮一轮手工重跑——那既慢又会随轮次线性变贵，而且合并之后那些临时
+检查一个都不会留下。
+
+### 轮次与预算
+
+实现轮数 `k` 由实现轮增加，审计轮不增加。
+
+**总预算 `N` 由 Autome 计算，写在每轮 prompt 的第一行，分母以它为准。**
+不要自己按里程碑数推算，不要因为一次停顿或放行改写它。`k` 达到 `N` 时任务
+停下等用户，是否追加由用户决定。
 
 ### 收敛模式
 
@@ -735,7 +860,12 @@ prompt 里。看到这类注入时，按其中写明的处置执行：纳入的 
 
 任务结束时，`retro.md` 只记可核对的事实：终止状态和原因、设计轮数与实现轮数、
 各里程碑最终状态、各里程碑 reopen 次数与重复领域、收敛模式与关闭轮次、
-预算是否满足、未完成部分的明确阻塞。
+实现缺陷数与验证缺口数、预算是否满足、未完成部分的明确阻塞、`## 人工验收清单`
+里还没确认的条目。
+
+最后可以写不超过三条对协议本身的改进建议，每条附本次运行里的具体证据。
+这些建议是协议演进的唯一依据——协议按多次运行的复盘证据改，不按单次运行的
+局部不适改。
 "##;
 
 const RULES_README_MD: &str = r#"# 项目规则
@@ -1123,6 +1253,86 @@ mod tests {
         // The machine-read milestone format appears here too, so the design
         // round has it in front of it.
         assert!(p.contains("| ID | 状态 | 标题 | reopen | 领域 |"));
+    }
+
+    /// The seven changes of the 2026-09-16 protocol audit, each asserted by
+    /// the rule it introduced. They are text, so the test is that the text is
+    /// there — but each line below is a rule a round would otherwise have to
+    /// invent, and every one of them was invented wrongly in a real run.
+    #[test]
+    fn the_loop_protocol_carries_the_seven_changes_of_the_2026_09_16_audit() {
+        let p = LOOP_PROTOCOL_MD;
+
+        // S1 evidence leaves the design document, which grew to 230-335KB
+        // across three runs, ~70% of it appended evidence blocks.
+        assert!(p.contains("证据不写进设计文档"), "S1 missing");
+        assert!(
+            p.contains("docs/<slug>/evidence/"),
+            "S1 evidence path missing"
+        );
+        assert!(p.contains("最新证据："), "S1 pointer line missing");
+
+        // S2 one line a round in retro.md, which reached 225KB.
+        assert!(p.contains("运行记录只有一行"), "S2 missing");
+        assert!(
+            p.contains("轮次 | 里程碑 | 结果 | 证据 | 阻塞"),
+            "S2 fixed fields missing"
+        );
+
+        // S3 the implementation round self-checks the four categories that
+        // covered all nine implementation defects of the last run.
+        assert!(p.contains("标 `待审` 之前的自审清单"), "S3 missing");
+        for item in ["情形表逐行", "失败分支", "全部迁移", "域边界"] {
+            assert!(p.contains(item), "S3 self-check item `{item}` missing");
+        }
+
+        // S4 the audit's discriminating checks become regression tests, and
+        // the audit stops re-running historical matrices.
+        assert!(p.contains("审计造的检查归谁"), "S4 missing");
+        assert!(
+            p.contains("搬进项目测试体系"),
+            "S4 promotion to the test suite missing"
+        );
+        assert!(
+            p.contains("审计轮不重跑前几轮"),
+            "S4 no-re-run rule missing"
+        );
+
+        // S5 the denominator comes from the core.
+        assert!(
+            p.contains("总预算 `N` 由 Autome 计算"),
+            "S5 missing: a round guessed the factor and wrote 14/14 against the core's 35"
+        );
+
+        // S6 results only a human can observe are not milestone acceptance.
+        assert!(p.contains("验收必须是会话自己能跑的"), "S6 missing");
+        assert!(p.contains("## 人工验收清单"), "S6 section missing");
+
+        // S7 three one-line clauses.
+        assert!(p.contains("用例总数"), "S7a case-count rule missing");
+        assert!(p.contains("复现不了不等于不存在"), "S7b missing");
+        assert!(p.contains("**验证缺口**"), "S7c missing");
+        assert!(
+            p.contains("不计 reopen，不退回实现轮"),
+            "S7c must say a verification gap does not reopen"
+        );
+        assert!(
+            p.contains("结论三选一"),
+            "S7c: the audit has three verdicts"
+        );
+    }
+
+    #[test]
+    fn the_session_protocol_keeps_other_tables_out_of_the_milestone_section() {
+        // 2026-09-16: an implementation round wrote a comparison table whose
+        // header's first cell was blank, inside `## 里程碑` and 1300 lines
+        // below the milestone table. The parser read it as the milestone
+        // table and the task stopped. The parser is stricter now; the
+        // protocol says the thing that stops it being written at all.
+        assert!(
+            SESSION_PROTOCOL_MD.contains("`## 里程碑` 一节里只放这一张表格"),
+            "the session protocol must forbid a second table in the milestone section"
+        );
     }
 
     #[test]

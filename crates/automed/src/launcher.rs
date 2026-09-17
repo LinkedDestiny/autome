@@ -182,10 +182,31 @@ pub fn build_args(config: &RoleConfig) -> Vec<String> {
 // Prompt construction
 // ---------------------------------------------------------------------------
 
+/// What the core knows about the implementation budget as it starts a round.
+///
+/// Neither number is reliably derivable inside a session, and a real run
+/// proved it: the protocol said "N is the milestone count times a factor" but
+/// not which factor, so the round guessed 2 and wrote `implementation-round:
+/// 14/14` while the core had computed 35. The session then declared the budget
+/// spent, the core scheduled another round anyway, and the next session
+/// invented "the user released one more round" to explain the contradiction.
+///
+/// So the core states both numbers and the protocol says the denominator comes
+/// from here.
+pub struct BudgetLine {
+    /// The round number this session is about to run, counted per role.
+    pub round: u32,
+    /// `N`, the shared implementation budget.
+    pub limit: u32,
+}
+
 /// Everything needed to write a session's prompt.
 pub struct PromptSpec<'a> {
     pub kind: SessionKind,
     pub slug: &'a str,
+    /// Present for the two rounds of the implementation loop, which are the
+    /// only ones that reason about `k` and `N`.
+    pub budget: Option<BudgetLine>,
     /// The one-line request, for the intake session.
     pub request: &'a str,
     pub skills: &'a [String],
@@ -215,7 +236,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
             return p;
         }
         SessionKind::Role { role } => {
-            p.push_str(&role_prompt(role, spec.slug));
+            p.push_str(&role_prompt(role, spec.slug, spec.budget.as_ref()));
         }
     }
 
@@ -271,13 +292,14 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
 /// Each prompt therefore states three things and nothing else: which round
 /// this is, which files to read and write, and where the rules are. The rules
 /// themselves stay in the task file, which the intake round embedded them into.
-fn role_prompt(role: Role, slug: &str) -> String {
+fn role_prompt(role: Role, slug: &str, budget: Option<&BudgetLine>) -> String {
     let task_file = format!("docs/{slug}/{slug}-task.md");
     let design = format!("docs/{slug}/{slug}.md");
     let review = format!("docs/{slug}/{slug}-review.md");
     let adjudication = format!("docs/{slug}/{slug}-adjudication.md");
     let audit = format!("docs/{slug}/{slug}-audit.md");
     let retro = format!("docs/{slug}/retro.md");
+    let evidence_dir = format!("docs/{slug}/evidence/");
 
     let body = match role {
         Role::Plan => format!(
@@ -286,6 +308,11 @@ fn role_prompt(role: Role, slug: &str) -> String {
              它们是上一轮评审提出的问题和对这些问题的裁决，本轮必须按裁决修改设计。\n\n\
              本轮产出：更新 `{design}`。写清背景、目标与非目标、方案、风险与验证安排，\
              并把工作拆成里程碑表（格式见协议「里程碑」一节，Autome 按列读取）。\n\n\
+             两条关于验收的硬要求：\n\n\
+             - 每个里程碑的验收命令必须是会话自己能跑、能读到结果的。\
+               需要真实鼠标、麦克风、系统弹窗、肉眼看横幅的，**不做里程碑验收条件**，\
+               写进 `{design}` 的 `## 人工验收清单`，每条一行，由用户在合并前确认。\n\
+             - `## 里程碑` 一节里只放里程碑表那一张表格，别的表格和说明放到别处。\n\n\
              不要写实现代码，不要改 `{review}` 或 `{adjudication}`。"
         ),
         Role::Review => format!(
@@ -317,29 +344,66 @@ fn role_prompt(role: Role, slug: &str) -> String {
              上一轮审计退回的里程碑和原因在里面，本轮要先处理。\n\n\
              本轮产出：推进**编号最小的「开放」里程碑**，取得该里程碑验收命令的通过证据，\
              把它在里程碑表里标成 `待审`，并更新状态块的 `implementation-round`（加 1）\
-             与 `next-action`。一轮只推进一个里程碑。\
-             在 `{retro}` 追加一行本轮记录。\n\n\
+             与 `next-action`。一轮只推进一个里程碑。\n\n\
+             标 `待审` 之前，先在证据文件里写下协议「标 `待审` 之前的自审清单」的四项\
+             并逐项执行：情形表逐行、设计点名的每条失败分支、全部状态迁移、输入域边界。\
+             不适用的写「不适用」并说明一句，不要跳过不写。\
+             报验收结果时报**用例总数与上一轮基线的差**，说明差从哪来；\
+             只报通过/失败/跳过三个数不够。\n\n\
+             上一轮审计如果是靠某个检查抓到缺陷的，把那个检查**逐字搬进项目测试体系**\
+             作为回归用例：先原样跑一遍复现（红），修完再跑（绿），两次都记进证据文件。\n\n\
+             本轮的证据写进 `{evidence_dir}M-xx-r<k>.md`（命令与结果、自审清单、修复说明）；\
+             `{design}` 里该里程碑只留一行指针「最新证据：<路径> · 结论 · 轮次」，\
+             **不要把证据正文、轮次记录追加进设计文档**。\
+             在 `{retro}` 追加**一行**：`轮次 | 里程碑 | 结果 | 证据 | 阻塞`，不超过 200 字。\n\n\
              **不得把里程碑标成 `已完成`**——只有审计轮独立复验通过才能关闭它。\
-             超过 5 行的命令输出写进 `.autome/output/`，不要进任务目录。"
+             超过 5 行的命令原始输出写进 `.autome/output/`，不要进任务目录。"
         ),
         Role::Audit => format!(
             "先读 `{task_file}` 和 `{design}`，找出状态为 `待审` 的里程碑。\n\n\
              本轮产出：**独立复验**——自己跑该里程碑的验收命令，\
              自己构造能区分错误实现的检查，不要以实现轮的说法为准。\
-             结论覆盖写进 `{audit}`，并在 `{retro}` 追加一行。\n\n\
-             结论二选一：\n\n\
+             结论覆盖写进 `{audit}`，复验证据写进 `{evidence_dir}M-xx-r<k>.md`，\
+             并在 `{retro}` 追加**一行**：`轮次 | 里程碑 | 结果 | 证据 | 阻塞`。\
+             **不要把审计结论抄进 `{design}`。**\n\n\
+             结论三选一：\n\n\
              - **通过** → 在里程碑表里标成 `已完成`。\n\
-             - **有实现缺陷** → 退回 `开放`，`reopen` 加 1，在「领域」列按稳定的行为领域名归组，\
-               并按协议「收敛模式」更新 `convergence-mode`。\n\n\
-             只以「产品行为不符合设计或任务」为缺陷。代码风格、超出验收范围的健壮性、\
+             - **实现缺陷**（产品行为不符合设计或任务）→ 退回 `开放`，`reopen` 加 1，\
+               在「领域」列按稳定的行为领域名归组，并按协议「收敛模式」更新 `convergence-mode`。\n\
+             - **验证缺口**（现有验收可能放过错误实现，但产品实现没有被证明是错的）→ \
+               当场加强验收或补检查，把临时的缺陷注入完全还原，立即复验；\
+               复验通过则里程碑照常关闭，**不计 reopen、不退回实现轮**。\n\n\
+             分界只有一条：产品行为错了没有。代码风格、超出验收范围的健壮性、\
              性能微优化、测试还可以更多等属于改进建议，写进 `{design}` 的「## Backlog」，\
-             不得据此退回实现轮。"
+             不得据此退回实现轮。\n\n\
+             **复现不了不等于不存在**：怀疑有缺陷却复现不出来时不得就此结案，\
+             要么解释清楚为什么复现不出来，要么用时序或因果证据替代复现。\n\n\
+             复验范围只有三样：项目测试体系、本里程碑的验收命令、本轮自己新造的检查。\
+             **不要重跑前几轮留在 `.autome/output/` 里的临时检查**——已闭合的缺陷由\
+             回归用例守住。本轮如果抓到实现缺陷，把用到的判别检查留在 `.autome/output/` 并\
+             在 `{audit}` 里写明路径，下一轮实现轮要把它搬进项目测试体系。"
         ),
+    };
+
+    // The denominator comes from here or it comes from a guess. See BudgetLine.
+    let budget_line = match (role, budget) {
+        (Role::Impl, Some(b)) => format!(
+            "本轮是**实现轮第 {} 轮**，实现预算 N = {}。\
+             状态块的 `implementation-round` 写 `{}/{}`——\
+             这两个数由 Autome 计算，不要自己按里程碑数推算、不要改写分母。\n\n",
+            b.round, b.limit, b.round, b.limit
+        ),
+        (Role::Audit, Some(b)) => format!(
+            "实现预算 N = {}，由 Autome 计算。预算是否用尽由 Autome 判断并停下等用户，\
+             你不需要据此终止或改写分母。\n\n",
+            b.limit
+        ),
+        _ => String::new(),
     };
 
     format!(
         "你是本任务的**{round}**。本轮在 worktree 内独立完成，完成后结束会话——\
-         **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{body}\n\n\
+         **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{budget_line}{body}\n\n\
          结束前把本轮的改动提交到当前分支（`git add` + `git commit`）。\n\
          **如果提交被拒绝——权限模式不允许、或沙箱不让写 `.git`——那不是协议失败。**\
          Autome 会在会话结束后把工作区里剩下的改动一并提交，前几轮的提交记录就是这么来的。\
@@ -875,6 +939,7 @@ mod tests {
         PromptSpec {
             kind,
             slug: "checkout-flow",
+            budget: None,
             request: "加购物车结算",
             skills,
             inject,
@@ -997,6 +1062,137 @@ mod tests {
             let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
             assert!(p.contains("git commit"), "{role}: {p}");
         }
+    }
+
+    // ---- the 2026-09-16 protocol audit ------------------------------------
+
+    fn budgeted(role: Role, round: u32, limit: u32) -> String {
+        let mut s = spec(SessionKind::Role { role }, &[], None);
+        s.budget = Some(BudgetLine { round, limit });
+        build_prompt(&s)
+    }
+
+    #[test]
+    fn the_implementation_round_is_told_which_round_it_is_and_what_n_is() {
+        // S5. The run of 2026-09-16: the protocol said N was "the milestone
+        // count times a factor" without naming the factor, the round guessed
+        // 2, wrote `implementation-round: 14/14` against the core's 35,
+        // declared the budget spent — and the core, which disagreed,
+        // scheduled another round. The next session invented "the user
+        // released one more round" to reconcile the two.
+        let p = budgeted(Role::Impl, 7, 35);
+        assert!(p.contains("实现轮第 7 轮"), "{p}");
+        assert!(p.contains("N = 35"), "{p}");
+        assert!(p.contains("`7/35`"), "the round is told what to write: {p}");
+        assert!(p.contains("不要自己按里程碑数推算"), "{p}");
+    }
+
+    #[test]
+    fn the_audit_round_is_given_n_but_not_asked_to_enforce_it() {
+        // The same run: an audit round stopped "on budget" on its own
+        // initiative. Deciding that is the core's job, and the core did not
+        // agree with the number the audit was reading.
+        let p = budgeted(Role::Audit, 4, 35);
+        assert!(p.contains("N = 35"), "{p}");
+        assert!(p.contains("你不需要据此终止"), "{p}");
+        assert!(
+            !p.contains("实现轮第 4 轮"),
+            "the audit does not increment k: {p}"
+        );
+    }
+
+    #[test]
+    fn the_three_rounds_outside_the_implementation_loop_get_no_budget_line() {
+        for role in [Role::Plan, Role::Review, Role::Adjudicate] {
+            let p = budgeted(role, 3, 35);
+            assert!(!p.contains("N = 35"), "{role} has no business with N:\n{p}");
+        }
+    }
+
+    #[test]
+    fn a_round_with_no_budget_yet_is_told_nothing_about_it() {
+        // Before the design is approved there is no N. Saying "N = 0" would
+        // be worse than saying nothing.
+        for role in Role::ALL {
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            assert!(!p.contains("实现预算 N"), "{role}: {p}");
+        }
+    }
+
+    #[test]
+    fn the_implementation_round_self_checks_before_claiming_pending() {
+        // S3. All nine implementation defects of the last run were of a kind
+        // the design already listed: state transitions, named failure
+        // branches, input-domain edges. Each cost an implementation round and
+        // an audit round to find.
+        let p = budgeted(Role::Impl, 1, 10);
+        assert!(p.contains("自审清单"), "{p}");
+        for item in ["情形表逐行", "失败分支", "状态迁移", "输入域边界"] {
+            assert!(p.contains(item), "self-check item `{item}` missing:\n{p}");
+        }
+        assert!(p.contains("用例总数"), "S7a: {p}");
+    }
+
+    #[test]
+    fn the_audit_round_has_three_verdicts_including_a_verification_gap() {
+        // S7c. 2.0 dropped the verification-gap verdict that 1.x had, and the
+        // audits kept doing it anyway — 30 gaps against 14 defects in one run
+        // — with no rule to do it under.
+        let p = budgeted(Role::Audit, 1, 10);
+        assert!(p.contains("结论三选一"), "{p}");
+        assert!(p.contains("验证缺口"), "{p}");
+        assert!(p.contains("不计 reopen、不退回实现轮"), "{p}");
+        // S7b.
+        assert!(p.contains("复现不了不等于不存在"), "{p}");
+    }
+
+    #[test]
+    fn the_audit_does_not_re_run_earlier_temporary_checks() {
+        // S4. One audit re-ran 346 + 76 + 72 checks left behind by earlier
+        // rounds. They live in `.autome/output/`, which is gitignored, so
+        // none of them survives the merge either.
+        let p = budgeted(Role::Audit, 5, 20);
+        assert!(p.contains("不要重跑前几轮"), "{p}");
+        assert!(p.contains("搬进项目测试体系"), "{p}");
+        // And the other half of the handshake: the next implementation round
+        // is the one that promotes the check.
+        let impl_p = budgeted(Role::Impl, 6, 20);
+        assert!(impl_p.contains("逐字搬进项目测试体系"), "{impl_p}");
+        assert!(impl_p.contains("回归用例"), "{impl_p}");
+    }
+
+    #[test]
+    fn both_loop_rounds_write_evidence_to_a_file_and_one_line_to_retro() {
+        // S1 and S2.
+        for role in [Role::Impl, Role::Audit] {
+            let p = budgeted(role, 2, 10);
+            assert!(
+                p.contains("docs/checkout-flow/evidence/"),
+                "{role} is not told where evidence goes:\n{p}"
+            );
+            assert!(
+                p.contains("轮次 | 里程碑 | 结果 | 证据 | 阻塞"),
+                "{role} is not given the one-line retro format:\n{p}"
+            );
+        }
+        // The design document takes a pointer, never the evidence itself.
+        let impl_p = budgeted(Role::Impl, 2, 10);
+        assert!(impl_p.contains("最新证据："), "{impl_p}");
+        assert!(impl_p.contains("不要把证据正文"), "{impl_p}");
+        let audit_p = budgeted(Role::Audit, 2, 10);
+        assert!(audit_p.contains("不要把审计结论抄进"), "{audit_p}");
+    }
+
+    #[test]
+    fn the_design_round_keeps_human_only_acceptance_out_of_the_milestones() {
+        // S6. "End-to-end acceptance on real hardware" was made the last
+        // milestone of a real run. It needs a real mouse and a real
+        // microphone, so no session could ever close it.
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Plan }, &[], None));
+        assert!(p.contains("## 人工验收清单"), "{p}");
+        assert!(p.contains("不做里程碑验收条件"), "{p}");
+        // And the parser's lesson, stated where the table is written.
+        assert!(p.contains("只放里程碑表那一张表格"), "{p}");
     }
 
     #[test]

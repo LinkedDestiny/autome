@@ -28,7 +28,14 @@
 const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const appProtocol = require('../src/app-protocol');
-const { FIXTURES, TASK_AT_MERGE, TASK_FAILED_PANEL, TASK_APPROVE_PANEL, SCREEN_IDS } = require('./fixtures');
+const {
+  FIXTURES,
+  TASK_AT_MERGE,
+  TASK_FAILED_PANEL,
+  TASK_APPROVE_PANEL,
+  TASK_UNREADABLE_DOC_PANEL,
+  SCREEN_IDS,
+} = require('./fixtures');
 
 appProtocol.registerSchemeAsPrivileged();
 
@@ -413,6 +420,31 @@ async function run() {
     );
   }
 
+  // An unparseable design document must say which line, not just that it is
+  // unparseable: the document is hundreds of KB and the user has to go edit
+  // one row of it.
+  const unreadable = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-unreadable').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    return {
+      texts: Array.from(host.querySelectorAll('.empty')).map((e) => e.textContent),
+      stones: host.querySelectorAll('.stone').length,
+    };
+  });
+  check(
+    'an unreadable status block names the offending line in the milestone card',
+    unreadable.stones === 13 &&
+      unreadable.texts.some((t) => t.includes('第 2124 行') && t.includes('读不出来')),
+    unreadable
+  );
+
   // T-07: the merge fixture's main worktree is dirty, so the button that
   // cannot succeed must not be offered as if it could.
   const mergeBlocked = await evaluate(async () => {
@@ -693,6 +725,7 @@ function fixtureInjector() {
     'task-merge': TASK_AT_MERGE,
     'task-failed': TASK_FAILED_PANEL,
     'task-approve': TASK_APPROVE_PANEL,
+    'task-unreadable': TASK_UNREADABLE_DOC_PANEL,
   });
   return `(() => {
     const blobs = ${JSON.stringify(blobs)};

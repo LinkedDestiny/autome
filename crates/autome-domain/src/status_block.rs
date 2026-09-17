@@ -296,12 +296,26 @@ enum TableRegion {
 }
 
 /// Whether a header row belongs to the milestone table. The first column is
-/// the discriminator: the milestone table's is `ID` (or `里程碑`, or blank),
-/// and every other table in this section names something else.
+/// the discriminator: the milestone table's is `ID` (or `里程碑`), and every
+/// other table in this section names something else.
+///
+/// A blank first cell used to qualify as well, as a tolerance for a milestone
+/// table written without an `ID` header. That tolerance cost a real task.
+/// Implementation round #16 of 2026-09-16 wrote a two-way comparison table
+/// whose header was `| | 启动对齐 | 运行中的通道交接 |`, 1300 lines below the
+/// milestone table and still inside the same 里程碑 section. The blank cell
+/// opened a table body, the next row's `` `loadSchedules()` `` was read as a
+/// milestone state, and the document — seven correctly parsed milestones
+/// included — was rejected as a protocol error that stopped the task.
+///
+/// A blank header cell is ordinary in a comparison table and says nothing
+/// about milestones, so it no longer qualifies. A milestone table that really
+/// does omit the header now fails as `NoMilestonesAfterDesign`, which names
+/// the actual problem instead of blaming an unrelated row.
 fn is_milestone_header(cells: &[&str]) -> bool {
     cells
         .first()
-        .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑" || c.is_empty())
+        .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑")
 }
 
 /// `d/N` — the shape both round fields use.
@@ -407,6 +421,11 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
     let mut milestones: Vec<Milestone> = Vec::new();
     let mut saw_milestone_heading = false;
+    // A document has exactly one milestone table. Once it has been read, a
+    // later table that happens to lead with `ID` is some other table — an
+    // evidence or comparison table written by a round that had no idea it was
+    // sitting in the 里程碑 section — and its rows are not milestone rows.
+    let mut seen_milestone_table = false;
     let mut backlog: Vec<BacklogItem> = Vec::new();
     let mut disputes: Vec<DisputeItem> = Vec::new();
 
@@ -532,7 +551,10 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                     // Only a separator under a header opens a body, and only
                     // the milestone table's header opens *the* body.
                     table = match table {
-                        TableRegion::AfterCandidateHeader { milestone: true } => TableRegion::Body,
+                        TableRegion::AfterCandidateHeader { milestone: true } => {
+                            seen_milestone_table = true;
+                            TableRegion::Body
+                        }
                         TableRegion::AfterCandidateHeader { milestone: false } => {
                             TableRegion::OtherTable
                         }
@@ -547,7 +569,7 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                     // The header line, or prose that happens to hold pipes.
                     // Which of the two it was is decided by the next line.
                     table = TableRegion::AfterCandidateHeader {
-                        milestone: is_milestone_header(&cells),
+                        milestone: !seen_milestone_table && is_milestone_header(&cells),
                     };
                     continue;
                 }
@@ -764,6 +786,115 @@ next-action: 继续
         let parsed = parse(doc).unwrap();
         assert_eq!(parsed.milestones.len(), 1);
         assert_eq!(parsed.milestones[0].id, "M-01");
+    }
+
+    #[test]
+    fn a_comparison_table_with_a_blank_header_is_not_the_milestone_table() {
+        // The failure of 2026-09-16, reduced. Implementation round #16 wrote
+        // this comparison table inside the 里程碑 section, far below the
+        // milestone table. Its blank first header cell used to open a
+        // milestone table body, and the row under it — whose second cell is a
+        // code span, not a state — failed the whole document and stopped the
+        // task with "里程碑表第 2124 行格式错误".
+        let doc = "\
+<!-- autome:status
+status: 实现中
+design-round: 1/15
+implementation-round: 16/35
+current-milestone: M-02
+current-milestone-reopens: 1
+convergence-mode: domain-review
+next-action: 独立复验 A12-P01 的修复
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 已完成 | 工程骨架 | 0 | |
+| M-02 | 待审 | 端到端链路 | 1 | reminder-delivery |
+
+#### 判据不同，所以新增的是一个独立的 Core 函数
+
+| | 启动对齐 | 运行中的通道交接 |
+|---|---|---|
+| 入口 | `loadSchedules()` → `alignReminders(handingOver: false)` | `refreshMode()` 的通道变化分支 |
+| 已经到点的那些 | **不补发** | **当场补送一次** |
+| 判据 | 只看 `plan` | 看 `plan` **且** 看旧队列 |
+";
+        let parsed =
+            parse(doc).expect("a blank-headed comparison table is not the milestone table");
+        assert_eq!(parsed.milestones.len(), 2);
+        assert_eq!(parsed.milestones[1].id, "M-02");
+        assert_eq!(parsed.milestones[1].state, MilestoneState::Pending);
+        assert_eq!(
+            parsed.milestones[1].reopen_domains,
+            vec!["reminder-delivery"]
+        );
+    }
+
+    #[test]
+    fn only_the_first_milestone_shaped_table_is_read() {
+        // A document has one milestone table. A later table that also leads
+        // with `ID` is something else — here a per-milestone evidence index —
+        // and reading its rows as milestones used to fail the document on a
+        // duplicate id.
+        let doc = "\
+<!-- autome:status
+status: 实现中
+design-round: 1/15
+implementation-round: 2/10
+current-milestone: M-01
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交审计
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 |
+|---|---|---|
+| M-01 | 待审 | 工程骨架 |
+
+#### 证据索引
+
+| ID | 证据文件 |
+|---|---|
+| M-01 | .autome/output/m01-evidence.txt |
+";
+        let parsed = parse(doc).expect("the second ID-led table is not the milestone table");
+        assert_eq!(parsed.milestones.len(), 1);
+        assert_eq!(parsed.milestones[0].state, MilestoneState::Pending);
+    }
+
+    #[test]
+    fn a_milestone_table_whose_header_is_blank_is_reported_as_a_missing_table() {
+        // The cost of the rule above: a milestone table that omits its `ID`
+        // header is no longer recognised. The document still fails — it must,
+        // the milestones are unreadable — but it fails by naming the missing
+        // table rather than by blaming a row in it.
+        let doc = "\
+<!-- autome:status
+status: 实现中
+design-round: 1/15
+implementation-round: 1/10
+current-milestone:
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交审计
+-->
+
+## 里程碑
+
+| | 状态 | 标题 |
+|---|---|---|
+| M-01 | 待审 | 工程骨架 |
+";
+        assert_eq!(
+            parse(doc).unwrap_err(),
+            ParseError::NoMilestonesAfterDesign,
+            "a blank header should read as 'no milestone table', not as a bad row"
+        );
     }
 
     #[test]

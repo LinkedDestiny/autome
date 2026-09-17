@@ -1223,7 +1223,8 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let repo = std::path::PathBuf::from(&project.path);
     let worktree = repo.join(".worktree").join(&task.slug);
 
-    let status = read_status_block(&worktree, &task);
+    let doc = read_status_block(&worktree, &task);
+    let status = doc.block();
     let sessions = ctx.store.list_sessions(task_id)?;
     let decisions = ctx.store.list_decisions(task_id)?;
 
@@ -1232,8 +1233,9 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "task": task_json(&task),
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
             "queue_position": queue_position(ctx, &task)?,
-            "status_block": status.as_ref().map(status_json),
-            "status_error": status.is_none(),
+            "status_block": status.map(status_json),
+            "status_error": doc.error().is_some(),
+            "status_error_detail": doc.error(),
             "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
             "decisions": decisions.iter().map(decision_json).collect::<Vec<_>>(),
             "pending_decisions": ctx.store.pending_decisions(task_id)?,
@@ -1245,15 +1247,55 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     ))
 }
 
-/// Reads the design document from the task's worktree. `None` when it does not
-/// exist yet or does not parse — the panel shows the node flow either way, and
-/// a parse failure has already failed the task through the normal path.
-fn read_status_block(
-    worktree: &std::path::Path,
-    task: &crate::store::TaskRecord,
-) -> Option<StatusBlock> {
-    let text = std::fs::read_to_string(worktree.join(task.design_doc())).ok()?;
-    status_block::parse(&text).ok()
+/// What reading the task's design document produced.
+///
+/// The two failures are kept apart because the user can only act on one of
+/// them. "Not written yet" is the normal state of a task whose design round
+/// has not run; "written but unreadable" is a defect in a specific line of a
+/// specific file, and the panel can only say which line if this type carries
+/// the message that far.
+///
+/// Collapsing both into `None` is what the panel used to get. It offered two
+/// wordings for the two cases and could never reach the second, because the
+/// flag it switched on was `status.is_none()` — true for both.
+enum DocRead {
+    /// No design document on disk yet.
+    Absent,
+    /// The document exists and `parse` rejected it. Carries the rendered
+    /// `ParseError`, which names the field or the row and line number.
+    Unreadable(String),
+    Ok(Box<StatusBlock>),
+}
+
+impl DocRead {
+    fn block(&self) -> Option<&StatusBlock> {
+        match self {
+            DocRead::Ok(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The parse failure, if that is why there is no status block. `None` both
+    /// when the document parsed and when there is no document.
+    fn error(&self) -> Option<&str> {
+        match self {
+            DocRead::Unreadable(message) => Some(message),
+            _ => None,
+        }
+    }
+}
+
+/// Reads the design document from the task's worktree. The panel shows the
+/// node flow whatever this returns; a parse failure has already failed the
+/// task through the normal path, and this is how the panel explains it.
+fn read_status_block(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> DocRead {
+    let Ok(text) = std::fs::read_to_string(worktree.join(task.design_doc())) else {
+        return DocRead::Absent;
+    };
+    match status_block::parse(&text) {
+        Ok(block) => DocRead::Ok(Box::new(block)),
+        Err(error) => DocRead::Unreadable(error.to_string()),
+    }
 }
 
 fn status_json(s: &StatusBlock) -> Value {
@@ -1314,7 +1356,7 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
         (format!("{slug}-audit.md"), "审计"),
         ("retro.md".to_string(), "运行记录"),
     ];
-    names
+    let mut out: Vec<Value> = names
         .iter()
         .filter_map(|(name, label)| {
             let path = worktree.join(&dir).join(name);
@@ -1327,7 +1369,42 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
                 "size": meta.len(),
             }))
         })
-        .collect()
+        .collect();
+
+    // The per-round evidence files. Since the 2026-09-16 audit these carry
+    // what the design document used to accumulate — the commands and their
+    // results, the self-check, the audit's independent re-verification — so
+    // leaving them out of this list would move the substance of every round
+    // somewhere the panel cannot open. Main resolves an open by matching the
+    // name against this list, and these names cannot collide with the six
+    // above.
+    let evidence = worktree.join(&dir).join("evidence");
+    if let Ok(entries) = std::fs::read_dir(&evidence) {
+        let mut found: Vec<(String, u64, String)> = entries
+            .filter_map(|e| {
+                let entry = e.ok()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.ends_with(".md") {
+                    return None;
+                }
+                let size = entry.metadata().ok()?.len();
+                Some((name, size, entry.path().to_string_lossy().into_owned()))
+            })
+            .collect();
+        // By name: the milestone-then-round shape of `M-03-r7.md` sorts into
+        // the order the work happened in.
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        out.extend(found.into_iter().map(|(name, size, absolute)| {
+            json!({
+                "name": name,
+                "label": "证据",
+                "path": format!("{dir}/evidence/{name}"),
+                "absolute": absolute,
+                "size": size,
+            })
+        }));
+    }
+    out
 }
 
 /// Applies a trigger and returns the refreshed panel.
@@ -2205,6 +2282,81 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_document_list_includes_the_per_round_evidence_files() {
+        // Since the 2026-09-16 audit the evidence lives in its own directory
+        // rather than being appended to the design document. Main resolves an
+        // open by matching a name against this list, so an evidence file that
+        // is not here is one the user cannot open from the panel.
+        let sb = Sandbox::new("docs-evidence");
+        let task = crate::store::TaskRecord {
+            id: "T-1".into(),
+            project_id: "p".into(),
+            slug: "cart".into(),
+            title: "t".into(),
+            request: "r".into(),
+            attachments: vec![],
+            doc_refs: vec![],
+            state: autome_domain::task::TaskState::Queued,
+            budget_n: None,
+            created_at: now_iso(),
+            completed_at: None,
+            merge_commit: None,
+            archived_at: None,
+        };
+        let worktree = sb.path("wt");
+        let dir = worktree.join(task.doc_dir());
+        std::fs::create_dir_all(dir.join("evidence")).unwrap();
+        std::fs::write(dir.join("cart.md"), "设计").unwrap();
+        std::fs::write(dir.join("retro.md"), "记录").unwrap();
+        // Written out of order, and one file that is not evidence at all.
+        std::fs::write(dir.join("evidence/M-02-r3.md"), "第三轮").unwrap();
+        std::fs::write(dir.join("evidence/M-01-r1.md"), "第一轮").unwrap();
+        std::fs::write(dir.join("evidence/raw.log"), "不是 markdown").unwrap();
+
+        let docs = documents(&worktree, &task);
+        let names: Vec<&str> = docs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec!["cart.md", "retro.md", "M-01-r1.md", "M-02-r3.md"]
+        );
+
+        let evidence = docs.iter().find(|d| d["name"] == "M-01-r1.md").unwrap();
+        assert_eq!(evidence["label"], "证据");
+        assert_eq!(evidence["path"], "docs/cart/evidence/M-01-r1.md");
+        // The name Main matches on must stay path-free: the write gate
+        // refuses anything path-shaped.
+        assert!(!evidence["name"].as_str().unwrap().contains('/'));
+    }
+
+    #[test]
+    fn a_task_without_an_evidence_directory_still_lists_its_documents() {
+        let sb = Sandbox::new("docs-no-evidence");
+        let task = crate::store::TaskRecord {
+            id: "T-1".into(),
+            project_id: "p".into(),
+            slug: "cart".into(),
+            title: "t".into(),
+            request: "r".into(),
+            attachments: vec![],
+            doc_refs: vec![],
+            state: autome_domain::task::TaskState::Queued,
+            budget_n: None,
+            created_at: now_iso(),
+            completed_at: None,
+            merge_commit: None,
+            archived_at: None,
+        };
+        let worktree = sb.path("wt");
+        let dir = worktree.join(task.doc_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cart-task.md"), "任务").unwrap();
+
+        let docs = documents(&worktree, &task);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["label"], "任务文件");
     }
 
     #[test]

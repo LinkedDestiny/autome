@@ -366,6 +366,7 @@ const FIXTURES = {
       milestones_total: 5,
     },
     status_error: false,
+    status_error_detail: null,
     sessions: [SESSION_RUNNING, SESSION_DONE],
     decisions: [
       {
@@ -458,10 +459,25 @@ const TASK_AT_MERGE = {
 const TASK_FAILED_PANEL = { ...FIXTURES.task, task: TASK_FAILED, changes: null };
 const TASK_APPROVE_PANEL = { ...FIXTURES.task, task: TASK_APPROVE, changes: null };
 
+/* A task stopped because its design document does not parse. The detail is the
+ * real message from 2026-09-16, when a comparison table inside the 里程碑
+ * section was read as a milestone row and the panel could only say "读不出来"
+ * about a 240KB document. */
+const TASK_UNREADABLE_DOC_PANEL = {
+  ...FIXTURES.task,
+  task: TASK_FAILED,
+  changes: null,
+  status_block: null,
+  status_error: true,
+  status_error_detail:
+    '里程碑表第 2124 行格式错误：状态 `loadSchedules()` 不是 开放 / 待审 / 已完成',
+};
+
 module.exports = {
   FIXTURES,
   TASK_AT_MERGE,
   TASK_FAILED_PANEL,
   TASK_APPROVE_PANEL,
+  TASK_UNREADABLE_DOC_PANEL,
   SCREEN_IDS: ['dash', 'projects', 'project', 'task', 'routing', 'settings', 'env', 'skills'],
 };

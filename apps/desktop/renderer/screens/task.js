@@ -334,11 +334,17 @@ function milestonesCard(status, data) {
   const card = h('div.card.card--pad.col');
   if (!status) {
     card.appendChild(cardHead('里程碑', tag('未知', 'dashed-brown')));
+    /* The core names the offending field or the offending row and its line
+     * number. Printing only "读不出来" left the user with a 240KB document and
+     * no idea which line of it to look at. */
+    const detail = data && data.status_error_detail;
     card.appendChild(
       empty(
-        data && data.status_error
-          ? '设计文档的状态块读不出来，里程碑无从得知。'
-          : '设计还没有产出里程碑。'
+        detail
+          ? `设计文档的状态块读不出来：${detail}`
+          : data && data.status_error
+            ? '设计文档的状态块读不出来，里程碑无从得知。'
+            : '设计还没有产出里程碑。'
       )
     );
     return card;
