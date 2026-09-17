@@ -1,0 +1,12 @@
+# 每轮结束"启动即结束"：拉起下一角色会话后立即结束，不等待/轮询。
+name: launch-and-return
+description: 轮末用启动脚本拉起下一会话后立即结束，不 wait/不轮询日志/不重复启动
+tags: [protocol-compliance, launch-and-return, all-at]
+runs: 3
+max_turns: 40
+timeout_seconds: 1200
+scaffold_script: ./scaffold.sh
+prompt: |
+  Please execute docs/mini-eval-task/mini-eval-task-task.md Task 1 additional task 3.
+graders:
+  - graders/launched-then-stopped.md

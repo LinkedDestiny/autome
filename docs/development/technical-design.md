@@ -24,7 +24,7 @@
 
 与 09-13 方案相比的三个结构性变化：
 
-1. **会话在 iTerm2 可见终端里运行**，不是 automed 的子进程。automed 通过启动包装脚本写出的退出标记感知会话结束。
+1. **会话在后台运行**，由启动包装脚本直接拉起，不开终端窗口。automed 通过包装脚本写出的退出标记感知会话结束。（原定在 iTerm2 可见终端里运行，2026-09-16 用户改为后台：一次 Loop 会起六个以上会话，每个都弹窗抢焦点，打断用户手上的事。包装脚本照样把 CLI 的 stdout/stderr tee 进会话日志，任务面板能打开，也可以 tail -f 跟实时输出。）
 2. **任务状态从仓库文件推导**：设计文档头部状态块、里程碑三态、Backlog 与争议项是事实来源；SQLite 只存登记、索引、台账与用户表态。
 3. **automed 独占节点转换**。Agent 不再自己启动下一个会话；每个会话结束后由 automed 依据状态块决定下一节点并启动。这使暂停、并行控制、角色开关、预算与停顿点全部可由内核执行。
 
@@ -228,7 +228,7 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 1. 解析生效配置，校验 SAME-MODEL 与技能可见性；不通过则任务进入 Failed(config)，不启动。
 2. 组装 prompt：入口语句 + 绑定技能条款「本会话必须使用技能 X、Y」+ 冲突修复或用户意见附加段（如有）。
 3. 组装命令：`run_session.sh <session-id> <role> <runtime> <model> <effort> "<prompt>"`，工作目录为任务 worktree。
-4. 通过 osascript 在 iTerm2 新标签执行；iTerm2 缺失时用 Terminal。标签标题 `autome · T-n · <角色> #<轮>`。
+4. 直接 spawn 包装脚本，stdio 全部指向 /dev/null，输出由包装脚本 tee 进会话日志。不开终端窗口、不抢焦点。（`launcher::LaunchMode` 仍保留 `Terminal` 模式，但产品里没有调用方。）
 5. 写 Session 记录，状态进入对应节点。
 
 ### 7.2 CLI 参数映射
@@ -268,7 +268,7 @@ Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为
 | Codex | `codex --version`、路径 | 同上 | `npm i -g @openai/codex` 或 Homebrew |
 | iTerm2 | `/Applications/iTerm.app` 存在与版本 | 不适用 | `brew install --cask iterm2` |
 
-安装命令通过 osascript 在可见终端执行；Homebrew 或 npm 缺失时先给出它们的安装命令。探测在应用启动、回到前台、安装或登录终端关闭后触发，结果缓存并推送事件。
+安装与登录命令通过 osascript 在可见终端执行——这两条是用户主动按的、需要看到 sudo 与登录提示，所以与会话相反，必须可见。Homebrew 或 npm 缺失时先给出它们的安装命令。探测在应用启动、回到前台、安装或登录终端关闭后触发，结果缓存并推送事件。
 
 ## 12. 技能盘点与绑定
 

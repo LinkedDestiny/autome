@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN" xml:lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Autome 2.0 需求文档</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Autome 2.0 需求文档</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#1-产品定位" id="toc-1-产品定位">1. 产品定位</a></li>
+<li><a href="#2-术语" id="toc-2-术语">2. 术语</a></li>
+<li><a href="#3-范围" id="toc-3-范围">3. 范围</a>
+<ul>
+<li><a href="#31-20-做什么" id="toc-31-20-做什么">3.1 2.0
+做什么</a></li>
+<li><a href="#32-20-不做什么" id="toc-32-20-不做什么">3.2 2.0
+不做什么</a></li>
+</ul></li>
+<li><a href="#4-功能需求" id="toc-4-功能需求">4. 功能需求</a>
+<ul>
+<li><a href="#41-项目" id="toc-41-项目">4.1 项目</a></li>
+<li><a href="#42-loop-配置" id="toc-42-loop-配置">4.2 Loop 配置</a></li>
+<li><a href="#43-任务" id="toc-43-任务">4.3 任务</a></li>
+<li><a href="#44-界面" id="toc-44-界面">4.4 界面</a></li>
+<li><a href="#45-本地环境" id="toc-45-本地环境">4.5 本地环境</a></li>
+<li><a href="#46-技能" id="toc-46-技能">4.6 技能</a></li>
+</ul></li>
+<li><a href="#5-非功能需求" id="toc-5-非功能需求">5. 非功能需求</a></li>
+<li><a href="#6-端到端验收场景" id="toc-6-端到端验收场景">6.
+端到端验收场景</a></li>
+<li><a href="#7-未决事项" id="toc-7-未决事项">7. 未决事项</a></li>
+</ul>
+</nav>
+<p>版本：v3　日期：2026-09-15　状态：定稿</p>
+<ul>
+<li>本文替代
+<code>2026-09-13-autome-2.0-greenfield-development-plan.md</code> 中
+§0–§2、§9 的产品定义。冲突处以本文为准。</li>
+<li>配套文件：技术设计
+<code>2026-09-15-autome-2.0-technical-design.md</code>；决策记录
+<code>2026-09-15-autome-2.0-project-task-ui-decisions.md</code>；交互设计稿
+<code>autome-2.0-desktop-ui.html</code>。</li>
+<li>编号规则：P 项目、C 配置、T 任务、U 界面、E 环境、S
+技能。每条需求带验收标准。</li>
+</ul>
+<h1 id="1-产品定位">1. 产品定位</h1>
+<p>Autome 2.0 是一个 macOS 桌面应用。用户在自己的 Git
+仓库上，用一句话需求驱动 Claude Code 与 Codex 按「设计 → 评审 → 裁决 →
+实现 → 审计」的 Loop
+自主完成开发。用户只在两处介入：批准设计、点合并。</p>
+<p>目标用户：单人开发者或小团队技术负责人。本机已安装 Claude Code 与
+Codex，日常使用 Git 与 iTerm2。</p>
+<p>核心价值：</p>
+<ol type="1">
+<li>多任务并行，每个任务在自己的 worktree
+里，不互相干扰，也不碰用户当前工作树。</li>
+<li>生成侧与评测侧强制使用不同模型（SAME-MODEL
+纪律），避免自产自评。</li>
+<li>人只做两件事：定方向（批准设计）、收成果（合并）。</li>
+<li>配置、规则、技能、任务文档全部随仓库走，多机同步靠 Git。</li>
+</ol>
+<h1 id="2-术语">2. 术语</h1>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>项目</td>
+<td>一个本地目录加它的 Git 仓库。Autome 的顶层管理单位。</td>
+</tr>
+<tr>
+<td>默认分支</td>
+<td>仓库默认分支（如 main）。任务分支从它切出，最终合并回它。</td>
+</tr>
+<tr>
+<td>worktree</td>
+<td><code>git worktree</code>。每个任务一个，位于项目根
+<code>.worktree/&lt;slug&gt;/</code>。</td>
+</tr>
+<tr>
+<td>任务</td>
+<td>用户输入的一句话需求及其整个生命周期。项目内编号 T-序号。</td>
+</tr>
+<tr>
+<td>角色</td>
+<td>Loop 的五个 AI 角色：设计 plan、评审 review、裁决 adjudicate、实现
+impl、审计 audit。</td>
+</tr>
+<tr>
+<td>节点</td>
+<td>任务生命周期的一步。包括五个角色节点、系统步骤和人工停顿。</td>
+</tr>
+<tr>
+<td>会话</td>
+<td>一次 CLI 进程运行。一个角色节点的一轮对应一次会话。</td>
+</tr>
+<tr>
+<td>轮次</td>
+<td>设计循环轮数 d（裁决加一）、实现循环轮数 k（实现加一）。</td>
+</tr>
+<tr>
+<td>里程碑</td>
+<td>设计文档中的 M-01…M-N，三态：开放、待审、已完成。</td>
+</tr>
+<tr>
+<td>Backlog</td>
+<td>非阻塞改进建议，等用户处置。</td>
+</tr>
+<tr>
+<td>争议项</td>
+<td>评审与设计双方复提两次后冻结的分歧，等用户裁定。</td>
+</tr>
+<tr>
+<td>停顿点</td>
+<td>任务等待用户的位置：设计定稿后、合并前。</td>
+</tr>
+<tr>
+<td>Onboarding</td>
+<td>添加项目后可跳过的引导流程。</td>
+</tr>
+<tr>
+<td>规则</td>
+<td>仓库内规定 Agent 行为的文件。</td>
+</tr>
+<tr>
+<td>技能</td>
+<td>Claude Code 与 Codex 原生技能目录中的 Skill。</td>
+</tr>
+<tr>
+<td>绑定</td>
+<td>指定某角色启动时必须使用某技能。</td>
+</tr>
+</tbody>
+</table>
+<h1 id="3-范围">3. 范围</h1>
+<h2 id="31-20-做什么">3.1 2.0 做什么</h2>
+<ul>
+<li>项目的添加、初始化、Onboarding、配置、归档。</li>
+<li>任务的创建、并行调度、五角色 Loop、两处人工停顿、rebase
+与手动合并、归档。</li>
+<li>全局与项目两级 Loop 配置，五角色的
+CLI、模型、Effort、启用、技能绑定。</li>
+<li>本地环境四项检测与一键安装。</li>
+<li>技能只读盘点与角色绑定。</li>
+<li>桌面端九块屏幕。</li>
+</ul>
+<h2 id="32-20-不做什么">3.2 2.0 不做什么</h2>
+<ul>
+<li>不做 09-13
+方案中的任务契约、任务图、要求覆盖矩阵、证据收据、证书、交付演练、交付核对。</li>
+<li>不自动合并，不推送远端，不发 PR。</li>
+<li>不内嵌终端，不展示会话实时输出流。</li>
+<li>不做技能市场、隔离审计、技能库。</li>
+<li>不显示 token 与金额，不做统计报表。</li>
+<li>不做跨项目的并行上限，只做项目内并行控制。</li>
+<li>不做运行中「纠偏」输入。</li>
+<li>不支持 Windows 与 Linux，不做多用户。</li>
+</ul>
+<h1 id="4-功能需求">4. 功能需求</h1>
+<h2 id="41-项目">4.1 项目</h2>
+<p><strong>P-01 添加项目。</strong>
+用户选择一个目录。目录不存在则创建；不是 Git 仓库则执行
+<code>git init</code>，默认分支 main。 验收：对空目录执行添加后，目录是
+Git 仓库，<code>.gitignore</code> 含 <code>.worktree/</code> 与
+<code>.autome/output/</code>，存在 <code>.autome/</code>
+脚手架，且默认分支上有一个 init commit。</p>
+<p><strong>P-02 选择即受信。</strong>
+添加项目没有单独的「确认受信」步骤。
+验收：添加流程中不出现受信确认界面。</p>
+<p><strong>P-03 默认分支识别。</strong>
+以仓库默认分支为任务基线与合并目标。 验收：对默认分支为 master
+的仓库，任务分支从 master 切出并合并回 master。</p>
+<p><strong>P-04 项目并行。</strong> 每个项目有并行上限，默认取全局默认值
+3，最大 5。超出的任务自动排队，按提交顺序启动。 验收：并行 3
+的项目提交第 4 个任务时，任务显示「排队
+#1」；任一任务释放槽位后它自动启动。</p>
+<p><strong>P-05 worktree。</strong> 每个任务一个 worktree，路径
+<code>.worktree/&lt;slug&gt;/</code>，分支
+<code>autome/&lt;slug&gt;</code>。合并或取消后删除 worktree 与分支。
+验收：运行中任务的 worktree 存在；合并后 <code>git worktree list</code>
+不含该任务，分支已删除。</p>
+<p><strong>P-06 项目意图。</strong> 不单独维护产品意图。Agent 从
+AGENTS.md、项目画像与 docs/ 获得项目背景。
+验收：项目页没有意图编辑入口。</p>
+<p><strong>P-07 项目列表。</strong>
+每张项目卡显示名称、目录、默认分支、运行中数量、等待我数量、异常标记。Onboarding
+未完成的项目显示「继续 Onboarding」。 验收：见设计稿「我的项目」屏。</p>
+<p><strong>P-08 移除项目。</strong> 从 Autome
+移除登记，不删除目录、不改仓库内容。存在运行中任务时拒绝移除。
+验收：移除后目录与 <code>.autome/</code> 原样保留。</p>
+<h2 id="42-loop-配置">4.2 Loop 配置</h2>
+<p><strong>C-01 初始化。</strong> 添加项目后自动写入
+<code>.autome/</code>
+脚手架：项目配置、启动脚本、会话技能说明、规则目录。幂等，重复执行不覆盖用户改动。
+验收：连续两次初始化，第二次不修改已存在文件。</p>
+<p><strong>C-02 Onboarding。</strong> 五步：选目录并 init、Claude Code
+起草项目画像与 AGENTS.md、用户在应用内确认或编辑、从全局默认复制 Loop
+配置供修改、完成。任何一步可跳过剩余步骤。Claude Code 在 iTerm2
+可见终端中运行；空目录时向用户提问项目定位。
+验收：跳过后项目立即可建任务并使用全局默认配置；完成后仓库中存在
+<code>docs/agent-project-profile.md</code> 与 AGENTS.md。</p>
+<p><strong>C-03 init commit。</strong> init 与 Onboarding 产物由 Autome
+自动提交到默认分支。这是 Autome 唯一在默认分支上自动创建的非合并提交。
+验收：init commit 包含 <code>.autome/</code>、<code>.gitignore</code> 及
+Onboarding 产物；此后界面改配置不产生自动提交。</p>
+<p><strong>C-04 五角色字段。</strong> 每个角色可配置：启用、CLI（Claude
+Code 或 Codex）、模型、Effort（留空用 CLI 默认）、绑定的技能。
+验收：路由图节点抽屉包含以上五项。</p>
+<p><strong>C-05 角色开关。</strong>
+每个角色单独开关。评审关闭时裁决无输入，自动跳过；审计关闭时实现节点的「待审」视为完成。
+验收：关闭评审后任务从设计直接进入设计定稿停顿；关闭审计后里程碑全部待审即进入
+rebase。</p>
+<p><strong>C-06 SAME-MODEL 纪律。</strong>
+评审与设计、审计与实现不得使用相同的 CLI
+与模型组合。违反时保存被阻止，路由图节点标红并说明原因。
+验收：把审计改成与实现相同的组合后，保存按钮禁用，节点显示红色。</p>
+<p><strong>C-07 全局默认与项目覆盖。</strong>
+全局默认可改。项目可逐角色覆盖，项目视图只显示生效值与「恢复默认」。
+验收：项目覆盖实现角色后，其他角色随全局默认变化而变化，实现角色不变；点恢复默认后跟随全局。</p>
+<p><strong>C-08 全局可调项。</strong>
+五角色路由、项目并行默认值、设计轮次上限（默认 15）、实现预算系数（默认
+5，N = 系数 × 初始里程碑数）。终端固定 iTerm2。
+验收：全局设置页只有这些可调项。</p>
+<p><strong>C-09 改动即生效。</strong>
+配置改动在下一个启动的会话生效，正在运行的会话不打断。
+验收：运行中任务改模型后，当前会话继续，下一节点使用新模型。</p>
+<p><strong>C-10 规则。</strong>
+规则是仓库内文件（AGENTS.md、<code>.autome/rules/*.md</code>）。Autome
+只列出，不在应用内编辑。
+验收：项目页显示规则文件列表；点击在编辑器中打开。</p>
+<p><strong>C-11 提交规则。</strong> 配置在项目根 <code>.autome/</code>
+随仓库提交；<code>.autome/output/</code>
+忽略。界面改配置只落盘，提交由用户自己做。任务内 Agent 不得修改
+<code>.autome/</code>。 验收：会话技能说明中含禁止修改
+<code>.autome/</code> 的条款；改配置后 <code>git status</code>
+显示未提交改动。</p>
+<h2 id="43-任务">4.3 任务</h2>
+<p><strong>T-01 输入。</strong>
+一句话需求，加可选附件与仓库内文档引用。附件复制进 worktree
+的任务目录并随分支提交。
+验收：带附件创建任务后，<code>docs/&lt;slug&gt;/attachments/</code>
+在任务分支上存在。</p>
+<p><strong>T-02 提交即启动。</strong>
+创建后不再确认。有槽位立即启动任务整理，无槽位排队。ID 为项目内
+T-序号，标题由任务整理节点生成，slug 用作分支与 worktree 名。
+验收：创建后 3 秒内任务出现在列表，状态为「任务整理」或「排队」。</p>
+<p><strong>T-03 生命周期。</strong> 节点顺序固定：</p>
+<pre><code>已接收 → 任务整理 → 设计 ⇄ 评审 ⇄ 裁决 → [设计定稿，等待批准]
+      → 实现 ⇄ 审计 → rebase → [待合并，等待手动合并] → 合并 → 清理 → 完成</code></pre>
+<p>验收：任务面板节点流按此顺序显示，当前节点高亮，两处循环显示轮次与预算。</p>
+<p><strong>T-04 设计定稿停顿。</strong>
+裁决判定设计定稿后任务停下。用户可在应用内阅读设计文档、评审、裁决记录。批准进入实现；驳回并输入意见后回到设计，重跑评审与裁决，再停。
+验收：驳回后设计轮次加一，新一轮评审的输入包含用户意见。</p>
+<p><strong>T-05 待合并停顿。</strong> rebase
+干净且审计通过后任务停下，显示分支、commit
+数、文件列表与变更统计、审计结论、rebase 状态。合并只能由用户点击触发。
+验收：不存在任何自动合并路径；点「合并到 main」前默认分支不变。</p>
+<p><strong>T-06 rebase 与冲突。</strong> 合并前 rebase
+到最新默认分支。冲突时由实现节点修复，审计再审，仍失败才等用户。
+验收：构造冲突后，任务进入实现节点并携带冲突文件列表；修复通过审计后回到待合并。</p>
+<p><strong>T-07 合并与完成。</strong>
+合并前置条件：主工作树无未提交改动、任务分支已在最新默认分支之上。不满足时合并失败并提示，不改动用户文件。合并后删除
+worktree 与分支。完成 = 已合并进默认分支。
+验收：主工作树有未提交改动时点合并，提示失败且文件未被触碰。</p>
+<p><strong>T-08 运行中干预。</strong>
+暂停：当前会话跑完后不再启动下一节点。停止：立刻结束当前会话。取消：终止任务，删除
+worktree 与分支，任务文档复制到
+<code>docs/.archive/&lt;slug&gt;/</code>。不提供纠偏输入。
+验收：暂停后当前会话进程仍在，会话结束后无新会话；停止后会话进程退出。</p>
+<p><strong>T-09 Backlog 与争议项。</strong> 面板列出所有争议项与
+Backlog。争议项选一方或写裁定；Backlog
+选纳入或忽略。表态在下一个停顿点消费：设计定稿停顿有裁定或纳入时，批准变为「带着决定再跑一轮设计」；待合并停顿纳入的
+Backlog 变为新里程碑，任务退回实现，审计后回到待合并。忽略与裁定写入
+retro。不转成新任务。 验收：待合并时纳入一条
+Backlog，任务回到实现，设计文档新增里程碑，完成后再次进入待合并。</p>
+<p><strong>T-10 失败与预算耗尽。</strong>
+情形：设计轮次耗尽、实现预算耗尽、协议失败、会话崩溃、rebase
+冲突无法解。用户可选：追加轮次继续、从某个节点重跑、取消任务。
+验收：实现预算耗尽后三个按钮可用；追加 5 轮后预算上限加 5
+并从实现节点继续。</p>
+<p><strong>T-11 进度指标。</strong> 主进度 = 里程碑已完成数 /
+总数；副指标 = 设计轮次 d/15、实现轮次 k/N。不显示 token 与金额。
+验收：任务卡与面板显示上述指标，任何位置不出现 token 或金额。</p>
+<p><strong>T-12 已完成与归档。</strong>
+项目页任务区分未完成、已完成两段。已完成任务可归档：<code>docs/&lt;slug&gt;/</code>
+移入
+<code>docs/.archive/&lt;slug&gt;/</code>，任务移出列表。可从「已归档」恢复。目录移动只落在默认分支工作树，不自动提交。
+验收：归档后列表不含该任务，<code>docs/.archive/&lt;slug&gt;/</code>
+存在；恢复后目录移回。</p>
+<p><strong>T-13 任务产物。</strong> 每个任务在
+<code>docs/&lt;slug&gt;/</code>
+下产生：任务文件、设计文档、设计评审、裁决记录、实现审计、retro。设计文档头部维护状态块，是任务状态的事实来源。
+验收：面板产物区列出六个文件；设计文档在应用内渲染。</p>
+<p><strong>T-14 会话历史。</strong> 每次会话一条记录：角色、CLI
+与模型、开始时间、时长、结果，可点开看完整日志。 验收：日志内容与
+<code>.autome/output/sessions/</code> 下的文件一致。</p>
+<h2 id="44-界面">4.4 界面</h2>
+<p><strong>U-01 导航。</strong>
+侧栏：仪表盘、项目、本地环境、技能、全局设置、最近项目。顶栏：运行中
+N、等待我 N。 <strong>U-02 仪表盘。</strong>
+只做监控：环境异常横幅（仅异常时）、「等待我」跨项目汇总、「运行中」跨项目任务卡。不做事件流、遥测、统计。
+<strong>U-03 项目列表。</strong> 见 P-07。 <strong>U-04
+项目详情。</strong> 头部信息与新建任务；仓库、Loop
+配置、规则与技能三卡；未完成与已完成两段任务卡；已完成带归档。
+<strong>U-05 新建任务抽屉。</strong>
+一句话需求、附件拖放、仓库内文档选择、并行占用与排队提示、创建并启动。
+<strong>U-06 任务面板。</strong> 头部、13
+节点流、当前会话、里程碑、原始需求、待你决定、停顿面板、产物、会话历史。停顿面板按状态显示无需操作、批准设计、合并、失败选项四种内容。
+<strong>U-07 全局设置。</strong> 默认角色路由摘要、Loop
+默认值、终端、关于。 <strong>U-08 路由图。</strong> 五角色 Loop
+图，灰色固定节点与黄色人工节点不可编辑，点角色节点开配置抽屉，顶部切换全局与项目。
+<strong>U-09 本地环境。</strong> 四项卡片与被引用情况。 <strong>U-10
+技能。</strong> 盘点卡片，含来源、可见
+CLI、绑定角色、打开目录、修改绑定。 <strong>U-11 一屏与语言。</strong>
+以 1512 × 944
+逻辑像素为基准，每屏不纵向滚动。界面全中文，只保留专有名词与标识符。</p>
+<p>验收：U-01 至 U-10 以设计稿 <code>autome-2.0-desktop-ui.html</code>
+为准；U-11 用 Playwright 逐屏测量 scrollHeight 不大于 clientHeight。</p>
+<h2 id="45-本地环境">4.5 本地环境</h2>
+<p><strong>E-01 检测项。</strong> 只检测 Git、Claude
+Code、Codex、iTerm2。每项显示存在、版本、路径；两个 CLI 加登录状态。
+<strong>E-02 一键安装。</strong>
+缺失项提供一键安装，命令在可见终端执行。iTerm2 缺失时用系统
+Terminal。Homebrew 或 npm 缺失时先提示安装它们。 <strong>E-03
+登录。</strong> 登录失效时提供「去终端登录」，打开终端执行对应 CLI
+的登录命令，完成后自动重新检测。 <strong>E-04 重新检测。</strong>
+手动按钮；应用回到前台时自动检测。 <strong>E-05 异常横幅。</strong> CLI
+缺失或登录失效时，仪表盘顶部显示红色横幅并指向本地环境页。</p>
+<p>验收：卸载 iTerm2
+后本地环境页显示缺失与一键安装；点击后终端中出现安装命令。</p>
+<h2 id="46-技能">4.6 技能</h2>
+<p><strong>S-01 盘点范围。</strong>
+<code>~/.claude/skills</code>、<code>~/.agents/skills</code>
+与各项目仓库内
+<code>.claude/skills</code>、<code>.agents/skills</code>。只读。
+<strong>S-02 可见性。</strong> 标注每个技能对 Claude Code 与 Codex
+是否可见。 <strong>S-03 绑定语义。</strong> 绑定 =
+该角色启动时必须使用此技能。未绑定的角色从全部可见技能自选。不做「只允许」限制。
+<strong>S-04 冲突阻止。</strong> 技能绑定到看不见它的 CLI
+所用角色时，保存被阻止并标红。 <strong>S-05 存储。</strong>
+绑定关系存项目根 <code>.autome/</code>，随仓库提交。 <strong>S-06
+只读。</strong> 不在应用内创建或编辑技能，只提供打开目录。</p>
+<p>验收：把只在 <code>~/.claude/skills</code> 的技能绑定给使用 Codex
+的评审角色，保存按钮禁用并显示原因。</p>
+<h1 id="5-非功能需求">5. 非功能需求</h1>
+<ul>
+<li><strong>响应</strong>：界面操作 200 毫秒内有反馈；任务状态变化 3
+秒内反映到界面。</li>
+<li><strong>安全边界</strong>：不改用户主工作树内容（除 init
+commit、用户触发的合并、归档与取消时的目录移动）；不推送远端；不自动合并；Agent
+不得修改 <code>.autome/</code>；取消任务只删 worktree 与分支。</li>
+<li><strong>可恢复</strong>：应用重启后从仓库文件与本地台账恢复任务状态；正在
+iTerm2 中运行的会话不受应用重启影响。</li>
+<li><strong>可观察</strong>：每次会话有独立日志文件；retro
+每轮追加一行。</li>
+<li><strong>数据位置</strong>：项目配置在仓库
+<code>.autome/</code>；全局默认在
+<code>~/.autome/</code>；项目登记、任务索引、会话台账在
+<code>~/Library/Application Support/Autome/</code>。</li>
+</ul>
+<h1 id="6-端到端验收场景">6. 端到端验收场景</h1>
+<ol type="1">
+<li>空目录添加项目，跳过
+Onboarding，创建任务，设计定稿停顿批准，实现审计通过，待合并，手动合并，任务完成，归档。</li>
+<li>项目并行 3，提交第 4 个任务进入排队，第 1 个完成后第 4
+个自动启动。</li>
+<li>两个任务修改同一文件，后合并者 rebase
+冲突，实现节点修复，审计通过，回到待合并。</li>
+<li>把审计改为与实现相同的模型，保存被阻止；改回后保存成功。</li>
+<li>Codex 登录失效，仪表盘出现横幅，去终端登录后横幅消失。</li>
+<li>待合并时纳入一条
+Backlog，任务退回实现并新增里程碑，完成后再次待合并。</li>
+<li>实现预算耗尽，选择追加 5 轮，任务继续并完成。</li>
+<li>主工作树有未提交改动时点合并，提示失败，文件未变。</li>
+<li>设计定稿时驳回并附意见，设计重跑一轮后再次停顿，新设计包含对意见的处理。</li>
+<li>应用重启期间一个会话在 iTerm2
+中结束，重启后任务状态正确推进到下一节点。</li>
+</ol>
+<h1 id="7-未决事项">7. 未决事项</h1>
+<ul>
+<li>任务整理节点是否开放 CLI 与模型配置。当前固定使用 Claude Code。</li>
+<li>排队任务是否需要手动调整顺序。</li>
+<li>附件大小与类型限制。</li>
+<li>应用回到前台自动检测环境的频率上限。</li>
+</ul>
+</body>
+</html>

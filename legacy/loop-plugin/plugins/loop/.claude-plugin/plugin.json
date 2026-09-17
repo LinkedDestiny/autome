@@ -1,0 +1,11 @@
+{
+  "name": "loop",
+  "displayName": "Loop Engineering",
+  "version": "0.7.0",
+  "description": "本地自动化 Loop 工程（cycle-runner 融合协议）：一句话需求 → 自驱动收敛循环「设计 → 评审/裁决 → 实现/审计」，里程碑三态机 + reopen 收敛 + 裁决记录复提追踪。运行时集中在 .autome/ 目录；生成与评测角色强制使用不同模型（SAME-MODEL 闸门）。提供初始化（含 0.6.x 迁移）、任务生成、入口启动、状态查看与紧急停止命令。",
+  "author": {
+    "name": "dannie"
+  },
+  "keywords": ["loop", "agent-orchestration", "convergence", "automation", "cycle-runner"],
+  "license": "MIT"
+}

@@ -1,0 +1,12 @@
+# AT4 审计轮：复跑门禁而非信任 closed。
+name: auditor-rerun
+description: 审计轮复验 待审 里程碑的验收命令，识别"证据实际跑不过"者退回 开放（reopen +1）
+tags: [protocol-compliance, at4, rerun]
+runs: 3
+max_turns: 40
+timeout_seconds: 1200
+scaffold_script: ./scaffold.sh
+prompt: |
+  Please execute docs/mini-eval-task/mini-eval-task-task.md Task 1 additional task 4.
+graders:
+  - graders/reopened-false-closed.md

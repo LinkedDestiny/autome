@@ -1,0 +1,15 @@
+{
+  "name": "autome",
+  "owner": {
+    "name": "dannie"
+  },
+  "description": "本地自动化 Loop 工程插件市场",
+  "plugins": [
+    {
+      "name": "loop",
+      "source": "./plugins/loop",
+      "description": "自动收敛的「方案 → 评审/裁决 → 实现/审计」双循环工程：/loop:init 初始化项目，/loop:task 生成任务，/loop:run 启动循环",
+      "keywords": ["loop", "agent-orchestration", "automation"]
+    }
+  ]
+}

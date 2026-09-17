@@ -1,0 +1,1346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Autome 2.0 · 岛屿工作台 — Electron Desktop UI Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   animal-island-ui :root tokens (docs/design-system/css-variables.md)
+   ===================================================================== */
+:root {
+  --animal-font: Nunito, 'Noto Sans SC', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  --animal-primary: #19c8b9; --animal-primary-hover: #3dd4c6; --animal-primary-active: #11a89b; --animal-primary-bg: #e6f9f6;
+  --animal-text: #794f27; --animal-text-body: #725d42; --animal-text-secondary: #9f927d; --animal-text-muted: #8a7b66; --animal-text-disabled: #c4b89e;
+  --animal-bg: #f8f8f0; --animal-bg-content: rgb(247, 243, 223); --animal-bg-secondary: #f0e8d8; --animal-bg-disabled: #f0ece2; --animal-bg-input: #fffbe7;
+  --animal-border: #c4b89e; --animal-border-hover: #a89878; --animal-border-strong: #9f927d; --animal-border-light: #e8dcc8;
+  --animal-radius-sm: 12px; --animal-radius: 18px; --animal-radius-lg: 24px; --animal-radius-pill: 50px;
+  --animal-shadow-btn: #bdaea0; --animal-shadow-input: #d4c9b4; --animal-shadow-switch: #5a9e1e;
+  --animal-shadow-sm: 0 2px 4px 0 rgba(61,52,40,.06); --animal-shadow-base: 0 3px 10px 0 rgba(61,52,40,.10); --animal-shadow-lg: 0 8px 24px 0 rgba(61,52,40,.14);
+  --animal-focus-yellow: #ffcc00; --animal-focus-yellow-d: #e0b800; --animal-sidebar-active: #b7c6e5; --animal-sidebar-hover: #d6dff0;
+  --animal-success: #6fba2c; --animal-success-active: #5a9e1e; --animal-warning: #f5c31c; --animal-warning-active: #dba90e; --animal-error: #e05a5a; --animal-error-active: #c94444;
+  --animal-ease: cubic-bezier(0.4, 0, 0.2, 1); --animal-duration-fast: .15s; --animal-duration: .25s; --animal-duration-slow: .35s;
+  /* island app-tile palette (Card color prop) */
+  --tile-pink:#f8a6b2; --tile-purple:#b77dee; --tile-blue:#889df0; --tile-yellow:#f7cd67; --tile-orange:#e59266; --tile-teal:#82d5bb; --tile-green:#8ac68a; --tile-red:#fc736d; --tile-lime:#d1da49; --tile-brown:#9a835a; --tile-peach:#e18c6f;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; font-family: var(--animal-font); font-weight: 500; font-size: 14px; line-height: 1.5; letter-spacing: .01em;
+  color: var(--animal-text-body); background: var(--animal-bg); -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+button { font-family: inherit; }
+b, strong { font-weight: 700; }
+.num { font-variant-numeric: tabular-nums; }
+.mono-ish { font-weight: 700; letter-spacing: .03em; }
+.muted { color: var(--animal-text-secondary); }
+.small { font-size: 12px; }
+.hide { display: none !important; }
+@media (max-width: 1400px) { .exec__v em { display: none; } }
+.nw { white-space: nowrap; }
+
+/* ---------- Icons (hand-drawn in the library's 48×48 / stroke 3.5 / round-cap style) ---------- */
+.ic { width: 20px; height: 20px; flex: 0 0 auto; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+.ic--sm { width: 16px; height: 16px; } .ic--lg { width: 26px; height: 26px; }
+
+/* ---------- Polka wallpaper (Background type=default) ---------- */
+.bg-dots {
+  background:
+    radial-gradient(circle, rgba(196,184,158,.15) 1.5px, transparent 1.5px) 0 0 / 28px 28px,
+    radial-gradient(circle, rgba(196,184,158,.10) 1px, transparent 1px) 7px 7px / 14px 14px,
+    var(--animal-bg);
+}
+
+/* =====================================================================
+   Electron window chrome
+   ===================================================================== */
+#window { position: fixed; inset: 0; display: grid; grid-template-rows: 54px 1fr; grid-template-columns: 224px 1fr; transition: transform .3s var(--animal-ease), filter .3s var(--animal-ease); transform-origin: 50% 40%; }
+#window.recessed { transform: translateY(24px) scale(.96); filter: brightness(.85) saturate(.9); }
+
+.titlebar { grid-column: 1 / -1; display: grid; grid-template-columns: 224px 1fr auto; align-items: center; background: var(--animal-bg-content); border-bottom: 2px solid var(--animal-border); -webkit-app-region: drag; user-select: none; }
+.titlebar__left { display: flex; align-items: center; gap: 14px; padding-left: 14px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; border: .5px solid rgba(0,0,0,.12); }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 900; font-size: 15px; color: var(--animal-text); letter-spacing: .04em; }
+.brand__mark { width: 26px; height: 26px; border-radius: 9px; background: var(--animal-primary); display: grid; place-items: center; color: #fff9e3; box-shadow: 0 3px 0 0 var(--animal-primary-active); }
+.brand__mark .ic { width: 16px; height: 16px; stroke: #fff9e3; }
+
+/* Global execution bar — 当前运行 / 等待我 / 排队 N */
+.execbar { display: flex; align-items: center; gap: 8px; justify-content: center; -webkit-app-region: no-drag; }
+.exec { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px 0 10px; border-radius: 50px; border: 2px solid var(--animal-border); background: var(--animal-bg); color: var(--animal-text-body); cursor: pointer; font-weight: 600; font-size: 13px; transition: all .25s var(--animal-ease); box-shadow: var(--animal-shadow-sm); }
+.exec:hover { transform: translateY(-1px); box-shadow: var(--animal-shadow-base); border-color: var(--animal-border-hover); }
+.exec:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.exec__k { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; letter-spacing: .06em; padding: 2px 8px; border-radius: 50px; white-space: nowrap; flex: 0 0 auto; }
+.exec--run .exec__k { background: var(--animal-primary); color: #fff9e3; }
+.exec--wait .exec__k { background: var(--animal-warning); color: #5a4300; }
+.exec--queue .exec__k { background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+.exec__v { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exec__v em { font-style: normal; color: var(--animal-text-secondary); font-weight: 600; }
+.exec .pulse { width: 8px; height: 8px; border-radius: 50%; background: #fff9e3; box-shadow: 0 0 0 0 rgba(255,249,227,.6); animation: pulse 1.6s var(--animal-ease) infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,249,227,.7);} 70% { box-shadow: 0 0 0 6px rgba(255,249,227,0);} 100% { box-shadow: 0 0 0 0 rgba(255,249,227,0);} }
+
+.titlebar__right { display: flex; align-items: center; gap: 10px; padding-right: 16px; -webkit-app-region: no-drag; }
+.corepill { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; height: 30px; padding: 0 12px; border-radius: 50px; background: var(--animal-bg); border: 2px solid var(--animal-border-light); font-size: 12px; font-weight: 700; color: var(--animal-text-muted); }
+.corepill .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--animal-success); box-shadow: inset 0 -1px 0 rgba(0,0,0,.15); }
+body.offline .corepill .dot { background: var(--animal-error); }
+
+/* Sidebar */
+.sidebar { display: flex; flex-direction: column; background: var(--animal-bg-content); border-right: 2px solid var(--animal-border); padding: 16px 12px 14px; }
+.nav { display: flex; flex-direction: column; gap: 6px; }
+.nav__item { display: flex; align-items: center; gap: 11px; height: 44px; padding: 0 12px 0 12px; border-radius: 14px; border: 2px solid transparent; background: transparent; color: var(--animal-text-muted); font-weight: 700; font-size: 14px; cursor: pointer; text-align: left; transition: all .2s var(--animal-ease); letter-spacing: .02em; }
+.nav__item:hover { background: var(--animal-sidebar-hover); color: var(--animal-text); }
+.nav__item.active { background: var(--animal-sidebar-active); color: var(--animal-text); border-color: rgba(121,79,39,.08); }
+.nav__item:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.nav__item .ic { width: 22px; height: 22px; }
+.nav__badge { margin-left: auto; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 50px; display: grid; place-items: center; font-size: 11px; font-weight: 800; background: var(--animal-warning); color: #5a4300; }
+.nav__badge--soft { background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+.sidebar__sec { margin: 22px 0 8px 12px; font-size: 11px; font-weight: 800; letter-spacing: .12em; color: var(--animal-text-secondary); text-transform: uppercase; }
+.recent { display: flex; flex-direction: column; gap: 4px; }
+.recent__item { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px; border-radius: 12px; font-size: 13px; font-weight: 600; color: var(--animal-text-muted); cursor: pointer; border: none; background: transparent; text-align: left; transition: all .2s var(--animal-ease); }
+.recent__item:hover { background: var(--animal-sidebar-hover); color: var(--animal-text); }
+.recent__item .sw { width: 12px; height: 12px; border-radius: 4px; flex: 0 0 auto; }
+.sidebar__foot { margin-top: auto; padding-top: 14px; border-top: 2px dashed var(--animal-border-light); font-size: 11px; color: var(--animal-text-secondary); line-height: 1.7; }
+.sidebar__foot b { color: var(--animal-text-muted); }
+.linkbtn { background: none; border: none; padding: 0; color: var(--animal-primary-active); font-weight: 700; cursor: pointer; font-size: 11px; }
+.linkbtn:hover { text-decoration: underline; }
+
+/* Main */
+.main { position: relative; overflow: auto; }
+.screen { display: none; padding: 26px 30px 60px; min-height: 100%; }
+.screen.active { display: block; }
+.offline-banner { display: none; align-items: center; gap: 10px; margin: 0 0 18px; padding: 10px 16px; border-radius: 18px; border: 2px solid var(--animal-error); background: #fbe0e0; color: #8c2f2f; font-weight: 700; }
+body.offline .offline-banner { display: flex; }
+body.offline .btn--primary, body.offline .btn--danger, body.offline .btn--yellow, body.offline .write { opacity: .45; pointer-events: none; filter: saturate(.4); }
+
+/* =====================================================================
+   Components — hand-rolled to the pixel specs
+   ===================================================================== */
+/* Button */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 45px; padding: 0 20px; font-size: 14px; font-weight: 600; line-height: 1; letter-spacing: .02em; border-radius: 50px; border: 2px solid var(--animal-border); background: var(--animal-bg-content); color: var(--animal-text); cursor: pointer; white-space: nowrap; box-shadow: var(--animal-shadow-sm); transition: all .25s var(--animal-ease); user-select: none; }
+.btn:hover { color: var(--animal-primary); border-color: var(--animal-primary); box-shadow: var(--animal-shadow-base); transform: translateY(-1px); }
+.btn:active { color: var(--animal-primary-active); border-color: var(--animal-primary-active); transform: translateY(0); box-shadow: var(--animal-shadow-sm); }
+.btn:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+.btn--sm { height: 32px; padding: 0 16px; font-size: 12px; border-radius: 12px; }
+.btn--lg { height: 48px; padding: 0 32px; font-size: 16px; border-radius: 24px; }
+.btn--primary { color: #794f27; background: #f8f8f0; border-color: #f8f8f0; box-shadow: 0 5px 0 0 #bdaea0; }
+.btn--primary:hover { color: #794f27; border-color: #f8f8f0; transform: translateY(-1px); box-shadow: 0 6px 0 0 #bdaea0; }
+.btn--primary:active { color: #794f27; border-color: #f8f8f0; transform: translateY(2px); box-shadow: 0 1px 0 0 #bdaea0; }
+.btn--danger { color: #fff; background: var(--animal-error); border-color: var(--animal-error); box-shadow: 0 5px 0 0 #c94444; }
+.btn--danger:hover { color: #fff; border-color: var(--animal-error); transform: translateY(-1px); box-shadow: 0 6px 0 0 #c94444; }
+.btn--danger:active { color: #fff; transform: translateY(2px); box-shadow: 0 1px 0 0 #c94444; }
+.btn--yellow { color: rgba(114,93,66,1); background: #ffcc00; border-color: #ffcc00; box-shadow: none; height: 40px; padding: 0 24px; font-size: 16px; }
+.btn--yellow:hover { color: rgba(114,93,66,1); background: rgba(255,204,0,.85); border-color: rgba(255,204,0,.85); transform: none; box-shadow: none; }
+.btn--text { background: transparent; border-color: transparent; box-shadow: none; }
+.btn--text:hover { background: rgba(25,200,185,.08); box-shadow: none; transform: none; }
+.btn--dashed { border-style: dashed; }
+.btn--loading { color: #fff; background: #0ec4b6; border: 4px solid #4de2da; background-image: repeating-linear-gradient(-45deg, #0ec4b6, #0ec4b6 10px, #01b0a7 10px, #01b0a7 20px); background-size: 28.28px 28.28px; animation: animal-btn-loading 1s linear infinite; box-shadow: none; pointer-events: none; }
+@keyframes animal-btn-loading { 0% { background-position: 0 0; } 100% { background-position: -28.28px 0; } }
+.btn .ic { width: 18px; height: 18px; }
+
+/* Card */
+.card { position: relative; border-radius: 20px; background: var(--animal-bg-content); padding: 16px 24px; color: var(--animal-text-body); font-weight: 500; transition: all .3s ease; }
+.card--hoverable { cursor: pointer; } .card--hoverable:hover { transform: translateY(-2px); }
+.card--dashed { border: 2px dashed #e8dcc8; background: rgb(250,248,242); }
+.card--dashed.card--hoverable:hover { transform: none; border-color: #d4c4a8; }
+.card--bordered { border: 2px solid var(--animal-border-strong); }
+.card--pattern { border: 1.5px solid; }
+.card--pattern-default { background: radial-gradient(circle, rgba(196,184,158,.15) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(196,184,158,.1) 1px, transparent 1px) 7px 7px/14px 14px, rgb(247,243,223); border-color: #d4c4a8; color: #725d42; }
+.card--pattern-pink   { background: radial-gradient(circle, rgba(248,166,178,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(255,200,210,.12) 1px, transparent 1px) 7px 7px/14px 14px, #fde4e8; border-color: #f8a6b2; color: #a85565; }
+.card--pattern-purple { background: radial-gradient(circle, rgba(183,125,238,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(210,180,255,.12) 1px, transparent 1px) 7px 7px/14px 14px, #f0e8ff; border-color: #b77dee; color: #6f4aa8; }
+.card--pattern-blue   { background: radial-gradient(circle, rgba(136,157,240,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(180,195,255,.12) 1px, transparent 1px) 7px 7px/14px 14px, #e8edff; border-color: #889df0; color: #4f5fb0; }
+.card--pattern-yellow { background: radial-gradient(circle, rgba(247,205,103,.22) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(255,225,150,.14) 1px, transparent 1px) 7px 7px/14px 14px, #fff8e0; border-color: #f7cd67; color: #8a6a10; }
+.card--pattern-orange { background: radial-gradient(circle, rgba(229,146,102,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(255,190,160,.12) 1px, transparent 1px) 7px 7px/14px 14px, #fff0e8; border-color: #e59266; color: #a0522d; }
+.card--pattern-teal   { background: radial-gradient(circle, rgba(130,213,187,.2) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(170,235,210,.12) 1px, transparent 1px) 7px 7px/14px 14px, #e8faf5; border-color: #82d5bb; color: #2e8a6e; }
+.card--pattern-green  { background: radial-gradient(circle, rgba(138,198,138,.2) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(180,225,180,.12) 1px, transparent 1px) 7px 7px/14px 14px, #e8f5e8; border-color: #8ac68a; color: #3f7a3f; }
+.card--pattern-red    { background: radial-gradient(circle, rgba(252,115,109,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(255,180,175,.12) 1px, transparent 1px) 7px 7px/14px 14px, #ffe8e8; border-color: #fc736d; color: #b0413a; }
+.card--pattern-brown  { background: radial-gradient(circle, rgba(154,131,90,.18) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(200,180,140,.12) 1px, transparent 1px) 7px 7px/14px 14px, #f5f0e0; border-color: #9a835a; color: #6b5a3a; }
+.card--tile { color: #fff; border: none; }
+.card--tile-blue { background: var(--tile-blue); } .card--tile-teal { background: var(--tile-teal); } .card--tile-yellow { background: var(--tile-yellow); color: #725d42; } .card--tile-pink { background: var(--tile-pink); } .card--tile-purple { background: var(--tile-purple); } .card--tile-orange { background: var(--tile-orange); } .card--tile-green { background: var(--tile-green); }
+
+/* Title — ribbon banner, `layer` variant (双层纸) */
+.ribbon { --rf:#27d039; --rb:#20992a; --rk:#115017; --rt:#fff; position: relative; display: inline-flex; align-items: center; height: 2.1em; font-size: 17px; font-weight: 800; transition: transform .2s ease; margin: 0; }
+.ribbon:hover { transform: scale(1.06); }
+.ribbon::before { content: ''; position: absolute; left: -.26em; top: -.3em; right: .65em; bottom: 0; background: var(--rb); border-radius: .35em; z-index: 0; }
+.ribbon__front { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; height: 2.1em; padding: 0 1.55em; border-radius: .35em; color: var(--rt); background: var(--rf); box-shadow: 0 .1em .16em rgba(0,0,0,.08); letter-spacing: .04em; font-weight: 900; white-space: nowrap; text-shadow: 0 .05em .1em rgba(0,0,0,.12); padding-top: .11em; }
+.ribbon--sm { font-size: 13px; }
+.ribbon--teal   { --rf:#19c8b9; --rb:#11a89b; --rk:#0b6f66; --rt:#fff; }
+.ribbon--yellow { --rf:#f7cd67; --rb:#d4a030; --rk:#8a6010; --rt:#725d42; }
+.ribbon--purple { --rf:#b77dee; --rb:#9050d0; --rk:#5a1a9a; --rt:#fff; }
+.ribbon--blue   { --rf:#889df0; --rb:#5f78d8; --rk:#2f3f8a; --rt:#fff; }
+.ribbon--orange { --rf:#e59266; --rb:#c26a3c; --rk:#7a3a14; --rt:#fff; }
+.ribbon--pink   { --rf:#f8a6b2; --rb:#e07a8a; --rk:#8f3644; --rt:#fff; }
+.ribbon--brown  { --rf:#9a835a; --rb:#7a6440; --rk:#463620; --rt:#fff; }
+/* Title — `tab` variant (折角便签) */
+.tabnote { --rf:#f7cd67; --rk:#8a6010; --rt:#725d42; position: relative; display: inline-flex; align-items: center; justify-content: center; height: 2em; padding: 0 1.5em; border-radius: .32em; color: var(--rt); background: linear-gradient(135deg, transparent .9em, var(--rf) .9em); filter: drop-shadow(0 .1em .16em rgba(0,0,0,.08)); font-size: 12px; font-weight: 900; letter-spacing: .04em; white-space: nowrap; text-shadow: 0 .05em .1em rgba(0,0,0,.12); }
+.tabnote::after { content: ''; position: absolute; right: 0; bottom: 0; border-style: solid; border-width: 0 0 .9em .9em; border-color: transparent transparent var(--rk) transparent; }
+
+/* Tabs */
+.tabs { background: var(--animal-bg-content); border-radius: 20px; border: 2px solid var(--animal-border-strong); overflow: hidden; }
+.tablist { display: flex; gap: 4px; padding: 12px; background: rgba(255,255,255,.6); border-bottom: 2px solid var(--animal-border); align-items: center; }
+.tab { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 14px; background: transparent; border: none; border-radius: 50px; cursor: pointer; font-size: 14px; font-weight: 500; color: #8a7b66; transition: all .2s ease; }
+.tab:hover { background: rgba(25,200,185,.1); color: #725d42; }
+.tab.active { background: #0cc0b5; color: #fff9e3; font-weight: 600; }
+.tab:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.tab .cnt { font-size: 11px; font-weight: 800; padding: 1px 7px; border-radius: 50px; background: rgba(114,93,66,.12); }
+.tab.active .cnt { background: rgba(255,249,227,.25); }
+.tab .leaf { position: absolute; right: -6px; top: -3px; width: 12px; height: 12px; animation: leafWiggle 2s ease-in-out infinite; color: var(--animal-success); }
+@keyframes leafWiggle { 0%,100% { transform: rotate(0);} 25% { transform: rotate(-10deg);} 75% { transform: rotate(10deg);} }
+.tabpanel { display: none; padding: 24px; }
+.tabpanel.active { display: block; animation: fadeIn .25s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: translateY(0);} }
+.tablist__spacer { flex: 1; }
+.tablist__meta { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; padding-right: 6px; }
+
+/* Tag (pill, 12-colour palette) */
+.tag { box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; font-size: 12px; line-height: 1; font-weight: 600; border-radius: 999px; border: 1.5px solid transparent; transition: all .2s ease; user-select: none; white-space: nowrap; background: rgb(247,243,223); color: #8f734f; border-color: #d4c4a8; }
+.tag--md { height: 32px; padding: 0 12px; font-size: 14px; }
+.tag--outlined { background: transparent; border-color: #c4b89e; }
+.tag--dashed { background: transparent; border-color: #c4b89e; border-style: dashed; }
+.tag--soft { background: #f5f0e6; border-color: transparent; }
+.tag--solid-teal { background: #82d5bb; border-color: #82d5bb; color: #fff; }
+.tag--solid-green { background: #8ac68a; border-color: #8ac68a; color: #fff; }
+.tag--solid-yellow { background: #f7cd67; border-color: #f7cd67; color: #fff; }
+.tag--solid-red { background: #fc736d; border-color: #fc736d; color: #fff; }
+.tag--solid-blue { background: #889df0; border-color: #889df0; color: #fff; }
+.tag--solid-purple { background: #b77dee; border-color: #b77dee; color: #fff; }
+.tag--solid-orange { background: #e59266; border-color: #e59266; color: #fff; }
+.tag--solid-brown { background: #9a835a; border-color: #9a835a; color: #fff; }
+.tag--solid-pink { background: #f8a6b2; border-color: #f8a6b2; color: #fff; }
+.tag--soft-teal { background: #e0f2f1; color: #00695c; border-color: transparent; }
+.tag--soft-green { background: #e8f5e9; color: #2e7d32; border-color: transparent; }
+.tag--soft-yellow { background: #fff8e1; color: #f9a825; border-color: transparent; }
+.tag--soft-red { background: #ffebee; color: #c62828; border-color: transparent; }
+.tag--soft-blue { background: #e6f0ff; color: #1565c0; border-color: transparent; }
+.tag--soft-purple { background: #f3e5f5; color: #7b1fa2; border-color: transparent; }
+.tag--soft-orange { background: #fff3e0; color: #e65100; border-color: transparent; }
+.tag--soft-brown { background: #efebe9; color: #4e342e; border-color: transparent; }
+.tag--soft-pink { background: #fce4ec; color: #c2185b; border-color: transparent; }
+.tag--outlined-teal { background: transparent; color: #82d5bb; border-color: #82d5bb; }
+.tag--outlined-green { background: transparent; color: #8ac68a; border-color: #8ac68a; }
+.tag--outlined-red { background: transparent; color: #fc736d; border-color: #fc736d; }
+.tag--outlined-blue { background: transparent; color: #889df0; border-color: #889df0; }
+.tag--outlined-yellow { background: transparent; color: #d4a030; border-color: #f7cd67; }
+.tag--outlined-purple { background: transparent; color: #b77dee; border-color: #b77dee; }
+.tag--dashed-brown { background: transparent; color: #9a835a; border-color: #9a835a; border-style: dashed; }
+.tag .ic { width: 13px; height: 13px; }
+.tag .spin { width: 11px; height: 11px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: animal-spin .6s linear infinite; }
+@keyframes animal-spin { to { transform: rotate(360deg); } }
+
+/* Table (dashed row rules, solid hover) */
+.tbl-wrap { background: var(--animal-bg-content); border-radius: 20px; padding: 6px; overflow-x: auto; }
+.tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
+.tbl th { text-align: left; padding: 16px 20px; font-size: 14px; font-weight: 700; color: #725d42; letter-spacing: .02em; border-bottom: 1px dashed rgb(240,232,216); white-space: nowrap; }
+.tbl td { padding: 14px 20px; font-size: 14px; font-weight: 500; color: #725d42; line-height: 1.6; border-bottom: 1px dashed rgb(240,232,216); vertical-align: top; }
+.tbl tbody tr:nth-child(even) td { background: rgba(248,248,240,.6); }
+.tbl tbody tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: #d6f0ea; color: #3d2e1e; }
+.tbl tbody tr:hover td:first-child { border-radius: 30px 0 0 30px; }
+.tbl tbody tr:hover td:last-child { border-radius: 0 30px 30px 0; }
+.tbl--compact th { padding: 12px 14px; font-size: 13px; } .tbl--compact td { padding: 10px 14px; font-size: 13px; }
+.tbl .id { font-weight: 800; color: var(--animal-text); letter-spacing: .03em; white-space: nowrap; }
+.tbl .hash { font-weight: 700; color: var(--animal-text-secondary); letter-spacing: .04em; }
+.tbl td .st { white-space: nowrap; }
+.tbl--dense th { padding: 12px 12px; font-size: 12.5px; } .tbl--dense td { padding: 10px 12px; font-size: 12.5px; }
+.screen[data-screen="env"] .two-col { grid-template-columns: minmax(0,1fr) 320px; }
+.tbl tr.dim td { color: var(--animal-text-secondary); }
+
+/* Progress (dotted pill track) */
+.progress { display: flex; align-items: center; gap: 12px; width: 100%; }
+.progress__track { position: relative; flex: 1 1 auto; min-width: 80px; height: 24px; border-radius: 999px; overflow: hidden; background: radial-gradient(circle, rgba(196,184,158,.15) 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, rgba(196,184,158,.1) 1px, transparent 1px) 7px 7px/14px 14px, #f8f8f0; box-shadow: inset 0 2px 4px rgba(114,93,66,.08); }
+.progress__track--sm { height: 14px; }
+.progress__fill { position: absolute; top: 0; left: 0; bottom: 0; width: 0; border-radius: 999px; transition: width .6s var(--animal-ease); background: linear-gradient(90deg, #82d5bb, #19c8b9); }
+.progress__fill--warn { background: linear-gradient(90deg, #f7cd67, #f5c31c); }
+.progress__fill--danger { background: linear-gradient(90deg, #fc736d, #e05a5a); }
+.progress__fill--blue { background: linear-gradient(90deg, #b7c6e5, #889df0); }
+.progress__mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--animal-warning-active); border-radius: 2px; }
+.progress__mark::after { content: '80%'; position: absolute; top: -16px; left: -12px; font-size: 10px; font-weight: 800; color: var(--animal-warning-active); }
+.progress__info { font-weight: 700; color: #725d42; white-space: nowrap; flex-shrink: 0; letter-spacing: .02em; min-width: 44px; text-align: right; }
+
+/* Switch */
+.switch { position: relative; display: inline-block; min-width: 52px; height: 28px; border: 2.5px solid #c4b89e; border-radius: 50px; background: #d4c9b4; box-shadow: inset 0 2px 4px rgba(114,93,66,.15); cursor: pointer; transition: all .25s var(--animal-ease); vertical-align: middle; }
+.switch::after { content: ''; position: absolute; width: 21px; height: 21px; top: 50%; left: 2px; transform: translateY(-50%); background: rgb(247,243,223); border: 2.5px solid #c4b89e; border-radius: 50%; transition: all .25s var(--animal-ease); }
+.switch.checked { background: #86d67a; border-color: #6fba2c; box-shadow: inset 0 2px 4px rgba(90,158,30,.2); }
+.switch.checked::after { left: calc(100% - 24px); border-color: #6fba2c; }
+.switch:focus-visible { outline: 2px solid #ffcc00; outline-offset: 2px; }
+.switch--sm { min-width: 38px; height: 20px; }
+.switch--sm::after { width: 14px; height: 14px; left: 1px; }
+.switch--sm.checked::after { left: calc(100% - 16px); }
+.switch.disabled { opacity: .5; pointer-events: none; }
+
+/* Input */
+.input { display: inline-flex; align-items: center; gap: 6px; width: 100%; height: 40px; padding: 0 18px; border-radius: 50px; background: #fffbe7; color: #8a7b66; font-weight: 500; font-size: 14px; letter-spacing: .01em; transition: all .25s var(--animal-ease); border: none; }
+.input:hover { box-shadow: 0 3px 0 0 #c4b89e; }
+.input:focus-within { box-shadow: 0 3px 0 0 #e0b800, 0 0 0 3px rgba(255,204,0,.15); }
+.input input, .input textarea { flex: 1; border: none; background: transparent; outline: none; font: inherit; color: inherit; min-width: 0; }
+.input input::placeholder, .input textarea::placeholder { color: #c4b89e; font-weight: 400; }
+.input .ic { color: #a0936e; width: 18px; height: 18px; }
+.input--area { height: auto; border-radius: 18px; padding: 12px 18px; align-items: flex-start; }
+.input--area textarea { resize: vertical; min-height: 72px; line-height: 1.6; }
+/* Select trigger */
+.select { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 120px; height: 36px; padding: 0 12px; border: 2px solid #e8dcc8; border-radius: 12px; background: #fff; color: var(--animal-text-body); font-weight: 600; font-size: 13px; cursor: pointer; transition: all .2s var(--animal-ease); }
+.select:hover { border-color: #d4c4a8; background: #fffdf7; }
+.select .chev { width: 8px; height: 8px; border-right: 2.5px solid #a0936e; border-bottom: 2.5px solid #a0936e; transform: rotate(45deg) translateY(-2px); }
+/* Checkbox (circle box + SVG check) */
+.cbx { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.cbx__box { position: relative; width: 22px; height: 22px; border: 2px solid #c4b89e; border-radius: 50%; background: rgb(247,243,223); transition: all .25s var(--animal-ease); }
+.cbx__box svg { position: absolute; top: 50%; left: 50%; width: 12px; height: 11px; transform: translate(-50%,-54%); fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 24; stroke-dashoffset: 24; transition: stroke-dashoffset .25s var(--animal-ease); }
+.cbx.checked .cbx__box { background: #19c8b9; border-color: #50b9ab; }
+.cbx.checked .cbx__box svg { stroke-dashoffset: 0; }
+
+/* Divider */
+.divider { height: 2px; margin: 18px 0; background: linear-gradient(90deg, #c4b89e 50%, transparent 50%) 0 0/12px 2px repeat-x; }
+.divider--thin { height: 1px; background: #e8dec7; }
+.divider--squiggle { height: 10px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 10' width='120' height='10'%3E%3Cpath d='M0 5 C15 0 15 0 30 5 S45 10 60 5 S75 0 90 5 S105 10 120 5' fill='none' stroke='%2319c8b9' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") 0 0/120px 10px repeat-x; }
+
+/* Collapse */
+.collapse { border-radius: 18px; border: 2px solid var(--animal-border-strong); margin-bottom: 12px; background: var(--animal-bg-content); }
+.collapse__q { display: flex; align-items: center; gap: 12px; padding: 14px 20px; cursor: pointer; font-size: 15px; font-weight: 600; user-select: none; }
+.collapse__ico { width: 28px; height: 28px; border-radius: 50%; background: var(--animal-primary); color: #fff; display: grid; place-items: center; box-shadow: 0 2px 4px rgba(25,200,185,.3); transition: transform .3s var(--animal-ease); flex: 0 0 auto; }
+.collapse__ico::after { content: ''; width: 8px; height: 8px; border-right: 3px solid #fff; border-bottom: 3px solid #fff; transform: rotate(45deg) translate(-1px,-1px); border-radius: 1px; }
+.collapse.open .collapse__ico { transform: rotate(180deg); }
+.collapse__a { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s var(--animal-ease); }
+.collapse.open .collapse__a { grid-template-rows: 1fr; }
+.collapse__a > div { overflow: hidden; }
+.collapse__body { padding: 0 20px 18px; font-size: 14px; line-height: 1.7; }
+
+/* Tooltip (default) — static demo */
+.tip { position: relative; }
+.tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translate(-50%, 4px); background: rgb(247,243,223); border: 2px solid #c4b89e; border-radius: 16px; padding: 6px 12px; max-width: 240px; width: max-content; font-size: 12px; font-weight: 500; line-height: 1.5; color: #725d42; box-shadow: var(--animal-shadow-base); opacity: 0; pointer-events: none; transition: all .2s var(--animal-ease); z-index: 100; }
+.tip:hover::after { opacity: 1; transform: translate(-50%, 0); }
+
+/* Notification */
+.notif-root { position: fixed; inset: 0; pointer-events: none; z-index: 2000; }
+.notif-root .position-topRight { position: fixed; top: 70px; right: 24px; display: flex; flex-direction: column; gap: 12px; align-items: flex-end; pointer-events: none; }
+.notif { pointer-events: auto; display: flex; align-items: flex-start; gap: 12px; width: 384px; max-width: calc(100vw - 48px); padding: 14px 16px; background: rgb(247,243,223); border: 2px solid #c4b89e; border-radius: 18px; box-shadow: 0 6px 18px rgba(61,52,40,.14); color: #725d42; animation: animal-notification-slide-from-top .25s var(--animal-ease) both; }
+.notif.leaving { animation: animal-notification-slide-out-top .25s var(--animal-ease) both; }
+.notif--success { border-color: #6fba2c; box-shadow: 0 6px 18px rgba(111,186,44,.18); } .notif--success .notif__ico { background: #e9f6d4; color: #5a9e1e; }
+.notif--info { border-color: #19c8b9; box-shadow: 0 6px 18px rgba(25,200,185,.18); } .notif--info .notif__ico { background: #e6f9f6; color: #11a89b; }
+.notif--warning { border-color: #f5c31c; box-shadow: 0 6px 18px rgba(245,195,28,.2); } .notif--warning .notif__ico { background: #fdf3c4; color: #b88a06; }
+.notif--error { border-color: #e05a5a; box-shadow: 0 6px 18px rgba(224,90,90,.18); } .notif--error .notif__ico { background: #fbe0e0; color: #c94444; }
+.notif__ico { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
+.notif__body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.notif__title { font-size: 15px; font-weight: 700; line-height: 1.4; color: #794f27; }
+.notif__desc { font-size: 13px; font-weight: 500; line-height: 1.55; color: #8a7b66; }
+.notif__close { width: 22px; height: 22px; border: none; background: transparent; color: rgba(114,93,66,.55); border-radius: 50%; font-size: 18px; line-height: 1; cursor: pointer; display: grid; place-items: center; transition: all .15s ease; }
+.notif__close:hover { background: rgba(114,93,66,.12); color: rgba(114,93,66,1); }
+@keyframes animal-notification-slide-from-top { from { opacity: 0; transform: translateY(-16px);} to { opacity: 1; transform: translateY(0);} }
+@keyframes animal-notification-slide-out-top { from { opacity: 1; transform: translateY(0);} to { opacity: 0; transform: translateY(-16px);} }
+
+/* Modal (SVG blob clip-path) */
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: none; align-items: center; justify-content: center; animation: animal-fade-in .25s ease; }
+.modal-mask.open { display: flex; }
+.modal { max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); width: 640px; animation: animal-zoom-in .3s ease; }
+.modal__clip { clip-path: url(#animal-modal-clip); background: rgb(247,243,223); color: rgb(128,115,89); padding: 48px 48px 32px; }
+.modal__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.modal__title { font-size: 28px; font-weight: 700; color: rgba(114,93,66,1); padding-bottom: 15px; margin: 0; line-height: 1.2; }
+.modal__close { width: 32px; height: 32px; font-size: 22px; color: rgba(114,93,66,.6); border-radius: 50%; border: none; background: transparent; cursor: pointer; transition: all .2s; display: grid; place-items: center; }
+.modal__close:hover { background: rgba(114,93,66,.1); color: rgba(114,93,66,1); }
+.modal__lead { font-size: 20px; font-weight: 600; line-height: 1.6; color: #8a7b66; padding-bottom: 20px; margin: 0; }
+.modal__body { font-size: 14px; font-weight: 500; color: #8a7b66; line-height: 1.6; padding-bottom: 20px; }
+.modal__foot { display: flex; gap: 12px; justify-content: flex-end; align-items: center; }
+.modal__btn { height: 40px; padding: 0 24px; font-size: 18px; border: 2px solid rgba(114,93,66,.3); border-radius: 39.81px; transition: all .2s; line-height: 1; background: transparent; color: rgba(114,93,66,1); font-weight: 600; cursor: pointer; }
+.modal__btn:hover { border-color: rgba(114,93,66,.6); background: rgba(114,93,66,.08); }
+@keyframes animal-fade-in { from { opacity: 0;} to { opacity: 1;} }
+@keyframes animal-zoom-in { from { opacity: 0; transform: scale(.92);} to { opacity: 1; transform: scale(1);} }
+.bindlist { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; font-size: 13px; padding: 12px 16px; background: rgba(255,251,231,.7); border-radius: 18px; border: 1.5px dashed #d4c4a8; }
+.bindlist dt { font-weight: 700; color: var(--animal-text-body); } .bindlist dd { margin: 0; font-weight: 600; color: var(--animal-text-secondary); letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Drawer (recessed depth-of-field, right) */
+.drawer-mask { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.18); animation: animal-fade-in .25s ease; display: none; }
+.drawer-mask.open { display: block; }
+.drawer { position: fixed; z-index: 1001; top: 0; right: 0; height: 100vh; width: 560px; max-width: calc(100vw - 32px); display: none; flex-direction: column; background: rgb(247,243,223); color: rgb(128,115,89); border-radius: 20px 0 0 20px; box-shadow: -12px 0 32px rgba(61,52,40,.18); overflow: hidden; animation: animal-drawer-slide-right .3s var(--animal-ease) both; }
+.drawer.open { display: flex; }
+@keyframes animal-drawer-slide-right { from { transform: translateX(100%);} to { transform: translateX(0);} }
+.drawer__head { display: flex; align-items: center; justify-content: space-between; padding: 24px 24px 12px; }
+.drawer__title { font-size: 28px; font-weight: 700; color: rgba(114,93,66,1); margin: 0; }
+.drawer__body { flex: 1; overflow: auto; padding: 0 24px 24px; font-size: 14px; font-weight: 500; line-height: 1.6; color: #8a7b66; }
+.drawer__foot { display: flex; gap: 12px; padding: 0 24px 24px; align-items: center; }
+</style>
+<style>
+/* =====================================================================
+   Screen-specific layout
+   ===================================================================== */
+.pagehead { display: flex; align-items: center; gap: 18px; margin: 4px 0 22px; flex-wrap: wrap; }
+.pagehead__sub { color: var(--animal-text-secondary); font-weight: 600; font-size: 13px; }
+.pagehead__actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+.sec { display: flex; align-items: center; gap: 12px; margin: 26px 0 12px; }
+.sec h3 { margin: 0; font-size: 15px; font-weight: 800; color: var(--animal-text); letter-spacing: .02em; }
+.sec .muted { font-size: 12px; }
+.sec .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.grid { display: grid; gap: 16px; }
+.grid--projects { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.grid--2 { grid-template-columns: 1fr 1fr; }
+.two-col { display: grid; grid-template-columns: minmax(0,1fr) 350px; gap: 20px; align-items: start; }
+.two-col > * { min-width: 0; }
+.grid > * { min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+.kv dt { color: var(--animal-text-secondary); font-weight: 600; white-space: nowrap; } .kv dd { margin: 0; font-weight: 600; color: var(--animal-text-body); }
+
+/* staggered reveal */
+.reveal { animation: ac-fade-up .35s var(--animal-ease) both; animation-delay: calc(var(--i, 0) * 60ms); }
+@keyframes ac-fade-up { from { opacity: 0; transform: translateY(8px);} to { opacity: 1; transform: translateY(0);} }
+
+/* Project tile */
+.ptile { min-height: 168px; display: flex; flex-direction: column; gap: 10px; padding: 18px 20px 16px; }
+.ptile__top { display: flex; align-items: center; gap: 10px; }
+.ptile__name { font-size: 18px; font-weight: 900; letter-spacing: .02em; }
+.ptile__kind { margin-left: auto; font-size: 11px; font-weight: 800; letter-spacing: .06em; padding: 3px 9px; border-radius: 50px; background: rgba(255,255,255,.55); }
+.ptile__intent { font-size: 13px; line-height: 1.55; opacity: .9; min-height: 40px; }
+.ptile__foot { margin-top: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ptile__cta { margin-left: auto; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; gap: 4px; }
+.ptile--new { align-items: center; justify-content: center; text-align: center; gap: 12px; color: var(--animal-text-muted); }
+.ptile--new .big { width: 48px; height: 48px; border-radius: 50%; border: 2.5px dashed #c4b89e; display: grid; place-items: center; color: #a89878; }
+
+/* Attention (需要我决定) */
+.attn { display: flex; gap: 14px; align-items: flex-start; padding: 14px 18px; }
+.attn__ico { width: 40px; height: 40px; border-radius: 14px; display: grid; place-items: center; flex: 0 0 auto; background: rgba(255,255,255,.6); }
+.attn__t { font-weight: 800; font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.attn__d { font-size: 13px; line-height: 1.55; margin-top: 3px; }
+.attn__a { margin-top: 10px; display: flex; gap: 8px; }
+
+/* Run phase "航线" (stepping stones) */
+.route { display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 10px 6px 14px; scrollbar-width: thin; scroll-behavior: smooth; mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); }
+.stone { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 76px; }
+.stone__dot { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid #c4b89e; background: #fffbe7; display: grid; place-items: center; transition: all .25s var(--animal-ease); }
+.stone__dot .ic { width: 12px; height: 12px; stroke-width: 5; }
+.stone__lbl { font-size: 11px; font-weight: 700; color: var(--animal-text-secondary); white-space: nowrap; }
+.stone::before { content: ''; position: absolute; top: 10px; left: 50%; width: 100%; height: 0; border-top: 2px dashed #d4c4a8; z-index: 0; }
+.stone:last-child::before { display: none; }
+.stone__dot { position: relative; z-index: 1; }
+.stone.done .stone__dot { background: var(--animal-primary); border-color: var(--animal-primary-active); color: #fff9e3; }
+.stone.done .stone__lbl { color: var(--animal-text-muted); }
+.stone.done::before { border-top-style: solid; border-color: #82d5bb; }
+.stone.now .stone__dot { background: #ffcc00; border-color: #e0b800; box-shadow: 0 0 0 0 rgba(255,204,0,.5); animation: stonepulse 1.8s var(--animal-ease) infinite; transform: scale(1.15); }
+.stone.now .stone__lbl { color: var(--animal-text); font-weight: 900; }
+@keyframes stonepulse { 0% { box-shadow: 0 0 0 0 rgba(255,204,0,.55);} 70% { box-shadow: 0 0 0 9px rgba(255,204,0,0);} 100% { box-shadow: 0 0 0 0 rgba(255,204,0,0);} }
+.axes { display: flex; gap: 10px; flex-wrap: wrap; }
+.axis { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 12px; border-radius: 50px; background: #fffbe7; border: 2px solid var(--animal-border-light); font-size: 12px; font-weight: 800; color: var(--animal-text-secondary); letter-spacing: .04em; }
+.axis .tag { height: 22px; }
+
+/* Task graph nodes */
+.nodes { display: flex; flex-direction: column; gap: 8px; }
+.node { display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 16px; background: #fffbe7; border: 2px solid var(--animal-border-light); transition: all .2s var(--animal-ease); }
+.node:hover { border-color: #d4c4a8; transform: translateY(-1px); }
+.node__idx { width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; font-weight: 900; font-size: 12px; background: var(--animal-bg-secondary); color: var(--animal-text-muted); letter-spacing: .02em; }
+.node.accepted .node__idx { background: #8ac68a; color: #fff; }
+.node.verifying .node__idx { background: #82d5bb; color: #fff; }
+.node.ready .node__idx { background: #889df0; color: #fff; }
+.node.repair .node__idx { background: #e59266; color: #fff; }
+.node.human .node__idx { background: #f7cd67; color: #725d42; }
+.node__t { font-weight: 700; font-size: 14px; color: var(--animal-text); }
+.node__m { font-size: 12px; color: var(--animal-text-secondary); display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; font-weight: 600; }
+.node__m b { color: var(--animal-text-muted); font-weight: 700; }
+.node__s { display: flex; align-items: center; gap: 8px; }
+
+/* Budget */
+.budget { display: flex; flex-direction: column; gap: 14px; }
+.budget__row { display: flex; flex-direction: column; gap: 6px; }
+.budget__lbl { display: flex; align-items: baseline; gap: 8px; font-size: 12px; font-weight: 700; color: var(--animal-text-muted); }
+.budget__lbl .v { margin-left: auto; color: var(--animal-text); font-weight: 800; letter-spacing: .02em; }
+.budget__lbl .k { padding: 1px 7px; border-radius: 50px; font-size: 10px; letter-spacing: .06em; font-weight: 800; }
+.budget__lbl .k--hard { background: #fbe0e0; color: #c94444; } .budget__lbl .k--soft { background: #fdf3c4; color: #b88a06; }
+
+/* Requirement matrix status */
+.st { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px; white-space: nowrap; }
+.st i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.st--ok i { background: var(--animal-success); } .st--run i { background: var(--animal-primary); animation: pulse2 1.4s infinite; } .st--wait i { background: #d4c9b4; } .st--fail i { background: var(--animal-error); } .st--warn i { background: var(--animal-warning); }
+@keyframes pulse2 { 0%,100% { opacity: 1;} 50% { opacity: .35;} }
+.coverage { display: flex; align-items: center; gap: 14px; }
+.coverage__big { font-size: 34px; font-weight: 900; color: var(--animal-text); line-height: 1; letter-spacing: .01em; }
+.coverage__big small { font-size: 16px; color: var(--animal-text-secondary); font-weight: 800; }
+.coverage__note { font-size: 12px; color: var(--animal-text-secondary); line-height: 1.45; max-width: 220px; font-weight: 600; }
+
+/* Original request block — immutable */
+.rawreq { position: relative; padding: 16px 20px 16px 24px; border-radius: 18px; background: #fffbe7; border: 2px solid var(--animal-border-light); font-size: 14.5px; line-height: 1.75; color: var(--animal-text-body); font-weight: 500; }
+.rawreq::before { content: ''; position: absolute; left: 10px; top: 14px; bottom: 14px; width: 4px; border-radius: 4px; background: var(--animal-warning); }
+.rawreq__meta { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* Environment table cells */
+.envc { display: inline-flex; flex-direction: column; gap: 3px; }
+.envc small { color: var(--animal-text-secondary); font-weight: 600; font-size: 11px; letter-spacing: .02em; }
+.dotst { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px; }
+.dotst::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: #d4c9b4; }
+.dotst--ok::before { background: var(--animal-success); } .dotst--warn::before { background: var(--animal-warning); } .dotst--bad::before { background: var(--animal-error); } .dotst--na::before { background: #e8dcc8; }
+
+/* Plan drawer action list */
+.plan { display: flex; flex-direction: column; gap: 10px; }
+.plan__item { display: grid; grid-template-columns: 30px 1fr; gap: 12px; padding: 12px 14px; border-radius: 16px; background: #fffbe7; border: 2px solid var(--animal-border-light); }
+.plan__n { width: 30px; height: 30px; border-radius: 10px; background: var(--animal-primary); color: #fff9e3; display: grid; place-items: center; font-weight: 900; font-size: 13px; }
+.plan__t { font-weight: 800; color: var(--animal-text); font-size: 14px; }
+.plan__meta { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 12px; margin-top: 6px; color: var(--animal-text-secondary); font-weight: 600; }
+.plan__meta b { color: var(--animal-text-muted); font-weight: 700; }
+
+/* Skill cards */
+.skill { display: grid; grid-template-columns: 44px 1fr auto; gap: 14px; align-items: start; }
+.skill__ico { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; color: #fff; }
+.skill__n { font-weight: 900; font-size: 15px; color: var(--animal-text); letter-spacing: .01em; }
+.skill__d { font-size: 13px; color: var(--animal-text-muted); margin-top: 2px; line-height: 1.5; }
+.skill__m { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+.skill__src { font-size: 12px; font-weight: 700; color: var(--animal-text-secondary); letter-spacing: .02em; }
+.skill__act { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+
+/* Config matrix */
+.matrix td .select { height: 32px; font-size: 12px; min-width: 0; padding: 0 10px; }
+.matrix .ident { display: flex; flex-direction: column; gap: 2px; font-size: 12px; font-weight: 700; color: var(--animal-text-body); }
+.matrix .ident small { color: var(--animal-text-secondary); font-weight: 600; font-size: 11px; letter-spacing: .02em; }
+.matrix .fixed td { color: var(--animal-text-secondary); }
+.srcchip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 9px; border-radius: 50px; font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+.srcchip--g { background: #e8edff; color: #4f5fb0; } .srcchip--p { background: #fff0e8; color: #a0522d; } .srcchip--s { background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+
+.impact { padding: 14px 18px; border-radius: 18px; border: 2px solid var(--animal-warning); background: #fff8e0; display: flex; gap: 12px; align-items: flex-start; }
+.impact .ic { color: #b88a06; margin-top: 2px; }
+.impact b { color: #7a5a06; }
+
+/* Evidence receipts */
+.receipt { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 12px 16px; border-radius: 16px; background: #fffbe7; border: 2px solid var(--animal-border-light); font-size: 13px; }
+.receipt__id { font-weight: 800; letter-spacing: .04em; color: var(--animal-text); }
+.receipt__row { grid-column: 1 / -1; display: flex; gap: 14px; flex-wrap: wrap; color: var(--animal-text-secondary); font-weight: 600; font-size: 12px; }
+.receipt__row b { color: var(--animal-text-muted); }
+
+/* misc */
+.hl { background: rgba(255,204,0,.28); border-radius: 6px; padding: 0 4px; }
+.warncard { background: #fff8e0; border: 2px solid var(--animal-warning); }
+.chall { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 13px; margin: 10px 0 12px; }
+.chall b { color: var(--animal-text-body); }
+code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; font-weight: 600; background: #f0e8d8; color: #5a4a30; padding: 3px 10px; border-radius: 10px; letter-spacing: 0; }
+</style>
+<style>
+/* ===== v2: card-first layout additions ===== */
+.cardgrid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.cardgrid--2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.cardgrid--3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.cardgrid--4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+.cardgrid > * { min-width: 0; }
+.span2 { grid-column: span 2; } .span3 { grid-column: span 3; }
+.card--link { cursor: pointer; } .card--link:hover { transform: translateY(-2px); }
+.card--link:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.card--pad { padding: 18px 22px 20px; }
+.card__head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.card__title { font-size: 15px; font-weight: 800; color: var(--animal-text); letter-spacing: .02em; margin: 0; }
+.card--pattern .card__title, .card--pattern .stat__n, .card--pattern .hero__title { color: inherit; }
+.card__cta { margin-top: auto; padding-top: 12px; font-size: 12px; font-weight: 800; color: var(--animal-primary-active); display: inline-flex; gap: 4px; align-items: center; align-self: flex-end; opacity: .85; transition: all .2s var(--animal-ease); }
+.card--link:hover .card__cta { opacity: 1; transform: translateX(2px); }
+.card--pattern .card__cta { color: inherit; }
+.card.col { display: flex; flex-direction: column; }
+.stat { padding: 18px 22px; display: flex; flex-direction: column; gap: 6px; min-height: 132px; }
+.stat__n { font-size: 36px; font-weight: 900; color: var(--animal-text); line-height: 1; letter-spacing: .01em; }
+.stat__n small { font-size: 15px; color: var(--animal-text-secondary); font-weight: 800; margin-left: 2px; }
+.stat__l { font-size: 13px; font-weight: 800; color: var(--animal-text-muted); }
+.stat__s { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; margin-top: auto; line-height: 1.5; }
+.hero { padding: 22px 26px 20px; }
+.hero__title { font-size: 22px; font-weight: 900; color: var(--animal-text); margin: 0; letter-spacing: .01em; line-height: 1.25; }
+.hero__sub { font-size: 13px; color: var(--animal-text-secondary); font-weight: 600; margin-top: 4px; }
+.crumb { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--animal-text-secondary); margin: 0 0 12px; }
+.crumb button { background: none; border: none; padding: 4px 9px; border-radius: 10px; color: var(--animal-text-muted); font: inherit; font-weight: 700; cursor: pointer; transition: all .2s var(--animal-ease); }
+.crumb button:hover { background: var(--animal-sidebar-hover); color: var(--animal-text); }
+.crumb b { color: var(--animal-text); padding: 4px 4px; }
+.crumb .sep { color: var(--animal-border); }
+.dots { display: flex; gap: 6px; flex-wrap: wrap; }
+.dots i { width: 20px; height: 20px; border-radius: 7px; background: #e8dcc8; display: inline-block; }
+.dots i.ok { background: #8ac68a; } .dots i.run { background: #82d5bb; animation: pulse2 1.4s infinite; } .dots i.ready { background: #889df0; } .dots i.warn { background: #f7cd67; } .dots i.bad { background: #fc736d; }
+.facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; }
+.fact { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 700; color: var(--animal-text-secondary); }
+.fact b { font-size: 12px; color: var(--animal-text-body); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.fact b::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: #d4c9b4; flex: 0 0 auto; }
+.fact.ok b::before { background: var(--animal-success); } .fact.warn b::before { background: var(--animal-warning); } .fact.bad b::before { background: var(--animal-error); } .fact.na b::before { background: #e8dcc8; }
+.corner { position: absolute; top: 14px; right: 16px; }
+.reqcard { padding: 16px 20px 16px; display: flex; flex-direction: column; gap: 8px; min-height: 150px; }
+.reqcard__id { font-size: 12px; font-weight: 900; letter-spacing: .06em; color: var(--animal-text-secondary); }
+.reqcard__t { font-size: 15px; font-weight: 700; color: var(--animal-text); line-height: 1.45; padding-right: 70px; }
+.reqcard__c { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; margin-top: auto; line-height: 1.5; }
+.nodecard { padding: 16px 20px 16px; min-height: 150px; display: flex; flex-direction: column; gap: 8px; }
+.nodecard__idx { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; font-weight: 900; font-size: 12px; background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+.nodecard.accepted .nodecard__idx { background: #8ac68a; color: #fff; } .nodecard.verifying .nodecard__idx { background: #82d5bb; color: #fff; } .nodecard.ready .nodecard__idx { background: #889df0; color: #fff; }
+.nodecard__t { font-size: 15px; font-weight: 700; color: var(--animal-text); line-height: 1.4; }
+.nodecard__m { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; line-height: 1.6; margin-top: auto; }
+.minibars { display: flex; flex-direction: column; gap: 9px; }
+.minibar { display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 10px; font-size: 12px; font-weight: 700; color: var(--animal-text-muted); }
+.minibar .v { color: var(--animal-text); font-weight: 800; white-space: nowrap; }
+.eventline { display: flex; flex-direction: column; gap: 10px; }
+.event { display: grid; grid-template-columns: 52px 1fr; gap: 10px; font-size: 13px; line-height: 1.5; }
+.event time { font-weight: 800; color: var(--animal-text-secondary); font-size: 12px; padding-top: 1px; }
+.route--hero { padding: 6px 0 10px; }
+.rawtext { font-size: 14px; line-height: 1.75; }
+.taskcard { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 150px; }
+.taskcard__id { font-size: 12px; font-weight: 900; letter-spacing: .06em; color: var(--animal-text-secondary); }
+.taskcard__t { font-size: 16px; font-weight: 800; color: var(--animal-text); }
+.pagehead--tight { margin-bottom: 14px; }
+.tilegrid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
+.ring { width: 76px; height: 76px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--animal-success) 0 62.5%, var(--animal-warning) 62.5% 87.5%, var(--animal-error) 87.5% 100%); position: relative; flex: 0 0 auto; }
+.ring::after { content: ''; position: absolute; inset: 9px; border-radius: 50%; background: var(--animal-bg-content); }
+.ring b { position: relative; z-index: 1; font-size: 18px; font-weight: 900; color: var(--animal-text); }
+.legend { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--animal-text-muted); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.quiet { color: var(--animal-text-secondary); font-size: 13px; font-weight: 600; line-height: 1.6; }
+.envcard { padding: 16px 20px 14px; min-height: 150px; }
+.envcard__n { font-size: 15px; font-weight: 800; color: var(--animal-text); }
+.envcard__v { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; margin-top: 2px; }
+.tabpanel .card:not(.card--pattern):not(.card--dashed) { border: 1.5px solid var(--animal-border-light); background: #fffbe7; }
+.matrix-note { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; margin-top: 10px; }
+</style>
+<style>
+/* ===== v3: live monitor + loop graph ===== */
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 900; letter-spacing: .08em; color: var(--animal-error); }
+.live::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--animal-error); animation: pulse2 1.2s infinite; }
+.stream { display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; max-height: 372px; overflow: auto; scrollbar-width: thin; padding-right: 2px; }
+.stream__item { display: grid; grid-template-columns: 46px 1fr; gap: 8px; padding: 8px 10px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); animation: ac-fade-up .3s var(--animal-ease) both; line-height: 1.45; color: var(--animal-text-body); }
+.stream__item time { font-weight: 800; color: var(--animal-text-secondary); font-size: 11px; padding-top: 1px; }
+.stream__item .who { font-size: 10px; font-weight: 900; letter-spacing: .06em; padding: 1px 6px; border-radius: 50px; margin-right: 6px; background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+.stream__item.verifier .who { background: #e0f2f1; color: #00695c; } .stream__item.harness .who { background: #e6f0ff; color: #1565c0; } .stream__item.auditor .who { background: #f3e5f5; color: #7b1fa2; } .stream__item.core .who { background: #f0e8d8; color: #6b5a3a; }
+.monoval { font-size: 12.5px; font-weight: 700; color: var(--animal-text-body); }
+.nowbox { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.nowbox__card { padding: 12px 14px; border-radius: 16px; background: rgba(255,251,231,.85); border: 1.5px solid rgba(255,255,255,.7); }
+.nowbox__k { font-size: 10.5px; font-weight: 900; letter-spacing: .08em; color: var(--animal-text-secondary); text-transform: uppercase; margin-bottom: 4px; }
+.nowbox__v { font-size: 14px; font-weight: 800; color: var(--animal-text); }
+.nowbox__s { font-size: 12px; font-weight: 600; color: var(--animal-text-muted); margin-top: 2px; line-height: 1.5; }
+.bigclock { font-size: 30px; font-weight: 900; color: var(--animal-text); letter-spacing: .02em; line-height: 1; }
+.repo { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12.5px; }
+.repo dt { color: var(--animal-text-secondary); font-weight: 700; white-space: nowrap; } .repo dd { margin: 0; font-weight: 700; color: var(--animal-text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal { font-size: 13px; line-height: 1.6; color: var(--animal-text-muted); font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Loop graph */
+.lgraph { position: relative; padding: 30px 12px 8px; overflow: visible; }
+.lgraph__edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.lane { position: relative; display: grid; grid-template-columns: repeat(8, minmax(0,1fr)); gap: 14px; align-items: stretch; margin-bottom: 84px; }
+.lane:last-child { margin-bottom: 6px; }
+.lane__lbl { position: absolute; right: 2px; top: -22px; font-size: 10.5px; font-weight: 900; letter-spacing: .12em; color: var(--animal-text-secondary); text-transform: uppercase; }
+.lnode { position: relative; min-width: 0; min-height: 104px; border-radius: 16px; padding: 10px 11px 9px; background: #fffbe7; border: 2px solid var(--animal-border-light); display: flex; flex-direction: column; gap: 4px; transition: all .2s var(--animal-ease); z-index: 1; }
+.lnode--ai { cursor: pointer; } .lnode--ai:hover { transform: translateY(-2px); box-shadow: var(--animal-shadow-base); }
+.lnode--ai:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
+.lnode--claude { border-color: #b7c6e5; background: #eef2ff; } .lnode--codex { border-color: #d3bff2; background: #f5efff; } .lnode--impl { border-color: #a9e3d3; background: #e8faf5; }
+.lnode--rust { background: var(--animal-bg-secondary); border-style: dashed; }
+.lnode--human { background: #fff8e0; border-color: #f7cd67; }
+.lnode--end { background: #e8f5e8; border-color: #8ac68a; justify-content: center; align-items: center; text-align: center; }
+.lnode__id { font-size: 11px; font-weight: 900; letter-spacing: 0; color: var(--animal-text); line-height: 1.2; padding-right: 12px; }
+.lnode__role { font-size: 10.5px; font-weight: 700; color: var(--animal-text-secondary); line-height: 1.3; }
+.lnode__cfg { display: flex; flex-wrap: wrap; gap: 3px; margin-top: auto; }
+.chip { font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 50px; background: rgba(255,255,255,.75); color: var(--animal-text-body); border: 1px solid rgba(0,0,0,.05); white-space: nowrap; line-height: 1.3; }
+.chip--hr { background: #fdf3c4; color: #7a5a06; } .chip--off { color: var(--animal-text-secondary); }
+.lnode__st { position: absolute; top: 9px; right: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--animal-success); }
+.lnode__st.bad { background: var(--animal-error); }
+.lnode--rust .ic, .lnode--human .ic { position: absolute; top: 8px; right: 8px; width: 14px; height: 14px; color: var(--animal-text-secondary); }
+.lnode--human .ic { color: #b88a06; }
+.legend-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; font-weight: 700; color: var(--animal-text-muted); align-items: center; }
+.legend-row .sw { width: 14px; height: 14px; border-radius: 5px; border: 2px solid; display: inline-block; vertical-align: -2px; margin-right: 5px; }
+.legend-row .ln { width: 26px; height: 0; border-top: 2.5px solid #19c8b9; display: inline-block; vertical-align: middle; margin-right: 5px; } .legend-row .ln.rej { border-top-style: dashed; border-color: #e59266; }
+.scopetoggle { display: inline-flex; gap: 4px; padding: 4px; border-radius: 50px; background: rgba(255,255,255,.6); border: 2px solid var(--animal-border); }
+.scopetoggle button { border: none; background: transparent; border-radius: 50px; padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 700; color: #8a7b66; cursor: pointer; }
+.scopetoggle button.active { background: #0cc0b5; color: #fff9e3; }
+.form { display: grid; grid-template-columns: 110px 1fr; gap: 12px 14px; align-items: center; font-size: 13px; }
+.form label { font-weight: 700; color: var(--animal-text-secondary); }
+.form .select { width: 100%; }
+.form .fixed { font-weight: 700; color: var(--animal-text-body); }
+</style>
+<style>
+/* ===== v4: compact scale for a 14" MacBook Pro (1512×944 logical) ===== */
+body { font-size: 13px; }
+#window { grid-template-rows: 46px 1fr; grid-template-columns: 196px 1fr; }
+.titlebar { grid-template-columns: 196px 1fr auto; }
+.titlebar__left { gap: 12px; padding-left: 12px; } .brand { font-size: 14px; } .brand__mark { width: 24px; height: 24px; }
+.exec { height: 30px; font-size: 12px; padding: 0 12px 0 8px; } .exec__k { font-size: 10.5px; padding: 2px 7px; }
+.corepill { height: 28px; font-size: 11.5px; padding: 0 10px; }
+.sidebar { padding: 12px 10px 12px; } .nav__item { height: 38px; font-size: 13px; padding: 0 10px; border-radius: 12px; } .nav__item .ic { width: 20px; height: 20px; }
+.sidebar__sec { margin: 16px 0 6px 10px; } .recent__item { height: 30px; font-size: 12.5px; } .sidebar__foot { font-size: 10.5px; }
+.screen { padding: 16px 20px 18px; }
+.pagehead { margin: 0 0 12px; gap: 14px; } .pagehead__sub { font-size: 12px; } .pagehead__actions { gap: 8px; }
+.ribbon { font-size: 15px; } .crumb { margin-bottom: 8px; font-size: 12px; }
+.sec { margin: 14px 0 8px; } .sec h3 { font-size: 14px; } .sectionhead { margin: 14px 0 8px; }
+.card { padding: 14px 18px; } .card--pad { padding: 14px 18px 14px; }
+.card__head { margin-bottom: 8px; } .card__title { font-size: 14px; } .card__cta { padding-top: 8px; font-size: 11.5px; }
+.cardgrid { gap: 12px; } .tilegrid { gap: 12px; }
+.stat { min-height: 112px; padding: 14px 18px; gap: 4px; } .stat__n { font-size: 28px; } .stat__l { font-size: 12px; } .stat__s { font-size: 11.5px; }
+.hero { padding: 14px 20px 14px; } .hero__title { font-size: 18px; } .hero__sub { font-size: 12px; }
+.route { padding: 6px 4px 8px; } .route--hero { padding: 2px 0 4px; } .stone { min-width: 64px; } .stone__dot { width: 20px; height: 20px; } .stone__lbl { font-size: 10.5px; }
+.axis { height: 30px; font-size: 11px; padding: 0 5px 0 10px; } .axis .tag { height: 20px; }
+.nowbox { gap: 10px; margin-top: 6px; } .nowbox__card { padding: 10px 12px; } .nowbox__v { font-size: 13px; } .nowbox__s { font-size: 11.5px; }
+.stream { max-height: 292px; gap: 6px; font-size: 12px; } .stream__item { padding: 6px 9px; gap: 6px; grid-template-columns: 44px 1fr; }
+.minibars { gap: 7px; } .minibar { font-size: 11.5px; gap: 8px; grid-template-columns: 56px 1fr auto; }
+.taskcard, .reqcard, .nodecard, .envcard { min-height: 126px; padding: 14px 18px; } .ptile { min-height: 136px; padding: 14px 18px 12px; }
+.taskcard__t { font-size: 15px; } .reqcard__t, .nodecard__t { font-size: 14px; } .goal { font-size: 12.5px; }
+.btn { height: 38px; padding: 0 16px; font-size: 13px; } .btn--sm { height: 30px; padding: 0 12px; font-size: 12px; } .btn--yellow { height: 36px; font-size: 14px; }
+.tag { height: 22px; font-size: 11.5px; padding: 0 9px; } .tag--md { height: 28px; font-size: 12.5px; }
+.attn { padding: 12px 16px; gap: 12px; } .attn__ico { width: 36px; height: 36px; border-radius: 12px; } .attn__t { font-size: 13px; } .attn__d { font-size: 12px; }
+.rawreq { padding: 12px 16px 12px 20px; font-size: 13px; line-height: 1.65; }
+.repo { font-size: 12px; gap: 5px 10px; } .kv { font-size: 12px; } .quiet { font-size: 12px; }
+.facts { margin-top: 8px; } .envcard__n { font-size: 14px; }
+.lgraph { padding: 26px 10px 6px; } .lane { margin-bottom: 76px; gap: 12px; } .lnode { min-height: 94px; padding: 9px 10px 8px; } .lnode__id { font-size: 12px; } .lnode__role { font-size: 10px; }
+.tabs .tablist { padding: 10px; } .tab { font-size: 13px; padding: 5px 12px; } .tabpanel { padding: 16px; }
+.drawer { width: 520px; } .drawer__title { font-size: 24px; } .drawer__head { padding: 20px 22px 10px; } .drawer__body { padding: 0 22px 20px; font-size: 13px; } .drawer__foot { padding: 0 22px 20px; }
+.modal { width: 600px; } .modal__clip { padding: 44px 44px 30px; } .modal__title { font-size: 24px; } .modal__lead { font-size: 17px; }
+.notif { width: 360px; } .notif-root .position-topRight { top: 60px; }
+.ring { width: 66px; height: 66px; } .ring b { font-size: 16px; }
+.offline-banner { margin-bottom: 12px; padding: 8px 14px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+
+<!-- Modal blob clip-path (overlays spec) -->
+<svg style="position:absolute;width:0;height:0" aria-hidden="true">
+  <defs>
+    <clipPath id="animal-modal-clip" clipPathUnits="objectBoundingBox">
+      <path d="M0.501,0.005 L0.501,0.005 L0.523,0.005 L0.549,0.006 C0.704,0.01,0.796,0.017,0.825,0.027 L0.827,0.028 C0.872,0.045,0.939,0.044,0.978,0.17 C1,0.254,1,0.365,0.99,0.505 L0.988,0.513 C0.979,0.558,0.971,0.598,0.965,0.633 C0.956,0.689,0.979,0.77,0.964,0.865 C0.953,0.928,0.921,0.966,0.869,0.979 C0.821,0.986,0.773,0.992,0.726,0.995 L0.712,0.996 L0.694,0.997 C0.648,1,0.586,1,0.507,1 L0.501,1 L0.464,1 C0.385,1,0.325,0.998,0.283,0.995 C0.234,0.992,0.184,0.987,0.133,0.979 C0.081,0.966,0.05,0.928,0.039,0.865 C0.023,0.77,0.047,0.689,0.037,0.633 C0.031,0.595,0.023,0.552,0.013,0.505 C-0.006,0.365,-0.002,0.254,0.024,0.17 C0.064,0.045,0.13,0.045,0.174,0.028 L0.175,0.028 C0.204,0.017,0.303,0.009,0.474,0.005 L0.501,0.005"/>
+    </clipPath>
+    <!-- cute stroke icons, 48×48 viewBox, stroke 3.5, round caps -->
+    <symbol id="i-island" viewBox="0 0 48 48"><path d="M6 34 C12 20 36 20 42 34"/><path d="M4 40 q5 -4 10 0 t10 0 t10 0 t10 0"/><circle cx="36" cy="12" r="5"/><path d="M24 24 v-8 M24 16 q-8 -6 -12 2 M24 16 q8 -6 12 2"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 48 48"><rect x="12" y="18" width="24" height="16" rx="6"/><path d="M18 18 v-8 M30 18 v-8 M24 34 v8"/></symbol>
+    <symbol id="i-bag" viewBox="0 0 48 48"><rect x="8" y="16" width="32" height="26" rx="8"/><path d="M16 16 v-4 a8 8 0 0 1 16 0 v4"/><path d="M8 28 h32"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 48 48"><circle cx="24" cy="24" r="7"/><path d="M24 6 v6 M24 36 v6 M6 24 h6 M36 24 h6 M11.3 11.3 l4.2 4.2 M32.5 32.5 l4.2 4.2 M11.3 36.7 l4.2 -4.2 M32.5 15.5 l4.2 -4.2"/></symbol>
+    <symbol id="i-play" viewBox="0 0 48 48"><path d="M16 10 L38 24 L16 38 Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 48 48"><path d="M16 10 v28 M32 10 v28"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 48 48"><path d="M12 42 V8"/><path d="M12 10 h22 l-6 8 6 8 H12"/></symbol>
+    <symbol id="i-check" viewBox="0 0 48 48"><path d="M10 25 L20 35 L38 14"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 48 48"><path d="M24 8 L42 40 H6 Z"/><path d="M24 20 v9"/><circle cx="24" cy="34" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><path d="M24 14 v10 l7 5"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 48 48"><circle cx="14" cy="10" r="4"/><circle cx="14" cy="38" r="4"/><circle cx="34" cy="16" r="4"/><path d="M14 14 v20"/><path d="M34 20 c0 10 -20 6 -20 14"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 48 48"><path d="M24 6 L40 12 v12 c0 9 -7 15 -16 18 c-9 -3 -16 -9 -16 -18 V12 Z"/><path d="M17 24 l5 5 l9 -10"/></symbol>
+    <symbol id="i-coin" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="8"/><path d="M24 12 v4 M24 32 v4"/></symbol>
+    <symbol id="i-leaf" viewBox="0 0 48 48"><path d="M10 38 C8 20 20 8 40 8 C40 28 28 40 10 38 Z"/><path d="M10 38 L30 18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 48 48"><circle cx="21" cy="21" r="12"/><path d="M30 30 L40 40"/></symbol>
+    <symbol id="i-x" viewBox="0 0 48 48"><path d="M12 12 L36 36 M36 12 L12 36"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 48 48"><path d="M8 24 h30 M28 12 l12 12 -12 12"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 48 48"><rect x="10" y="20" width="28" height="20" rx="6"/><path d="M16 20 v-4 a8 8 0 0 1 16 0 v4"/><circle cx="24" cy="30" r="2" fill="currentColor"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 48 48"><path d="M12 6 h16 l10 10 v26 H12 Z"/><path d="M28 6 v10 h10"/><path d="M18 26 h12 M18 34 h12"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 48 48"><rect x="6" y="12" width="36" height="26" rx="6"/><path d="M8 16 L24 28 L40 16"/></symbol>
+    <symbol id="i-term" viewBox="0 0 48 48"><rect x="6" y="10" width="36" height="28" rx="6"/><path d="M14 20 l6 5 -6 5 M24 30 h10"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 48 48"><path d="M24 10 v28 M10 24 h28"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 48 48"><path d="M12 32 c0 -14 4 -20 12 -20 s12 6 12 20 H12 Z"/><path d="M20 38 a4 4 0 0 0 8 0"/><path d="M24 8 v4"/></symbol>
+    <symbol id="i-git" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><path d="M14 18 h20 M14 30 h20 M20 8 c-6 10 -6 22 0 32 M28 8 c6 10 6 22 0 32"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 48 48"><path d="M14 26 V12 a3 3 0 0 1 6 0 v10 M20 20 V8 a3 3 0 0 1 6 0 v12 M26 22 V10 a3 3 0 0 1 6 0 v14"/><path d="M14 26 c-6 0 -6 8 -2 12 c4 4 10 4 20 4 c4 0 8 -4 8 -10 v-8 a3 3 0 0 0 -6 0 v6"/></symbol>
+  </defs>
+</svg>
+
+<style>
+/* ===== v5: project-first redesign (2026-09-15 决策) ===== */
+.alertbar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 8px 14px; border-radius: 18px; border: 2px solid var(--animal-error); background: #fbe0e0; color: #8c2f2f; font-weight: 700; font-size: 12.5px; }
+.alertbar .btn { margin-left: auto; }
+.tstate { display: none; } .tstate.active { display: flex; flex-direction: column; gap: 8px; }
+.demo-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800; color: var(--animal-text-secondary); letter-spacing: .04em; }
+.mstones { display: flex; flex-direction: column; gap: 5px; }
+.mstone { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; align-items: center; font-size: 12px; font-weight: 600; color: var(--animal-text-body); }
+.mstone b { font-weight: 900; letter-spacing: .04em; color: var(--animal-text-secondary); font-size: 11px; }
+.mstone .tag { height: 20px; font-size: 10.5px; padding: 0 8px; }
+.log { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.6; background: #f0e8d8; border-radius: 14px; padding: 12px 14px; color: #5a4a30; white-space: pre-wrap; word-break: break-all; }
+.md h4 { margin: 12px 0 6px; font-size: 14px; font-weight: 800; color: var(--animal-text); }
+.md ul { margin: 0 0 8px; padding-left: 18px; line-height: 1.7; }
+.md p { margin: 0 0 8px; line-height: 1.7; }
+.stblock { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; padding: 10px 14px; border-radius: 14px; background: #fffbe7; border: 1.5px dashed #d4c4a8; }
+.stblock dt { font-weight: 800; color: var(--animal-text-secondary); } .stblock dd { margin: 0; font-weight: 700; color: var(--animal-text-body); }
+.wstep { display: grid; grid-template-columns: 30px 1fr; gap: 12px; padding: 8px 0; align-items: start; }
+.wstep__n { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font-weight: 900; font-size: 13px; background: var(--animal-bg-secondary); color: var(--animal-text-muted); }
+.wstep.done .wstep__n { background: var(--animal-success); color: #fff; } .wstep.now .wstep__n { background: #ffcc00; color: #5a4300; box-shadow: 0 0 0 4px rgba(255,204,0,.25); }
+.wstep__t { font-weight: 800; color: var(--animal-text); font-size: 14px; } .wstep__d { font-size: 12.5px; color: var(--animal-text-secondary); font-weight: 600; margin-top: 2px; line-height: 1.5; }
+.sess { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); font-size: 12px; cursor: pointer; transition: all .2s var(--animal-ease); font-weight: 600; color: var(--animal-text-body); }
+.sess:hover { border-color: #d4c4a8; transform: translateY(-1px); }
+.sess time { font-weight: 800; color: var(--animal-text-secondary); font-size: 11.5px; }
+.sess .r { font-weight: 800; color: var(--animal-text); } .sess .m { color: var(--animal-text-secondary); font-weight: 600; }
+.sesslist { display: flex; flex-direction: column; gap: 5px; }
+.filerow { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 7px 12px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); font-size: 12.5px; font-weight: 600; }
+.filerow .add { color: var(--animal-success-active); font-weight: 800; } .filerow .del { color: var(--animal-error-active); font-weight: 800; margin-left: 6px; }
+.doclist { display: flex; flex-direction: column; gap: 5px; }
+.docrow { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); font-size: 12px; font-weight: 700; color: var(--animal-text-body); cursor: pointer; transition: all .2s var(--animal-ease); }
+.docrow:hover { border-color: #d4c4a8; transform: translateY(-1px); }
+.docrow .ic { width: 16px; height: 16px; color: var(--animal-text-secondary); } .docrow small { color: var(--animal-text-secondary); font-weight: 600; }
+.lane--7 { grid-template-columns: repeat(7, minmax(0,1fr)); }
+.lgraph .lane:last-child { margin-bottom: 44px; }
+.repo--wrap dd { white-space: normal; line-height: 1.45; }
+.lnode--err { border-color: var(--animal-error) !important; background: #fff0f0 !important; }
+.chip--err { background: #fbe0e0; color: #c94444; } .chip--on { background: #e9f6d4; color: #5a9e1e; }
+.decide { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 16px; background: #fffbe7; border: 2px solid var(--animal-border-light); }
+.decide__k { font-size: 11px; font-weight: 900; letter-spacing: .06em; color: var(--animal-text-secondary); }
+.decide__t { font-size: 14px; font-weight: 800; color: var(--animal-text); line-height: 1.45; }
+.decide__d { font-size: 12.5px; color: var(--animal-text-muted); line-height: 1.55; }
+.pick { display: flex; gap: 6px; flex-wrap: wrap; }
+.pick .tag { cursor: pointer; height: 26px; padding: 0 11px; } .pick .tag.on { background: #19c8b9; border-color: #19c8b9; color: #fff; }
+.dropzone { border: 2px dashed #c4b89e; border-radius: 16px; padding: 14px; text-align: center; color: var(--animal-text-secondary); font-weight: 700; font-size: 12.5px; background: rgba(255,251,231,.6); }
+.envcard__login { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; margin-top: 8px; }
+.roleline { display: grid; grid-template-columns: 44px 1fr; gap: 4px 10px; font-size: 12.5px; font-weight: 600; color: var(--animal-text-body); }
+.roleline b { color: var(--animal-text); font-weight: 800; }
+.roleline .m { color: var(--animal-text-secondary); }
+.skillcard { padding: 14px 18px 12px; display: flex; flex-direction: column; gap: 6px; min-height: 150px; }
+.skillcard__n { font-size: 15px; font-weight: 900; color: var(--animal-text); letter-spacing: .01em; }
+.skillcard__src { font-size: 12px; color: var(--animal-text-secondary); font-weight: 700; }
+.skillcard__row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11.5px; font-weight: 800; color: var(--animal-text-secondary); }
+.skillcard__row .k { min-width: 34px; }
+.taskcard .btnrow { display: flex; gap: 6px; margin-top: auto; padding-top: 6px; }
+.taskcard--done { min-height: 0; padding: 12px 18px; gap: 6px; }
+.taskcard--done .taskcard__t { font-size: 14px; }
+.taskcard.leaving { opacity: 0; transform: translateY(6px) scale(.98); transition: all .25s var(--animal-ease); }
+.archrow { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 12px; background: #fffbe7; border: 1.5px solid var(--animal-border-light); font-size: 12.5px; font-weight: 600; }
+.archrow b { font-weight: 900; letter-spacing: .04em; color: var(--animal-text-secondary); font-size: 11.5px; }
+.archrow small { color: var(--animal-text-secondary); font-weight: 600; display: block; margin-top: 1px; }
+.route--13 .stone { min-width: 80px; }
+.hero__actions { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.hero__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+</style>
+
+<div id="window">
+  <header class="titlebar">
+    <div class="titlebar__left">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="brand"><span class="brand__mark"><svg class="ic"><use href="#i-island"/></svg></span>Autome</div>
+    </div>
+    <div class="execbar" aria-label="全局执行条">
+      <button class="exec exec--run" data-nav="dash" title="正在运行的任务"><span class="exec__k"><span class="pulse"></span>运行中</span><span class="exec__v num">4 <em>· 岛屿商店 3 · 潮汐日历 1</em></span></button>
+      <button class="exec exec--wait" data-nav="dash" title="需要我操作的事项"><span class="exec__k">等待我</span><span class="exec__v num">4 <em>· 批准 1 · 合并 1 · 表态 1 · 失败 1</em></span></button>
+    </div>
+    <div class="titlebar__right"><span class="corepill"><span class="dot"></span>4 个会话运行中 · iTerm2</span></div>
+  </header>
+
+  <aside class="sidebar">
+    <nav class="nav" aria-label="主导航">
+      <button class="nav__item active" data-nav="dash"><svg class="ic"><use href="#i-island"/></svg>仪表盘<span class="nav__badge">4</span></button>
+      <button class="nav__item" data-nav="projects"><svg class="ic"><use href="#i-git"/></svg>项目<span class="nav__badge nav__badge--soft">4</span></button>
+      <button class="nav__item" data-nav="env"><svg class="ic"><use href="#i-plug"/></svg>本地环境<span class="nav__badge">2</span></button>
+      <button class="nav__item" data-nav="skills"><svg class="ic"><use href="#i-bag"/></svg>技能</button>
+      <button class="nav__item" data-nav="settings"><svg class="ic"><use href="#i-gear"/></svg>全局设置</button>
+    </nav>
+    <div class="sidebar__sec">最近的项目</div>
+    <div class="recent">
+      <button class="recent__item" data-goto="project"><span class="sw" style="background:var(--tile-blue)"></span>岛屿商店</button>
+      <button class="recent__item" data-goto="project"><span class="sw" style="background:var(--tile-teal)"></span>潮汐日历</button>
+      <button class="recent__item" data-goto="project"><span class="sw" style="background:var(--tile-orange)"></span>海风 CLI</button>
+      <button class="recent__item" data-modal="onboardingModal"><span class="sw" style="background:var(--tile-pink)"></span>珊瑚笔记</button>
+    </div>
+    <div class="sidebar__foot">
+      <div><b>Autome</b> 2.0.0 · macOS 14 arm64</div>
+      <div><b>全局配置</b> ~/.autome · <b>终端</b> iTerm2</div>
+    </div>
+  </aside>
+
+  <main class="main bg-dots" id="main">
+
+    <!-- ============ 仪表盘 · 只做监控 ============ -->
+    <section class="screen active" data-screen="dash">
+      <div class="pagehead pagehead--tight">
+        <h1 class="ribbon ribbon--teal"><span class="ribbon__front">仪表盘</span></h1>
+        <span class="pagehead__sub">监控所有项目里正在发生的事 · 最近刷新 3 秒前</span>
+      </div>
+      <div class="alertbar reveal" style="--i:0"><svg class="ic"><use href="#i-warn"/></svg>Codex 登录已失效 · 评审与审计角色下一次启动会失败 · 潮汐日历 T-004 当前会话不受影响<button class="btn btn--sm" data-nav="env">去本地环境</button></div>
+
+      <div class="sec sectionhead" style="margin-top:4px"><h3>等待我</h3><span class="muted">4 件 · 点卡片直达</span></div>
+      <div class="cardgrid cardgrid--4">
+        <div class="card card--pattern card--pattern-yellow attn reveal card--link" style="--i:1" data-goto="task" data-tstate="approve" tabindex="0"><div class="attn__ico"><svg class="ic"><use href="#i-hand"/></svg></div><div><div class="attn__t">批准设计 <span class="tag tag--outlined">岛屿商店 · T-016</span></div><div class="attn__d">会员积分 · 设计 3 轮定稿 · 5 个里程碑 · 有 1 条裁定待消费</div><div class="attn__a"><button class="btn btn--sm btn--primary">看设计并批准</button></div></div></div>
+        <div class="card card--pattern card--pattern-teal attn reveal card--link" style="--i:2" data-modal="mergeModal" tabindex="0"><div class="attn__ico"><svg class="ic"><use href="#i-branch"/></svg></div><div><div class="attn__t">待合并 <span class="tag tag--outlined">岛屿商店 · T-013</span></div><div class="attn__d">商品搜索联想 · 3 commits · 9 文件 · rebase 干净 · 审计通过</div><div class="attn__a"><button class="btn btn--sm btn--primary">合并到 main</button></div></div></div>
+        <div class="card card--pattern card--pattern-purple attn reveal card--link" style="--i:3" data-drawer="decideDrawer" tabindex="0"><div class="attn__ico"><svg class="ic"><use href="#i-flag"/></svg></div><div><div class="attn__t">待你决定 <span class="tag tag--outlined">岛屿商店 · T-015</span></div><div class="attn__d">购物车结算流程 · 争议项 1 · Backlog 2 · 在待合并前消费</div><div class="attn__a"><button class="btn btn--sm btn--primary">去表态</button></div></div></div>
+        <div class="card card--pattern card--pattern-red attn reveal card--link" style="--i:4" data-goto="task" data-tstate="failed" tabindex="0"><div class="attn__ico"><svg class="ic"><use href="#i-warn"/></svg></div><div><div class="attn__t">预算耗尽 <span class="tag tag--outlined">海风 CLI · T-009</span></div><div class="attn__d">配置文件热加载 · 实现 20 / 20 轮 · M-03 reopen 3 次</div><div class="attn__a"><button class="btn btn--sm btn--primary">看选项</button></div></div></div>
+      </div>
+
+      <div class="sec sectionhead"><h3>运行中</h3><span class="muted">4 个任务 · 岛屿商店已满 3 / 3，1 个排队</span></div>
+      <div class="cardgrid cardgrid--4">
+        <div class="card taskcard card--link reveal" style="--i:5" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">岛屿商店 · T-015</span><span class="tag tag--solid-teal" style="margin-left:auto"><span class="spin"></span>实现 4 / 25</span></div><div class="taskcard__t">购物车结算流程</div><div class="quiet">Claude Code · opus-5 · 会话 12m · 已运行 1h 42m</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill" data-w="40"></div></div><span class="progress__info num small">2 / 5</span></div></div>
+        <div class="card taskcard card--link reveal" style="--i:6" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">岛屿商店 · T-018</span><span class="tag tag--solid-blue" style="margin-left:auto"><span class="spin"></span>评审 2 / 15</span></div><div class="taskcard__t">订单页骨架屏</div><div class="quiet">Codex · gpt-5.4 · 会话 6m · 已运行 23m</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill progress__fill--blue" data-w="13"></div></div><span class="progress__info num small">设计中</span></div></div>
+        <div class="card taskcard card--link reveal" style="--i:7" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">岛屿商店 · T-019</span><span class="tag tag--solid-brown" style="margin-left:auto"><span class="spin"></span>任务整理</span></div><div class="taskcard__t">库存告警邮件</div><div class="quiet">Claude Code · 会话 3m · 已运行 3m · 正在调研仓库</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill progress__fill--blue" data-w="4"></div></div><span class="progress__info num small">整理中</span></div></div>
+        <div class="card taskcard card--link reveal" style="--i:8" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">潮汐日历 · T-004</span><span class="tag tag--solid-purple" style="margin-left:auto"><span class="spin"></span>审计 6 / 20</span></div><div class="taskcard__t">周视图拖拽排期</div><div class="quiet">Codex · gpt-5.4 · 会话 9m · 已运行 58m</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill" data-w="75"></div></div><span class="progress__info num small">3 / 4</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 项目列表 ============ -->
+    <section class="screen" data-screen="projects">
+      <div class="pagehead">
+        <h1 class="ribbon ribbon--blue"><span class="ribbon__front">我的项目</span></h1>
+        <span class="pagehead__sub">项目 = 一个目录 · 不是 Git 仓库会自动 init · 任务都在项目下</span>
+        <div class="pagehead__actions"><button class="btn btn--primary" data-modal="newProjectModal"><svg class="ic"><use href="#i-plus"/></svg>添加项目</button></div>
+      </div>
+      <div class="grid grid--projects">
+        <div class="card card--pattern card--pattern-blue card--hoverable ptile reveal" style="--i:1" data-goto="project" tabindex="0"><div class="ptile__top"><span class="ptile__name">岛屿商店</span><span class="ptile__kind">main</span></div><div class="ptile__intent">~/code/island-shop · 并行 3 / 3 · 排队 1</div><div class="ptile__foot"><span class="tag tag--solid-teal"><span class="spin"></span>3 运行中</span><span class="tag tag--solid-yellow">2 等待我</span><span class="ptile__cta">进入 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div></div>
+        <div class="card card--pattern card--pattern-teal card--hoverable ptile reveal" style="--i:2" data-goto="project" tabindex="0"><div class="ptile__top"><span class="ptile__name">潮汐日历</span><span class="ptile__kind">main</span></div><div class="ptile__intent">~/code/tide-calendar · 并行 1 / 3</div><div class="ptile__foot"><span class="tag tag--solid-teal"><span class="spin"></span>1 运行中</span><span class="tag tag--outlined">7 已完成</span><span class="ptile__cta">进入 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div></div>
+        <div class="card card--pattern card--pattern-orange card--hoverable ptile reveal" style="--i:3" data-goto="project" tabindex="0"><div class="ptile__top"><span class="ptile__name">海风 CLI</span><span class="ptile__kind">master</span></div><div class="ptile__intent">~/code/seabreeze-cli · 并行 0 / 2</div><div class="ptile__foot"><span class="tag tag--solid-red"><svg class="ic"><use href="#i-warn"/></svg>1 预算耗尽</span><span class="tag tag--outlined">12 已完成</span><span class="ptile__cta">进入 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div></div>
+        <div class="card card--pattern card--pattern-pink card--hoverable ptile reveal" style="--i:4" data-modal="onboardingModal" tabindex="0"><div class="ptile__top"><span class="ptile__name">珊瑚笔记</span><span class="ptile__kind">新目录</span></div><div class="ptile__intent">~/code/coral-notes · 已 git init 并提交 init commit</div><div class="ptile__foot"><span class="tag tag--dashed-brown">Onboarding 第 3 / 5 步</span><span class="ptile__cta">继续 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div></div>
+        <div class="card card--dashed card--hoverable ptile ptile--new reveal" style="--i:5" data-modal="newProjectModal" tabindex="0"><span class="big"><svg class="ic ic--lg"><use href="#i-plus"/></svg></span><div><b>添加项目</b><br><span class="small">选一个目录，剩下的自动完成</span></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 项目详情 ============ -->
+    <section class="screen" data-screen="project">
+      <div class="crumb"><button data-nav="projects">项目</button><span class="sep">›</span><b>岛屿商店</b></div>
+      <div class="pagehead pagehead--tight">
+        <h1 class="ribbon ribbon--blue"><span class="ribbon__front">岛屿商店</span></h1>
+        <span class="pagehead__sub">~/code/island-shop · 默认分支 main · 并行 3 / 3 · 排队 1</span>
+        <div class="pagehead__actions"><button class="btn" data-notify="info|已在 Finder 打开|~/code/island-shop">打开目录</button><button class="btn btn--primary" data-drawer="newTaskDrawer"><svg class="ic"><use href="#i-plus"/></svg>新建任务</button></div>
+      </div>
+      <div class="cardgrid cardgrid--3">
+        <div class="card card--pattern card--pattern-blue card--pad col reveal" style="--i:1"><div class="card__head"><h3 class="card__title">仓库</h3><span class="tag tag--soft-green" style="margin-left:auto"><svg class="ic"><use href="#i-check"/></svg>就绪</span></div><dl class="repo" style="color:inherit"><dt>目录</dt><dd>~/code/island-shop</dd><dt>默认分支</dt><dd>main @ c7d2e9a · 工作树干净</dd><dt>worktree</dt><dd>3 个活跃 · .worktree/</dd><dt>.autome</dt><dd>已初始化 · 已提交 · 无未提交改动</dd></dl></div>
+        <div class="card card--pad col card--link reveal" style="--i:2" data-goto="routing" tabindex="0"><div class="card__head"><h3 class="card__title">Loop 配置</h3><span class="tag tag--soft-brown" style="margin-left:auto">1 项覆盖</span></div><div class="roleline"><b>设计</b><span>Claude Code · opus-5 · high</span><b>评审</b><span>Codex · gpt-5.4 · high</span><b>裁决</b><span>Claude Code · opus-5</span><b>实现</b><span>Claude Code · opus-5 · high <span class="srcchip srcchip--p">项目</span></span><b>审计</b><span>Codex · gpt-5.4 · high</span></div><div class="quiet" style="margin-top:6px">并行 3 · 设计 15 轮 · 预算系数 5 · 改动对下一个节点生效</div><span class="card__cta">打开路由图 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div>
+        <div class="card card--pad col card--link reveal" style="--i:3" data-nav="skills" tabindex="0"><div class="card__head"><h3 class="card__title">规则与技能</h3></div><dl class="repo"><dt>规则</dt><dd>AGENTS.md · .autome/rules/ 3 个文件</dd><dt>画像</dt><dd>docs/agent-project-profile.md · 09-12</dd><dt>项目技能</dt><dd>island-shop-conventions · playwright-e2e</dd><dt>全局技能</dt><dd>vitest-runner · repo-facts · conventional-commits</dd></dl><span class="card__cta">技能盘点与绑定 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div>
+      </div>
+
+      <div class="sec sectionhead"><h3>未完成</h3><span class="muted">6 个 · 3 运行中 · 1 排队 · 2 等待我</span></div>
+      <div class="cardgrid cardgrid--4">
+        <div class="card taskcard card--link reveal" style="--i:4" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">T-015</span><span class="tag tag--solid-teal" style="margin-left:auto"><span class="spin"></span>实现 4 / 25</span></div><div class="taskcard__t">购物车结算流程</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill" data-w="40"></div></div><span class="progress__info num small">2 / 5</span></div><div class="quiet">已运行 1h 42m · 待你决定 3 条</div></div>
+        <div class="card taskcard card--link reveal" style="--i:5" data-goto="task" data-tstate="approve" tabindex="0"><div class="row"><span class="taskcard__id">T-016</span><span class="tag tag--solid-yellow" style="margin-left:auto"><svg class="ic"><use href="#i-hand"/></svg>等待批准</span></div><div class="taskcard__t">会员积分</div><div class="quiet">设计 3 轮定稿 · 5 个里程碑 · 停顿 14m</div><div class="btnrow"><button class="btn btn--sm btn--primary">看设计并批准</button></div></div>
+        <div class="card taskcard card--link reveal" style="--i:6" data-modal="mergeModal" tabindex="0"><div class="row"><span class="taskcard__id">T-013</span><span class="tag tag--solid-green" style="margin-left:auto"><svg class="ic"><use href="#i-branch"/></svg>待合并</span></div><div class="taskcard__t">商品搜索联想</div><div class="quiet">3 commits · 9 文件 +203 −18 · 审计通过</div><div class="btnrow"><button class="btn btn--sm btn--primary">合并到 main</button></div></div>
+        <div class="card taskcard card--link reveal" style="--i:7" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">T-018</span><span class="tag tag--solid-blue" style="margin-left:auto"><span class="spin"></span>评审 2 / 15</span></div><div class="taskcard__t">订单页骨架屏</div><div class="progress"><div class="progress__track progress__track--sm"><div class="progress__fill progress__fill--blue" data-w="13"></div></div><span class="progress__info num small">设计中</span></div><div class="quiet">已运行 23m</div></div>
+        <div class="card taskcard card--link reveal" style="--i:8" data-goto="task" data-tstate="running" tabindex="0"><div class="row"><span class="taskcard__id">T-019</span><span class="tag tag--solid-brown" style="margin-left:auto"><span class="spin"></span>任务整理</span></div><div class="taskcard__t">库存告警邮件</div><div class="quiet">正在调研仓库、起草任务文件 · 3m</div></div>
+        <div class="card taskcard card--link reveal" style="--i:9" data-notify="info|T-017 · 退款流程|排队 #1 · 岛屿商店并行 3 / 3 已满，任一任务释放槽位后自动启动。" tabindex="0"><div class="row"><span class="taskcard__id">T-017</span><span class="tag tag--outlined" style="margin-left:auto">排队 #1</span></div><div class="taskcard__t">退款流程</div><div class="quiet">等待槽位 · 提交于 14:20</div></div>
+        <div class="card card--dashed taskcard ptile--new card--link reveal" style="--i:10" data-drawer="newTaskDrawer" tabindex="0"><span class="big"><svg class="ic ic--lg"><use href="#i-plus"/></svg></span><div><b>新建任务</b><br><span class="small">一句话需求 + 附件</span></div></div>
+      </div>
+
+      <div class="sec sectionhead"><h3>已完成</h3><span class="muted" id="doneCount">2 个 · 已合并进 main · 归档后移出列表，可恢复</span><div class="right"><button class="btn btn--sm btn--text" data-drawer="archiveDrawer">已归档 5</button><button class="btn btn--sm" data-archive-all><svg class="ic"><use href="#i-doc"/></svg>归档全部已完成</button></div></div>
+      <div class="cardgrid cardgrid--4" id="doneGrid">
+        <div class="card taskcard taskcard--done card--link reveal" style="--i:11" data-notify="info|T-012 · 订单导出 CSV|已完成 · 合并 a1b2c3d 于 09-14 · worktree 已清理 · retro 见 docs/order-export/retro.md" tabindex="0"><div class="row"><span class="taskcard__id">T-012</span><span class="tag tag--soft-green" style="margin-left:auto"><svg class="ic"><use href="#i-check"/></svg>已完成</span></div><div class="taskcard__t">订单导出 CSV</div><div class="row" style="gap:8px"><span class="quiet">合并 a1b2c3d · 09-14 · 设计 2 轮 · 实现 7 轮</span><button class="btn btn--sm btn--text" style="margin-left:auto" data-archive="T-012">归档</button></div></div>
+        <div class="card taskcard taskcard--done card--link reveal" style="--i:12" data-notify="info|T-011 · 商品图片懒加载|已完成 · 合并 8e9f0a1 于 09-11 · worktree 已清理 · retro 见 docs/image-lazyload/retro.md" tabindex="0"><div class="row"><span class="taskcard__id">T-011</span><span class="tag tag--soft-green" style="margin-left:auto"><svg class="ic"><use href="#i-check"/></svg>已完成</span></div><div class="taskcard__t">商品图片懒加载</div><div class="row" style="gap:8px"><span class="quiet">合并 8e9f0a1 · 09-11 · 设计 1 轮 · 实现 4 轮</span><button class="btn btn--sm btn--text" style="margin-left:auto" data-archive="T-011">归档</button></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 任务面板 ============ -->
+    <section class="screen" data-screen="task">
+      <div class="crumb"><button data-nav="projects">项目</button><span class="sep">›</span><button data-goto="project">岛屿商店</button><span class="sep">›</span><b>T-015</b><span class="demo-toggle" style="margin-left:auto">演示状态<span class="scopetoggle" id="tstateToggle"><button class="active" data-set-tstate="running">实现中</button><button data-set-tstate="approve">等待批准</button><button data-set-tstate="merge">待合并</button><button data-set-tstate="failed">预算耗尽</button></span></span></div>
+
+      <div class="card hero card--pattern card--pattern-teal reveal" style="--i:0">
+        <div class="row" style="align-items:flex-start">
+          <div><h2 class="hero__title">T-015 · 购物车结算流程</h2><div class="hero__meta"><span class="tag tag--solid-teal" id="tsTag"><span class="spin"></span>实现 · 第 4 / 25 轮</span><span class="tag tag--outlined">分支 autome/checkout-flow</span><span class="tag tag--outlined">.worktree/checkout-flow</span><span class="tag tag--outlined">开始 12:25 · 已运行 1h 42m</span></div></div>
+          <div class="hero__actions"><button class="btn btn--sm" data-notify="info|已请求暂停|当前会话跑完后不再启动下一节点。"><svg class="ic"><use href="#i-pause"/></svg>暂停</button><button class="btn btn--sm" data-notify="warning|已停止|当前会话已被终止；任务停在实现节点，可随时继续。"><svg class="ic"><use href="#i-x"/></svg>停止</button><button class="btn btn--sm btn--text" data-notify="error|取消任务|将删除 worktree 与分支 autome/checkout-flow；任务文档保留在 docs/ 下。">取消</button><button class="btn btn--sm btn--primary" data-notify="info|已切到 iTerm2|会话窗口 autome · T-015 · 实现 #4"><svg class="ic"><use href="#i-term"/></svg>在 iTerm 中查看</button></div>
+        </div>
+        <div class="route route--hero route--13" id="taskRoute">
+          <div class="stone done"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">已接收</div></div>
+          <div class="stone done"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">任务整理</div></div>
+          <div class="stone done"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">设计</div></div>
+          <div class="stone done"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">评审</div></div>
+          <div class="stone done"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">裁决</div></div>
+          <div class="stone done" data-stone="approve"><div class="stone__dot"><svg class="ic"><use href="#i-check"/></svg></div><div class="stone__lbl">设计批准</div></div>
+          <div class="stone now" data-stone="impl"><div class="stone__dot"></div><div class="stone__lbl">实现</div></div>
+          <div class="stone" data-stone="audit"><div class="stone__dot"></div><div class="stone__lbl">审计</div></div>
+          <div class="stone" data-stone="rebase"><div class="stone__dot"></div><div class="stone__lbl">rebase</div></div>
+          <div class="stone" data-stone="merge"><div class="stone__dot"></div><div class="stone__lbl">待合并</div></div>
+          <div class="stone"><div class="stone__dot"></div><div class="stone__lbl">合并</div></div>
+          <div class="stone"><div class="stone__dot"></div><div class="stone__lbl">清理</div></div>
+          <div class="stone"><div class="stone__dot"></div><div class="stone__lbl">完成</div></div>
+        </div>
+        <div class="row" style="gap:6px"><span class="tag tag--soft-green">设计循环 3 / 15 轮 · 已定稿</span><span class="tag tag--soft-teal">实现循环 4 / 25 轮 · 预算 = 5 × 5 里程碑</span><span class="tag tag--soft-brown">reopen 1 · convergence normal</span><span class="tag tag--soft-brown">Backlog 2 · 争议项 1</span></div>
+      </div>
+
+      <div class="cardgrid cardgrid--4" style="margin-top:12px">
+        <div class="card card--pad col reveal" style="--i:1"><div class="card__head"><h3 class="card__title">当前会话</h3><span class="tag tag--solid-teal" style="margin-left:auto"><span class="spin"></span>12m</span></div><dl class="repo repo--wrap"><dt>角色</dt><dd>实现 · 第 4 轮</dd><dt>CLI</dt><dd>Claude Code · claude-opus-5 · high</dd><dt>技能</dt><dd>island-shop-conventions（绑定）</dd><dt>上次产出</dt><dd>M-03 优惠码校验 → 待审 · 14:11</dd><dt>next-action</dt><dd>补 promo.spec.ts 大小写用例，跑 vitest src/checkout/promo</dd></dl></div>
+        <div class="card card--pad col reveal" style="--i:2"><div class="card__head"><h3 class="card__title">里程碑</h3><span class="muted small" style="margin-left:auto">2 / 5 已完成</span></div><div class="mstones"><div class="mstone"><b>M-01</b><span>购物车数据模型</span><span class="tag tag--soft-green">已完成</span></div><div class="mstone"><b>M-02</b><span>结算接口</span><span class="tag tag--soft-green">已完成</span></div><div class="mstone"><b>M-03</b><span>优惠码校验 · reopen 1</span><span class="tag tag--soft-yellow">待审</span></div><div class="mstone"><b>M-04</b><span>库存不足阻止下单</span><span class="tag tag--outlined">开放</span></div><div class="mstone"><b>M-05</b><span>确认邮件</span><span class="tag tag--outlined">开放</span></div></div><div class="progress" style="margin-top:8px"><div class="progress__track progress__track--sm"><div class="progress__fill" data-w="40"></div></div><span class="progress__info num small">40%</span></div></div>
+        <div class="card card--pad col reveal" style="--i:3"><div class="card__head"><h3 class="card__title">原始需求</h3><span class="tag tag--outlined" style="margin-left:auto">只读</span></div><div class="rawreq" style="font-size:12.5px;line-height:1.6">给岛屿商店加购物车结算：支持优惠码，库存不足时阻止下单，结算成功后用现有 mailer 发确认邮件。不要动支付网关。</div><div class="row" style="gap:6px;margin-top:8px"><span class="tag tag--soft-brown"><svg class="ic"><use href="#i-doc"/></svg>promo-rules.csv</span><span class="tag tag--soft-brown"><svg class="ic"><use href="#i-doc"/></svg>结算流程.png</span><span class="tag tag--outlined">docs/checkout-notes.md</span></div></div>
+        <div class="card card--pattern card--pattern-purple card--pad col card--link reveal" style="--i:4" data-drawer="decideDrawer" tabindex="0"><div class="card__head"><h3 class="card__title">待你决定</h3><span class="tag tag--solid-purple" style="margin-left:auto">3</span></div><div class="quiet" style="color:inherit;opacity:.9;line-height:1.6"><b>争议项</b> D3-P02 优惠码是否大小写敏感<br><b>Backlog</b> B-01 优惠码使用次数上限<br><b>Backlog</b> B-02 结算接口日志脱敏</div><span class="card__cta">去表态 · 在待合并前消费 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div>
+      </div>
+
+      <div class="cardgrid cardgrid--3" style="margin-top:12px">
+        <div class="card card--pad col reveal" style="--i:5" id="stopPanel">
+          <div class="card__head"><h3 class="card__title" id="stopTitle">停顿面板</h3><span class="tag tag--outlined" style="margin-left:auto" id="stopTag">当前无需操作</span></div>
+          <div class="tstate active" data-tstate="running"><div class="quiet">现在不需要你做什么。下一次停顿在 rebase 之后的「待合并」，届时会在这里出现合并按钮。</div><div class="quiet">如果要改方向：停止 → 修改需求或规则 → 重开任务。运行中不接受口头纠偏。</div></div>
+          <div class="tstate" data-tstate="approve"><div class="quiet">设计文档 v3 已定稿 · 评审 3 轮 · 裁决通过 · 5 个里程碑 · 有 1 条裁定未消费：批准将变为「带着裁定再跑一轮设计」。</div><div class="row" style="gap:6px"><button class="btn btn--sm" data-drawer="docDrawer"><svg class="ic"><use href="#i-doc"/></svg>看设计文档</button><button class="btn btn--sm btn--primary" data-notify="success|已批准设计|带着 1 条裁定再跑一轮设计，定稿后再停一次给你看。">批准，进入实现</button></div><label class="input input--area"><textarea placeholder="驳回意见：例如「确认邮件只发给登录用户，游客下单不发」…" style="min-height:40px"></textarea></label><div class="row"><button class="btn btn--sm btn--text" data-notify="warning|已驳回|意见已写入，回到设计节点重跑评审与裁决，定稿后再停。">驳回并附意见</button></div></div>
+          <div class="tstate" data-tstate="merge"><dl class="repo"><dt>分支</dt><dd>autome/checkout-flow → main</dd><dt>提交</dt><dd>5 commits · 14 文件 +412 −57</dd><dt>rebase</dt><dd>到 main @ c7d2e9a · 干净</dd><dt>审计</dt><dd>通过 · 第 9 轮 · Codex gpt-5.4</dd><dt>主工作树</dt><dd>干净 · 可以合并</dd></dl><div class="row" style="gap:6px"><button class="btn btn--sm" data-drawer="filesDrawer">看文件列表</button><button class="btn btn--yellow btn--sm" style="height:30px;font-size:12px" data-notify="success|已合并到 main|merge commit 9e7b1c2 · worktree 与分支已清理 · T-015 完成。">合并到 main</button></div></div>
+          <div class="tstate" data-tstate="failed"><div class="quiet">实现 25 / 25 轮耗尽 · M-04 reopen 3 次 · convergence-mode milestone-review · 审计最后结论：库存并发校验仍有竞态。</div><div class="row" style="gap:6px"><button class="btn btn--sm btn--primary" data-notify="success|已追加 5 轮|预算 25 → 30，从实现节点继续。">追加 5 轮继续</button><button class="btn btn--sm" data-notify="info|从设计重跑|保留任务文件与附件，设计循环从第 1 轮开始。">从设计重跑</button><button class="btn btn--sm btn--text" data-notify="error|取消任务|删除 worktree 与分支，文档保留。">取消任务</button></div></div>
+        </div>
+        <div class="card card--pad col reveal" style="--i:6"><div class="card__head"><h3 class="card__title">产物</h3><span class="muted small" style="margin-left:auto">docs/checkout-flow/</span></div><div class="doclist"><div class="docrow" data-drawer="docDrawer" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>checkout-flow.md <small>· 设计文档 v3</small></span><small>14:11</small></div><div class="docrow" data-notify="info|checkout-flow-task.md|任务文件 · 含项目画像与协议 · 生成于 12:27" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>checkout-flow-task.md <small>· 任务文件</small></span><small>12:27</small></div><div class="docrow" data-notify="info|checkout-flow-review.md|设计评审 · 第 3 轮 · 每轮覆盖写入" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>checkout-flow-review.md <small>· 评审</small></span><small>13:02</small></div><div class="docrow" data-notify="info|checkout-flow-adjudication.md|裁决记录 · append-only · 3 轮 · 11 条" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>checkout-flow-adjudication.md <small>· 裁决</small></span><small>13:10</small></div><div class="docrow" data-notify="info|checkout-flow-audit.md|实现审计 · 第 3 轮 · M-03 reopen" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>checkout-flow-audit.md <small>· 审计</small></span><small>13:59</small></div><div class="docrow" data-notify="info|retro.md|运行记录 · 每轮一行 · 终止时补总结" tabindex="0"><svg class="ic"><use href="#i-doc"/></svg><span>retro.md <small>· 运行记录</small></span><small>14:11</small></div></div></div>
+        <div class="card card--pad col reveal" style="--i:7"><div class="card__head"><h3 class="card__title">会话历史</h3><span class="muted small" style="margin-left:auto">11 次 · 点开看完整日志</span></div><div class="sesslist"><div class="sess" data-drawer="logDrawer"><time>14:02</time><span><span class="r">实现 #4</span> <span class="m">· Claude Code opus-5</span></span><span class="tag tag--solid-teal"><span class="spin"></span>运行中</span></div><div class="sess" data-drawer="logDrawer"><time>13:48</time><span><span class="r">审计 #3</span> <span class="m">· Codex gpt-5.4 · 11m</span></span><span class="tag tag--soft-yellow">M-03 reopen</span></div><div class="sess" data-drawer="logDrawer"><time>13:21</time><span><span class="r">实现 #3</span> <span class="m">· Claude Code opus-5 · 26m</span></span><span class="tag tag--soft-green">M-03 待审</span></div><div class="sess" data-drawer="logDrawer"><time>13:12</time><span><span class="r">审计 #2</span> <span class="m">· Codex gpt-5.4 · 8m</span></span><span class="tag tag--soft-green">M-02 已完成</span></div><div class="sess" data-drawer="logDrawer"><time>13:10</time><span><span class="r">裁决 #3</span> <span class="m">· Claude Code opus-5 · 7m</span></span><span class="tag tag--soft-green">设计定稿</span></div><div class="sess" data-drawer="logDrawer"><time>13:02</time><span><span class="r">评审 #3</span> <span class="m">· Codex gpt-5.4 · 6m</span></span><span class="tag tag--soft-brown">2 条问题</span></div></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 本地环境 ============ -->
+    <section class="screen" data-screen="env">
+      <div class="pagehead">
+        <h1 class="ribbon ribbon--orange"><span class="ribbon__front">本地环境</span></h1>
+        <span class="pagehead__sub">只检测四样东西 · 前置 Homebrew 4.4.8 ✓ · npm 10.9 ✓ · 最近检测 14:31</span>
+        <div class="pagehead__actions"><button class="btn" id="recheckBtn"><svg class="ic"><use href="#i-search"/></svg>重新检测</button></div>
+      </div>
+      <div class="cardgrid cardgrid--4">
+        <div class="card envcard reveal" style="--i:1"><span class="corner tag tag--solid-green">就绪</span><div class="envcard__n">Git</div><div class="envcard__v">2.47.1 · /usr/bin/git · Xcode 命令行工具</div><div class="envcard__login"><span class="dotst dotst--ok">worktree 与 rebase 可用</span></div><div class="quiet" style="margin-top:8px">所有任务必需</div></div>
+        <div class="card envcard reveal" style="--i:2"><span class="corner tag tag--solid-green">就绪</span><div class="envcard__n">Claude Code</div><div class="envcard__v">2.1.14 · /opt/homebrew/bin/claude</div><div class="envcard__login"><span class="dotst dotst--ok">已登录 · 账号 4f…9a</span></div><div class="quiet" style="margin-top:8px">设计 · 裁决 · 实现 · 任务整理 · Onboarding</div></div>
+        <div class="card envcard card--pattern card--pattern-red reveal" style="--i:3"><span class="corner tag tag--solid-red">登录失效</span><div class="envcard__n">Codex</div><div class="envcard__v" style="color:inherit;opacity:.85">0.58.0 · /opt/homebrew/bin/codex</div><div class="envcard__login"><span class="dotst dotst--bad">认证已过期 · 14:31 探测</span></div><div class="row" style="margin-top:10px"><button class="btn btn--sm btn--primary" data-notify="info|已打开 iTerm2|正在执行 codex login；完成后自动重新检测。"><svg class="ic"><use href="#i-term"/></svg>去终端登录</button></div></div>
+        <div class="card envcard card--pattern card--pattern-yellow reveal" style="--i:4"><span class="corner tag tag--solid-yellow">缺失</span><div class="envcard__n">iTerm2</div><div class="envcard__v" style="color:inherit;opacity:.85">任务会话与 Onboarding 在其中运行</div><div class="envcard__login"><span class="dotst dotst--warn">缺失时暂用系统 Terminal</span></div><div class="row" style="margin-top:10px"><button class="btn btn--sm btn--primary" data-modal="installModal"><svg class="ic"><use href="#i-plus"/></svg>一键安装</button></div></div>
+      </div>
+      <div class="sec sectionhead"><h3>被谁用到</h3><span class="muted">按当前全局默认路由</span></div>
+      <div class="cardgrid cardgrid--3">
+        <div class="card card--pad col reveal" style="--i:5"><div class="card__head"><h3 class="card__title">Claude Code</h3></div><div class="roleline"><b>设计</b><span>4 个项目</span><b>裁决</b><span>4 个项目</span><b>实现</b><span>4 个项目</span><b>整理</b><span>任务整理 · Onboarding</span></div></div>
+        <div class="card card--pad col reveal" style="--i:6"><div class="card__head"><h3 class="card__title">Codex</h3><span class="tag tag--soft-red" style="margin-left:auto">下一节点会失败</span></div><div class="roleline"><b>评审</b><span>4 个项目</span><b>审计</b><span>4 个项目</span></div><div class="quiet" style="margin-top:6px">运行中的潮汐日历 T-004 审计会话在过期前启动，不受影响。</div></div>
+        <div class="card card--pad col reveal" style="--i:7"><div class="card__head"><h3 class="card__title">安装方式</h3></div><div class="quiet">一键安装在可见终端里执行，你能看到过程与 sudo 提示。Claude Code 与 Codex 走 npm 全局安装或 Homebrew，iTerm2 走 Homebrew cask，Git 走 Xcode 命令行工具。Homebrew 或 npm 缺失时先提示安装它们。</div></div>
+      </div>
+    </section>
+
+    <!-- ============ 技能 ============ -->
+    <section class="screen" data-screen="skills">
+      <div class="pagehead">
+        <h1 class="ribbon ribbon--purple"><span class="ribbon__front">技能</span></h1>
+        <span class="pagehead__sub">只读盘点 · Skill 随仓库走 · 绑定 = 该角色必须使用 · 未绑定的角色从全部可见技能自选</span>
+        <div class="pagehead__actions"><span class="scopetoggle" role="tablist"><button class="active" data-notify="info|全部|两个 CLI 的全局目录 + 所有项目仓库内目录。">全部</button><button data-notify="info|项目：岛屿商店|只看该仓库内目录与它的绑定。">项目：岛屿商店</button></span><button class="btn" data-notify="info|已在 Finder 打开|~/.claude/skills · ~/.agents/skills">打开技能目录</button></div>
+      </div>
+      <div class="cardgrid cardgrid--3">
+        <div class="card skillcard card--pattern card--pattern-blue reveal" style="--i:1"><div class="row"><span class="skillcard__n">island-shop-conventions</span><span class="tag tag--soft-blue" style="margin-left:auto">项目 · 岛屿商店</span></div><div class="skillcard__src" style="color:inherit;opacity:.85">.claude/skills/ · .agents/skills/（同一份，符号链接）</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--soft-green">Codex ✓</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--solid-teal">设计</span><span class="tag tag--solid-teal">实现</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/code/island-shop/.claude/skills/island-shop-conventions">打开目录</button><button class="btn btn--sm" data-drawer="bindDrawer">修改绑定</button></div></div>
+        <div class="card skillcard reveal" style="--i:2"><div class="row"><span class="skillcard__n">playwright-e2e</span><span class="tag tag--soft-blue" style="margin-left:auto">项目 · 岛屿商店</span></div><div class="skillcard__src">.agents/skills/ · .claude/skills/</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--soft-green">Codex ✓</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--solid-teal">实现</span><span class="tag tag--solid-teal">审计</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/code/island-shop/.agents/skills/playwright-e2e">打开目录</button><button class="btn btn--sm" data-drawer="bindDrawer">修改绑定</button></div></div>
+        <div class="card skillcard card--pattern card--pattern-red reveal" style="--i:3"><div class="row"><span class="skillcard__n">repo-facts</span><span class="tag tag--soft-brown" style="margin-left:auto">全局</span></div><div class="skillcard__src" style="color:inherit;opacity:.85">~/.claude/skills/</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--outlined">Codex —</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--solid-red"><svg class="ic"><use href="#i-warn"/></svg>评审 · 用 Codex，看不到</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/.claude/skills/repo-facts">打开目录</button><button class="btn btn--sm btn--primary" data-drawer="bindDrawer">修正绑定</button></div></div>
+        <div class="card skillcard reveal" style="--i:4"><div class="row"><span class="skillcard__n">vitest-runner</span><span class="tag tag--soft-brown" style="margin-left:auto">全局</span></div><div class="skillcard__src">~/.agents/skills/</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--outlined">Claude —</span><span class="tag tag--soft-green">Codex ✓</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--solid-teal">审计</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/.agents/skills/vitest-runner">打开目录</button><button class="btn btn--sm" data-drawer="bindDrawer">修改绑定</button></div></div>
+        <div class="card skillcard reveal" style="--i:5"><div class="row"><span class="skillcard__n">conventional-commits</span><span class="tag tag--soft-brown" style="margin-left:auto">全局</span></div><div class="skillcard__src">~/.claude/skills/ · ~/.agents/skills/</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--soft-green">Codex ✓</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--outlined">未绑定 · 各角色自选</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/.claude/skills/conventional-commits">打开目录</button><button class="btn btn--sm" data-drawer="bindDrawer">修改绑定</button></div></div>
+        <div class="card skillcard reveal" style="--i:6"><div class="row"><span class="skillcard__n">tide-brand-guide</span><span class="tag tag--soft-teal" style="margin-left:auto">项目 · 潮汐日历</span></div><div class="skillcard__src">.claude/skills/</div><div class="skillcard__row"><span class="k">可见</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--outlined">Codex —</span></div><div class="skillcard__row"><span class="k">绑定</span><span class="tag tag--solid-teal">设计</span><span class="tag tag--solid-teal">实现</span></div><div class="row" style="margin-top:auto;padding-top:6px;gap:6px"><button class="btn btn--sm" data-notify="info|已打开|~/code/tide-calendar/.claude/skills/tide-brand-guide">打开目录</button><button class="btn btn--sm" data-drawer="bindDrawer">修改绑定</button></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 全局设置 ============ -->
+    <section class="screen" data-screen="settings">
+      <div class="pagehead">
+        <h1 class="ribbon ribbon--brown"><span class="ribbon__front">全局设置</span></h1>
+        <span class="pagehead__sub">所有项目的默认值 · 项目可逐角色覆盖 · 改动对下一个启动的节点生效</span>
+      </div>
+      <div class="cardgrid cardgrid--2">
+        <div class="card card--pad col card--link reveal" style="--i:1" data-goto="routing" tabindex="0"><div class="card__head"><h3 class="card__title">默认角色路由</h3><span class="tag tag--soft-red" style="margin-left:auto">1 项未保存 · 被阻止</span></div><div class="roleline"><b>设计</b><span>Claude Code · claude-opus-5 · high · 已启用</span><b>评审</b><span>Codex · gpt-5.4 · high · 已启用</span><b>裁决</b><span>Claude Code · claude-opus-5 · 默认 Effort · 已启用</span><b>实现</b><span>Claude Code · claude-opus-5 · high · 已启用</span><b>审计</b><span>Codex · gpt-5.4 · high · 已启用</span></div><div class="quiet" style="margin-top:8px">双模型纪律：评审 ≠ 设计、审计 ≠ 实现。相同时无法保存。</div><span class="card__cta">打开路由图 <svg class="ic ic--sm"><use href="#i-arrow"/></svg></span></div>
+        <div class="card card--pad col reveal" style="--i:2"><div class="card__head"><h3 class="card__title">Loop 默认值</h3></div><dl class="kv" style="gap:10px 14px"><dt>项目并行默认</dt><dd><span class="select" style="min-width:90px;height:30px">3 <span class="chev"></span></span> <span class="muted small">上限 5 · 项目内各自控制</span></dd><dt>设计轮次上限</dt><dd><span class="select" style="min-width:90px;height:30px">15 <span class="chev"></span></span> <span class="muted small">耗尽后停下给你选项</span></dd><dt>实现预算系数</dt><dd><span class="select" style="min-width:90px;height:30px">5 <span class="chev"></span></span> <span class="muted small">N = 系数 × 初始里程碑数</span></dd></dl><div class="matrix-note">新建项目时复制这份默认值；已有项目只在未覆盖的字段上跟随。</div></div>
+        <div class="card card--pad col reveal" style="--i:3"><div class="card__head"><h3 class="card__title">终端</h3><span class="tag tag--solid-yellow" style="margin-left:auto">iTerm2 缺失</span></div><div class="quiet">任务会话、Onboarding 与一键安装都在 iTerm2 可见终端里运行，不内嵌到应用。iTerm2 缺失时暂用系统 Terminal。</div><div class="row" style="margin-top:auto;padding-top:10px"><button class="btn btn--sm" data-nav="env">去本地环境安装</button></div></div>
+        <div class="card card--pad col reveal" style="--i:4"><div class="card__head"><h3 class="card__title">关于</h3></div><dl class="kv"><dt>版本</dt><dd>Autome 2.0.0</dd><dt>系统</dt><dd>macOS 14 · arm64</dd><dt>全局配置</dt><dd>~/.autome/</dd><dt>项目配置</dt><dd>各仓库 .autome/（随仓库提交）</dd></dl><div class="row" style="margin-top:auto;padding-top:10px"><button class="btn btn--sm" data-notify="success|已是最新|2.0.0">检查更新</button></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 路由图（Loop 图） ============ -->
+    <section class="screen" data-screen="routing">
+      <div class="crumb"><button data-nav="settings">全局设置</button><span class="sep">›</span><b>路由图</b></div>
+      <div class="pagehead pagehead--tight">
+        <h1 class="ribbon ribbon--purple"><span class="ribbon__front">路由图</span></h1>
+        <span class="pagehead__sub">五个角色可点开配置 · 灰色为固定系统步骤 · 黄色为人工停顿 · 实线通过 · 虚线驳回</span>
+        <div class="pagehead__actions"><span class="scopetoggle" role="tablist"><button class="active" data-notify="info|全局默认|所有项目未覆盖的字段跟随这里。">全局默认</button><button data-notify="info|项目：岛屿商店|每个角色可选择覆盖或恢复默认。">项目：岛屿商店</button></span><button class="btn" data-notify="info|已放弃|审计恢复为 Codex · gpt-5.4">放弃更改</button><button class="btn btn--primary" aria-disabled="true" title="审计与实现模型相同，无法保存"><svg class="ic"><use href="#i-check"/></svg>保存</button></div>
+      </div>
+      <div class="alertbar" style="margin-bottom:8px"><svg class="ic"><use href="#i-warn"/></svg>审计与实现都配成了 Claude Code · claude-opus-5。评测侧必须与生成侧不同模型，保存已被阻止。<button class="btn btn--sm" data-drawer="routeDrawer" data-fill="audit">修正审计</button></div>
+      <div class="card card--pad" style="padding-bottom:10px">
+        <div class="lgraph" id="loopGraph">
+          <svg class="lgraph__edges" id="edgeLayer"><defs><marker id="arrPass" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#19c8b9"/></marker><marker id="arrRej" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e59266"/></marker></defs></svg>
+          <div class="lane lane--7" data-lane="1"><span class="lane__lbl">设计循环 · 最多 15 轮</span>
+            <div class="lnode lnode--rust" data-node="intake"><svg class="ic"><use href="#i-lock"/></svg><div class="lnode__id">任务整理</div><div class="lnode__role">固定 · 调研仓库，生成任务文件</div><div class="lnode__cfg"><span class="chip">Claude Code</span></div></div>
+            <div class="lnode lnode--ai lnode--claude" data-node="plan" data-drawer="routeDrawer" tabindex="0" data-title="设计" data-role="plan" data-cli="Claude Code" data-model="claude-opus-5" data-effort="high" data-enabled="1" data-skills="island-shop-conventions" data-src="全局" data-status="ok"><i class="lnode__st"></i><div class="lnode__id">设计</div><div class="lnode__role">plan · 写设计文档与里程碑</div><div class="lnode__cfg"><span class="chip">Claude · opus-5</span><span class="chip">high</span><span class="chip chip--on">启用</span></div></div>
+            <div class="lnode lnode--ai lnode--codex" data-node="review" data-drawer="routeDrawer" tabindex="0" data-title="评审" data-role="review" data-cli="Codex" data-model="gpt-5.4" data-effort="high" data-enabled="1" data-skills="" data-src="全局" data-status="ok"><i class="lnode__st"></i><div class="lnode__id">评审</div><div class="lnode__role">review · 独立模型挑问题</div><div class="lnode__cfg"><span class="chip">Codex · gpt-5.4</span><span class="chip">high</span><span class="chip chip--on">启用</span></div></div>
+            <div class="lnode lnode--ai lnode--claude" data-node="adjudicate" data-drawer="routeDrawer" tabindex="0" data-title="裁决" data-role="adjudicate" data-cli="Claude Code" data-model="claude-opus-5" data-effort="" data-enabled="1" data-skills="" data-src="全局" data-status="ok"><i class="lnode__st"></i><div class="lnode__id">裁决</div><div class="lnode__role">adjudicate · 逐条采纳或驳回</div><div class="lnode__cfg"><span class="chip">Claude · opus-5</span><span class="chip">默认 Effort</span><span class="chip chip--on">启用</span></div></div>
+            <div class="lnode lnode--human" data-node="design_approval"><svg class="ic"><use href="#i-hand"/></svg><div class="lnode__id">设计批准</div><div class="lnode__role">人工 · 唯一阻塞停顿</div><div class="lnode__cfg"><span class="chip">批准 / 驳回</span></div></div>
+          </div>
+          <div class="lane lane--7" data-lane="2"><span class="lane__lbl">实现循环 · 预算 5 × 里程碑</span>
+            <div class="lnode lnode--ai lnode--impl" data-node="impl" data-drawer="routeDrawer" tabindex="0" data-title="实现" data-role="impl" data-cli="Claude Code" data-model="claude-opus-5" data-effort="high" data-enabled="1" data-skills="island-shop-conventions · playwright-e2e" data-src="全局" data-status="ok"><i class="lnode__st"></i><div class="lnode__id">实现</div><div class="lnode__role">impl · 推进里程碑至待审</div><div class="lnode__cfg"><span class="chip">Claude · opus-5</span><span class="chip">high</span><span class="chip chip--on">启用</span></div></div>
+            <div class="lnode lnode--ai lnode--claude lnode--err" data-node="audit" data-drawer="routeDrawer" tabindex="0" data-title="审计" data-role="audit" data-cli="Claude Code" data-model="claude-opus-5" data-effort="high" data-enabled="1" data-skills="vitest-runner · playwright-e2e" data-src="全局" data-status="err"><i class="lnode__st bad"></i><div class="lnode__id">审计</div><div class="lnode__role">audit · 独立复验，reopen 或关闭</div><div class="lnode__cfg"><span class="chip chip--err">Claude · opus-5 = 实现</span><span class="chip">high</span></div></div>
+            <div class="lnode lnode--rust" data-node="rebase"><svg class="ic"><use href="#i-lock"/></svg><div class="lnode__id">rebase</div><div class="lnode__role">固定 · 到最新 main</div><div class="lnode__cfg"><span class="chip">冲突 → 实现修</span></div></div>
+            <div class="lnode lnode--human" data-node="merge_wait"><svg class="ic"><use href="#i-hand"/></svg><div class="lnode__id">待合并</div><div class="lnode__role">人工 · 你点合并</div><div class="lnode__cfg"><span class="chip">文件列表 · 统计</span></div></div>
+            <div class="lnode lnode--rust" data-node="merge"><svg class="ic"><use href="#i-lock"/></svg><div class="lnode__id">合并</div><div class="lnode__role">固定 · merge 到默认分支</div><div class="lnode__cfg"><span class="chip">主工作树须干净</span></div></div>
+            <div class="lnode lnode--rust" data-node="cleanup"><svg class="ic"><use href="#i-lock"/></svg><div class="lnode__id">清理</div><div class="lnode__role">固定 · 删 worktree 与分支</div><div class="lnode__cfg"><span class="chip">docs 留在 main</span></div></div>
+            <div class="lnode lnode--end" data-node="done"><div class="lnode__id">完成</div><div class="lnode__role">已合并进 main</div></div>
+          </div>
+        </div>
+        <div class="legend-row" style="margin-top:4px"><span><span class="sw" style="border-color:#b7c6e5;background:#eef2ff"></span>Claude Code</span><span><span class="sw" style="border-color:#d3bff2;background:#f5efff"></span>Codex</span><span><span class="sw" style="border-color:#a9e3d3;background:#e8faf5"></span>实现者</span><span><span class="sw" style="border-color:#d4c4a8;background:#f0e8d8;border-style:dashed"></span>固定系统步骤</span><span><span class="sw" style="border-color:#f7cd67;background:#fff8e0"></span>人工停顿</span><span><span class="ln"></span>通过</span><span><span class="ln rej"></span>驳回 / 返工</span><span class="muted" style="margin-left:auto">每个角色可单独关闭 · 关闭评审时裁决一并跳过</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="drawer-mask" id="drawerMask"></div>
+
+<!-- 新建任务 -->
+<aside class="drawer" id="newTaskDrawer" aria-label="新建任务">
+  <div class="drawer__head"><h2 class="drawer__title">新建任务</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="row" style="margin-bottom:12px"><span class="tag tag--soft-blue">岛屿商店</span><span class="tag tag--outlined">从 main @ c7d2e9a 切分支</span><span class="tag tag--soft-yellow">并行 3 / 3 已满 · 将排队 #2</span></div>
+    <div class="sec" style="margin:0 0 6px"><h3>一句话需求</h3></div>
+    <label class="input input--area"><textarea placeholder="例如：退款流程支持部分退款，退款成功后库存回补，不改支付网关。" style="min-height:84px"></textarea></label>
+    <div class="sec" style="margin:14px 0 6px"><h3>附件</h3><span class="muted">复制进任务目录，随分支提交</span></div>
+    <div class="dropzone">把文件拖到这里，或点击选择</div>
+    <div class="row" style="gap:6px;margin-top:8px"><span class="tag tag--soft-brown"><svg class="ic"><use href="#i-doc"/></svg>refund-policy.pdf · 1.2 MB</span><span class="tag tag--soft-brown"><svg class="ic"><use href="#i-doc"/></svg>退款状态机.png</span></div>
+    <div class="sec" style="margin:14px 0 6px"><h3>仓库内文档</h3><span class="muted">引用，不复制</span></div>
+    <span class="select" style="width:100%">docs/payments/refund-notes.md <span class="chev"></span></span>
+    <div class="quiet" style="margin-top:14px">提交后由任务整理节点调研仓库、生成任务文件并起标题，不再确认。第一次停顿在设计定稿后。</div>
+  </div>
+  <div class="drawer__foot"><button class="modal__btn" data-close>取消</button><button class="btn btn--yellow" style="margin-left:auto" data-close data-notify="success|已创建 T-020|并行已满，排队 #2 · 任一任务释放槽位后自动启动。">创建并启动</button></div>
+</aside>
+
+<!-- 设计文档（应用内渲染） -->
+<aside class="drawer" id="docDrawer" aria-label="设计文档">
+  <div class="drawer__head"><h2 class="drawer__title">checkout-flow.md</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body md">
+    <div class="row" style="margin-bottom:10px"><span class="tag tag--soft-brown">设计文档 v3</span><span class="tag tag--soft-green">已定稿 · 13:10</span><span class="tag tag--outlined">docs/checkout-flow/</span><button class="btn btn--sm btn--text" style="margin-left:auto" data-notify="info|已在编辑器打开|~/code/island-shop/.worktree/checkout-flow/docs/checkout-flow/checkout-flow.md">在编辑器打开</button></div>
+    <dl class="stblock"><dt>status</dt><dd>实现中</dd><dt>design-round</dt><dd>3 / 15</dd><dt>implementation-round</dt><dd>4 / 25</dd><dt>current-milestone</dt><dd>M-03</dd><dt>reopens</dt><dd>1</dd><dt>convergence-mode</dt><dd>normal</dd><dt>next-action</dt><dd>补 promo.spec.ts 大小写用例，跑 vitest src/checkout/promo</dd></dl>
+    <h4>目标</h4><p>在现有结算链路上加入优惠码、库存校验与确认邮件，不触碰 src/payments/**。</p>
+    <h4>里程碑</h4>
+    <ul><li><b>M-01</b> 购物车数据模型 · 验收 <code class="cmd">vitest src/cart</code> · 已完成</li><li><b>M-02</b> 结算接口 · 验收 <code class="cmd">vitest src/checkout/api</code> · p95 &lt; 300ms · 已完成</li><li><b>M-03</b> 优惠码校验 · 验收 <code class="cmd">vitest src/checkout/promo</code> · 待审 · reopen 1（大小写）</li><li><b>M-04</b> 库存不足阻止下单 · 验收 <code class="cmd">vitest src/checkout/inventory</code> · 开放</li><li><b>M-05</b> 确认邮件 · 复用 lib/mailer.ts · 开放</li></ul>
+    <h4>Backlog</h4><ul><li>B-01 优惠码使用次数上限（评审第 2 轮提出，非阻塞）</li><li>B-02 结算接口日志脱敏（审计第 3 轮建议）</li></ul>
+    <h4>争议项</h4><ul><li>D3-P02 优惠码是否大小写敏感 · 复提 2 次冻结 · 等你裁定</li></ul>
+  </div>
+</aside>
+
+<!-- 会话日志 -->
+<aside class="drawer" id="logDrawer" aria-label="会话日志">
+  <div class="drawer__head"><h2 class="drawer__title">审计 #3</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="row" style="margin-bottom:12px"><span class="tag tag--soft-purple">Codex · gpt-5.4 · high</span><span class="tag tag--outlined">13:48 → 13:59 · 11m</span><span class="tag tag--soft-yellow">结果：M-03 reopen · 实现缺陷</span></div>
+    <dl class="kv" style="margin-bottom:12px"><dt>启动语句</dt><dd>Please execute docs/checkout-flow/checkout-flow-task.md Task 1 additional task 4.</dd><dt>技能</dt><dd>vitest-runner · playwright-e2e（绑定）</dd><dt>日志</dt><dd>.autome/output/sessions/2026-09-15T13-48-audit.log</dd></dl>
+<div class="log">[13:48:02] session start · role=audit · runtime=codex:gpt-5.4
+[13:48:05] read docs/checkout-flow/checkout-flow.md (status: 实现中, M-03 待审)
+[13:48:41] run: npx vitest run src/checkout/promo
+[13:49:12]   ✓ 41 passed · 0 failed · 0 skipped
+[13:51:30] independent probe: POST /checkout {promo:"SUMMER10"} → 200
+[13:51:33] independent probe: POST /checkout {promo:"summer10"} → 200 (expected 400 per design §3.2)
+[13:55:10] verdict: 实现缺陷 · M-03 待审 → 开放 · reopen-domains += promo-case
+[13:58:47] write docs/checkout-flow/checkout-flow-audit.md (overwrite)
+[13:58:52] append docs/checkout-flow/retro.md
+[13:59:01] launch next: additional task 3 (impl) → LAUNCHED
+[13:59:01] session end</div>
+  </div>
+</aside>
+
+<!-- 待你决定 -->
+<aside class="drawer" id="decideDrawer" aria-label="待你决定">
+  <div class="drawer__head"><h2 class="drawer__title">待你决定</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="quiet" style="margin-bottom:12px">T-015 购物车结算流程 · 3 条 · 表态不会打断运行，在下一个停顿点「待合并」消费。纳入 Backlog 会让任务退回实现。</div>
+    <div class="stack" style="gap:10px">
+      <div class="decide"><div class="decide__k">争议项 · D3-P02 · 复提 2 次冻结</div><div class="decide__t">优惠码是否大小写敏感</div><div class="decide__d"><b>评审方</b>：用户输入习惯不一，应不敏感，与 promo-rules.csv 一致。<br><b>设计方</b>：运营后台生成的码区分大小写，敏感可避免撞码。</div><div class="pick"><span class="tag tag--outlined on">采纳评审方 · 不敏感</span><span class="tag tag--outlined">维持设计 · 敏感</span><span class="tag tag--outlined">写裁定…</span></div></div>
+      <div class="decide"><div class="decide__k">Backlog · B-01 · 评审第 2 轮</div><div class="decide__t">优惠码使用次数上限</div><div class="decide__d">每个码可设总次数与每人次数；当前设计未覆盖。</div><div class="pick"><span class="tag tag--outlined">纳入 · 成为新里程碑</span><span class="tag tag--outlined on">忽略 · 写入 retro</span></div></div>
+      <div class="decide"><div class="decide__k">Backlog · B-02 · 审计第 3 轮</div><div class="decide__t">结算接口日志脱敏</div><div class="decide__d">当前日志打印完整邮箱与优惠码；建议脱敏。</div><div class="pick"><span class="tag tag--outlined on">纳入 · 成为新里程碑</span><span class="tag tag--outlined">忽略 · 写入 retro</span></div></div>
+    </div>
+  </div>
+  <div class="drawer__foot"><button class="modal__btn" data-close>稍后</button><button class="btn btn--yellow" style="margin-left:auto" data-close data-notify="success|表态已保存|1 条裁定 · 1 条纳入 · 1 条忽略。到待合并时任务会退回实现，把 B-02 做成 M-06。">保存表态</button></div>
+</aside>
+
+<!-- 已归档 -->
+<aside class="drawer" id="archiveDrawer" aria-label="已归档任务">
+  <div class="drawer__head"><h2 class="drawer__title">已归档</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="quiet" style="margin-bottom:12px">岛屿商店 · 5 个 · 归档 = 任务目录移入 docs/.archive/，从列表移出；合并记录仍在 main 历史里。恢复会把目录移回 docs/。</div>
+    <div class="stack" style="gap:6px">
+      <div class="archrow"><b>T-010</b><span>优惠券中心<small>合并 5c6d7e8 · 09-08 · docs/.archive/coupon-center/</small></span><button class="btn btn--sm btn--text" data-notify="success|已恢复 T-010|目录已移回 docs/coupon-center/，回到「已完成」。">恢复</button></div>
+      <div class="archrow"><b>T-009</b><span>地址簿<small>合并 2b3c4d5 · 09-06 · docs/.archive/address-book/</small></span><button class="btn btn--sm btn--text" data-notify="success|已恢复 T-009|目录已移回 docs/address-book/，回到「已完成」。">恢复</button></div>
+      <div class="archrow"><b>T-008</b><span>商品评价<small>合并 9a0b1c2 · 09-03 · docs/.archive/product-reviews/</small></span><button class="btn btn--sm btn--text" data-notify="success|已恢复 T-008|目录已移回 docs/product-reviews/，回到「已完成」。">恢复</button></div>
+      <div class="archrow"><b>T-007</b><span>购物车持久化<small>合并 6d7e8f9 · 08-30 · docs/.archive/cart-persist/</small></span><button class="btn btn--sm btn--text" data-notify="success|已恢复 T-007|目录已移回 docs/cart-persist/，回到「已完成」。">恢复</button></div>
+      <div class="archrow"><b>T-006</b><span>首页轮播<small>合并 3f4a5b6 · 08-27 · docs/.archive/home-carousel/</small></span><button class="btn btn--sm btn--text" data-notify="success|已恢复 T-006|目录已移回 docs/home-carousel/，回到「已完成」。">恢复</button></div>
+    </div>
+    <div class="quiet" style="margin-top:12px">移动目录只落在默认分支工作树，提交由你自己做，与改配置同一规则。</div>
+  </div>
+</aside>
+
+<!-- 变更文件 -->
+<aside class="drawer" id="filesDrawer" aria-label="变更文件">
+  <div class="drawer__head"><h2 class="drawer__title">变更文件</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="row" style="margin-bottom:12px"><span class="tag tag--soft-teal">autome/checkout-flow → main</span><span class="tag tag--outlined">5 commits</span><span class="tag tag--outlined">14 文件 · +412 −57</span><button class="btn btn--sm btn--text" style="margin-left:auto" data-notify="info|已在编辑器打开|git diff main...autome/checkout-flow">在编辑器看 diff</button></div>
+    <div class="stack" style="gap:5px">
+      <div class="filerow"><span>src/checkout/api/checkout.ts</span><span><span class="add">+88</span><span class="del">−12</span></span></div>
+      <div class="filerow"><span>src/checkout/promo/validate.ts</span><span><span class="add">+64</span><span class="del">−0</span></span></div>
+      <div class="filerow"><span>src/checkout/promo/promo.spec.ts</span><span><span class="add">+71</span><span class="del">−3</span></span></div>
+      <div class="filerow"><span>src/checkout/inventory/guard.ts</span><span><span class="add">+42</span><span class="del">−8</span></span></div>
+      <div class="filerow"><span>src/checkout/inventory/guard.spec.ts</span><span><span class="add">+39</span><span class="del">−0</span></span></div>
+      <div class="filerow"><span>src/checkout/notify/sendConfirmation.ts</span><span><span class="add">+31</span><span class="del">−0</span></span></div>
+      <div class="filerow"><span>src/checkout/notify/notify.spec.ts</span><span><span class="add">+28</span><span class="del">−0</span></span></div>
+      <div class="filerow"><span>src/cart/model.ts</span><span><span class="add">+19</span><span class="del">−21</span></span></div>
+      <div class="filerow"><span>docs/checkout-flow/checkout-flow.md</span><span><span class="add">+9</span><span class="del">−6</span></span></div>
+      <div class="filerow"><span>docs/checkout-flow/retro.md</span><span><span class="add">+11</span><span class="del">−0</span></span></div>
+      <div class="filerow muted"><span>… 4 个文件</span><span><span class="add">+10</span><span class="del">−7</span></span></div>
+    </div>
+    <div class="sec" style="margin:14px 0 6px"><h3>提交</h3></div>
+    <div class="quiet" style="line-height:1.8">9e1a2b3 feat(checkout): confirmation mail via lib/mailer<br>7c4d5e6 feat(checkout): block order when inventory short<br>5a6b7c8 fix(promo): case-insensitive code match (M-03 reopen)<br>3e4f5a6 feat(promo): validate promo code<br>1b2c3d4 feat(cart): checkout data model</div>
+  </div>
+</aside>
+
+<!-- 角色路由 -->
+<aside class="drawer" id="routeDrawer" aria-label="配置角色">
+  <div class="drawer__head"><h2 class="drawer__title" id="rdTitle">审计</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="row" style="margin-bottom:14px"><span class="tag tag--soft-brown" id="rdRole">audit</span><span class="srcchip srcchip--g" id="rdSrc">全局</span><span class="tag tag--soft-red" id="rdStatus">被阻止</span></div>
+    <div class="form">
+      <label>启用</label><span class="row"><span class="switch switch--sm checked" id="rdOn" role="switch" aria-checked="true"></span><span class="small muted">关闭后该节点跳过</span></span>
+      <label>CLI</label><span class="select" id="rdCli">Claude Code <span class="chev"></span></span>
+      <label>模型</label><span class="select" id="rdModel">claude-opus-5 <span class="chev"></span></span>
+      <label>Effort</label><span class="select" id="rdEffort">high <span class="chev"></span></span>
+      <label>绑定的技能</label><span class="row" id="rdSkills"><span class="tag tag--soft-brown">vitest-runner</span><span class="tag tag--soft-brown">playwright-e2e</span><button class="btn btn--sm btn--text">+ 添加</button></span>
+      <label>配置来源</label><span class="row"><span class="small muted" id="rdSrcNote">全局默认 · 项目视图中可覆盖</span><button class="btn btn--sm btn--text" id="rdReset">恢复默认</button></span>
+    </div>
+    <div class="impact" id="rdImpact" style="margin-top:14px;border-color:var(--animal-error);background:#fbe0e0"><svg class="ic" style="color:#c94444"><use href="#i-warn"/></svg><div id="rdImpactText"><b>审计与实现相同：Claude Code · claude-opus-5。</b>评测侧必须与生成侧不同模型，否则保存被阻止。把审计改回 Codex，或把实现改成别的模型。</div></div>
+    <div class="quiet" style="margin-top:12px">保存后对下一个启动的节点生效，正在跑的会话不打断。绑定的技能 = 该角色启动时必须使用；绑定到看不见它的 CLI 会被阻止。</div>
+  </div>
+  <div class="drawer__foot"><button class="modal__btn" data-close>取消</button><button class="btn btn--yellow" style="margin-left:auto" id="rdSave" aria-disabled="true" data-close data-notify="success|已保存|下一个启动的节点生效。">保存</button></div>
+</aside>
+
+<!-- 修改绑定 -->
+<aside class="drawer" id="bindDrawer" aria-label="修改绑定">
+  <div class="drawer__head"><h2 class="drawer__title">repo-facts</h2><button class="modal__close" data-close>×</button></div>
+  <div class="drawer__body">
+    <div class="row" style="margin-bottom:12px"><span class="tag tag--soft-brown">全局 · ~/.claude/skills/</span><span class="tag tag--soft-green">Claude ✓</span><span class="tag tag--outlined">Codex —</span></div>
+    <div class="quiet" style="margin-bottom:12px">勾选的角色启动时必须使用这个技能。角色所用 CLI 看不到它时不能勾选。</div>
+    <div class="stack" style="gap:8px">
+      <label class="cbx"><span class="cbx__box"><svg viewBox="0 0 12 11"><path d="M1 5.5 L4.5 9 L11 1.5"/></svg></span><span>设计 · Claude Code</span></label>
+      <label class="cbx checked"><span class="cbx__box"><svg viewBox="0 0 12 11"><path d="M1 5.5 L4.5 9 L11 1.5"/></svg></span><span>评审 · Codex <span class="tag tag--soft-red" style="margin-left:6px"><svg class="ic"><use href="#i-warn"/></svg>看不到此技能</span></span></label>
+      <label class="cbx"><span class="cbx__box"><svg viewBox="0 0 12 11"><path d="M1 5.5 L4.5 9 L11 1.5"/></svg></span><span>裁决 · Claude Code</span></label>
+      <label class="cbx"><span class="cbx__box"><svg viewBox="0 0 12 11"><path d="M1 5.5 L4.5 9 L11 1.5"/></svg></span><span>实现 · Claude Code</span></label>
+      <label class="cbx"><span class="cbx__box"><svg viewBox="0 0 12 11"><path d="M1 5.5 L4.5 9 L11 1.5"/></svg></span><span>审计 · Codex <span class="small muted" style="margin-left:6px">看不到，不可选</span></span></label>
+    </div>
+    <div class="impact" style="margin-top:14px;border-color:var(--animal-error);background:#fbe0e0"><svg class="ic" style="color:#c94444"><use href="#i-warn"/></svg><div>评审角色当前用 Codex，而 repo-facts 只在 ~/.claude/skills 下。取消勾选，或把它也放进 ~/.agents/skills。</div></div>
+  </div>
+  <div class="drawer__foot"><button class="modal__btn" data-close>取消</button><button class="btn btn--yellow" style="margin-left:auto" aria-disabled="true">保存</button></div>
+</aside>
+
+<!-- 添加项目 -->
+<div class="modal-mask" id="newProjectModal">
+  <div class="modal"><div class="modal__clip">
+    <div class="modal__head"><h2 class="modal__title">添加项目</h2><button class="modal__close" data-close>×</button></div>
+    <p class="modal__lead">选一个目录。之后的所有任务都在它里面发生。</p>
+    <div class="modal__body">
+      <div class="row"><label class="input" style="flex:1"><svg class="ic"><use href="#i-git"/></svg><input value="~/code/coral-notes" readonly></label><button class="btn">浏览…</button></div>
+      <dl class="bindlist" style="margin-top:12px"><dt>目录</dt><dd>存在 · 空目录</dd><dt>Git</dt><dd>不是仓库 → 将执行 git init，默认分支 main</dd><dt>初始化</dt><dd>写入 .autome/ 脚手架，提交 init commit</dd><dt>.gitignore</dt><dd>追加 .worktree/ 与 .autome/output/</dd><dt>之后</dt><dd>进入 Onboarding：Claude 起草画像与 AGENTS.md，再选 Loop 配置</dd></dl>
+      <p style="margin:12px 0 0;font-size:12.5px">选择目录即视为受信。Onboarding 可以跳过，跳过则直接用全局默认；首个任务会自己补画像。</p>
+    </div>
+    <div class="modal__foot"><button class="modal__btn" data-close>取消</button><button class="modal__btn" data-close data-notify="success|已添加 珊瑚笔记|git init 完成 · init commit 3f1e2a · 使用全局默认配置。">跳过 Onboarding</button><button class="btn btn--yellow" data-close data-modal="onboardingModal">添加并开始 Onboarding</button></div>
+  </div></div>
+</div>
+
+<!-- Onboarding -->
+<div class="modal-mask" id="onboardingModal">
+  <div class="modal"><div class="modal__clip">
+    <div class="modal__head"><h2 class="modal__title">Onboarding · 珊瑚笔记</h2><button class="modal__close" data-close>×</button></div>
+    <p class="modal__lead">五步，随时可以跳过剩下的。</p>
+    <div class="modal__body">
+      <div class="wstep done"><div class="wstep__n"><svg class="ic ic--sm"><use href="#i-check"/></svg></div><div><div class="wstep__t">选择目录</div><div class="wstep__d">~/code/coral-notes · 空目录 · 已 git init</div></div></div>
+      <div class="wstep done"><div class="wstep__n"><svg class="ic ic--sm"><use href="#i-check"/></svg></div><div><div class="wstep__t">初始化 .autome</div><div class="wstep__d">脚手架已写入 · init commit 3f1e2a</div></div></div>
+      <div class="wstep now"><div class="wstep__n">3</div><div><div class="wstep__t">Claude Code 起草画像与 AGENTS.md</div><div class="wstep__d">正在 iTerm2 中运行 · 空目录，Claude 会问你 3 个关于项目定位的问题 · 已 2m</div></div></div>
+      <div class="wstep"><div class="wstep__n">4</div><div><div class="wstep__t">确认产物</div><div class="wstep__d">在这里预览并编辑 docs/agent-project-profile.md 与 AGENTS.md</div></div></div>
+      <div class="wstep"><div class="wstep__n">5</div><div><div class="wstep__t">Loop 配置</div><div class="wstep__d">从全局默认复制一份，按这个项目改</div></div></div>
+    </div>
+    <div class="modal__foot"><button class="modal__btn" data-close>稍后继续</button><button class="modal__btn" data-close data-notify="info|已跳过|使用全局默认配置；首个任务会自己补画像。">跳过剩下的</button><button class="btn btn--yellow" data-close data-notify="info|已切到 iTerm2|窗口 autome · 珊瑚笔记 · Onboarding">打开 iTerm 查看</button></div>
+  </div></div>
+</div>
+
+<!-- 一键安装 -->
+<div class="modal-mask" id="installModal">
+  <div class="modal"><div class="modal__clip">
+    <div class="modal__head"><h2 class="modal__title">安装 iTerm2</h2><button class="modal__close" data-close>×</button></div>
+    <p class="modal__lead">在可见终端里执行，你能看到全过程。</p>
+    <div class="modal__body">
+      <div class="log" style="margin-bottom:12px">brew install --cask iterm2</div>
+      <dl class="bindlist"><dt>前置</dt><dd>Homebrew 4.4.8 ✓</dd><dt>执行位置</dt><dd>系统 Terminal（iTerm2 尚未安装）</dd><dt>权限</dt><dd>用户级 · 可能要求一次密码</dd><dt>完成后</dt><dd>自动重新检测，后续会话改用 iTerm2</dd></dl>
+    </div>
+    <div class="modal__foot"><button class="modal__btn" data-close>取消</button><button class="btn btn--yellow" data-close data-notify="info|已打开 Terminal|正在执行 brew install --cask iterm2 · 完成后自动重新检测。">在终端中安装</button></div>
+  </div></div>
+</div>
+
+<!-- 合并 -->
+<div class="modal-mask" id="mergeModal">
+  <div class="modal"><div class="modal__clip">
+    <div class="modal__head"><h2 class="modal__title">合并到 main</h2><button class="modal__close" data-close>×</button></div>
+    <p class="modal__lead">岛屿商店 · T-013 商品搜索联想。合并由你点，不会自动发生。</p>
+    <div class="modal__body">
+      <dl class="bindlist"><dt>分支</dt><dd>autome/search-suggest → main @ c7d2e9a</dd><dt>提交</dt><dd>3 commits · 9 文件 · +203 −18</dd><dt>rebase</dt><dd>干净 · 已在最新 main 上</dd><dt>审计</dt><dd>通过 · 第 6 轮 · Codex gpt-5.4</dd><dt>主工作树</dt><dd>干净 ✓</dd><dt>合并后</dt><dd>删除 .worktree/search-suggest 与分支 · docs 留在 main</dd></dl>
+      <div class="row" style="margin-top:12px"><button class="btn btn--sm" data-drawer="filesDrawer">看文件列表</button></div>
+    </div>
+    <div class="modal__foot"><button class="modal__btn" data-close>稍后</button><button class="btn btn--yellow" data-close data-notify="success|已合并到 main|merge commit 4d5e6f7 · worktree 与分支已清理 · T-013 完成。">合并</button></div>
+  </div></div>
+</div>
+
+<div class="notif-root"><div class="position-topRight" id="notifStack"></div></div>
+
+<script>
+(function () {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const ICONS = { success: '#i-check', info: '#i-bell', warning: '#i-warn', error: '#i-x' };
+  function notify(type, message, description, duration = 4500) {
+    const el = document.createElement('div'); el.className = 'notif notif--' + type; el.setAttribute('role', 'status');
+    el.innerHTML = `<span class="notif__ico"><svg class="ic"><use href="${ICONS[type] || '#i-bell'}"/></svg></span><div class="notif__body"><div class="notif__title"></div>${description ? '<div class="notif__desc"></div>' : ''}</div><button class="notif__close" aria-label="关闭">×</button>`;
+    el.querySelector('.notif__title').textContent = message; if (description) el.querySelector('.notif__desc').textContent = description;
+    const close = () => { if (el.classList.contains('leaving')) return; el.classList.add('leaving'); setTimeout(() => el.remove(), 260); };
+    el.querySelector('.notif__close').addEventListener('click', e => { e.stopPropagation(); close(); });
+    $('#notifStack').appendChild(el); if (duration > 0) setTimeout(close, duration);
+  }
+  const NAV = { dash: 'dash', projects: 'projects', project: 'projects', task: 'projects', env: 'env', skills: 'skills', settings: 'settings', routing: 'settings' };
+  function animateBars(root) { $$('.progress__fill[data-w]', root).forEach(f => { f.style.width = '0%'; requestAnimationFrame(() => requestAnimationFrame(() => { f.style.width = f.dataset.w + '%'; })); }); }
+  function replay(root) { $$('.reveal', root).forEach(el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; }); }
+  function centerRoute(root) { $$('.route', root).forEach(r => { const now = $('.stone.now', r); if (now) r.scrollLeft = now.offsetLeft - r.clientWidth / 2 + now.offsetWidth / 2; }); }
+  function showScreen(id) {
+    const scr = $(`.screen[data-screen="${id}"]`); if (!scr) return;
+    $$('.screen').forEach(s => s.classList.toggle('active', s === scr));
+    $$('.nav__item').forEach(n => n.classList.toggle('active', n.dataset.nav === NAV[id]));
+    $('#main').scrollTop = 0; replay(scr); animateBars(scr); centerRoute(scr);
+    if (id === 'routing') requestAnimationFrame(() => requestAnimationFrame(drawGraph));
+  }
+  let openLayer = null;
+  function closeLayer() { if (!openLayer) return; $('#' + openLayer).classList.remove('open'); $('#drawerMask').classList.remove('open'); $('#window').classList.remove('recessed'); openLayer = null; }
+  function openDrawer(id) { closeLayer(); $('#drawerMask').classList.add('open'); $('#' + id).classList.add('open'); $('#window').classList.add('recessed'); openLayer = id; }
+  function openModal(id) { closeLayer(); $('#' + id).classList.add('open'); openLayer = id; }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLayer(); if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.card--link, .card--hoverable, .lnode--ai, .docrow, .sess')) { e.preventDefault(); e.target.click(); } });
+
+  /* 任务面板演示状态 */
+  const TSTATE = {
+    running: { tag: '<span class="spin"></span>实现 · 第 4 / 25 轮', cls: 'tag tag--solid-teal', title: '停顿面板', stop: '当前无需操作', stopCls: 'tag tag--outlined', now: 'impl' },
+    approve: { tag: '<svg class="ic"><use href="#i-hand"/></svg>设计定稿 · 等待批准', cls: 'tag tag--solid-yellow', title: '批准设计', stop: '等待你', stopCls: 'tag tag--solid-yellow', now: 'approve' },
+    merge:   { tag: '<svg class="ic"><use href="#i-branch"/></svg>待合并 · 审计通过', cls: 'tag tag--solid-green', title: '合并到 main', stop: '等待你', stopCls: 'tag tag--solid-green', now: 'merge' },
+    failed:  { tag: '<svg class="ic"><use href="#i-warn"/></svg>实现预算耗尽 · 25 / 25', cls: 'tag tag--solid-red', title: '预算耗尽，怎么办', stop: '等待你', stopCls: 'tag tag--solid-red', now: 'impl' },
+  };
+  const STONES = ['approve', 'impl', 'audit', 'rebase', 'merge'];
+  function setTaskState(s) {
+    const d = TSTATE[s]; if (!d) return;
+    $$('.tstate').forEach(el => el.classList.toggle('active', el.dataset.tstate === s));
+    $$('#tstateToggle button').forEach(b => b.classList.toggle('active', b.dataset.setTstate === s));
+    const tg = $('#tsTag'); tg.className = d.cls; tg.innerHTML = d.tag;
+    $('#stopTitle').textContent = d.title; const st = $('#stopTag'); st.textContent = d.stop; st.className = d.stopCls;
+    const idx = STONES.indexOf(d.now);
+    STONES.forEach((k, i) => { const el = $(`[data-stone="${k}"]`); el.classList.toggle('done', i < idx); el.classList.toggle('now', i === idx); const dot = $('.stone__dot', el); dot.innerHTML = i < idx ? '<svg class="ic"><use href="#i-check"/></svg>' : ''; });
+    if (s === 'approve') { const el = $('[data-stone="approve"]'); el.classList.remove('done'); el.classList.add('now'); }
+    centerRoute($('.screen[data-screen="task"]'));
+  }
+
+  document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.closest('[data-close]') || t.id === 'drawerMask' || t.classList.contains('modal-mask')) closeLayer();
+    const ts = t.closest('[data-set-tstate]'); if (ts) { setTaskState(ts.dataset.setTstate); return; }
+    const ar = t.closest('[data-archive]'); if (ar) { e.stopPropagation(); archiveCard(ar.closest('.taskcard'), ar.dataset.archive); return; }
+    const aa = t.closest('[data-archive-all]'); if (aa) { const cards = $$('#doneGrid .taskcard'); if (!cards.length) { notify('info', '没有可归档的任务', '已完成列表为空。'); return; } cards.forEach(c => archiveCard(c, $('.taskcard__id', c).textContent, true)); notify('success', `已归档 ${cards.length} 个任务`, '目录已移入 docs/.archive/，可在「已归档」里恢复。'); return; }
+    const sw = t.closest('.switch'); if (sw && !sw.classList.contains('disabled')) { sw.classList.toggle('checked'); sw.setAttribute('aria-checked', sw.classList.contains('checked')); notify('info', '已记录', '保存后对下一个启动的节点生效。', 2500); return; }
+    const cb = t.closest('.cbx'); if (cb) { cb.classList.toggle('checked'); return; }
+    const pk = t.closest('.pick .tag'); if (pk) { $$('.tag', pk.parentElement).forEach(x => x.classList.remove('on')); pk.classList.add('on'); return; }
+    const n = t.closest('.lnode--ai'); if (n) fillRouteDrawer(n.dataset);
+    const act = t.closest('[data-nav],[data-goto],[data-drawer],[data-modal],[data-notify]'); if (!act) return;
+    if (act.getAttribute('aria-disabled') === 'true') return;
+    if (act.dataset.fill) { const src = $(`.lnode--ai[data-role="${act.dataset.fill}"]`); if (src) fillRouteDrawer(src.dataset); }
+    if (act.dataset.notify) { const [type, title, desc] = act.dataset.notify.split('|'); notify(type, title, desc); }
+    if (act.dataset.tstate) setTaskState(act.dataset.tstate);
+    if (act.dataset.drawer) openDrawer(act.dataset.drawer); else if (act.dataset.modal) openModal(act.dataset.modal); else if (act.dataset.goto) showScreen(act.dataset.goto); else if (act.dataset.nav) showScreen(act.dataset.nav);
+  });
+
+  function archiveCard(card, id, silent) {
+    if (!card) return; card.classList.add('leaving');
+    setTimeout(() => { card.remove(); const left = $$('#doneGrid .taskcard').length; const dc = $('#doneCount'); if (dc) dc.textContent = left ? `${left} 个 · 已合并进 main · 归档后移出列表，可恢复` : '0 个 · 已完成的任务都归档了'; const ab = $('.btn[data-drawer="archiveDrawer"]'); if (ab) ab.textContent = `已归档 ${5 + (ARCHIVED += 1)}`; }, 260);
+    if (!silent) notify('success', `已归档 ${id}`, '任务目录移入 docs/.archive/，从列表移出；可在「已归档」里恢复。');
+  }
+  let ARCHIVED = 0;
+  function fillRouteDrawer(d) {
+    $('#rdTitle').textContent = d.title; $('#rdRole').textContent = d.role;
+    const on = $('#rdOn'); on.classList.toggle('checked', d.enabled === '1'); on.setAttribute('aria-checked', d.enabled === '1');
+    $('#rdCli').innerHTML = d.cli + ' <span class="chev"></span>'; $('#rdModel').innerHTML = d.model + ' <span class="chev"></span>'; $('#rdEffort').innerHTML = (d.effort || '默认') + ' <span class="chev"></span>';
+    $('#rdSkills').innerHTML = (d.skills ? d.skills.split(' · ').map(s => `<span class="tag tag--soft-brown">${s}</span>`).join(' ') : '<span class="small muted">未绑定 · 自由选择</span>') + ' <button class="btn btn--sm btn--text">+ 添加</button>';
+    const src = $('#rdSrc'); src.textContent = d.src; src.className = 'srcchip ' + (d.src.startsWith('项目') ? 'srcchip--p' : 'srcchip--g');
+    const err = d.status === 'err'; const st = $('#rdStatus'); st.textContent = err ? '被阻止' : '有效'; st.className = 'tag ' + (err ? 'tag--soft-red' : 'tag--soft-green');
+    $('#rdImpact').classList.toggle('hide', !err); const sv = $('#rdSave'); sv.setAttribute('aria-disabled', err ? 'true' : 'false');
+  }
+  const rb = $('#recheckBtn'); if (rb) rb.addEventListener('click', () => { const orig = rb.innerHTML; rb.classList.add('btn--loading'); rb.textContent = '检测中…'; setTimeout(() => { rb.classList.remove('btn--loading'); rb.innerHTML = orig; notify('warning', '检测完成', 'Codex 仍为登录失效 · iTerm2 仍缺失。'); }, 1200); });
+
+  /* Loop 图：按节点位置绘制边 */
+  const EDGES = [
+    ['intake','plan'],['plan','review'],['review','adjudicate'],
+    ['adjudicate','review',{rej:1,via:'bottom',d:26,label:'复审'}],
+    ['adjudicate','design_approval'],
+    ['design_approval','plan',{rej:1,via:'top',d:26,label:'驳回 + 意见'}],
+    ['design_approval','impl',{gy:40,t:.2,label:'批准'}],
+    ['impl','audit'],
+    ['audit','impl',{rej:1,via:'bottom',d:26,label:'reopen'}],
+    ['audit','rebase'],
+    ['rebase','impl',{rej:1,via:'top',d:26,ex:10,label:'冲突'}],
+    ['rebase','merge_wait'],['merge_wait','merge'],['merge','cleanup'],['cleanup','done'],
+  ];
+  function drawGraph() {
+    const g = $('#loopGraph'); if (!g || !g.offsetParent) return;
+    const layer = $('#edgeLayer'); $$('path, text', layer).forEach(x => x.remove()); const gb = g.getBoundingClientRect();
+    const box = id => { const el = $(`[data-node="${id}"]`, g); const r = el.getBoundingClientRect(); return { x: r.left - gb.left, y: r.top - gb.top, w: r.width, h: r.height, lane: +el.closest('.lane').dataset.lane }; };
+    EDGES.forEach(([a, b, o = {}]) => {
+      const A = box(a), B = box(b); const sx = o.sx || 0, ex = o.ex || 0, t = o.t ?? .5; let d, lx, ly;
+      if (A.lane === B.lane && !o.via) { const x1 = A.x + A.w, y1 = A.y + A.h / 2, x2 = B.x, y2 = B.y + B.h / 2; d = `M${x1},${y1} L${x2},${y2}`; lx = x1 + (x2 - x1) * t; ly = y1 - 8; }
+      else if (A.lane === B.lane) { const dep = o.d || 30; const x1 = A.x + A.w / 2 + sx, x2 = B.x + B.w / 2 + ex; const y = o.via === 'top' ? A.y : A.y + A.h; const sgn = o.via === 'top' ? -1 : 1; d = `M${x1},${y} C${x1},${y + sgn * dep} ${x2},${y + sgn * dep} ${x2},${y}`; lx = (x1 + x2) / 2; ly = y + sgn * dep * 0.78 + (sgn < 0 ? -2 : 4); }
+      else if (A.lane < B.lane) { const x1 = A.x + A.w / 2 + sx, y1 = A.y + A.h, x2 = B.x + B.w / 2 + ex, y2 = B.y; const gy = y1 + (o.gy ?? 30); d = `M${x1},${y1} L${x1},${gy} L${x2},${gy} L${x2},${y2}`; lx = x1 + (x2 - x1) * t; ly = gy - 6; }
+      else { const x1 = A.x + A.w / 2 + sx, y1 = A.y, x2 = B.x + B.w / 2 + ex, y2 = B.y + B.h; const gy = y1 - (o.gy ?? 30); d = `M${x1},${y1} L${x1},${gy} L${x2},${gy} L${x2},${y2}`; lx = x1 + (x2 - x1) * t; ly = gy - 6; }
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', o.rej ? '#e59266' : '#19c8b9'); p.setAttribute('stroke-width', '2.5'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round'); if (o.rej) p.setAttribute('stroke-dasharray', '6 5'); p.setAttribute('marker-end', o.rej ? 'url(#arrRej)' : 'url(#arrPass)'); layer.appendChild(p);
+      if (o.label) { const tx = document.createElementNS('http://www.w3.org/2000/svg', 'text'); tx.setAttribute('x', lx); tx.setAttribute('y', ly); tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('font-size', '10.5'); tx.setAttribute('font-weight', '800'); tx.setAttribute('fill', o.rej ? '#a0522d' : '#0b6f66'); tx.setAttribute('stroke', '#f8f8f0'); tx.setAttribute('stroke-width', '4'); tx.setAttribute('paint-order', 'stroke'); tx.setAttribute('font-family', 'Nunito, Noto Sans SC, sans-serif'); tx.textContent = o.label; layer.appendChild(tx); }
+    });
+  }
+  window.addEventListener('resize', drawGraph);
+
+  animateBars(document); centerRoute(document);
+  setTimeout(() => notify('info', '欢迎回来', '4 个任务在跑；有 4 件事等你。', 4000), 600);
+})();
+</script>
+</body>
+</html>

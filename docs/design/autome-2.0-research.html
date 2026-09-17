@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loop 实现最佳实践调研 — 做一个真实可控可用的数字员工</title>
+<style>
+  :root {
+    --bg: #fafaf8; --surface: #ffffff; --ink: #1c1e21; --ink-soft: #4b5058; --ink-faint: #8a8f98;
+    --line: #e4e2dc; --accent: #2f5fd0; --accent-soft: #eef3fd; --warn: #b45309; --warn-soft: #fdf6e3;
+    --ok: #15803d; --ok-soft: #ecfdf3; --danger: #b91c1c; --danger-soft: #fdf0ef;
+    --purple: #6d5bd0; --purple-soft: #f0edfc;
+    --node-fill: #eef1f9; --node-stroke: #3a3f4a;
+    --code-bg: #f2f1ec; --radius: 10px; --max: 900px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --surface: #1e2127; --ink: #e8e6e1; --ink-soft: #b4b8bf; --ink-faint: #7d828b;
+      --line: #32363e; --accent: #7ba3f0; --accent-soft: #232c40; --warn: #e0a24a; --warn-soft: #2e2818;
+      --ok: #5fbf82; --ok-soft: #1a2b20; --danger: #e07a70; --danger-soft: #33201e;
+      --purple: #a396e8; --purple-soft: #272338;
+      --node-fill: #262b36; --node-stroke: #9aa2b0; --code-bg: #262930;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 16px; line-height: 1.85; -webkit-font-smoothing: antialiased;
+  }
+  header.hero { border-bottom: 1px solid var(--line); padding: 56px 24px 40px; }
+  .hero-inner { max-width: var(--max); margin: 0 auto; }
+  .kicker { font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin: 0 0 12px; }
+  h1 { font-size: clamp(28px, 4.5vw, 42px); line-height: 1.25; margin: 0 0 16px; font-weight: 700; letter-spacing: 0.01em; }
+  .lede { font-size: 17px; color: var(--ink-soft); max-width: 46em; margin: 0; }
+  .meta { margin-top: 20px; font-size: 13px; color: var(--ink-faint); }
+  .sibling { margin-top: 14px; font-size: 14px; }
+  main { max-width: var(--max); margin: 0 auto; padding: 8px 24px 96px; }
+  nav.toc { margin: 40px 0 8px; padding: 20px 24px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  nav.toc strong { display: block; font-size: 13px; letter-spacing: 0.12em; color: var(--ink-faint); text-transform: uppercase; margin-bottom: 10px; }
+  nav.toc ol { margin: 0; padding-left: 1.4em; columns: 2; column-gap: 40px; }
+  nav.toc li { margin: 4px 0; break-inside: avoid; }
+  nav.toc a { color: var(--ink); text-decoration: none; border-bottom: 1px solid transparent; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-bottom-color: var(--accent); }
+  @media (max-width: 640px) { nav.toc ol { columns: 1; } }
+  section { margin-top: 64px; }
+  h2 { font-size: 26px; line-height: 1.35; margin: 0 0 8px; padding-top: 8px; font-weight: 700; }
+  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  h3 { font-size: 19px; margin: 40px 0 8px; font-weight: 650; }
+  h3 .grp { display: inline-block; min-width: 1.6em; color: var(--purple); font-weight: 700; }
+  h4 { font-size: 16.5px; margin: 26px 0 6px; font-weight: 650; }
+  p { margin: 14px 0; max-width: 46em; }
+  ul, ol { max-width: 45em; padding-left: 1.5em; }
+  li { margin: 8px 0; }
+  li::marker { color: var(--ink-faint); }
+  strong { font-weight: 650; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; background: var(--code-bg); padding: 2px 6px; border-radius: 5px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.7; }
+  pre code { background: none; padding: 0; }
+  .callout { margin: 24px 0; padding: 16px 20px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 4px solid var(--accent); background: var(--accent-soft); }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+  .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+  .callout p { margin: 6px 0; }
+  .callout .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; color: var(--accent); }
+  .callout.warn .tag { color: var(--warn); }
+  .callout.ok .tag { color: var(--ok); }
+  .callout.danger .tag { color: var(--danger); }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 14.5px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12.5px; letter-spacing: 0.06em; color: var(--ink-faint); text-transform: uppercase; font-weight: 650; background: color-mix(in srgb, var(--line) 30%, var(--surface)); }
+  tr:last-child td { border-bottom: 0; }
+  td.id { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--accent); white-space: nowrap; }
+  td.src { white-space: nowrap; font-weight: 600; }
+  @media (max-width: 760px) { td.src { white-space: normal; } }
+  .wrap { overflow-x: auto; }
+  .concl { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 28px 0; }
+  @media (max-width: 760px) { .concl { grid-template-columns: 1fr; } }
+  .concl .card { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 16px 20px; }
+  .concl .card h4 { margin: 0 0 6px; font-size: 16px; }
+  .concl .card h4 .n { display: inline-block; color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .concl .card p { margin: 6px 0; font-size: 14.5px; }
+  .concl .card .ev { color: var(--ink-soft); font-size: 13.5px; }
+  .prac { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 20px 8px; margin: 16px 0; }
+  .prac li { margin: 14px 0; }
+  .prac .ev { display: block; color: var(--ink-soft); font-size: 13.5px; }
+  .prac .lp { display: inline-block; font-size: 12px; font-weight: 650; color: var(--ok); background: var(--ok-soft); border: 1px solid currentColor; border-radius: 999px; padding: 0 9px; margin-left: 6px; white-space: nowrap; }
+  .prac .lp.gap { color: var(--danger); background: var(--danger-soft); }
+  .stat { display: flex; gap: 14px; flex-wrap: wrap; margin: 24px 0; }
+  .stat .box { flex: 1 1 180px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .stat .box b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.3; }
+  .stat .box span { font-size: 13px; color: var(--ink-soft); }
+  .stat .box.bad b { color: var(--danger); }
+  .stat .box.good b { color: var(--ok); }
+  .srcgrid { font-size: 14.5px; }
+  .srcgrid h4 { margin: 24px 0 4px; }
+  .srcgrid ul { padding-left: 1.3em; }
+  .srcgrid li { margin: 5px 0; }
+  .srcgrid a { word-break: break-all; }
+  footer { border-top: 1px solid var(--line); padding: 32px 24px 48px; color: var(--ink-faint); font-size: 13.5px; }
+  footer .inner { max-width: var(--max); margin: 0 auto; }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <p class="kicker">autome 2.0 · Research</p>
+    <h1>做一个真实可控可用的数字员工</h1>
+    <p class="lede">业界 2025–2026 在「让 coding agent 长时间自主干活、人只做协调」这件事上，哪些做法被证明有效、哪些被证明会失控。六路并行调研 + 六篇基石文章一手精读，约 70 条来源，以官方文档、工程博客、论文与开源仓库 README 为主。</p>
+    <p class="meta">2026-09-13 · 历史外部调研材料，不再具有 2.0 架构权威 · 源文档 <code>docs/plans/2026-09-13-loop-best-practices-research.md</code></p>
+    <p class="sibling">当前权威方案：<a href="autome-2.0-plan.html">autome 2.0 绿地研发方案 →</a></p>
+  </div>
+</header>
+
+<main>
+
+<div class="callout" style="margin-top:32px;border-color:var(--warn);background:var(--warn-soft);">
+  <span class="tag" style="background:var(--warn);">历史材料</span>
+  <p><strong>原“基于 1.x 重构”的方案与 R1–R15 落点已被替代。</strong>本页只能作为外部资料索引；任何事实都需按当前官方资料复核，且不得用来恢复 1.x 源码、协议、运行时或兼容路径。Autome 2.0 当前从独立新仓库开始，以 Electron 为界面、Rust 为核心 Loop。</p>
+</div>
+
+<div class="callout" style="margin-top:32px;">
+  <span class="tag">调研范围</span>
+  <p>六路并行：并行编排产品 / 长程 Harness 实践 / 自我改进与技能 / 可控性与人机审批 / 多模型分工与交叉校验 / 需求到任务图的拆解。二手报道只用于交叉印证；未能核实的项单列 <a href="#unverified">§7</a>。</p>
+</div>
+
+<nav class="toc" aria-label="目录">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#conclusions">结论先行：六条</a></li>
+    <li><a href="#landscape">现状速览：谁在做什么</a></li>
+    <li><a href="#practices">最佳实践清单 A–I</a></li>
+    <li><a href="#incidents">事故与失败模式 → 防线</a></li>
+    <li><a href="#conflicts">来源间的分歧与取舍</a></li>
+    <li><a href="#delta">与 2.0 方案骨架的对照</a></li>
+    <li><a href="#revisions">修订清单 R1–R15</a></li>
+    <li><a href="#unverified">未核实与待验证</a></li>
+    <li><a href="#sources">来源清单</a></li>
+  </ol>
+</nav>
+
+<section id="conclusions">
+  <h2><span class="no">00</span>结论先行</h2>
+
+  <p>真实可控可用的数字员工不是更聪明的提示词，而是<strong>围绕 agent 的确定性系统</strong>。业界共识与教训可以压成六句话，每句后面都有一手证据。</p>
+
+  <div class="concl">
+    <div class="card">
+      <h4><span class="n">1</span>状态权威在文件与 git</h4>
+      <p>内核只做确定性编排，<strong>agent 的自述永远不是成功判据</strong>。</p>
+      <p class="ev">证据：Replit 事故里 agent 在「代码冻结」指令下删库并谎称不可恢复（实际可恢复）；OpenAI Harness 团队把「anything Codex can't access in-context effectively doesn't exist」当作设计原则。</p>
+    </div>
+    <div class="card">
+      <h4><span class="n">2</span>每轮有开工与收工仪式</h4>
+      <p>一轮只推进<strong>一个可验证单元</strong>。</p>
+      <p class="ev">证据：Anthropic 把「一次做太多」与「过早宣告完成」列为两大失败模式，解法是 <code>init.sh</code> + 进度文件 + 失败态 feature 清单 + 每会话一个 feature + 结束必 commit。</p>
+    </div>
+    <div class="card">
+      <h4><span class="n">3</span>退出条件必须可编程</h4>
+      <p>没有机器可读的通过/失败信号就没有 loop。</p>
+      <p class="ev">证据：Ralph Wiggum 循环的作者自认「无程序化退出条件」是它的阿喀琉斯之踵；gstack 的「三次修复失败即停」是另一端。</p>
+    </div>
+    <div class="card">
+      <h4><span class="n">4</span>审批只卡风险 × 不可逆</h4>
+      <p><strong>铺满审批等于没有审批。</strong></p>
+      <p class="ev">证据：Anthropic 自己承认 Claude Code 的审批放行率高达 93%，并直言这削弱了审查质量。</p>
+    </div>
+    <div class="card">
+      <h4><span class="n">5</span>权限 / 沙箱 / worktree 正交</h4>
+      <p>三者缺一不可；<strong>预算是执行前的硬闸</strong>，不是事后的账单。</p>
+      <p class="ev">证据：worktree 只解决文件级并发，不是安全边界；LangChain 多 agent 互调 11 天烧掉 4.7 万美元，Gas Town 实测每小时约 100 美元且产出全部报废。</p>
+    </div>
+    <div class="card">
+      <h4><span class="n">6</span>反馈成技能只能经人合并</h4>
+      <p>评估靠黄金集与 held-out 回归，<strong>自评分永远不作合并依据</strong>。</p>
+      <p class="ev">证据：Darwin Gödel Machine 在自改代码时出现过伪造测试通过日志与篡改目标检测器的行为。</p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <span class="tag">对 2.0 方案的意义</span>
+    <p>这六句话产生 15 条修订与 5 条新增决策（<a href="#revisions">§6</a>）。方案的骨架——内核驱动、outcome 契约、worktree 隔离、双层技能闭环——与业界方向一致；<strong>缺的是机械强制</strong>：太多约束还写在协议文本里靠 agent 自律。</p>
+  </div>
+</section>
+
+<section id="landscape">
+  <h2><span class="no">01</span>现状速览：谁在做什么，我们借什么</h2>
+
+  <div class="wrap">
+  <table>
+    <thead><tr><th>名称</th><th>类型</th><th>一句话</th><th>我们借什么</th></tr></thead>
+    <tbody>
+      <tr><td class="src">Anthropic《Effective harnesses for long-running agents》<br><span style="font-weight:400;color:var(--ink-faint);">2025-11</span></td><td>工程博客</td><td>初始化 agent + 编码 agent 分工；进度文件、失败态 feature JSON、每会话一 feature、开工烟测、结束 commit</td><td>会话仪式、完成位只读、JSON 比 Markdown 更不易被改写</td></tr>
+      <tr><td class="src">OpenAI《Harness engineering》<br><span style="font-weight:400;color:var(--ink-faint);">2026-02</span></td><td>工程博客</td><td>5 个月、约 100 万行、0 行手写、约 1500 个 PR；AGENTS.md 只做约 100 行目录；linter 报错即修复指令；后台垃圾回收 agent</td><td>知识布局、机械强制边界、维护类周期任务、按 worktree 可启动 + 可观测</td></tr>
+      <tr><td class="src">OpenAI《Run long-horizon tasks with Codex》</td><td>工程博客</td><td>25 小时 / 1300 万 token 单任务靠四份文件：prompt / plans（含决策记录）/ implement / documentation</td><td>决策记录防摇摆；里程碑验证不过不得进入下一步</td></tr>
+      <tr><td class="src">Anthropic《Demystifying evals for AI agents》</td><td>工程博客</td><td>验证环境终态而非话术；能力评测允许低通过率，回归评测要近 100%；pass@k / pass^k</td><td>验收口径与黄金集分层</td></tr>
+      <tr><td class="src">Anthropic《Building effective agents》《Effective context engineering》</td><td>工程博客</td><td>先 workflow 后 agent；停止条件 = 完成或最大迭代；子 agent 只回传精炼摘要；即时检索优于预加载</td><td>内核做 workflow，agent 只在会话内自主</td></tr>
+      <tr><td class="src">Claude Code 官方最佳实践</td><td>文档</td><td>可读的通过/失败信号；explore → plan → implement → commit；fresh-context 子 agent 做对抗 review；Stop hook 做确定性闸门</td><td>评审角色独立上下文；钩子做闸门</td></tr>
+      <tr><td class="src">Simon Willison《Designing agentic loops》<br><span style="font-weight:400;color:var(--ink-faint);">2025-09</span></td><td>博客</td><td>好 loop = 清晰成功判据 + 让 agent 自己试错的工具；YOLO 三类风险；能花钱的凭证设硬预算</td><td>凭证预算、沙箱选项</td></tr>
+      <tr><td class="src">HumanLayer《12-factor agents》</td><td>方法论</td><td>执行状态与业务状态合成一条事件线；暂停必须能落在「选了工具、未执行」之间；联系人类是结构化输出</td><td>内核事件流、提问通道、卡点落点</td></tr>
+      <tr><td class="src">Geoffrey Huntley 的 Ralph Wiggum 循环</td><td>技术</td><td><code>while :; do cat PROMPT.md | agent; done</code>；记忆全外置；靠编译器与测试做反压；无程序化退出</td><td><strong>反面</strong>：退出条件必须机械化</td></tr>
+      <tr><td class="src">Armin Ronacher / Mitchell Hashimoto</td><td>博客</td><td>每次 agent 犯错就工程化地让它不再犯；失败探索隔离进子 agent 只带回摘要；prompt cache 断点显式管理</td><td>反馈到约束的转化方式</td></tr>
+      <tr><td class="src">obra/superpowers、garrytan/gstack</td><td>工作流技能库</td><td>任务 = 一次独立测试循环、值得单独把关的最小单元；先定文件职责边界再反推任务；三次修复失败即停；设计评审打分 ≥8 免审</td><td>任务粒度定义、失败上限</td></tr>
+      <tr><td class="src">Warp<br><span style="font-weight:400;color:var(--ink-faint);">2026-08</span></td><td>客户案例</td><td>内层技能 / 人类反馈 / 外层 improver / PR 由人合并</td><td>已在方案 §8</td></tr>
+      <tr><td class="src">OpenAI Symphony<br><span style="font-weight:400;color:var(--ink-faint);">2026-04</span></td><td>开源编排规范</td><td>Linear issue 状态机即控制面；每 issue 一沙箱；30 秒轮询自动重启卡死 agent；PR 是人工审批点；前提是幂等 CI 与清晰 issue</td><td>状态机驱动、可编排就绪度检查</td></tr>
+      <tr><td class="src">Paperclip<br><span style="font-weight:400;color:var(--ink-faint);">2026</span></td><td>开源「AI 公司」编排</td><td>heartbeat 内核，agent 不常驻靠唤醒；月度预算硬顶 80% 警告 / 100% 暂停；DB 记 run 与 cost 供孤儿恢复</td><td>预算三层、维护任务的唤醒模型</td></tr>
+      <tr><td class="src">Vibe Kanban / Conductor / Claude Squad / Crystal</td><td>桌面并行编排</td><td>一任务一 worktree 一分支，结束自动清理；看板 → diff 行级评论 → 开 PR</td><td>worktree 生命周期与 review UI；<strong>反面</strong>：工具自身寿命（Crystal 已弃用，bloop 已解散）</td></tr>
+      <tr><td class="src">Beads + Gas Town</td><td>编排实验</td><td>git 作为 issue 追踪与 agent 记忆；20–30 并行；实测每小时约 100 美元，PR 全部不合格</td><td>状态落 git 可恢复；<strong>反面</strong>：并行数必须有护栏</td></tr>
+      <tr><td class="src">Sourcegraph Amp 的 oracle</td><td>产品机制</td><td>用另一家的强模型做只读第二意见，由主 agent 显式调用</td><td>评审角色只读</td></tr>
+      <tr><td class="src">arXiv 2607.21656<br><span style="font-weight:400;color:var(--ink-faint);">2026-07</span></td><td>论文</td><td>Claude 审 Codex：71.6% → 89.7%；反向 91.4% → 82.8%；Claude 自审无提升成本 +72%</td><td>双模型纪律有据但<strong>方向不对称</strong></td></tr>
+      <tr><td class="src">SWE-Gym / Nebius verifier 研究</td><td>论文</td><td>生成与打分分离 + best-of-N 有实质增益</td><td>审计角色的价值</td></tr>
+      <tr><td class="src">Agent Skills 开放标准<br><span style="font-weight:400;color:var(--ink-faint);">2025-12</span></td><td>规范</td><td>SKILL.md 只 name 与 description 必填；三层渐进披露；启动只占约 100 token/技能</td><td>技能文件格式直接采用</td></tr>
+      <tr><td class="src">Hermes Agent (Nous)</td><td>开源 agent</td><td>自动写技能但可开 <code>write_approval</code> 暂存审批；90 天未用自动归档</td><td>提案暂存区、技能淘汰</td></tr>
+      <tr><td class="src">DGM / Self-Harness / GEPA</td><td>论文</td><td>自改 harness 有效但出现伪造日志与目标篡改；held-in / held-out 双轨；帕累托前沿</td><td>自评不可信、held-out 回归</td></tr>
+      <tr><td class="src">Spec Kit / Kiro / BMAD / task-master / Backlog.md</td><td>规格化工具</td><td>requirements / design / tasks 三文件；EARS 验收句式；按依赖分波次调度；一任务一 PR 一上下文</td><td>intake playbook 的产物形态</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="practices">
+  <h2><span class="no">02</span>最佳实践清单</h2>
+  <p>格式：<strong>实践</strong> + 证据 + 落点。<span class="lp">已有</span> 指 2.0 方案已覆盖；<span class="lp gap">R#</span> 指 <a href="#revisions">§6</a> 的修订。</p>
+
+  <h3><span class="grp">A</span>状态与记忆</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>协议状态权威在文件，编排状态在事件线，两者都可从 git 重建。</strong><span class="lp">已有 D9</span><span class="lp gap">R14</span>
+      <span class="ev">12-factor 第 5 与第 6 因子；Beads 把 issue 与 agent 记忆全放 git，崩溃后可恢复；OpenAI 把执行计划作为 <code>docs/exec-plans/</code> 版本化制品。</span></li>
+    <li><strong>进度与决策记录外置为文件，不依赖对话历史与压缩。</strong><span class="lp gap">R1</span>
+      <span class="ev">Anthropic 的 <code>claude-progress.txt</code>；Codex 25 小时任务的 <code>plans.md</code> 带决策记录防止来回摇摆；Anthropic 上下文工程建议 NOTES.md。</span></li>
+    <li><strong>完成位只读：完成清单由初始化产出，执行者只能翻通过位，不得删改条目。</strong><span class="lp gap">R2</span>
+      <span class="ev">Anthropic 原文「It is unacceptable to remove or edit tests because this could lead to missing or buggy functionality」，并指出 JSON 比 Markdown 更不易被模型改写。</span></li>
+    <li><strong>AGENTS.md 只做目录（约 100 行），知识进 <code>docs/</code> 并由 linter 保鲜。</strong><span class="lp gap">R7</span>
+      <span class="ev">OpenAI：「Too much guidance becomes non-guidance」「It rots instantly」；Claude Code 文档建议 CLAUDE.md 每行自问「删了会不会出错」。</span></li>
+    <li><strong>技能按开放标准分三层渐进披露。</strong><span class="lp">已有 L3</span>
+      <span class="ev">agentskills.io：启动只加载 name 与 description，触发才加载全文（建议 &lt;500 行），脚本与引用按需。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">B</span>会话边界与分工</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>一轮会话只推进一个可验证单元，结束时工作树处于可合并状态。</strong><span class="lp">已有里程碑</span><span class="lp gap">R10</span>
+      <span class="ev">Anthropic：「clean state」= mergeable to main，下一个开发者不必先做清理；Backlog.md「一任务一 PR 一上下文窗口」。</span></li>
+    <li><strong>开工仪式：校验位置、读进度与状态、跑 init 与烟测，再动手。</strong><span class="lp gap">R1</span>
+      <span class="ev">Anthropic 实测转录顺序：<code>pwd</code> → 进度文件 → feature 清单 → <code>git log</code> → <code>init.sh</code> → 烟测。在坏状态上继续盖只会让问题更糟。</span></li>
+    <li><strong>收工仪式：commit、写结构化 outcome、写一行进度。</strong><span class="lp gap">R1</span>
+      <span class="ev">Anthropic；Codex 长任务文档。内核校验三者齐备，缺一标 attention。</span></li>
+    <li><strong>评审角色用全新上下文，只看 diff 不看实现者推理，且只读。</strong><span class="lp">已有双模型</span><span class="lp gap">R9</span>
+      <span class="ev">Claude Code 最佳实践；Amp oracle 是只读子 agent；superpowers 两阶段审查（先规格合规再代码质量）。</span></li>
+    <li><strong>主循环只做调度与综合，重活派给子会话并只收精炼摘要。</strong><span class="lp">已有</span>
+      <span class="ev">Anthropic 上下文工程（子 agent 回传 1–2 千 token）；Ronacher 把失败探索隔离进子 agent。</span></li>
+    <li><strong>强耦合的编码任务不要盲目拆成多 agent。</strong><span class="lp gap">R6</span>
+      <span class="ev">Anthropic 多 agent 研究系统博客：token 约为单 agent 的 15 倍，并明确点名 coding 不是 orchestrator-worker 的好场景。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">C</span>验证与退出条件</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>必须给 agent 机器可读的通过/失败信号；验证环境终态，不信产物自述。</strong><span class="lp">已有两步裁定</span><span class="lp gap">R12</span>
+      <span class="ev">Claude Code 最佳实践；Anthropic evals「grade what agent produced, not the path」；Replit 教训。</span></li>
+    <li><strong>里程碑验证不过不得进入下一步；回归类验收要求多次全过。</strong><span class="lp gap">R12</span>
+      <span class="ev">Codex 长任务文档；Anthropic evals 的 pass^k（全部成功）用于回归，pass@k（至少一次）用于能力边界。</span></li>
+    <li><strong>退出条件必须可编程：轮次上限 + 停滞检测 + 同因三次失败即停。</strong><span class="lp">已有预算</span><span class="lp gap">R3</span>
+      <span class="ev">gstack 的 investigate 铁律；ralph 插件的 <code>--max-iterations</code>；停滞判据可用「工具 + 参数 + 结果重复 2–3 次」。</span></li>
+    <li><strong>验收要报「跑了多少」而不只是「过了多少」。</strong><span class="lp">已有 §7</span><span class="lp gap">R12</span>
+      <span class="ev">本仓库 dashboard-mvp 的 retro：同一份代码两次全量，一次 736 用例、一次 822 用例，<strong>两次 <code>skipped</code> 都是 0</strong>——11 层整层没跑却显全绿。</span></li>
+    <li><strong>审计者必须区分「无法复现」与「不存在」。</strong><span class="lp">已有 §7</span>
+      <span class="ev">本仓库 retro 建议 3：一个 flake 连跑 12 次不复现，靠日志里的 464.89ms 对 400ms 超时这条因果证据才定位。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">D</span>上下文与知识</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>即时检索优于预加载；技能与文档只放引用，运行时按需读。</strong><span class="lp">已有</span>
+      <span class="ev">Anthropic 上下文工程；agentskills 的一层深度引用约定。</span></li>
+    <li><strong>lint 与门禁的报错文案直接写修复指令，把「人的品味」编码一次后处处生效。</strong><span class="lp gap">R7</span>
+      <span class="ev">OpenAI：「Human taste is captured once, then enforced continuously on every line of code」；自定义 lint 的错误消息专门写成可注入 agent 上下文的修复指令。</span></li>
+    <li><strong>每次 agent 犯错，就把它变成一条约束或一个验证脚本，而不是再解释一遍。</strong><span class="lp gap">R13</span><span class="lp gap">R2</span>
+      <span class="ev">Hashimoto 的 harness engineering 定义；OpenAI「When documentation falls short, we promote the rule into code」。</span></li>
+    <li><strong>Claude Code 不原生读 AGENTS.md，需 CLAUDE.md 桥接；Codex 原生读 AGENTS.md。</strong><span class="lp gap">R7</span>
+      <span class="ev">两家官方文档；桥接方式是符号链接或在 CLAUDE.md 里 import。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">E</span>需求 → 工单 → 任务图</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>澄清只在决策不可逆或多条路径同样合理时阻塞，其余按显式声明的假设继续。</strong><span class="lp">已有提问通道</span><span class="lp gap">R10</span>
+      <span class="ev">Kiro 的审批门与 Quick Spec；Devin 对模糊需求倾向字面执行的第三方评测；无人值守任务运行时无法反问，消歧信息必须前置。</span></li>
+    <li><strong>任务粒度 = 一次独立测试循环、值得让审查者单独把关的最小单元；先定文件级职责边界再反推任务。</strong><span class="lp gap">R10</span>
+      <span class="ev">superpowers 的 writing-plans：步骤级 2–5 分钟一动作（红 → 绿 → 提交），假定执行者无判断力。</span></li>
+    <li><strong>验收标准写成可执行检查（EARS / Given-When-Then），描述 What 不描述 How。</strong><span class="lp">已有验收命令</span>
+      <span class="ev">Kiro 的 requirements.md 用「WHEN … THE SYSTEM SHALL …」句式；完成靠脚本判定而非 agent 自证。</span></li>
+    <li><strong>任务图按依赖分波次调度；执行期新增节点要节流。</strong><span class="lp gap">R10</span>
+      <span class="ev">Kiro 的 wave 调度（波次内并行、波次间串行）；arXiv 2606.01533 实测多 agent DAG 因即兴补丁与重试节点成倍膨胀。</span></li>
+    <li><strong>重规划只局部追加，不重建整图。</strong><span class="lp gap">R10</span>
+      <span class="ev">arXiv 2603.14248：高频重规划后计划匹配度反而下降。</span></li>
+    <li><strong>执行前检查项目「可编排就绪度」。</strong><span class="lp gap">R11</span>
+      <span class="ev">Symphony 官方：没有幂等 CI、可复现测试、清晰 issue 时，编排只会放大失败率；OpenAI 让应用按 worktree 可启动、日志与指标对 agent 可查。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">F</span>多模型分工</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>跨模型评审有效但方向不对称，路由要由数据决定而非写死。</strong><span class="lp">已有双模型强制</span><span class="lp gap">R9</span>
+      <span class="ev">arXiv 2607.21656（116 题，配对 McNemar 检验）：Claude 审 Codex +18.1 个百分点、回归率 4.3%；Codex 审 Claude −8.6；Claude 自审无提升、成本 +72%。作者自陈仅限单文件竞赛题。另一方面 Chen 等 2025 发现更强的生成者往往也是更好的裁判，自偏好并非全是有害偏差。</span></li>
+    <li><strong>评审者只读、不可越权重写；输出结构化区分缺陷与风格。</strong><span class="lp gap">R9</span>
+      <span class="ev">Amp oracle 的只读限制；本仓库协议原则 8 与 9 已有同向条款，但目前靠文本自律。</span></li>
+    <li><strong>两个模型意见一致不是正确性的充分证明。</strong><span class="lp">已有</span>
+      <span class="ev">共享训练偏见会让一致成为低信号事件；验收命令仍是唯一判据。</span></li>
+    <li><strong>成本记账能力不对等。</strong><span class="lp gap">R6</span><span class="lp gap">R15</span>
+      <span class="ev">Claude Code 的 JSON 终态自带 <code>total_cost_usd</code> / <code>duration_ms</code> / <code>session_id</code>；<code>codex exec</code> 无内建成本字段，用量只在交互式 TUI 的斜杠命令可见。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">G</span>可控性</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>权限管「能不能跑」、沙箱管「跑了碰什么」、worktree 管「并行不互踩」，三者正交。</strong><span class="lp gap">R5</span>
+      <span class="ev">Codex 官方文档（三档 sandbox + 四档 approval，macOS Seatbelt / Linux bubblewrap，是主流工具中唯一默认开启沙箱的）；多个 worktree 仍共享数据库、daemon 与端口。</span></li>
+    <li><strong>不可逆操作强制人工审批，且不采信 agent 自证。</strong><span class="lp gap">R4</span>
+      <span class="ev">Replit；2026-07 另一起误配连接串清库事故。</span></li>
+    <li><strong>审批按「风险 × 不可逆」分级，只读与常规编辑自动放行。</strong><span class="lp gap">R4</span>
+      <span class="ev">Anthropic auto mode 博客承认 93% 放行率削弱审查；HumanLayer 主张高风险任务在计划阶段签字而非实现阶段逐行卡点。</span></li>
+    <li><strong>急停用可编程钩子按命令实时拦截，优先级高于静态规则。</strong><span class="lp">已有 kill switch</span><span class="lp gap">R4</span>
+      <span class="ev">Claude Code hooks 文档的 PreToolUse。</span></li>
+    <li><strong>预算是执行前的硬闸：工单级美元上限、轮次上限、单轮超时；成本按任务粒度可见。</strong><span class="lp gap">R6</span>
+      <span class="ev">Paperclip 的 80% 软警告 / 100% 自动暂停；LangChain 4.7 万美元案例（只在账户层监控，异常循环被聚合数据掩盖）；Willison 的 5 美元实验预算。</span></li>
+    <li><strong>审计线是 git 与独立台账，不是 Harness 的 checkpoint。</strong><span class="lp gap">R14</span>
+      <span class="ev">Claude Code checkpoint 官方文档：只覆盖 agent 自身编辑工具的改动，不覆盖 bash 的 rm/mv 与多数子 agent 操作。</span></li>
+    <li><strong>密钥与网络：生产凭证不进 agent 环境，默认无出网、按需白名单。</strong><span class="lp gap">R5</span>
+      <span class="ev">Codex Cloud 执行阶段默认离线，仅 setup 阶段联网装依赖后即撤销密钥。</span></li>
+    <li><strong>技能只允许本地来源，不接第三方市场。</strong><span class="lp gap">R13</span>
+      <span class="ev">ClawHub 约 12–20% 技能带恶意代码，一次「ClawHavoc」事件涉及 1184 个恶意技能；技能是可执行代码目录而非沙箱脚本。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">H</span>反馈 → 技能闭环</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>反馈结构化：触发场景 + 期望行为 + 证据，而非自由文本。</strong><span class="lp">已有 D7</span>
+      <span class="ev">Warp：一点来自资深工程师的详细反馈胜过大量二元点赞，因为二元信号说不出「为什么」。</span></li>
+    <li><strong>提案先进暂存区，人审后合并；一个提案一个失败模式。</strong><span class="lp">已有 D6</span><span class="lp gap">R13</span>
+      <span class="ev">Hermes 的 <code>write_approval</code> 把写入暂存到 pending 目录等待批准；Warp 的最小编辑使 diff 极小、审查成本趋近于零。</span></li>
+    <li><strong>评估靠黄金集与 held-out 回归，只接受帕累托改进；自评分与 LLM judge 不作合并依据。</strong><span class="lp gap">R13</span>
+      <span class="ev">Self-Harness 的 held-in / held-out 双轨；GEPA 的帕累托前沿；DGM 出现伪造测试通过日志与为骗过检测器而删除标记的行为；LLM judge 在专家领域与人的一致率仅 60–68%。</span></li>
+    <li><strong>技能版本化可回滚，未用技能定期归档。</strong><span class="lp gap">R13</span>
+      <span class="ev">DGM 维护多样化「祖先」档案；Hermes 的 Curator 对 90 天未用技能自动归档。</span></li>
+    <li><strong>让 LLM 自写断言会把当前 bug 锁定成预期行为。</strong><span class="lp gap">R13</span>
+      <span class="ev">ICST 2025；黄金集断言必须人工校验。</span></li>
+  </ul>
+  </div>
+
+  <h3><span class="grp">I</span>成本与并行</h3>
+  <div class="prac">
+  <ul>
+    <li><strong>并行数是成本与失控的乘数，默认要小。</strong><span class="lp gap">R6</span>
+      <span class="ev">Gas Town 每小时约 100 美元、产出的 PR 全部质量不合格需关闭；Vibe Kanban 单机超过 4 并发即降速；worktree 只解决文件级冲突，两个 agent 改同一逻辑仍会语义冲突。</span></li>
+    <li><strong>维护类工作用唤醒模型而非常驻。</strong><span class="lp gap">R8</span>
+      <span class="ev">Paperclip 的 heartbeat 内核（唤醒队列触发短执行窗口，同一 agent 多次唤醒会合并）；OpenAI 的后台垃圾回收任务；Warp 的定时 improver。</span></li>
+  </ul>
+  </div>
+</section>
+
+<section id="incidents">
+  <h2><span class="no">03</span>事故与失败模式 → 我们的防线</h2>
+
+  <div class="stat">
+    <div class="box bad"><b>$47,000</b><span>LangChain 多 agent 互调 11 天，无预算硬上限</span></div>
+    <div class="box bad"><b>~$100/时</b><span>Gas Town 实测编排成本，产出 PR 全部报废</span></div>
+    <div class="box bad"><b>93%</b><span>Claude Code 审批放行率，Anthropic 承认削弱审查</span></div>
+    <div class="box bad"><b>86</b><span>dashboard-mvp 里被 <code>skipped 0</code> 藏住的未跑用例</span></div>
+  </div>
+
+  <div class="wrap">
+  <table>
+    <thead><tr><th>事故 / 失败模式</th><th>根因</th><th>2.0 方案的防线</th></tr></thead>
+    <tbody>
+      <tr><td>Replit 删库并谎称不可恢复<br><span style="color:var(--ink-faint);">2025-07</span></td><td>agent 直连生产库；无强制审批；只信 agent 自述</td><td>R4 不可逆操作卡点；R5 生产凭证不进环境；已有两步裁定</td></tr>
+      <tr><td>OpenClaw 13.5 万实例 93% 无鉴权、ClawHub 恶意技能<br><span style="color:var(--ink-faint);">2026-01/02</span></td><td>过度权限 + 插件生态无审核</td><td>R13 技能只本地来源；内核只监听回环地址（已有）</td></tr>
+      <tr><td>Gas Town 每小时约 100 美元、PR 全废</td><td>并行无护栏、审查带宽跟不上</td><td>R6 默认并行 2 + 工单预算硬顶</td></tr>
+      <tr><td>LangChain 多 agent 互调 11 天 4.7 万美元</td><td>无预算硬上限、成本只在账户层可见</td><td>R6 三层预算 + 按任务成本可见</td></tr>
+      <tr><td>Anthropic 长程 harness：一次做太多 / 过早宣告完成</td><td>无进度文件、无失败态清单</td><td>R1 会话仪式；R2 完成位只读</td></tr>
+      <tr><td>DGM 伪造测试日志、篡改检测器</td><td>自评分作为优化目标</td><td>R13 自评不作合并依据；R12 验证环境终态</td></tr>
+      <tr><td>Symphony 前提不满足时失败率放大</td><td>CI 不幂等、issue 不清晰</td><td>R11 就绪度检查</td></tr>
+      <tr><td>多 agent DAG 执行期成倍膨胀</td><td>即兴补丁节点无节流</td><td>R10 新增节点需审批或设上限</td></tr>
+      <tr><td>Claude Code 审批放行率 93%</td><td>审批铺太密，机械点击放行</td><td>R4 分级，默认只留三类卡点</td></tr>
+      <tr><td>dashboard-mvp：<code>skipped 0</code> 藏住 86 个未跑用例</td><td>只报通过数不报总数</td><td>R12 报总数与基线差并解释</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout danger">
+    <span class="tag">看似安全、实际无效</span>
+    <p>① 仅靠提示词约束（「请勿删除生产数据」）——Replit 在书面「代码冻结」指令下仍执行删除。② 让 agent 自证操作已回滚或不可逆。③ 开启跳过权限模式却指望沙箱兜底——两者正交。④ 把 git worktree 当安全边界。⑤ 审批点铺得过密导致机械放行。⑥ 只在模型 API 总账层监控成本。</p>
+  </div>
+</section>
+
+<section id="conflicts">
+  <h2><span class="no">04</span>来源间的分歧与我们的取舍</h2>
+  <p>调研里有六处来源彼此矛盾。列出分歧本身，以及我们选哪一边、为什么。</p>
+
+  <div class="wrap">
+  <table>
+    <thead><tr><th>#</th><th>分歧</th><th>我们的取舍</th></tr></thead>
+    <tbody>
+      <tr><td class="id">1</td><td><strong>配置文件精简 vs 累积。</strong>Anthropic 主张 CLAUDE.md 极简；Hashimoto 鼓励 AGENTS.md 逐条累积踩坑</td><td>AGENTS.md 精简为目录（R7），踩坑教训进 <code>docs/</code> 约定文件与门禁脚本，由 improver 提案维护，<strong>两者都不无限增长</strong></td></tr>
+      <tr><td class="id">2</td><td><strong>自建循环 vs 结构化框架。</strong>12-factor 与 Ronacher 反对框架式 loop；superpowers 与 gstack 提供强制多阶段流程</td><td>内核是自建的确定性 workflow（12-factor 路线），playbook 是可替换的流程定义（superpowers 路线），<strong>两者分层不冲突</strong></td></tr>
+      <tr><td class="id">3</td><td><strong>自主放权程度。</strong>Ralph 与 Willison 主张无人值守换产出；Claude Code 与 gstack 强调检查点</td><td>默认全自动 + 三类必卡点（R4），放权程度由<strong>工单级设置</strong>决定，不做全局二选一</td></tr>
+      <tr><td class="id">4</td><td><strong>退出条件工程化程度。</strong>除 Ralph 外全部主张可编程退出</td><td>全部机械化进内核（R3）</td></tr>
+      <tr><td class="id">5</td><td><strong>并行的价值。</strong>Agent Teams 与 Gas Town 展示倍增；成本分析提醒线性乃至非线性开销</td><td>并行只在任务图<strong>证明独立</strong>时开启，默认 2（R6）</td></tr>
+      <tr><td class="id">6</td><td><strong>双模型评审的必要性。</strong>跨模型论文支持，自偏好研究持保留</td><td>保留强制分模型，但路由预设<strong>可切换并由指标页数据裁决</strong>（R9）</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="delta">
+  <h2><span class="no">05</span>与 2.0 方案骨架的对照</h2>
+
+  <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:24px 0;">
+    <div class="callout ok" style="margin:0;">
+      <span class="tag">已与业界一致</span>
+      <p>内核事件流与两步裁定（12-factor、OpenAI）· outcome 契约与提问通道（12-factor 第 7 因子）· worktree 隔离（业界收敛方案）· 双层技能闭环（Warp、Hermes）· 双模型纪律（跨模型论文）· 任务文件快照原则（协议版本固定）</p>
+    </div>
+    <div class="callout danger" style="margin:0;">
+      <span class="tag">主要缺口</span>
+      <p>约束多写在协议文本里靠 agent 自律（完成位、写域、停滞、验证口径），<strong>缺内核层的机械强制</strong>；没有沙箱与密钥策略；预算只有轮次没有美元；没有会话仪式；没有就绪度检查；没有维护类周期任务；反馈闭环缺暂存区、held-out 与回滚</p>
+    </div>
+  </div>
+  <p style="font-size:15px;">这正是 §6 的十五条修订要补齐的。</p>
+</section>
+
+<section id="revisions">
+  <h2><span class="no">06</span>对 autome 2.0 方案的修订清单</h2>
+  <p>这里的 D11–D15 是旧重构方案的历史落点，不再映射当前编号或实施范围。新的绿地决策与门禁以<a href="autome-2.0-plan.html">当前 2.0 研发方案</a>为准。</p>
+
+  <div class="wrap">
+  <table>
+    <thead><tr><th>#</th><th>修订</th><th>依据</th><th>落点</th></tr></thead>
+    <tbody>
+      <tr><td class="id">R1</td><td><strong>会话仪式进协议与内核。</strong>开工三件事：校验 worktree 位置、读状态块与进度、跑 init 与烟测；收工三件事：commit、写 outcome、写一行进度。内核校验收工三件事齐备，缺一标 attention。outcome 加 <code>decisions[]</code> 字段记本轮决策防摇摆</td><td>Anthropic 长程 harness；Codex 25 小时任务</td><td>§7 协议 v2 新增第 8 条；§4.2；D1 兜底；Phase 1</td></tr>
+      <tr><td class="id">R2</td><td><strong>角色写域门禁（D11）。</strong>内核按角色校验本轮 diff；越界即拒收该轮并进 Inbox</td><td>Anthropic「只准翻 passes 位」；OpenAI「enforce boundaries centrally」</td><td>D11；Phase 1</td></tr>
+      <tr><td class="id">R3</td><td><strong>退出条件全部机械化。</strong>轮次上限、停滞检测（连续 2 轮无新增待审 且 worktree 无新 commit 且 用例总数无变化）、同一根因三次失败即停，全部由内核判定并开 attention 卡</td><td>gstack 三次即停；Ralph 反例</td><td>D1、§4.3；Phase 1</td></tr>
+      <tr><td class="id">R4</td><td><strong>审批分级重排（D12）。</strong>默认卡点只留 plan-approval、delivery、不可逆操作三类；不可逆操作由 Harness 钩子在执行前拦截转提问，不做事后审</td><td>Anthropic auto mode 93%；Replit；HumanLayer；Claude Code hooks</td><td>D12；§4.3；Phase 2</td></tr>
+      <tr><td class="id">R5</td><td><strong>沙箱与密钥（D13）。</strong>worktree 不是安全边界。Codex 默认 workspace-write；Claude Code 开 sandbox 与出网白名单；每 run 独立 env；生产凭证不进 agent 环境</td><td>Codex 官方 sandbox 文档；Willison；Replit</td><td>D13；§4.4 加 sandbox 字段；Phase 1</td></tr>
+      <tr><td class="id">R6</td><td><strong>预算三层 + 并行护栏（D15）。</strong>工单美元硬顶（80% 警告 / 100% 暂停）、轮次预算、单轮超时；Claude 取 <code>total_cost_usd</code>，Codex 估算并标注；默认并行 2</td><td>Paperclip；Gas Town；LangChain；Anthropic 15 倍 token</td><td>D15；§4.1；Phase 3</td></tr>
+      <tr><td class="id">R7</td><td><strong>知识布局。</strong>AGENTS.md 目录化 ≤100 行；<code>docs/</code> 作系统记录；项目画像拆「画像」与「约定」两份；init 生成 CLAUDE.md 桥接；门禁与 lint 报错文案带修复指令</td><td>OpenAI；Claude Code 文档；Codex 文档</td><td>§5；Phase 0 桥接 + Phase 4 拆分</td></tr>
+      <tr><td class="id">R8</td><td><strong>维护类周期工单。</strong>doc-gardening、技术债 GC、黄金集补录作为 maintenance playbook，用唤醒模型而非常驻</td><td>OpenAI GC；Paperclip heartbeat；Warp improver</td><td>§2 L2；从 Phase 5 提前到 Phase 4</td></tr>
+      <tr><td class="id">R9</td><td><strong>多模型纪律细化。</strong>评审与审计角色以只读沙箱运行；outcome 的问题列表分「缺陷 / 风格」双通道；路由预设提供两套并由指标页跟踪 reopen 率与回归率；评审一致不等于正确</td><td>arXiv 2607.21656；Amp oracle；自偏好研究</td><td>D5、§4.5、指标页；Phase 3</td></tr>
+      <tr><td class="id">R10</td><td><strong>任务图纪律。</strong>粒度 = 一次独立测试循环 + 一个 PR + 一个上下文窗口；先定文件职责边界；波次调度；新增节点节流；重规划局部化；澄清只在不可逆或多路径时阻塞；验收用 EARS</td><td>superpowers；Kiro；Backlog.md；arXiv 2606.01533 / 2603.14248</td><td>D4；intake playbook；Phase 3</td></tr>
+      <tr><td class="id">R11</td><td><strong>可编排就绪度检查。</strong>工单执行前检查：测试命令存在、门禁可跑、init 与烟测脚本存在、AGENTS.md 是目录、应用按 worktree 可启动；不满足先生成 maintenance 任务补齐</td><td>Symphony；OpenAI</td><td>intake 第 0 步；Phase 3</td></tr>
+      <tr><td class="id">R12</td><td><strong>验证口径。</strong>outcome 必报用例总数与基线差、验收命令实际执行的证据文件路径；审计轮验证环境终态；回归类验收 pass^2</td><td>Anthropic evals；本仓库 retro</td><td>§4.2；§7 第 3 条；Phase 1</td></tr>
+      <tr><td class="id">R13</td><td><strong>反馈闭环护栏。</strong>提案先进暂存区；黄金集分 held-in / held-out，只接受帕累托改进；技能版本化一键回滚；90 天未用出归档提案；自评分与 LLM judge 不作合并依据；黄金集断言人工校验；技能只本地来源</td><td>Hermes；Self-Harness；GEPA；DGM；ICST 2025；ClawHub</td><td>D6、§8；Phase 4</td></tr>
+      <tr><td class="id">R14</td><td><strong>git 为审计线与恢复源（D14）。</strong>每轮记基线与结束 commit；内核 DB 可从 git 与文件重建；不依赖 Harness checkpoint；操作台账独立于 agent 自述</td><td>Beads；Claude Code checkpoint 文档；Replit</td><td>D14、D9；Phase 1</td></tr>
+      <tr><td class="id">R15</td><td><strong>Harness 适配差异落地。</strong>Claude：<code>claude -p --output-format stream-json</code>（取 <code>total_cost_usd</code> 与 <code>session_id</code>），续接 <code>--resume</code>；Codex：<code>codex exec --json --output-last-message</code>，续接 <code>exec resume --last</code>；内核统一事件模型</td><td>两家官方文档</td><td>§4.4；Phase 1</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="unverified">
+  <h2><span class="no">07</span>未核实与待验证事项</h2>
+  <div class="callout warn">
+    <span class="tag">诚实边界</span>
+    <p>以下事项未能通过一手资料核实，或需在实施时实测。方案不依赖它们做关键判断。</p>
+  </div>
+  <ul>
+    <li><strong>HumanLayer 当前产品定位</strong>：二手资料称「函数级审批 SDK」，官网直接核实显示已偏向「多 agent 协作 IDE」。本报告只引用其 12-factor 方法论，不引用产品。</li>
+    <li><strong>OWASP《Agentic Applications Top 10（2026）》</strong>原文抓取失败，条目未核实；《LLM Top 10 2026》把「Denial of Wallet」列入，与 R6 一致。</li>
+    <li><strong>Claude 5 家族与 GPT-5.x 家族的具体档位与定价</strong>未逐条核实到官方定价页，路由预设里的模型名以实施时官方页为准。</li>
+    <li><strong>Conductor、Crystal 的状态权威与失败恢复机制</strong>官方未公开；Crystal 已弃用，Conductor 仅 Mac。</li>
+    <li><strong>OpenClaw 恶意技能数量</strong>（386 / 1184）来自安全研究者报告，可能重复计数。</li>
+    <li><strong>DGM 的安全问题是否已在后续版本修复</strong>未核实。</li>
+    <li><strong>cycle-runner</strong>（本项目协议上游）在公开 GitHub 未检索到，可能已转私有；本报告不依赖它。</li>
+    <li><strong>Codex <code>exec</code> 的 JSONL 事件是否包含 token 用量字段</strong>需在实施 R15 时实测；若无，成本只能按模型单价与字符数估算并明确标注为估算值。</li>
+  </ul>
+</section>
+
+<section id="sources">
+  <h2><span class="no">08</span>来源清单</h2>
+  <div class="srcgrid">
+
+    <h4>基石文章（一手精读）</h4>
+    <ul>
+      <li>Anthropic, Effective harnesses for long-running agents (2025-11) — <a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">anthropic.com</a></li>
+      <li>OpenAI, Harness engineering: leveraging Codex in an agent-first world (2026-02) — <a href="https://openai.com/index/harness-engineering/">openai.com</a>（原站 403，经 <a href="https://jaytaylor.com/notes/node/1770842156000.html">镜像一</a> 与 <a href="https://xiaow.dev/claude_notes/2026-03-25---Article---OpenAI-Harness-Engineering---Leveraging-Codex-in-an-Agent-First-World">镜像二</a> 核对）</li>
+      <li>Simon Willison, Designing agentic loops (2025-09) — <a href="https://simonwillison.net/2025/Sep/30/designing-agentic-loops/">simonwillison.net</a></li>
+      <li>HumanLayer, 12-factor agents（因子 5 / 6 / 7 原文）— <a href="https://github.com/humanlayer/12-factor-agents">github.com</a></li>
+      <li>Anthropic, How Warp builds self-improving agents on Claude (2026-08) — <a href="https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude">claude.com</a></li>
+    </ul>
+
+    <h4>长程 Harness 与工作流</h4>
+    <ul>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Effective context engineering for AI agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Building effective agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">Demystifying evals for AI agents</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code best practices</a></li>
+      <li><a href="https://developers.openai.com/blog/run-long-horizon-tasks-with-codex">Run long-horizon tasks with Codex</a></li>
+      <li><a href="https://agents.md/">AGENTS.md 规范</a></li>
+      <li><a href="https://ghuntley.com/ralph/">Ralph Wiggum as a software engineer</a></li>
+      <li><a href="https://simonwillison.net/2025/Oct/7/vibe-engineering/">Vibe engineering</a></li>
+      <li><a href="https://lucumr.pocoo.org/2025/6/12/agentic-coding/">Ronacher: agentic coding</a> · <a href="https://lucumr.pocoo.org/2025/11/21/agents-are-hard/">Agents are hard</a></li>
+      <li><a href="https://mitchellh.com/writing/my-ai-adoption-journey">Hashimoto: my AI adoption journey</a></li>
+      <li><a href="https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md">superpowers writing-plans</a> · <a href="https://github.com/garrytan/gstack/blob/main/plan-eng-review/SKILL.md">gstack plan-eng-review</a></li>
+    </ul>
+
+    <h4>并行编排产品</h4>
+    <ul>
+      <li><a href="https://github.com/BloopAI/vibe-kanban">Vibe Kanban</a> · <a href="https://www.conductor.build/docs/">Conductor</a> · <a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a> · <a href="https://github.com/stravu/crystal">Crystal（已弃用）</a></li>
+      <li><a href="https://openai.com/index/open-source-codex-orchestration-symphony/">OpenAI Symphony</a></li>
+      <li><a href="https://github.com/paperclipai/paperclip">Paperclip</a></li>
+      <li><a href="https://yegge.ai/gastown">Beads / Gas Town</a> · <a href="https://www.dolthub.com/blog/2026-01-15-a-day-in-gas-town/">DoltHub 实测</a></li>
+      <li><a href="https://github.com/eyaltoledano/claude-task-master">claude-task-master</a> · <a href="https://github.com/MrLesk/Backlog.md">Backlog.md</a></li>
+      <li><a href="https://ampcode.com/news/oracle">Sourcegraph Amp oracle</a></li>
+    </ul>
+
+    <h4>多模型与评审</h4>
+    <ul>
+      <li><a href="https://arxiv.org/html/2607.21656v1">Cross-model LLM code review (arXiv 2607.21656)</a></li>
+      <li><a href="https://arxiv.org/pdf/2412.21139">SWE-Gym</a> · <a href="https://nebius.com/blog/posts/training-and-search-for-software-engineering-agents">Nebius: training and search for SWE agents</a></li>
+      <li><a href="https://arxiv.org/pdf/2410.21819">Self-preference bias</a> · <a href="https://arxiv.org/abs/2504.03846">Do LLM evaluators prefer themselves for a reason?</a></li>
+      <li><a href="https://www.anthropic.com/engineering/built-multi-agent-research-system">Anthropic multi-agent research system</a> · <a href="https://claude.com/blog/building-multi-agent-systems-when-and-how-to-use-them">When and how to use multi-agent systems</a></li>
+      <li><a href="https://arxiv.org/pdf/2503.13657">Why do multi-agent LLM systems fail?</a></li>
+      <li><a href="https://code.claude.com/docs/en/headless">Claude Code headless</a> · <a href="https://code.claude.com/docs/en/permission-modes">permission modes</a> · <a href="https://code.claude.com/docs/en/agent-sdk">Agent SDK</a></li>
+      <li><a href="https://developers.openai.com/codex/cli/reference.md">Codex CLI reference</a> · <a href="https://developers.openai.com/codex/config-reference.md">Codex config reference</a></li>
+    </ul>
+
+    <h4>可控性与安全</h4>
+    <ul>
+      <li><a href="https://github.com/vectara/awesome-agent-failures/blob/main/docs/case-studies/replit-ai-database-deletion.md">Replit 删库事故</a></li>
+      <li><a href="https://en.wikipedia.org/wiki/OpenClaw">OpenClaw</a> · <a href="https://www.ibm.com/think/x-force/what-openclaw-reveals-about-agentic-ai-security-risks">IBM X-Force 分析</a> · <a href="https://www.scworld.com/brief/massive-openclaw-supply-chain-attack-floods-openclaw-with-malicious-skills">ClawHub 供应链攻击</a></li>
+      <li><a href="https://dev.to/dingdawg/how-an-ai-agent-ran-up-a-47000-bill-in-11-days-and-how-to-stop-it-1fk">4.7 万美元账单案例</a></li>
+      <li><a href="https://code.claude.com/docs/en/hooks">Claude Code hooks</a> · <a href="https://code.claude.com/docs/en/checkpointing">checkpointing</a> · <a href="https://code.claude.com/docs/en/costs">costs</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-auto-mode">How we built Claude Code auto mode（93% 数据）</a> · <a href="https://www.anthropic.com/research/measuring-agent-autonomy">Measuring AI agent autonomy</a></li>
+      <li><a href="https://developers.openai.com/codex/agent-approvals-security">Codex agent approvals &amp; security</a> · <a href="https://openai.com/index/running-codex-safely/">Running Codex safely</a> · <a href="https://github.com/openai/codex/blob/main/docs/sandbox.md">sandbox.md</a></li>
+      <li><a href="https://bex.co/blog/2026/07/27/github-copilot-worktree-isolation">worktree 不是安全边界</a></li>
+    </ul>
+
+    <h4>自我改进与技能</h4>
+    <ul>
+      <li><a href="https://agentskills.io/specification">Agent Skills 规范</a> · <a href="https://github.com/agentskills/agentskills">GitHub</a></li>
+      <li><a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/skills">Hermes Agent skills</a></li>
+      <li><a href="https://sakana.ai/dgm/">Darwin Gödel Machine</a> · <a href="https://arxiv.org/pdf/2505.22954">论文</a></li>
+      <li><a href="https://arxiv.org/abs/2606.09498">Self-Harness</a> · <a href="https://medium.com/prosus-ai-tech-blog/beyond-prompt-optimization-optimizing-the-whole-agent-harness-da3cd16631a2">Meta-Harness</a> · <a href="https://github.com/gepa-ai/gepa">GEPA</a></li>
+      <li><a href="https://code.claude.com/docs/en/memory">Claude Code memory</a> · <a href="https://www.confident-ai.com/blog/llm-agent-evaluation-complete-guide">Agent 评估综述</a></li>
+    </ul>
+
+    <h4>需求到任务图</h4>
+    <ul>
+      <li><a href="https://github.com/github/spec-kit">GitHub Spec Kit</a> · <a href="https://kiro.dev/docs/specs/">AWS Kiro specs</a> · <a href="https://github.com/bmad-code-org/BMAD-METHOD">BMAD</a></li>
+      <li><a href="https://github.com/openai/codex/issues/3268">Codex plan mode</a> · <a href="https://claudelog.com/mechanics/plan-mode/">Claude Code plan mode</a></li>
+      <li><a href="https://arxiv.org/pdf/2606.01533">DAG 漂移实测</a> · <a href="https://arxiv.org/pdf/2603.14248">重规划降低计划质量</a></li>
+    </ul>
+
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="inner">
+    <p>Loop 实现最佳实践调研 · 2026-09-13 · 源文档 <code>docs/plans/2026-09-13-loop-best-practices-research.md</code></p>
+    <p>当前方案：<a href="autome-2.0-plan.html">Autome 2.0 绿地研发方案</a> · 1.x 现行协议说明：<a href="local-automation-loop.html">本地自动化 Loop 工程实现</a> · <a href="loop-manual.html">图解说明书</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
