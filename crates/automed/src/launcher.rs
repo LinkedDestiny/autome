@@ -139,7 +139,13 @@ pub const ADAPTERS: [RuntimeAdapter; 2] = [
     RuntimeAdapter {
         runtime: Runtime::Codex,
         binary: "codex",
-        autonomous_flags: &["exec", "--sandbox", "workspace-write"],
+        // `--json` is what makes a Codex session measurable. Without it the
+        // stream is prose written for a person: no usage, no turn count,
+        // nothing the core can record — so every Codex round was invisible to
+        // the version page while every Claude round was not, which would have
+        // made the two runtimes incomparable in the one direction that
+        // matters. The wrapper renders the JSONL back into prose for the log.
+        autonomous_flags: &["exec", "--json", "--sandbox", "workspace-write"],
         model_flag: "--model",
         // Codex takes reasoning effort as a config override rather than a
         // dedicated flag.

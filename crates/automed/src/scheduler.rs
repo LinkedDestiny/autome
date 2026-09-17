@@ -187,7 +187,17 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .ok()
         .and_then(|t| ExitMarker::parse(&t));
     let alive = s.pid.map(launcher::pid_alive).unwrap_or(false);
-    let idle = log_idle_secs(&repo.join(SessionPaths::log(&s.task_id, &s.id)));
+    // A session cannot have been idle longer than it has existed.
+    //
+    // `log_idle_secs` reports a missing log as maximally idle, which is right
+    // for a log that was never written — but between the core recording a
+    // session and the terminal actually starting the wrapper there is a window
+    // where the log does not exist yet. On an unloaded machine that window is
+    // milliseconds; on a busy one it is long enough that the very next tick
+    // declared a just-launched session vanished and failed the task. Both of
+    // those are the same bug, and this is the floor that closes it.
+    let idle = log_idle_secs(&repo.join(SessionPaths::log(&s.task_id, &s.id)))
+        .min(secs_since(&s.started_at).unwrap_or(u64::MAX));
 
     let lifecycle = session::classify(marker.as_ref(), alive, idle);
     if lifecycle.is_running() {
@@ -199,6 +209,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .map(|m| m.ended_at.clone())
         .unwrap_or_else(now_iso);
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
+    record_usage(ctx, s, &repo, &task, &ended_at);
 
     // Onboarding sessions are not part of a task's Loop; the project page
     // advances its own wizard.
@@ -217,6 +228,79 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     let outcome = read_outcome(&repo, &task, &lifecycle);
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
+}
+
+/// Reads what the session cost out of its raw stream and records it.
+///
+/// Best-effort on purpose: a session whose `.jsonl` is missing or truncated
+/// still has to be reaped and its task still has to advance. A failure here
+/// loses a row in a table; making it fatal would lose the task.
+fn record_usage(ctx: &mut Ctx, s: &Session, repo: &Path, task: &TaskRecord, ended_at: &str) {
+    let stream_path = repo.join(format!(
+        "{}/{}.jsonl",
+        SessionPaths::dir(&s.task_id),
+        s.id
+    ));
+    let stream = std::fs::read_to_string(&stream_path).unwrap_or_default();
+    let wall_ms = wall_clock_ms(&s.started_at, ended_at);
+    let mut metrics = crate::usage::parse(s.runtime, &stream, wall_ms);
+
+    let worktree = worktree_path(repo, &task.slug);
+    let (bytes, files) = crate::usage::measure_documents(&worktree, &task.doc_dir(), &task.slug);
+    metrics.design_doc_bytes = bytes;
+    metrics.evidence_files = files;
+
+    if metrics.is_empty() {
+        // Worth an event rather than a silent gap: a runtime that stops
+        // reporting usage would otherwise show up months later as a version
+        // with no numbers and no explanation.
+        let _ = ctx.store.append_event(
+            "session.usage_missing",
+            &s.task_id,
+            json!({ "session_id": s.id, "runtime": s.runtime.as_str() }),
+        );
+        return;
+    }
+    if let Err(e) = ctx.store.set_session_metrics(&s.id, &metrics) {
+        tracing::warn!(session = %s.id, error = %e, "could not record session usage");
+    }
+}
+
+/// Seconds since an RFC 3339 timestamp. `None` when it cannot be parsed, so
+/// the caller can fall back rather than treat an unreadable timestamp as now.
+fn secs_since(ts: &str) -> Option<u64> {
+    let then = epoch_secs(ts)?;
+    let now = epoch_secs(&now_iso())?;
+    Some((now - then).max(0) as u64)
+}
+
+/// Milliseconds between two RFC 3339 timestamps, for the runtime that does not
+/// report a duration of its own. `None` when either cannot be read, rather
+/// than a zero that would read as an instant session.
+fn wall_clock_ms(started_at: &str, ended_at: &str) -> Option<u64> {
+    let start = epoch_secs(started_at)?;
+    let end = epoch_secs(ended_at)?;
+    (end >= start).then(|| ((end - start) * 1000) as u64)
+}
+
+/// Parses `YYYY-MM-DDTHH:MM:SSZ`, the one format `store::now_iso` writes.
+fn epoch_secs(ts: &str) -> Option<i64> {
+    let bytes = ts.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, b: usize| ts.get(a..b)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // Days from civil (Howard Hinnant), the inverse of `store::format_iso`.
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// Commits whatever a session left behind in its own worktree.
@@ -357,6 +441,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     } = trigger
     {
         sync_decisions(ctx, &task, status)?;
+        record_contradictions(ctx, &task, status)?;
     }
 
     let decisions = ctx.store.pending_decisions(task_id)?;
@@ -395,8 +480,123 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         json!({ "state": transition.next, "trigger": trigger_name(trigger) }),
     )?;
 
+    // Counted rather than derived from the final state: a task can fail on a
+    // protocol error, be re-run from an earlier node, and fail again. The last
+    // state remembers one of those; the version page needs all of them.
+    if let TaskState::Failed {
+        reason: FailureReason::Protocol { detail },
+        at,
+    } = &transition.next
+    {
+        ctx.store.append_event(
+            "task.protocol_failure",
+            task_id,
+            json!({ "node": at.as_str(), "detail": detail }),
+        )?;
+    }
+
+    // A task is measured while its worktree still exists. That rules out
+    // waiting for `Done`: `Done` is reached *from* cleanup, which has already
+    // deleted the worktree the evidence files live in. So the measurement
+    // happens one step earlier, on the way into cleanup — and on the way into
+    // Failed or Cancelled, which a task reaches with its worktree intact.
+    //
+    // A task that went wrong is the most informative kind there is, so the
+    // failing paths are measured too.
+    let measure_now = matches!(
+        transition.action,
+        Action::RunCoreStep {
+            node: Node::Cleanup
+        }
+    ) || matches!(transition.next, TaskState::Failed { .. } | TaskState::Cancelled)
+        || (transition.next == TaskState::Done && task.metrics.is_none());
+    if measure_now && let Err(e) = write_task_metrics(ctx, task_id) {
+        tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
+    }
+
     perform(ctx, &task, &project, &resolved, &transition)?;
     Ok(true)
+}
+
+/// Notes any milestone that was closed and has just been taken back.
+///
+/// Counted as it happens because it cannot be recovered afterwards: the
+/// document ends up showing the milestone as open, with nothing to say it was
+/// ever closed. This is the direct measurement of an audit going soft, and the
+/// heuristic it replaces — "defects down *and* reopens down" — would have
+/// flagged a protocol that had genuinely improved.
+fn record_contradictions(ctx: &mut Ctx, task: &TaskRecord, status: &StatusBlock) -> Result<()> {
+    let before: Vec<(String, autome_domain::status_block::MilestoneState)> = ctx
+        .store
+        .last_event(&task.id, "task.milestones")?
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    for id in crate::task_metrics::newly_contradicted(&before, status) {
+        ctx.store.append_event(
+            "milestone.contradicted",
+            &task.id,
+            json!({ "milestone": id }),
+        )?;
+    }
+    let snapshot = crate::task_metrics::snapshot(status);
+    ctx.store
+        .append_event("task.milestones", &task.id, json!(snapshot))?;
+    Ok(())
+}
+
+/// Folds a finished task into `TaskMetrics` and stores it.
+fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    let repo = PathBuf::from(&project.path);
+    let worktree = worktree_path(&repo, &task.slug);
+
+    let status = read_status(&project, &task);
+    let design = std::fs::read_to_string(worktree.join(task.design_doc())).unwrap_or_default();
+    let (impl_defects, verification_gaps) =
+        crate::task_metrics::count_verdicts(&worktree, &task.doc_dir());
+
+    let sessions = ctx.store.list_sessions(task_id)?;
+    let mut total_tokens = 0u64;
+    let mut total_turns = 0u64;
+    let mut cost: Option<f64> = None;
+    for s in &sessions {
+        total_tokens += s.metrics.total_tokens().unwrap_or(0);
+        total_turns += s.metrics.turns.unwrap_or(0);
+        if let Some(c) = s.metrics.cost_usd {
+            // Only Claude reports a price. Summing what exists and leaving the
+            // total absent when nothing does is the honest form: a task run
+            // entirely on Codex costs an unknown amount, not zero.
+            cost = Some(cost.unwrap_or(0.0) + c);
+        }
+    }
+
+    let counts = crate::task_metrics::Counts {
+        protocol_failures: ctx.store.count_events(task_id, "task.protocol_failure")?,
+        closed_then_contradicted: ctx.store.count_events(task_id, "milestone.contradicted")?,
+        impl_defects,
+        verification_gaps,
+        manual_items_open: crate::task_metrics::count_manual_items(&design),
+        total_cost_usd: cost,
+        total_tokens,
+        total_turns,
+    };
+
+    let metrics = crate::task_metrics::aggregate(
+        status.as_ref(),
+        task.budget_n.unwrap_or(0),
+        task.protocol_ref.clone(),
+        task.rules_hash.clone(),
+        counts,
+    );
+    ctx.store.set_task_metrics(task_id, &metrics)?;
+    ctx.store.append_event(
+        "task.metrics",
+        task_id,
+        serde_json::to_value(&metrics).unwrap_or_else(|_| json!({})),
+    )?;
+    Ok(())
 }
 
 /// N is computed from the *initial* milestone count when the design is
@@ -2226,6 +2426,29 @@ mod tests {
         let mut w = World::new("idle");
         let report = tick(&mut w.ctx);
         assert!(report.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn a_session_started_a_moment_ago_is_not_idle_however_absent_its_log_is() {
+        // The bug: `log_idle_secs` reports a missing log as `u64::MAX`, and
+        // between recording a session and the terminal starting the wrapper
+        // the log does not exist. On a loaded machine that window was long
+        // enough for the next tick to declare the session vanished and fail
+        // the task before it had run at all.
+        let started = now_iso();
+        let idle = u64::MAX.min(secs_since(&started).unwrap_or(u64::MAX));
+        assert!(idle < autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
+    }
+
+    #[test]
+    fn a_session_started_long_ago_with_no_log_is_still_vanished() {
+        let idle = u64::MAX.min(secs_since("2020-01-01T00:00:00Z").unwrap_or(u64::MAX));
+        assert!(idle >= autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
+    }
+
+    #[test]
+    fn an_unreadable_start_timestamp_does_not_make_a_session_look_fresh_forever() {
+        assert_eq!(secs_since("not a timestamp"), None);
     }
 
     #[test]

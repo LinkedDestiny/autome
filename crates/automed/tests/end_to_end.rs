@@ -200,9 +200,56 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
         )
     }
 
+    /// What a CLI prints alongside its work.
+    ///
+    /// Both runtimes point at the same stand-in, and which renderer the
+    /// wrapper uses depends on the role's configured runtime — so a step
+    /// prints both vocabularies and lets each side pick out its own. The other
+    /// line passes through as an unknown event, which is what the renderers do
+    /// with anything they do not recognise.
+    const FAKE_USAGE: &'static str = concat!(
+        r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":10,"#,
+        r#""cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":5}}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","total_cost_usd":0.25,"num_turns":3,"#,
+        r#""duration_api_ms":4000,"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"#,
+        r#""cache_read_input_tokens":40,"output_tokens":5}}"#,
+        "\n",
+        r#"{"type":"turn.completed","usage":{"input_tokens":150,"cached_input_tokens":40,"#,
+        r#""cache_write_input_tokens":100,"output_tokens":5,"reasoning_output_tokens":0}}"#,
+    );
+
+    /// A step that also prints usage, the way a real CLI does.
+    ///
+    /// Both runtimes point at the same stand-in, and which renderer the
+    /// wrapper uses depends on the role's configured runtime — so the step
+    /// prints both vocabularies and lets each side pick out its own. The
+    /// other line passes through as an unknown event, which is what the
+    /// renderers do with anything they do not recognise.
+    fn doc_step_with_usage(&self, n: u32, slug: &str, body: &str) {
+        let usage = Self::FAKE_USAGE;
+        self.step(
+            n,
+            &format!(
+                r#"set -e
+mkdir -p "docs/{slug}"
+cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
+{body}
+AUTOME_EOF
+git add -A docs >/dev/null 2>&1 || true
+git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
+cat <<'AUTOME_USAGE'
+{usage}
+AUTOME_USAGE
+"#
+            ),
+        );
+    }
+
     /// What the retro round does: write `docs/<slug>/lessons.md` and leave
     /// the design document alone.
     fn retro_step(&self, n: u32, slug: &str) {
+        let usage = Self::FAKE_USAGE;
         self.step(
             n,
             &format!(
@@ -224,6 +271,9 @@ cat > "docs/{slug}/lessons.md" <<'AUTOME_EOF'
 AUTOME_EOF
 git add -A docs >/dev/null 2>&1 || true
 git -c user.name=fake -c user.email=f@f commit -q -m "session {n} retro" >/dev/null 2>&1 || true
+cat <<'AUTOME_USAGE'
+{usage}
+AUTOME_USAGE
 "#
             ),
         );
@@ -1098,5 +1148,118 @@ fn a_freshly_added_project_has_a_clean_worktree_even_with_a_task_running() {
         automed::git::is_clean(&w.repo).unwrap(),
         "the main worktree must still read clean: {:?}",
         automed::git::dirty_paths(&w.repo).unwrap()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the observation layer (plan §4.A)
+// ---------------------------------------------------------------------------
+
+/// The core ran for months recording that a session happened and nothing about
+/// what it cost. Both CLIs were writing it the whole time.
+#[test]
+fn every_session_records_what_it_cost_and_the_finished_task_is_measured() {
+    needs_git!();
+    let mut w = World::new("usage");
+
+    let request = "measure me";
+    let slug = slug_for(request);
+    w.doc_step_with_usage(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step_with_usage(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step_with_usage(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step_with_usage(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step_with_usage(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_with_usage(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // Every finished session has tokens and turns. Neither number existed
+    // before; both come out of the CLI's own stream.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(sessions.len() >= 6, "sessions: {}", sessions.len());
+    for s in &sessions {
+        assert!(
+            s.metrics.total_tokens().unwrap_or(0) > 0,
+            "{} ({}) recorded no tokens",
+            s.id,
+            s.runtime
+        );
+        assert!(s.metrics.turns.is_some(), "{} recorded no turns", s.id);
+        assert!(
+            s.protocol_ref.is_some(),
+            "{} is not attributed to a protocol version",
+            s.id
+        );
+    }
+
+    // Cost is recorded for Claude and deliberately absent for Codex: Codex
+    // reports no price, and inventing one from a table we maintain would
+    // produce a number that looks authoritative and is not.
+    for s in &sessions {
+        match s.runtime {
+            autome_domain::role::Runtime::Claude => {
+                assert!(s.metrics.cost_usd.is_some(), "{} has no cost", s.id)
+            }
+            autome_domain::role::Runtime::Codex => {
+                assert_eq!(s.metrics.cost_usd, None, "{} invented a price", s.id)
+            }
+        }
+    }
+
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    let metrics = w.ctx.store.task_metrics(&task_id).unwrap().unwrap();
+    assert_eq!(metrics.milestones, 1);
+    assert_eq!(metrics.impl_rounds_used, 1);
+    assert!(metrics.total_tokens > 0);
+    assert!(metrics.total_turns > 0);
+    assert!(
+        metrics.protocol_ref.is_some(),
+        "the task is not attributed to a protocol version"
+    );
+}
+
+/// A closed milestone that is later taken back is the direct measurement of an
+/// audit going soft — and it cannot be read off the finished document, which
+/// shows the milestone as open and says nothing about it having been closed.
+#[test]
+fn a_milestone_closed_and_then_reopened_is_counted_as_contradicted() {
+    needs_git!();
+    let mut w = World::new("contradicted");
+
+    let request = "soft audit";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]));
+    // implement M-01, audit closes it, implement M-02 …
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]));
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]));
+    // … and this audit takes M-01 back, having closed it two rounds ago.
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "开放"), ("M-02", "已完成")]));
+    w.doc_step(9, &slug, &doc("实现中", 2, 3, &[("M-01", "待审"), ("M-02", "已完成")]));
+    w.doc_step(10, &slug, &doc("实现中", 2, 3, &[("M-01", "已完成"), ("M-02", "已完成")]));
+    w.retro_step(11, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    let metrics = w.ctx.store.task_metrics(&task_id).unwrap().unwrap();
+    assert_eq!(
+        metrics.closed_then_contradicted, 1,
+        "M-01 was closed and then taken back"
     );
 }

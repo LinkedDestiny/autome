@@ -241,9 +241,9 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
     }
 }
 
-struct DispatchError {
-    code: ReplyErrorCode,
-    message: String,
+pub struct DispatchError {
+    pub code: ReplyErrorCode,
+    pub message: String,
 }
 
 fn bad_params(msg: impl Into<String>) -> DispatchError {
@@ -260,7 +260,7 @@ fn internal(msg: impl Into<String>) -> DispatchError {
     }
 }
 
-fn rejected(msg: impl Into<String>) -> DispatchError {
+pub fn rejected(msg: impl Into<String>) -> DispatchError {
     DispatchError {
         code: ReplyErrorCode::TransitionRejected,
         message: msg.into(),
@@ -328,7 +328,7 @@ impl From<scheduler::SchedulerError> for DispatchError {
     }
 }
 
-type DispatchResult = std::result::Result<(Value, Vec<Event>), DispatchError>;
+pub type DispatchResult = std::result::Result<(Value, Vec<Event>), DispatchError>;
 
 fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
     let p = &command.params;
@@ -389,6 +389,14 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "config.reset_role" => config_reset_role(ctx, p),
         "config.set_loop" => config_set_loop(ctx, p),
         "config.set_theme" => config_set_theme(ctx, p),
+
+        // ---- protocol ------------------------------------------------
+        "protocol.get" => crate::dispatch_protocol::get(ctx),
+        "protocol.versions" => {
+            crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
+        }
+        "protocol.pin" => crate::dispatch_protocol::pin(ctx, p),
+        "protocol.rollback" => crate::dispatch_protocol::rollback(ctx, p),
 
         // ---- environment -------------------------------------------------
         "env.get" => env_get(ctx),
@@ -497,6 +505,8 @@ fn task_json(t: &crate::store::TaskRecord) -> Value {
         "completed_at": t.completed_at,
         "merge_commit": t.merge_commit,
         "archived": t.is_archived(),
+        "protocol_ref": t.protocol_ref,
+        "metrics": t.metrics,
     })
 }
 
@@ -1264,6 +1274,9 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "documents": documents(&worktree, &task),
             "worktree": worktree.to_string_lossy(),
             "next_role": scheduler::next_role(&task.state),
+            // Running totals, for a task still in flight. `task.metrics` is
+            // the final aggregate and only exists once the task has ended.
+            "so_far": running_totals(&sessions),
         }),
         vec![],
     ))
@@ -1351,6 +1364,41 @@ fn session_json(s: &autome_domain::session::Session) -> Value {
         "ended_at": s.ended_at,
         "lifecycle": s.lifecycle,
         "running": s.is_running(),
+        "protocol_ref": s.protocol_ref,
+        // Absent rather than zeroed when the stream could not be read: a card
+        // showing "0 tokens" for a session that produced work is worse than a
+        // card showing nothing.
+        "metrics": (!s.metrics.is_empty()).then(|| s.metrics.clone()),
+    })
+}
+
+/// What a task has spent so far, summed across its finished sessions.
+///
+/// Cost is `null` unless at least one session reported one. A task run
+/// entirely on Codex has an unknown cost, not a zero one — Codex reports no
+/// price, and a table of prices we maintained ourselves would produce a number
+/// that looks authoritative and is not.
+fn running_totals(sessions: &[autome_domain::session::Session]) -> Value {
+    let mut tokens = 0u64;
+    let mut turns = 0u64;
+    let mut cost: Option<f64> = None;
+    let mut measured = 0u32;
+    for s in sessions {
+        if s.metrics.is_empty() {
+            continue;
+        }
+        measured += 1;
+        tokens += s.metrics.total_tokens().unwrap_or(0);
+        turns += s.metrics.turns.unwrap_or(0);
+        if let Some(c) = s.metrics.cost_usd {
+            cost = Some(cost.unwrap_or(0.0) + c);
+        }
+    }
+    json!({
+        "sessions_measured": measured,
+        "total_tokens": tokens,
+        "total_turns": turns,
+        "total_cost_usd": cost,
     })
 }
 
@@ -1885,7 +1933,7 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn event(seq: u64, kind: &str, subject: &str, payload: Value) -> Event {
+pub fn event(seq: u64, kind: &str, subject: &str, payload: Value) -> Event {
     Event {
         event_seq: seq,
         event_id: new_id("evt"),
@@ -1925,7 +1973,7 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 14] = [
+pub const READ_METHODS: [&str; 16] = [
     "project.list",
     "project.get",
     "project.onboarding.artefacts",
@@ -1940,6 +1988,8 @@ pub const READ_METHODS: [&str; 14] = [
     "skills.list",
     "events.since",
     "env.detect",
+    "protocol.get",
+    "protocol.versions",
 ];
 
 #[cfg(test)]

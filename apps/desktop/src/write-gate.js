@@ -49,6 +49,8 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'scheduler.tick',
   'open.path',
   'open.terminal',
+  'protocol.pin',
+  'protocol.rollback',
 ]);
 
 // Ops whose params may contain prose the user typed, and the cap on it. A

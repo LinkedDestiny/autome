@@ -1,4 +1,4 @@
-//! Renders Claude Code's `stream-json` output into something a person can read.
+//! Renders a CLI's JSONL event stream into something a person can read.
 //!
 //! Sessions are headless, so the session log is the only window onto what a
 //! round actually did. With `--output-format text` — the default, and what
@@ -14,20 +14,34 @@
 //! pipe, and a CLI warning must not be swallowed by a renderer that only
 //! understands JSON.
 //!
-//! The raw stream is kept beside the log as `<session>.jsonl`, so nothing is
-//! lost to a rendering choice made here.
+//! Codex went the other way. Its default output is already written for a
+//! person, so the wrapper passed it through — and that output carries no
+//! usage, no turn count, nothing the core could record. `codex exec --json`
+//! carries all of it and is, like Claude's, unreadable in a terminal. So both
+//! runtimes now stream JSONL, both get rendered here, and both keep the raw
+//! stream beside the log as `<session>.jsonl`. Nothing is lost to a rendering
+//! choice made here.
 
 use std::io::{BufRead, Write};
 
+use autome_domain::role::Runtime;
 use serde_json::Value;
 
 /// Reads JSONL on `input`, writes rendered lines to `output`, flushing each so
 /// a `tail -f` on the log follows a live session rather than lagging a buffer
 /// behind it.
-pub fn render_stream<R: BufRead, W: Write>(input: R, output: &mut W) -> std::io::Result<()> {
+pub fn render_stream<R: BufRead, W: Write>(
+    runtime: Runtime,
+    input: R,
+    output: &mut W,
+) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
-        if let Some(rendered) = render_line(&line) {
+        let rendered = match runtime {
+            Runtime::Claude => render_line(&line),
+            Runtime::Codex => render_codex_line(&line),
+        };
+        if let Some(rendered) = rendered {
             writeln!(output, "{rendered}")?;
         }
         output.flush()?;
@@ -187,6 +201,129 @@ fn render_system(object: &serde_json::Map<String, Value>) -> Option<String> {
     Some(format!("=== model={model} permission-mode={mode} ==="))
 }
 
+// ---------------------------------------------------------------------------
+// Codex
+// ---------------------------------------------------------------------------
+
+/// One line of `codex exec --json`.
+///
+/// The event vocabulary is small and flat: a thread starts, turns start and
+/// complete, and everything the agent did arrives as `item.completed` with a
+/// typed `item`. Shapes verified against Codex 0.153.4 on 2026-09-17.
+pub fn render_codex_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+        return Some(String::new());
+    }
+    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(trimmed) else {
+        // `Reading prompt from stdin...`, or a warning on stderr. Part of the
+        // record either way.
+        return Some(trimmed.to_string());
+    };
+
+    match object.get("type").and_then(Value::as_str) {
+        Some("thread.started") => {
+            let id = object
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            Some(format!("=== codex thread {id} ==="))
+        }
+        Some("turn.started") => None,
+        Some("turn.completed") => Some(render_codex_turn(&object)),
+        Some("turn.failed") => {
+            let detail = object
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            Some(format!("=== turn failed · {} ===", truncate(detail, TOOL_ERROR_MAX)))
+        }
+        Some("item.completed") | Some("item.started") => render_codex_item(&object),
+        Some(other) => Some(format!("· {other}")),
+        None => Some(trimmed.to_string()),
+    }
+}
+
+fn render_codex_turn(object: &serde_json::Map<String, Value>) -> String {
+    let Some(usage) = object.get("usage") else {
+        return "=== turn completed ===".to_string();
+    };
+    let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    format!(
+        "=== turn completed · in {} (cached {}) · out {} ===",
+        n("input_tokens"),
+        n("cached_input_tokens"),
+        n("output_tokens") + n("reasoning_output_tokens")
+    )
+}
+
+fn render_codex_item(object: &serde_json::Map<String, Value>) -> Option<String> {
+    let item = object.get("item")?;
+    let started = object.get("type").and_then(Value::as_str) == Some("item.started");
+    let pick = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("");
+    match item.get("type").and_then(Value::as_str) {
+        // A message is the round talking; it is the same content the Claude
+        // renderer prints unprefixed.
+        Some("agent_message") => {
+            if started {
+                return None;
+            }
+            let text = pick("text").trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
+        Some("reasoning") => started.then(|| "→ (thinking)".to_string()),
+        Some("command_execution") => {
+            if started {
+                return Some(format!("→ Bash {}", truncate(pick("command"), TOOL_SUMMARY_MAX)));
+            }
+            // Only a failure is worth a second line; a successful command's
+            // output is the file contents it printed.
+            let code = item.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
+            (code != 0).then(|| {
+                format!(
+                    "  ✗ exit {code} · {}",
+                    truncate(pick("aggregated_output"), TOOL_ERROR_MAX)
+                )
+            })
+        }
+        Some("file_change") => {
+            if started {
+                return None;
+            }
+            let files = item
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(|c| {
+                    c.iter()
+                        .filter_map(|f| f.get("path").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            Some(format!("→ Edit {}", truncate(&files, TOOL_SUMMARY_MAX)))
+        }
+        Some("mcp_tool_call") => started.then(|| {
+            format!(
+                "→ {} {}",
+                pick("server"),
+                truncate(pick("tool"), TOOL_SUMMARY_MAX)
+            )
+        }),
+        Some("web_search") => started.then(|| {
+            format!("→ WebSearch {}", truncate(pick("query"), TOOL_SUMMARY_MAX))
+        }),
+        Some("todo_list") => None,
+        Some("error") => {
+            (!started).then(|| format!("  ✗ {}", truncate(pick("message"), TOOL_ERROR_MAX)))
+        }
+        // An unknown item type still gets a line: a silently dropped event is
+        // how a log starts lying about what happened.
+        Some(other) => (!started).then(|| format!("· {other}")),
+        None => None,
+    }
+}
+
 const TOOL_SUMMARY_MAX: usize = 160;
 const TOOL_ERROR_MAX: usize = 400;
 
@@ -328,11 +465,110 @@ mod tests {
             "{\"type\":\"result\",\"subtype\":\"success\"}\n"
         );
         let mut out = Vec::new();
-        render_stream(std::io::BufReader::new(input.as_bytes()), &mut out).unwrap();
+        render_stream(
+            Runtime::Claude,
+            std::io::BufReader::new(input.as_bytes()),
+            &mut out,
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert_eq!(
             text,
             "=== model=m permission-mode=p ===\nhi\n=== success ===\n"
+        );
+    }
+
+    // ---- codex -----------------------------------------------------------
+    //
+    // Shapes captured from Codex 0.153.4 on 2026-09-17.
+
+    fn codex(json: &str) -> Option<String> {
+        render_codex_line(json)
+    }
+
+    #[test]
+    fn a_codex_line_that_is_not_json_passes_through() {
+        // `codex exec` prints this before the stream starts, and stderr is
+        // merged into the same pipe.
+        assert_eq!(
+            codex("Reading prompt from stdin...").as_deref(),
+            Some("Reading prompt from stdin...")
+        );
+    }
+
+    #[test]
+    fn a_codex_agent_message_renders_as_its_text() {
+        let out = codex(
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Hello!"}}"#,
+        );
+        assert_eq!(out.as_deref(), Some("Hello!"));
+    }
+
+    #[test]
+    fn a_codex_command_says_what_it_ran_and_only_reports_failures() {
+        assert_eq!(
+            codex(
+                r#"{"type":"item.started","item":{"type":"command_execution","command":"cargo test"}}"#
+            )
+            .as_deref(),
+            Some("→ Bash cargo test")
+        );
+        assert_eq!(
+            codex(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","exit_code":0,"aggregated_output":"ok"}}"#
+            ),
+            None
+        );
+        let failed = codex(
+            r#"{"type":"item.completed","item":{"type":"command_execution","command":"cargo test","exit_code":101,"aggregated_output":"3 failed"}}"#,
+        )
+        .unwrap();
+        assert!(failed.contains("exit 101"), "{failed}");
+        assert!(failed.contains("3 failed"), "{failed}");
+    }
+
+    #[test]
+    fn a_codex_turn_records_what_it_used() {
+        let out = codex(
+            r#"{"type":"turn.completed","usage":{"input_tokens":36111,"cached_input_tokens":12928,"cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":128}}"#,
+        )
+        .unwrap();
+        assert!(out.contains("in 36111"), "{out}");
+        assert!(out.contains("cached 12928"), "{out}");
+        // Reasoning tokens are output tokens.
+        assert!(out.contains("out 134"), "{out}");
+    }
+
+    #[test]
+    fn an_unknown_codex_event_still_gets_a_line() {
+        // A silently dropped event is how a log starts lying about what
+        // happened.
+        assert_eq!(
+            codex(r#"{"type":"something.new"}"#).as_deref(),
+            Some("· something.new")
+        );
+    }
+
+    #[test]
+    fn a_codex_error_item_is_rendered_as_a_failure() {
+        let out = codex(
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"hooks is deprecated"}}"#,
+        )
+        .unwrap();
+        assert!(out.contains("hooks is deprecated"), "{out}");
+    }
+
+    #[test]
+    fn the_two_renderers_do_not_try_to_read_each_others_events() {
+        // Claude's renderer would turn a codex `turn.completed` into "· turn.completed"
+        // and the reverse would be equally wrong; the wrapper says which is which.
+        assert_eq!(
+            render_line(r#"{"type":"turn.completed","usage":{"input_tokens":1}}"#).as_deref(),
+            Some("· turn.completed")
+        );
+        assert_eq!(
+            render_codex_line(r#"{"type":"assistant","message":{"content":[]}}"#).as_deref(),
+            Some("· assistant")
         );
     }
 }

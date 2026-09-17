@@ -449,8 +449,8 @@ fn run_session_sh() -> String {
 # 用法：
 #   run_session.sh <session-id> <output-dir> <runtime> <renderer> <binary> <prompt-file> [extra-args...]
 #
-# <renderer> 是 automed 自己的可执行文件路径，用来把 Claude 的 stream-json 输出
-# 渲染成人能读的日志；传 `-` 或传一个不可执行的路径即跳过渲染。
+# <renderer> 是 automed 自己的可执行文件路径，用来把 CLI 的 JSONL 输出渲染成
+# 人能读的日志；传 `-` 或传一个不可执行的路径即跳过渲染。
 #
 # 职责：写 pid → 执行 CLI 并把输出 tee 到日志 → 无论如何都写退出标记。
 
@@ -525,23 +525,19 @@ fi
 code_file="$out_dir/$session_id.code"
 rm -f "$code_file"
 
-# Claude 用 --output-format stream-json 跑，因为 text 模式只打印收尾的那段总结：
-# 会话已经不开窗口了，日志是唯一能看到这一轮干了什么的地方，而 text 模式下它
-# 只有几 KB。stream-json 是完整的，但一行一个 JSON，人读不了，所以经 automed
-# 自己渲染一遍。原始流另存 .jsonl，渲染只影响展示、不丢东西。
+# 两个 CLI 都用 JSONL 跑：Claude 是 --output-format stream-json，Codex 是 --json。
 #
-# Codex 的输出本来就是给人看的，原样通过。
-render() {{
-  if [ "$runtime" = "claude" ] && [ -n "$renderer" ] && [ "$renderer" != "-" ] && [ -x "$renderer" ]; then
-    "$renderer" render-stream
-  else
-    cat
-  fi
-}}
-
-if [ "$runtime" = "claude" ] && [ -n "$renderer" ] && [ "$renderer" != "-" ] && [ -x "$renderer" ]; then
+# Claude 的 text 模式只打印收尾那段总结——会话不开窗口，日志是唯一能看到这一轮
+# 干了什么的地方，而 text 模式下它只有几 KB。Codex 的默认输出本来就是给人看的，
+# 但它不带用量：费用、turn 数、token 全都拿不到，内核记不下任何东西。
+#
+# JSONL 是完整的，但一行一个 JSON，人读不了，所以经 automed 自己渲染一遍。
+# 原始流另存 .jsonl——内核事后从它读用量，渲染只影响展示、不丢东西。
+if [ -n "$renderer" ] && [ "$renderer" != "-" ] && [ -x "$renderer" ]; then
   {{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} \
-    | tee -a "$out_dir/$session_id.jsonl" | render | tee -a "$log"
+    | tee -a "$out_dir/$session_id.jsonl" \
+    | "$renderer" render-stream "$runtime" \
+    | tee -a "$log"
 else
   {{ "$binary" "$@" < "$prompt_file" 2>&1; echo $? > "$code_file"; }} | tee -a "$log"
 fi

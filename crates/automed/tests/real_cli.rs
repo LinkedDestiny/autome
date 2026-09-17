@@ -735,7 +735,11 @@ fn a_claude_session_log_records_the_tools_it_ran() {
 
     // Render it the way the wrapper does.
     let mut rendered = Vec::new();
-    automed::stream_render::render_stream(std::io::BufReader::new(raw.as_bytes()), &mut rendered)
+    automed::stream_render::render_stream(
+        autome_domain::role::Runtime::Claude,
+        std::io::BufReader::new(raw.as_bytes()),
+        &mut rendered,
+    )
         .unwrap();
     let text = String::from_utf8(rendered).unwrap();
     let _ = std::fs::remove_dir_all(&dir);

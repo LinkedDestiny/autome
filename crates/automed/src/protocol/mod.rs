@@ -189,6 +189,19 @@ pub struct Repo {
     pub path: PathBuf,
 }
 
+/// The repository, if it already exists.
+///
+/// Distinct from [`ensure`] because the read half of the IPC surface must not
+/// create anything: the read/write split is what lets the desktop shell put a
+/// narrower gate in front of reads, and a "read" that initialises a git
+/// repository would make that gate decoration. A fresh install with no
+/// projects yet honestly has no protocol repository, and the version page can
+/// say so.
+pub fn open(autome_home: &Path) -> Option<Repo> {
+    let path = repo_path(autome_home);
+    path.join(".git").exists().then_some(Repo { path })
+}
+
 /// Creates the repository if it is not there, and offers an upstream tag if the
 /// binary's seed has moved on. Idempotent: the common case is two `git` calls
 /// and no writes.

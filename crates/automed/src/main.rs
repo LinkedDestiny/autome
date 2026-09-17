@@ -31,9 +31,17 @@ fn main() {
     // is readable. It must produce no tracing noise on stderr — stderr is
     // merged into the same pipe it is rendering.
     if std::env::args().nth(1).as_deref() == Some("render-stream") {
+        // Both CLIs stream JSONL now, and their event vocabularies have
+        // nothing in common, so the wrapper says which one it is piping. An
+        // absent or unknown name falls back to Claude, which is what every
+        // wrapper written before this argument existed passes.
+        let runtime = std::env::args()
+            .nth(2)
+            .and_then(|s| autome_domain::role::Runtime::parse(&s))
+            .unwrap_or(autome_domain::role::Runtime::Claude);
         let stdin = io::stdin();
         let mut stdout = io::stdout();
-        if let Err(e) = automed::stream_render::render_stream(stdin.lock(), &mut stdout) {
+        if let Err(e) = automed::stream_render::render_stream(runtime, stdin.lock(), &mut stdout) {
             eprintln!("render-stream: {e}");
             std::process::exit(1);
         }

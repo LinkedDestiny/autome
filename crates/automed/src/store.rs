@@ -347,6 +347,34 @@ impl Store {
         Ok(self.conn.last_insert_rowid() as u64)
     }
 
+    /// The most recent event of one kind about one subject.
+    ///
+    /// Used for the running comparisons the metrics need — "what did the
+    /// milestone table look like before this session" — which have to be made
+    /// as they happen: the final document shows a milestone as open and says
+    /// nothing about it having once been closed.
+    pub fn last_event(&self, subject_id: &str, kind: &str) -> Result<Option<Value>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = ?2
+                 ORDER BY seq DESC LIMIT 1",
+                params![subject_id, kind],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
+    pub fn count_events(&self, subject_id: &str, kind: &str) -> Result<u32> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2",
+            params![subject_id, kind],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as u32)
+    }
+
     pub fn latest_seq(&self) -> Result<u64> {
         let seq: i64 =
             self.conn

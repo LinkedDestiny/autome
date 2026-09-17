@@ -9,6 +9,8 @@
 //!
 //! - [`ipc`] — framed JSON-RPC over stdio, the only channel to Electron Main.
 //! - [`dispatch`] — the command table: every method the Renderer can call.
+//! - [`dispatch_protocol`] — the protocol repository and version page half of
+//!   that table.
 //! - [`store`] — SQLite: project registry, task index, session ledger, the
 //!   user's decisions, and the event stream the UI resyncs against.
 //! - [`config_io`] — the two TOML files, with sparse project overrides
@@ -22,9 +24,15 @@
 //!   kernel contract, and a task's frozen copy.
 //! - [`scheduler`] — the one place a transition is applied and acted on.
 //! - [`skills`] — the read-only skill inventory scan.
+//! - [`task_metrics`] — one task folded into the numbers a later decision can
+//!   be made on.
+//! - [`usage`] — what a session cost, read out of the CLI's own event stream.
+//! - [`version_page`] — what each protocol version cost, and whether its
+//!   changes did what they said they would.
 
 pub mod config_io;
 pub mod dispatch;
+pub mod dispatch_protocol;
 pub mod env_probe;
 pub mod git;
 pub mod init;
@@ -34,4 +42,7 @@ pub mod protocol;
 pub mod scheduler;
 pub mod skills;
 pub mod store;
+pub mod task_metrics;
+pub mod usage;
+pub mod version_page;
 pub mod stream_render;
