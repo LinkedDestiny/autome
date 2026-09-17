@@ -661,7 +661,7 @@ pub fn apply_trigger(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<
 /// The other order would leave a running session the store knows nothing
 /// about, which is not.
 fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
-    let task = ctx.store.get_task(task_id)?;
+    let mut task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let resolved = resolve_config(ctx, &project)?;
 
@@ -696,6 +696,18 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     ctx.store.set_task_state(task_id, &transition.next)?;
     if let Some(n) = budget {
         ctx.store.set_task_budget(task_id, n)?;
+        // Also on the record `perform` is about to read. It was loaded at the
+        // top of this function, so without this the store says 75 and the
+        // prompt the very next session gets says 35 — the panel and the round
+        // disagree about the denominator, and the round is the one that acts
+        // on it. A real run hit this the round after a merge added eight
+        // backlog items: the budget went 35 → 75 and the session was told
+        // `32/35`, four rounds from an ending that was no longer there.
+        //
+        // The protocol answers "who owns N" with "the core states it in the
+        // prompt", so a stale number here is not a display bug — it is the
+        // core telling the session something untrue about its own budget.
+        task.budget_n = Some(n);
     }
     if transition.consumes_decisions {
         ctx.store.consume_decisions(task_id)?;
@@ -2039,6 +2051,63 @@ mod tests {
         // fallback here, so assert it is at least the factor.
         let n = w.ctx.store.get_task("T-1").unwrap().budget_n.unwrap();
         assert!(n >= 5, "budget {n}");
+    }
+
+    /// The prompt of the session a budget change starts must carry the new
+    /// budget, not the one the task had when `advance` began.
+    ///
+    /// Both numbers come from the same `TaskRecord`, and it is read once at
+    /// the top of `advance` — so a transition that computes a budget wrote it
+    /// to the store and then handed `perform` the record from before. On the
+    /// approval path `budget_n` was still `None`, which does not render as a
+    /// stale number but as no budget line at all: implementation round 1 was
+    /// never told what N is, on every task.
+    ///
+    /// The protocol puts N in the prompt precisely because a session cannot
+    /// derive it, and a real run already showed what happens when the two
+    /// sides disagree — the session declared the budget spent, the core
+    /// scheduled another round anyway, and the round after that invented a
+    /// user decision to explain the contradiction.
+    #[test]
+    fn the_first_implementation_round_is_told_the_budget_just_computed() {
+        needs_git!();
+        let mut w = World::new("budget-prompt");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+        w.write_design(
+            &task,
+            &design_doc(
+                "实现中",
+                &[
+                    ("M-01", MilestoneState::Open),
+                    ("M-02", MilestoneState::Open),
+                    ("M-03", MilestoneState::Open),
+                    ("M-04", MilestoneState::Open),
+                    ("M-05", MilestoneState::Open),
+                ],
+                "",
+            ),
+        );
+        let _ = advance(&mut w.ctx, "T-1", &Trigger::Approve);
+        assert_eq!(w.ctx.store.get_task("T-1").unwrap().budget_n, Some(25));
+
+        let dir = w.repo.join(".autome/output/sessions/T-1");
+        let prompt = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "prompt"))
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .expect("the approval started a session, so a prompt was written");
+        assert!(
+            prompt.contains("N = 25"),
+            "本轮 prompt 没有拿到刚算出的预算：\n{prompt}"
+        );
     }
 
     #[test]
