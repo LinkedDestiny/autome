@@ -92,30 +92,67 @@ function hero(data, ctx) {
 
   const card = h('div.card.hero.card--pattern.card--pattern-teal');
 
-  const meta = h('div.hero__meta');
-  meta.appendChild(pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon));
-  if (task.branch) meta.appendChild(tag(`分支 ${task.branch}`, 'outlined'));
-  if (data && data.worktree) meta.appendChild(tag(data.worktree, 'outlined'));
-  if (task.created_at) {
-    meta.appendChild(tag(`创建 ${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`, 'outlined'));
-  }
-  if (state.state === 'queued' && data.queue_position) {
-    meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
-  }
-
+  // Band 1 — what it is, and the buttons that act on it. One line: the title
+  // is the raw request and can be a paragraph long, and letting it wrap pushes
+  // everything below it around as tasks come and go. The full text is in the
+  // tooltip and, in full, in the task document.
+  const title = `${task.id || ''} · ${task.title || task.request || task.slug || ''}`;
   card.appendChild(
-    h('div.row.align-start', [
-      h('div', [
-        h('h2.hero__title', { text: `${task.id || ''} · ${task.title || task.request || task.slug || ''}` }),
-        meta,
-      ]),
+    h('div.hero__top', [
+      h('h2.hero__title', { text: title, title }),
       heroActions(data, ctx),
     ])
   );
 
+  // Band 2 — how far along, and where it lives. The state pill and the round
+  // counters answer the same question and belong on the same line; they used
+  // to sit in two rows with the whole flow diagram between them.
+  //
+  // Branch/worktree/age ride along at the end of this row rather than getting
+  // a row of their own: a fourth band pushed the screen past the 944px U-11
+  // holds it to, and they are the least urgent thing on the card — a quiet
+  // line beside the chips says that better than three outlined tags did, the
+  // widest of which was the path.
+  const meta = h('div.hero__meta');
+  meta.appendChild(pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon));
+  if (state.state === 'queued' && data.queue_position) {
+    meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
+  }
+  roundTags(status, task, data).forEach((t) => meta.appendChild(t));
+  meta.appendChild(heroIdent(task, data));
+  card.appendChild(meta);
+
+  // Band 3 — where it is in the flow, across the full width of the card.
   card.appendChild(flowRoute(node, state));
-  card.appendChild(roundTags(status, task, data));
   return card;
+}
+
+/** `/Users/dannie/project/x` → `~/project/x`. The home prefix is the same on
+ *  every row and pushes the part that differs off the end of the line. */
+function tildeHome(path) {
+  return String(path).replace(/^\/Users\/[^/]+\//, '~/');
+}
+
+/** Branch, worktree and age: the identifying facts, none of them urgent. */
+function heroIdent(task, data) {
+  const row = h('div.hero__ident');
+  const parts = [];
+  if (task.branch) parts.push(h('span', { text: `分支 ${task.branch}` }));
+  if (data && data.worktree) {
+    parts.push(h('span', { text: tildeHome(data.worktree), title: data.worktree }));
+  }
+  if (task.created_at) {
+    parts.push(
+      h('span', {
+        text: `创建 ${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`,
+      })
+    );
+  }
+  parts.forEach((part, i) => {
+    if (i) row.appendChild(h('span.hero__ident-sep', { text: '·' }));
+    row.appendChild(part);
+  });
+  return row;
 }
 
 /**
@@ -176,17 +213,13 @@ function heroActions(data, ctx) {
     );
   }
   if (!['done', 'cancelled'].includes(state.state)) {
+    // Opening a terminal is a utility, not the thing you came here to do, so
+    // it does not carry the same weight as 继续/暂停. Two filled buttons of
+    // equal weight with a bare one between them read as three unrelated
+    // controls.
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm.btn--text', {
-          type: 'button',
-          onClick: () => confirmCancel(task, ctx),
-        }, [text('取消')])
-      )
-    );
-    row.appendChild(
-      registerWrite(
-        h('button.btn.btn--sm.btn--primary', {
+        h('button.btn.btn--sm', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -195,6 +228,15 @@ function heroActions(data, ctx) {
               run: (write) => write.openTerminal(task.id),
             }),
         }, [icon('term'), text('打开终端')])
+      )
+    );
+    // Last, and set apart: the one button here you cannot undo.
+    row.appendChild(
+      registerWrite(
+        h('button.btn.btn--sm.btn--text.hero__actions-last', {
+          type: 'button',
+          onClick: () => confirmCancel(task, ctx),
+        }, [text('取消')])
       )
     );
   }
@@ -256,35 +298,31 @@ function flowRoute(node, state) {
  *  — an unreadable document means we do not know the round, and saying "1/15"
  *  would be an invention. */
 function roundTags(status, task, data) {
-  const row = h('div.row.gap-6');
   if (!status) {
-    row.appendChild(
+    return [
       tag(
         data && data.status_error
           ? '设计文档的状态块还读不到 · 轮次未知'
           : '设计文档还没有生成 · 轮次未知',
         'dashed-brown'
-      )
-    );
-    return row;
+      ),
+    ];
   }
-  row.appendChild(
-    tag(`设计循环 ${status.design_round} / ${status.design_round_limit} 轮`, 'soft-green')
-  );
   const budget = task.budget_n || status.impl_round_limit;
-  row.appendChild(tag(`实现循环 ${status.impl_round} / ${budget} 轮`, 'soft-teal'));
-  row.appendChild(
+  const tags = [
+    tag(`设计循环 ${status.design_round} / ${status.design_round_limit} 轮`, 'soft-green'),
+    tag(`实现循环 ${status.impl_round} / ${budget} 轮`, 'soft-teal'),
     tag(
       `reopen ${status.current_milestone_reopens || 0} · convergence ${status.convergence_mode}`,
       'soft-brown'
-    )
-  );
+    ),
+  ];
   const backlog = ((data && data.decisions) || []).filter((d) => d.kind === 'backlog').length;
   const disputes = ((data && data.decisions) || []).filter((d) => d.kind === 'dispute').length;
   if (backlog || disputes) {
-    row.appendChild(tag(`Backlog ${backlog} · 争议项 ${disputes}`, 'soft-brown'));
+    tags.push(tag(`Backlog ${backlog} · 争议项 ${disputes}`, 'soft-brown'));
   }
-  return row;
+  return tags;
 }
 
 // ---------------------------------------------------------------------------

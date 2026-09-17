@@ -903,8 +903,28 @@ body { font-size: 13px; }
 .archrow b { font-weight: 900; letter-spacing: .04em; color: var(--animal-text-secondary); font-size: 11.5px; }
 .archrow small { color: var(--animal-text-secondary); font-weight: 600; display: block; margin-top: 1px; }
 .route--13 .stone { min-width: 80px; }
-.hero__actions { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-.hero__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.hero__actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.hero__actions-last { margin-left: 4px; }
+.hero__meta { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* The hero reads top to bottom as four bands: what it is (+ its buttons),
+   how far along, where in the flow, where on disk. They used to interleave —
+   the buttons floated beside the title and overlapped the flow diagram, and
+   the round counters sat below the diagram, a whole row away from the state
+   pill that means the same kind of thing. */
+/* 8px, and the flow diagram gives up its own padding below: the bands used to
+   space themselves with their own margins, and adding a gap on top of those
+   made the card taller than the 944px budget U-11 holds the screen to. */
+.hero { display: flex; flex-direction: column; gap: 8px; }
+.hero .route--hero { padding: 2px 0 4px; }
+.hero__top { display: flex; align-items: center; gap: 20px; }
+/* One line. The title is the raw request and can run to a paragraph; wrapping
+   it moves every band below it whenever the text changes length. */
+.hero__top .hero__title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Rides at the end of the meta row, pushed right so the coloured chips and the
+   quiet facts do not read as one undifferentiated run of text. */
+.hero__ident { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; font-size: 12px; font-weight: 600; color: var(--animal-text-muted); }
+.hero__ident-sep { opacity: .45; }
 
 /* ===================================================================
    Layer 7 - renderer-only additions
