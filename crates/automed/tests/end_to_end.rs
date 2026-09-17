@@ -262,6 +262,12 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
     /// What the retro round does: write `docs/<slug>/lessons.md` and leave
     /// the design document alone.
     fn retro_step(&self, n: u32, slug: &str) {
+        self.retro_step_learning(n, slug, "证据文件必须逐字写出跑过的命令");
+    }
+
+    /// The same, with the lesson's sentence chosen by the caller — so two
+    /// tasks can learn the same thing, which is what turns it into a rule.
+    fn retro_step_learning(&self, n: u32, slug: &str, proposal: &str) {
         let usage = Self::FAKE_USAGE;
         self.step(
             n,
@@ -278,7 +284,7 @@ cat > "docs/{slug}/lessons.md" <<'AUTOME_EOF'
   root_cause: 实现轮的证据只写了结论，没有写命令
   evidence: docs/{slug}/lessons.md
   level: rule
-  proposal: 证据文件必须逐字写出跑过的命令
+  proposal: {proposal}
   predicted_impact: {{metric: verification_gaps, direction: down, scope: task, horizon: 3}}
 ```
 AUTOME_EOF
@@ -1690,4 +1696,140 @@ fn the_app_suggests_an_iteration_only_once_there_is_something_to_say() {
         reasons.iter().any(|r| r.as_str().unwrap().contains(&slug)),
         "{after}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: a lesson becoming a rule (plan §E2, §E3)
+// ---------------------------------------------------------------------------
+
+/// Runs one whole task to a merge, with a retro that learns `proposal`.
+fn run_a_task(w: &mut World, request: &str, proposal: &str) -> String {
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step_learning(7, &slug, proposal);
+    let id = create_task(w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": id }));
+    w.settle();
+    w.call("task.merge", json!({ "task_id": id }));
+    w.settle();
+    // The step counter is per repository, so the next task starts again at 1.
+    std::fs::write(w.repo.join(".autome/fake/next"), "1").unwrap();
+    id
+}
+
+/// One task is a bad week. Two is a rule.
+#[test]
+fn the_same_lesson_from_two_tasks_becomes_a_project_rule_after_the_user_approves() {
+    needs_git!();
+    let mut w = World::new("curation");
+    let lesson = "证据文件必须逐字写出跑过的命令";
+
+    run_a_task(&mut w, "first task", lesson);
+
+    // After one task there is nothing to propose.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_one = ok(&out).clone();
+    assert_eq!(
+        after_one["proposals"].as_array().unwrap().len(),
+        0,
+        "{after_one}"
+    );
+
+    run_a_task(&mut w, "second task", lesson);
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_two = ok(&out).clone();
+    let proposals = after_two["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 1, "{after_two}");
+    let p = &proposals[0];
+    assert_eq!(p["file"], ".autome/rules/verification.md");
+    assert_eq!(p["tasks"].as_array().unwrap().len(), 2, "{p}");
+    // What the user approves is the exact text that gets written, provenance
+    // included.
+    let diff = p["diff"].as_str().unwrap();
+    assert!(diff.contains(lesson), "{diff}");
+    assert!(diff.contains("since:"), "{diff}");
+    assert!(diff.contains("first-task"), "{diff}");
+
+    // Nothing is written until the user says so.
+    let rule_file = w.repo.join(".autome/rules/verification.md");
+    assert!(!rule_file.exists(), "the rule was written without approval");
+
+    let key = p["key"].as_str().unwrap().to_string();
+    let out = w.call(
+        "rules.decide",
+        json!({ "project_id": w.project_id, "key": key, "approve": true }),
+    );
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(text.contains(lesson), "{text}");
+    assert!(text.contains("移除实验"), "the file explains itself:\n{text}");
+
+    // And it is not offered again.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_approve = ok(&out).clone();
+    assert_eq!(
+        after_approve["proposals"].as_array().unwrap().len(),
+        0,
+        "{after_approve}"
+    );
+}
+
+/// A rule is never retired for having gone quiet: its absence from recent
+/// lessons is caused by its presence. Removal is an experiment.
+#[test]
+fn removing_a_rule_is_an_experiment_with_a_baseline_and_a_way_back() {
+    needs_git!();
+    let mut w = World::new("retire");
+    let lesson = "证据文件必须逐字写出跑过的命令";
+    run_a_task(&mut w, "first task", lesson);
+    run_a_task(&mut w, "second task", lesson);
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let key = ok(&out)["proposals"][0]["key"].as_str().unwrap().to_string();
+    w.call(
+        "rules.decide",
+        json!({ "project_id": w.project_id, "key": key, "approve": true }),
+    );
+
+    let rule_file = w.repo.join(".autome/rules/verification.md");
+    assert!(std::fs::read_to_string(&rule_file).unwrap().contains(lesson));
+
+    let out = w.call(
+        "rules.retire",
+        json!({
+            "project_id": w.project_id,
+            "file": ".autome/rules/verification.md",
+            "body": lesson,
+        }),
+    );
+    let started = ok(&out).clone();
+    assert_eq!(started["metric"], "verification_gaps", "{started}");
+    assert_eq!(started["horizon"], 3, "{started}");
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(!text.contains(lesson), "{text}");
+    assert!(!text.contains("first-task L-01"), "an orphan comment:\n{text}");
+
+    // The experiment is running and not yet judgeable.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let listed = ok(&out).clone();
+    let experiments = listed["experiments"].as_array().unwrap();
+    assert_eq!(experiments.len(), 1, "{listed}");
+    assert_eq!(experiments[0]["verdict"], "还没到期", "{listed}");
+
+    // And there is a way back.
+    let id = experiments[0]["id"].as_str().unwrap().to_string();
+    let out = w.call(
+        "rules.restore",
+        json!({ "project_id": w.project_id, "id": id }),
+    );
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(text.contains(lesson), "{text}");
 }

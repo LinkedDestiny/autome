@@ -741,8 +741,22 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         }
     ) || matches!(transition.next, TaskState::Failed { .. } | TaskState::Cancelled)
         || (transition.next == TaskState::Done && task.metrics.is_none());
-    if measure_now && let Err(e) = write_task_metrics(ctx, task_id) {
-        tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
+    if measure_now {
+        if let Err(e) = write_task_metrics(ctx, task_id) {
+            tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
+        }
+        // A new sample just arrived, which is the only thing that can make a
+        // past prediction judgeable. The core fills the outcome in, never the
+        // person who proposed the change: a claim scored by its author is not
+        // a claim.
+        for filled in crate::backfill::run(ctx) {
+            tracing::info!(
+                entry = %filled.id,
+                metric = %filled.metric,
+                held_up = filled.held_up,
+                "protocol change measured"
+            );
+        }
     }
 
     perform(ctx, &task, &project, &resolved, &transition)?;

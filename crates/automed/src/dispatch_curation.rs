@@ -1,0 +1,332 @@
+//! The IPC surface for curation: rule proposals, removal experiments, and the
+//! backfill that tells a past change whether it was right.
+
+use autome_domain::lesson::{Lesson, LessonDomain};
+use serde_json::{Value, json};
+
+use crate::curation::{self, ExperimentVerdict, ProposalState};
+use crate::dispatch::{Ctx, DispatchResult, rejected};
+
+/// Recomputes a project's rule proposals from every task's lessons.
+///
+/// Cheap and idempotent, so it runs whenever the panel asks rather than being
+/// scheduled: the answer changes only when a task ends, and asking then costs
+/// one pass over lessons the core already has in the event stream.
+fn refresh(ctx: &mut Ctx, project_id: &str) -> Result<Vec<curation::Proposal>, crate::dispatch::DispatchError> {
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let mut per_task: Vec<(String, Vec<Lesson>)> = Vec::new();
+    for task in ctx.store.list_tasks(project_id)? {
+        let lessons = ctx
+            .store
+            .last_event(&task.id, "task.lessons")?
+            .and_then(|p| p.get("lessons").cloned())
+            .and_then(|v| serde_json::from_value::<Vec<Lesson>>(v).ok())
+            .or_else(|| {
+                std::fs::read_to_string(repo.join(task.doc_dir()).join("lessons.md"))
+                    .ok()
+                    .and_then(|t| autome_domain::lesson::parse(&t).ok())
+            })
+            .unwrap_or_default();
+        if !lessons.is_empty() {
+            per_task.push((task.slug.clone(), lessons));
+        }
+    }
+    let aggregated = autome_domain::lesson::aggregate(
+        per_task
+            .iter()
+            .map(|(slug, l)| (slug.as_str(), l.as_slice()))
+            .collect::<Vec<_>>(),
+    );
+    let answered = ctx.store.answered_rule_proposals(project_id)?;
+    let proposals = curation::proposals(&aggregated, &answered);
+    for p in &proposals {
+        ctx.store.upsert_rule_proposal(
+            project_id,
+            &p.key,
+            p.domain.as_str(),
+            &p.proposal,
+            &p.evidence,
+        )?;
+    }
+    Ok(proposals)
+}
+
+/// `rules.proposals` — what the project page's 建议入规 card shows.
+pub fn proposals(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
+    let proposals = refresh(ctx, project_id)?;
+    let today = crate::store::now_iso();
+    let date = today.split('T').next().unwrap_or(&today).to_string();
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+
+    Ok((
+        json!({
+            "proposals": proposals.iter().map(|p| {
+                let file = p.rule_file();
+                let existing = std::fs::read_to_string(repo.join(&file)).ok();
+                json!({
+                    "key": p.key,
+                    "domain": p.domain.as_str(),
+                    "proposal": p.proposal,
+                    "tasks": p.tasks,
+                    "evidence": p.evidence,
+                    "file": file,
+                    // The exact text that will be added, not a description of
+                    // it: what the user approves has to be what gets written.
+                    "diff": p.rule_text(&date),
+                    "file_exists": existing.is_some(),
+                })
+            }).collect::<Vec<_>>(),
+            "experiments": experiments_json(ctx, project_id)?,
+        }),
+        vec![],
+    ))
+}
+
+/// `rules.decide` — approve or dismiss a proposal.
+pub fn decide(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let project_id = params
+        .get("project_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 project_id"))?;
+    let key = params
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 key"))?;
+    let approve = params
+        .get("approve")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| rejected("缺少 approve"))?;
+
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let rows = ctx.store.list_rule_proposals(project_id)?;
+    let Some((_, domain, proposal, evidence, _)) = rows.into_iter().find(|(k, ..)| k == key) else {
+        return Err(rejected(format!("没有这条建议：{key}")));
+    };
+    let domain = LessonDomain::parse(&domain).unwrap_or(LessonDomain::Process);
+
+    if !approve {
+        ctx.store
+            .set_rule_proposal_state(project_id, key, ProposalState::Dismissed.as_str())?;
+        let seq = ctx
+            .store
+            .append_event("rule.dismissed", project_id, json!({ "key": key }))?;
+        return Ok((
+            json!({ "state": "dismissed" }),
+            vec![crate::dispatch::event(
+                seq,
+                "rule.dismissed",
+                project_id,
+                json!({}),
+            )],
+        ));
+    }
+
+    let today = crate::store::now_iso();
+    let date = today.split('T').next().unwrap_or(&today).to_string();
+    let p = curation::Proposal {
+        key: key.to_string(),
+        domain,
+        proposal,
+        evidence,
+        tasks: vec![],
+    };
+    let file = p.rule_file();
+    let path = repo.join(&file);
+    let existing = std::fs::read_to_string(&path).ok();
+    let text = curation::apply(existing.as_deref(), domain, &p.rule_text(&date));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, text).map_err(|e| rejected(format!("无法写入 {file}：{e}")))?;
+    let _ = crate::git::commit_paths(
+        &repo,
+        &[&file],
+        &format!("chore(autome): 入规 {}", p.proposal),
+    );
+
+    ctx.store
+        .set_rule_proposal_state(project_id, key, ProposalState::Approved.as_str())?;
+    let seq = ctx.store.append_event(
+        "rule.approved",
+        project_id,
+        json!({ "key": key, "file": file }),
+    )?;
+    Ok((
+        json!({ "state": "approved", "file": file }),
+        vec![crate::dispatch::event(
+            seq,
+            "rule.approved",
+            project_id,
+            json!({}),
+        )],
+    ))
+}
+
+fn experiments_json(ctx: &mut Ctx, project_id: &str) -> Result<Value, crate::dispatch::DispatchError> {
+    let rows = ctx.store.list_rule_experiments(project_id)?;
+    let mut out = Vec::new();
+    for (id, file, body, metric, baseline, horizon, removed_at, state, outcome) in rows {
+        let after: Vec<f64> = ctx
+            .store
+            .tasks_completed_after(project_id, &removed_at)?
+            .iter()
+            .filter_map(|m| m.value(&metric))
+            .collect();
+        let verdict = curation::judge(baseline, &after, horizon);
+        out.push(json!({
+            "id": id,
+            "file": file,
+            "body": body,
+            "metric": metric,
+            "baseline": baseline,
+            "horizon": horizon,
+            "samples": after.len(),
+            "state": state,
+            "outcome": outcome,
+            "verdict": match verdict {
+                ExperimentVerdict::TooEarly => "还没到期",
+                ExperimentVerdict::Held => "没有变差，可以就这样",
+                ExperimentVerdict::Regressed => "变差了，建议放回来",
+            },
+        }));
+    }
+    Ok(json!(out))
+}
+
+/// `rules.retire` — remove a rule as an experiment.
+pub fn retire(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let project_id = params
+        .get("project_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 project_id"))?;
+    let file = params
+        .get("file")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 file"))?;
+    let body = params
+        .get("body")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 body"))?;
+
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let path = repo.join(file);
+    let existing = std::fs::read_to_string(&path)
+        .map_err(|e| rejected(format!("读不到 {file}：{e}")))?;
+    if !existing.contains(body) {
+        return Err(rejected(format!("{file} 里没有这条规则")));
+    }
+
+    let domain = LessonDomain::parse(
+        file.rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".md"),
+    )
+    .unwrap_or(LessonDomain::Process);
+    let metric = curation::metric_for(domain);
+
+    // The baseline is what the metric looked like *with* the rule in place.
+    // Without it the later verdict has nothing to compare to, and the
+    // experiment is just a deletion with extra steps.
+    let history: Vec<f64> = ctx
+        .store
+        .tasks_with_metrics(project_id)?
+        .iter()
+        .filter_map(|(_, m)| m.value(metric))
+        .collect();
+    if history.is_empty() {
+        return Err(rejected(
+            "这个项目还没有任何带指标的已终结任务，移除实验没有基线可比。",
+        ));
+    }
+    let baseline = history.iter().sum::<f64>() / history.len() as f64;
+
+    std::fs::write(&path, curation::remove(&existing, body))
+        .map_err(|e| rejected(format!("无法写入 {file}：{e}")))?;
+    let _ = crate::git::commit_paths(
+        &repo,
+        &[file],
+        &format!("chore(autome): 移除实验 · {body}"),
+    );
+
+    let id = ctx.store.start_rule_experiment(
+        project_id,
+        file,
+        body,
+        metric,
+        baseline,
+        curation::EXPERIMENT_HORIZON,
+    )?;
+    let seq = ctx.store.append_event(
+        "rule.removal_experiment",
+        project_id,
+        json!({ "id": id, "file": file, "metric": metric, "baseline": baseline }),
+    )?;
+    Ok((
+        json!({ "id": id, "metric": metric, "baseline": baseline,
+                "horizon": curation::EXPERIMENT_HORIZON }),
+        vec![crate::dispatch::event(
+            seq,
+            "rule.removal_experiment",
+            project_id,
+            json!({}),
+        )],
+    ))
+}
+
+/// `rules.restore` — put a rule back after an experiment went badly.
+pub fn restore(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let project_id = params
+        .get("project_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 project_id"))?;
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rejected("缺少 id"))?;
+
+    let project = ctx.store.get_project(project_id)?;
+    let repo = std::path::PathBuf::from(&project.path);
+    let rows = ctx.store.list_rule_experiments(project_id)?;
+    let Some((_, file, body, ..)) = rows.into_iter().find(|(i, ..)| i == id) else {
+        return Err(rejected(format!("没有这个实验：{id}")));
+    };
+
+    let domain = LessonDomain::parse(
+        file.rsplit('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".md"),
+    )
+    .unwrap_or(LessonDomain::Process);
+    let path = repo.join(&file);
+    let existing = std::fs::read_to_string(&path).ok();
+    let today = crate::store::now_iso();
+    let date = today.split('T').next().unwrap_or(&today);
+    let text = curation::apply(
+        existing.as_deref(),
+        domain,
+        &format!("<!-- since: {date} · 移除实验后放回 -->\n- {body}\n"),
+    );
+    std::fs::write(&path, text).map_err(|e| rejected(format!("无法写入 {file}：{e}")))?;
+    let _ = crate::git::commit_paths(&repo, &[&file], &format!("chore(autome): 放回 {body}"));
+
+    ctx.store
+        .finish_rule_experiment(id, "restored", "指标变差，规则放回")?;
+    let seq = ctx
+        .store
+        .append_event("rule.restored", project_id, json!({ "id": id, "file": file }))?;
+    Ok((
+        json!({ "file": file }),
+        vec![crate::dispatch::event(
+            seq,
+            "rule.restored",
+            project_id,
+            json!({}),
+        )],
+    ))
+}

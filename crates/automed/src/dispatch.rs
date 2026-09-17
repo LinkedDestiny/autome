@@ -396,6 +396,14 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "protocol.eval" => crate::dispatch_protocol::eval(ctx),
         "protocol.triggers" => crate::dispatch_protocol::triggers(ctx),
         "protocol.improve" => crate::dispatch_protocol::improve(ctx),
+
+        // ---- curation --------------------------------------------------
+        "rules.proposals" => {
+            crate::dispatch_curation::proposals(ctx, str_param(p, "project_id")?)
+        }
+        "rules.decide" => crate::dispatch_curation::decide(ctx, p),
+        "rules.retire" => crate::dispatch_curation::retire(ctx, p),
+        "rules.restore" => crate::dispatch_curation::restore(ctx, p),
         "protocol.versions" => {
             crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
         }

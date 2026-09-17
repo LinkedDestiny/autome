@@ -11,10 +11,14 @@
 //! - [`dispatch`] — the command table: every method the Renderer can call.
 //! - [`dispatch_protocol`] — the protocol repository and version page half of
 //!   that table.
+//! - [`dispatch_curation`] — the rule-proposal and removal-experiment half.
 //! - [`store`] — SQLite: project registry, task index, session ledger, the
 //!   user's decisions, and the event stream the UI resyncs against.
+//! - [`backfill`] — telling a past protocol change whether it was right.
 //! - [`brief`] — the four paragraphs a round is handed before it opens the
 //!   design document.
+//! - [`curation`] — from a lesson two tasks learned to a rule the next one is
+//!   held to, and the experiment that removes one again.
 //! - [`config_io`] — the two TOML files, with sparse project overrides
 //!   preserved across a write.
 //! - [`git`] — the operations table from design §6, and nothing else.
@@ -38,9 +42,12 @@
 //! - [`version_page`] — what each protocol version cost, and whether its
 //!   changes did what they said they would.
 
+pub mod backfill;
 pub mod brief;
 pub mod config_io;
+pub mod curation;
 pub mod dispatch;
+pub mod dispatch_curation;
 pub mod dispatch_protocol;
 pub mod env_probe;
 pub mod git;

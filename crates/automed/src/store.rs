@@ -710,6 +710,171 @@ impl Store {
             .collect())
     }
 
+    // -----------------------------------------------------------------
+    // Curation: lessons becoming rules, and rules being removed again
+    // -----------------------------------------------------------------
+
+    /// Records a proposal the panel is showing. Idempotent: the aggregation
+    /// runs on every tick and must not re-ask a question the user answered.
+    pub fn upsert_rule_proposal(
+        &self,
+        project_id: &str,
+        key: &str,
+        domain: &str,
+        proposal: &str,
+        evidence: &[String],
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO rule_proposals (project_id, lesson_key, domain, proposal, evidence, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')
+             ON CONFLICT (project_id, lesson_key) DO UPDATE SET evidence = excluded.evidence",
+            params![
+                project_id,
+                key,
+                domain,
+                proposal,
+                serde_json::to_string(evidence)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// `(key, domain, proposal, evidence, state)` for one project.
+    pub fn list_rule_proposals(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(String, String, String, Vec<String>, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT lesson_key, domain, proposal, evidence, state FROM rule_proposals
+             WHERE project_id = ?1 ORDER BY lesson_key",
+        )?;
+        let rows = stmt.query_map(params![project_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (key, domain, proposal, evidence, state) = row?;
+            out.push((
+                key,
+                domain,
+                proposal,
+                serde_json::from_str(&evidence).unwrap_or_default(),
+                state,
+            ));
+        }
+        Ok(out)
+    }
+
+    pub fn set_rule_proposal_state(&self, project_id: &str, key: &str, state: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE rule_proposals SET state = ?3, decided_at = ?4
+             WHERE project_id = ?1 AND lesson_key = ?2",
+            params![project_id, key, state, now_iso()],
+        )?;
+        self.require_one(n, "入规建议", key)
+    }
+
+    /// Keys the user has already answered, so they are not offered again.
+    pub fn answered_rule_proposals(&self, project_id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .list_rule_proposals(project_id)?
+            .into_iter()
+            .filter(|(_, _, _, _, state)| state != "pending")
+            .map(|(key, ..)| key)
+            .collect())
+    }
+
+    /// Starts a removal experiment. `baseline` is the metric's mean before the
+    /// rule came out, which is the only thing the later verdict compares to.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_rule_experiment(
+        &self,
+        project_id: &str,
+        rule_file: &str,
+        body: &str,
+        metric: &str,
+        baseline: f64,
+        horizon: u32,
+    ) -> Result<String> {
+        let id = new_id("exp");
+        self.conn.execute(
+            "INSERT INTO rule_experiments
+                (id, project_id, rule_file, removed_at, metric, baseline, horizon, body, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'running')",
+            params![
+                id,
+                project_id,
+                rule_file,
+                now_iso(),
+                metric,
+                baseline,
+                horizon as i64,
+                body
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// `(id, rule_file, body, metric, baseline, horizon, removed_at, state, outcome)`.
+    #[allow(clippy::type_complexity)]
+    pub fn list_rule_experiments(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(String, String, String, String, f64, u32, String, String, Option<String>)>>
+    {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, rule_file, body, metric, baseline, horizon, removed_at, state, outcome
+             FROM rule_experiments WHERE project_id = ?1 ORDER BY removed_at",
+        )?;
+        let rows = stmt.query_map(params![project_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, i64>(5)? as u32,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn finish_rule_experiment(&self, id: &str, state: &str, outcome: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE rule_experiments SET state = ?2, outcome = ?3 WHERE id = ?1",
+            params![id, state, outcome],
+        )?;
+        self.require_one(n, "移除实验", id)
+    }
+
+    /// Tasks that finished after a timestamp, in order — the window a removal
+    /// experiment is judged over.
+    pub fn tasks_completed_after(
+        &self,
+        project_id: &str,
+        after: &str,
+    ) -> Result<Vec<autome_domain::metrics::TaskMetrics>> {
+        Ok(self
+            .list_tasks(project_id)?
+            .into_iter()
+            .filter(|t| t.completed_at.as_deref().is_some_and(|c| c > after))
+            .filter_map(|t| t.metrics)
+            .collect())
+    }
+
     pub fn set_task_archived(&self, id: &str, archived: bool) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE tasks SET archived_at = ?2 WHERE id = ?1",
