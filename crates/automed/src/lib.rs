@@ -18,6 +18,8 @@
 //! - [`env_probe`] — the four local components.
 //! - [`launcher`] — prompt construction, the CLI adapter table, and starting
 //!   a session in a visible terminal.
+//! - [`protocol`] — the `~/.autome/protocol/` repository: versions, tags, the
+//!   kernel contract, and a task's frozen copy.
 //! - [`scheduler`] — the one place a transition is applied and acted on.
 //! - [`skills`] — the read-only skill inventory scan.
 
@@ -28,6 +30,7 @@ pub mod git;
 pub mod init;
 pub mod ipc;
 pub mod launcher;
+pub mod protocol;
 pub mod scheduler;
 pub mod skills;
 pub mod store;

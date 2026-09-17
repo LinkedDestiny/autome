@@ -1,0 +1,10 @@
+# 要真人才能看到的结果进人工验收清单，不做里程碑
+name: plan-manual-checks-are-not-milestones
+role: plan
+description: 要真人才能看到的结果进人工验收清单，不做里程碑
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/hand-checks-are-listed-not-milestoned.md

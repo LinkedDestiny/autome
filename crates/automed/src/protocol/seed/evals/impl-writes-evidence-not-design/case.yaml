@@ -1,0 +1,11 @@
+              # 证据进 evidence/，设计文档里只留一行指针
+              name: impl-writes-evidence-not-design
+              role: impl
+              description: 证据进 evidence/，设计文档里只留一行指针
+              runs: 3
+              max_turns: 15
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/evidence-left-the-design-doc.md
+- graders/retro-got-one-line.md

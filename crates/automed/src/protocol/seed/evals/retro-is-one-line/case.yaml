@@ -1,0 +1,11 @@
+              # 审计轮在 retro 里也只追加一行
+              name: retro-is-one-line
+              role: audit
+              description: 审计轮在 retro 里也只追加一行
+              runs: 3
+              max_turns: 15
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/audit-conclusion-not-copied-into-design.md
+- graders/one-line-per-round.md

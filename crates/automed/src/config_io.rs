@@ -243,6 +243,11 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                 .get("budget_factor")
                 .and_then(toml::Value::as_integer)
                 .map(|v| v.clamp(0, u32::MAX as i64) as u32),
+            protocol: t
+                .get("protocol")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty()),
         };
     }
 
@@ -376,6 +381,12 @@ pub fn save_project(repo: &Path, config: &ProjectConfig) -> Result<()> {
             "budget_factor",
             config.loop_overrides.budget_factor,
         );
+        match &config.loop_overrides.protocol {
+            Some(tag) => loop_table["protocol"] = value(tag.as_str()),
+            None => {
+                loop_table.remove("protocol");
+            }
+        }
     }
 
     {
@@ -833,7 +844,7 @@ effort = ""
         )
         .unwrap();
         let config = load_global(dir.path()).unwrap();
-        assert_eq!(config.roles.len(), 5);
+        assert_eq!(config.roles.len(), Role::ALL.len());
         assert_eq!(config.role(Role::Plan).model, "m");
         assert_eq!(config.role(Role::Audit).runtime, Runtime::Codex);
     }

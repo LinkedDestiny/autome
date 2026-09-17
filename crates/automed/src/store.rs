@@ -64,9 +64,15 @@ impl From<serde_json::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// The schema version this binary writes. Bump it and add a `if version < N`
+/// block in `migrate`; never edit an earlier block, because a database that
+/// already ran it will not run it again.
+pub const SCHEMA_VERSION: i64 = 2;
+
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Eq` is deliberately absent: `TaskMetrics` carries a cost in dollars.
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskRecord {
     pub id: String,
     pub project_id: String,
@@ -82,6 +88,14 @@ pub struct TaskRecord {
     pub completed_at: Option<String>,
     pub merge_commit: Option<String>,
     pub archived_at: Option<String>,
+    /// The protocol version this task is held to, in wire form. Set the first
+    /// time a session starts, and never changed after — the frozen copy under
+    /// `docs/<slug>/protocol/` is what the sessions read.
+    pub protocol_ref: Option<String>,
+    /// Hash of `.autome/rules/` when the task started.
+    pub rules_hash: Option<String>,
+    /// Aggregated once the task reaches a terminal state.
+    pub metrics: Option<autome_domain::metrics::TaskMetrics>,
 }
 
 impl TaskRecord {
@@ -243,6 +257,70 @@ impl Store {
                 "#,
             )?;
             self.conn.pragma_update(None, "user_version", 1)?;
+        }
+
+        // v2: the observation layer. Until now the ledger recorded that a
+        // session happened and what it exited with, and nothing about what it
+        // cost or produced — so "did that protocol change help" had no answer
+        // and the whole self-improvement idea was decorative. The CLIs were
+        // already writing everything needed; nobody was reading it.
+        //
+        // Session usage goes in real columns rather than a JSON blob because
+        // the version page averages them, and a database that can do the
+        // averaging is one less place to get it wrong.
+        if version < 2 {
+            self.conn.execute_batch(
+                r#"
+                ALTER TABLE tasks ADD COLUMN protocol_ref TEXT;
+                ALTER TABLE tasks ADD COLUMN rules_hash TEXT;
+                ALTER TABLE tasks ADD COLUMN metrics TEXT;
+
+                ALTER TABLE sessions ADD COLUMN protocol_ref TEXT;
+                ALTER TABLE sessions ADD COLUMN rules_hash TEXT;
+                ALTER TABLE sessions ADD COLUMN input_tokens INTEGER;
+                ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER;
+                ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER;
+                ALTER TABLE sessions ADD COLUMN output_tokens INTEGER;
+                ALTER TABLE sessions ADD COLUMN cost_usd REAL;
+                ALTER TABLE sessions ADD COLUMN turns INTEGER;
+                ALTER TABLE sessions ADD COLUMN duration_ms INTEGER;
+                ALTER TABLE sessions ADD COLUMN mean_request_input INTEGER;
+                ALTER TABLE sessions ADD COLUMN design_doc_bytes INTEGER;
+                ALTER TABLE sessions ADD COLUMN evidence_files INTEGER;
+
+                -- One row per lesson key a project has seen twice. The user
+                -- approves or dismisses; the row is what stops the panel
+                -- proposing the same rule every tick.
+                CREATE TABLE rule_proposals (
+                    project_id  TEXT NOT NULL REFERENCES projects(id),
+                    lesson_key  TEXT NOT NULL,
+                    domain      TEXT NOT NULL,
+                    proposal    TEXT NOT NULL,
+                    evidence    TEXT NOT NULL,
+                    state       TEXT NOT NULL,
+                    decided_at  TEXT,
+                    PRIMARY KEY (project_id, lesson_key)
+                );
+
+                -- A removal experiment (plan §E3). A rule is never retired
+                -- because it stopped being needed — the rule is why it stopped
+                -- — so removing one is an experiment with a prediction and a
+                -- deadline.
+                CREATE TABLE rule_experiments (
+                    id          TEXT PRIMARY KEY,
+                    project_id  TEXT NOT NULL REFERENCES projects(id),
+                    rule_file   TEXT NOT NULL,
+                    removed_at  TEXT NOT NULL,
+                    metric      TEXT NOT NULL,
+                    baseline    REAL NOT NULL,
+                    horizon     INTEGER NOT NULL,
+                    body        TEXT NOT NULL,
+                    state       TEXT NOT NULL,
+                    outcome     TEXT
+                );
+                "#,
+            )?;
+            self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(())
     }
@@ -418,8 +496,9 @@ impl Store {
         self.conn
             .execute(
                 "INSERT INTO tasks (id, project_id, slug, title, request, attachments, doc_refs,
-                                    state, budget_n, created_at, completed_at, merge_commit, archived_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                    state, budget_n, created_at, completed_at, merge_commit,
+                                    archived_at, protocol_ref, rules_hash, metrics)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     task.id,
                     task.project_id,
@@ -434,6 +513,12 @@ impl Store {
                     task.completed_at,
                     task.merge_commit,
                     task.archived_at,
+                    task.protocol_ref,
+                    task.rules_hash,
+                    task.metrics
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()?,
                 ],
             )
             .map_err(|e| match e {
@@ -523,6 +608,67 @@ impl Store {
         self.require_one(n, "任务", id)
     }
 
+    /// Records which protocol version a task froze. Written once, on the first
+    /// session; a second write would mean the rules changed under a running
+    /// task, which is the thing freezing exists to prevent.
+    pub fn set_task_protocol_ref(&self, id: &str, wire: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE tasks SET protocol_ref = ?2 WHERE id = ?1 AND protocol_ref IS NULL",
+            params![id, wire],
+        )?;
+        // Zero rows means it was already set, which is fine and expected on
+        // every session after the first.
+        let _ = n;
+        Ok(())
+    }
+
+    pub fn set_task_rules_hash(&self, id: &str, hash: Option<&str>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE tasks SET rules_hash = ?2 WHERE id = ?1",
+            params![id, hash],
+        )?;
+        self.require_one(n, "任务", id)
+    }
+
+    pub fn task_metrics(
+        &self,
+        id: &str,
+    ) -> Result<Option<autome_domain::metrics::TaskMetrics>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT metrics FROM tasks WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten();
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
+    pub fn set_task_metrics(
+        &self,
+        id: &str,
+        metrics: &autome_domain::metrics::TaskMetrics,
+    ) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE tasks SET metrics = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(metrics)?],
+        )?;
+        self.require_one(n, "任务", id)
+    }
+
+    /// Every terminal task of a project that recorded metrics, oldest first.
+    /// The version page and the meta task's `inputs/` both read this.
+    pub fn tasks_with_metrics(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(TaskRecord, autome_domain::metrics::TaskMetrics)>> {
+        Ok(self
+            .list_tasks(project_id)?
+            .into_iter()
+            .filter_map(|t| t.metrics.clone().map(|m| (t, m)))
+            .collect())
+    }
+
     pub fn set_task_archived(&self, id: &str, archived: bool) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE tasks SET archived_at = ?2 WHERE id = ?1",
@@ -590,8 +736,9 @@ impl Store {
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, task_id, kind, runtime, model, effort, skills, round,
-                                   started_at, ended_at, lifecycle, log_path, pid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                   started_at, ended_at, lifecycle, log_path, pid,
+                                   protocol_ref, rules_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 session.id,
                 session.task_id,
@@ -606,6 +753,8 @@ impl Store {
                 serde_json::to_string(&session.lifecycle)?,
                 session.log_path,
                 session.pid,
+                session.protocol_ref,
+                session.rules_hash,
             ],
         )?;
         Ok(())
@@ -620,6 +769,36 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE sessions SET lifecycle = ?2, ended_at = ?3 WHERE id = ?1",
             params![id, serde_json::to_string(lifecycle)?, ended_at],
+        )?;
+        self.require_one(n, "会话", id)
+    }
+
+    /// Records what a session cost, read out of the CLI's own stream when the
+    /// session is reaped.
+    pub fn set_session_metrics(
+        &self,
+        id: &str,
+        m: &autome_domain::metrics::SessionMetrics,
+    ) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE sessions SET input_tokens = ?2, cache_read_tokens = ?3,
+                    cache_write_tokens = ?4, output_tokens = ?5, cost_usd = ?6,
+                    turns = ?7, duration_ms = ?8, mean_request_input = ?9,
+                    design_doc_bytes = ?10, evidence_files = ?11
+             WHERE id = ?1",
+            params![
+                id,
+                m.input_tokens.map(|v| v as i64),
+                m.cache_read_tokens.map(|v| v as i64),
+                m.cache_write_tokens.map(|v| v as i64),
+                m.output_tokens.map(|v| v as i64),
+                m.cost_usd,
+                m.turns.map(|v| v as i64),
+                m.duration_ms.map(|v| v as i64),
+                m.mean_request_input.map(|v| v as i64),
+                m.design_doc_bytes.map(|v| v as i64),
+                m.evidence_files.map(|v| v as i64),
+            ],
         )?;
         self.require_one(n, "会话", id)
     }
@@ -845,14 +1024,19 @@ impl Store {
 }
 
 const TASK_SELECT_BASE: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
-            state, budget_n, created_at, completed_at, merge_commit, archived_at FROM tasks";
+            state, budget_n, created_at, completed_at, merge_commit, archived_at,
+            protocol_ref, rules_hash, metrics FROM tasks";
 
 const TASK_SELECT: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
-            state, budget_n, created_at, completed_at, merge_commit, archived_at
+            state, budget_n, created_at, completed_at, merge_commit, archived_at,
+            protocol_ref, rules_hash, metrics
      FROM tasks WHERE id = ?1";
 
 const SESSION_SELECT_BASE: &str = "SELECT id, task_id, kind, runtime, model, effort, skills, round,
-            started_at, ended_at, lifecycle, log_path, pid FROM sessions";
+            started_at, ended_at, lifecycle, log_path, pid,
+            protocol_ref, rules_hash, input_tokens, cache_read_tokens, cache_write_tokens,
+            output_tokens, cost_usd, turns, duration_ms, mean_request_input,
+            design_doc_bytes, evidence_files FROM sessions";
 
 type RowResult<T> = rusqlite::Result<std::result::Result<T, serde_json::Error>>;
 
@@ -893,7 +1077,10 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> RowResult<TaskRecord> {
         r.get::<_, Option<String>>(10)?,
         r.get::<_, Option<String>>(11)?,
         r.get::<_, Option<String>>(12)?,
+        r.get::<_, Option<String>>(13)?,
+        r.get::<_, Option<String>>(14)?,
     );
+    let metrics: Option<String> = r.get(15)?;
     Ok(
         (|| -> std::result::Result<TaskRecord, serde_json::Error> {
             Ok(TaskRecord {
@@ -910,6 +1097,9 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> RowResult<TaskRecord> {
                 completed_at: base.6,
                 merge_commit: base.7,
                 archived_at: base.8,
+                protocol_ref: base.9,
+                rules_hash: base.10,
+                metrics: metrics.as_deref().map(serde_json::from_str).transpose()?,
             })
         })(),
     )
@@ -930,7 +1120,24 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
         r.get::<_, Option<String>>(9)?,
         r.get::<_, String>(11)?,
         r.get::<_, Option<i32>>(12)?,
+        r.get::<_, Option<String>>(13)?,
+        r.get::<_, Option<String>>(14)?,
     );
+    let u = |i: usize| -> rusqlite::Result<Option<u64>> {
+        Ok(r.get::<_, Option<i64>>(i)?.map(|v| v.max(0) as u64))
+    };
+    let metrics = autome_domain::metrics::SessionMetrics {
+        input_tokens: u(15)?,
+        cache_read_tokens: u(16)?,
+        cache_write_tokens: u(17)?,
+        output_tokens: u(18)?,
+        cost_usd: r.get::<_, Option<f64>>(19)?,
+        turns: u(20)?,
+        duration_ms: u(21)?,
+        mean_request_input: u(22)?,
+        design_doc_bytes: u(23)?,
+        evidence_files: u(24)?,
+    };
     Ok((|| -> std::result::Result<Session, serde_json::Error> {
         Ok(Session {
             id: base.0,
@@ -946,6 +1153,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
             lifecycle: serde_json::from_str(&lifecycle)?,
             log_path: base.6,
             pid: base.7,
+            protocol_ref: base.8,
+            rules_hash: base.9,
+            metrics,
         })
     })())
 }
@@ -1061,6 +1271,9 @@ mod tests {
             completed_at: None,
             merge_commit: None,
             archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
         }
     }
 
@@ -1079,6 +1292,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: Some(1),
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         }
     }
 
@@ -1628,7 +1844,7 @@ mod tests {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, SCHEMA_VERSION);
         drop(s);
         remove_db(&path);
     }

@@ -47,7 +47,12 @@ impl Default for LoopDefaults {
 }
 
 /// The sparse counterpart of `LoopDefaults`: `None` means "inherit".
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `protocol` has no global counterpart on purpose. There is no sensible
+/// machine-wide "everyone runs v5"; the useful default is "whatever the
+/// protocol repository's newest tag is", and that is what absence means. A
+/// project pins only when it has a reason to stay behind.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel: Option<u32>,
@@ -55,6 +60,9 @@ pub struct LoopOverrides {
     pub design_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_factor: Option<u32>,
+    /// A `protocol/vN` tag this project stays on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 /// One role's fully-resolved execution profile (requirement C-04).
@@ -184,7 +192,7 @@ impl Default for GlobalConfig {
     /// about configuration. The user picks models in the routing graph, where
     /// the list is theirs.
     ///
-    /// SAME-MODEL still holds on a fresh install, because the two evaluating
+    /// SAME-MODEL still holds on a fresh install, because the three evaluating
     /// roles sit on the other runtime: `codex:` and `claude:` differ even when
     /// both models are unset.
     fn default() -> Self {
@@ -201,6 +209,9 @@ impl Default for GlobalConfig {
         roles.insert(Role::Adjudicate, role(Runtime::Claude, None));
         roles.insert(Role::Impl, role(Runtime::Claude, Some("high")));
         roles.insert(Role::Audit, role(Runtime::Codex, Some("high")));
+        // The retro round evaluates what the implementation rounds produced,
+        // so it sits on the other runtime for the same reason the audit does.
+        roles.insert(Role::Retro, role(Runtime::Codex, Some("high")));
         Self {
             loop_defaults: LoopDefaults::default(),
             roles,
@@ -215,11 +226,12 @@ impl GlobalConfig {
     pub fn role(&self, role: Role) -> &RoleConfig {
         self.roles
             .get(&role)
-            .expect("global config always carries all five roles")
+            .expect("global config always carries every role")
     }
 
-    /// Fills in any role absent from a hand-edited file, so the rest of the
-    /// system can rely on `role()` being total.
+    /// Fills in any role absent from a hand-edited file — including one this
+    /// binary added and the file predates — so the rest of the system can rely
+    /// on `role()` being total.
     pub fn repair(&mut self) {
         let defaults = GlobalConfig::default();
         for role in Role::ALL {
@@ -267,6 +279,10 @@ pub struct ResolvedConfig {
     pub loop_defaults: LoopDefaults,
     pub loop_provenance: LoopProvenance,
     pub roles: Vec<ResolvedRole>,
+    /// The project's protocol pin, if it has one. `None` means "follow the
+    /// protocol repository's newest tag", which is what most projects do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_pin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,7 +297,7 @@ impl ResolvedConfig {
         self.roles
             .iter()
             .find(|r| r.role == role)
-            .expect("resolved config always carries all five roles")
+            .expect("resolved config always carries every role")
     }
 
     pub fn is_enabled(&self, role: Role) -> bool {
@@ -290,7 +306,7 @@ impl ResolvedConfig {
 }
 
 /// Overlays a sparse project config onto the global defaults. Total: the
-/// result always carries all five roles, in `Role::ALL` order.
+/// result always carries every role, in `Role::ALL` order.
 pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig {
     fn pick<T>(override_value: Option<T>, global_value: T) -> (T, Provenance) {
         match override_value {
@@ -348,6 +364,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             budget_factor: budget_src,
         },
         roles,
+        protocol_pin: project.loop_overrides.protocol.clone(),
     }
 }
 
@@ -552,7 +569,7 @@ mod tests {
         let resolved = resolved_default();
         assert!(validate(&resolved, &NoSkills).is_empty());
         assert_eq!(resolved.loop_defaults.parallel, DEFAULT_PARALLEL);
-        assert_eq!(resolved.roles.len(), 5);
+        assert_eq!(resolved.roles.len(), Role::ALL.len());
     }
 
     #[test]

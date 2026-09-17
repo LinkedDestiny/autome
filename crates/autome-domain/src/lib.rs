@@ -24,12 +24,22 @@
 //! - [`session`] — session records and the exit-marker protocol.
 //! - [`skill`] — the read-only skill inventory.
 //! - [`environment`] — the four checked local components.
+//! - [`protocol`] — the protocol as versioned data, and the kernel contract.
+//! - [`metrics`] — what one session and one task cost and produced.
+//! - [`lesson`] — the retro round's output schema and its cross-task key.
+//! - [`changelog`] — one protocol version's changes, with predicted impact.
+//! - [`yaml_lite`] — the small block reader `lesson` and `changelog` share.
 
+pub mod changelog;
 pub mod config;
 pub mod environment;
+pub mod lesson;
+pub mod metrics;
 pub mod project;
+pub mod protocol;
 pub mod role;
 pub mod session;
 pub mod skill;
 pub mod status_block;
 pub mod task;
+pub mod yaml_lite;

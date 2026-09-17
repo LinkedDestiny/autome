@@ -15,6 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use autome_domain::protocol::ProtocolFiles;
+
 /// Bumped when `run_session.sh` or `session-protocol.md` change in a way that
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
@@ -27,7 +29,11 @@ use std::path::{Path, PathBuf};
 /// the budget denominator comes from the core, results only a human can see
 /// stop being milestone acceptance, and the audit may again conclude
 /// "验证缺口".
-pub const SCAFFOLD_VERSION: u32 = 5;
+///
+/// 6: the protocol left the binary. The rule text now lives in
+/// `~/.autome/protocol/` and arrives here as an argument, with
+/// `<!-- kernel-contract: … -->` markers around the regions the core parses.
+pub const SCAFFOLD_VERSION: u32 = 6;
 
 const VERSION_MARKER: &str = "autome-scaffold-version:";
 
@@ -90,7 +96,14 @@ impl InitReport {
 }
 
 /// Writes the scaffold into `repo`. Idempotent.
-pub fn init(repo: &Path) -> Result<InitReport> {
+///
+/// `protocol` is the version this project resolved to — the caller gets it
+/// from `~/.autome/protocol/`, not from a constant here. The two rule files
+/// are mirrored into `.autome/skill/` so that a human reading the repository,
+/// and the onboarding session which runs outside any task worktree, can see
+/// the rules in force. A *task's* authoritative copy is the one frozen into
+/// its own `docs/<slug>/protocol/` at creation time.
+pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
     let mut report = InitReport::default();
 
     for dir in [
@@ -112,16 +125,24 @@ pub fn init(repo: &Path) -> Result<InitReport> {
         &mut report,
     )?;
     set_executable(&repo.join(".autome/skill/run_session.sh"))?;
-    write_owned(
+    write_mirrored(
         repo,
         ".autome/skill/session-protocol.md",
-        SESSION_PROTOCOL_MD,
+        protocol
+            .session_protocol()
+            .ok_or_else(|| InitError {
+                path: ".autome/skill/session-protocol.md".into(),
+                detail: "协议版本里没有 session-protocol.md".into(),
+            })?,
         &mut report,
     )?;
-    write_owned(
+    write_mirrored(
         repo,
         ".autome/skill/loop-protocol.md",
-        LOOP_PROTOCOL_MD,
+        protocol.loop_protocol().ok_or_else(|| InitError {
+            path: ".autome/skill/loop-protocol.md".into(),
+            detail: "协议版本里没有 loop-protocol.md".into(),
+        })?,
         &mut report,
     )?;
 
@@ -188,6 +209,43 @@ fn write_owned(repo: &Path, rel: &str, contents: &str, report: &mut InitReport) 
                 action: Action::Kept,
             }),
         }
+        return Ok(());
+    }
+    write(&path, contents, rel)?;
+    report.steps.push(InitStep {
+        path: rel.to_string(),
+        action: Action::Created,
+    });
+    Ok(())
+}
+
+/// Writes a mirror of a file Autome does not own the content of.
+///
+/// Different from [`write_owned`] in what triggers a rewrite. An owned file —
+/// the wrapper script — changes only when Autome's own version does, so the
+/// version marker is the right trigger. A mirror of the protocol changes
+/// whenever the user edits `~/.autome/protocol/`, and the marker inside it
+/// does not move when they do; keying off the marker would leave the mirror
+/// showing last release's rules indefinitely.
+///
+/// The escape hatch is the same: strip the version marker and the file is
+/// yours, Autome stops touching it.
+fn write_mirrored(repo: &Path, rel: &str, contents: &str, report: &mut InitReport) -> Result<()> {
+    let path = repo.join(rel);
+    if path.exists() {
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        if embedded_version(&existing).is_none() || existing == contents {
+            report.steps.push(InitStep {
+                path: rel.to_string(),
+                action: Action::Kept,
+            });
+            return Ok(());
+        }
+        write(&path, contents, rel)?;
+        report.steps.push(InitStep {
+            path: rel.to_string(),
+            action: Action::Refreshed,
+        });
         return Ok(());
     }
     write(&path, contents, rel)?;
@@ -498,375 +556,12 @@ exit "$code"
     )
 }
 
-const SESSION_PROTOCOL_MD: &str = r#"<!-- autome-scaffold-version: 5 -->
-# 会话协议
-
-本文件说明 Autome 会话的边界。它由 Autome 维护，会随版本刷新。
-
-## 会话如何开始和结束
-
-每个节点由 Autome 在可见终端中启动一个 CLI 会话，工作目录是该任务的 worktree。
-**会话完成本轮工作后直接结束即可，不要启动下一个会话。** 下一个节点由 Autome 根据
-设计文档头部的状态块决定并调度。
-
-这是 2.0 与 1.x 的关键区别：1.x 由 Agent 调用脚本自行接力，2.0 由内核独占调度。
-自行启动会话会绕过并行上限、暂停、角色开关与轮次预算。
-
-## 硬性边界
-
-- 不修改 `.autome/` 下的任何内容。
-- 不切换分支，不操作其它 worktree，不推送远端。
-- 不修改用户主工作树（`.worktree/` 之外的仓库根目录内容）。
-
-## 状态块
-
-设计文档 `docs/<slug>/<slug>.md` 的头部必须维护以下字段，格式严格：
-
-```text
-status: 设计中 | 实现中 | 已完成 | 不可实现 | 协议失败
-design-round: d/N
-implementation-round: k/N
-current-milestone: M-xx | 无
-current-milestone-reopens: r
-convergence-mode: normal | domain-review | milestone-review
-next-action: <下一实现轮首先完成的具体工作；没有时写"无">
-```
-
-里程碑用固定表格，Autome 按列读取：
-
-```markdown
-## 里程碑
-
-| ID | 状态 | 标题 | reopen | 领域 |
-|---|---|---|---|---|
-| M-01 | 已完成 | 购物车数据模型 | 0 | |
-| M-02 | 待审 | 结算接口 | 1 | promo-case |
-```
-
-状态只有 `开放` / `待审` / `已完成` 三种。实现轮不得把里程碑标为 `已完成`，
-只有审计轮独立复验通过才能关闭。
-
-**`## 里程碑` 一节里只放这一张表格。** Autome 在这一节里按位置读表，多一张
-表就可能读错——2026-09-16 有一轮在这一节中间写了张对比表，表头第一格是空的，
-整份文档被判协议失败，任务停摆。逐轮证据写进 `docs/<slug>/evidence/`，
-对比与说明写进那里，不要放在里程碑表所在的这一节。
-
-`## Backlog` 与 `## 争议项` 两节用无序列表，每条以稳定 ID 开头。
-
-**任一字段缺失或格式错误，Autome 一次即判协议失败并停下等人。** 不要猜测格式，
-不要把状态块放进代码块，不要用其它写法表达同一件事。
-
-## `协议失败` 是什么，不是什么
-
-`status: 协议失败` 只有一个含义：**你无法让这份文档符合上面的格式**。它会让任务
-立刻停下等人，所以不要用它来表达别的意思。
-
-下面这些都**不是**协议失败：
-
-- **提交不上。** 权限模式拒绝 `git commit`，或沙箱不让写 `.git`（Codex 的
-  `workspace-write` 就是如此）。Autome 会在会话结束后把工作区里剩下的改动一并提交。
-  把改动留着，在本轮记录里写一句，正常结束。
-- **拿不到某条验收证据。** 需要真实鼠标、需要系统授权弹窗、需要装没装的工具——
-  照实写「未取证」和原因，把里程碑留在它该在的状态，让审计轮或人去复验。
-- **发现了实现缺陷。** 那是退回里程碑（`开放` + `reopen` 加 1），Loop 会继续跑。
-- **工具链与设计假设不符。** 就地更新设计并说明理由，继续做。
-
-会话卡住时，问自己一句：停下等人是不是唯一出路？如果换一轮、换个人、或者仅仅是
-把情况写清楚就能继续，那就不是协议失败。
-"#;
-
-/// The Loop's own rules: what each round may conclude, what may force another
-/// round, and how a milestone closes.
-///
-/// This is the substance the five roles operate on, and it is deliberately a
-/// file in the repository rather than prose in a prompt. Three reasons:
-///
-/// 1. The intake session embeds it into the task file, so a task's rules are
-///    fixed at the moment it was created. A protocol change six weeks later
-///    cannot silently alter what a running task is being held to.
-/// 2. It is reviewable and diffable by the user, who is the one living with
-///    its consequences.
-/// 3. Prompts are per-session; this is shared by five roles that must agree.
-///
-/// The rules are inherited from 1.x, which arrived at them by running the loop
-/// for months. The changes for 2.0 are: no self-relay (the core schedules),
-/// and the milestone table has a fixed machine-read format.
-const LOOP_PROTOCOL_MD: &str = r##"<!-- autome-scaffold-version: 5 -->
-# Loop 协议
-
-本文件是五个角色共同遵守的规则。任务整理轮会把它逐字嵌入任务文件，
-所以一个任务从创建那一刻起就固定了自己的规则版本。
-
-## 共同原则
-
-1. **产品结果优先。** 以上规范是为了让任务完成，不是为了让流程文件完善。
-   不得为了补全流程记录而推迟主要工作。
-2. **证据优先。** 涉及代码现状、运行行为或外部接口的判断，优先使用源码、
-   现有测试、实际命令或最小验证实验。纯逻辑矛盾可以用准确引用和具体反例证明。
-3. **一次处理同类问题。** 提出的问题必须说明根因和检查范围，并列出该范围内
-   全部同类问题。修复时再次检查同类位置，一次处理完毕。
-4. **不追求完美。** 设计阶段只消除会使方向失效、目标受损或里程碑不可执行的
-   问题；审计只以「产品行为不符合设计或任务」为缺陷。「还可以更好」一律进
-   Backlog。
-5. **验证用项目原有体系。** 优先使用项目已有的测试、契约、运行脚本和真实环境。
-   只有确有需要时才新增专用验证程序。
-6. **协议版本固定。** 本次运行始终使用任务文件内的这份规则，不得中途换版本。
-7. **会话自主。** 每轮在独立会话中完成，不得向用户提问如何继续。遇到未明确
-   规定的事项，依据任务目标、项目规则和已有证据作出决定并记录理由。
-8. **问题必须可追溯。** 每条评审或审计意见都必须写明它违反的任务要求编号、
-   设计条款或里程碑验收命令。建立不了这种追溯的意见一律进 Backlog，
-   不得触发复审、reopen 或额外轮次。
-
-## 角色
-
-| 角色 | 做什么 | 可以把里程碑标成 |
-|---|---|---|
-| 设计 plan | 写设计文档与里程碑；按评审与裁决的结论修改 | — |
-| 评审 review | 对设计提出问题，只限下列六类 | — |
-| 裁决 adjudicate | 逐条裁决评审意见，决定是否再评审一轮 | — |
-| 实现 impl | 推进最小编号的开放里程碑 | `待审` |
-| 审计 audit | 独立复验待审的里程碑 | `已完成` 或退回 `开放` |
-
-**实现轮不得把里程碑标成 `已完成`。** 只有审计轮独立复验通过才能关闭一个
-里程碑。这条是整个协议里最不能让步的一条：它是生成与评测分离在任务层面的
-体现，和 SAME-MODEL 是同一件事的两面。
-
-## 文件
-
-- 设计文档 `docs/<slug>/<slug>.md` —— 头部状态块 + 正文，覆盖式维护。
-- 设计评审 `docs/<slug>/<slug>-review.md` —— 每轮覆盖写，只保留当前结论。
-- 裁决记录 `docs/<slug>/<slug>-adjudication.md` —— **只增不改**，设计循环
-  唯一的跨轮记忆。
-- 实现审计 `docs/<slug>/<slug>-audit.md` —— 每轮覆盖写。
-- 证据文件 `docs/<slug>/evidence/M-xx-r<k>.md` —— 每轮为本轮推进或复验的
-  里程碑写一份，**只增不改**。验收证据、自审清单、修复说明、审计的独立复验
-  结论都写在这里。
-- 运行记录 `docs/<slug>/retro.md` —— 每轮追加**一行**，任务结束时补总结。
-
-超过 5 行的命令原始输出和临时验证产物写进 `.autome/output/`，不要进任务目录。
-证据文件写的是结论与判据，不是原始输出的转存。
-
-### 证据不写进设计文档
-
-设计文档是**当前状态**，不是日志。每个里程碑在设计文档里只留一行指针：
-
-`最新证据：docs/<slug>/evidence/M-03-r7.md · 通过 · 审计 #4`
-
-展开的内容——命令与结果、逐条对照表、修复说明、审计结论——写进那一轮的
-证据文件。设计文档的其它小节同样不得追加轮次记录：背景与现状写的是现状，
-方案写的是当前方案，事实变了就地改写，不要在后面接一段「实现轮 #7 记录」。
-审计结论只写进 `<slug>-audit.md` 与证据文件，不再抄进设计文档。
-
-这条有可核对的来历：三次真实运行的设计文档分别长到 335KB、323KB、230KB，
-其中约七成是逐轮追加的证据块。每个会话开场都要读它，之后每一次往返还会
-带着它。2026-09-16 的一次协议失败也出在这里——一张写在里程碑节中间的
-对比表被当成了里程碑表，整份文档读不出来，任务停摆。
-
-### 运行记录只有一行
-
-`retro.md` 每轮**一行**，固定五段，不超过 200 字：
-
-`轮次 | 里程碑 | 结果 | 证据 | 阻塞`
-
-- 轮次：`裁决 #1` / `实现 #7` / `审计 #4`
-- 结果：`设计定稿` / `待审` / `通过` / `退回 + 领域名`
-- 证据：本轮证据文件的路径
-- 阻塞：没有就写「无」
-
-叙述、理由、命令输出都在证据文件里，不在这里重复。只有任务终止时的那段
-总结可以成段。
-
-## 设计循环
-
-### 可以要求再评审一轮的六类问题
-
-只有这六类：
-
-1. **关键事实错误** —— 方案依赖的技术、接口、代码行为或运行条件与实际不符，
-   可能使方案整体失效。
-2. **内部逻辑矛盾** —— 两项要求不能同时满足、关键路径不可达，或里程碑按设计
-   无法通过验收。
-3. **违反项目规则** —— 违反 AGENTS.md 或 `.autome/rules/` 里的架构职责、
-   数据原则或工程约束。
-4. **违反任务目标** —— 偏离任务的目标、范围或硬性约束。
-5. **里程碑不可执行** —— 过大、依赖顺序错误、验收不明确，或明显不能在合理
-   轮次内完成。
-6. **必须提前验证的重大风险** —— 该风险无法在实现期及时验证，推迟会使后续
-   实现整体失效。
-
-「验证还可以更严格」「测试还可以更多」「命名可以更好」「说明可以更清楚」
-一律不得单独触发下一轮，进 Backlog。
-
-### 裁决与复提
-
-裁决轮逐条给出：稳定 ID（`Dd-Pxx`，d 为轮次）、主张摘要、设计位置、
-裁决（采纳 / 驳回 / 部分采纳 / 因重写失效）、证据或理由、修改落点、复提计数。
-
-与既有裁决重复且没有新证据的主张，可以引用原裁决驳回，但必须先核对它锚定的
-设计内容自那次裁决后未变更。此类复提使该主张的复提计数加 1。
-
-**复提计数达到 2 的主张冻结为争议项**，写进设计文档的 `## 争议项` 小节，
-退出复审阻塞集。争议项的存在不阻塞设计通过；双方不得再修改对应内容，
-等用户裁定。
-
-### 设计定稿
-
-裁决轮认为没有剩余的六类问题时，把状态块的 `status` 从 `设计中` 改为
-`实现中`，并写出完整的里程碑表。这就是设计定稿的信号——Autome 据此把任务
-停在「等待批准」。
-
-设计轮数 `d` 由裁决轮增加，评审轮不增加。`d` 达到上限时任务停下等用户。
-
-## 里程碑
-
-按依赖顺序编号 `M-01..M-N`。第一个里程碑应尽早消除最大的技术不确定性；
-跨组件的任务通常先建立最小端到端链路。
-
-每个里程碑必须有：可独立观察的结果、覆盖的任务要求编号、前置里程碑、
-验收命令（或明确说明实现期需要新增什么测试）。
-
-表格格式固定，Autome 按列读取：
-
-```markdown
-## 里程碑
-
-| ID | 状态 | 标题 | reopen | 领域 |
-|---|---|---|---|---|
-| M-01 | 已完成 | 购物车数据模型 | 0 | |
-| M-02 | 待审 | 结算接口 | 1 | promo-case |
-```
-
-状态只有 `开放` / `待审` / `已完成`。
-
-**`## 里程碑` 一节里只放这一张表格。** 别的表格、对比说明、逐轮证据都放到
-别处——Autome 在这一节里按位置读表，多一张表就可能读错。
-
-### 验收必须是会话自己能跑的
-
-一个里程碑的验收命令必须是本轮会话能执行、能读到结果的。需要真实鼠标、
-真实麦克风、系统授权弹窗、肉眼确认横幅或截图的结果，**不作为里程碑的验收
-条件**，写进设计文档固定小节 `## 人工验收清单`，每条一行：
-
-`- H-01 长按面板按钮 3 秒，松手后面板出现「已创建：…」`
-
-这一节只进不出。设计轮建立它，实现轮与审计轮可以往里加条目，但其中任何一条
-都不阻塞里程碑关闭、不触发轮次、不算未取证的缺陷。它由用户在按合并之前
-逐条确认。
-
-理由：一次真实运行把「端到端真机验收」做成了最后一个里程碑，它要真实鼠标和
-麦克风，会话永远拿不到证据，于是这个里程碑谁也关不上，预算耗尽仍停在那里。
-
-## 实现循环
-
-实现轮推进**最小编号的开放里程碑**，取得通过证据后标为 `待审`，然后结束会话。
-一轮只推进一个里程碑。
-
-### 标 `待审` 之前的自审清单
-
-验收命令通过之后、把里程碑标成 `待审` 之前，实现轮必须在本轮证据文件里写下
-这四项并逐项执行：
-
-1. **情形表逐行** —— 对照设计里本里程碑的情形表或落法表，逐行列出检查与结果。
-2. **失败分支** —— 设计点名的每条失败分支各跑一个检查：拒绝授权、读盘失败、
-   超时、空输入、外部服务不可达。
-3. **全部迁移** —— 有状态机或多通道的，列出全部迁移（状态 × 事件、通道 ×
-   方向）并各跑一次，不只跑正路径那一条。
-4. **域边界** —— 有输入域声明的，跑它的边界：前导零、闰日、跨年、空串、
-   最大值、单元素。
-
-某一项不适用就写「不适用」并说明一句，不要跳过不写。
-
-这不替代审计，也不是要把审计的活提前干完。它挡的是「拿着设计就能列出来」的
-那一类漏洞：一次真实运行的 9 个实现缺陷，全部落在上面四类里，而每一个都花掉
-了一对实现轮与审计轮。
-
-### 验收结果报什么
-
-报**用例总数，以及它与上一轮基线的差**，并说明这个差是从哪来的。只报
-「通过 / 失败 / 跳过」三个数不够。
-
-证据：一次真实运行里，同一份代码的两次全量，一次 736 个用例、一次 822 个，
-两次的「跳过」都是 0——整层被跳过时这个 0 是瞎的，少掉 86 个用例它藏得住，
-用例总数藏不住。
-
-### 审计轮
-
-审计轮独立复验：自己跑验收命令，自己构造能区分错误实现的检查，不看实现轮的
-推理过程。结论三选一：
-
-- **通过** —— 标为 `已完成`。
-- **实现缺陷** —— 产品行为不符合设计或任务。退回 `开放`，`reopen` 加 1，
-  并在 `领域` 列按稳定的行为领域名归组。同一审计轮的同一领域只计一次；
-  领域名按根因复用，不得改名规避升级。
-- **验证缺口** —— 现有验收可能放过错误的实现，但当前产品实现**没有被证明
-  是错的**。审计轮当场加强验收或补检查，把临时的缺陷注入完全还原，然后立即
-  复验。复验通过则里程碑照常关闭：**不计 reopen，不退回实现轮**。
-
-三者的分界只有一条：产品行为错了没有。错了是实现缺陷；没错但证明不住是验证
-缺口；都没有是通过。代码风格、超出验收范围的健壮性、性能微优化、测试还可以
-更多，一律进 Backlog。
-
-**复现不了不等于不存在。** 审计怀疑有缺陷却复现不出来时，不得就此结案：
-要么给出「为什么复现不出来」的机制性解释，要么用时序或因果证据替代复现。
-在并发与时序问题上，「复现不了就放过」会系统性地漏报。
-
-### 审计造的检查归谁
-
-审计**发现实现缺陷**时所用的判别检查，由下一轮实现轮逐字搬进项目测试体系，
-作为这个缺陷的回归用例。搬之前先原样跑一遍复现（应为红），修复后再跑（应为
-绿），两次都记进证据文件。
-
-审计**通过**时新造的检查可以丢弃，只在审计文件里记一行：构造了什么、结果如何。
-
-审计轮不重跑前几轮留在 `.autome/output/` 里的临时检查。复验范围就三样：项目
-测试体系、本里程碑的验收命令、本轮自己新造的检查。已经闭合的缺陷由回归用例
-守住，不靠一轮一轮手工重跑——那既慢又会随轮次线性变贵，而且合并之后那些临时
-检查一个都不会留下。
-
-### 轮次与预算
-
-实现轮数 `k` 由实现轮增加，审计轮不增加。
-
-**总预算 `N` 由 Autome 计算，写在每轮 prompt 的第一行，分母以它为准。**
-不要自己按里程碑数推算，不要因为一次停顿或放行改写它。`k` 达到 `N` 时任务
-停下等用户，是否追加由用户决定。
-
-### 收敛模式
-
-- 同一领域第二次 reopen → `convergence-mode: domain-review`
-- 同一里程碑第三次 reopen → `convergence-mode: milestone-review`
-
-`milestone-review` 优先级更高。收敛模式一旦触发，直到该里程碑关闭前不得
-恢复为 `normal`。
-
-触发收敛模式的审计轮必须在审计文件顶部维护 `## Convergence Note`，固定四部分：
-未闭合的行为领域与当前失败证据；根因、同类检查范围以及前轮为何漏检；
-下一轮应完成的具体工作与完成条件；当前应红、完成应绿、不得退化的命令。
-后续审计轮覆盖写审计文件时必须保留并更新这个 Note，直到里程碑关闭。
-
-## Backlog 与争议项
-
-`## Backlog` 收非阻塞的改进建议：评审提出的有跨轮价值的实现注意事项由裁决轮
-追加，审计提出的非阻塞建议由审计轮追加。每条一行，以稳定 ID 开头。
-Backlog 条目**不触发轮次**，等用户处置。
-
-`## 争议项` 收复提两次冻结的主张，格式同上。
-
-用户在界面上对这两节作出的决定，会由 Autome 在下一个停顿点注入到会话的
-prompt 里。看到这类注入时，按其中写明的处置执行：纳入的 Backlog 条目要成为
-新的里程碑并实现；忽略的和已裁定的要写进 `retro.md`。
-
-## 终止
-
-任务结束时，`retro.md` 只记可核对的事实：终止状态和原因、设计轮数与实现轮数、
-各里程碑最终状态、各里程碑 reopen 次数与重复领域、收敛模式与关闭轮次、
-实现缺陷数与验证缺口数、预算是否满足、未完成部分的明确阻塞、`## 人工验收清单`
-里还没确认的条目。
-
-最后可以写不超过三条对协议本身的改进建议，每条附本次运行里的具体证据。
-这些建议是协议演进的唯一依据——协议按多次运行的复盘证据改，不按单次运行的
-局部不适改。
-"##;
+// The Loop protocol and the session protocol used to be two constants right
+// here. They now live in `~/.autome/protocol/`, seeded from
+// `crate::protocol::seed()`, and arrive as an argument to `init`. See that
+// module for why: a rule set nobody can change is a rule set that cannot
+// learn, and the retro round had been writing improvement suggestions into a
+// dead end for months.
 
 const RULES_README_MD: &str = r#"# 项目规则
 
@@ -900,6 +595,14 @@ pub fn wrapper_script(repo: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Tests call `init` through this so the protocol argument does not have
+    /// to be spelled out thirty times. Production always passes the version
+    /// the *project* resolved to, which may not be the seed.
+    fn init(repo: &Path) -> Result<InitReport> {
+        super::init(repo, &crate::protocol::seed())
+    }
+
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -1234,127 +937,6 @@ mod tests {
         assert!(!is_initialised(dir.path()));
         init(dir.path()).unwrap();
         assert!(is_initialised(dir.path()));
-    }
-
-    #[test]
-    fn the_loop_protocol_states_the_rules_the_five_roles_share() {
-        // Without these the review and audit rounds have nothing to apply.
-        // Each assertion names a rule a role would otherwise have to invent.
-        let p = LOOP_PROTOCOL_MD;
-        assert!(p.contains("实现轮不得把里程碑标成 `已完成`"));
-        assert!(p.contains("复提计数达到 2 的主张冻结为争议项"));
-        assert!(p.contains("domain-review"));
-        assert!(p.contains("milestone-review"));
-        assert!(p.contains("Convergence Note"));
-        // The six review conditions, numbered.
-        for n in 1..=6 {
-            assert!(p.contains(&format!("{n}. **")), "condition {n} is missing");
-        }
-        // The machine-read milestone format appears here too, so the design
-        // round has it in front of it.
-        assert!(p.contains("| ID | 状态 | 标题 | reopen | 领域 |"));
-    }
-
-    /// The seven changes of the 2026-09-16 protocol audit, each asserted by
-    /// the rule it introduced. They are text, so the test is that the text is
-    /// there — but each line below is a rule a round would otherwise have to
-    /// invent, and every one of them was invented wrongly in a real run.
-    #[test]
-    fn the_loop_protocol_carries_the_seven_changes_of_the_2026_09_16_audit() {
-        let p = LOOP_PROTOCOL_MD;
-
-        // S1 evidence leaves the design document, which grew to 230-335KB
-        // across three runs, ~70% of it appended evidence blocks.
-        assert!(p.contains("证据不写进设计文档"), "S1 missing");
-        assert!(
-            p.contains("docs/<slug>/evidence/"),
-            "S1 evidence path missing"
-        );
-        assert!(p.contains("最新证据："), "S1 pointer line missing");
-
-        // S2 one line a round in retro.md, which reached 225KB.
-        assert!(p.contains("运行记录只有一行"), "S2 missing");
-        assert!(
-            p.contains("轮次 | 里程碑 | 结果 | 证据 | 阻塞"),
-            "S2 fixed fields missing"
-        );
-
-        // S3 the implementation round self-checks the four categories that
-        // covered all nine implementation defects of the last run.
-        assert!(p.contains("标 `待审` 之前的自审清单"), "S3 missing");
-        for item in ["情形表逐行", "失败分支", "全部迁移", "域边界"] {
-            assert!(p.contains(item), "S3 self-check item `{item}` missing");
-        }
-
-        // S4 the audit's discriminating checks become regression tests, and
-        // the audit stops re-running historical matrices.
-        assert!(p.contains("审计造的检查归谁"), "S4 missing");
-        assert!(
-            p.contains("搬进项目测试体系"),
-            "S4 promotion to the test suite missing"
-        );
-        assert!(
-            p.contains("审计轮不重跑前几轮"),
-            "S4 no-re-run rule missing"
-        );
-
-        // S5 the denominator comes from the core.
-        assert!(
-            p.contains("总预算 `N` 由 Autome 计算"),
-            "S5 missing: a round guessed the factor and wrote 14/14 against the core's 35"
-        );
-
-        // S6 results only a human can observe are not milestone acceptance.
-        assert!(p.contains("验收必须是会话自己能跑的"), "S6 missing");
-        assert!(p.contains("## 人工验收清单"), "S6 section missing");
-
-        // S7 three one-line clauses.
-        assert!(p.contains("用例总数"), "S7a case-count rule missing");
-        assert!(p.contains("复现不了不等于不存在"), "S7b missing");
-        assert!(p.contains("**验证缺口**"), "S7c missing");
-        assert!(
-            p.contains("不计 reopen，不退回实现轮"),
-            "S7c must say a verification gap does not reopen"
-        );
-        assert!(
-            p.contains("结论三选一"),
-            "S7c: the audit has three verdicts"
-        );
-    }
-
-    #[test]
-    fn the_session_protocol_keeps_other_tables_out_of_the_milestone_section() {
-        // 2026-09-16: an implementation round wrote a comparison table whose
-        // header's first cell was blank, inside `## 里程碑` and 1300 lines
-        // below the milestone table. The parser read it as the milestone
-        // table and the task stopped. The parser is stricter now; the
-        // protocol says the thing that stops it being written at all.
-        assert!(
-            SESSION_PROTOCOL_MD.contains("`## 里程碑` 一节里只放这一张表格"),
-            "the session protocol must forbid a second table in the milestone section"
-        );
-    }
-
-    #[test]
-    fn the_session_protocol_states_the_strict_status_block_rule() {
-        assert!(SESSION_PROTOCOL_MD.contains("一次即判协议失败"));
-        // And what it is *not* for. An audit round stopped a healthy task by
-        // writing `协议失败` when its sandbox refused a `git commit`; the
-        // protocol said what the status meant for formatting and said nothing
-        // about everything else a session might be tempted to use it for.
-        for line in [
-            "`协议失败` 是什么，不是什么",
-            "提交不上",
-            "拿不到某条验收证据",
-            "发现了实现缺陷",
-        ] {
-            assert!(
-                SESSION_PROTOCOL_MD.contains(line),
-                "the protocol must rule out `{line}` as a protocol failure"
-            );
-        }
-        assert!(SESSION_PROTOCOL_MD.contains("不要启动下一个会话"));
-        assert!(SESSION_PROTOCOL_MD.contains("| ID | 状态 | 标题 | reopen | 领域 |"));
     }
 
     #[test]

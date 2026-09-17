@@ -203,7 +203,18 @@ pub struct BudgetLine {
 /// Everything needed to write a session's prompt.
 pub struct PromptSpec<'a> {
     pub kind: SessionKind,
+    /// The prompt templates of the protocol version this task is pinned to.
+    /// Passed in rather than read here: two tasks in the same project can be
+    /// running under different versions, and the one that started first keeps
+    /// the rules it started under.
+    pub templates: &'a autome_domain::protocol::ProtocolFiles,
     pub slug: &'a str,
+    /// The project's design-round limit, for the skeleton status block the
+    /// intake round writes.
+    pub design_rounds: u32,
+    /// The task's measured numbers, for the retro round. `None` everywhere
+    /// else, and for a task whose metrics were never recorded.
+    pub task_metrics: Option<&'a autome_domain::metrics::TaskMetrics>,
     /// Present for the two rounds of the implementation loop, which are the
     /// only ones that reason about `k` and `N`.
     pub budget: Option<BudgetLine>,
@@ -223,20 +234,14 @@ pub struct PromptSpec<'a> {
 /// The entry sentence is quoted verbatim from the task-file protocol (§5.2),
 /// because the task file dispatches on it. Everything else is appended after
 /// it, so a protocol change in the file cannot be broken by prose we add here.
-pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
+pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
     let mut p = String::new();
 
     match spec.kind {
-        SessionKind::Intake => {
-            p.push_str(&intake_prompt(spec));
-            return p;
-        }
-        SessionKind::Onboarding => {
-            p.push_str(&onboarding_prompt());
-            return p;
-        }
+        SessionKind::Intake => return intake_prompt(spec),
+        SessionKind::Onboarding => return onboarding_prompt(spec),
         SessionKind::Role { role } => {
-            p.push_str(&role_prompt(role, spec.slug, spec.budget.as_ref()));
+            p.push_str(&role_prompt(role, spec)?);
         }
     }
 
@@ -273,7 +278,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
         None => {}
     }
 
-    p
+    Ok(p)
 }
 
 /// What a role session is told to do.
@@ -289,104 +294,25 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> String {
 /// found nothing addressed to itself, and did nothing. Four sessions ran and
 /// the design document was untouched.
 ///
-/// Each prompt therefore states three things and nothing else: which round
-/// this is, which files to read and write, and where the rules are. The rules
-/// themselves stay in the task file, which the intake round embedded them into.
-fn role_prompt(role: Role, slug: &str, budget: Option<&BudgetLine>) -> String {
-    let task_file = format!("docs/{slug}/{slug}-task.md");
-    let design = format!("docs/{slug}/{slug}.md");
-    let review = format!("docs/{slug}/{slug}-review.md");
-    let adjudication = format!("docs/{slug}/{slug}-adjudication.md");
-    let audit = format!("docs/{slug}/{slug}-audit.md");
-    let retro = format!("docs/{slug}/retro.md");
-    let evidence_dir = format!("docs/{slug}/evidence/");
-
-    let body = match role {
-        Role::Plan => format!(
-            "先读 `{task_file}`（任务目标、范围、约束和 Loop 协议全文都在里面），\
-             再读 `{design}`。如果存在 `{review}` 与 `{adjudication}`，也要读——\
-             它们是上一轮评审提出的问题和对这些问题的裁决，本轮必须按裁决修改设计。\n\n\
-             本轮产出：更新 `{design}`。写清背景、目标与非目标、方案、风险与验证安排，\
-             并把工作拆成里程碑表（格式见协议「里程碑」一节，Autome 按列读取）。\n\n\
-             两条关于验收的硬要求：\n\n\
-             - 每个里程碑的验收命令必须是会话自己能跑、能读到结果的。\
-               需要真实鼠标、麦克风、系统弹窗、肉眼看横幅的，**不做里程碑验收条件**，\
-               写进 `{design}` 的 `## 人工验收清单`，每条一行，由用户在合并前确认。\n\
-             - `## 里程碑` 一节里只放里程碑表那一张表格，别的表格和说明放到别处。\n\n\
-             不要写实现代码，不要改 `{review}` 或 `{adjudication}`。"
-        ),
-        Role::Review => format!(
-            "先读 `{task_file}`，再独立复核 `{design}`。\n\n\
-             本轮产出：覆盖写 `{review}`，逐条列出问题。\
-             **只有协议「可以要求再评审一轮的六类问题」里的六类才能提**，\
-             每条必须写明它违反的任务要求编号、设计条款或里程碑验收命令；\
-             追溯不了的一律写进「非阻塞建议」，由裁决轮决定是否进 Backlog。\
-             没有问题时也要写出这个结论。\n\n\
-             不要修改 `{design}`，不要实现代码。"
-        ),
-        Role::Adjudicate => format!(
-            "先读 `{task_file}`、`{design}` 和本轮的 `{review}`；\
-             如果 `{adjudication}` 已存在，读它了解此前的裁决与复提计数。\n\n\
-             本轮产出三件事：\n\n\
-             1. **追加**（不是覆盖）到 `{adjudication}`：本轮轮次、评审结论，\
-                以及逐条裁决记录（稳定 ID、主张摘要、设计位置、裁决、证据或理由、\
-                修改落点、复提计数）。复提计数达到 2 的主张冻结为争议项，\
-                写进 `{design}` 的「## 争议项」小节。\n\
-             2. 按采纳的裁决修改 `{design}`，并把 `design-round` 加 1。\n\
-             3. **判断设计是否定稿。** 若已没有剩余的六类问题：把 `{design}` 状态块的 \
-                `status` 从 `设计中` 改为 `实现中`，并填好完整的里程碑表——\
-                这是 Autome 判断「可以停下来等用户批准」的唯一信号。\
-                若仍有问题，`status` 保持 `设计中`。\n\n\
-             注意：状态块里的 `design-round` 只由本轮增加，评审轮不增加。"
-        ),
-        Role::Impl => format!(
-            "先读 `{task_file}` 和 `{design}`；如果 `{audit}` 存在，读它——\
-             上一轮审计退回的里程碑和原因在里面，本轮要先处理。\n\n\
-             本轮产出：推进**编号最小的「开放」里程碑**，取得该里程碑验收命令的通过证据，\
-             把它在里程碑表里标成 `待审`，并更新状态块的 `implementation-round`（加 1）\
-             与 `next-action`。一轮只推进一个里程碑。\n\n\
-             标 `待审` 之前，先在证据文件里写下协议「标 `待审` 之前的自审清单」的四项\
-             并逐项执行：情形表逐行、设计点名的每条失败分支、全部状态迁移、输入域边界。\
-             不适用的写「不适用」并说明一句，不要跳过不写。\
-             报验收结果时报**用例总数与上一轮基线的差**，说明差从哪来；\
-             只报通过/失败/跳过三个数不够。\n\n\
-             上一轮审计如果是靠某个检查抓到缺陷的，把那个检查**逐字搬进项目测试体系**\
-             作为回归用例：先原样跑一遍复现（红），修完再跑（绿），两次都记进证据文件。\n\n\
-             本轮的证据写进 `{evidence_dir}M-xx-r<k>.md`（命令与结果、自审清单、修复说明）；\
-             `{design}` 里该里程碑只留一行指针「最新证据：<路径> · 结论 · 轮次」，\
-             **不要把证据正文、轮次记录追加进设计文档**。\
-             在 `{retro}` 追加**一行**：`轮次 | 里程碑 | 结果 | 证据 | 阻塞`，不超过 200 字。\n\n\
-             **不得把里程碑标成 `已完成`**——只有审计轮独立复验通过才能关闭它。\
-             超过 5 行的命令原始输出写进 `.autome/output/`，不要进任务目录。"
-        ),
-        Role::Audit => format!(
-            "先读 `{task_file}` 和 `{design}`，找出状态为 `待审` 的里程碑。\n\n\
-             本轮产出：**独立复验**——自己跑该里程碑的验收命令，\
-             自己构造能区分错误实现的检查，不要以实现轮的说法为准。\
-             结论覆盖写进 `{audit}`，复验证据写进 `{evidence_dir}M-xx-r<k>.md`，\
-             并在 `{retro}` 追加**一行**：`轮次 | 里程碑 | 结果 | 证据 | 阻塞`。\
-             **不要把审计结论抄进 `{design}`。**\n\n\
-             结论三选一：\n\n\
-             - **通过** → 在里程碑表里标成 `已完成`。\n\
-             - **实现缺陷**（产品行为不符合设计或任务）→ 退回 `开放`，`reopen` 加 1，\
-               在「领域」列按稳定的行为领域名归组，并按协议「收敛模式」更新 `convergence-mode`。\n\
-             - **验证缺口**（现有验收可能放过错误实现，但产品实现没有被证明是错的）→ \
-               当场加强验收或补检查，把临时的缺陷注入完全还原，立即复验；\
-               复验通过则里程碑照常关闭，**不计 reopen、不退回实现轮**。\n\n\
-             分界只有一条：产品行为错了没有。代码风格、超出验收范围的健壮性、\
-             性能微优化、测试还可以更多等属于改进建议，写进 `{design}` 的「## Backlog」，\
-             不得据此退回实现轮。\n\n\
-             **复现不了不等于不存在**：怀疑有缺陷却复现不出来时不得就此结案，\
-             要么解释清楚为什么复现不出来，要么用时序或因果证据替代复现。\n\n\
-             复验范围只有三样：项目测试体系、本里程碑的验收命令、本轮自己新造的检查。\
-             **不要重跑前几轮留在 `.autome/output/` 里的临时检查**——已闭合的缺陷由\
-             回归用例守住。本轮如果抓到实现缺陷，把用到的判别检查留在 `.autome/output/` 并\
-             在 `{audit}` 里写明路径，下一轮实现轮要把它搬进项目测试体系。"
-        ),
-    };
+/// The text itself is no longer here. It is a template in the protocol
+/// version this task is pinned to (`prompts/<role>.md`), so that improving a
+/// prompt is something a meta task can do and something the user can read a
+/// diff of, rather than something that needs a release. What stays in code is
+/// the *substitution*: which placeholders exist and what the core puts in
+/// them. A template asking for a placeholder the core does not fill would
+/// leave a literal `{…}` in front of the model, so every placeholder is
+/// replaced and any leftover is an error.
+fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
+    let template = spec.templates.prompt(role.as_str()).ok_or_else(|| {
+        err(format!(
+            "协议版本里没有 prompts/{}.md，无法启动{}",
+            role.as_str(),
+            role.round_name()
+        ))
+    })?;
 
     // The denominator comes from here or it comes from a guess. See BudgetLine.
-    let budget_line = match (role, budget) {
+    let budget_line = match (role, spec.budget.as_ref()) {
         (Role::Impl, Some(b)) => format!(
             "本轮是**实现轮第 {} 轮**，实现预算 N = {}。\
              状态块的 `implementation-round` 写 `{}/{}`——\
@@ -401,20 +327,81 @@ fn role_prompt(role: Role, slug: &str, budget: Option<&BudgetLine>) -> String {
         _ => String::new(),
     };
 
-    format!(
-        "你是本任务的**{round}**。本轮在 worktree 内独立完成，完成后结束会话——\
-         **不要启动下一个会话**，下一个节点由 Autome 调度。\n\n{budget_line}{body}\n\n\
-         结束前把本轮的改动提交到当前分支（`git add` + `git commit`）。\n\
-         **如果提交被拒绝——权限模式不允许、或沙箱不让写 `.git`——那不是协议失败。**\
-         Autome 会在会话结束后把工作区里剩下的改动一并提交，前几轮的提交记录就是这么来的。\
-         把改动留在工作区、在本轮记录里写一句「提交由 Autome 兜底」，然后照常结束会话。\n\n\
-         `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。\
-         环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——\
-         该记录就记录、该退回里程碑就退回，让 Loop 继续走。\n\n\
-         状态块格式必须严格符合 `{task_file}` 中「Loop 协议」一节与 \
-         `.autome/skill/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。\n",
-        round = role.round_name()
-    )
+    let rendered = template
+        .replace("{slug}", spec.slug)
+        .replace("{budget_line}", &budget_line)
+        .replace("{task_metrics}", &render_task_metrics(spec.task_metrics))
+        .replace(
+            "{metric_vocabulary}",
+            &autome_domain::metrics::TaskMetrics::METRIC_NAMES.join(" / "),
+        );
+    check_no_placeholders_left(&rendered, &format!("prompts/{}.md", role.as_str()))?;
+    Ok(rendered)
+}
+
+/// The retro round is handed the task's measured numbers so it writes against
+/// them rather than against its recollection of the run.
+fn render_task_metrics(metrics: Option<&autome_domain::metrics::TaskMetrics>) -> String {
+    let Some(m) = metrics else {
+        return "（本任务没有记录到指标。照常复盘，但不要编造数字。）".to_string();
+    };
+    let mut s = String::from("| 指标 | 值 |\n|---|---|\n");
+    let mut row = |name: &str, value: String| s.push_str(&format!("| {name} | {value} |\n"));
+    row(
+        "设计轮",
+        format!("{}/{}", m.design_rounds_used, m.design_rounds_limit),
+    );
+    row("实现轮", format!("{}/{}", m.impl_rounds_used, m.budget_n));
+    row("里程碑数", m.milestones.to_string());
+    row("reopen 合计", m.reopen_total.to_string());
+    if !m.reopen_by_domain.is_empty() {
+        row(
+            "reopen 按领域",
+            m.reopen_by_domain
+                .iter()
+                .map(|(d, n)| format!("{d} × {n}"))
+                .collect::<Vec<_>>()
+                .join("、"),
+        );
+    }
+    row("实现缺陷", m.impl_defects.to_string());
+    row("验证缺口", m.verification_gaps.to_string());
+    row("协议失败", m.protocol_failures.to_string());
+    row("关闭后被推翻", m.closed_then_contradicted.to_string());
+    row("人工验收未确认", m.manual_items_open.to_string());
+    row("总 tokens", m.total_tokens.to_string());
+    row("总 turns", m.total_turns.to_string());
+    if let Some(cost) = m.total_cost_usd {
+        row("费用 USD（仅 Claude 会话）", format!("{cost:.4}"));
+    }
+    s
+}
+
+/// A template placeholder the core does not know how to fill would reach the
+/// model as a literal `{task_metrics}`. That is not a cosmetic problem: the
+/// round would be reading an instruction about data it was never given.
+fn check_no_placeholders_left(rendered: &str, file: &str) -> Result<()> {
+    // Only single-word `{lower_snake}` runs count. Protocol text contains
+    // braces in code samples and in prose, and rejecting those would make the
+    // check unusable.
+    let mut rest = rendered;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else { break };
+        let name = &after[..close];
+        if !name.is_empty()
+            && name.len() < 40
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+        {
+            return Err(err(format!(
+                "{file} 里有 Autome 不认识的占位符 `{{{name}}}`"
+            )));
+        }
+        rest = &after[close + 1..];
+    }
+    Ok(())
 }
 
 fn render_decisions(decisions: &[DecisionRecord]) -> String {
@@ -439,17 +426,23 @@ fn render_decisions(decisions: &[DecisionRecord]) -> String {
     out
 }
 
-/// The intake session's prompt. This is the one place 2.0 still leans on a
-/// 1.x asset: the `loop-task` skill knows how to turn a one-line request into
-/// a task file. Rather than duplicate that knowledge, the prompt asks for the
-/// same artefacts and states the 2.0-specific constraints the skill predates.
-fn intake_prompt(spec: &PromptSpec<'_>) -> String {
-    let mut p = format!(
-        "把下面这句需求整理成一个可执行的循环任务。\n\n需求原文（不要改写，不要扩大范围）：\n\n{}\n\n",
-        spec.request
-    );
+/// The intake session's prompt.
+///
+/// Like the role prompts, the text lives in the protocol version
+/// (`prompts/intake.md`). The three placeholders the core fills are the
+/// request verbatim, the slug, and the design-round limit — which used to be
+/// the literal `15` here regardless of what the project had configured, so a
+/// project that lowered `design_rounds` got a skeleton status block claiming a
+/// limit it did not have.
+fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
+    let template = spec
+        .templates
+        .prompt("intake")
+        .ok_or_else(|| err("协议版本里没有 prompts/intake.md，无法启动任务整理轮"))?;
+
+    let mut inputs = String::new();
     if !spec.attachments.is_empty() {
-        p.push_str(&format!(
+        inputs.push_str(&format!(
             "用户提供的附件（已复制到任务目录）：\n{}\n\n",
             spec.attachments
                 .iter()
@@ -459,7 +452,7 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> String {
         ));
     }
     if !spec.doc_refs.is_empty() {
-        p.push_str(&format!(
+        inputs.push_str(&format!(
             "用户指定的仓库内参考文档：\n{}\n\n",
             spec.doc_refs
                 .iter()
@@ -468,57 +461,23 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> String {
                 .join("\n")
         ));
     }
-    p.push_str(&format!(
-        r#"请完成三件事：
 
-1. 调研本仓库，读 AGENTS.md、docs/agent-project-profile.md（若存在）
-   与 .autome/rules/ 下的规则。
-2. 生成任务文件 docs/{slug}/{slug}-task.md。它必须是自包含的——执行后续各轮的
-   会话不会读到别的说明文件，所以任务文件里要有：
-   - 本任务的目标、范围与硬性约束（从上面那句需求和你的调研中得出）；
-   - 生成时的项目背景摘要（技术栈、布局、测试命令、权威规则文件）；
-   - **`.autome/skill/loop-protocol.md` 的全文，逐字复制**，不要只写路径、
-     不要概括、不要改写。任务目录归档多年后仍要能凭它复现当时的规则。
-   另见 .autome/skill/session-protocol.md 的会话边界，同样逐条遵守。
-3. 生成设计文档 docs/{slug}/{slug}.md 的骨架，头部写完整的状态块：
-
-```text
-status: 设计中
-design-round: 0/{design_rounds}
-implementation-round: 0/0
-current-milestone: 无
-current-milestone-reopens: 0
-convergence-mode: normal
-next-action: 无
-```
-
-同时为这个任务起一个简短准确的标题，写在设计文档的一级标题里。
-
-注意：本轮只做整理，不要开始设计、不要写代码、不要启动别的会话。完成后结束会话。
-"#,
-        slug = spec.slug,
-        design_rounds = 15
-    ));
-    p
+    let rendered = template
+        .replace("{request}", spec.request)
+        .replace("{inputs}", &inputs)
+        .replace("{slug}", spec.slug)
+        .replace("{design_rounds}", &spec.design_rounds.to_string());
+    check_no_placeholders_left(&rendered, "prompts/intake.md")?;
+    Ok(rendered)
 }
 
-fn onboarding_prompt() -> String {
-    r#"这是一个刚被 Autome 接管的项目，请为它建立 Agent 可用的项目背景。
-
-请完成两件事：
-
-1. 生成 docs/agent-project-profile.md —— 项目画像。内容应当是可核对的事实，
-   不是评价：技术栈与版本、源码布局、构建与测试命令、运行环境、已有的权威规则文件、
-   以及调研入口（从哪里开始读代码）。不要写流程协议，不要写里程碑状态机。
-2. 补充 AGENTS.md 中 <!-- autome:begin --> 标记之外的部分，写这个项目对 Agent 的
-   硬性约束。约束要可检验，例如「所有对外接口必须有契约测试」，而不是「代码要优雅」。
-
-如果这是一个空目录、没有代码可读，请直接问用户三个问题：这个项目要做什么、
-给谁用、技术栈倾向。拿到回答后再写这两个文件。
-
-不要修改 .autome/ 下的任何内容。完成后结束会话。
-"#
-    .to_string()
+fn onboarding_prompt(spec: &PromptSpec<'_>) -> Result<String> {
+    let template = spec
+        .templates
+        .prompt("onboarding")
+        .ok_or_else(|| err("协议版本里没有 prompts/onboarding.md，无法启动项目上手轮"))?;
+    check_no_placeholders_left(template, "prompts/onboarding.md")?;
+    Ok(template.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -931,14 +890,26 @@ mod tests {
         }
     }
 
+    /// The seed's templates. Tests here are about *rendering* — which
+    /// placeholder gets what, which round is handed a budget line — not about
+    /// the wording, which lives in the protocol repository and is checked by
+    /// `protocol::phrases`.
+    fn templates() -> autome_domain::protocol::ProtocolFiles {
+        crate::protocol::seed()
+    }
+
     fn spec<'a>(
         kind: SessionKind,
         skills: &'a [String],
         inject: Option<&'a Inject>,
+        templates: &'a autome_domain::protocol::ProtocolFiles,
     ) -> PromptSpec<'a> {
         PromptSpec {
             kind,
+            templates,
             slug: "checkout-flow",
+            design_rounds: 15,
+            task_metrics: None,
             budget: None,
             request: "加购物车结算",
             skills,
@@ -947,6 +918,12 @@ mod tests {
             attachments: &[],
             doc_refs: &[],
         }
+    }
+
+    /// `build_prompt` for a role, with the seed's templates.
+    fn prompt_for(role: Role) -> String {
+        let tpl = templates();
+        build_prompt(&spec(SessionKind::Role { role }, &[], None, &tpl)).unwrap()
     }
 
     // ---- adapter table ---------------------------------------------------
@@ -987,7 +964,7 @@ mod tests {
         // pointing at a task-file section that did not exist, so four real
         // sessions ran and produced nothing.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 p.contains(role.round_name()),
                 "{role} prompt does not say which round it is:\n{p}"
@@ -1002,13 +979,20 @@ mod tests {
     #[test]
     fn every_role_prompt_names_the_files_it_reads_and_writes() {
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
-            // Every round reads the task file and the design document.
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            // Every round reads the task file.
             assert!(p.contains("checkout-flow-task.md"), "{role}: {p}");
-            assert!(
-                p.contains("docs/checkout-flow/checkout-flow.md"),
-                "{role}: {p}"
-            );
+            // Every round of the loop itself reads the design document. The
+            // retro round deliberately does not: it reads the evidence and the
+            // numbers the core hands it, and adding the design document back
+            // would put the largest file in the task directory in front of the
+            // one round that has no use for it.
+            if role != Role::Retro {
+                assert!(
+                    p.contains("docs/checkout-flow/checkout-flow.md"),
+                    "{role}: {p}"
+                );
+            }
             // The three reviewing rounds each own an output document.
             if let Some(kind) = role.output_document() {
                 assert!(
@@ -1029,7 +1013,7 @@ mod tests {
         // leaves behind. A sentence that is not true about the system will be
         // acted on as if it were.
         for role in Role::ALL {
-            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 prompt.contains("不是协议失败"),
                 "{role:?} is not told that a refused commit is survivable"
@@ -1044,7 +1028,7 @@ mod tests {
     #[test]
     fn every_role_prompt_says_what_protocol_failure_is_for() {
         for role in Role::ALL {
-            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 prompt.contains("`协议失败` 只用于一种情况"),
                 "{role:?} does not narrow what 协议失败 means"
@@ -1059,7 +1043,7 @@ mod tests {
         // brought nothing. The core sweeps up afterwards, but a round that
         // commits its own work produces a legible history.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(p.contains("git commit"), "{role}: {p}");
         }
     }
@@ -1067,9 +1051,10 @@ mod tests {
     // ---- the 2026-09-16 protocol audit ------------------------------------
 
     fn budgeted(role: Role, round: u32, limit: u32) -> String {
-        let mut s = spec(SessionKind::Role { role }, &[], None);
+        let tpl = templates();
+        let mut s = spec(SessionKind::Role { role }, &[], None, &tpl);
         s.budget = Some(BudgetLine { round, limit });
-        build_prompt(&s)
+        build_prompt(&s).unwrap()
     }
 
     #[test]
@@ -1114,7 +1099,7 @@ mod tests {
         // Before the design is approved there is no N. Saying "N = 0" would
         // be worse than saying nothing.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(!p.contains("实现预算 N"), "{role}: {p}");
         }
     }
@@ -1188,7 +1173,7 @@ mod tests {
         // S6. "End-to-end acceptance on real hardware" was made the last
         // milestone of a real run. It needs a real mouse and a real
         // microphone, so no session could ever close it.
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Plan }, &[], None));
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Plan }, &[], None, &templates())).unwrap();
         assert!(p.contains("## 人工验收清单"), "{p}");
         assert!(p.contains("不做里程碑验收条件"), "{p}");
         // And the parser's lesson, stated where the table is written.
@@ -1200,7 +1185,7 @@ mod tests {
         // The core schedules; a round that relays would bypass the parallel
         // limit, pause, the role toggles and the budgets.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None));
+            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(p.contains("不要启动下一个会话"), "{role}: {p}");
         }
     }
@@ -1215,7 +1200,9 @@ mod tests {
             },
             &[],
             None,
-        ));
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("实现中"), "{p}");
         assert!(p.contains("里程碑表"), "{p}");
         assert!(p.contains("design-round"), "{p}");
@@ -1223,13 +1210,13 @@ mod tests {
 
     #[test]
     fn the_implement_round_is_forbidden_from_closing_a_milestone() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None));
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None, &templates())).unwrap();
         assert!(p.contains("不得把里程碑标成 `已完成`"), "{p}");
     }
 
     #[test]
     fn the_audit_round_is_told_to_verify_independently() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &[], None));
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &[], None, &templates())).unwrap();
         assert!(p.contains("独立复验"), "{p}");
         assert!(p.contains("不要以实现轮的说法为准"), "{p}");
     }
@@ -1237,14 +1224,14 @@ mod tests {
     #[test]
     fn bound_skills_are_stated_as_mandatory() {
         let skills = vec!["conventions".to_string(), "vitest".to_string()];
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &skills, None));
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &skills, None, &templates())).unwrap();
         assert!(p.contains("必须使用"), "{p}");
         assert!(p.contains("conventions、vitest"), "{p}");
     }
 
     #[test]
     fn no_skills_means_no_skill_sentence() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None));
+        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None, &templates())).unwrap();
         assert!(!p.contains("必须使用"), "{p}");
     }
 
@@ -1257,7 +1244,9 @@ mod tests {
             SessionKind::Role { role: Role::Plan },
             &[],
             Some(&inject),
-        ));
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("确认邮件只发登录用户\n不要发给游客"), "{p}");
         assert!(p.contains("不要改写"), "{p}");
     }
@@ -1271,7 +1260,9 @@ mod tests {
             SessionKind::Role { role: Role::Impl },
             &[],
             Some(&inject),
-        ));
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("- src/a.ts"), "{p}");
         assert!(p.contains("- src/b.ts"), "{p}");
         assert!(p.contains("冲突"), "{p}");
@@ -1308,13 +1299,15 @@ mod tests {
                 consumed_at: None,
             },
         ];
+        let tpl = templates();
         let mut s = spec(
             SessionKind::Role { role: Role::Impl },
             &[],
             Some(&Inject::Decisions),
+            &tpl,
         );
         s.decisions = &decisions;
-        let p = build_prompt(&s);
+        let p = build_prompt(&s).unwrap();
         assert!(p.contains("B-01 优惠码次数上限 → 纳入"), "{p}");
         assert!(p.contains("B-02 日志脱敏 → 忽略"), "{p}");
         assert!(p.contains("按评审方，不敏感"), "{p}");
@@ -1331,18 +1324,20 @@ mod tests {
             ruling: None,
             consumed_at: None,
         }];
+        let tpl = templates();
         let mut s = spec(
             SessionKind::Role { role: Role::Impl },
             &[],
             Some(&Inject::Decisions),
+            &tpl,
         );
         s.decisions = &decisions;
-        assert!(!build_prompt(&s).contains("B-09"));
+        assert!(!build_prompt(&s).unwrap().contains("B-09"));
     }
 
     #[test]
     fn the_intake_prompt_carries_the_request_verbatim_and_the_status_block_shape() {
-        let p = build_prompt(&spec(SessionKind::Intake, &[], None));
+        let p = build_prompt(&spec(SessionKind::Intake, &[], None, &templates())).unwrap();
         assert!(p.contains("加购物车结算"), "{p}");
         assert!(p.contains("不要改写，不要扩大范围"), "{p}");
         assert!(p.contains("status: 设计中"), "{p}");
@@ -1358,7 +1353,7 @@ mod tests {
         // A task file that only *points* at the protocol stops being
         // self-contained the moment the scaffold is refreshed — and the
         // archived task directory would no longer explain its own history.
-        let p = build_prompt(&spec(SessionKind::Intake, &[], None));
+        let p = build_prompt(&spec(SessionKind::Intake, &[], None, &templates())).unwrap();
         assert!(p.contains("loop-protocol.md"), "{p}");
         assert!(p.contains("逐字复制"), "{p}");
         assert!(p.contains("不要只写路径"), "{p}");
@@ -1367,12 +1362,13 @@ mod tests {
 
     #[test]
     fn the_intake_prompt_lists_attachments_and_doc_refs_when_present() {
-        let mut s = spec(SessionKind::Intake, &[], None);
+        let tpl = templates();
+        let mut s = spec(SessionKind::Intake, &[], None, &tpl);
         let attachments = vec!["promo.csv".to_string()];
         let refs = vec!["docs/notes.md".to_string()];
         s.attachments = &attachments;
         s.doc_refs = &refs;
-        let p = build_prompt(&s);
+        let p = build_prompt(&s).unwrap();
         assert!(
             p.contains("docs/checkout-flow/attachments/promo.csv"),
             "{p}"
@@ -1382,7 +1378,7 @@ mod tests {
 
     #[test]
     fn the_onboarding_prompt_asks_for_both_artefacts_and_forbids_touching_autome() {
-        let p = build_prompt(&spec(SessionKind::Onboarding, &[], None));
+        let p = build_prompt(&spec(SessionKind::Onboarding, &[], None, &templates())).unwrap();
         assert!(p.contains("docs/agent-project-profile.md"), "{p}");
         assert!(p.contains("AGENTS.md"), "{p}");
         assert!(p.contains("不要修改 .autome/"), "{p}");
@@ -1589,7 +1585,7 @@ mod tests {
         // a sandbox the test had already deleted.
         let dir = std::env::temp_dir().join(format!("automed-dry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir).unwrap();
+        crate::init::init(&dir, &crate::protocol::seed()).unwrap();
         let launched = launch(&LaunchSpec {
             session_id: "s-dry",
             task_id: "T-1",
@@ -1651,7 +1647,7 @@ mod tests {
     fn launching_writes_the_prompt_file_before_it_needs_the_terminal() {
         let dir = std::env::temp_dir().join(format!("automed-launch2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir).unwrap();
+        crate::init::init(&dir, &crate::protocol::seed()).unwrap();
         let spec = LaunchSpec {
             session_id: "s1",
             task_id: "T-1",

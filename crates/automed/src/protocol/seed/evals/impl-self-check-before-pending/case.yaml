@@ -1,0 +1,11 @@
+              # 标待审之前写满自审清单四项，标「不适用」要说明
+              name: impl-self-check-before-pending
+              role: impl
+              description: 标待审之前写满自审清单四项，标「不适用」要说明
+              runs: 3
+              max_turns: 15
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/case-count-delta-reported.md
+- graders/four-items-each-answered.md

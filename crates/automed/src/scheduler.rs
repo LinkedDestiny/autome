@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use autome_domain::config::{self, ResolvedConfig};
 use autome_domain::project::Project;
+use autome_domain::protocol::{ProtocolFiles, ProtocolRef};
 use autome_domain::role::Role;
 use autome_domain::session::{
     self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths,
@@ -535,6 +536,13 @@ fn start_session(
         write_task_inputs(&repo, &worktree, task)?;
     }
 
+    // Which rules this task is held to, decided once and then frozen. A task
+    // that started under v6 keeps running under v6 even if the user releases
+    // v7 in the middle of it — protocol principle 6 as a property of the
+    // filesystem rather than a sentence a session has to remember.
+    let (protocol_ref, protocol) = freeze_protocol(ctx, task, resolved, &worktree)?;
+    let rules_hash = rules_hash(&repo);
+
     let role_config = match kind.role() {
         Some(role) => resolved.role(role).config.clone(),
         None => launcher::system_role_config(),
@@ -551,9 +559,18 @@ fn start_session(
         }
         _ => None,
     };
+    // The retro round writes against the task's measured numbers rather than
+    // its recollection of the run, so it is the one round handed them.
+    let task_metrics = match kind.role() {
+        Some(Role::Retro) => ctx.store.task_metrics(&task.id)?,
+        _ => None,
+    };
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
+        templates: &protocol,
         slug: &task.slug,
+        design_rounds: resolved.loop_defaults.design_rounds,
+        task_metrics: task_metrics.as_ref(),
         budget,
         request: &task.request,
         skills: &role_config.skills,
@@ -561,7 +578,7 @@ fn start_session(
         decisions: &decisions,
         attachments: &task.attachments,
         doc_refs: &task.doc_refs,
-    });
+    })?;
 
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
@@ -591,6 +608,10 @@ fn start_session(
         lifecycle: SessionLifecycle::Running,
         log_path: launched.log_path.clone(),
         pid,
+        protocol_ref: Some(protocol_ref.to_wire()),
+        rules_hash,
+        // Filled in when the session is reaped and its stream is read.
+        metrics: Default::default(),
     })?;
     ctx.store.append_event(
         "session.started",
@@ -619,6 +640,114 @@ fn read_pid(repo: &Path, task_id: &str, session_id: &str) -> Option<i32> {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     None
+}
+
+/// Resolves the protocol version for a task and, the first time, freezes a
+/// copy of it into `docs/<slug>/protocol/`.
+///
+/// After that the copy *is* the version: it is read back from the worktree
+/// rather than re-resolved, so releasing a new protocol tag cannot change the
+/// rules a running task is being held to. That is protocol principle 6, and it
+/// used to rest on the intake round having pasted the rules into the task file
+/// and every later round choosing not to look anywhere else.
+fn freeze_protocol(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    resolved: &ResolvedConfig,
+    worktree: &Path,
+) -> Result<(ProtocolRef, ProtocolFiles)> {
+    let dir = worktree
+        .join(task.doc_dir())
+        .join(crate::protocol::TASK_SUBDIR);
+
+    if let Some(recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
+        && dir.exists()
+    {
+        let files = read_task_protocol(&dir)?;
+        // A mismatch means someone edited the frozen copy. The file wins, as
+        // everywhere else in this system, but the disagreement is recorded
+        // rather than smoothed over: every metric this task produces is
+        // attributed to a version, and this is the one moment the attribution
+        // can be seen to be wrong.
+        let hash = files.hash();
+        if hash != recorded.hash {
+            ctx.store.append_event(
+                "integrity_warning",
+                &task.id,
+                json!({
+                    "what": "protocol_copy_edited",
+                    "recorded": recorded.to_wire(),
+                    "actual_hash": hash,
+                }),
+            )?;
+            return Ok((ProtocolRef::new(recorded.tag, hash), files));
+        }
+        return Ok((recorded, files));
+    }
+
+    let repo = PathBuf::from(&ctx.store.get_project(&task.project_id)?.path);
+    let pin = resolved.protocol_pin.clone();
+    let (protocol_ref, files) = crate::protocol::ensure(&ctx.autome_home)
+        .and_then(|r| r.resolve(pin.as_deref()))
+        .map_err(|e| err(e.to_string()))?;
+
+    let written = crate::protocol::copy_into_task(&files, worktree, &task.doc_dir())
+        .map_err(|e| err(e.to_string()))?;
+    let refs: Vec<&str> = written.iter().map(String::as_str).collect();
+    git::commit_paths(
+        worktree,
+        &refs,
+        &format!("chore(autome): {} 固定协议 {}", task.id, protocol_ref.tag),
+    )?;
+    ctx.store
+        .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
+    let _ = repo;
+    Ok((protocol_ref, files))
+}
+
+/// Reads a task's frozen copy back. Only the files the copy contains — eval
+/// fixtures are deliberately not copied, so the hash here is over the same set
+/// `copy_into_task` wrote.
+fn read_task_protocol(dir: &Path) -> Result<ProtocolFiles> {
+    fn walk(root: &Path, dir: &Path, out: &mut ProtocolFiles) -> Result<()> {
+        for entry in std::fs::read_dir(dir).map_err(|e| err(format!("读取协议副本失败：{e}")))? {
+            let entry = entry.map_err(|e| err(format!("读取协议副本失败：{e}")))?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out)?;
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|_| err("协议副本里出现了目录之外的路径"))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel, text);
+            }
+        }
+        Ok(())
+    }
+    let mut out = ProtocolFiles::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+/// A hash over `.autome/rules/`, so a usage number can say which rule set
+/// produced it. Rules change between tasks; two numbers taken under different
+/// rules are not the same measurement.
+fn rules_hash(repo: &Path) -> Option<String> {
+    let dir = repo.join(".autome/rules");
+    let mut files = ProtocolFiles::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        files.insert(name, std::fs::read_to_string(&path).ok()?);
+    }
+    Some(files.hash())
 }
 
 /// Copies attachments into the worktree's task directory and commits them, so
@@ -803,7 +932,19 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
                 continue;
             }
             let _ = git::worktree_prune(path);
-            match crate::init::init(path) {
+            // The protocol is resolved per project: one of them may be pinned
+            // to an older version, and refreshing it to the newest would be
+            // exactly the silent rule change pinning exists to prevent.
+            let protocol = match crate::protocol::resolve_for_project(&ctx.autome_home, path) {
+                Ok((_, files)) => files,
+                Err(e) => {
+                    report
+                        .errors
+                        .push(format!("{}：读取协议版本失败 {e}", p.display_name));
+                    continue;
+                }
+            };
+            match crate::init::init(path, &protocol) {
                 Ok(done) => {
                     for step in done
                         .steps
@@ -887,9 +1028,17 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let repo = PathBuf::from(&project.path);
     let role_config = launcher::system_role_config();
 
+    // Onboarding has no task and therefore no frozen copy; it runs under
+    // whatever version the project resolves to right now, which is correct:
+    // nothing it produces is attributed to a protocol version.
+    let (_, protocol) = crate::protocol::resolve_for_project(&ctx.autome_home, &repo)
+        .map_err(|e| err(e.to_string()))?;
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
+        templates: &protocol,
         slug: "onboarding",
+        design_rounds: 0,
+        task_metrics: None,
         budget: None,
         request: "",
         skills: &[],
@@ -897,7 +1046,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         decisions: &[],
         attachments: &[],
         doc_refs: &[],
-    });
+    })?;
 
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
@@ -1074,7 +1223,7 @@ mod tests {
             std::fs::create_dir_all(&repo).unwrap();
 
             git::init(&repo, "main").unwrap();
-            crate::init::init(&repo).unwrap();
+            crate::init::init(&repo, &crate::protocol::seed()).unwrap();
             std::fs::write(repo.join("README.md"), "hi\n").unwrap();
             git::commit_paths(
                 &repo,
@@ -1120,6 +1269,9 @@ mod tests {
                 completed_at: None,
                 merge_commit: None,
                 archived_at: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: None,
             };
             self.ctx.store.insert_task(&task).unwrap();
             task
@@ -1379,11 +1531,30 @@ mod tests {
     }
 
     #[test]
-    fn an_audit_closing_every_milestone_reaches_rebase() {
+    fn an_audit_closing_every_milestone_reaches_the_retro_round() {
         needs_git!();
         let mut w = World::new("audit-done");
         w.add_task("T-1", "a");
         w.set_state("T-1", TaskState::Active { node: Node::Audit });
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        let doc = design_doc(
+            "实现中",
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Done),
+            ],
+            "",
+        );
+        let _ = advance(&mut w.ctx, "T-1", &ended_ok(&doc));
+        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Retro });
+    }
+
+    #[test]
+    fn the_retro_round_hands_off_to_the_rebase() {
+        needs_git!();
+        let mut w = World::new("retro-done");
+        w.add_task("T-1", "a");
+        w.set_state("T-1", TaskState::Active { node: Node::Retro });
         w.ctx.store.set_task_budget("T-1", 25).unwrap();
         let doc = design_doc(
             "实现中",
@@ -1418,6 +1589,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         // Write a clean exit marker, so the document is what decides.
@@ -1477,6 +1651,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1544,6 +1721,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1613,6 +1793,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1628,10 +1811,14 @@ mod tests {
         .unwrap();
 
         reap_session(&mut w.ctx, &session).unwrap();
-        assert_eq!(
-            git::head_sha(&wt).unwrap(),
-            after_own_commit,
-            "a clean worktree must not produce an empty sweep commit"
+        // Reaping also advances the task, and the next session freezes the
+        // protocol into the task directory — so HEAD legitimately moves. What
+        // must not be there is a sweep commit: the round committed its own
+        // work and there was nothing left over.
+        let subjects = git::commit_subjects(&wt, &after_own_commit, "HEAD").unwrap();
+        assert!(
+            !subjects.iter().any(|s| s.contains("未提交的剩余改动")),
+            "a clean worktree must not produce an empty sweep commit: {subjects:?}"
         );
     }
 
@@ -1661,6 +1848,9 @@ mod tests {
             log_path: "l".into(),
             // Our own pid is certainly alive.
             pid: Some(std::process::id() as i32),
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         assert!(!reap_session(&mut w.ctx, &session).unwrap());
@@ -1969,6 +2159,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));

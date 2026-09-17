@@ -299,6 +299,15 @@ impl From<git::GitError> for DispatchError {
     }
 }
 
+impl From<crate::protocol::ProtocolError> for DispatchError {
+    fn from(e: crate::protocol::ProtocolError) -> Self {
+        DispatchError {
+            code: ReplyErrorCode::Internal,
+            message: e.to_string(),
+        }
+    }
+}
+
 impl From<init::InitError> for DispatchError {
     fn from(e: init::InitError) -> Self {
         DispatchError {
@@ -563,7 +572,12 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
     let default_branch = git::default_branch(&canonical)
         .ok_or_else(|| rejected(format!("{} 没有可用的默认分支", canonical.display())))?;
 
-    let report = init::init(&canonical)?;
+    // A brand-new project has no pin yet, so this resolves to the newest tag.
+    // It still goes through the resolver so that adopting a directory whose
+    // `.autome/config.toml` already pins a version honours that pin.
+    let (protocol_ref, protocol) =
+        crate::protocol::resolve_for_project(&ctx.autome_home, &canonical)?;
+    let report = init::init(&canonical, &protocol)?;
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let project = Project {
@@ -588,6 +602,7 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
     Ok((
         json!({
             "project": project,
+            "protocol_ref": protocol_ref.to_wire(),
             "init": report.steps.iter().map(|s| json!({
                 "path": s.path,
                 "action": format!("{:?}", s.action).to_lowercase(),
@@ -1091,6 +1106,7 @@ fn role_label(role: Role) -> &'static str {
         Role::Adjudicate => "裁决",
         Role::Impl => "实现",
         Role::Audit => "审计",
+        Role::Retro => "复盘",
     }
 }
 
@@ -1168,6 +1184,12 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         completed_at: None,
         merge_commit: None,
         archived_at: None,
+        // All three are filled in by the scheduler: the protocol version and
+        // the rules hash when the first session starts, the metrics when the
+        // task reaches a terminal state.
+        protocol_ref: None,
+        rules_hash: None,
+        metrics: None,
     };
     ctx.store.insert_task(&task)?;
     let seq = ctx
@@ -2262,7 +2284,10 @@ mod tests {
         let id = sb.add_project("p");
         let out = handle_command(sb.ctx(), &cmd("project.get", json!({ "project_id": id })));
         let payload = ok_payload(&out);
-        assert_eq!(payload["config"]["roles"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            payload["config"]["roles"].as_array().unwrap().len(),
+            Role::ALL.len()
+        );
         assert!(payload["violations"].as_array().unwrap().is_empty());
         let rules = payload["rules"].as_array().unwrap();
         assert!(rules.iter().any(|r| r == "AGENTS.md"), "{rules:?}");
@@ -2305,6 +2330,9 @@ mod tests {
             completed_at: None,
             merge_commit: None,
             archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2348,6 +2376,9 @@ mod tests {
             completed_at: None,
             merge_commit: None,
             archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2380,6 +2411,9 @@ mod tests {
                 completed_at: None,
                 merge_commit: None,
                 archived_at: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: None,
             })
             .unwrap();
         let out = handle_command(sb.ctx(), &cmd("project.remove", json!({"project_id": id})));

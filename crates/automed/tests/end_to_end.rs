@@ -200,6 +200,35 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
         )
     }
 
+    /// What the retro round does: write `docs/<slug>/lessons.md` and leave
+    /// the design document alone.
+    fn retro_step(&self, n: u32, slug: &str) {
+        self.step(
+            n,
+            &format!(
+                r#"set -e
+mkdir -p "docs/{slug}"
+cat > "docs/{slug}/lessons.md" <<'AUTOME_EOF'
+# 教训
+
+```yaml
+- id: L-01
+  domain: verification
+  symptom: 审计 #1 在 M-01 上要自己跑一遍验收命令
+  root_cause: 实现轮的证据只写了结论，没有写命令
+  evidence: docs/{slug}/lessons.md
+  level: rule
+  proposal: 证据文件必须逐字写出跑过的命令
+  predicted_impact: {{metric: verification_gaps, direction: down, scope: task, horizon: 3}}
+```
+AUTOME_EOF
+git add -A docs >/dev/null 2>&1 || true
+git -c user.name=fake -c user.email=f@f commit -q -m "session {n} retro" >/dev/null 2>&1 || true
+"#
+            ),
+        );
+    }
+
     /// A step that writes a design document into the task's worktree and
     /// commits it, which is what every real session does.
     fn doc_step(&self, n: u32, slug: &str, body: &str) {
@@ -456,6 +485,7 @@ fn a_task_runs_from_one_line_to_a_merge_commit() {
     //   4 adjudicate  -> 实现中 with two open milestones (design is final)
     //   5 implement   -> both pending
     //   6 audit       -> both done
+    //   7 retro       -> lessons.md
     let request = "add cart checkout";
     let slug = slug_for(request);
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
@@ -476,6 +506,7 @@ fn a_task_runs_from_one_line_to_a_merge_commit() {
         &slug,
         &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "已完成")]),
     );
+    w.retro_step(7, &slug);
 
     let task_id = create_task(&mut w, request);
     w.settle();
@@ -541,6 +572,7 @@ fn a_dirty_main_worktree_blocks_the_merge_and_leaves_the_users_file_alone() {
     w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
     w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
     w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
     let task_id = create_task(&mut w, request);
     w.settle();
     w.call("task.approve", json!({ "task_id": task_id }));
@@ -610,6 +642,7 @@ fn the_merge_panel_reports_what_the_core_would_actually_do() {
     w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
     w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
     w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
     let task_id = create_task(&mut w, request);
     w.settle();
     w.call("task.approve", json!({ "task_id": task_id }));

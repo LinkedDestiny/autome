@@ -1,4 +1,4 @@
-//! The five Loop roles and the two CLI runtimes, per technical design §5.2.
+//! The six Loop roles and the two CLI runtimes, per technical design §5.2.
 //!
 //! These are the only two closed enumerations the whole system routes on, so
 //! they live in their own module rather than inside `config`: the scheduler,
@@ -10,8 +10,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// A Loop role. Ordering here is the Loop's own order (design → review →
-/// adjudicate → impl → audit), which `Role::ALL` preserves so that anything
-/// iterating roles for display gets the graph order for free.
+/// adjudicate → impl → audit → retro), which `Role::ALL` preserves so that
+/// anything iterating roles for display gets the graph order for free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -20,15 +20,19 @@ pub enum Role {
     Adjudicate,
     Impl,
     Audit,
+    /// Runs once, when the task stops. Reads the whole run and writes what can
+    /// be carried out of it into `docs/<slug>/lessons.md`.
+    Retro,
 }
 
 impl Role {
-    pub const ALL: [Role; 5] = [
+    pub const ALL: [Role; 6] = [
         Role::Plan,
         Role::Review,
         Role::Adjudicate,
         Role::Impl,
         Role::Audit,
+        Role::Retro,
     ];
 
     /// The TOML key / IPC wire name. Kept as an explicit match rather than
@@ -41,6 +45,7 @@ impl Role {
             Role::Adjudicate => "adjudicate",
             Role::Impl => "impl",
             Role::Audit => "audit",
+            Role::Retro => "retro",
         }
     }
 
@@ -57,6 +62,7 @@ impl Role {
             Role::Adjudicate => "裁决轮",
             Role::Impl => "实现轮",
             Role::Audit => "审计轮",
+            Role::Retro => "复盘轮",
         }
     }
 
@@ -75,7 +81,10 @@ impl Role {
             Role::Review => Some("review"),
             Role::Adjudicate => Some("adjudication"),
             Role::Audit => Some("audit"),
-            Role::Plan | Role::Impl => None,
+            // The retro round does own a file, but not one named after the
+            // slug: it writes `docs/<slug>/lessons.md`, which the core reads
+            // rather than the next round.
+            Role::Plan | Role::Impl | Role::Retro => None,
         }
     }
 
@@ -87,6 +96,11 @@ impl Role {
         match self {
             Role::Review => Some(Role::Plan),
             Role::Audit => Some(Role::Impl),
+            // The retro round judges what the implementation rounds produced
+            // and why it went wrong. Sharing a model with the side being
+            // judged is the same defect as an audit sharing one with its
+            // implementation.
+            Role::Retro => Some(Role::Impl),
             _ => None,
         }
     }
@@ -176,15 +190,18 @@ mod tests {
     }
 
     #[test]
-    fn round_names_are_distinct_and_cover_all_five_roles() {
+    fn round_names_are_distinct_and_cover_all_six_roles() {
         let mut names: Vec<&str> = Role::ALL.iter().map(|r| r.round_name()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 6);
     }
 
+    /// The retro round writes `lessons.md`, which is not named after the slug
+    /// and is read by the core rather than by another round — so it is not in
+    /// this set even though it does produce a file.
     #[test]
-    fn exactly_the_three_reviewing_rounds_own_a_document() {
+    fn exactly_the_three_reviewing_rounds_own_a_slug_named_document() {
         let with_doc: Vec<Role> = Role::ALL
             .into_iter()
             .filter(|r| r.output_document().is_some())
@@ -193,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn same_model_pairs_are_exactly_review_plan_and_audit_impl() {
+    fn the_three_evaluating_roles_are_paired_with_the_side_they_judge() {
         let pairs: Vec<(Role, Option<Role>)> = Role::ALL
             .into_iter()
             .map(|r| (r, r.same_model_counterpart()))
@@ -206,6 +223,7 @@ mod tests {
                 (Role::Adjudicate, None),
                 (Role::Impl, None),
                 (Role::Audit, Some(Role::Impl)),
+                (Role::Retro, Some(Role::Impl)),
             ]
         );
     }
