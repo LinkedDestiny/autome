@@ -102,13 +102,12 @@ pub fn versions(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let mut entries_by_tag: serde_json::Map<String, Value> = serde_json::Map::new();
     for row in &rows {
         let Some(repo) = repo.as_ref() else { break };
-        let Ok(files) = repo.files_at(&row.tag) else {
+        // One file, one `git show`. Reading the whole tree here cost 93
+        // processes per tag to use one of them.
+        let Ok(text) = repo.file_at(&row.tag, "CHANGELOG.md") else {
             continue;
         };
-        let Some(text) = files.get("CHANGELOG.md") else {
-            continue;
-        };
-        let Ok(log) = changelog::parse(text) else {
+        let Ok(log) = changelog::parse(&text) else {
             continue;
         };
         if let Some(version) = log.version(&row.tag) {

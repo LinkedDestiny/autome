@@ -273,6 +273,18 @@ impl Repo {
         Ok(files)
     }
 
+    /// One file out of a revision, without materialising the tree.
+    ///
+    /// `files_at` spawns a `git show` per file, and the seed is 92 of them.
+    /// A caller that wants a single file — the version page wants
+    /// `CHANGELOG.md` and nothing else, once per tag — paid 93 processes for
+    /// it and threw the other 91 away, which is ~2.6s per tag and the reason
+    /// opening a project stalled.
+    pub fn file_at(&self, rev: &str, path: &str) -> Result<String> {
+        let spec = format!("{rev}:{path}");
+        Ok(git::run_ok(&self.path, &["show", &spec])?.stdout)
+    }
+
     /// The files as they sit on disk. Used by the meta task's worktree and by
     /// `protocol eval` when checking work in progress.
     pub fn working_files(&self) -> Result<ProtocolFiles> {
@@ -687,6 +699,31 @@ mod tests {
         assert_ne!(v3.tag, v1.tag);
         assert_eq!(repo.tags().unwrap(), vec!["protocol/v1", "protocol/v2", "protocol/v3"]);
         assert_eq!(repo.files_at(&v2.tag).unwrap().hash(), v2.hash);
+    }
+
+    /// `file_at` is the whole-tree read narrowed to one path; it has to agree
+    /// with it, or the version page would quietly show a different CHANGELOG
+    /// than the one in the tag.
+    #[test]
+    fn one_file_out_of_a_revision_matches_the_whole_tree_read() {
+        if !git_available() {
+            return;
+        }
+        let home = Home::new("file-at");
+        let repo = ensure(&home.0).unwrap();
+        let v1 = repo.release("v1").unwrap();
+
+        let whole = repo.files_at(&v1.tag).unwrap();
+        for path in ["CHANGELOG.md", LOOP_PROTOCOL] {
+            assert_eq!(
+                repo.file_at(&v1.tag, path).unwrap(),
+                *whole.get(path).expect("seed ships this file"),
+                "{path}"
+            );
+        }
+        // A path the revision does not have is an error, not an empty string:
+        // silently returning "" would parse as a changelog with no entries.
+        assert!(repo.file_at(&v1.tag, "nope.md").is_err());
     }
 
     #[test]
