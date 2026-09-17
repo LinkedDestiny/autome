@@ -221,6 +221,8 @@ pub struct PromptSpec<'a> {
     /// The task's measured numbers, for the retro round. `None` everywhere
     /// else, and for a task whose metrics were never recorded.
     pub task_metrics: Option<&'a autome_domain::metrics::TaskMetrics>,
+    /// Where the core wrote this round's brief, worktree-relative.
+    pub brief_path: &'a str,
     /// Present for the two rounds of the implementation loop, which are the
     /// only ones that reason about `k` and `N`.
     pub budget: Option<BudgetLine>,
@@ -336,6 +338,7 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
     let rendered = template
         .replace("{slug}", spec.slug)
         .replace("{budget_line}", &budget_line)
+        .replace("{brief_path}", spec.brief_path)
         .replace("{task_metrics}", &render_task_metrics(spec.task_metrics))
         .replace(
             "{metric_vocabulary}",
@@ -913,6 +916,7 @@ mod tests {
         PromptSpec {
             kind,
             templates,
+            brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
             design_rounds: 15,
             task_metrics: None,
@@ -988,7 +992,10 @@ mod tests {
             let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             // Every round reads the task file.
             assert!(p.contains("checkout-flow-task.md"), "{role}: {p}");
-            // Every round of the loop itself reads the design document. The
+            // Every round is pointed at its brief, which is the index into
+            // everything else.
+            assert!(p.contains("brief/"), "{role}: {p}");
+            // Every round of the loop itself names the design document. The
             // retro round deliberately does not: it reads the evidence and the
             // numbers the core hands it, and adding the design document back
             // would put the largest file in the task directory in front of the
@@ -1355,15 +1362,21 @@ mod tests {
     }
 
     #[test]
-    fn the_intake_prompt_demands_the_loop_protocol_be_embedded_not_referenced() {
-        // A task file that only *points* at the protocol stops being
-        // self-contained the moment the scaffold is refreshed — and the
-        // archived task directory would no longer explain its own history.
+    fn the_intake_prompt_points_at_the_tasks_own_copy_rather_than_embedding_the_protocol() {
+        // It used to demand the whole protocol be pasted into the task file,
+        // for a real reason: a task file that only *pointed* at the scaffold
+        // stopped being self-contained the moment the scaffold was refreshed,
+        // and an archived task directory could no longer explain its own
+        // history.
+        //
+        // The copy under `docs/<slug>/protocol/` answers that better than the
+        // paste did. It is frozen at creation, it travels with the branch, it
+        // survives archival — and there is exactly one of it, so the task file
+        // and the protocol can no longer disagree.
         let p = build_prompt(&spec(SessionKind::Intake, &[], None, &templates())).unwrap();
-        assert!(p.contains("loop-protocol.md"), "{p}");
-        assert!(p.contains("逐字复制"), "{p}");
-        assert!(p.contains("不要只写路径"), "{p}");
-        assert!(p.contains("自包含"), "{p}");
+        assert!(p.contains("docs/checkout-flow/protocol/loop-protocol.md"), "{p}");
+        assert!(p.contains("不要把协议抄进任务文件"), "{p}");
+        assert!(!p.contains("逐字复制"), "{p}");
     }
 
     #[test]

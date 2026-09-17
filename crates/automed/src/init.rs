@@ -53,6 +53,8 @@ pub enum Action {
     /// A section appended to a file that already existed (`.gitignore`,
     /// `AGENTS.md`).
     Appended,
+    /// An Autome-owned file this scaffold version no longer produces.
+    Removed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +112,7 @@ impl InitReport {
 /// the rules in force. A *task's* authoritative copy is the one frozen into
 /// its own `docs/<slug>/protocol/` at creation time.
 pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
+    let _ = protocol;
     let mut report = InitReport::default();
 
     for dir in [
@@ -131,26 +134,13 @@ pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
         &mut report,
     )?;
     set_executable(&repo.join(".autome/skill/run_session.sh"))?;
-    write_mirrored(
-        repo,
-        ".autome/skill/session-protocol.md",
-        protocol
-            .session_protocol()
-            .ok_or_else(|| InitError {
-                path: ".autome/skill/session-protocol.md".into(),
-                detail: "协议版本里没有 session-protocol.md".into(),
-            })?,
-        &mut report,
-    )?;
-    write_mirrored(
-        repo,
-        ".autome/skill/loop-protocol.md",
-        protocol.loop_protocol().ok_or_else(|| InitError {
-            path: ".autome/skill/loop-protocol.md".into(),
-            detail: "协议版本里没有 loop-protocol.md".into(),
-        })?,
-        &mut report,
-    )?;
+    // The protocol is deliberately *not* mirrored here. A task reads the copy
+    // frozen into its own `docs/<slug>/protocol/` at creation time, which is
+    // what makes its rules unchangeable mid-run. A third copy in the project
+    // scaffold would be a second answer to "what are the rules", and the two
+    // would drift the first time someone edited `~/.autome/protocol/`.
+    remove_stale(repo, ".autome/skill/session-protocol.md", &mut report);
+    remove_stale(repo, ".autome/skill/loop-protocol.md", &mut report);
 
     // Owned by the user: created once, then never touched again.
     write_if_absent(
@@ -223,6 +213,31 @@ fn write_owned(repo: &Path, rel: &str, contents: &str, report: &mut InitReport) 
         action: Action::Created,
     });
     Ok(())
+}
+
+/// Deletes a file an earlier scaffold version wrote and this one does not.
+///
+/// Only when it still carries Autome's version marker: a file the user has
+/// taken over — marker stripped — is theirs, including the decision to keep it
+/// after Autome stopped producing it.
+fn remove_stale(repo: &Path, rel: &str, report: &mut InitReport) {
+    let path = repo.join(rel);
+    let Ok(existing) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if embedded_version(&existing).is_none() {
+        report.steps.push(InitStep {
+            path: rel.to_string(),
+            action: Action::Kept,
+        });
+        return;
+    }
+    if std::fs::remove_file(&path).is_ok() {
+        report.steps.push(InitStep {
+            path: rel.to_string(),
+            action: Action::Removed,
+        });
+    }
 }
 
 /// Writes a mirror of a file Autome does not own the content of.
@@ -647,8 +662,6 @@ mod tests {
         let report = init(dir.path()).unwrap();
         for rel in [
             ".autome/skill/run_session.sh",
-            ".autome/skill/session-protocol.md",
-            ".autome/skill/loop-protocol.md",
             ".autome/rules/README.md",
             ".gitignore",
             "AGENTS.md",

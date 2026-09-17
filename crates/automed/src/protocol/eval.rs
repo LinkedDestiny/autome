@@ -212,14 +212,39 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
         }
     }
 
+    // The brief map points at protocol headings by name. A heading that was
+    // renamed leaves the brief missing a section *silently*, and a round that
+    // was never shown a rule cannot follow it — which then looks like the
+    // model ignoring the protocol.
+    match files.get("brief-map.toml").map(crate::brief::parse_map) {
+        None => r
+            .problems
+            .push(Problem::fail(L1, "本版本没有 brief-map.toml")),
+        Some(Err(e)) => r.problems.push(Problem::fail(L1, e)),
+        Some(Ok(map)) => {
+            let dangling = map.dangling(
+                files.loop_protocol().unwrap_or_default(),
+                files.session_protocol().unwrap_or_default(),
+            );
+            if dangling.is_empty() {
+                r.passed.push("brief-map 指向的协议小节都还在".into());
+            }
+            for d in dangling {
+                r.problems
+                    .push(Problem::fail(L1, format!("brief-map.toml {d}")));
+            }
+        }
+    }
+
     layer_one_changelog(files, r);
 }
 
 /// Placeholders a template may use.
-const KNOWN_PLACEHOLDERS: [&str; 7] = [
+const KNOWN_PLACEHOLDERS: [&str; 8] = [
     "slug",
     "request",
     "inputs",
+    "brief_path",
     "budget_line",
     "design_rounds",
     "task_metrics",
@@ -802,6 +827,19 @@ mod tests {
 
         let (_, code) = run(&std::env::temp_dir().join("autome-eval-nowhere"));
         assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn a_brief_map_pointing_at_a_renamed_heading_is_refused() {
+        let mut files = seed();
+        let text = files
+            .loop_protocol()
+            .unwrap()
+            .replace("## 实现循环", "## 实现与审计循环");
+        files.insert(autome_domain::protocol::LOOP_PROTOCOL, text);
+        let r = check(&files);
+        assert!(r.failed(), "{}", r.render());
+        assert!(details(&r).contains("实现循环"), "{}", details(&r));
     }
 
     #[test]

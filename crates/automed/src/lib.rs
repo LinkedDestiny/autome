@@ -13,6 +13,8 @@
 //!   that table.
 //! - [`store`] — SQLite: project registry, task index, session ledger, the
 //!   user's decisions, and the event stream the UI resyncs against.
+//! - [`brief`] — the four paragraphs a round is handed before it opens the
+//!   design document.
 //! - [`config_io`] — the two TOML files, with sparse project overrides
 //!   preserved across a write.
 //! - [`git`] — the operations table from design §6, and nothing else.
@@ -32,6 +34,7 @@
 //! - [`version_page`] — what each protocol version cost, and whether its
 //!   changes did what they said they would.
 
+pub mod brief;
 pub mod config_io;
 pub mod dispatch;
 pub mod dispatch_protocol;

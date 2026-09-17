@@ -21,6 +21,7 @@ use automed::launcher::{PromptSpec, build_prompt};
 /// A sentinel no prompt contains, so the substitution can be reversed.
 const SLUG: &str = "\u{1}";
 const REQUEST: &str = "\u{2}";
+const BRIEF: &str = "\u{3}";
 
 fn golden(name: &str) -> String {
     let path = format!("{}/tests/golden/prompts/{name}.md", env!("CARGO_MANIFEST_DIR"));
@@ -44,6 +45,7 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
     PromptSpec {
         kind,
         templates,
+        brief_path: BRIEF,
         slug: SLUG,
         design_rounds: 15,
         task_metrics: None,
@@ -63,6 +65,7 @@ fn rendered(kind: SessionKind) -> String {
         .unwrap()
         .replace(SLUG, "{slug}")
         .replace(REQUEST, "{request}")
+        .replace(BRIEF, "{brief_path}")
 }
 
 fn diff_report(name: &str, got: &str, want: &str) -> String {
@@ -125,7 +128,10 @@ fn the_budget_placeholder_sits_where_the_core_used_to_write_the_budget_line() {
             round: 7,
             limit: 35,
         });
-        let got = build_prompt(&s).unwrap().replace(SLUG, "{slug}");
+        let got = build_prompt(&s)
+            .unwrap()
+            .replace(SLUG, "{slug}")
+            .replace(BRIEF, "{brief_path}");
 
         assert!(got.starts_with(head), "{} 的开头变了", role.as_str());
         assert!(got.ends_with(tail), "{} 的结尾变了", role.as_str());

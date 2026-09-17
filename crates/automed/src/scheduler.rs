@@ -969,9 +969,26 @@ fn start_session(
         Some(Role::Retro) => ctx.store.task_metrics(&task.id)?,
         _ => None,
     };
+    // Written before the prompt that points at it. A round told to read a
+    // brief that is not there would go and read the design document instead,
+    // which is the thing the brief exists to make optional.
+    let brief_path = match kind.role() {
+        Some(role) => write_brief(
+            ctx,
+            &task,
+            &worktree,
+            &protocol,
+            role,
+            round,
+            budget.as_ref(),
+            &decisions,
+        )?,
+        None => String::new(),
+    };
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         templates: &protocol,
+        brief_path: &brief_path,
         slug: &task.slug,
         design_rounds: resolved.loop_defaults.design_rounds,
         task_metrics: task_metrics.as_ref(),
@@ -1107,6 +1124,87 @@ fn freeze_protocol(
         .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
     let _ = repo;
     Ok((protocol_ref, files))
+}
+
+/// Assembles this round's brief and commits it.
+///
+/// Best-effort in one direction only: if the brief cannot be written the
+/// session still starts, because a missing index is worse than no session but
+/// much better than a stalled task. The prompt points at it either way, and a
+/// round that finds nothing there falls back to the design document — which is
+/// exactly what every round did before this existed.
+#[allow(clippy::too_many_arguments)]
+fn write_brief(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    worktree: &Path,
+    protocol: &ProtocolFiles,
+    role: Role,
+    round: u32,
+    budget: Option<&launcher::BudgetLine>,
+    decisions: &[crate::store::DecisionRecord],
+) -> Result<String> {
+    let rel = crate::brief::path(&task.doc_dir(), role, round);
+    let map = match protocol.get("brief-map.toml").map(crate::brief::parse_map) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            // A malformed map costs the brief its protocol sections and
+            // nothing else, but it is a defect in the protocol version and
+            // must not pass unremarked.
+            ctx.store.append_event(
+                "guard.warning",
+                &task.id,
+                json!({ "code": "brief_map_unreadable", "detail": e }),
+            )?;
+            crate::brief::BriefMap::default()
+        }
+        None => crate::brief::BriefMap::default(),
+    };
+
+    let read = |rel: String| std::fs::read_to_string(worktree.join(rel)).ok();
+    let audit_doc = read(format!("{}/{}-audit.md", task.doc_dir(), task.slug));
+    let status = read(task.design_doc()).and_then(|t| status_block::parse(&t).ok());
+    let evidence = evidence_filenames(worktree, &task.doc_dir());
+
+    let text = crate::brief::build(&crate::brief::Inputs {
+        role,
+        slug: &task.slug,
+        round,
+        status: status.as_ref(),
+        audit_doc: audit_doc.as_deref(),
+        evidence: &evidence,
+        loop_protocol: protocol.loop_protocol().unwrap_or_default(),
+        session_protocol: protocol.session_protocol().unwrap_or_default(),
+        map: &map,
+        budget_line: budget.map(|b| {
+            format!(
+                "本轮是第 {} 轮，实现预算 N = {}。分母由 Autome 计算。\n",
+                b.round, b.limit
+            )
+        }),
+        decisions: (!decisions.is_empty()).then(|| {
+            let mut s = String::from("\n用户已对以下待决条目作出决定：\n\n");
+            for d in decisions {
+                s.push_str(&format!("- {} {}\n", d.item_id, d.text));
+            }
+            s
+        }),
+    });
+
+    let full = worktree.join(&rel);
+    if let Some(parent) = full.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::write(&full, text).is_err() {
+        tracing::warn!(task = %task.id, path = %rel, "could not write the brief");
+        return Ok(rel);
+    }
+    let _ = git::commit_paths(
+        worktree,
+        &[&rel],
+        &format!("chore(autome): {} {} 简报", task.id, role.as_str()),
+    );
+    Ok(rel)
 }
 
 /// Reads a task's frozen copy back. Only the files the copy contains — eval
@@ -1478,6 +1576,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
         templates: &protocol,
+        brief_path: "",
         slug: "onboarding",
         design_rounds: 0,
         task_metrics: None,

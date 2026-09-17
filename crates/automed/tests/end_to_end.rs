@@ -1504,3 +1504,79 @@ fn a_running_task_refuses_a_retro_by_hand() {
         out.reply.outcome
     );
 }
+
+// ---------------------------------------------------------------------------
+// Scenario: the per-round brief and the single protocol copy (plan §B)
+// ---------------------------------------------------------------------------
+
+/// Every session used to open by reading the whole design document, which
+/// reached 230–335KB across three real runs and sat in the context for every
+/// turn after. The brief is the index the core can assemble instead.
+#[test]
+fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
+    needs_git!();
+    let mut w = World::new("brief");
+    let request = "brief me";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+
+    // The task holds exactly one copy of the protocol, frozen at creation.
+    let frozen = wt.join(format!("docs/{slug}/protocol/loop-protocol.md"));
+    assert!(frozen.exists(), "{}", frozen.display());
+    let task_file = std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}-task.md")))
+        .unwrap_or_default();
+    // The fake CLI writes no task file; what matters is that the scaffold no
+    // longer carries a second copy to disagree with the first.
+    let _ = task_file;
+    assert!(
+        !w.repo.join(".autome/skill/loop-protocol.md").exists(),
+        "the project scaffold still mirrors the protocol"
+    );
+
+    // And the task recorded which version it is being held to.
+    let task = w.ctx.store.get_task(&task_id).unwrap();
+    let protocol_ref = task.protocol_ref.expect("no protocol_ref");
+    assert!(protocol_ref.starts_with("protocol/v1@"), "{protocol_ref}");
+
+    // Each role that ran got a brief of its own, naming the milestone it is
+    // about and carrying the protocol sections its role is mapped to.
+    let briefs = std::fs::read_dir(wt.join(format!("docs/{slug}/brief")))
+        .expect("no brief directory")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    for role in ["plan", "review", "adjudicate", "impl", "audit", "retro"] {
+        assert!(
+            briefs.iter().any(|b| b.starts_with(role)),
+            "{role} got no brief: {briefs:?}"
+        );
+    }
+
+    let impl_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-1.md")))
+        .unwrap();
+    assert!(impl_brief.contains("| M-01 |"), "{impl_brief}");
+    assert!(impl_brief.contains("## 实现循环"), "{impl_brief}");
+    assert!(impl_brief.contains("不是设计文档的替代品"), "{impl_brief}");
+
+    // The audit round is given the evidence *path* and told not to start
+    // there: reading the implementation round's reasoning is what an
+    // independent re-verification must not do.
+    let audit_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/audit-1.md")))
+        .unwrap();
+    assert!(audit_brief.contains("M-01-r1-impl.md"), "{audit_brief}");
+    assert!(audit_brief.contains("先不要读它"), "{audit_brief}");
+}

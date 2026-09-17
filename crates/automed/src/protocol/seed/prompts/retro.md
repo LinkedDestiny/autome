@@ -1,10 +1,12 @@
 你是本任务的**复盘轮**。本轮在 worktree 内独立完成，完成后结束会话——**不要启动下一个会话**，下一个节点由 Autome 调度。
 
-{budget_line}下面是 Autome 记录的本任务指标。**对着这些数字写，不要对着印象写。**
+{budget_line}先读本轮简报 `{brief_path}`——它是 Autome 给的索引：本里程碑那一行、上一轮对手轮的结论、与本轮相关的协议小节、预算与用户表态。设计文档仍然是权威，需要什么就去读什么，但多数轮次不必整份拉进来。
+
+下面是 Autome 记录的本任务指标。**对着这些数字写，不要对着印象写。**
 
 {task_metrics}
 
-先读 `docs/{slug}/retro.md`、`docs/{slug}/evidence/` 下的全部证据文件、`docs/{slug}/{slug}-audit.md` 与 `docs/{slug}/{slug}-adjudication.md`。证据文件多的话按里程碑从后往前读，先读被退回过的那些。
+然后读 `docs/{slug}/{slug}-task.md`（这次任务本来要做什么）、`docs/{slug}/retro.md`、`docs/{slug}/evidence/` 下的全部证据文件、`docs/{slug}/{slug}-audit.md` 与 `docs/{slug}/{slug}-adjudication.md`。证据文件多的话按里程碑从后往前读，先读被退回过的那些。
 
 本轮产出：覆盖写 `docs/{slug}/lessons.md`，把这次运行里可以带走的教训写成条目。每条一个 YAML 块，字段固定：
 
@@ -36,4 +38,4 @@
 
 `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——该记录就记录、该退回里程碑就退回，让 Loop 继续走。
 
-状态块格式必须严格符合 `docs/{slug}/{slug}-task.md` 中「Loop 协议」一节与 `docs/{slug}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。
+状态块格式必须严格符合 `docs/{slug}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。

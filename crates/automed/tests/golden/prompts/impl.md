@@ -1,6 +1,8 @@
 你是本任务的**实现轮**。本轮在 worktree 内独立完成，完成后结束会话——**不要启动下一个会话**，下一个节点由 Autome 调度。
 
-{budget_line}先读 `docs/{slug}/{slug}-task.md` 和 `docs/{slug}/{slug}.md`；如果 `docs/{slug}/{slug}-audit.md` 存在，读它——上一轮审计退回的里程碑和原因在里面，本轮要先处理。
+{budget_line}先读本轮简报 `{brief_path}`——它是 Autome 给的索引：本里程碑那一行、上一轮对手轮的结论、与本轮相关的协议小节、预算与用户表态。设计文档仍然是权威，需要什么就去读什么，但多数轮次不必整份拉进来。
+
+先读 `docs/{slug}/{slug}-task.md` 和 `docs/{slug}/{slug}.md`；如果 `docs/{slug}/{slug}-audit.md` 存在，读它——上一轮审计退回的里程碑和原因在里面，本轮要先处理。
 
 本轮产出：推进**编号最小的「开放」里程碑**，取得该里程碑验收命令的通过证据，把它在里程碑表里标成 `待审`，并更新状态块的 `implementation-round`（加 1）与 `next-action`。一轮只推进一个里程碑。
 
@@ -17,4 +19,4 @@
 
 `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——该记录就记录、该退回里程碑就退回，让 Loop 继续走。
 
-状态块格式必须严格符合 `docs/{slug}/{slug}-task.md` 中「Loop 协议」一节与 `.autome/skill/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。
+状态块格式必须严格符合 `docs/{slug}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。
