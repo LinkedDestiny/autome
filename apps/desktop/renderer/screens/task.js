@@ -69,10 +69,12 @@ export function render(host, data, ctx) {
   screen.appendChild(
     h('div.cardgrid.cardgrid--3.mt-12', [
       reveal(stopCard(data, ctx, node), 5),
-      reveal(documentsCard(data), 6),
-      reveal(sessionsCard(data), 7),
+      reveal(usageCard(data), 6),
+      reveal(documentsCard(data), 7),
     ])
   );
+
+  screen.appendChild(h('div.cardgrid.cardgrid--3.mt-12', [reveal(sessionsCard(data), 8)]));
 
   host.appendChild(screen);
 }
@@ -374,6 +376,59 @@ function milestonesCard(status, data) {
   return card;
 }
 
+/// What the task has cost so far, and which version of the rules it is being
+/// held to.
+///
+/// Every number here is absent rather than zero when nothing measured it. A
+/// task run entirely on Codex has an unknown cost — Codex reports no price —
+/// and a dash says that where `$0.00` would be a claim.
+function usageCard(data) {
+  const task = (data && data.task) || {};
+  const soFar = (data && data.so_far) || {};
+  const metrics = task.metrics;
+  const card = h('div.card.card--pad.col', [
+    cardHead('用量', tag(metrics ? '已终结' : '进行中', metrics ? 'outlined' : 'soft-blue')),
+  ]);
+
+  const rows = [
+    ['协议版本', labels.protocolRef(task.protocol_ref)],
+    ['费用', labels.cost(metrics ? metrics.total_cost_usd : soFar.total_cost_usd)],
+    ['tokens', labels.tokens(metrics ? metrics.total_tokens : soFar.total_tokens)],
+    ['turns', labels.count(metrics ? metrics.total_turns : soFar.total_turns)],
+  ];
+  if (metrics) {
+    rows.push(['设计轮', labels.ratio(metrics.design_rounds_used, metrics.design_rounds_limit)]);
+    rows.push(['实现轮', labels.ratio(metrics.impl_rounds_used, metrics.budget_n)]);
+    rows.push(['reopen', labels.count(metrics.reopen_total)]);
+    rows.push(['实现缺陷 / 验证缺口',
+      `${labels.count(metrics.impl_defects)} / ${labels.count(metrics.verification_gaps)}`]);
+    if (metrics.closed_then_contradicted) {
+      rows.push(['关闭后被推翻', labels.count(metrics.closed_then_contradicted)]);
+    }
+  } else {
+    const status = data.status_block;
+    if (status) {
+      rows.push(['设计轮', labels.ratio(status.design_round, status.design_round_limit)]);
+      rows.push(['实现轮', labels.ratio(status.impl_round, status.impl_round_limit)]);
+    }
+  }
+  card.appendChild(repoList(rows));
+
+  if (!metrics && !soFar.sessions_measured) {
+    card.appendChild(
+      h('div.quiet.mt-8', {
+        text: '还没有会话留下用量。CLI 的原始事件流读不出来时这里是空的——空着比填 0 诚实。',
+      })
+    );
+  }
+  if (metrics && typeof metrics.total_cost_usd !== 'number') {
+    card.appendChild(
+      h('div.quiet.mt-8', { text: '费用未知：Codex 不报价，Autome 不自己编一张价格表。' })
+    );
+  }
+  return card;
+}
+
 /** T-01's one-line request, verbatim and read-only for the task's whole life. */
 function requestCard(task) {
   const card = h('div.card.card--pad.col', [cardHead('原始需求', tag('只读', 'outlined'))]);
@@ -574,15 +629,37 @@ function stopCard(data, ctx, node) {
     failedFace(card, data, ctx);
   } else if (node === 'await_design_approval') {
     card.appendChild(cardHead('批准设计', tag('等待你', 'solid-yellow')));
+    humanApprovalNotice(card, data);
     approveFace(card, data, ctx);
   } else if (node === 'await_merge') {
     card.appendChild(cardHead(`合并到 ${(data.project || {}).default_branch || 'main'}`, tag('等待你', 'solid-green')));
+    humanApprovalNotice(card, data);
     mergeFace(card, data, ctx);
   } else {
     card.appendChild(cardHead('停顿面板', tag('当前无需操作', 'outlined')));
     idleFace(card, state);
   }
   return card;
+}
+
+/// Changes the review and audit rounds were not competent to judge.
+///
+/// Only ever non-empty for a meta task — one that edits the protocol itself —
+/// and then only for edits to those two rounds' own prompts. There is no
+/// clever fix for the self-reference: an evaluator judging the rules it is
+/// evaluated under is a fixed point, not a check. So it lands here, at both
+/// gates, where a person is already looking.
+function humanApprovalNotice(card, data) {
+  const files = (data && data.needs_human_approval) || [];
+  if (!files.length) return;
+  card.appendChild(
+    h('div.alertbar', [text(`需人工特批：${files.join('、')}`)])
+  );
+  card.appendChild(
+    h('div.quiet', {
+      text: '这次改动动了评审轮或审计轮自己的 prompt。它们判不了这个——一个评测者去审自己被评测所依据的规则，那是不动点不是检查。这一条只能你看。',
+    })
+  );
 }
 
 function idleFace(card, state) {
@@ -758,6 +835,21 @@ function failedFace(card, data, ctx) {
             onDone: () => ctx.refresh(),
           }),
       }, [text('追加 5 轮继续')])
+    )
+  );
+  row.appendChild(
+    registerWrite(
+      h('button.btn.btn--sm', {
+        type: 'button',
+        title: '跑一轮复盘，把这次失败教给后面的任务。任务停在原地不动。',
+        onClick: () =>
+          attempt({
+            label: '复盘这次失败',
+            success: '复盘轮已启动，任务状态不变。',
+            run: (write) => write.retroTask(task.id),
+            onDone: () => ctx.refresh(),
+          }),
+      }, [text('复盘一次')])
     )
   );
   row.appendChild(

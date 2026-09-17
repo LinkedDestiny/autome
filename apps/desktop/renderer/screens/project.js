@@ -27,7 +27,11 @@ export async function load(ctx) {
   // concerns apart; a failure here must not blank the whole project page, so
   // it degrades to "not listed" rather than to an error screen.
   const skills = await readOr({ skills: [] }, 'listSkills', projectId);
-  return { ...project, skills: skills.skills || [] };
+  // The version table needs the protocol repository; a project page that
+  // refused to render because it is missing would be a page you cannot use to
+  // fix anything.
+  const versions = await readOr({ rows: [] }, 'protocolVersions', projectId);
+  return { ...project, skills: skills.skills || [], versions };
 }
 
 export function render(host, data, ctx) {
@@ -86,6 +90,13 @@ export function render(host, data, ctx) {
   ]);
   screen.appendChild(cards);
 
+  // Rendered empty and filled in when the proposals come back: computing them
+  // is a write (it records what was offered, so the same question is not asked
+  // twice), and a write does not belong in `load`.
+  const curation = h('div.mt-12');
+  screen.appendChild(curation);
+  fillCuration(curation, project.id, ctx);
+
   // ---- 未完成 ----------------------------------------------------------
   screen.appendChild(
     sectionHead(
@@ -97,6 +108,24 @@ export function render(host, data, ctx) {
   active.forEach((task, index) => activeGrid.appendChild(reveal(taskCard(task, ctx), index + 4)));
   activeGrid.appendChild(reveal(newTaskTile(data, ctx), active.length + 4));
   screen.appendChild(activeGrid);
+
+  // ---- 指标 ------------------------------------------------------------
+  const finished = tasks.filter((task) => task.metrics);
+  if (finished.length) {
+    screen.appendChild(
+      sectionHead(
+        '已终结任务的指标',
+        `${finished.length} 个 · 每一行记着它运行时固定的那一版协议`,
+        [
+          h('button.btn.btn--sm.btn--text', {
+            type: 'button',
+            onClick: () => ctx.navigate('protocol', { projectId: project.id }),
+          }, [text('按版本看')]),
+        ]
+      )
+    );
+    screen.appendChild(metricsTable(finished));
+  }
 
   // ---- 已完成 ----------------------------------------------------------
   const doneRight = [
@@ -123,6 +152,154 @@ export function render(host, data, ctx) {
   }
 
   host.appendChild(screen);
+}
+
+/// What the task cost, on the card, when anything measured it.
+///
+/// Absent rather than zero: a task whose sessions left no usage — a crashed
+/// CLI, a stream that would not parse — shows nothing here, because "0 tokens"
+/// would be a claim about a task that did work.
+function usageLine(card, task) {
+  const m = task.metrics;
+  if (!m) return;
+  const parts = [];
+  if (typeof m.total_cost_usd === 'number') parts.push(labels.cost(m.total_cost_usd));
+  if (m.total_tokens) parts.push(`${labels.tokens(m.total_tokens)} tokens`);
+  if (m.total_turns) parts.push(`${m.total_turns} turns`);
+  if (m.budget_n) parts.push(`实现 ${labels.ratio(m.impl_rounds_used, m.budget_n)}`);
+  if (!parts.length) return;
+  card.appendChild(h('div.quiet', { text: parts.join(' · ') }));
+}
+
+/// One row per finished task. Deliberately not averaged: this is the project's
+/// own history, and the per-version comparison lives on the protocol page
+/// where the sample-size rule is applied.
+function metricsTable(tasks) {
+  const columns = [
+    ['任务', (t) => t.title || t.slug],
+    ['协议', (t) => labels.protocolRef(t.protocol_ref)],
+    ['设计轮', (t) => labels.ratio(t.metrics.design_rounds_used, t.metrics.design_rounds_limit)],
+    ['实现轮', (t) => labels.ratio(t.metrics.impl_rounds_used, t.metrics.budget_n)],
+    ['里程碑', (t) => labels.count(t.metrics.milestones)],
+    ['reopen', (t) => labels.count(t.metrics.reopen_total)],
+    ['实现缺陷', (t) => labels.count(t.metrics.impl_defects)],
+    ['验证缺口', (t) => labels.count(t.metrics.verification_gaps)],
+    ['关闭后被推翻', (t) => labels.count(t.metrics.closed_then_contradicted)],
+    ['人工未确认', (t) => labels.count(t.metrics.manual_items_open)],
+    ['tokens', (t) => labels.tokens(t.metrics.total_tokens)],
+    ['turns', (t) => labels.count(t.metrics.total_turns)],
+    ['费用', (t) => labels.cost(t.metrics.total_cost_usd)],
+  ];
+  const table = h('table.metrics');
+  table.appendChild(h('thead', [h('tr', columns.map(([name]) => h('th', { text: name })))]));
+  const body = h('tbody');
+  for (const task of tasks) {
+    body.appendChild(h('tr', columns.map(([, value]) => h('td', { text: value(task) }))));
+  }
+  table.appendChild(body);
+  return table;
+}
+
+/// The 建议入规 card and any running removal experiments.
+async function fillCuration(host, projectId, ctx) {
+  const result = await attempt({
+    label: '读入规建议',
+    success: false,
+    run: (write) => write.ruleProposals(projectId),
+  });
+  if (!result.ok) return;
+  const data = result.result || {};
+  const proposals = data.proposals || [];
+  const experiments = (data.experiments || []).filter((e) => e.state === 'running');
+  if (!proposals.length && !experiments.length) return;
+
+  host.appendChild(
+    sectionHead(
+      '教训与规则',
+      '同一条教训在两个不同任务里各出现过一次，才会走到这里。一个任务只是一次倒霉。'
+    )
+  );
+  const grid = h('div.cardgrid.cardgrid--2');
+  for (const p of proposals) grid.appendChild(proposalCard(p, projectId, ctx));
+  for (const e of experiments) grid.appendChild(experimentCard(e, projectId, ctx));
+  host.appendChild(grid);
+}
+
+function proposalCard(p, projectId, ctx) {
+  const card = h('div.card.card--pattern.card--pattern-purple.card--pad.col', [
+    cardHead('建议入规', tag(`${(p.tasks || []).length} 个任务`, 'solid-purple')),
+  ]);
+  card.appendChild(h('div.rawreq.rawreq--sm', { text: p.proposal }));
+  card.appendChild(h('div.quiet', { text: `写进 ${p.file}${p.file_exists ? '' : '（新建）'}` }));
+  // The exact text, not a description of it: what you approve is what gets
+  // written, provenance comment included.
+  card.appendChild(h('pre.diff', { text: p.diff }));
+  card.appendChild(h('div.quiet', { text: `依据：${(p.evidence || []).join('、')}` }));
+
+  const row = h('div.row.gap-6.mt-8');
+  row.appendChild(
+    registerWrite(
+      h('button.btn.btn--sm.btn--primary', {
+        type: 'button',
+        onClick: () =>
+          attempt({
+            label: '已入规',
+            success: `写进了 ${p.file}`,
+            run: (write) => write.decideRule(projectId, p.key, true),
+            onDone: () => ctx.refresh(),
+          }),
+      }, [icon('check'), text('写进项目规则')])
+    )
+  );
+  row.appendChild(
+    registerWrite(
+      h('button.btn.btn--sm', {
+        type: 'button',
+        title: '不再提示这一条',
+        onClick: () =>
+          attempt({
+            label: '已忽略',
+            success: false,
+            run: (write) => write.decideRule(projectId, p.key, false),
+            onDone: () => ctx.refresh(),
+          }),
+      }, [text('不要')])
+    )
+  );
+  card.appendChild(row);
+  return card;
+}
+
+function experimentCard(e, projectId, ctx) {
+  const card = h('div.card.card--pad.col', [cardHead('移除实验', tag(e.verdict, 'outlined'))]);
+  card.appendChild(h('div.rawreq.rawreq--sm', { text: e.body }));
+  card.appendChild(
+    h('div.quiet', {
+      text: `从 ${e.file} 里拿掉了，看 ${labels.metricLabel(e.metric)} 会不会变差。基线 ${labels.metricValue(e.metric, e.baseline)}，已经跑了 ${e.samples} / ${e.horizon} 个任务。`,
+    })
+  );
+  card.appendChild(
+    h('div.quiet', {
+      text: '一条规则不会因为「最近没再出问题」就该删——它没再出问题，很可能正是因为它在。所以这是个实验，不是打扫。',
+    })
+  );
+  card.appendChild(
+    h('div.row.gap-6.mt-8', [
+      registerWrite(
+        h('button.btn.btn--sm', {
+          type: 'button',
+          onClick: () =>
+            attempt({
+              label: '规则已放回',
+              success: `${e.body} 回到了 ${e.file}`,
+              run: (write) => write.restoreRule(projectId, e.id),
+              onDone: () => ctx.refresh(),
+            }),
+        }, [text('放回来')])
+      ),
+    ])
+  );
+  return card;
 }
 
 function isFinished(task) {
@@ -266,6 +443,7 @@ function taskCard(task, ctx) {
     );
     card.appendChild(h('div.quiet', { text: `已存在 ${labels.duration(task.created_at) || '—'}` }));
   }
+  usageLine(card, task);
 
   if (node === 'await_merge') {
     card.appendChild(
@@ -296,6 +474,8 @@ function doneCard(task, ctx) {
   doneTag.classList.add('ml-auto');
   card.appendChild(h('div.row', [h('span.taskcard__id', { text: task.id }), doneTag]));
   card.appendChild(h('div.taskcard__t', { text: task.title || task.request || task.slug }));
+
+  usageLine(card, task);
 
   const meta = task.merge_commit
     ? `合并 ${task.merge_commit} · ${labels.day(task.completed_at)}`

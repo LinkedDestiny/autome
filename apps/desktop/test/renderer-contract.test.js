@@ -103,8 +103,19 @@ test('every write the renderer performs is a function the preload exposes', () =
 });
 
 test('the renderer covers the reads it needs: every screen reads something', () => {
+  // Counted from the router's own table rather than written down here: a
+  // hard-coded number turns "a screen was added" into a failure of this test
+  // instead of a failure of whatever the new screen got wrong.
+  const routed = fs.readFileSync(path.join(__dirname, '..', 'renderer/app.js'), 'utf8');
+  const expected = new Set(
+    Array.from(routed.matchAll(/from '\.\/screens\/(\w+)\.js'/g)).map((m) => m[1])
+  ).size;
   const screens = sourceFiles().filter((f) => f.includes(`${path.sep}screens${path.sep}`));
-  assert.equal(screens.length, 8, `expected 8 screen modules, found ${screens.length}`);
+  assert.equal(
+    screens.length,
+    expected,
+    `the router imports ${expected} screens but ${screens.length} exist`
+  );
   for (const file of screens) {
     const source = fs.readFileSync(file, 'utf8');
     assert.match(

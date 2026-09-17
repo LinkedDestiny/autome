@@ -35,6 +35,8 @@ const {
   TASK_FAILED_PANEL,
   TASK_APPROVE_PANEL,
   TASK_UNREADABLE_DOC_PANEL,
+  TASK_MEASURED_PANEL,
+  PROTOCOL_SCREEN,
   SCREEN_IDS,
 } = require('./fixtures');
 
@@ -529,6 +531,76 @@ async function run() {
     { ...sameModel, expectedRoleNodes: ROLE_COUNT }
   );
 
+  // ---- the usage card, and what the two gates have to disclose ----------
+  //
+  // Every number is absent rather than zero when nothing measured it. A task
+  // run entirely on Codex has an unknown cost — Codex reports no price — and a
+  // dash says that where `$0.00` would be a claim.
+  const usage = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-measured').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    const titles = Array.from(host.querySelectorAll('.card__title')).map((t) => t.textContent);
+    return {
+      titles,
+      text: host.textContent,
+      alerts: Array.from(host.querySelectorAll('.alertbar')).map((a) => a.textContent),
+    };
+  });
+  check(
+    'the usage card shows tokens and rounds, and says a cost it does not know is unknown',
+    usage.titles.includes('用量') &&
+      usage.text.includes('1.8M') &&
+      usage.text.includes('9/35') &&
+      usage.text.includes('protocol/v2') &&
+      usage.text.includes('Codex 不报价'),
+    usage
+  );
+  check(
+    'a change the review round could not judge is disclosed at the gate (plan §6.3)',
+    usage.alerts.some((a) => a.includes('需人工特批') && a.includes('prompts/review.md')),
+    usage
+  );
+
+  // ---- the version page states its own limits ---------------------------
+  const version = await evaluate(async () => {
+    const module = await import('autome://app/screens/protocol.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-protocol').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    return {
+      text: host.textContent,
+      rows: host.querySelectorAll('.metrics tbody tr').length,
+      tags: Array.from(host.querySelectorAll('.tag')).map((t) => t.textContent),
+    };
+  });
+  check(
+    'the version page says 样本不足 rather than drawing a line between two points',
+    version.rows === 2 && version.text.includes('样本不足'),
+    version
+  );
+  check(
+    'a prediction the numbers went against is labelled as such, not quietly dropped',
+    version.tags.some((t) => t.includes('与预测相反')),
+    version
+  );
+  check(
+    'rolling back is offered as a forward commit, not as moving a tag',
+    version.text.includes('回到这一版的内容'),
+    version
+  );
+
   // ---- the router maps each nav item to its screen -----------------------
   const routerMap = await evaluate(async () => {
     const appModule = await import('autome://app/app.js');
@@ -745,6 +817,8 @@ function fixtureInjector() {
     'task-failed': TASK_FAILED_PANEL,
     'task-approve': TASK_APPROVE_PANEL,
     'task-unreadable': TASK_UNREADABLE_DOC_PANEL,
+    'task-measured': TASK_MEASURED_PANEL,
+    protocol: PROTOCOL_SCREEN,
   });
   return `(() => {
     const blobs = ${JSON.stringify(blobs)};

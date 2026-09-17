@@ -33,6 +33,7 @@ import * as projects from './screens/projects.js';
 import * as project from './screens/project.js';
 import * as task from './screens/task.js';
 import * as routing from './screens/routing.js';
+import * as protocol from './screens/protocol.js';
 import * as settings from './screens/settings.js';
 import * as env from './screens/env.js';
 import * as skills from './screens/skills.js';
@@ -52,6 +53,7 @@ export const SCREENS = {
   project,
   task,
   routing,
+  protocol,
   settings,
   env,
   skills,
