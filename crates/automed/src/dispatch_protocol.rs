@@ -58,6 +58,36 @@ pub fn get(ctx: &mut Ctx) -> DispatchResult {
     ))
 }
 
+/// `protocol.eval` — layers 1 and 2 over the protocol repository's working
+/// tree.
+///
+/// The working tree rather than the newest tag, because the question the user
+/// is asking when they press this is "would what I have here be accepted",
+/// and what they have here is usually uncommitted.
+pub fn eval(ctx: &mut Ctx) -> DispatchResult {
+    let Some(repo) = protocol::open(&ctx.autome_home) else {
+        return Ok((json!({ "initialised": false }), vec![]));
+    };
+    let files = repo.working_files()?;
+    let report = crate::protocol::eval::check(&files);
+    Ok((
+        json!({
+            "initialised": true,
+            "passed": report.passed,
+            "failures": report.fails().map(|p| json!({
+                "layer": p.layer,
+                "detail": p.detail,
+            })).collect::<Vec<_>>(),
+            "warnings": report.warnings().map(|p| json!({
+                "layer": p.layer,
+                "detail": p.detail,
+            })).collect::<Vec<_>>(),
+            "ok": !report.failed(),
+        }),
+        vec![],
+    ))
+}
+
 /// `protocol.versions` — the version page's table for one project.
 pub fn versions(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let tasks: Vec<TaskMetrics> = ctx

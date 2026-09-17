@@ -94,6 +94,7 @@ fn eval_seed() -> Vec<(&'static str, &'static str)> {
     crate::protocol::evals::SEED.to_vec()
 }
 
+pub mod eval;
 pub mod evals;
 pub mod phrases;
 
@@ -441,6 +442,16 @@ fn commit_all(repo: &Path, message: &str) -> Result<()> {
     }
     git::run_ok(repo, &["commit", "-m", message])?;
     Ok(())
+}
+
+/// Reads a directory of protocol files, for `autome protocol eval` run against
+/// a checkout that is not a repository this module manages — a meta task's
+/// worktree, or a task's frozen copy.
+pub fn read_dir_protocol(dir: &Path) -> Result<ProtocolFiles> {
+    if !dir.is_dir() {
+        return Err(err(format!("{} 不是一个目录", dir.display())));
+    }
+    read_dir_files(dir, dir)
 }
 
 /// Reads every file under `root`, skipping `.git`. Paths come back

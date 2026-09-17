@@ -48,6 +48,22 @@ fn main() {
         return;
     }
 
+    // `automed protocol eval [<dir>]` is the gate a protocol version has to
+    // pass. Also a filter rather than the daemon: a meta task's audit round
+    // runs it as an ordinary command and reads the exit code, and the desktop
+    // app calls the same function over IPC.
+    if std::env::args().nth(1).as_deref() == Some("protocol")
+        && std::env::args().nth(2).as_deref() == Some("eval")
+    {
+        // Defaults to the working directory, which is what a meta task's
+        // audit round has checked out — the version being proposed, not the
+        // one installed.
+        let dir = std::path::PathBuf::from(std::env::args().nth(3).unwrap_or_else(|| ".".into()));
+        let (report, code) = automed::protocol::eval::run(&dir);
+        print!("{report}");
+        std::process::exit(code);
+    }
+
     tracing_subscriber::fmt().with_writer(io::stderr).init();
 
     let db_path =

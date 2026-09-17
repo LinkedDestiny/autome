@@ -393,6 +393,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
 
         // ---- protocol ------------------------------------------------
         "protocol.get" => crate::dispatch_protocol::get(ctx),
+        "protocol.eval" => crate::dispatch_protocol::eval(ctx),
         "protocol.versions" => {
             crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
         }
@@ -1986,7 +1987,7 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 16] = [
+pub const READ_METHODS: [&str; 17] = [
     "project.list",
     "project.get",
     "project.onboarding.artefacts",
@@ -2003,6 +2004,7 @@ pub const READ_METHODS: [&str; 16] = [
     "env.detect",
     "protocol.get",
     "protocol.versions",
+    "protocol.eval",
 ];
 
 #[cfg(test)]
