@@ -222,6 +222,11 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
     if after != was {
         return None;
     }
+    // A `待审` milestone is what an audit round is *for*. With none in the
+    // table the round had nothing to reach a verdict on, and an unchanged
+    // table is the normal way out: `Node::Implement` always schedules an
+    // audit, so the round that follows the last milestone's closure sees a
+    // table that is already all `已完成` and hands straight to the merge gate.
     let stuck: Vec<&str> = round
         .status
         .milestones
@@ -229,10 +234,14 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
         .filter(|m| m.state == MilestoneState::Pending)
         .map(|m| m.id.as_str())
         .collect();
+    if stuck.is_empty() {
+        return None;
+    }
     Some(Finding::error(
         "audit_made_no_progress",
         format!(
-            "审计轮结束时里程碑表和本轮开始时一模一样{}。审计结论只有三种，每一种都会动这张表：\
+            "审计轮结束时里程碑表和本轮开始时一模一样（{} 仍是 `待审`）。\
+             审计结论只有三种，每一种都会动这张表：\
              通过就标 `已完成`，实现缺陷就退回 `开放`，验证缺口是审计当场补强检查再复验、\
              通过后照常关闭。表没动，说明本轮落在了协议里不存在的第四种结论上，\
              而下一个实现轮会发现没有 `开放` 的里程碑、无事可做——这一对会一直空转到预算耗尽。\
@@ -240,11 +249,7 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
              要么这个里程碑剩下的验收项本来就要真人（真实鼠标、麦克风、系统弹窗、肉眼看横幅），\
              那它就不该是里程碑的验收条件——把它们逐条移进设计文档的 `## 人工验收清单`，\
              由用户在合并前确认，然后关闭这个里程碑。",
-            if stuck.is_empty() {
-                String::new()
-            } else {
-                format!("（{} 仍是 `待审`）", stuck.join("、"))
-            }
+            stuck.join("、")
         ),
     ))
 }
@@ -508,6 +513,22 @@ mod tests {
         let s = status(31, &after);
         let before = snapshot(&stuck_at_m07(), 56, 60_000);
         let r = round(Role::Audit, &s, &before, &["M-07-r31-audit.md"]);
+        assert_eq!(check(&r), vec![]);
+    }
+
+    #[test]
+    fn the_audit_after_the_last_milestone_closes_is_not_blamed_for_a_still_table() {
+        // `Node::Implement` always schedules an audit, so one runs after the
+        // table is already all `已完成`. It has no `待审` milestone to reach a
+        // verdict on and leaves the table alone — which is the normal way out
+        // of the loop, straight to the merge gate, not a stalled round.
+        let done = [
+            ("M-01", MilestoneState::Done),
+            ("M-02", MilestoneState::Done),
+        ];
+        let s = status(9, &done);
+        let before = snapshot(&done, 12, 20_000);
+        let r = round(Role::Audit, &s, &before, &["M-02-r9-audit.md"]);
         assert_eq!(check(&r), vec![]);
     }
 
