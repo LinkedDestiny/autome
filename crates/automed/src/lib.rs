@@ -24,6 +24,10 @@
 //! - [`env_probe`] — the four local components.
 //! - [`launcher`] — prompt construction, the CLI adapter table, and starting
 //!   a session in a visible terminal.
+//! - [`meta`] — improving the protocol as an ordinary Loop task, and the
+//!   evidence the core assembles for it.
+//! - [`meta_store`] — the half of that which reaches for the store and the
+//!   repositories.
 //! - [`protocol`] — the `~/.autome/protocol/` repository: versions, tags, the
 //!   kernel contract, and a task's frozen copy.
 //! - [`scheduler`] — the one place a transition is applied and acted on.
@@ -44,6 +48,8 @@ pub mod guards;
 pub mod init;
 pub mod ipc;
 pub mod launcher;
+pub mod meta;
+pub mod meta_store;
 pub mod protocol;
 pub mod scheduler;
 pub mod skills;

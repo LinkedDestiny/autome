@@ -937,7 +937,7 @@ fn start_session(
         git::worktree_prune(&repo)?;
         let rel = format!(".worktree/{}", task.slug);
         git::worktree_add(&repo, &rel, &task.branch(), &project.default_branch)?;
-        write_task_inputs(&repo, &worktree, task)?;
+        write_task_inputs(ctx, task, project, &worktree)?;
     }
 
     // Which rules this task is held to, decided once and then frozen. A task
@@ -1207,6 +1207,26 @@ fn write_brief(
     Ok(rel)
 }
 
+/// Which changes on this branch the review and audit rounds were not
+/// competent to judge — a change to their own prompts.
+///
+/// Recorded at the design stopping point and again at the merge gate, because
+/// those are the two places a human is looking. There is no clever fix for the
+/// self-reference: an evaluator judging the rules it is evaluated under is a
+/// fixed point, not a check.
+pub fn needs_human_approval(ctx: &mut Ctx, task_id: &str) -> Result<Vec<String>> {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    if !crate::meta_store::is_protocol_project(ctx, &project) {
+        return Ok(vec![]);
+    }
+    let repo = PathBuf::from(&project.path);
+    let changed = git::change_summary(&repo, &project.default_branch, &task.branch())
+        .map(|s| s.files.into_iter().map(|f| f.path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(crate::meta::needs_human_approval(&changed))
+}
+
 /// Reads a task's frozen copy back. Only the files the copy contains — eval
 /// fixtures are deliberately not copied, so the hash here is over the same set
 /// `copy_into_task` wrote.
@@ -1252,28 +1272,58 @@ fn rules_hash(repo: &Path) -> Option<String> {
     Some(files.hash())
 }
 
-/// Copies attachments into the worktree's task directory and commits them, so
-/// the agent can read them and they travel with the branch (requirement T-01).
-fn write_task_inputs(repo: &Path, worktree: &Path, task: &TaskRecord) -> Result<()> {
-    if task.attachments.is_empty() {
+/// Everything the core puts into a task's directory before the first session
+/// opens it: the user's attachments, and — for a meta task — the evidence it
+/// is asked to propose changes from.
+fn write_task_inputs(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    worktree: &Path,
+) -> Result<()> {
+    let mut paths: Vec<String> = Vec::new();
+
+    if !task.attachments.is_empty() {
+        let dest = worktree.join(task.doc_dir()).join("attachments");
+        std::fs::create_dir_all(&dest).map_err(|e| err(format!("无法创建附件目录：{e}")))?;
+        for source in &task.attachments {
+            let name = Path::new(source)
+                .file_name()
+                .ok_or_else(|| err(format!("附件路径无效：{source}")))?;
+            std::fs::copy(source, dest.join(name))
+                .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
+        }
+        paths.push(format!("{}/attachments", task.doc_dir()));
+    }
+
+    // A meta task cannot assemble its own evidence: a session cannot read the
+    // store, cannot see other projects' tasks, and should not be trusted to
+    // summarise its own history from memory.
+    if crate::meta_store::is_protocol_project(ctx, project) {
+        let tasks = crate::meta_store::collect(ctx)?;
+        let deferred = crate::meta_store::deferred(ctx, &project.id)?;
+        let contradicted = crate::meta_store::contradicted(ctx)?;
+        for (rel, body) in crate::meta::inputs(&tasks, &deferred, &contradicted) {
+            let full = worktree.join(task.doc_dir()).join(&rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| err(format!("无法创建 {}：{e}", parent.display())))?;
+            }
+            std::fs::write(&full, body)
+                .map_err(|e| err(format!("无法写入 {}：{e}", full.display())))?;
+        }
+        paths.push(format!("{}/inputs", task.doc_dir()));
+    }
+
+    if paths.is_empty() {
         return Ok(());
     }
-    let dest = worktree.join(task.doc_dir()).join("attachments");
-    std::fs::create_dir_all(&dest).map_err(|e| err(format!("无法创建附件目录：{e}")))?;
-    for source in &task.attachments {
-        let name = Path::new(source)
-            .file_name()
-            .ok_or_else(|| err(format!("附件路径无效：{source}")))?;
-        std::fs::copy(source, dest.join(name))
-            .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
-    }
-    let rel = format!("{}/attachments", task.doc_dir());
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     git::commit_paths(
         worktree,
-        &[&rel],
+        &refs,
         &format!("chore(autome): {} inputs", task.id),
     )?;
-    let _ = repo;
     Ok(())
 }
 

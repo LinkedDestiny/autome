@@ -52,6 +52,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'open.terminal',
   'protocol.pin',
   'protocol.rollback',
+  'protocol.improve',
 ]);
 
 // Ops whose params may contain prose the user typed, and the cap on it. A

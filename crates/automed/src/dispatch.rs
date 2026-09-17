@@ -394,6 +394,8 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         // ---- protocol ------------------------------------------------
         "protocol.get" => crate::dispatch_protocol::get(ctx),
         "protocol.eval" => crate::dispatch_protocol::eval(ctx),
+        "protocol.triggers" => crate::dispatch_protocol::triggers(ctx),
+        "protocol.improve" => crate::dispatch_protocol::improve(ctx),
         "protocol.versions" => {
             crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
         }
@@ -1168,7 +1170,34 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         })
         .unwrap_or_default();
 
-    let base = autome_domain::project::slugify(&request);
+    create(ctx, project_id, &request, None, attachments, doc_refs)
+}
+
+/// Creates a task with a fixed request and title, for the one caller that has
+/// both: `protocol.improve`.
+///
+/// A meta task's request is not something a user types. The constraints in it
+/// — two tasks' worth of evidence, a metric the core records, an eval case for
+/// anything behavioural — are what make a proposal checkable, and a user
+/// typing their own request would be typing around them.
+pub fn task_create_in(
+    ctx: &mut Ctx,
+    project_id: &str,
+    request: &str,
+    title: &str,
+) -> DispatchResult {
+    create(ctx, project_id, request, Some(title), vec![], vec![])
+}
+
+fn create(
+    ctx: &mut Ctx,
+    project_id: &str,
+    request: &str,
+    title: Option<&str>,
+    attachments: Vec<String>,
+    doc_refs: Vec<String>,
+) -> DispatchResult {
+    let base = autome_domain::project::slugify(title.unwrap_or(request));
     let slug = {
         let taken: Vec<String> = ctx
             .store
@@ -1186,8 +1215,8 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         slug,
         // The intake session writes the real title; until then the request
         // itself is the most informative thing to show.
-        title: first_line(&request),
-        request,
+        title: title.map(str::to_string).unwrap_or_else(|| first_line(request)),
+        request: request.to_string(),
         attachments,
         doc_refs,
         state: TaskState::Queued,
@@ -1288,6 +1317,10 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "documents": documents(&worktree, &task),
             "worktree": worktree.to_string_lossy(),
             "next_role": scheduler::next_role(&task.state),
+            // Empty for every ordinary task. For a meta task it names the
+            // changes the review and audit rounds were not competent to judge,
+            // and both stopping points show it.
+            "needs_human_approval": scheduler::needs_human_approval(ctx, task_id)?,
             // Running totals, for a task still in flight. `task.metrics` is
             // the final aggregate and only exists once the task has ended.
             "so_far": running_totals(&sessions),
@@ -1987,7 +2020,7 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 17] = [
+pub const READ_METHODS: [&str; 18] = [
     "project.list",
     "project.get",
     "project.onboarding.artefacts",
@@ -2005,6 +2038,7 @@ pub const READ_METHODS: [&str; 17] = [
     "protocol.get",
     "protocol.versions",
     "protocol.eval",
+    "protocol.triggers",
 ];
 
 #[cfg(test)]

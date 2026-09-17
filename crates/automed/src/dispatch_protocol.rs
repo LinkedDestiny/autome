@@ -134,6 +134,44 @@ pub fn versions(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     ))
 }
 
+/// `protocol.improve` — start a meta task on the protocol repository.
+///
+/// Nothing starts by itself. The triggers are shown as a suggestion and this
+/// is the button: a protocol iteration costs a full Loop's worth of sessions,
+/// and "there is enough evidence to have a conversation" is not the same as
+/// "have it now".
+pub fn improve(ctx: &mut Ctx) -> DispatchResult {
+    let project = crate::meta_store::ensure_project(ctx)?;
+    if let Ok(tasks) = ctx.store.list_tasks(&project.id)
+        && let Some(running) = tasks.iter().find(|t| !t.state.is_terminal())
+    {
+        return Err(rejected(format!(
+            "协议仓库上已经有一个没结束的任务：{}（{}）。两个元任务同时改协议，             合并时会在最不能出错的那个文件上冲突。",
+            running.id, running.title
+        )));
+    }
+
+    let (payload, events) = crate::dispatch::task_create_in(
+        ctx,
+        &project.id,
+        crate::meta::REQUEST,
+        "改进 Loop 协议",
+    )?;
+    Ok((payload, events))
+}
+
+/// `protocol.triggers` — why the app might suggest an iteration.
+pub fn triggers(ctx: &mut Ctx) -> DispatchResult {
+    let triggers = crate::meta_store::triggers(ctx)?;
+    Ok((
+        json!({
+            "triggers": triggers.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            "suggest": !triggers.is_empty(),
+        }),
+        vec![],
+    ))
+}
+
 /// `protocol.pin` — which version a project's *new* tasks start on.
 ///
 /// Running tasks are unaffected by construction: each holds its own copy.

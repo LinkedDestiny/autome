@@ -549,12 +549,25 @@ impl Store {
                         .transpose()?,
                 ],
             )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(f, _)
+            .map_err(|e| match &e {
+                // Two different constraints can fire here and they mean
+                // opposite things: a duplicate slug is a name clash the caller
+                // can retry around, a foreign-key failure means the project id
+                // does not exist at all. Reporting the second as the first
+                // sent a real bug off looking for a task that was never there.
+                rusqlite::Error::SqliteFailure(f, msg)
                     if f.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    StoreError::Conflict {
-                        detail: format!("项目内已存在 slug `{}`", task.slug),
+                    let text = msg.clone().unwrap_or_default();
+                    if text.contains("FOREIGN KEY") {
+                        StoreError::Sql(format!(
+                            "任务 {} 引用的项目 {} 不存在",
+                            task.id, task.project_id
+                        ))
+                    } else {
+                        StoreError::Conflict {
+                            detail: format!("项目内已存在 slug `{}`", task.slug),
+                        }
                     }
                 }
                 other => StoreError::Sql(other.to_string()),
@@ -705,22 +718,31 @@ impl Store {
         self.require_one(n, "任务", id)
     }
 
-    /// The next task id for a project: `T-1`, `T-2`, … Numbers are per project
-    /// and never reused, including after a cancel, so an id in a log or a
-    /// branch name always refers to the same piece of work.
-    pub fn next_task_id(&self, project_id: &str) -> Result<String> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1",
-            params![project_id],
-            |r| r.get(0),
-        )?;
-        // Count is not enough on its own once a task is deleted; scan the
-        // existing ids for the highest suffix instead.
-        let mut stmt = self
+    /// The next task id: `T-1`, `T-2`, … Never reused, including after a
+    /// cancel, so an id in a log or a session directory always refers to the
+    /// same piece of work.
+    ///
+    /// **Numbered across all projects, not within one.** It used to count per
+    /// project, which reads better — every project starts at T-1 — and was
+    /// wrong: `tasks.id` is the primary key, and `sessions` and `decisions`
+    /// both reference it. Two projects each numbering from T-1 collide on the
+    /// second project's first task. Nothing caught it because everything that
+    /// exercised task creation used a single project; the first thing that
+    /// used two was the protocol repository being registered as one, and it
+    /// failed at once — with a message about a duplicate slug, because the
+    /// insert mapped every constraint violation to the same complaint.
+    ///
+    /// The alternative was a composite primary key, which means rebuilding
+    /// three tables to keep a cosmetic property.
+    pub fn next_task_id(&self, _project_id: &str) -> Result<String> {
+        let count: i64 = self
             .conn
-            .prepare("SELECT id FROM tasks WHERE project_id = ?1")?;
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+        // Count alone is not enough once a task has been deleted; take the
+        // highest suffix that exists as well.
+        let mut stmt = self.conn.prepare("SELECT id FROM tasks")?;
         let mut max = 0i64;
-        let rows = stmt.query_map(params![project_id], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for row in rows {
             let id = row?;
             if let Some(n) = id.strip_prefix("T-").and_then(|s| s.parse::<i64>().ok()) {
@@ -1345,6 +1367,33 @@ mod tests {
     }
 
     #[test]
+    fn two_projects_do_not_hand_out_the_same_task_id() {
+        // `tasks.id` is the primary key and `sessions` references it. Per
+        // project numbering collided on the second project's first task, and
+        // the insert reported it as a duplicate slug.
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_project(&project("p2", "/b")).unwrap();
+
+        let first = s.next_task_id("p1").unwrap();
+        s.insert_task(&task(&first, "p1", "one")).unwrap();
+        let second = s.next_task_id("p2").unwrap();
+        assert_ne!(first, second);
+        s.insert_task(&task(&second, "p2", "two")).unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_task_does_not_release_its_number() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        for _ in 0..3 {
+            let id = s.next_task_id("p1").unwrap();
+            s.insert_task(&task(&id, "p1", &id)).unwrap();
+        }
+        assert_eq!(s.next_task_id("p1").unwrap(), "T-4");
+    }
+
+    #[test]
     fn project_by_path_finds_a_registered_directory() {
         let s = store();
         s.insert_project(&project("p1", "/a/b")).unwrap();
@@ -1414,7 +1463,7 @@ mod tests {
     }
 
     #[test]
-    fn task_ids_increment_per_project_and_are_never_reused() {
+    fn task_ids_increment_and_are_never_reused() {
         let s = store();
         s.insert_project(&project("p1", "/a")).unwrap();
         s.insert_project(&project("p2", "/b")).unwrap();
@@ -1425,8 +1474,9 @@ mod tests {
         // A cancelled task still holds its number.
         s.set_task_state("T-1", &TaskState::Cancelled).unwrap();
         assert_eq!(s.next_task_id("p1").unwrap(), "T-3");
-        // Numbering is per project.
-        assert_eq!(s.next_task_id("p2").unwrap(), "T-1");
+        // And so does a task in another project: the id is the primary key,
+        // and `sessions` and `decisions` both point at it.
+        assert_eq!(s.next_task_id("p2").unwrap(), "T-3");
     }
 
     #[test]

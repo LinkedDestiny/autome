@@ -240,43 +240,6 @@ fn remove_stale(repo: &Path, rel: &str, report: &mut InitReport) {
     }
 }
 
-/// Writes a mirror of a file Autome does not own the content of.
-///
-/// Different from [`write_owned`] in what triggers a rewrite. An owned file —
-/// the wrapper script — changes only when Autome's own version does, so the
-/// version marker is the right trigger. A mirror of the protocol changes
-/// whenever the user edits `~/.autome/protocol/`, and the marker inside it
-/// does not move when they do; keying off the marker would leave the mirror
-/// showing last release's rules indefinitely.
-///
-/// The escape hatch is the same: strip the version marker and the file is
-/// yours, Autome stops touching it.
-fn write_mirrored(repo: &Path, rel: &str, contents: &str, report: &mut InitReport) -> Result<()> {
-    let path = repo.join(rel);
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if embedded_version(&existing).is_none() || existing == contents {
-            report.steps.push(InitStep {
-                path: rel.to_string(),
-                action: Action::Kept,
-            });
-            return Ok(());
-        }
-        write(&path, contents, rel)?;
-        report.steps.push(InitStep {
-            path: rel.to_string(),
-            action: Action::Refreshed,
-        });
-        return Ok(());
-    }
-    write(&path, contents, rel)?;
-    report.steps.push(InitStep {
-        path: rel.to_string(),
-        action: Action::Created,
-    });
-    Ok(())
-}
-
 fn embedded_version(text: &str) -> Option<u32> {
     text.lines()
         .find_map(|l| l.split_once(VERSION_MARKER))
