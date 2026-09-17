@@ -121,6 +121,71 @@ pub fn run(dir: &std::path::Path) -> (String, i32) {
     (report.render(), code)
 }
 
+/// Which cases layer 3 should run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Nothing. Layers 1 and 2 only, which is what an implementation round's
+    /// acceptance command wants: fast, free, and run on every change.
+    Static,
+    /// The cases the newest changelog version references, plus the three
+    /// baselines. What `--changed` means.
+    Changed,
+    /// Every case in the version.
+    All,
+}
+
+/// Runs the behaviour layer over a directory and appends its results.
+///
+/// Separate from [`run`] because it costs money: nothing reaches this unless
+/// someone asked for it by name.
+pub fn run_behaviour(dir: &std::path::Path, scope: Scope, tag: &str) -> (String, i32) {
+    let files = match super::read_dir_protocol(dir) {
+        Ok(f) => f,
+        Err(e) => return (format!("protocol eval: {e}\n"), 2),
+    };
+    let wanted: Vec<String> = match scope {
+        Scope::Static => return (String::new(), 0),
+        Scope::Changed => changed_cases(&files, tag),
+        Scope::All => files
+            .paths()
+            .filter(|p| p.ends_with("/case.yaml"))
+            .map(|p| p.trim_end_matches("case.yaml").to_string())
+            .collect(),
+    };
+
+    let mut out = String::from("\n# 第 3 层 行为\n\n");
+    let mut failed = false;
+    let mut ran = 0;
+    for case_path in wanted {
+        let yaml_path = format!("{}case.yaml", case_path);
+        let Some(yaml) = files.get(&yaml_path) else {
+            out.push_str(&format!("! {case_path} 不在本版本里，跳过\n"));
+            continue;
+        };
+        let case = match super::case::parse(yaml) {
+            Ok(c) => c,
+            Err(e) => {
+                out.push_str(&format!("✗ {yaml_path}：{e}\n"));
+                failed = true;
+                continue;
+            }
+        };
+        let plan = super::eval_run::Plan {
+            files: &files,
+            case_dir: dir.join(case_path.trim_end_matches('/')),
+            slug: "eval-case".into(),
+            role_runtime: autome_domain::role::Runtime::Claude,
+        };
+        let runner = super::eval_run::CliRunner::grading_against(plan.role_runtime);
+        let result = super::eval_run::run_case(&plan, &case, &runner);
+        out.push_str(&result.render());
+        failed |= !result.passed();
+        ran += 1;
+    }
+    out.push_str(&format!("\n跑了 {ran} 个用例。\n"));
+    (out, if failed { 1 } else { 0 })
+}
+
 /// Layers 1 and 2 over one version.
 pub fn check(files: &ProtocolFiles) -> Report {
     let mut r = Report::default();
@@ -236,7 +301,66 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
         }
     }
 
+    layer_one_cases(files, r);
     layer_one_changelog(files, r);
+}
+
+/// The eval cases, as data. Layer 3 runs them; this reads them.
+fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
+    let paths: Vec<String> = files
+        .paths()
+        .filter(|p| p.ends_with("/case.yaml"))
+        .map(str::to_string)
+        .collect();
+    if paths.is_empty() {
+        r.problems.push(Problem::warn(
+            L1,
+            "本版本一个 eval 用例都没有。behavioral 类改动会因此没法验证。",
+        ));
+        return;
+    }
+    let mut ok = 0;
+    for path in &paths {
+        let dir = path.trim_end_matches("case.yaml");
+        let case = match super::case::parse(files.get(path).unwrap_or_default()) {
+            Ok(c) => c,
+            Err(e) => {
+                r.problems.push(Problem::fail(L1, format!("{path}：{e}")));
+                continue;
+            }
+        };
+        let mut bodies = Vec::new();
+        let mut missing = false;
+        for g in &case.graders {
+            let full = format!("{dir}{g}");
+            match files.get(&full) {
+                Some(body) => bodies.push((g.clone(), body.to_string())),
+                None => {
+                    missing = true;
+                    r.problems
+                        .push(Problem::fail(L1, format!("{path} 引用了不存在的 {full}")));
+                }
+            }
+        }
+        // The scaffold has to be there too, or the case fails at run time —
+        // after the money is spent.
+        if !files.contains(&format!("{dir}{}", case.scaffold.trim_start_matches("./"))) {
+            missing = true;
+            r.problems.push(Problem::fail(
+                L1,
+                format!("{path} 的 scaffold `{}` 不存在", case.scaffold),
+            ));
+        }
+        for problem in super::case::lint(&case, &bodies) {
+            r.problems.push(Problem::fail(L1, problem));
+        }
+        if !missing {
+            ok += 1;
+        }
+    }
+    if ok == paths.len() {
+        r.passed.push(format!("eval 用例 {ok} 个，可读且带阳性对照"));
+    }
 }
 
 /// Placeholders a template may use.
@@ -840,6 +964,26 @@ mod tests {
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
         assert!(details(&r).contains("实现循环"), "{}", details(&r));
+    }
+
+    #[test]
+    fn a_case_that_could_never_say_anything_is_caught_before_it_is_paid_for() {
+        let mut files = seed();
+        let path = "evals/auditor-rerun/graders/reopened-the-false-pass.md";
+        let text = files.get(path).unwrap().replace("阳性对照", "说明");
+        files.insert(path, text);
+        let r = check(&files);
+        assert!(r.failed(), "{}", r.render());
+        assert!(details(&r).contains("阳性对照"), "{}", details(&r));
+    }
+
+    #[test]
+    fn a_case_whose_scaffold_is_missing_is_caught_statically() {
+        let mut files = seed();
+        files.remove("evals/auditor-rerun/scaffold.sh");
+        let r = check(&files);
+        assert!(r.failed(), "{}", r.render());
+        assert!(details(&r).contains("scaffold"), "{}", details(&r));
     }
 
     #[test]

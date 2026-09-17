@@ -55,12 +55,42 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("protocol")
         && std::env::args().nth(2).as_deref() == Some("eval")
     {
+        let args: Vec<String> = std::env::args().skip(3).collect();
         // Defaults to the working directory, which is what a meta task's
         // audit round has checked out — the version being proposed, not the
         // one installed.
-        let dir = std::path::PathBuf::from(std::env::args().nth(3).unwrap_or_else(|| ".".into()));
-        let (report, code) = automed::protocol::eval::run(&dir);
+        let dir = std::path::PathBuf::from(
+            args.iter()
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_else(|| ".".into()),
+        );
+        let (report, mut code) = automed::protocol::eval::run(&dir);
         print!("{report}");
+
+        // The behaviour layer costs money, so it never runs unless asked for
+        // by name. `--changed` is the audit round's form: the cases the
+        // proposed changes reference, plus the three baselines.
+        use automed::protocol::eval::Scope;
+        let scope = if args.iter().any(|a| a == "--changed") {
+            Some(Scope::Changed)
+        } else if args.iter().any(|a| a == "--behaviour" || a == "--behavior") {
+            Some(Scope::All)
+        } else {
+            None
+        };
+        if let Some(scope) = scope {
+            let tag = args
+                .iter()
+                .position(|a| a == "--tag")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| "未发布".into());
+            let (behaviour, behaviour_code) =
+                automed::protocol::eval::run_behaviour(&dir, scope, &tag);
+            print!("{behaviour}");
+            code = code.max(behaviour_code);
+        }
         std::process::exit(code);
     }
 

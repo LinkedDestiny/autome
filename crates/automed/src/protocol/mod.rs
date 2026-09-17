@@ -94,7 +94,9 @@ fn eval_seed() -> Vec<(&'static str, &'static str)> {
     crate::protocol::evals::SEED.to_vec()
 }
 
+pub mod case;
 pub mod eval;
+pub mod eval_run;
 pub mod evals;
 pub mod phrases;
 

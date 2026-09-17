@@ -930,12 +930,6 @@ mod tests {
         }
     }
 
-    /// `build_prompt` for a role, with the seed's templates.
-    fn prompt_for(role: Role) -> String {
-        let tpl = templates();
-        build_prompt(&spec(SessionKind::Role { role }, &[], None, &tpl)).unwrap()
-    }
-
     // ---- adapter table ---------------------------------------------------
 
     #[test]
