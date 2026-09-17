@@ -100,30 +100,39 @@ fn toml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// The repository's real Git directory, when it is *not* inside `cwd`.
+/// The repository's **common** Git directory, when it is not inside `cwd`.
 ///
-/// For a worktree it never is: `git rev-parse --absolute-git-dir` in
-/// `<repo>/.worktree/<slug>/` answers `<repo>/.git/worktrees/<slug>/`, which
-/// is outside the directory the session is allowed to write. Codex's
-/// `workspace-write` sandbox therefore refuses to create `index.lock`, and
-/// every `git add` in a worktree session exits 128.
+/// For a worktree it never is: the common directory of
+/// `<repo>/.worktree/<slug>/` is `<repo>/.git`, outside the directory the
+/// session is allowed to write. Codex's `workspace-write` sandbox therefore
+/// refuses to create `index.lock`, and every `git add` in a worktree session
+/// exits 128.
 ///
 /// A real run did that on every audit round for thirty rounds. Nothing was
 /// lost — the core sweeps the leftover changes into a commit of its own — but
 /// each round still spent a doomed commit attempt and a paragraph explaining
 /// it, and the branch history ended up narrated by two different voices.
 ///
+/// **Common, not per-worktree.** The first version of this asked for
+/// `--absolute-git-dir` and got `<repo>/.git/worktrees/<slug>`. That is enough
+/// to create `index.lock` and not enough to finish: `git add` writes the blob
+/// into the shared object store at `<repo>/.git/objects`, so it got one step
+/// further and failed with `failed to insert into database` instead. Widening
+/// to the common directory covers both, and the per-worktree directory is
+/// inside it.
+///
 /// Returns `None` when the Git directory is already inside `cwd` (the
 /// onboarding session runs in the repository itself, where nothing needs
 /// widening) and when Git cannot answer at all — a guessed path would be worse
 /// than the status quo.
 fn git_dir_outside(cwd: &Path) -> Option<PathBuf> {
-    let out = crate::git::run(cwd, &["rev-parse", "--absolute-git-dir"]).ok()?;
+    let out = crate::git::run(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok()?;
     if !out.ok() {
         return None;
     }
     let dir = PathBuf::from(out.line());
-    if dir.as_os_str().is_empty() || dir.starts_with(cwd) {
+    if dir.as_os_str().is_empty() || !dir.is_absolute() || dir.starts_with(cwd) {
         return None;
     }
     Some(dir)
@@ -1050,7 +1059,17 @@ mod tests {
         let args = build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), &worktree)
             .join(" ");
         assert!(args.contains("sandbox_workspace_write.writable_roots"), "{args}");
-        assert!(args.contains("worktrees"), "{args}");
+        // The *common* directory, not `<repo>/.git/worktrees/<slug>`. The
+        // narrower one lets `git add` take the lock and then fail on the
+        // shared object store with `failed to insert into database`, which is
+        // the same outcome one step later. Asserting only that some path is
+        // there is what let that ship.
+        let common = repo.join(".git");
+        assert!(args.contains(common.to_str().unwrap()), "{args}");
+        assert!(
+            !args.contains("worktrees"),
+            "asked for the per-worktree directory, which cannot hold the objects: {args}"
+        );
 
         // In the repository itself the Git directory is already inside the
         // sandbox, so nothing is widened.
