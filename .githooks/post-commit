@@ -1,0 +1,86 @@
+#!/bin/sh
+# Runs the CI workflow locally after every commit, in the background.
+#
+# Lives in `.githooks/` rather than `.git/hooks/` so it is version-controlled
+# and reviewable; `git config core.hooksPath .githooks` is what points git at
+# it. See the note at the top of scripts/ci-local.sh for why running CI
+# locally is not redundant here.
+#
+# Three things this has to get right:
+#
+#   1. **Not block the commit.** The fast jobs are ~35 seconds warm. A
+#      synchronous hook would put that in front of every `git commit`, and a
+#      gate people start working around is worse than no gate.
+#   2. **Not fire during a replay.** Rebasing twenty commits should run the
+#      suite once, at the end, not twenty times — and `git rebase` does invoke
+#      post-commit on some paths.
+#   3. **Not pile up.** A second commit supersedes the first commit's run
+#      rather than leaving two cargos contending for `target/`'s lock.
+#
+# To skip it for one commit:  NO_CI=1 git commit …
+set -u
+
+[ "${NO_CI:-}" = "1" ] && exit 0
+
+git_dir=$(git rev-parse --git-dir 2> /dev/null) || exit 0
+root=$(git rev-parse --show-toplevel 2> /dev/null) || exit 0
+
+# A rebase, cherry-pick, revert or `git am` replays commits. Each one would
+# otherwise start its own run, and all but the last would be obsolete before
+# they finished.
+for marker in rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do
+  if [ -e "$git_dir/$marker" ]; then
+    exit 0
+  fi
+done
+case "${GIT_REFLOG_ACTION:-}" in
+  rebase* | cherry-pick* | revert* | am*) exit 0 ;;
+esac
+
+state="$git_dir/ci-local"
+log="$state/last.log"
+mkdir -p "$state"
+
+# Supersede an in-flight run: kill the recorded shell and its direct children,
+# which is the `cargo` holding the target-directory lock.
+if [ -f "$state/pid" ]; then
+  old=$(cat "$state/pid" 2> /dev/null) || old=''
+  if [ -n "$old" ] && kill -0 "$old" 2> /dev/null; then
+    pkill -P "$old" 2> /dev/null
+    kill "$old" 2> /dev/null
+  fi
+fi
+
+sha=$(git rev-parse --short HEAD)
+subject=$(git log -1 --format=%s)
+# Quotes and backslashes would break out of the AppleScript string literal
+# below, and a commit subject is free text.
+safe_subject=$(printf '%s' "$subject" | tr -d '"\\')
+
+{
+  printf '%s  %s\n%s\n' "$sha" "$subject" "$(date '+%Y-%m-%d %H:%M:%S')"
+  sh "$root/scripts/ci-local.sh"
+  status=$?
+
+  if [ "$status" -eq 0 ]; then
+    printf '\nCI 通过 · %s\n' "$sha"
+    body="全部通过 · $safe_subject"
+  else
+    printf '\nCI 未通过 · %s\n' "$sha"
+    body="有步骤未通过 · $safe_subject"
+  fi
+
+  # The terminal that ran `git commit` has usually moved on by the time this
+  # finishes, so the result has to find the user rather than wait to be looked
+  # for.
+  if command -v osascript > /dev/null 2>&1; then
+    osascript -e "display notification \"$body\" with title \"autome CI · $sha\"" \
+      > /dev/null 2>&1
+  fi
+
+  rm -f "$state/pid"
+} > "$log" 2>&1 &
+
+echo $! > "$state/pid"
+
+printf 'CI 已在后台启动（%s）。跟进：tail -f %s\n' "$sha" "$log"

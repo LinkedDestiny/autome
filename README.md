@@ -70,6 +70,26 @@ cargo clippy --all-targets      # warnings are errors in CI
 cd apps/desktop && npm test     # the shell, the gates and the renderer
 ```
 
+All of the above at once, in the order and with the flags `.github/workflows/ci.yml`
+uses:
+
+```sh
+sh scripts/ci-local.sh          # ~35s with a warm target/
+sh scripts/ci-local.sh --package  # also builds the .app; minutes
+```
+
+This is not redundant with the workflow. There is no git remote, so the
+workflow has never run — which is how its Format and Clippy gates came to be
+147 and 38 findings deep without anyone being told. To have every commit run
+it in the background:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Results land in `.git/ci-local/last.log` and in a desktop notification.
+`NO_CI=1 git commit …` skips it for one commit.
+
 The end-to-end suite drives a whole task from a one-line request to a merge
 commit against a real Git repository, with a stand-in for the model. Nothing
 else is substituted: real worktrees, the real wrapper script, the real
