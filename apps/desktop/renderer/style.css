@@ -134,10 +134,17 @@
 [data-theme="dark"] .nowbox__card { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.08); }
 [data-theme="dark"] .chip { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.08); }
 [data-theme="dark"] .ptile__kind { background: rgba(0,0,0,.28); }
-[data-theme="dark"] .lnode--claude { background: #262c46; }
-[data-theme="dark"] .lnode--codex { background: #2e2542; border-color: #4a3d63; }
-[data-theme="dark"] .lnode--impl { border-color: #2f5f52; }
-[data-theme="dark"] .lnode--err { background: #3a2422; }
+/* The routing boxes, from the same tile tokens as every other tinted surface.
+   They used to be three different treatments in one picture: `--claude` and
+   `--codex` were hand-mixed hex, `--impl` overrode only its border and kept
+   its *light* background — so in dark mode one box in the graph was pale mint
+   with unreadable grey text on it — while `--human` and `--end` already used
+   the mix formula. Now all six are the formula, which also means they track
+   the palette instead of drifting from it. */
+[data-theme="dark"] .lnode--claude { background: color-mix(in srgb, var(--tile-blue) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-blue) 42%, var(--animal-bg-content)); }
+[data-theme="dark"] .lnode--codex { background: color-mix(in srgb, var(--tile-purple) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-purple) 42%, var(--animal-bg-content)); }
+[data-theme="dark"] .lnode--impl { background: color-mix(in srgb, var(--tile-teal) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-teal) 42%, var(--animal-bg-content)); }
+[data-theme="dark"] .lnode--err { background: color-mix(in srgb, var(--tile-red) 20%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-red) 45%, var(--animal-bg-content)); }
 [data-theme="dark"] .impact b { color: var(--tile-yellow); }
 [data-theme="dark"] code.cmd { color: var(--animal-text-body); }
 [data-theme="dark"] .hl { background: rgba(255,204,0,.22); }
@@ -786,10 +793,14 @@ code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, m
 .lnode { position: relative; min-width: 0; min-height: 104px; border-radius: 16px; padding: 10px 11px 9px; background: var(--animal-bg-input); border: 2px solid var(--animal-border-light); display: flex; flex-direction: column; gap: 4px; transition: all .2s var(--animal-ease); z-index: 1; }
 .lnode--ai { cursor: pointer; } .lnode--ai:hover { transform: translateY(-2px); box-shadow: var(--animal-shadow-base); }
 .lnode--ai:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 2px; }
-.lnode--claude { border-color: var(--animal-sidebar-active); background: #eef2ff; } .lnode--codex { border-color: #d3bff2; background: #f5efff; } .lnode--impl { border-color: #a9e3d3; background: #e8faf5; }
+/* Light mode, same formula against white, so the two themes stay in step: a
+   change to a tile token moves both, and neither can drift on its own. */
+.lnode--claude { background: color-mix(in srgb, var(--tile-blue) 11%, #fff); border-color: color-mix(in srgb, var(--tile-blue) 45%, #fff); }
+.lnode--codex { background: color-mix(in srgb, var(--tile-purple) 11%, #fff); border-color: color-mix(in srgb, var(--tile-purple) 45%, #fff); }
+.lnode--impl { background: color-mix(in srgb, var(--tile-teal) 13%, #fff); border-color: color-mix(in srgb, var(--tile-teal) 50%, #fff); }
 .lnode--rust { background: var(--animal-bg-secondary); border-style: dashed; }
-.lnode--human { background: #fff8e0; border-color: var(--tile-yellow); }
-.lnode--end { background: #e8f5e8; border-color: var(--tile-green); justify-content: center; align-items: center; text-align: center; }
+.lnode--human { background: color-mix(in srgb, var(--tile-yellow) 15%, #fff); border-color: var(--tile-yellow); }
+.lnode--end { background: color-mix(in srgb, var(--tile-green) 14%, #fff); border-color: var(--tile-green); justify-content: center; align-items: center; text-align: center; }
 .lnode__id { font-size: 11px; font-weight: 900; letter-spacing: 0; color: var(--animal-text); line-height: 1.2; padding-right: 12px; }
 .lnode__role { font-size: 10.5px; font-weight: 700; color: var(--animal-text-secondary); line-height: 1.3; }
 .lnode__cfg { display: flex; flex-wrap: wrap; gap: 3px; margin-top: auto; }

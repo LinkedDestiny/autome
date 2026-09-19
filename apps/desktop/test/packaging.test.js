@@ -244,8 +244,18 @@ test('every cream surface in the stylesheet has a dark counterpart', () => {
   for (const [, selector, block] of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
     const sel = selector.replace(/\s+/g, ' ').trim();
     if (sel.includes('data-theme')) {
-      for (const one of sel.split(',')) {
-        themed.add(one.replace('[data-theme="dark"]', '').trim());
+      // Only a dark rule that actually repaints counts. `.lnode--impl` had a
+      // dark rule that set its *border* and nothing else, so it was recorded
+      // as handled while its light background — a near-white — carried
+      // straight into dark mode. The routing graph rendered one box in pale
+      // mint with a contrast ratio of 1.12 against its own title.
+      const repaints = block
+        .split(';')
+        .some((d) => (d.split(':')[0] || '').includes('background'));
+      if (repaints) {
+        for (const one of sel.split(',')) {
+          themed.add(one.replace('[data-theme="dark"]', '').trim());
+        }
       }
       continue;
     }
