@@ -968,6 +968,50 @@ async function run() {
     editorOffline
   );
 
+  // A retirement offer is built from a payload the core assembles, and the
+  // curation section fetches it itself — so rendering the screen from a
+  // fixture never touches this card. The failure worth catching is a field
+  // renamed on one side: the card would still render, with `undefined` where
+  // the number justifying the offer should be.
+  const retirement = await evaluate(async () => {
+    const project = await import('autome://app/screens/project.js');
+    // Exactly the shape `rules.proposals` puts in `retirement_candidates`.
+    const card = project.__testRetirementCard(
+      {
+        file: '.autome/rules/verification.md',
+        body: '证据文件必须逐字写出跑过的命令',
+        metric: 'verification_gaps',
+        idle_tasks: 7,
+        horizon: 3,
+        direction: 'flat',
+      },
+      'prj_island',
+      { refresh() {} }
+    );
+    return {
+      text: card.textContent,
+      buttons: Array.from(card.querySelectorAll('button')).map((b) => b.textContent.trim()),
+      undefineds: (card.textContent.match(/undefined/g) || []).length,
+    };
+  });
+  check(
+    'a retirement offer names the rule, the wait, the metric and the horizon',
+    retirement.undefineds === 0 &&
+      retirement.text.includes('证据文件必须逐字写出跑过的命令') &&
+      retirement.text.includes('7 个任务没提到') &&
+      retirement.text.includes('.autome/rules/verification.md') &&
+      retirement.text.includes('3 个任务') &&
+      retirement.buttons.length === 1,
+    retirement
+  );
+  check(
+    'it offers an experiment rather than a delete, and says the prediction',
+    retirement.buttons[0] === '作为实验移除' &&
+      retirement.text.includes('什么都不会变差') &&
+      retirement.text.includes('放回来'),
+    retirement
+  );
+
   const cspViolations = consoleMessages.filter((m) =>
     /content security policy|refused to/i.test(String(m))
   );

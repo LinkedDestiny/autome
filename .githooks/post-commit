@@ -57,9 +57,22 @@ subject=$(git log -1 --format=%s)
 # below, and a commit subject is free text.
 safe_subject=$(printf '%s' "$subject" | tr -d '"\\')
 
+# `nice`, because this runs while you keep working. Two full `cargo test`
+# runs on one machine is not a hypothetical here — it is what a commit
+# followed by any command of your own *is* — and the end-to-end suite drives
+# real git and real processes against wall-clock deadlines. Yielding the CPU
+# to whatever you do next keeps the background run from failing the
+# foreground one.
+if command -v nice > /dev/null 2>&1; then
+  yield='nice -n 10'
+else
+  yield=''
+fi
+
 {
   printf '%s  %s\n%s\n' "$sha" "$subject" "$(date '+%Y-%m-%d %H:%M:%S')"
-  sh "$root/scripts/ci-local.sh"
+  # shellcheck disable=SC2086  # $yield is a deliberate two-word prefix
+  $yield sh "$root/scripts/ci-local.sh"
   status=$?
 
   if [ "$status" -eq 0 ]; then

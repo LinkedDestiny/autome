@@ -333,7 +333,15 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
     /// condition is that no session is running *and* no task is sitting on
     /// work the scheduler would pick up — a queued task or a core step.
     fn settle(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // A hang detector, not a performance budget. What it is here to catch
+        // is a loop that never reaches quiet — a livelock, a task waiting on a
+        // transition that never fires — and those never finish at any
+        // deadline. The number only has to be longer than a healthy settle on
+        // the slowest machine this runs on, and 20s was not: a second `cargo
+        // test` on the same box (the post-commit hook, or two terminals) is
+        // enough to push a healthy run past it, which turns a real suite into
+        // one that cries wolf.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             automed::scheduler::tick(&mut self.ctx);
             if !self.has_pending_work() {
@@ -341,7 +349,7 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
             }
             if std::time::Instant::now() >= deadline {
                 panic!(
-                    "world did not settle within 20s; sessions run: {:?}, tasks: {:?}",
+                    "world did not settle within 90s; sessions run: {:?}, tasks: {:?}",
                     self.sessions_run(),
                     self.task_states()
                 );
@@ -1877,4 +1885,107 @@ fn removing_a_rule_is_an_experiment_with_a_baseline_and_a_way_back() {
     assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
     let text = std::fs::read_to_string(&rule_file).unwrap();
     assert!(text.contains(lesson), "{text}");
+}
+
+/// The gap this feature sat in for its whole life.
+///
+/// Everything needed to *run* a removal experiment existed — the method, the
+/// table, the card, the test above — and nothing produced the arguments, so
+/// no screen could ever start one. `rules.retire` refuses a body that is not
+/// already in the file, and neither the proposal list (which drops a
+/// proposal once it is answered) nor the rule-file list (filenames only) can
+/// supply one. The candidate list closes it, and the join is the thing worth
+/// asserting: what the panel offers has to be exactly what retire accepts.
+#[test]
+fn a_rule_gone_quiet_is_offered_for_removal_with_arguments_retire_accepts() {
+    needs_git!();
+    let mut w = World::new("retire-offer");
+    let lesson = "证据文件必须逐字写出跑过的命令";
+    run_a_task(&mut w, "first task", lesson);
+    run_a_task(&mut w, "second task", lesson);
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let key = ok(&out)["proposals"][0]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    w.call(
+        "rules.decide",
+        json!({ "project_id": w.project_id, "key": key, "approve": true }),
+    );
+
+    // Freshly approved, it is not offered: the second task needed it.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let fresh = ok(&out).clone();
+    assert_eq!(
+        fresh["retirement_candidates"].as_array().unwrap().len(),
+        0,
+        "a rule needed one task ago is not a retirement candidate:\n{fresh}"
+    );
+
+    // Tasks that learn something else leave it unmentioned. Each lesson here
+    // is distinct, so none of them corroborates into a rule of its own.
+    for i in 0..6 {
+        run_a_task(&mut w, &format!("later task {i}"), &format!("无关教训 {i}"));
+    }
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let listed = ok(&out).clone();
+    let candidates = listed["retirement_candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1, "{listed}");
+    let c = &candidates[0];
+    assert_eq!(c["idle_tasks"], 6, "{c}");
+    assert_eq!(c["file"], ".autome/rules/verification.md", "{c}");
+    assert_eq!(c["body"], lesson, "{c}");
+    // The prediction is that nothing gets worse — not that anything improves.
+    assert_eq!(c["direction"], "flat", "{c}");
+    assert_eq!(c["metric"], "verification_gaps", "{c}");
+
+    // The join. These two fields, handed straight back, have to be accepted.
+    let out = w.call(
+        "rules.retire",
+        json!({
+            "project_id": w.project_id,
+            "file": c["file"],
+            "body": c["body"],
+        }),
+    );
+    let started = ok(&out).clone();
+    assert_eq!(started["metric"], "verification_gaps", "{started}");
+
+    // And having become an experiment, it stops being offered — it is not in
+    // the file to remove twice.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after = ok(&out).clone();
+    assert_eq!(
+        after["retirement_candidates"].as_array().unwrap().len(),
+        0,
+        "{after}"
+    );
+    assert_eq!(after["experiments"].as_array().unwrap().len(), 1, "{after}");
+
+    // Putting it back must not put it straight back on the offer list. An
+    // experiment that ended in a restore is the strongest evidence this
+    // mechanism can produce that the rule is doing something — and the rule is
+    // still exactly as quiet as it was, so filtering on "an experiment is
+    // *running*" rather than "an experiment has *happened*" would ask the user
+    // to re-run the one that already answered.
+    let id = after["experiments"][0]["id"].as_str().unwrap().to_string();
+    w.call(
+        "rules.restore",
+        json!({ "project_id": w.project_id, "id": id }),
+    );
+    assert!(
+        std::fs::read_to_string(w.repo.join(".autome/rules/verification.md"))
+            .unwrap()
+            .contains(lesson),
+        "the rule is back in the file"
+    );
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let restored = ok(&out).clone();
+    assert_eq!(
+        restored["retirement_candidates"].as_array().unwrap().len(),
+        0,
+        "a restored rule is not offered for removal again:\n{restored}"
+    );
 }

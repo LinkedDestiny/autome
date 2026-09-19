@@ -211,7 +211,8 @@ async function fillCuration(host, projectId, ctx) {
   const data = result.result || {};
   const proposals = data.proposals || [];
   const experiments = (data.experiments || []).filter((e) => e.state === 'running');
-  if (!proposals.length && !experiments.length) return;
+  const retirements = data.retirement_candidates || [];
+  if (!proposals.length && !experiments.length && !retirements.length) return;
 
   host.appendChild(
     sectionHead(
@@ -222,6 +223,7 @@ async function fillCuration(host, projectId, ctx) {
   const grid = h('div.cardgrid.cardgrid--2');
   for (const p of proposals) grid.appendChild(proposalCard(p, projectId, ctx));
   for (const e of experiments) grid.appendChild(experimentCard(e, projectId, ctx));
+  for (const c of retirements) grid.appendChild(retirementCard(c, projectId, ctx));
   host.appendChild(grid);
 }
 
@@ -267,6 +269,48 @@ function proposalCard(p, projectId, ctx) {
     )
   );
   card.appendChild(row);
+  return card;
+}
+
+/// A rule that has gone quiet for long enough to be worth testing whether it
+/// is still doing anything.
+///
+/// Worded as an offer to run an experiment rather than as a delete button on
+/// purpose: a rule that stopped producing lessons has very likely stopped
+/// because it is there, so "remove" is a hypothesis, not a conclusion. The
+/// card says which number will be watched and for how long, because a
+/// prediction nobody can check later is just a deletion with extra steps.
+function retirementCard(c, projectId, ctx) {
+  const card = h('div.card.card--pad.col', [
+    cardHead('可以试着移除', tag(`${c.idle_tasks} 个任务没提到`, 'outlined')),
+  ]);
+  card.appendChild(h('div.rawreq.rawreq--sm', { text: c.body }));
+  card.appendChild(
+    h('div.quiet', {
+      text: `在 ${c.file} 里。移除后看 ${labels.metricLabel(c.metric)} 会不会变差，跟踪 ${c.horizon} 个任务。`,
+    })
+  );
+  card.appendChild(
+    h('div.quiet', {
+      text: '预测是「什么都不会变差」——不是「会变好」。变差了随时可以一键放回来。',
+    })
+  );
+  card.appendChild(
+    h('div.row.gap-6.mt-8', [
+      registerWrite(
+        h('button.btn.btn--sm', {
+          type: 'button',
+          onClick: () =>
+            attempt({
+              label: '移除实验已开始',
+              success: `${c.body} 已从 ${c.file} 拿掉，${c.horizon} 个任务后回看`,
+              run: (write) => write.retireRule(projectId, c.file, c.body),
+              onDone: () => ctx.refresh(),
+            }),
+        }, [text('作为实验移除')])
+      ),
+    ])
+  );
   return card;
 }
 
@@ -667,3 +711,10 @@ function lines(value) {
     .map((line) => line.trim())
     .filter(Boolean);
 }
+
+// The curation section fetches its own data, so the harness cannot reach this
+// card by rendering the screen from a fixture. Exported so a test can build
+// one from a payload shaped like the core's and check the fields line up —
+// a rename on either side otherwise shows up as `undefined` on a card nobody
+// looks at until they want to retire a rule.
+export const __testRetirementCard = retirementCard;

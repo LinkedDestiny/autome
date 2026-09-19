@@ -91,6 +91,16 @@ impl Proposal {
     }
 }
 
+/// The key a lesson is proposed, stored and answered under.
+///
+/// One function rather than one `format!` per call site: the string is written
+/// into `rule_proposals` when a proposal is made and read back when the rule
+/// it became is checked for retirement, and those two have to agree or an
+/// approved rule can never be matched to the lesson it came from.
+pub fn proposal_key(lesson: &AggregatedLesson) -> String {
+    format!("{}/{}", lesson.key.domain.as_str(), lesson.key.proposal)
+}
+
 /// Turns aggregated lessons into the proposals worth showing.
 ///
 /// `already` is the keys that have been approved or dismissed before; a
@@ -100,7 +110,7 @@ pub fn proposals(lessons: &[AggregatedLesson], already: &[String]) -> Vec<Propos
         .iter()
         .filter(|l| l.level == LessonLevel::Rule && l.is_corroborated())
         .map(|l| Proposal {
-            key: format!("{}/{}", l.key.domain.as_str(), l.key.proposal),
+            key: proposal_key(l),
             domain: l.key.domain,
             proposal: l.proposal.clone(),
             evidence: l.occurrences.clone(),
@@ -127,6 +137,10 @@ pub struct RemovalExperiment {
     pub body: String,
     /// The metric the rule's domain moves, if it is doing anything.
     pub metric: String,
+    /// Carried through from the `Rule` this was built from: it is the whole
+    /// reason the offer is being made, and the panel has to be able to say
+    /// "this has gone N tasks unmentioned" rather than just "remove?".
+    pub idle_tasks: u32,
     pub predicted: PredictedImpact,
 }
 
@@ -163,6 +177,7 @@ pub fn removal_experiments(rules: &[Rule]) -> Vec<RemovalExperiment> {
                 rule_file: r.file.clone(),
                 body: r.body.clone(),
                 metric: metric.to_string(),
+                idle_tasks: r.idle_tasks,
                 predicted: PredictedImpact {
                     metric: metric.to_string(),
                     // Not `down`. The claim is "removing this costs nothing",

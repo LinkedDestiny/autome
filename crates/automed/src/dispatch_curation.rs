@@ -1,21 +1,38 @@
 //! The IPC surface for curation: rule proposals, removal experiments, and the
 //! backfill that tells a past change whether it was right.
 
-use autome_domain::lesson::{Lesson, LessonDomain};
+use autome_domain::lesson::{AggregatedLesson, Lesson, LessonDomain};
 use serde_json::{Value, json};
 
 use crate::curation::{self, ExperimentVerdict, ProposalState};
 use crate::dispatch::{Ctx, DispatchResult, rejected};
 
-/// Recomputes a project's rule proposals from every task's lessons.
+/// Every task's lessons, aggregated, plus the order the tasks ran in.
+///
+/// The two halves are only useful together. The aggregation says which tasks
+/// a lesson key was seen in; the ordered list says how many tasks have run
+/// since — which is what tells a rule that is still earning its place from one
+/// that has gone quiet.
+struct Lessons {
+    /// Slugs of the tasks that wrote lessons, oldest first.
+    ///
+    /// Tasks that wrote none are left out on purpose. A task that never
+    /// reached the retro round had no opportunity to mention a rule, so
+    /// counting it as a task that failed to mention one would retire rules
+    /// faster than they earned.
+    task_slugs: Vec<String>,
+    aggregated: Vec<AggregatedLesson>,
+}
+
+/// One pass over every task's lessons.
 ///
 /// Cheap and idempotent, so it runs whenever the panel asks rather than being
 /// scheduled: the answer changes only when a task ends, and asking then costs
 /// one pass over lessons the core already has in the event stream.
-fn refresh(
+fn walk_lessons(
     ctx: &mut Ctx,
     project_id: &str,
-) -> Result<Vec<curation::Proposal>, crate::dispatch::DispatchError> {
+) -> Result<Lessons, crate::dispatch::DispatchError> {
     let project = ctx.store.get_project(project_id)?;
     let repo = std::path::PathBuf::from(&project.path);
     let mut per_task: Vec<(String, Vec<Lesson>)> = Vec::new();
@@ -41,8 +58,20 @@ fn refresh(
             .map(|(slug, l)| (slug.as_str(), l.as_slice()))
             .collect::<Vec<_>>(),
     );
+    Ok(Lessons {
+        task_slugs: per_task.into_iter().map(|(slug, _)| slug).collect(),
+        aggregated,
+    })
+}
+
+/// Recomputes a project's rule proposals and records them.
+fn refresh(
+    ctx: &mut Ctx,
+    project_id: &str,
+    lessons: &Lessons,
+) -> Result<Vec<curation::Proposal>, crate::dispatch::DispatchError> {
     let answered = ctx.store.answered_rule_proposals(project_id)?;
-    let proposals = curation::proposals(&aggregated, &answered);
+    let proposals = curation::proposals(&lessons.aggregated, &answered);
     for p in &proposals {
         ctx.store.upsert_rule_proposal(
             project_id,
@@ -55,9 +84,85 @@ fn refresh(
     Ok(proposals)
 }
 
+/// The rules Autome wrote, with how long each has gone unmentioned.
+///
+/// Nothing new is recorded to produce this. An approved proposal *is* a rule
+/// in the file: the row carries the lesson key it was written for and the
+/// exact sentence that was written, and the aggregation already knows every
+/// task whose lessons named that key. A rule is idle for each task that wrote
+/// lessons after the last one that named it.
+///
+/// Three exclusions, all deliberate:
+///
+/// - **Rules that have ever been the subject of an experiment.** A running one
+///   is not in the file to remove. A restored one was removed, something got
+///   worse, and it went back — which is this mechanism's strongest possible
+///   evidence that the rule is carrying its weight, and offering to remove it
+///   again on the next quiet stretch would be asking the user to re-run an
+///   experiment that already answered. Quietness is why it is asked about at
+///   all, so "it has been quiet again since" does not reopen the question.
+/// - **Rules whose key no longer appears in any lesson at all.** That means
+///   the lessons they came from are gone — deleted, or the task archived — and
+///   a rule whose origin cannot be shown is one this mechanism has nothing to
+///   say about. The panel's whole argument is "here is what it was written
+///   for, and here is how long since anything needed it".
+/// - **Rules a person wrote by hand.** They have no proposal row, so Autome
+///   has no provenance for them and cannot say how long they have been idle.
+///   Offering to remove one would be the cleanup this mechanism exists to
+///   avoid.
+fn retirement_rules(
+    ctx: &mut Ctx,
+    project_id: &str,
+    lessons: &Lessons,
+) -> Result<Vec<curation::Rule>, crate::dispatch::DispatchError> {
+    // Every state, not just `running` — see the note above on restored rules.
+    let already_experimented: Vec<String> = ctx
+        .store
+        .list_rule_experiments(project_id)?
+        .into_iter()
+        .map(|row| row.2)
+        .collect();
+
+    let mut rules = Vec::new();
+    for (key, domain, proposal, _evidence, state) in ctx.store.list_rule_proposals(project_id)? {
+        if state != curation::ProposalState::Approved.as_str() {
+            continue;
+        }
+        if already_experimented.contains(&proposal) {
+            continue;
+        }
+        let Some(agg) = lessons
+            .aggregated
+            .iter()
+            .find(|l| curation::proposal_key(l) == key)
+        else {
+            continue;
+        };
+        // `tasks` is first-seen order over the same list, so its last entry is
+        // the most recent task whose lessons named this rule.
+        let Some(newest) = agg.tasks.last() else {
+            continue;
+        };
+        let Some(at) = lessons.task_slugs.iter().position(|s| s == newest) else {
+            continue;
+        };
+        let idle_tasks = (lessons.task_slugs.len() - 1 - at) as u32;
+
+        let domain = LessonDomain::parse(&domain).unwrap_or(LessonDomain::Process);
+        rules.push(curation::Rule {
+            file: format!(".autome/rules/{}.md", domain.as_str()),
+            body: proposal,
+            idle_tasks,
+        });
+    }
+    Ok(rules)
+}
+
 /// `rules.proposals` — what the project page's 建议入规 card shows.
 pub fn proposals(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
-    let proposals = refresh(ctx, project_id)?;
+    let lessons = walk_lessons(ctx, project_id)?;
+    let proposals = refresh(ctx, project_id, &lessons)?;
+    let retirements = curation::removal_experiments(&retirement_rules(ctx, project_id, &lessons)?);
     let today = crate::store::now_iso();
     let date = today.split('T').next().unwrap_or(&today).to_string();
     let project = ctx.store.get_project(project_id)?;
@@ -82,6 +187,17 @@ pub fn proposals(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
                 })
             }).collect::<Vec<_>>(),
             "experiments": experiments_json(ctx, project_id)?,
+            // Rules old enough to be worth an experiment. Offered, never
+            // acted on: `RETIREMENT_IDLE_TASKS` says when to ask, and the
+            // user says whether to try.
+            "retirement_candidates": retirements.iter().map(|e| json!({
+                "file": e.rule_file,
+                "body": e.body,
+                "metric": e.metric,
+                "idle_tasks": e.idle_tasks,
+                "horizon": e.predicted.horizon,
+                "direction": e.predicted.direction.as_str(),
+            })).collect::<Vec<_>>(),
         }),
         vec![],
     ))
