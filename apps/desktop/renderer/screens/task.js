@@ -77,6 +77,8 @@ export function render(host, data, ctx) {
   screen.appendChild(h('div.cardgrid.cardgrid--3.mt-12', [reveal(sessionsCard(data), 8)]));
 
   host.appendChild(screen);
+  // After the append: the title has no width until it is in the document.
+  markTitleOverflow(screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,10 +98,9 @@ function hero(data, ctx) {
   // is the raw request and can be a paragraph long, and letting it wrap pushes
   // everything below it around as tasks come and go. The full text is in the
   // tooltip and, in full, in the task document.
-  const title = `${task.id || ''} · ${task.title || task.request || task.slug || ''}`;
   card.appendChild(
     h('div.hero__top', [
-      h('h2.hero__title', { text: title, title }),
+      heroTitle(task),
       heroActions(data, ctx),
     ])
   );
@@ -125,6 +126,60 @@ function hero(data, ctx) {
   // Band 3 — where it is in the flow, across the full width of the card.
   card.appendChild(flowRoute(node, state));
   return card;
+}
+
+/**
+ * The title, clamped to one line and expandable by clicking it.
+ *
+ * The title is the task's whole request sentence. Left to wrap it is three
+ * lines of heading and every band below it moves as tasks come and go; cut to
+ * one line it is unreadable exactly when it matters — a long request whose
+ * distinguishing half is past the ellipsis. So it is one line by default and
+ * the full text on demand.
+ *
+ * A real `<button>` rather than a click handler on the `<h2>`: this is the one
+ * thing on the card you can operate with the keyboard and not see, and the
+ * button gets focus, Enter/Space and a name from the browser for free.
+ *
+ * `markTitleOverflow` decides afterwards whether the control is offered at
+ * all — a short title has nothing to expand, and a chevron that does nothing
+ * when clicked is worse than no chevron.
+ */
+function heroTitle(task) {
+  const full = `${task.id || ''} · ${task.title || task.request || task.slug || ''}`;
+  const label = h('span.hero__title-text', { text: full });
+  const btn = h(
+    'button.hero__title-btn',
+    {
+      type: 'button',
+      'aria-expanded': 'false',
+      onClick: (e) => {
+        const el = e.currentTarget;
+        const open = el.getAttribute('aria-expanded') === 'true';
+        el.setAttribute('aria-expanded', open ? 'false' : 'true');
+      },
+    },
+    [label, icon('chev', 'hero__title-chev')]
+  );
+  return h('h2.hero__title', { title: full }, [btn]);
+}
+
+/**
+ * Marks the titles that actually overflow, once they are laid out.
+ *
+ * Width is not knowable while the card is being built, so this runs after the
+ * screen is in the document. Until it does the control is hidden, which is the
+ * safe way round: a title that turns out to need expanding gains the chevron a
+ * frame later, rather than every title showing one and most doing nothing.
+ */
+function markTitleOverflow(host) {
+  requestAnimationFrame(() => {
+    host.querySelectorAll('.hero__title-text').forEach((el) => {
+      const over = el.scrollWidth > el.clientWidth + 1;
+      el.closest('.hero__title').classList.toggle('hero__title--over', over);
+      if (!over) el.closest('.hero__title-btn').setAttribute('aria-expanded', 'false');
+    });
+  });
 }
 
 /** `/Users/dannie/project/x` → `~/project/x`. The home prefix is the same on
@@ -166,10 +221,14 @@ function heroActions(data, ctx) {
   const row = h('div.hero__actions');
   const running = state.state === 'active';
 
+  // All three carry the same shape and differ only in colour: teal acts on the
+  // loop, blue opens a window onto it, red ends it. Weight used to carry the
+  // meaning instead — two filled buttons and a bare one — which said these
+  // were three unrelated controls rather than three things you can do here.
   if (running) {
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -183,7 +242,7 @@ function heroActions(data, ctx) {
     );
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -199,7 +258,7 @@ function heroActions(data, ctx) {
   if (state.state === 'paused' || state.state === 'stopped') {
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm.btn--primary', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -219,7 +278,7 @@ function heroActions(data, ctx) {
     // controls.
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm', {
+        h('button.btn.btn--sm.btn--util', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -233,7 +292,7 @@ function heroActions(data, ctx) {
     // Last, and set apart: the one button here you cannot undo.
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm.btn--text.hero__actions-last', {
+        h('button.btn.btn--sm.btn--danger.hero__actions-last', {
           type: 'button',
           onClick: () => confirmCancel(task, ctx),
         }, [text('取消')])
