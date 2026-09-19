@@ -146,6 +146,45 @@ async function run() {
   // still teal at night.
   const darkness = await evaluate(async () => {
     const t = await import('autome://app/lib/theme.js');
+    // Put a screen on the page before measuring. Without this the scan sees
+    // the bootstrap view — eleven elements — and a component that is only
+    // ever painted on a screen nobody rendered is invisible to it. The
+    // routing graph in particular shipped a node whose *light* background
+    // survived into dark mode, giving its own title a contrast ratio of 1.12,
+    // and this check watched it happen without a word. It is the densest
+    // screen of tinted surfaces in the app, which makes it the right one.
+    // Into a scratch container appended to the page, not over it: the first
+    // attempt called `main.replaceChildren()` and took the offline banner with
+    // it, which a later check then asked `getComputedStyle` about and got
+    // null. Removed again before returning, so the checks after this one see
+    // the page they expect.
+    let scratch = null;
+    try {
+      const routing = await import('autome://app/screens/routing.js');
+      scratch = document.createElement('div');
+      document.getElementById('main').appendChild(scratch);
+      // With the SAME-MODEL collision resolved. The shipped fixture has audit
+      // and impl on one model on purpose, and `.lnode--err` paints over the
+      // node tint with `!important` — so rendering it as-is measures the error
+      // state and never the colours this check exists to watch. Clearing
+      // `violations` is not enough: the screen recomputes the collision from
+      // `resolved` rather than trusting that field, which is the point of
+      // C-06 being enforced twice. So move audit onto its own model. The
+      // collision itself has a dedicated check further down.
+      const fx = JSON.parse(document.getElementById('fx-routing').textContent);
+      fx.violations = [];
+      for (const r of fx.resolved.roles) {
+        if (r.role === 'audit') r.config.model = 'gpt-6-astra-distinct';
+      }
+      routing.render(scratch, fx, {
+        params: {},
+        navigate() {},
+        refresh() {},
+        connected: true,
+      });
+    } catch {
+      // A render failure is the next check's business, not this one's.
+    }
     // `color-mix()` computes to `color(srgb 0.22 0.21 0.26)`, whose components
     // are 0..1 — reading those as 0..255 makes every mixed colour look
     // near-black, which is the safe direction and therefore the direction a
@@ -206,6 +245,7 @@ async function run() {
     // Put motion back: the next check measures whether an entry animation
     // runs, and a leftover freeze here would answer it for them.
     sheet.deleteRule(frozenRule);
+    if (scratch) scratch.remove();
     return { dark, light, attr, systemAttr: document.documentElement.dataset.theme };
   });
   check(

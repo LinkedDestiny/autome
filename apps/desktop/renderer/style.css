@@ -144,7 +144,12 @@
 [data-theme="dark"] .lnode--claude { background: color-mix(in srgb, var(--tile-blue) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-blue) 42%, var(--animal-bg-content)); }
 [data-theme="dark"] .lnode--codex { background: color-mix(in srgb, var(--tile-purple) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-purple) 42%, var(--animal-bg-content)); }
 [data-theme="dark"] .lnode--impl { background: color-mix(in srgb, var(--tile-teal) 18%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-teal) 42%, var(--animal-bg-content)); }
-[data-theme="dark"] .lnode--err { background: color-mix(in srgb, var(--tile-red) 20%, var(--animal-bg-content)); border-color: color-mix(in srgb, var(--tile-red) 45%, var(--animal-bg-content)); }
+/* `!important` to match the light rule's, which the collision state needs in
+   order to beat the six tint rules it is layered on top of. Without it here
+   the light near-white won in dark mode however specific this selector was —
+   `!important` does not lose to specificity, and the runtime contrast check
+   found the node sitting at rgb(255,240,240) on a dark page. */
+[data-theme="dark"] .lnode--err { background: color-mix(in srgb, var(--tile-red) 22%, var(--animal-bg-content)) !important; border-color: color-mix(in srgb, var(--tile-red) 50%, var(--animal-bg-content)) !important; }
 [data-theme="dark"] .impact b { color: var(--tile-yellow); }
 [data-theme="dark"] code.cmd { color: var(--animal-text-body); }
 [data-theme="dark"] .hl { background: rgba(255,204,0,.22); }
