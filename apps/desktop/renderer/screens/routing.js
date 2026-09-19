@@ -683,7 +683,7 @@ function changedRoles(data, draft) {
       before.runtime === after.runtime &&
       before.model === after.model &&
       (before.effort || null) === (after.effort || null) &&
-      (before.skills || []).join(' ') === after.skills.join(' ');
+      (before.skills || []).join('\0') === after.skills.join('\0');
     if (!same) out.push(resolved.role);
   }
   return out;

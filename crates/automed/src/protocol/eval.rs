@@ -124,9 +124,6 @@ pub fn run(dir: &std::path::Path) -> (String, i32) {
 /// Which cases layer 3 should run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Nothing. Layers 1 and 2 only, which is what an implementation round's
-    /// acceptance command wants: fast, free, and run on every change.
-    Static,
     /// The cases the newest changelog version references, plus the three
     /// baselines. What `--changed` means.
     Changed,
@@ -144,7 +141,6 @@ pub fn run_behaviour(dir: &std::path::Path, scope: Scope, tag: &str) -> (String,
         Err(e) => return (format!("protocol eval: {e}\n"), 2),
     };
     let wanted: Vec<String> = match scope {
-        Scope::Static => return (String::new(), 0),
         Scope::Changed => changed_cases(&files, tag),
         Scope::All => files
             .paths()
@@ -725,13 +721,13 @@ mod tests {
 
     #[test]
     fn the_seed_passes_the_static_and_parse_layers() {
-        let r = check(&seed());
+        let r = check(seed());
         assert!(!r.failed(), "{}", details(&r));
     }
 
     #[test]
     fn the_report_says_what_it_looked_at_not_only_what_it_disliked() {
-        let r = check(&seed());
+        let r = check(seed());
         assert!(r.passed.len() >= 5, "{:?}", r.passed);
         assert!(r.render().contains("项通过"), "{}", r.render());
     }
@@ -854,7 +850,7 @@ mod tests {
 
     #[test]
     fn uncovered_imperatives_are_a_worklist_rather_than_a_refusal() {
-        let r = check(&seed());
+        let r = check(seed());
         assert!(!r.failed(), "{}", details(&r));
         // The inherited 1.x text has plenty; the point is that the number is
         // visible and supposed to fall.
@@ -930,7 +926,7 @@ mod tests {
         // The same files the unit tests use, but reached the way the command
         // line reaches them: off the filesystem, eval cases and generated
         // contract.toml included.
-        let dir = on_disk("good", &seed());
+        let dir = on_disk("good", seed());
         let (report, code) = run(&dir);
         assert_eq!(code, 0, "{report}");
         assert!(report.contains("项通过"), "{report}");

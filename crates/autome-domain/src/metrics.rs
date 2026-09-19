@@ -17,7 +17,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::role::{Role, Runtime};
 
 /// One session's usage, filled in when the session is reaped (plan §3.1).
 ///
@@ -75,24 +74,6 @@ impl SessionMetrics {
             }
         }
     }
-}
-
-/// A session's metrics plus enough identity to group them (plan §3.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionUsage {
-    pub session_id: String,
-    pub task_id: String,
-    /// `None` for the two system steps (intake, onboarding).
-    pub role: Option<Role>,
-    pub runtime: Runtime,
-    pub model: String,
-    /// The protocol version this session ran under, in wire form.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rules_hash: Option<String>,
-    #[serde(flatten)]
-    pub metrics: SessionMetrics,
 }
 
 /// Counted once per task when it reaches a terminal state (plan §3.2).

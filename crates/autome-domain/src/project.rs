@@ -115,68 +115,6 @@ impl Project {
     }
 }
 
-/// Why a directory cannot become a project.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AddRejection {
-    /// The path exists but is a file, not a directory.
-    NotADirectory {
-        path: String,
-    },
-    /// Already registered — switching to it is the right action, not adding
-    /// it twice.
-    AlreadyRegistered {
-        project_id: String,
-    },
-    /// The path is inside another registered project's tree. Nested projects
-    /// would make `.worktree/` and `.autome/` ambiguous.
-    NestedInProject {
-        project_id: String,
-        path: String,
-    },
-    /// The repository has no resolvable default branch and none could be
-    /// created (e.g. a bare repository).
-    NoDefaultBranch {
-        path: String,
-    },
-    PermissionDenied {
-        path: String,
-        detail: String,
-    },
-}
-
-impl std::fmt::Display for AddRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AddRejection::NotADirectory { path } => write!(f, "{path} 不是目录"),
-            AddRejection::AlreadyRegistered { .. } => write!(f, "该目录已经是一个项目"),
-            AddRejection::NestedInProject { path, .. } => {
-                write!(f, "{path} 位于另一个项目内部，不能嵌套")
-            }
-            AddRejection::NoDefaultBranch { path } => {
-                write!(f, "{path} 没有可用的默认分支")
-            }
-            AddRejection::PermissionDenied { path, detail } => {
-                write!(f, "没有权限访问 {path}：{detail}")
-            }
-        }
-    }
-}
-
-/// Why a project cannot be removed from the registry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RemoveRejection {
-    /// Requirement P-08: a running task owns a worktree and possibly a live
-    /// session; dropping the registration would orphan both.
-    HasRunningTasks {
-        task_ids: Vec<String>,
-    },
-    NotFound {
-        project_id: String,
-    },
-}
-
 /// Derives a project's display name from its path. Falls back to the whole
 /// path when the last component is unusable, so the name is never empty.
 pub fn display_name_from_path(path: &str) -> String {
@@ -436,15 +374,6 @@ mod tests {
     fn unique_slug_appends_a_counter_on_collision() {
         let taken = |s: &str| s == "checkout" || s == "checkout-2";
         assert_eq!(unique_slug("checkout", taken), "checkout-3");
-    }
-
-    #[test]
-    fn rejections_render_a_message() {
-        let r = AddRejection::NestedInProject {
-            project_id: "p1".into(),
-            path: "/a/b".into(),
-        };
-        assert!(r.to_string().contains("/a/b"));
     }
 
     #[test]

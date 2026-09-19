@@ -11,15 +11,11 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = "0.8"
-thiserror = "2"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "sync"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 libc = "0.2"
 toml = "0.8"
 toml_edit = "0.22"

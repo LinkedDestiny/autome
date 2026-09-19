@@ -5,18 +5,18 @@
 //! worth their cost:
 //!
 //! - **`closed_then_contradicted`.** A milestone that was closed and then
-//!    taken back — by a later audit, or by a human at the merge gate. This is
-//!    the direct measurement of an audit going soft, and it replaces an
-//!    earlier heuristic ("defects down *and* reopens down") that would have
-//!    flagged a protocol which had genuinely improved. It cannot be read off
-//!    the final document, because the final document shows the milestone as
-//!    open and says nothing about it having once been closed; it is counted as
-//!    it happens, from consecutive status snapshots.
+//!   taken back — by a later audit, or by a human at the merge gate. This is
+//!   the direct measurement of an audit going soft, and it replaces an
+//!   earlier heuristic ("defects down *and* reopens down") that would have
+//!   flagged a protocol which had genuinely improved. It cannot be read off
+//!   the final document, because the final document shows the milestone as
+//!   open and says nothing about it having once been closed; it is counted as
+//!   it happens, from consecutive status snapshots.
 //! - **`impl_defects` / `verification_gaps`.** The audit round's three-way
-//!    verdict, counted from the evidence files rather than from anything the
-//!    core observes — the distinction between "the product behaved wrongly"
-//!    and "the acceptance could have passed a wrong implementation" exists
-//!    only in the audit's own words.
+//!   verdict, counted from the evidence files rather than from anything the
+//!   core observes — the distinction between "the product behaved wrongly"
+//!   and "the acceptance could have passed a wrong implementation" exists
+//!   only in the audit's own words.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -119,7 +119,6 @@ pub fn aggregate(
     status: Option<&StatusBlock>,
     budget_n: u32,
     protocol_ref: Option<String>,
-    rules_hash: Option<String>,
     counts: Counts,
 ) -> TaskMetrics {
     let mut by_domain: BTreeMap<String, u32> = BTreeMap::new();
@@ -141,7 +140,10 @@ pub fn aggregate(
 
     TaskMetrics {
         protocol_ref,
-        rules_hash,
+        // Never populated: nothing writes `tasks.rules_hash`, so the source
+        // was always `None`. `skip_serializing_if` kept it off the wire
+        // either way, so dropping the argument changes no output.
+        rules_hash: None,
         design_rounds_used: design_used,
         design_rounds_limit: design_limit,
         impl_rounds_used: impl_used,
@@ -212,7 +214,7 @@ mod tests {
             milestone("M-01", MilestoneState::Done, 2, &["escaping", "escaping"]),
             milestone("M-02", MilestoneState::Done, 1, &["timing"]),
         ]);
-        let m = aggregate(Some(&s), 35, None, None, counts());
+        let m = aggregate(Some(&s), 35, None, counts());
         assert_eq!(m.reopen_total, 3);
         assert_eq!(m.reopens_in("escaping"), 2);
         assert_eq!(m.reopens_in("timing"), 1);
@@ -229,7 +231,6 @@ mod tests {
             None,
             0,
             Some("protocol/v1@abc".into()),
-            None,
             Counts {
                 protocol_failures: 1,
                 total_tokens: 500,

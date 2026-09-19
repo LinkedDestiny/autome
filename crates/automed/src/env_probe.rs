@@ -37,7 +37,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use autome_domain::environment::{Component, ComponentStatus, Environment, Login};
 
@@ -181,13 +181,6 @@ const UNRECOGNISED_MARKERS: &[&str] = &[
 pub fn probe_all() -> Environment {
     let path_var = std::env::var("PATH").unwrap_or_default();
     probe_all_with(&path_var, Path::new(ITERM_APP_PATH), &now_rfc3339())
-}
-
-/// Probes one component against the real machine.
-pub fn probe(component: Component) -> ComponentStatus {
-    let now = now_rfc3339();
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    probe_with(component, &path_var, Path::new(ITERM_APP_PATH), &now)
 }
 
 /// Whether an install recipe's prerequisite (`InstallRecipe::prerequisite`,
@@ -729,41 +722,10 @@ fn read_to_string_lossy<R: std::io::Read>(pipe: Option<R>) -> String {
 
 /// `ComponentStatus::checked_at` as UTC RFC 3339, to the second.
 ///
-/// Formatted by hand rather than pulled from a date crate because this
-/// module has exactly one timestamp and the conversion is twenty lines of
-/// arithmetic that can be tested against known epochs. A clock before the
-/// Unix epoch (a machine with a badly wrong date) formats as a pre-1970
-/// instant rather than panicking.
+/// The same format the store stamps every row with, from the same function,
+/// so a probe result and a database row sort against each other.
 fn now_rfc3339() -> String {
-    let secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64,
-        Err(e) => -(e.duration().as_secs() as i64),
-    };
-    rfc3339_from_unix_secs(secs)
-}
-
-fn rfc3339_from_unix_secs(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
-}
-
-/// Days since 1970-01-01 to a proleptic Gregorian date (Hinnant's
-/// `civil_from_days`). Integer arithmetic only, no leap-second notion —
-/// which is what RFC 3339 wants for a wall-clock stamp anyway.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    crate::store::now_iso()
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +736,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// A unique scratch directory under the system temp dir. No `tempfile`
     /// dependency: the crate has none today and one throwaway directory per
@@ -1394,20 +1357,6 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_format_as_utc_rfc3339() {
-        assert_eq!(rfc3339_from_unix_secs(0), "1970-01-01T00:00:00Z");
-        assert_eq!(
-            rfc3339_from_unix_secs(1_700_000_000),
-            "2023-11-14T22:13:20Z"
-        );
-        assert_eq!(
-            rfc3339_from_unix_secs(1_709_164_800),
-            "2024-02-29T00:00:00Z"
-        );
-        assert_eq!(rfc3339_from_unix_secs(-1), "1969-12-31T23:59:59Z");
-    }
-
-    #[test]
     fn a_sweep_returns_all_four_components_in_order_under_one_timestamp() {
         let empty = Scratch::new("sweep");
         let path_var = empty.path().display().to_string();
@@ -1425,18 +1374,6 @@ mod tests {
             assert!(!status.present);
         }
         assert!(!env.can_run_anything(), "no git means nothing can run");
-    }
-
-    #[test]
-    fn probing_the_real_machine_does_not_panic() {
-        // Deliberately cheap: iTerm2 is a stat, and a real sweep would
-        // spend the whole login table against whichever CLIs this machine
-        // has installed. Correctness lives in the tests above; this one
-        // only proves the real wiring runs.
-        let status = probe(Component::ITerm2);
-        assert_eq!(status.component, Component::ITerm2);
-        assert!(!status.checked_at.is_empty());
-        assert!(status.checked_at.ends_with('Z'));
     }
 
     #[test]

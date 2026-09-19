@@ -41,4 +41,4 @@ class FrameDecoder {
   }
 }
 
-module.exports = { encodeFrame, FrameDecoder, LENGTH_PREFIX_BYTES };
+module.exports = { encodeFrame, FrameDecoder };

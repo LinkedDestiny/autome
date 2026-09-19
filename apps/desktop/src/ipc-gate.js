@@ -24,11 +24,9 @@ const ALLOWED_READ_METHODS = Object.freeze([
   'session.log',
   'dashboard.get',
   'config.get',
-  'config.validate',
   'env.get',
   'env.install_recipe',
   'skills.list',
-  'events.since',
   'protocol.get',
   'protocol.versions',
   'protocol.eval',
@@ -89,9 +87,7 @@ function validateReadRequest(request) {
 
 module.exports = {
   ALLOWED_READ_METHODS,
-  TRUSTED_ORIGIN_PREFIX,
   MAX_PAYLOAD_JSON_LENGTH,
   isTrustedSenderUrl,
-  isAllowedMethod,
   validateReadRequest,
 };

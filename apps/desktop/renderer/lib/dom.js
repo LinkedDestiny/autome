@@ -95,20 +95,6 @@ export function clear(el) {
   return el;
 }
 
-/** Replaces a host's contents with `children`. */
-export function mount(host, children) {
-  clear(host);
-  return append(host, children);
-}
-
-export function qs(selector, root) {
-  return (root || document).querySelector(selector);
-}
-
-export function qsa(selector, root) {
-  return Array.from((root || document).querySelectorAll(selector));
-}
-
 /**
  * The design system's staggered reveal. The mock wrote `style="--i:3"`; the
  * CSP will not let us, so the custom property is set through CSSOM instead.

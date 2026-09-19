@@ -188,17 +188,10 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .ok()
         .and_then(|t| ExitMarker::parse(&t));
     let alive = s.pid.map(launcher::pid_alive).unwrap_or(false);
-    // A session cannot have been idle longer than it has existed.
-    //
-    // `log_idle_secs` reports a missing log as maximally idle, which is right
-    // for a log that was never written — but between the core recording a
-    // session and the terminal actually starting the wrapper there is a window
-    // where the log does not exist yet. On an unloaded machine that window is
-    // milliseconds; on a busy one it is long enough that the very next tick
-    // declared a just-launched session vanished and failed the task. Both of
-    // those are the same bug, and this is the floor that closes it.
-    let idle = log_idle_secs(&repo.join(SessionPaths::log(&s.task_id, &s.id)))
-        .min(secs_since(&s.started_at).unwrap_or(u64::MAX));
+    let idle = session_idle_secs(
+        &repo.join(SessionPaths::log(&s.task_id, &s.id)),
+        &s.started_at,
+    );
 
     let lifecycle = session::classify(marker.as_ref(), alive, idle);
     if lifecycle.is_running() {
@@ -290,7 +283,6 @@ fn apply_guards(
         retro_added,
         design_bytes,
         evidence_files: evidence_filenames(&worktree, &task.doc_dir()),
-        changed_paths: vec![],
         design_changed_outside_milestones: design_changed_outside_milestones(
             &worktree,
             task,
@@ -579,6 +571,25 @@ fn log_idle_secs(log: &Path) -> u64 {
     modified.elapsed().map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// How long a session has been idle, floored by how long it has existed.
+///
+/// `log_idle_secs` reports a missing log as maximally idle, which is right for
+/// a log that was never written — but between the core recording a session and
+/// the terminal actually starting the wrapper there is a window where the log
+/// does not exist yet. On an unloaded machine that window is milliseconds; on a
+/// busy one it is long enough that the very next tick declared a just-launched
+/// session vanished and failed the task before it had run at all. A session
+/// cannot have been idle longer than it has existed, and that is the floor that
+/// closes it.
+///
+/// Named rather than inlined at the one call site so the tests below can
+/// exercise the floor itself. They used to restate the expression and assert
+/// against their own copy, which meant the floor could have been deleted
+/// outright and both of them would still have passed.
+fn session_idle_secs(log: &Path, started_at: &str) -> u64 {
+    log_idle_secs(log).min(secs_since(started_at).unwrap_or(u64::MAX))
+}
+
 /// Turns a finished session into the outcome the transition table expects
 /// (design §7.3): a clean exit means "read the document", anything else is a
 /// crash, and a document that will not parse is a protocol failure.
@@ -819,7 +830,6 @@ fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
         status.as_ref(),
         task.budget_n.unwrap_or(0),
         task.protocol_ref.clone(),
-        task.rules_hash.clone(),
         counts,
     );
     ctx.store.set_task_metrics(task_id, &metrics)?;
@@ -1003,7 +1013,7 @@ fn start_session(
     let brief_path = match kind.role() {
         Some(role) => write_brief(
             ctx,
-            &task,
+            task,
             &worktree,
             &protocol,
             role,
@@ -1038,7 +1048,6 @@ fn start_session(
         runtime: role_config.runtime,
         args: launcher::build_args(&role_config, &worktree),
         prompt,
-        title: launcher::tab_title(&task.id, kind, round),
         mode: ctx.launch_mode,
     })?;
 
@@ -1134,7 +1143,6 @@ fn freeze_protocol(
         return Ok((recorded, files));
     }
 
-    let repo = PathBuf::from(&ctx.store.get_project(&task.project_id)?.path);
     let pin = resolved.protocol_pin.clone();
     let (protocol_ref, files) = crate::protocol::ensure(&ctx.autome_home)
         .and_then(|r| r.resolve(pin.as_deref()))
@@ -1150,7 +1158,6 @@ fn freeze_protocol(
     )?;
     ctx.store
         .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
-    let _ = repo;
     Ok((protocol_ref, files))
 }
 
@@ -1676,7 +1683,6 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         runtime: role_config.runtime,
         args: launcher::build_args(&role_config, &repo),
         prompt,
-        title: format!("autome · {} · Onboarding", project.display_name),
         mode: ctx.launch_mode,
     })?;
 
@@ -1692,30 +1698,6 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
 /// task, so it never appears in a task list; it exists only so the wrapper
 /// script's paths are well-defined.
 pub const ONBOARDING_SESSION_KEY: &str = "onboarding";
-
-/// Whether an Onboarding session has finished, and where its log is.
-pub fn onboarding_status(repo: &Path, session_id: &str) -> (bool, Option<String>) {
-    let marker = repo.join(SessionPaths::exit(ONBOARDING_SESSION_KEY, session_id));
-    let done = std::fs::read_to_string(&marker)
-        .ok()
-        .and_then(|t| ExitMarker::parse(&t))
-        .is_some();
-    let log = repo.join(SessionPaths::log(ONBOARDING_SESSION_KEY, session_id));
-    (
-        done,
-        log.exists().then(|| log.to_string_lossy().into_owned()),
-    )
-}
-
-/// Marks a task failed with a reason, used when a launch could not even be
-/// attempted.
-pub fn fail_task(ctx: &mut Ctx, task_id: &str, at: Node, reason: FailureReason) -> Result<()> {
-    ctx.store
-        .set_task_state(task_id, &TaskState::Failed { at, reason })?;
-    ctx.store
-        .append_event("task.updated", task_id, json!({ "failed": true }))?;
-    Ok(())
-}
 
 /// Which role a task's next session would use, for the panel's "current
 /// session" card before the session actually exists.
@@ -2910,15 +2892,16 @@ mod tests {
         // between recording a session and the terminal starting the wrapper
         // the log does not exist. On a loaded machine that window was long
         // enough for the next tick to declare the session vanished and fail
-        // the task before it had run at all.
+        // the task before it had run at all. A log that is genuinely absent is
+        // the whole point, so the path below is one that cannot exist.
         let started = now_iso();
-        let idle = u64::MAX.min(secs_since(&started).unwrap_or(u64::MAX));
+        let idle = session_idle_secs(Path::new("/nonexistent/log"), &started);
         assert!(idle < autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
     }
 
     #[test]
     fn a_session_started_long_ago_with_no_log_is_still_vanished() {
-        let idle = u64::MAX.min(secs_since("2020-01-01T00:00:00Z").unwrap_or(u64::MAX));
+        let idle = session_idle_secs(Path::new("/nonexistent/log"), "2020-01-01T00:00:00Z");
         assert!(idle >= autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
     }
 

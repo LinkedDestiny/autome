@@ -14,14 +14,10 @@ path = "src/main.rs"
 autome-domain = { path = "../autome-domain" }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 rusqlite.workspace = true
-sha2.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-time.workspace = true
 libc.workspace = true
 toml.workspace = true
 toml_edit.workspace = true

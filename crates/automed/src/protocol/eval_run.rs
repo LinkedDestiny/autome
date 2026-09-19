@@ -345,29 +345,21 @@ fn scaffold(plan: &Plan<'_>, case: &Case, run: u32) -> Result<PathBuf, String> {
 }
 
 /// Every text file under a directory, for the before/after the grader reads.
+/// The same recursive read the rest of the module does, rather than a second
+/// one: `ProtocolFiles` is a `BTreeMap`, so iterating it is already the sorted
+/// order this used to produce by hand. `unwrap_or_default` because the only
+/// callers snapshot a directory `scaffold()` just created — a read that fails
+/// there means an empty before/after, which is what the hand-rolled walk did
+/// too.
 fn snapshot(dir: &Path) -> Vec<(String, String)> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.file_name().is_some_and(|n| n == ".git") {
-                continue;
-            }
-            if path.is_dir() {
-                walk(root, &path, out);
-            } else if let Ok(text) = std::fs::read_to_string(&path)
-                && let Ok(rel) = path.strip_prefix(root)
-            {
-                out.push((rel.to_string_lossy().to_string(), text));
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, dir, &mut out);
-    out.sort();
-    out
+    super::read_dir_protocol(dir)
+        .map(|files| {
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The stream as a person would read it, which is also what a grader can judge

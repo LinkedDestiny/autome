@@ -17,10 +17,6 @@ function windowEl() {
   return document.getElementById('window');
 }
 
-export function isOpen() {
-  return current !== null;
-}
-
 export function close() {
   if (!current) return;
   const drawer = document.getElementById('drawer');

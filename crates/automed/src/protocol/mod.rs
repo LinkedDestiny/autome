@@ -22,8 +22,8 @@
 //!    `protocol/v7` pointing at different content. `ProtocolRef` carries both
 //!    and compares on the hash, so the difference shows up instead of hiding.
 //! 3. **Upgrading the binary never overwrites the user's repository.** A newer
-//!    seed lands on its own tag, `protocol/vN-upstream`, for the user to diff
-//!    and merge. Their edits are theirs.
+//!    seed lands on its own tag, `protocol/upstream-<hash>`, for the user to
+//!    diff and merge. Their edits are theirs.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,10 +33,6 @@ use autome_domain::protocol::{ContractRegion, ProtocolFiles, ProtocolRef};
 
 use crate::git;
 
-/// Bumped whenever any seed file changes. Drives the `-upstream` tag an
-/// existing repository gets offered after an upgrade.
-pub const SEED_VERSION: u32 = 2;
-
 /// Directory under `~/.autome`.
 pub const DIRNAME: &str = "protocol";
 
@@ -44,6 +40,11 @@ pub const DIRNAME: &str = "protocol";
 pub const TASK_SUBDIR: &str = "protocol";
 
 const TAG_PREFIX: &str = "protocol/v";
+
+/// Deliberately outside `TAG_PREFIX`, so `tags()`'s `protocol/v*` glob cannot
+/// match an upstream tag at all rather than relying on the version parse to
+/// reject it.
+const UPSTREAM_TAG_PREFIX: &str = "protocol/upstream-";
 
 /// The files a fresh repository starts from, compiled into the binary.
 ///
@@ -238,9 +239,9 @@ pub fn ensure(autome_home: &Path) -> Result<Repo> {
 }
 
 impl Repo {
-    /// Released tags, oldest first. Tags that are not `protocol/vN` — including
-    /// the `-upstream` ones — are ignored: they are not versions a task can run
-    /// under.
+    /// Released tags, oldest first. Tags that are not `protocol/vN` — the
+    /// upstream ones included, which is why they carry their own prefix — are
+    /// ignored: they are not versions a task can run under.
     pub fn tags(&self) -> Result<Vec<String>> {
         let out = git::run(&self.path, &["tag", "--list", "protocol/v*"])?;
         let mut tags: Vec<(u32, String)> = out
@@ -252,12 +253,6 @@ impl Repo {
             .collect();
         tags.sort_by_key(|(n, _)| *n);
         Ok(tags.into_iter().map(|(_, t)| t).collect())
-    }
-
-    pub fn latest_tag(&self) -> Result<String> {
-        self.tags()?
-            .pop()
-            .ok_or_else(|| err("协议仓库里没有任何 protocol/vN 标签"))
     }
 
     pub fn next_tag(&self) -> Result<String> {
@@ -400,16 +395,6 @@ impl Repo {
 
     /// One file out of a revision, without materialising the tree.
     ///
-    /// `files_at` is two processes and reads the whole tree; a caller that
-    /// wants one file pays for 91 it will discard. One `git show` is cheaper
-    /// when the answer really is a single file at a single revision. For the
-    /// same file across several revisions use `file_across`, which is one
-    /// process for all of them.
-    pub fn file_at(&self, rev: &str, path: &str) -> Result<String> {
-        let spec = format!("{rev}:{path}");
-        Ok(git::run_ok(&self.path, &["show", &spec])?.stdout)
-    }
-
     /// The files as they sit on disk. Used by the meta task's worktree and by
     /// `protocol eval` when checking work in progress.
     pub fn working_files(&self) -> Result<ProtocolFiles> {
@@ -491,7 +476,7 @@ impl Repo {
     /// After a binary upgrade, put the new seed on its own tag so the user can
     /// diff and merge. Never touches `main`.
     fn offer_upstream(&self) -> Result<()> {
-        self.offer_upstream_of(seed(), &format!("{TAG_PREFIX}{SEED_VERSION}-upstream"))
+        self.offer_upstream_of(seed(), &upstream_tag_for(seed()))
     }
 
     /// The body of `offer_upstream`, with the seed and tag passed in so a test
@@ -556,6 +541,21 @@ impl Repo {
 
 fn version_number(tag: &str) -> Option<u32> {
     tag.strip_prefix(TAG_PREFIX)?.parse().ok()
+}
+
+/// The tag a repository is offered after a binary upgrade, named by the seed's
+/// own hash.
+///
+/// This was a hand-maintained `SEED_VERSION` constant, bumped by whoever
+/// changed a seed file. Twice it was not: `f681b8c` changed nine seed files and
+/// `154104c` changed ten, both leaving it at 2. That is worse than it sounds,
+/// because `offer_upstream_of` short-circuits on "a tag with this name already
+/// exists" *before* it compares hashes — so a repository that had once taken
+/// `protocol/v2-upstream` would never be offered a newer seed again, which is
+/// precisely what the hash comparison was there to prevent. Deriving the name
+/// from the seed means the tag cannot go stale while the seed moves.
+fn upstream_tag_for(seed: &ProtocolFiles) -> String {
+    format!("{UPSTREAM_TAG_PREFIX}{}", &seed.hash()[..12])
 }
 
 fn write_files(root: &Path, files: &ProtocolFiles) -> Result<()> {
@@ -663,16 +663,6 @@ pub fn copy_into_task(files: &ProtocolFiles, worktree: &Path, doc_dir: &str) -> 
     Ok(written)
 }
 
-/// The path a session is pointed at for the loop protocol.
-pub fn task_loop_protocol(doc_dir: &str) -> String {
-    format!("{doc_dir}/{TASK_SUBDIR}/loop-protocol.md")
-}
-
-/// The path a session is pointed at for the session protocol.
-pub fn task_session_protocol(doc_dir: &str) -> String {
-    format!("{doc_dir}/{TASK_SUBDIR}/session-protocol.md")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,7 +708,7 @@ mod tests {
     fn the_seed_contract_markers_are_well_formed() {
         // `expected_contract` panics on malformed markers, which would be a
         // panic at first use on a user's machine. Fail here instead.
-        let regions = autome_domain::protocol::regions(&seed()).expect("seed markers");
+        let regions = autome_domain::protocol::regions(seed()).expect("seed markers");
         let names: Vec<String> = regions.iter().map(|r| r.key()).collect();
         assert!(names.contains(&format!("{SESSION_PROTOCOL}#status-block")), "{names:?}");
         assert!(names.contains(&format!("{SESSION_PROTOCOL}#milestone-table")), "{names:?}");
@@ -732,7 +722,7 @@ mod tests {
 
     #[test]
     fn the_seed_satisfies_its_own_contract() {
-        assert_eq!(verify_contract(expected_contract(), &seed()), vec![]);
+        assert_eq!(verify_contract(expected_contract(), seed()), vec![]);
     }
 
     #[test]
@@ -842,12 +832,11 @@ mod tests {
         assert_eq!(repo.files_at(&v2.tag).unwrap().hash(), v2.hash);
     }
 
-    /// `file_at` is the whole-tree read narrowed to one path; it has to agree
-    /// with it, or the version page would quietly show a different CHANGELOG
-    /// than the one in the tag.
-    /// The batched read has to agree with the single read, and has to skip a
-    /// revision that lacks the file rather than shifting every later answer by
-    /// one — `--batch` reports those as `<name> missing`, with no body.
+    /// The batched read has to agree with reading the whole tree — or the
+    /// version page would quietly show a different CHANGELOG than the one in
+    /// the tag — and has to skip a revision that lacks the file rather than
+    /// shifting every later answer by one; `--batch` reports those as
+    /// `<name> missing`, with no body.
     #[test]
     fn the_same_file_across_revisions_matches_reading_them_one_at_a_time() {
         if !git_available() {
@@ -863,7 +852,12 @@ mod tests {
         let batched = repo.file_across(&tags, "CHANGELOG.md").unwrap();
         assert_eq!(batched.len(), 2);
         for tag in &tags {
-            assert_eq!(batched[tag], repo.file_at(tag, "CHANGELOG.md").unwrap(), "{tag}");
+            let whole = repo.files_at(tag).unwrap();
+            assert_eq!(
+                batched[tag],
+                *whole.get("CHANGELOG.md").expect("seed ships this file"),
+                "{tag}"
+            );
         }
         assert_eq!(batched[&v2.tag], "# 第二版\n");
 
@@ -876,28 +870,6 @@ mod tests {
             .unwrap();
         assert_eq!(mixed.keys().collect::<Vec<_>>(), vec![&v3.tag]);
         assert_eq!(mixed[&v3.tag], "只在 v3\n");
-    }
-
-    #[test]
-    fn one_file_out_of_a_revision_matches_the_whole_tree_read() {
-        if !git_available() {
-            return;
-        }
-        let home = Home::new("file-at");
-        let repo = ensure(&home.0).unwrap();
-        let v1 = repo.release("v1").unwrap();
-
-        let whole = repo.files_at(&v1.tag).unwrap();
-        for path in ["CHANGELOG.md", LOOP_PROTOCOL] {
-            assert_eq!(
-                repo.file_at(&v1.tag, path).unwrap(),
-                *whole.get(path).expect("seed ships this file"),
-                "{path}"
-            );
-        }
-        // A path the revision does not have is an error, not an empty string:
-        // silently returning "" would parse as a changelog with no entries.
-        assert!(repo.file_at(&v1.tag, "nope.md").is_err());
     }
 
     #[test]
@@ -953,10 +925,10 @@ mod tests {
         let mut next_seed = seed().clone();
         let upstream_text = format!("{}\n上游新加的条文。\n", next_seed.loop_protocol().unwrap());
         next_seed.insert(LOOP_PROTOCOL, upstream_text);
-        let tag = "protocol/v2-upstream";
-        repo.offer_upstream_of(&next_seed, tag).unwrap();
+        let tag = upstream_tag_for(&next_seed);
+        repo.offer_upstream_of(&next_seed, &tag).unwrap();
 
-        let listed = git::run(&repo.path, &["tag", "--list", tag]).unwrap();
+        let listed = git::run(&repo.path, &["tag", "--list", &tag]).unwrap();
         assert_eq!(listed.stdout.trim(), tag);
         // The user's version is untouched and still what a task resolves to.
         assert_eq!(repo.resolve(None).unwrap().0, mine);
@@ -968,10 +940,42 @@ mod tests {
                 .contains("用户自己的条文")
         );
         // The offered tag is the new seed, and only that.
-        assert_eq!(repo.files_at(tag).unwrap().hash(), next_seed.hash());
+        assert_eq!(repo.files_at(&tag).unwrap().hash(), next_seed.hash());
         // Offering twice is a no-op.
-        repo.offer_upstream_of(&next_seed, tag).unwrap();
-        assert_eq!(repo.files_at(tag).unwrap().hash(), next_seed.hash());
+        repo.offer_upstream_of(&next_seed, &tag).unwrap();
+        assert_eq!(repo.files_at(&tag).unwrap().hash(), next_seed.hash());
+    }
+
+    /// The regression the hand-maintained `SEED_VERSION` could not survive.
+    ///
+    /// `offer_upstream_of` returns early when a tag of that name already
+    /// exists, so a name that does not move when the seed moves silences the
+    /// offer permanently: the repository keeps the first seed it was given and
+    /// every later one is dropped on the floor. Two seed changes shipped with
+    /// the constant left alone before this was noticed.
+    #[test]
+    fn the_upstream_tag_moves_when_the_seed_does() {
+        let mut changed = seed().clone();
+        changed.insert(
+            LOOP_PROTOCOL,
+            format!("{}\n一条新条文。\n", changed.loop_protocol().unwrap()),
+        );
+        assert_ne!(
+            upstream_tag_for(seed()),
+            upstream_tag_for(&changed),
+            "两个不同的种子必须落在两个不同的上游标签上"
+        );
+        // And is stable for a seed that did not change, so an unchanged binary
+        // never offers the same content twice.
+        assert_eq!(upstream_tag_for(seed()), upstream_tag_for(&seed().clone()));
+    }
+
+    /// `tags()` must not mistake an upstream tag for a released version — a
+    /// task resolving to one would run a protocol the user never accepted.
+    #[test]
+    fn an_upstream_tag_is_not_a_released_version() {
+        assert_eq!(version_number(&upstream_tag_for(seed())), None);
+        assert!(!upstream_tag_for(seed()).starts_with(TAG_PREFIX));
     }
 
     #[test]
@@ -979,12 +983,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("autome-copy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let written = copy_into_task(&seed(), &dir, "docs/demo").unwrap();
+        let written = copy_into_task(seed(), &dir, "docs/demo").unwrap();
         assert!(written.iter().any(|p| p.ends_with("loop-protocol.md")));
         assert!(written.iter().any(|p| p.ends_with("prompts/impl.md")));
         assert!(!written.iter().any(|p| p.contains("/evals/")));
-        assert!(dir.join(task_loop_protocol("docs/demo")).exists());
-        assert!(dir.join(task_session_protocol("docs/demo")).exists());
+        // Spelled out rather than built from a helper: these are the paths the
+        // seed's prompts name literally, and this is what pins the copy to
+        // what a session will actually go looking for.
+        assert!(dir.join("docs/demo/protocol/loop-protocol.md").exists());
+        assert!(dir.join("docs/demo/protocol/session-protocol.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

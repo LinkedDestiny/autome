@@ -65,9 +65,9 @@ specified, what survives, and why the rest was dropped.
 ## Building
 
 ```sh
-cargo test                      # 176 domain + 289 automed + 16 end-to-end
-cargo clippy --all-targets      # clean
-cd apps/desktop && npm test     # 102: the shell, the gates and the renderer
+cargo test                      # the domain, the core, and the end-to-end suite
+cargo clippy --all-targets      # warnings are errors in CI
+cd apps/desktop && npm test     # the shell, the gates and the renderer
 ```
 
 The end-to-end suite drives a whole task from a one-line request to a merge

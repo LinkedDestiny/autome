@@ -65,7 +65,13 @@ impl Skill {
 }
 
 /// The whole inventory for one project: its own skills plus the global ones.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialize only, deliberately. The visibility cache below is derived from
+/// `skills` and is not serialised, so a deserialised inventory would answer
+/// every visibility question with "not visible" until something recomputed it
+/// — a trap with no upside, since the only way one is ever built is by
+/// scanning the filesystem.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SkillInventory {
     /// Keyed by name so lookup during validation is not a linear scan, and so
     /// the listing order is deterministic.
@@ -100,16 +106,6 @@ impl SkillInventory {
             .map(|(n, s)| (n.clone(), s.visible_to()))
             .collect();
         Self { skills, visibility }
-    }
-
-    /// Recomputes the visibility cache — needed after deserialising, since
-    /// the cache is not serialised.
-    pub fn reindex(&mut self) {
-        self.visibility = self
-            .skills
-            .iter()
-            .map(|(n, s)| (n.clone(), s.visible_to()))
-            .collect();
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
@@ -296,19 +292,4 @@ mod tests {
         assert!(roots.iter().all(|(_, _, p)| !p.contains("//")));
     }
 
-    #[test]
-    fn reindex_restores_visibility_after_a_json_round_trip() {
-        let inv = SkillInventory::from_sources([(
-            "a".to_string(),
-            src(Runtime::Codex, Scope::Global, "/h/.agents/skills/a"),
-        )]);
-        let json = serde_json::to_string(&inv).unwrap();
-        let mut decoded: SkillInventory = serde_json::from_str(&json).unwrap();
-        assert_eq!(SkillVisibility::visible_to(&decoded, "a"), None);
-        decoded.reindex();
-        assert_eq!(
-            SkillVisibility::visible_to(&decoded, "a"),
-            Some([Runtime::Codex].as_slice())
-        );
-    }
 }

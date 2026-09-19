@@ -74,5 +74,4 @@ module.exports = {
   RENDERER_DIR,
   registerSchemeAsPrivileged,
   registerAppProtocol,
-  contentTypeFor,
 };

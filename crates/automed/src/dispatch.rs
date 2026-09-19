@@ -87,13 +87,6 @@ impl Ctx {
         self.launch_mode = crate::launcher::LaunchMode::Headless;
         self
     }
-
-    /// Opens a visible terminal per session. Nothing in the product does this
-    /// any more; it exists so the mode stays reachable and tested.
-    pub fn with_terminal(mut self) -> Self {
-        self.launch_mode = crate::launcher::LaunchMode::Terminal;
-        self
-    }
 }
 
 /// The environment snapshot, and whether a probe is in flight.

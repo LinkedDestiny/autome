@@ -43,7 +43,6 @@ pub fn get(ctx: &mut Ctx) -> DispatchResult {
             "path": repo.path.to_string_lossy(),
             "tags": tags,
             "current": { "tag": current.tag, "hash": current.hash, "wire": current.to_wire() },
-            "files": files.paths().collect::<Vec<_>>(),
             "bytes": files.sized_bytes(),
             "byte_budget": autome_domain::protocol::SIZE_BUDGET_BYTES,
             "contract_breaches": breaches.iter().map(|b| b.to_string()).collect::<Vec<_>>(),

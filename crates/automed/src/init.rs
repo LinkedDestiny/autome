@@ -560,12 +560,6 @@ const RULES_README_MD: &str = r#"# 项目规则
 本文件本身可以删除。
 "#;
 
-/// Whether a repository already has the scaffold, used to decide between
-/// "add project" and "reopen project".
-pub fn is_initialised(repo: &Path) -> bool {
-    repo.join(".autome/skill/run_session.sh").exists()
-}
-
 /// Where the wrapper script lives, absolute.
 pub fn wrapper_script(repo: &Path) -> PathBuf {
     repo.join(".autome/skill/run_session.sh")
@@ -634,7 +628,6 @@ mod tests {
         assert!(dir.path().join(".autome/output/sessions").is_dir());
         assert!(dir.path().join("docs").is_dir());
         assert!(report.changed());
-        assert!(is_initialised(dir.path()));
     }
 
     #[test]
@@ -907,14 +900,6 @@ mod tests {
 
         let second = init(dir.path()).unwrap();
         assert!(second.paths_to_commit().is_empty());
-    }
-
-    #[test]
-    fn is_initialised_is_false_before_and_true_after() {
-        let dir = TempDir::new("is-init");
-        assert!(!is_initialised(dir.path()));
-        init(dir.path()).unwrap();
-        assert!(is_initialised(dir.path()));
     }
 
     #[test]

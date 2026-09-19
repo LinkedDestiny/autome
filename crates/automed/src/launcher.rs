@@ -585,10 +585,6 @@ pub enum LaunchMode {
     /// panel opens that log, and `tail -f` follows it live.
     #[default]
     Headless,
-    /// Hand the command to iTerm2 or Terminal, where the user can watch it.
-    /// No longer used by the desktop; kept because it is a real mode and the
-    /// only way to put a session in front of someone deliberately.
-    Terminal,
     /// Write the prompt and record the launch, but start nothing. Unit tests
     /// that only care about the state transition use this.
     Dry,
@@ -606,7 +602,6 @@ pub struct LaunchSpec<'a> {
     pub runtime: Runtime,
     pub args: Vec<String>,
     pub prompt: String,
-    pub title: String,
     pub mode: LaunchMode,
 }
 
@@ -621,8 +616,6 @@ pub struct Launched {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Terminal {
-    ITerm2,
-    Terminal,
     /// The wrapper was executed directly, with no window.
     Headless,
     /// Nothing was started.
@@ -632,8 +625,6 @@ pub enum Terminal {
 impl Terminal {
     pub fn as_str(self) -> &'static str {
         match self {
-            Terminal::ITerm2 => "iTerm2",
-            Terminal::Terminal => "Terminal",
             Terminal::Headless => "headless",
             Terminal::Dry => "dry",
         }
@@ -689,7 +680,7 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     ];
     argv.extend(spec.args.iter().cloned());
 
-    let terminal = run_in_terminal(spec.mode, &argv, spec.cwd, &spec.title)?;
+    let terminal = run_in_terminal(&argv, spec.cwd)?;
 
     Ok(Launched {
         log_path: log_path.to_string_lossy().into_owned(),
@@ -698,8 +689,6 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     })
 }
 
-/// Which terminal to use. iTerm2 when present, Terminal otherwise
-/// (requirement E-02).
 /// This executable's own path, which the wrapper invokes as
 /// `automed render-stream` to turn Claude's `stream-json` into a readable log.
 ///
@@ -713,30 +702,19 @@ fn renderer_path() -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn run_in_terminal(mode: LaunchMode, argv: &[String], cwd: &Path, title: &str) -> Result<Terminal> {
-    if mode == LaunchMode::Headless || cfg!(test) {
-        // `cfg!(test)` is a backstop, not the mechanism: a unit test inside
-        // this crate that forgets to pass `Dry` still must not open a window
-        // on the developer's machine.
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..])
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        cmd.spawn()
-            .map_err(|e| err(format!("无法启动包装脚本：{e}")))?;
-        return Ok(Terminal::Headless);
-    }
-
-    let script = shell_command(argv, cwd);
-    if Path::new("/Applications/iTerm.app").exists() {
-        run_osascript(&iterm_applescript(&script, title))?;
-        Ok(Terminal::ITerm2)
-    } else {
-        run_osascript(&terminal_applescript(&script))?;
-        Ok(Terminal::Terminal)
-    }
+/// Starts the wrapper detached, with no window at all — the only non-dry mode
+/// there is. The wrapper tees the CLI's output to the session log, which is
+/// where the task panel looks.
+fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd.spawn()
+        .map_err(|e| err(format!("无法启动包装脚本：{e}")))?;
+    Ok(Terminal::Headless)
 }
 
 /// A single `sh -c`-safe command line: `cd <dir> && <wrapper> <args...>`.
@@ -772,57 +750,6 @@ pub fn sh_quote(s: &str) -> String {
 /// AppleScript string.
 pub fn as_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
-}
-
-fn iterm_applescript(command: &str, title: &str) -> String {
-    format!(
-        r#"tell application "iTerm"
-    activate
-    if (count of windows) = 0 then
-        set newWindow to (create window with default profile)
-        set targetSession to current session of newWindow
-    else
-        tell current window
-            set newTab to (create tab with default profile)
-            set targetSession to current session of newTab
-        end tell
-    end if
-    tell targetSession
-        set name to {title}
-        write text {command}
-    end tell
-end tell"#,
-        title = as_quote(title),
-        command = as_quote(command)
-    )
-}
-
-fn terminal_applescript(command: &str) -> String {
-    format!(
-        r#"tell application "Terminal"
-    activate
-    do script {command}
-end tell"#,
-        command = as_quote(command)
-    )
-}
-
-fn run_osascript(script: &str) -> Result<()> {
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| err(format!("无法运行 osascript：{e}")))?;
-    if !output.status.success() {
-        return Err(err(format!(
-            "终端拒绝启动会话：{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(())
 }
 
 /// The binary for a runtime: an explicit override if the user set one, else
@@ -918,23 +845,6 @@ pub fn pid_alive(pid: i32) -> bool {
     #[cfg(not(unix))]
     {
         false
-    }
-}
-
-/// Builds the terminal tab title, e.g. `autome · T-15 · 实现 #4`.
-pub fn tab_title(task_id: &str, kind: SessionKind, round: u32) -> String {
-    match kind {
-        SessionKind::Role { .. } => format!("autome · {task_id} · {} #{round}", kind.label()),
-        _ => format!("autome · {task_id} · {}", kind.label()),
-    }
-}
-
-/// The role whose session this is, for the store record. Intake and onboarding
-/// always run Claude Code on a fixed prompt (design §7.1).
-pub fn runtime_for(kind: SessionKind, config: Option<&RoleConfig>) -> Runtime {
-    match (kind, config) {
-        (SessionKind::Role { .. }, Some(c)) => c.runtime,
-        _ => Runtime::Claude,
     }
 }
 
@@ -1641,22 +1551,6 @@ mod tests {
         assert!(cmd.contains(r"'arg with '\''quote'\'''"), "{cmd}");
     }
 
-    #[test]
-    fn the_applescript_embeds_a_shell_command_without_breaking_out() {
-        let cmd = shell_command(
-            &["/bin/echo".to_string(), "he said \"hi\"".to_string()],
-            Path::new("/tmp"),
-        );
-        let script = iterm_applescript(&cmd, "autome · T-1 · 实现 #1");
-        // The embedded double quote must be escaped for AppleScript.
-        assert!(script.contains(r#"\""#), "{script}");
-        // And the title is quoted too.
-        assert!(
-            script.contains(r#"set name to "autome · T-1 · 实现 #1""#),
-            "{script}"
-        );
-    }
-
     // ---- which -----------------------------------------------------------
 
     #[test]
@@ -1687,35 +1581,6 @@ mod tests {
     // ---- misc ------------------------------------------------------------
 
     #[test]
-    fn tab_titles_include_the_round_only_for_role_sessions() {
-        assert_eq!(
-            tab_title("T-15", SessionKind::Role { role: Role::Impl }, 4),
-            "autome · T-15 · 实现 #4"
-        );
-        assert_eq!(
-            tab_title("T-15", SessionKind::Intake, 1),
-            "autome · T-15 · 任务整理"
-        );
-    }
-
-    #[test]
-    fn system_sessions_always_run_claude_regardless_of_config() {
-        let codex = role_config(Runtime::Codex, "gpt-5.4", None);
-        assert_eq!(
-            runtime_for(SessionKind::Intake, Some(&codex)),
-            Runtime::Claude
-        );
-        assert_eq!(
-            runtime_for(SessionKind::Onboarding, Some(&codex)),
-            Runtime::Claude
-        );
-        assert_eq!(
-            runtime_for(SessionKind::Role { role: Role::Audit }, Some(&codex)),
-            Runtime::Codex
-        );
-    }
-
-    #[test]
     fn stopping_an_implausible_pid_is_refused_rather_than_signalling_everything() {
         // -1 to `kill` means "every process we may signal". Guarding this is
         // the difference between stopping a session and stopping the machine.
@@ -1739,7 +1604,7 @@ mod tests {
         // a sandbox the test had already deleted.
         let dir = std::env::temp_dir().join(format!("automed-dry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir, &crate::protocol::seed()).unwrap();
+        crate::init::init(&dir, crate::protocol::seed()).unwrap();
         let launched = launch(&LaunchSpec {
             session_id: "s-dry",
             task_id: "T-1",
@@ -1748,7 +1613,6 @@ mod tests {
             runtime: Runtime::Claude,
             args: vec![],
             prompt: "the prompt".into(),
-            title: "t".into(),
             mode: LaunchMode::Dry,
         })
         .unwrap();
@@ -1789,7 +1653,6 @@ mod tests {
             runtime: Runtime::Claude,
             args: vec![],
             prompt: "hello".into(),
-            title: "t".into(),
             mode: LaunchMode::Dry,
         };
         let err = launch(&spec).unwrap_err();
@@ -1801,7 +1664,7 @@ mod tests {
     fn launching_writes_the_prompt_file_before_it_needs_the_terminal() {
         let dir = std::env::temp_dir().join(format!("automed-launch2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir, &crate::protocol::seed()).unwrap();
+        crate::init::init(&dir, crate::protocol::seed()).unwrap();
         let spec = LaunchSpec {
             session_id: "s1",
             task_id: "T-1",
@@ -1810,7 +1673,6 @@ mod tests {
             runtime: Runtime::Claude,
             args: vec![],
             prompt: "hello prompt".into(),
-            title: "t".into(),
             mode: LaunchMode::Dry,
         };
         // The launch itself may fail (no `claude` on PATH in CI), but the

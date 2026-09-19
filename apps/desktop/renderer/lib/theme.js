@@ -17,10 +17,6 @@ let mediaQuery = null;
 /** The three values the core accepts. */
 export const THEMES = Object.freeze(['system', 'light', 'dark']);
 
-export function currentPreference() {
-  return preference;
-}
-
 /** What is actually painted right now: `light` or `dark`, never `system`. */
 export function resolved() {
   if (preference === 'dark' || preference === 'light') return preference;

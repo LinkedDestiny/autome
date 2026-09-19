@@ -109,9 +109,6 @@ impl TaskRecord {
     pub fn design_doc(&self) -> String {
         format!("{}/{}.md", self.doc_dir(), self.slug)
     }
-    pub fn task_file(&self) -> String {
-        format!("{}/{}-task.md", self.doc_dir(), self.slug)
-    }
     pub fn is_archived(&self) -> bool {
         self.archived_at.is_some()
     }
@@ -133,6 +130,9 @@ pub struct DecisionRecord {
     /// exactly once (design §5.3's `consumes_decisions`).
     pub consumed_at: Option<String>,
 }
+
+/// `(key, domain, proposal, evidence, state)` for one rule proposal.
+pub type RuleProposalRow = (String, String, String, Vec<String>, String);
 
 pub struct Store {
     conn: Connection,
@@ -633,14 +633,6 @@ impl Store {
         self.require_one(n, "任务", id)
     }
 
-    pub fn set_task_title(&self, id: &str, title: &str) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE tasks SET title = ?2 WHERE id = ?1",
-            params![id, title],
-        )?;
-        self.require_one(n, "任务", id)
-    }
-
     pub fn complete_task(&self, id: &str, merge_commit: Option<&str>) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE tasks SET completed_at = ?2, merge_commit = ?3 WHERE id = ?1",
@@ -661,14 +653,6 @@ impl Store {
         // every session after the first.
         let _ = n;
         Ok(())
-    }
-
-    pub fn set_task_rules_hash(&self, id: &str, hash: Option<&str>) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE tasks SET rules_hash = ?2 WHERE id = ?1",
-            params![id, hash],
-        )?;
-        self.require_one(n, "任务", id)
     }
 
     pub fn task_metrics(
@@ -739,11 +723,8 @@ impl Store {
         Ok(())
     }
 
-    /// `(key, domain, proposal, evidence, state)` for one project.
-    pub fn list_rule_proposals(
-        &self,
-        project_id: &str,
-    ) -> Result<Vec<(String, String, String, Vec<String>, String)>> {
+    /// One row per proposal, in [`RuleProposalRow`]'s order.
+    pub fn list_rule_proposals(&self, project_id: &str) -> Result<Vec<RuleProposalRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT lesson_key, domain, proposal, evidence, state FROM rule_proposals
              WHERE project_id = ?1 ORDER BY lesson_key",
@@ -917,15 +898,6 @@ impl Store {
         Ok(format!("T-{}", max.max(count) + 1))
     }
 
-    pub fn slug_taken(&self, project_id: &str, slug: &str) -> Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND slug = ?2",
-            params![project_id, slug],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
-    }
-
     /// How many of a project's parallel slots are in use (design §8).
     pub fn slots_in_use(&self, project_id: &str) -> Result<u32> {
         Ok(self
@@ -1014,14 +986,6 @@ impl Store {
                 m.design_doc_bytes.map(|v| v as i64),
                 m.evidence_files.map(|v| v as i64),
             ],
-        )?;
-        self.require_one(n, "会话", id)
-    }
-
-    pub fn set_session_pid(&self, id: &str, pid: Option<i32>) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE sessions SET pid = ?2 WHERE id = ?1",
-            params![id, pid],
         )?;
         self.require_one(n, "会话", id)
     }
@@ -1721,7 +1685,6 @@ mod tests {
         let t = task("T-1", "p1", "checkout-flow");
         assert_eq!(t.branch(), "autome/checkout-flow");
         assert_eq!(t.design_doc(), "docs/checkout-flow/checkout-flow.md");
-        assert_eq!(t.task_file(), "docs/checkout-flow/checkout-flow-task.md");
     }
 
     #[test]

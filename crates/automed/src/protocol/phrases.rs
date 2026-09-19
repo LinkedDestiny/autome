@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn the_seed_satisfies_every_requirement() {
-        let problems = check(&seed());
+        let problems = check(seed());
         assert!(
             problems.is_empty(),
             "seed fails its own phrase table:\n{}",

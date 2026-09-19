@@ -193,10 +193,6 @@ impl ProtocolFiles {
         self.get(&format!("prompts/{name}.md"))
     }
 
-    /// Paths under `evals/`, for the eval runner.
-    pub fn eval_paths(&self) -> impl Iterator<Item = &str> {
-        self.paths().filter(|p| p.starts_with("evals/"))
-    }
 }
 
 fn hex(bytes: &[u8]) -> String {

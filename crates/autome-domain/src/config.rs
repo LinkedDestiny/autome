@@ -277,19 +277,11 @@ pub struct ResolvedRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedConfig {
     pub loop_defaults: LoopDefaults,
-    pub loop_provenance: LoopProvenance,
     pub roles: Vec<ResolvedRole>,
     /// The project's protocol pin, if it has one. `None` means "follow the
     /// protocol repository's newest tag", which is what most projects do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_pin: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LoopProvenance {
-    pub parallel: Provenance,
-    pub design_rounds: Provenance,
-    pub budget_factor: Provenance,
 }
 
 impl ResolvedConfig {
@@ -308,25 +300,18 @@ impl ResolvedConfig {
 /// Overlays a sparse project config onto the global defaults. Total: the
 /// result always carries every role, in `Role::ALL` order.
 pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig {
-    fn pick<T>(override_value: Option<T>, global_value: T) -> (T, Provenance) {
-        match override_value {
-            Some(v) => (v, Provenance::Project),
-            None => (global_value, Provenance::Global),
-        }
-    }
-
-    let (parallel, parallel_src) = pick(
-        project.loop_overrides.parallel,
-        global.loop_defaults.parallel,
-    );
-    let (design_rounds, design_src) = pick(
-        project.loop_overrides.design_rounds,
-        global.loop_defaults.design_rounds,
-    );
-    let (budget_factor, budget_src) = pick(
-        project.loop_overrides.budget_factor,
-        global.loop_defaults.budget_factor,
-    );
+    let parallel = project
+        .loop_overrides
+        .parallel
+        .unwrap_or(global.loop_defaults.parallel);
+    let design_rounds = project
+        .loop_overrides
+        .design_rounds
+        .unwrap_or(global.loop_defaults.design_rounds);
+    let budget_factor = project
+        .loop_overrides
+        .budget_factor
+        .unwrap_or(global.loop_defaults.budget_factor);
 
     let roles = Role::ALL
         .into_iter()
@@ -357,11 +342,6 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             parallel,
             design_rounds,
             budget_factor,
-        },
-        loop_provenance: LoopProvenance {
-            parallel: parallel_src,
-            design_rounds: design_src,
-            budget_factor: budget_src,
         },
         roles,
         protocol_pin: project.loop_overrides.protocol.clone(),
@@ -585,7 +565,6 @@ mod tests {
         for role in &resolved.roles {
             assert_eq!(role.provenance, Provenance::Global);
         }
-        assert_eq!(resolved.loop_provenance.parallel, Provenance::Global);
     }
 
     #[test]

@@ -33,14 +33,11 @@ contextBridge.exposeInMainWorld('autome', {
     sessionLog: (sessionId) => read('session.log')({ session_id: sessionId }),
     // `projectId` is optional: omitted means the global scope.
     getConfig: (projectId) => read('config.get')(projectId ? { project_id: projectId } : {}),
-    validateConfig: (projectId) =>
-      read('config.validate')(projectId ? { project_id: projectId } : {}),
     listSkills: (projectId) => read('skills.list')(projectId ? { project_id: projectId } : {}),
     onboardingArtefacts: (projectId) =>
       read('project.onboarding.artefacts')({ project_id: projectId }),
     environment: () => read('env.get')(),
     installRecipe: (component) => read('env.install_recipe')({ component }),
-    eventsSince: (afterSeq) => read('events.since')({ after_seq: afterSeq }),
 
     // The protocol repository and what each of its versions cost.
     protocol: () => read('protocol.get')(),
@@ -52,7 +49,6 @@ contextBridge.exposeInMainWorld('autome', {
   write: {
     // Main owns the directory picker; the renderer never names a path.
     pickProject: () => write('project.pick')(),
-    removeProject: (projectId) => write('project.remove')({ project_id: projectId }),
     advanceOnboarding: (projectId) =>
       write('project.onboarding.advance')({ project_id: projectId }),
     skipOnboarding: (projectId) => write('project.onboarding.skip')({ project_id: projectId }),
@@ -117,14 +113,10 @@ contextBridge.exposeInMainWorld('autome', {
     install: (component) => write('env.install')({ component }),
     login: (component) => write('env.login')({ component }),
 
-    tick: () => write('scheduler.tick')(),
-
     // A retro round on a task that already stopped: the failure panel's
     // button. Failed tasks never reach the retro node on their own.
     retroTask: (taskId) => write('task.retro')({ task_id: taskId }),
 
-    pinProtocol: (projectId, tag) =>
-      write('protocol.pin')({ project_id: projectId, tag: tag || null }),
     // Rolling back is a *forward* commit; the core refuses to move a tag.
     rollbackProtocol: (tag) => write('protocol.rollback')({ tag }),
     improveProtocol: () => write('protocol.improve')(),

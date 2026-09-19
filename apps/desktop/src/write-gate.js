@@ -21,7 +21,6 @@
 // path, and only Main may supply one (see `project.pick` below).
 const ALLOWED_WRITE_OPS = Object.freeze([
   'project.pick',
-  'project.remove',
   'project.onboarding.advance',
   'project.onboarding.skip',
   'project.onboarding.run',
@@ -47,10 +46,8 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'env.detect',
   'env.install',
   'env.login',
-  'scheduler.tick',
   'open.path',
   'open.terminal',
-  'protocol.pin',
   'protocol.rollback',
   'protocol.improve',
   'rules.proposals',
@@ -228,6 +225,5 @@ module.exports = {
   MAX_DOCUMENT_LENGTH,
   payloadLimitFor,
   looksLikeAPath,
-  isAllowedOp,
   validateWriteRequest,
 };

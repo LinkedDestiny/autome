@@ -486,7 +486,6 @@ const PROTOCOL = {
     hash: '3f9a12cd7b40e1a2',
     wire: 'protocol/v2@3f9a12cd7b40e1a2',
   },
-  files: ['loop-protocol.md', 'session-protocol.md', 'CHANGELOG.md'],
   bytes: 20602,
   byte_budget: 24576,
   contract_breaches: [],

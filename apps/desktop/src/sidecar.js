@@ -185,4 +185,4 @@ class AutomedSidecar {
   }
 }
 
-module.exports = { AutomedSidecar, defaultBinaryPath, packagedBinaryPath, MAX_FRAME_LEN };
+module.exports = { AutomedSidecar, defaultBinaryPath, packagedBinaryPath };

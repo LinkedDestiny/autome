@@ -59,16 +59,6 @@ export const ROLE_LABELS = {
   retro: '复盘',
 };
 
-/** The role a node runs, mirroring `Node::role()`. `null` = system or human. */
-export const NODE_ROLE = {
-  design: 'plan',
-  review: 'review',
-  adjudicate: 'adjudicate',
-  implement: 'impl',
-  audit: 'audit',
-  retro: 'retro',
-};
-
 export const RUNTIME_LABELS = { claude: 'Claude Code', codex: 'Codex' };
 
 export const COMPONENT_LABELS = {
@@ -87,14 +77,6 @@ export const COMPONENT_NOTE = {
 };
 
 export const MILESTONE_LABELS = { open: '开放', pending: '待审', done: '已完成' };
-
-export const DOC_STATUS_LABELS = {
-  designing: '设计中',
-  implementing: '实现中',
-  done: '已完成',
-  infeasible: '不可实现',
-  protocol_failure: '协议失败',
-};
 
 export function nodeLabel(node) {
   if (!node) return '—';

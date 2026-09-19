@@ -396,15 +396,11 @@ impl Transition {
 /// *failing*: this is a caller bug or a race, not a task outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rejected {
-    pub state: TaskState,
-    pub trigger: String,
     pub reason: String,
 }
 
-fn reject(state: &TaskState, trigger: &str, reason: &str) -> Rejected {
+fn reject(reason: &str) -> Rejected {
     Rejected {
-        state: state.clone(),
-        trigger: trigger.to_string(),
         reason: reason.to_string(),
     }
 }
@@ -498,7 +494,7 @@ pub fn apply(
     match trigger {
         Trigger::Cancel => {
             return if state.is_terminal() {
-                Err(reject(state, "cancel", "任务已终结"))
+                Err(reject("任务已终结"))
             } else {
                 Ok(Transition::to(TaskState::Cancelled, Action::RunCancel))
             };
@@ -510,10 +506,10 @@ pub fn apply(
                     Action::None,
                 )),
                 TaskState::Active { .. } => {
-                    Err(reject(state, "pause", "任务正在等待你，没有会话可暂停"))
+                    Err(reject("任务正在等待你，没有会话可暂停"))
                 }
-                TaskState::Queued => Err(reject(state, "pause", "任务尚未开始")),
-                _ => Err(reject(state, "pause", "任务不在运行中")),
+                TaskState::Queued => Err(reject("任务尚未开始")),
+                _ => Err(reject("任务不在运行中")),
             };
         }
         Trigger::Stop => {
@@ -526,7 +522,7 @@ pub fn apply(
                     TaskState::Stopped { at: *resume },
                     Action::None,
                 )),
-                _ => Err(reject(state, "stop", "任务不在运行中")),
+                _ => Err(reject("任务不在运行中")),
             };
         }
         Trigger::Resume => {
@@ -536,7 +532,7 @@ pub fn apply(
                 TaskState::Paused { .. } | TaskState::Stopped { .. } => {
                     Ok(Transition::to(TaskState::Queued, Action::None))
                 }
-                _ => Err(reject(state, "resume", "任务不处于暂停或已停止")),
+                _ => Err(reject("任务不处于暂停或已停止")),
             };
         }
         _ => {}
@@ -552,7 +548,7 @@ pub fn apply(
         (TaskState::Failed { reason, .. }, Trigger::ExtendBudget { extra_rounds }) => {
             let extra = *extra_rounds;
             if extra == 0 {
-                return Err(reject(state, "extend_budget", "追加轮次必须大于 0"));
+                return Err(reject("追加轮次必须大于 0"));
             }
             match reason {
                 FailureReason::ImplBudget { limit } => Ok(Transition::active(
@@ -570,11 +566,7 @@ pub fn apply(
                         inject: None,
                     },
                 )),
-                _ => Err(reject(
-                    state,
-                    "extend_budget",
-                    "只有轮次耗尽的失败可以追加轮次",
-                )),
+                _ => Err(reject("只有轮次耗尽的失败可以追加轮次")),
             }
         }
         (TaskState::Failed { .. } | TaskState::Stopped { .. }, Trigger::RerunFrom { node }) => {
@@ -589,11 +581,7 @@ pub fn apply(
                 | Node::Retro => {
                     let role = node.role().expect("role nodes carry a role");
                     if !ctx.config.is_enabled(role) {
-                        return Err(reject(
-                            state,
-                            "rerun_from",
-                            "该角色当前已关闭，无法从这里重跑",
-                        ));
+                        return Err(reject("该角色当前已关闭，无法从这里重跑"));
                     }
                     Ok(Transition::active(
                         node,
@@ -604,11 +592,7 @@ pub fn apply(
                     Node::Rebase,
                     Action::RunCoreStep { node: Node::Rebase },
                 )),
-                _ => Err(reject(
-                    state,
-                    "rerun_from",
-                    "只能从任务整理、六个角色节点或 rebase 重跑",
-                )),
+                _ => Err(reject("只能从任务整理、六个角色节点或 rebase 重跑")),
             }
         }
 
@@ -616,7 +600,7 @@ pub fn apply(
         (TaskState::Active { node }, Trigger::SessionEnded { outcome }) => {
             let node = *node;
             if node.is_core_step() || node.awaits_user() {
-                return Err(reject(state, "session_ended", "该节点不运行会话"));
+                return Err(reject("该节点不运行会话"));
             }
             let status = match outcome {
                 SessionOutcome::Ok { status } => status,
@@ -788,7 +772,7 @@ pub fn apply(
             Trigger::Reject { feedback },
         ) => {
             if feedback.trim().is_empty() {
-                return Err(reject(state, "reject", "驳回必须附意见"));
+                return Err(reject("驳回必须附意见"));
             }
             Ok(Transition::active(
                 Node::Design,
@@ -837,10 +821,10 @@ pub fn apply(
         (TaskState::Active { node }, Trigger::CoreStepDone { node: done, result }) => {
             let node = *node;
             if node != *done {
-                return Err(reject(state, "core_step_done", "核心步骤与当前节点不符"));
+                return Err(reject("核心步骤与当前节点不符"));
             }
             if !node.is_core_step() {
-                return Err(reject(state, "core_step_done", "该节点不是内核步骤"));
+                return Err(reject("该节点不是内核步骤"));
             }
             match (node, result) {
                 (Node::Rebase, CoreStepResult::Ok) => {
@@ -892,16 +876,12 @@ pub fn apply(
                 }
                 // `Ok` for a core node is handled above; `is_core_step`
                 // rules out every other node before this match.
-                (n, CoreStepResult::Ok) => Err(reject(
-                    state,
-                    "core_step_done",
-                    &format!("{n:?} 没有成功后继"),
-                )),
+                (n, CoreStepResult::Ok) => Err(reject(&format!("{n:?} 没有成功后继"))),
             }
         }
 
         // ---- Everything else ----------------------------------------------
-        (state, trigger) => Err(reject(state, trigger_name(trigger), "当前状态不接受该操作")),
+        _ => Err(reject("当前状态不接受该操作")),
     }
 }
 
@@ -911,23 +891,6 @@ pub fn apply(
 pub fn compute_budget(config: &ResolvedConfig, status: &StatusBlock) -> u32 {
     let milestones = status.milestones.len().max(1) as u32;
     config.loop_defaults.budget_factor * milestones
-}
-
-fn trigger_name(t: &Trigger) -> &'static str {
-    match t {
-        Trigger::SlotAvailable => "slot_available",
-        Trigger::SessionEnded { .. } => "session_ended",
-        Trigger::Approve => "approve",
-        Trigger::Reject { .. } => "reject",
-        Trigger::Merge => "merge",
-        Trigger::CoreStepDone { .. } => "core_step_done",
-        Trigger::Pause => "pause",
-        Trigger::Resume => "resume",
-        Trigger::Stop => "stop",
-        Trigger::Cancel => "cancel",
-        Trigger::ExtendBudget { .. } => "extend_budget",
-        Trigger::RerunFrom { .. } => "rerun_from",
-    }
 }
 
 #[cfg(test)]

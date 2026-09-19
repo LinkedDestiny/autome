@@ -92,8 +92,6 @@ pub struct Round<'a> {
     pub design_bytes: u64,
     /// Filenames in `docs/<slug>/evidence/` after the session.
     pub evidence_files: Vec<String>,
-    /// Paths the session changed, repository-relative.
-    pub changed_paths: Vec<String>,
     /// Whether the session's edit to the design document touched anything
     /// beyond the milestone table. `None` when it could not be determined.
     pub design_changed_outside_milestones: Option<bool>,
@@ -405,7 +403,6 @@ mod tests {
             retro_added: vec!["实现 #3 | M-01 | 待审 | docs/x/evidence/M-01-r3-impl.md | 无".into()],
             design_bytes: before.design_bytes,
             evidence_files: evidence.iter().map(|s| s.to_string()).collect(),
-            changed_paths: vec![],
             design_changed_outside_milestones: Some(false),
         }
     }
@@ -674,7 +671,6 @@ mod tests {
             retro_added: vec!["实现 #1 | M-01 | 待审 | e | 无".into()],
             design_bytes: 20_000,
             evidence_files: vec!["M-01-r1-impl.md".into()],
-            changed_paths: vec![],
             design_changed_outside_milestones: None,
         };
         assert_eq!(check(&r), vec![]);

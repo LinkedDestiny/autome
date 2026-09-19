@@ -435,7 +435,6 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
     let mut next_action: Option<String> = None;
 
     let mut milestones: Vec<Milestone> = Vec::new();
-    let mut saw_milestone_heading = false;
     // A document has exactly one milestone table. Once it has been read, a
     // later table that happens to lead with `ID` is some other table — an
     // evidence or comparison table written by a round that had no idea it was
@@ -468,9 +467,6 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
         if let Some(rest) = trimmed.strip_prefix("## ") {
             section = classify_heading(rest);
-            if section == Section::Milestones {
-                saw_milestone_heading = true;
-            }
             continue;
         }
         // A deeper heading stays inside its parent section; a `# ` title
@@ -690,7 +686,6 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
     // Tying the rule to `status` rather than to the heading's presence is the
     // difference between a parser that rejects a correct intake document and
     // one that catches a design round which forgot to decompose the work.
-    let _ = saw_milestone_heading;
     if milestones.is_empty() && matches!(status, DocStatus::Implementing | DocStatus::Done) {
         return Err(ParseError::NoMilestonesAfterDesign);
     }

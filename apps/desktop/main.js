@@ -428,5 +428,3 @@ app.on('before-quit', async (event) => {
     app.quit();
   }
 });
-
-module.exports = { TICK_INTERVAL_MS };

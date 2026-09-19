@@ -391,12 +391,6 @@ pub fn head_sha(repo: &Path) -> Result<String> {
     Ok(run_ok(repo, &["rev-parse", "HEAD"])?.line().to_string())
 }
 
-pub fn short_sha(repo: &Path, rev: &str) -> Result<String> {
-    Ok(run_ok(repo, &["rev-parse", "--short", rev])?
-        .line()
-        .to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Commits
 // ---------------------------------------------------------------------------
@@ -947,22 +941,40 @@ mod tests {
 
     /// The backoff must not make a fast command slower than the command is.
     ///
-    /// Measured as the best of several runs rather than a single one: the
-    /// suite runs hundreds of tests in parallel, and a wall-clock bound on one
-    /// sample fails on a loaded machine for reasons that have nothing to do
-    /// with the poll. The flat 20ms sleep this replaced could not produce a
-    /// fast sample at all, so the minimum still tells the two apart.
+    /// Compared against a blocking `wait_with_output` on an identical command
+    /// rather than against a constant. An absolute bound measures the machine,
+    /// not the poll: `cargo test --all-targets` runs the end-to-end suite's
+    /// real worktrees and rebases in a sibling process, and under that load
+    /// spawning `sh` alone takes longer than any threshold worth asserting —
+    /// which made this test fail for reasons that had nothing to do with the
+    /// backoff. The flat 20ms sleep this replaced shows up as a 20ms gap over
+    /// the baseline however loaded the machine is, so the difference still
+    /// tells the two apart when the absolute number cannot.
     #[test]
     fn a_command_that_finishes_quickly_is_not_held_by_the_poll() {
-        let best = (0..5)
+        fn exits_immediately() -> std::process::Child {
+            Command::new("/bin/sh")
+                .args(["-c", "exit 0"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("sh is available")
+        }
+        // Same stdio and the same pipe draining, so the only difference
+        // between the two measurements is how the exit is waited for.
+        let baseline = (0..5)
             .map(|_| {
-                let child = Command::new("/bin/sh")
-                    .args(["-c", "exit 0"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .expect("sh is available");
+                let child = exits_immediately();
+                let started = std::time::Instant::now();
+                child.wait_with_output().unwrap();
+                started.elapsed()
+            })
+            .min()
+            .unwrap();
+        let polled = (0..5)
+            .map(|_| {
+                let child = exits_immediately();
                 let started = std::time::Instant::now();
                 wait_with_timeout(child, 600).unwrap();
                 started.elapsed()
@@ -970,8 +982,8 @@ mod tests {
             .min()
             .unwrap();
         assert!(
-            best < std::time::Duration::from_millis(15),
-            "退避没有生效：最快一次也等了 {best:?}"
+            polled < baseline + std::time::Duration::from_millis(10),
+            "退避没有生效：轮询最快 {polled:?}，直接等待最快 {baseline:?}"
         );
     }
 
