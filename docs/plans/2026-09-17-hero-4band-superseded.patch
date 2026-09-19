@@ -1,0 +1,270 @@
+diff --git a/apps/desktop/renderer/screens/task.js b/apps/desktop/renderer/screens/task.js
+index 2f95c64..9dff99a 100644
+--- a/apps/desktop/renderer/screens/task.js
++++ b/apps/desktop/renderer/screens/task.js
+@@ -90,32 +90,64 @@ function hero(data, ctx) {
+ 
+   const card = h('div.card.hero.card--pattern.card--pattern-teal');
+ 
+-  const meta = h('div.hero__meta');
+-  meta.appendChild(pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon));
+-  if (task.branch) meta.appendChild(tag(`分支 ${task.branch}`, 'outlined'));
+-  if (data && data.worktree) meta.appendChild(tag(data.worktree, 'outlined'));
+-  if (task.created_at) {
+-    meta.appendChild(tag(`创建 ${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`, 'outlined'));
+-  }
++  /* Four bands instead of two. Everything used to share one wrapping row:
++   * the title, a chip per fact, and the intervention buttons. With real data
++   * — a title that is the whole request sentence and an absolute worktree
++   * path — that row filled the width, the buttons wrapped onto a line of
++   * their own and came to rest on top of the node flow, and the card read as
++   * one dense block. Title and status, then the facts, then the flow, then
++   * the rounds: each gets its own line and its own breathing room. */
++  const head = h('div.hero__head', [
++    h('h2.hero__title', {
++      text: `${task.id || ''} · ${task.title || task.request || task.slug || ''}`,
++    }),
++  ]);
++  const statusRow = h('div.hero__status');
++  statusRow.appendChild(
++    pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon)
++  );
+   if (state.state === 'queued' && data.queue_position) {
+-    meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
++    statusRow.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
+   }
++  head.appendChild(statusRow);
+ 
+-  card.appendChild(
+-    h('div.row.align-start', [
+-      h('div', [
+-        h('h2.hero__title', { text: `${task.id || ''} · ${task.title || task.request || task.slug || ''}` }),
+-        meta,
+-      ]),
+-      heroActions(data, ctx),
+-    ])
+-  );
+-
++  card.appendChild(h('div.hero__top', [head, heroActions(data, ctx)]));
++  card.appendChild(heroFacts(task, data));
+   card.appendChild(flowRoute(node, state));
+   card.appendChild(roundTags(status, task, data));
+   return card;
+ }
+ 
++/**
++ * Branch, worktree and creation time, as labelled facts rather than chips.
++ *
++ * They were three chips in the status row, and the worktree one carried the
++ * absolute path — `/Users/…/voice-schedule/.worktree/<slug>` — which was by
++ * some margin the widest thing on the screen. The path is shown relative to
++ * the repository, the way the design mock always had it; the absolute form
++ * stays on hover, where it is available without costing a line.
++ */
++function heroFacts(task, data) {
++  const facts = h('dl.hero__facts');
++  const add = (label, value, full) => {
++    if (!value) return;
++    facts.appendChild(
++      h('div.hero__fact', [h('dt', { text: label }), h('dd', { text: value, title: full || value })])
++    );
++  };
++
++  add('分支', task.branch);
++
++  const worktree = (data && data.worktree) || '';
++  const cut = worktree.indexOf('/.worktree/');
++  add('工作树', cut >= 0 ? worktree.slice(cut + 1) : worktree, worktree);
++
++  if (task.created_at) {
++    add('创建', `${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`);
++  }
++  return facts;
++}
++
+ /**
+  * T-08's three interventions plus the terminal jump. Which are offered is a
+  * function of the state: pausing a queued task or stopping a finished one
+@@ -254,7 +286,7 @@ function flowRoute(node, state) {
+  *  — an unreadable document means we do not know the round, and saying "1/15"
+  *  would be an invention. */
+ function roundTags(status, task, data) {
+-  const row = h('div.row.gap-6');
++  const row = h('div.hero__rounds');
+   if (!status) {
+     row.appendChild(
+       tag(
+diff --git a/apps/desktop/renderer/style.css b/apps/desktop/renderer/style.css
+index d9606f5..a23d50f 100644
+--- a/apps/desktop/renderer/style.css
++++ b/apps/desktop/renderer/style.css
+@@ -905,6 +905,18 @@ body { font-size: 13px; }
+ .hero__actions { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+ .hero__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+ 
++/* The task hero, in four bands. `min-width: 0` on the head is what lets a long
++   title shrink instead of shoving the buttons off the card. */
++.hero__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
++.hero__head { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
++.hero__title { overflow-wrap: anywhere; }
++.hero__status { display: flex; gap: 6px; flex-wrap: wrap; }
++.hero__facts { display: flex; flex-wrap: wrap; gap: 12px 34px; margin: 16px 0 2px; }
++.hero__fact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
++.hero__fact dt { font-size: 11px; font-weight: 800; letter-spacing: .06em; color: var(--animal-text-muted); }
++.hero__fact dd { margin: 0; max-width: 52ch; font-size: 12.5px; font-weight: 700; color: var(--animal-text-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.hero__rounds { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
++
+ /* ===================================================================
+    Layer 7 - renderer-only additions
+    ===================================================================
+diff --git a/apps/desktop/test/dom-harness.js b/apps/desktop/test/dom-harness.js
+index f4019c8..84bd17a 100644
+--- a/apps/desktop/test/dom-harness.js
++++ b/apps/desktop/test/dom-harness.js
+@@ -34,6 +34,7 @@ const {
+   TASK_FAILED_PANEL,
+   TASK_APPROVE_PANEL,
+   TASK_UNREADABLE_DOC_PANEL,
++  TASK_LONG_IDENTITY_PANEL,
+   SCREEN_IDS,
+ } = require('./fixtures');
+ 
+@@ -420,6 +421,56 @@ async function run() {
+     );
+   }
+ 
++  // The hero's four bands, measured against the identity a real task has.
++  // The complaint was that the card read as one dense block; the concrete
++  // defect behind it was that the buttons wrapped onto their own line and
++  // came down on top of the node flow.
++  const heroLayout = await evaluate(async () => {
++    const module = await import('autome://app/screens/task.js');
++    const host = document.getElementById('main');
++    host.replaceChildren();
++    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
++      params: {},
++      navigate() {},
++      refresh() {},
++      connected: true,
++    });
++    const box = (sel) => {
++      const el = host.querySelector(sel);
++      if (!el) return null;
++      const r = el.getBoundingClientRect();
++      return { top: r.top, bottom: r.bottom, width: r.width };
++    };
++    const facts = Array.from(host.querySelectorAll('.hero__fact')).map((f) => ({
++      label: f.querySelector('dt').textContent,
++      value: f.querySelector('dd').textContent,
++      title: f.querySelector('dd').getAttribute('title'),
++    }));
++    return {
++      actions: box('.hero__actions'),
++      route: box('.route'),
++      rounds: box('.hero__rounds'),
++      facts,
++      overflowsX: host.scrollWidth > host.clientWidth,
++    };
++  });
++  const worktreeFact = heroLayout.facts.find((f) => f.label === '工作树');
++  check(
++    'the hero keeps the buttons clear of the node flow and shows the worktree relative to the repo',
++    heroLayout.actions !== null &&
++      heroLayout.route !== null &&
++      heroLayout.rounds !== null &&
++      // The band order is the point: buttons end before the flow begins.
++      heroLayout.actions.bottom <= heroLayout.route.top &&
++      heroLayout.route.bottom <= heroLayout.rounds.top &&
++      !heroLayout.overflowsX &&
++      heroLayout.facts.map((f) => f.label).join() === '分支,工作树,创建' &&
++      worktreeFact.value === '.worktree/开发一个-mac-端的桌面组件-2' &&
++      worktreeFact.title ===
++        '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
++    heroLayout
++  );
++
+   // An unparseable design document must say which line, not just that it is
+   // unparseable: the document is hundreds of KB and the user has to go edit
+   // one row of it.
+@@ -583,6 +634,37 @@ async function run() {
+     );
+   }
+ 
++  // U-11 again, on the task panel's worst case. The loop above renders the
++  // short fixture, which fits with room to spare and so says nothing about
++  // the four-band hero under a real title and a real path. Spreading the
++  // header out is only an improvement if the screen still fits.
++  const longFit = await evaluate(async () => {
++    const api = await import('autome://app/lib/api.js');
++    api.setConnected(true);
++    api.resetWriteControls();
++    const module = await import('autome://app/screens/task.js');
++    const host = document.getElementById('main');
++    host.replaceChildren();
++    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
++      params: { taskId: 'T-2' },
++      navigate() {},
++      refresh() {},
++      connected: true,
++    });
++    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
++    const hero = host.querySelector('.hero').getBoundingClientRect();
++    return {
++      scrollHeight: host.scrollHeight,
++      clientHeight: host.clientHeight,
++      heroHeight: Math.round(hero.height),
++    };
++  });
++  check(
++    'the task panel still fits 1512x944 with a full-sentence title and an absolute worktree path',
++    longFit.scrollHeight <= longFit.clientHeight,
++    longFit
++  );
++
+   // ---- the security boundary --------------------------------------------
+   const noInlineStyle = await evaluate(async () => {
+     const dom = await import('autome://app/lib/dom.js');
+@@ -726,6 +808,7 @@ function fixtureInjector() {
+     'task-failed': TASK_FAILED_PANEL,
+     'task-approve': TASK_APPROVE_PANEL,
+     'task-unreadable': TASK_UNREADABLE_DOC_PANEL,
++    'task-long': TASK_LONG_IDENTITY_PANEL,
+   });
+   return `(() => {
+     const blobs = ${JSON.stringify(blobs)};
+diff --git a/apps/desktop/test/fixtures.js b/apps/desktop/test/fixtures.js
+index e0cd7c7..f6b55af 100644
+--- a/apps/desktop/test/fixtures.js
++++ b/apps/desktop/test/fixtures.js
+@@ -473,11 +473,31 @@ const TASK_UNREADABLE_DOC_PANEL = {
+     '里程碑表第 2124 行格式错误：状态 `loadSchedules()` 不是 开放 / 待审 / 已完成',
+ };
+ 
++/* The shape the hero actually meets in production, which the short fixture
++ * above never exercised: the intake round sets the title to the whole request
++ * sentence, and the slug — and therefore the branch and the worktree path — is
++ * the CJK request text. On 2026-09-17 this filled the status row edge to edge,
++ * pushed the intervention buttons onto their own line, and left them sitting
++ * on top of the node flow. */
++const TASK_LONG_IDENTITY_PANEL = {
++  ...FIXTURES.task,
++  task: {
++    ...FIXTURES.task.task,
++    id: 'T-2',
++    title: '开发一个 Mac 端的桌面组件：支持长按语音输入，将录下的语音转成文字，根据文字…',
++    slug: '开发一个-mac-端的桌面组件-2',
++    branch: 'autome/开发一个-mac-端的桌面组件-2',
++  },
++  worktree: '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
++  changes: null,
++};
++
+ module.exports = {
+   FIXTURES,
+   TASK_AT_MERGE,
+   TASK_FAILED_PANEL,
+   TASK_APPROVE_PANEL,
+   TASK_UNREADABLE_DOC_PANEL,
++  TASK_LONG_IDENTITY_PANEL,
+   SCREEN_IDS: ['dash', 'projects', 'project', 'task', 'routing', 'settings', 'env', 'skills'],
+ };
