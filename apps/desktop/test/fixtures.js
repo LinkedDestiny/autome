@@ -621,10 +621,31 @@ const TASK_MEASURED_PANEL = {
   needs_human_approval: ['prompts/review.md'],
 };
 
+/* The shape the hero actually meets in production, which the short fixture
+ * above never exercised: the intake round sets the title to the whole request
+ * sentence, and the slug — and therefore the branch and the worktree path — is
+ * the CJK request text. On 2026-09-17 this filled the status row edge to edge,
+ * pushed the intervention buttons onto their own line, and left them sitting
+ * on top of the node flow. */
+const TASK_LONG_IDENTITY_PANEL = {
+  ...FIXTURES.task,
+  task: {
+    ...FIXTURES.task.task,
+    id: 'T-2',
+    title:
+      '开发一个 Mac 端的桌面组件：支持长按语音输入，将录下的语音转成文字，根据文字内容自动生成日程，并在日程开始前 30 分钟提醒用户。',
+    slug: '开发一个-mac-端的桌面组件-2',
+    branch: 'autome/开发一个-mac-端的桌面组件-2',
+  },
+  worktree: '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
+  changes: null,
+};
+
 module.exports = {
   FIXTURES,
   PROTOCOL_SCREEN,
   TASK_MEASURED_PANEL,
+  TASK_LONG_IDENTITY_PANEL,
   TASK_AT_MERGE,
   TASK_FAILED_PANEL,
   TASK_APPROVE_PANEL,

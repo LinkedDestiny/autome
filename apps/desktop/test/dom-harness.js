@@ -36,6 +36,7 @@ const {
   TASK_APPROVE_PANEL,
   TASK_UNREADABLE_DOC_PANEL,
   TASK_MEASURED_PANEL,
+  TASK_LONG_IDENTITY_PANEL,
   PROTOCOL_SCREEN,
   SCREEN_IDS,
 } = require('./fixtures');
@@ -489,6 +490,137 @@ async function run() {
     mergeBlocked
   );
 
+  // ---- the hero under a production-shaped title and path -----------------
+  //
+  // The short fixture never showed the problem: in production the title is the
+  // whole request sentence and the slug — so the branch and the worktree path
+  // — is the CJK request text. That filled the header edge to edge, pushed the
+  // buttons onto a line of their own and left them sitting on the node flow.
+  //
+  // What is asserted is the arrangement, not the pixels: bands in order and
+  // nothing overflowing sideways. A height assertion here would fail on the
+  // first font change and say nothing about whether the header reads.
+  const heroLayout = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
+      params: { taskId: 'T-2' },
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const box = (sel) => {
+      const el = host.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, width: r.width, height: Math.round(r.height) };
+    };
+    const route = host.querySelector('.route');
+    const rows = new Set(
+      Array.from(host.querySelectorAll('.stone')).map((s) =>
+        Math.round(s.getBoundingClientRect().top)
+      )
+    );
+    // Narrow the card and read the flow again. This is the case the layout
+    // exists for: at 1512 the fourteen nodes fit on one line either way, so a
+    // check only at full width passes just as well against the old
+    // `overflow-x: auto` and proves nothing. Squeezing the container is also
+    // what makes this a test of the container query rather than of the window.
+    const hero = host.querySelector('.hero');
+    hero.style.maxWidth = '900px';
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const narrowRoute = host.querySelector('.route');
+    const narrow = {
+      rows: new Set(
+        Array.from(host.querySelectorAll('.stone')).map((s) =>
+          Math.round(s.getBoundingClientRect().top)
+        )
+      ).size,
+      scrollsX: narrowRoute.scrollWidth > narrowRoute.clientWidth + 1,
+    };
+    hero.style.maxWidth = '';
+    await new Promise((r) => requestAnimationFrame(r));
+
+    const titleText = host.querySelector('.hero__title-text');
+    const titleBtn = host.querySelector('.hero__title-btn');
+    const collapsed = Math.round(titleText.getBoundingClientRect().height);
+    titleBtn.click();
+    await new Promise((r) => requestAnimationFrame(r));
+    const expanded = Math.round(titleText.getBoundingClientRect().height);
+    titleBtn.click();
+    return {
+      actions: box('.hero__actions'),
+      meta: box('.hero__meta'),
+      route: box('.route'),
+      ident: host.querySelector('.hero__ident').textContent,
+      identTitle: host.querySelector('.hero__ident span[title]').getAttribute('title'),
+      routeScrollsX: route.scrollWidth > route.clientWidth + 1,
+      overflowsX: host.scrollWidth > host.clientWidth,
+      stoneRows: rows.size,
+      narrow,
+      titleOffered: host.querySelector('.hero__title').classList.contains('hero__title--over'),
+      collapsed,
+      expanded,
+    };
+  });
+  check(
+    'the hero keeps the buttons on the title line and off the node flow, and the flow needs no sideways scroll',
+    heroLayout.actions !== null &&
+      heroLayout.meta !== null &&
+      heroLayout.route !== null &&
+      // Bands in order: title+buttons, then the chips, then the flow.
+      heroLayout.actions.bottom <= heroLayout.meta.top &&
+      heroLayout.meta.bottom <= heroLayout.route.top &&
+      !heroLayout.overflowsX &&
+      // The scrollbar this layout exists to remove.
+      !heroLayout.routeScrollsX &&
+      // Wide enough for one row here; the second row is for narrow cards.
+      heroLayout.stoneRows === 1,
+    heroLayout
+  );
+  check(
+    'a card too narrow for fourteen nodes breaks them into two rows of seven rather than scrolling',
+    heroLayout.narrow.rows === 2 && !heroLayout.narrow.scrollsX,
+    heroLayout.narrow
+  );
+  check(
+    'a title too long for one line offers the expander, and clicking it shows the rest',
+    heroLayout.titleOffered && heroLayout.expanded > heroLayout.collapsed,
+    heroLayout
+  );
+  check(
+    'the worktree is shortened for reading but keeps the absolute path on hover',
+    heroLayout.ident.includes('~/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2') &&
+      heroLayout.identTitle ===
+        '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
+    heroLayout
+  );
+
+  // Spreading the header out is only an improvement if the screen still fits.
+  const longFit = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    api.setConnected(true);
+    api.resetWriteControls();
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
+      params: { taskId: 'T-2' },
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { scrollHeight: host.scrollHeight, clientHeight: host.clientHeight };
+  });
+  check(
+    'the task panel still fits 1512x944 with a full-sentence title and an absolute worktree path',
+    longFit.scrollHeight <= longFit.clientHeight,
+    longFit
+  );
+
   // ---- C-06: SAME-MODEL paints the node red and disables save ------------
   const sameModel = await evaluate(async () => {
     const api = await import('autome://app/lib/api.js');
@@ -818,6 +950,7 @@ function fixtureInjector() {
     'task-approve': TASK_APPROVE_PANEL,
     'task-unreadable': TASK_UNREADABLE_DOC_PANEL,
     'task-measured': TASK_MEASURED_PANEL,
+    'task-long': TASK_LONG_IDENTITY_PANEL,
     protocol: PROTOCOL_SCREEN,
   });
   return `(() => {
