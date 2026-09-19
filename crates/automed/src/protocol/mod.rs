@@ -25,6 +25,7 @@
 //!    seed lands on its own tag, `protocol/vN-upstream`, for the user to diff
 //!    and merge. Their edits are theirs.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -259,10 +260,9 @@ impl Repo {
         Ok(format!("{TAG_PREFIX}{}", highest + 1))
     }
 
-    /// The files at a tag. Read out of the object database rather than the
-    /// working tree, so a version stays readable while the user has something
-    /// else checked out.
-    /// Every file in a revision, in two git processes rather than one per file.
+    /// Every file in a revision, in two git processes rather than one per
+    /// file. Read out of the object database rather than the working tree, so
+    /// a version stays readable while the user has something else checked out.
     ///
     /// The first version ran `git show <rev>:<path>` in a loop. The seed is 92
     /// files, so reading one revision cost 93 processes — about 2.6s — and
@@ -323,13 +323,56 @@ impl Repo {
         Ok(files)
     }
 
+    /// The same file out of several revisions, in one git process.
+    ///
+    /// `cat-file --batch` takes `<rev>:<path>` object names, so the version
+    /// page's "the changelog of every tag" is one spawn rather than one per
+    /// tag. A revision that does not have the file is skipped rather than
+    /// failing the batch — `--batch` answers those with `<name> missing`, and
+    /// an older protocol version legitimately predates a file.
+    pub fn file_across(&self, revs: &[String], path: &str) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        if revs.is_empty() {
+            return Ok(out);
+        }
+        let names: Vec<String> = revs.iter().map(|r| format!("{r}:{path}")).collect();
+        let batch = git::run_ok_with_stdin(
+            &self.path,
+            &["cat-file", "--batch"],
+            &format!("{}\n", names.join("\n")),
+        )?;
+        let bytes = batch.stdout.as_bytes();
+        let mut at = 0usize;
+        for rev in revs {
+            let Some(rest) = bytes.get(at..) else { break };
+            let Some(eol) = rest.iter().position(|b| *b == b'\n') else {
+                break;
+            };
+            let header = String::from_utf8_lossy(&rest[..eol]).into_owned();
+            at += eol + 1;
+            if header.ends_with(" missing") {
+                continue;
+            }
+            let Some(size) = header.rsplit(' ').next().and_then(|s| s.trim().parse::<usize>().ok())
+            else {
+                break;
+            };
+            let Some(content) = bytes.get(at..at + size) else {
+                break;
+            };
+            out.insert(rev.clone(), String::from_utf8_lossy(content).into_owned());
+            at += size + 1;
+        }
+        Ok(out)
+    }
+
     /// One file out of a revision, without materialising the tree.
     ///
-    /// `files_at` spawns a `git show` per file, and the seed is 92 of them.
-    /// A caller that wants a single file — the version page wants
-    /// `CHANGELOG.md` and nothing else, once per tag — paid 93 processes for
-    /// it and threw the other 91 away, which is ~2.6s per tag and the reason
-    /// opening a project stalled.
+    /// `files_at` is two processes and reads the whole tree; a caller that
+    /// wants one file pays for 91 it will discard. One `git show` is cheaper
+    /// when the answer really is a single file at a single revision. For the
+    /// same file across several revisions use `file_across`, which is one
+    /// process for all of them.
     pub fn file_at(&self, rev: &str, path: &str) -> Result<String> {
         let spec = format!("{rev}:{path}");
         Ok(git::run_ok(&self.path, &["show", &spec])?.stdout)
@@ -754,6 +797,39 @@ mod tests {
     /// `file_at` is the whole-tree read narrowed to one path; it has to agree
     /// with it, or the version page would quietly show a different CHANGELOG
     /// than the one in the tag.
+    /// The batched read has to agree with the single read, and has to skip a
+    /// revision that lacks the file rather than shifting every later answer by
+    /// one — `--batch` reports those as `<name> missing`, with no body.
+    #[test]
+    fn the_same_file_across_revisions_matches_reading_them_one_at_a_time() {
+        if !git_available() {
+            return;
+        }
+        let home = Home::new("file-across");
+        let repo = ensure(&home.0).unwrap();
+        let v1 = repo.release("v1").unwrap();
+        std::fs::write(repo.path.join("CHANGELOG.md"), "# 第二版\n").unwrap();
+        let v2 = repo.release("v2").unwrap();
+
+        let tags = vec![v1.tag.clone(), v2.tag.clone()];
+        let batched = repo.file_across(&tags, "CHANGELOG.md").unwrap();
+        assert_eq!(batched.len(), 2);
+        for tag in &tags {
+            assert_eq!(batched[tag], repo.file_at(tag, "CHANGELOG.md").unwrap(), "{tag}");
+        }
+        assert_eq!(batched[&v2.tag], "# 第二版\n");
+
+        // A file only the later version has: the earlier tag is skipped and
+        // the later one still lands on its own key.
+        std::fs::write(repo.path.join("NEW.md"), "只在 v3\n").unwrap();
+        let v3 = repo.release("v3").unwrap();
+        let mixed = repo
+            .file_across(&[v1.tag.clone(), v3.tag.clone()], "NEW.md")
+            .unwrap();
+        assert_eq!(mixed.keys().collect::<Vec<_>>(), vec![&v3.tag]);
+        assert_eq!(mixed[&v3.tag], "只在 v3\n");
+    }
+
     #[test]
     fn one_file_out_of_a_revision_matches_the_whole_tree_read() {
         if !git_available() {

@@ -98,20 +98,24 @@ pub fn versions(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
         .collect();
     let rows = version_page::rows(&tasks);
 
-    let repo = protocol::open(&ctx.autome_home);
+    // Every tag's changelog in one `cat-file --batch`. Reading them one at a
+    // time was the same shape as the bug this page used to have, a level up:
+    // rows grow with every protocol iteration, and each one cost a process.
+    // Rows are keyed by `protocol_ref` (tag@hash), so two rows can share a
+    // tag — dedupe before asking.
     let mut entries_by_tag: serde_json::Map<String, Value> = serde_json::Map::new();
-    for row in &rows {
-        let Some(repo) = repo.as_ref() else { break };
-        // One file, one `git show`. Reading the whole tree here cost 93
-        // processes per tag to use one of them.
-        let Ok(text) = repo.file_at(&row.tag, "CHANGELOG.md") else {
-            continue;
-        };
-        let Ok(log) = changelog::parse(&text) else {
-            continue;
-        };
-        if let Some(version) = log.version(&row.tag) {
-            entries_by_tag.insert(row.tag.clone(), json!(version.entries));
+    if let Some(repo) = protocol::open(&ctx.autome_home) {
+        let mut tags: Vec<String> = rows.iter().map(|r| r.tag.clone()).collect();
+        tags.sort();
+        tags.dedup();
+        let logs = repo.file_across(&tags, "CHANGELOG.md").unwrap_or_default();
+        for (tag, text) in &logs {
+            let Ok(log) = changelog::parse(text) else {
+                continue;
+            };
+            if let Some(version) = log.version(tag) {
+                entries_by_tag.insert(tag.clone(), json!(version.entries));
+            }
         }
     }
 

@@ -711,7 +711,6 @@ code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, m
 .stat__n small { font-size: 15px; color: var(--animal-text-secondary); font-weight: 800; margin-left: 2px; }
 .stat__l { font-size: 13px; font-weight: 800; color: var(--animal-text-muted); }
 .stat__s { font-size: 12px; color: var(--animal-text-secondary); font-weight: 600; margin-top: auto; line-height: 1.5; }
-.hero { padding: 22px 26px 20px; }
 .hero__title { font-size: 22px; font-weight: 900; color: var(--animal-text); margin: 0; letter-spacing: .01em; line-height: 1.25; }
 .hero__sub { font-size: 13px; color: var(--animal-text-secondary); font-weight: 600; margin-top: 4px; }
 .crumb { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--animal-text-secondary); margin: 0 0 12px; }
@@ -743,7 +742,6 @@ code.cmd { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, m
 .eventline { display: flex; flex-direction: column; gap: 10px; }
 .event { display: grid; grid-template-columns: 52px 1fr; gap: 10px; font-size: 13px; line-height: 1.5; }
 .event time { font-weight: 800; color: var(--animal-text-secondary); font-size: 12px; padding-top: 1px; }
-.route--hero { padding: 6px 0 10px; }
 .rawtext { font-size: 14px; line-height: 1.75; }
 .taskcard { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 150px; }
 .taskcard__id { font-size: 12px; font-weight: 900; letter-spacing: .06em; color: var(--animal-text-secondary); }
@@ -841,8 +839,8 @@ body { font-size: 13px; }
 .card__head { margin-bottom: 8px; } .card__title { font-size: 14px; } .card__cta { padding-top: 8px; font-size: 11.5px; }
 .cardgrid { gap: 12px; } .tilegrid { gap: 12px; }
 .stat { min-height: 112px; padding: 14px 18px; gap: 4px; } .stat__n { font-size: 28px; } .stat__l { font-size: 12px; } .stat__s { font-size: 11.5px; }
-.hero { padding: 14px 20px 14px; } .hero__title { font-size: 18px; } .hero__sub { font-size: 12px; }
-.route { padding: 6px 4px 8px; } .route--hero { padding: 2px 0 4px; } .stone { min-width: 64px; } .stone__dot { width: 20px; height: 20px; } .stone__lbl { font-size: 10.5px; }
+.hero__title { font-size: 18px; } .hero__sub { font-size: 12px; }
+.route { padding: 6px 4px 8px; } .stone { min-width: 64px; } .stone__dot { width: 20px; height: 20px; } .stone__lbl { font-size: 10.5px; }
 .axis { height: 30px; font-size: 11px; padding: 0 5px 0 10px; } .axis .tag { height: 20px; }
 .nowbox { gap: 10px; margin-top: 6px; } .nowbox__card { padding: 10px 12px; } .nowbox__v { font-size: 13px; } .nowbox__s { font-size: 11.5px; }
 .stream { max-height: 292px; gap: 6px; font-size: 12px; } .stream__item { padding: 6px 9px; gap: 6px; grid-template-columns: 44px 1fr; }
@@ -960,7 +958,7 @@ body { font-size: 13px; }
    the buttons floated beside the title and overlapped the flow diagram, and
    the round counters sat below the diagram, a whole row away from the state
    pill that means the same kind of thing. */
-/* 8px, and the flow diagram gives up its own padding below: the bands used to
+/* The flow diagram gives up its own padding below: the bands used to
    space themselves with their own margins, and adding a gap on top of those
    made the card taller than the 944px budget U-11 holds the screen to. */
 /* `container-type` so the flow below can ask how wide this card actually is. */
@@ -1015,7 +1013,6 @@ body { font-size: 13px; }
 .card--pattern .inherit { color: inherit; }
 .sec--flush { margin: 0 0 6px; }
 .sec--gap { margin: 14px 0 6px; }
-.align-start { align-items: flex-start; }
 .rawreq--sm { font-size: 12.5px; line-height: 1.6; }
 .quiet--inherit { color: inherit; opacity: .9; line-height: 1.6; }
 .btn--yellow.btn--sm { height: 30px; font-size: 12px; padding: 0 14px; }

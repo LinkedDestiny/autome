@@ -84,20 +84,15 @@ impl RuntimeAdapter {
             Runtime::Codex => vec![
                 "--config".to_string(),
                 format!(
-                    "sandbox_workspace_write.writable_roots=[\"{}\"]",
-                    toml_escape(&root.to_string_lossy())
+                    "sandbox_workspace_write.writable_roots={}",
+                    toml::Value::Array(vec![toml::Value::String(
+                        root.to_string_lossy().into_owned()
+                    )])
                 ),
             ],
             Runtime::Claude => vec![],
         }
     }
-}
-
-/// Escapes a path for a TOML basic string. Paths with a quote or a backslash
-/// in them are rare, and silently producing invalid TOML when one shows up
-/// would fail as "Codex rejected the config" a long way from the cause.
-fn toml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// The repository's **common** Git directory, when it is not inside `cwd`.
@@ -234,7 +229,11 @@ pub fn build_args(config: &RoleConfig, cwd: &Path) -> Vec<String> {
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-    if let Some(root) = git_dir_outside(cwd) {
+    // Only the runtime that has a sandbox pays for the probe: `git rev-parse`
+    // is a process, and `extra_writable_root` returns nothing for Claude.
+    if a.runtime == Runtime::Codex
+        && let Some(root) = git_dir_outside(cwd)
+    {
         args.extend(a.extra_writable_root(&root));
     }
     if !config.model.trim().is_empty() {
@@ -1085,7 +1084,21 @@ mod tests {
 
     #[test]
     fn a_path_with_a_quote_in_it_does_not_break_the_toml() {
-        assert_eq!(toml_escape(r#"/a"b\c"#), r#"/a\"b\\c"#);
+        // Parsed the way Codex parses it: `-c` takes one `key=value` line and
+        // reads the value as TOML. Delegating to `toml` also covers the
+        // control characters a two-`replace` escaper emitted raw — here a
+        // newline, which is legal in a POSIX path.
+        let root = std::path::PathBuf::from("/a\"b\\c\nd");
+        let args = adapter(Runtime::Codex).extra_writable_root(&root);
+        let doc: toml::Value = args[1].parse().expect("`-c` line must be valid TOML");
+        assert_eq!(
+            doc["sandbox_workspace_write"]["writable_roots"][0]
+                .as_str()
+                .unwrap(),
+            root.to_string_lossy(),
+            "路径要原样还原回来：{}",
+            args[1]
+        );
     }
 
     // ---- prompts ---------------------------------------------------------

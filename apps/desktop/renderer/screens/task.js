@@ -177,7 +177,6 @@ function markTitleOverflow(host) {
     host.querySelectorAll('.hero__title-text').forEach((el) => {
       const over = el.scrollWidth > el.clientWidth + 1;
       el.closest('.hero__title').classList.toggle('hero__title--over', over);
-      if (!over) el.closest('.hero__title-btn').setAttribute('aria-expanded', 'false');
     });
   });
 }

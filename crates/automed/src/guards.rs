@@ -208,25 +208,12 @@ fn no_closing_a_milestone(round: &Round<'_>) -> Option<Finding> {
 /// fixed cheaply, and the detail names both exits.
 fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
     let before = round.before?;
-    let after: Vec<(&str, MilestoneState)> = round
-        .status
-        .milestones
-        .iter()
-        .map(|m| (m.id.as_str(), m.state))
-        .collect();
-    let was: Vec<(&str, MilestoneState)> = before
-        .milestones
-        .iter()
-        .map(|(id, s)| (id.as_str(), *s))
-        .collect();
-    if after != was {
-        return None;
-    }
     // A `待审` milestone is what an audit round is *for*. With none in the
     // table the round had nothing to reach a verdict on, and an unchanged
     // table is the normal way out: `Node::Implement` always schedules an
     // audit, so the round that follows the last milestone's closure sees a
     // table that is already all `已完成` and hands straight to the merge gate.
+    // Cheap, and it short-circuits the comparison below on the common path.
     let stuck: Vec<&str> = round
         .status
         .milestones
@@ -235,6 +222,12 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
         .map(|m| m.id.as_str())
         .collect();
     if stuck.is_empty() {
+        return None;
+    }
+    // Compared against the same projection that *wrote* the snapshot
+    // (`task_metrics::snapshot`, via `scheduler::apply_guards`), so the two
+    // cannot drift into disagreeing about what "the table changed" means.
+    if crate::task_metrics::snapshot(round.status) != before.milestones {
         return None;
     }
     Some(Finding::error(
@@ -266,8 +259,9 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
 /// round that left every milestone `待审`, arrives here too.
 fn impl_had_a_target(round: &Round<'_>) -> Option<Finding> {
     let before = round.before?;
-    if before.milestones.is_empty()
-        || before.milestones.iter().any(|(_, s)| *s == MilestoneState::Open)
+    // `all` is true on an empty list, so the "no milestones yet" case falls
+    // out of the third clause without a test of its own.
+    if before.milestones.iter().any(|(_, s)| *s == MilestoneState::Open)
         || before.milestones.iter().all(|(_, s)| *s == MilestoneState::Done)
     {
         return None;

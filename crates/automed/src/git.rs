@@ -106,7 +106,7 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<Output> {
 }
 
 fn run_with_extra_env(cwd: &Path, args: &[&str], extra: &[(&str, &str)]) -> Result<Output> {
-    run_with_binary(&git_binary(), cwd, args, extra)
+    run_with_binary(&git_binary(), cwd, args, extra, None)
 }
 
 /// The one place a Git process is actually spawned. Takes the binary
@@ -118,6 +118,7 @@ fn run_with_binary(
     cwd: &Path,
     args: &[&str],
     extra: &[(&str, &str)],
+    stdin: Option<&str>,
 ) -> Result<Output> {
     let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
     let mut cmd = Command::new(binary);
@@ -127,7 +128,7 @@ fn run_with_binary(
         // PATH is still needed: git shells out to its own subcommands.
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in sanitised_env() {
@@ -137,12 +138,24 @@ fn run_with_binary(
         cmd.env(k, v);
     }
 
-    let child = cmd.spawn().map_err(|e| GitError {
+    let mut child = cmd.spawn().map_err(|e| GitError {
         argv: argv.clone(),
         code: None,
         stderr: String::new(),
         detail: format!("无法启动 git：{e}"),
     })?;
+
+    // On its own thread: `wait_with_timeout` drains stdout and stderr on
+    // theirs, and writing inline would deadlock the moment git's output filled
+    // the pipe before it had finished reading ours. Dropping the handle closes
+    // the pipe, which is what tells a `--batch` command to stop waiting.
+    if let (Some(mut pipe), Some(text)) = (child.stdin.take(), stdin) {
+        use std::io::Write;
+        let owned = text.to_string();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(owned.as_bytes());
+        });
+    }
 
     let out = wait_with_timeout(child, GIT_TIMEOUT_SECS).map_err(|detail| GitError {
         argv: argv.clone(),
@@ -188,6 +201,13 @@ fn wait_with_timeout(
     });
 
     let deadline = Instant::now() + Duration::from_secs(secs);
+    // Backs off from 1ms rather than sleeping a flat 20. An ordinary git
+    // command here takes single-digit milliseconds, so a fixed 20ms poll meant
+    // the first `try_wait` essentially always missed and every call in this
+    // module — the whole of §6 — paid 20ms it did not need. The core's IPC
+    // loop is serial, so that was 20ms of everything else waiting too. The cap
+    // keeps a genuinely long command (a rebase) from spinning.
+    let mut nap = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -197,7 +217,8 @@ fn wait_with_timeout(
                     let _ = child.wait();
                     return Err(format!("git 超过 {secs}s 未结束，已终止"));
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(20));
             }
             Err(e) => return Err(format!("等待 git 失败：{e}")),
         }
@@ -212,80 +233,36 @@ fn wait_with_timeout(
     })
 }
 
+/// Runs git and fails on a non-zero exit.
+pub fn run_ok(cwd: &Path, args: &[&str]) -> Result<Output> {
+    ok_or_err(run(cwd, args)?, args)
+}
+
 /// Runs git with `input` on its stdin, and fails on a non-zero exit.
 ///
 /// For the plumbing commands that take a list of things to do rather than one
 /// argument — `cat-file --batch` above all, which turns "read ninety-two
 /// blobs" from ninety-two processes into one.
-///
-/// stdin is written on its own thread. `wait_with_timeout` already drains
-/// stdout and stderr on theirs, and writing inline instead would deadlock the
-/// moment git's output filled the pipe before it had finished reading ours.
 pub fn run_ok_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Result<Output> {
-    use std::io::Write;
-    let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
-    let mut cmd = Command::new(git_binary());
-    cmd.current_dir(cwd)
-        .args(args)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (k, v) in sanitised_env() {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().map_err(|e| GitError {
-        argv: argv.clone(),
-        code: None,
-        stderr: String::new(),
-        detail: format!("无法启动 git：{e}"),
-    })?;
-    if let Some(mut pipe) = child.stdin.take() {
-        let owned = input.to_string();
-        std::thread::spawn(move || {
-            let _ = pipe.write_all(owned.as_bytes());
-            // Dropping closes the pipe, which is what tells `--batch` to stop.
-        });
-    }
-    let out = wait_with_timeout(child, GIT_TIMEOUT_SECS).map_err(|detail| GitError {
-        argv: argv.clone(),
-        code: None,
-        stderr: String::new(),
-        detail,
-    })?;
-    let result = Output {
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        code: out.status.code().unwrap_or(-1),
-    };
-    if result.ok() {
-        Ok(result)
-    } else {
-        Err(GitError {
-            argv,
-            code: Some(result.code),
-            stderr: result.stderr,
-            detail: String::new(),
-        })
-    }
+    let out = run_with_binary(&git_binary(), cwd, args, &[], Some(input))?;
+    ok_or_err(out, args)
 }
 
-/// Runs git and fails on a non-zero exit.
-pub fn run_ok(cwd: &Path, args: &[&str]) -> Result<Output> {
-    let out = run(cwd, args)?;
+/// The failure half of `run_ok`, shared so the message cannot drift between
+/// callers. It did once: a copy of this arm left `detail` empty, so a failing
+/// `cat-file --batch` reached the user as `git cat-file --batch: ` with no
+/// reason attached.
+fn ok_or_err(out: Output, args: &[&str]) -> Result<Output> {
     if out.ok() {
-        Ok(out)
-    } else {
-        Err(GitError {
-            argv: args.iter().map(|s| (*s).to_string()).collect(),
-            code: Some(out.code),
-            stderr: out.stderr.clone(),
-            detail: first_meaningful_line(&out.stderr)
-                .unwrap_or_else(|| format!("退出码 {}", out.code)),
-        })
+        return Ok(out);
     }
+    Err(GitError {
+        argv: args.iter().map(|s| (*s).to_string()).collect(),
+        code: Some(out.code),
+        stderr: out.stderr.clone(),
+        detail: first_meaningful_line(&out.stderr)
+            .unwrap_or_else(|| format!("退出码 {}", out.code)),
+    })
 }
 
 /// Picks the line a user should see out of git's stderr: the first line that
@@ -1302,7 +1279,7 @@ mod tests {
         // set AUTOMED_GIT_BINARY and unset it, and every test that happened to
         // spawn git in that window failed with a spurious "cannot start git".
         let dir = TempDir::new("no-binary");
-        let err = run_with_binary("/nonexistent/git", dir.path(), &["status"], &[]).unwrap_err();
+        let err = run_with_binary("/nonexistent/git", dir.path(), &["status"], &[], None).unwrap_err();
         assert!(err.detail.contains("无法启动"), "{err:?}");
     }
 }
