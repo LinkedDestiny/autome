@@ -98,7 +98,10 @@ pub struct ChangelogEntry {
 impl ChangelogEntry {
     /// The file half of `clause`, for checking that the clause exists.
     pub fn clause_file(&self) -> &str {
-        self.clause.split_once('#').map(|(f, _)| f).unwrap_or(&self.clause)
+        self.clause
+            .split_once('#')
+            .map(|(f, _)| f)
+            .unwrap_or(&self.clause)
     }
 
     /// The distinct task names in `evidence`. An entry citing the same task
@@ -166,7 +169,10 @@ impl std::fmt::Display for EntryProblem {
                 write!(f, "{id}：metric `{metric}` 无法测量")
             }
             EntryProblem::RetireMustBeFlat { id } => {
-                write!(f, "{id}：retire 只能以移除实验的形式提出，direction 必须是 flat")
+                write!(
+                    f,
+                    "{id}：retire 只能以移除实验的形式提出，direction 必须是 flat"
+                )
             }
             EntryProblem::ClauseFileMissing { id, file } => {
                 write!(f, "{id}：clause 指向的文件 `{file}` 不在本版本里")
@@ -316,10 +322,7 @@ fn parse_block(block: &yaml_lite::Block, offset: usize) -> Result<ChangelogEntry
         .reject_unknown(&FIELDS)
         .map_err(|e| err(at(e.line), e.detail))?;
     if let Some(dup) = block.duplicate() {
-        return Err(err(
-            at(dup.line),
-            format!("字段 `{}` 出现了两次", dup.key),
-        ));
+        return Err(err(at(dup.line), format!("字段 `{}` 出现了两次", dup.key)));
     }
 
     let require = |key: &str| -> Result<&yaml_lite::Field, Error> {
@@ -476,7 +479,10 @@ mod tests {
     fn versions_parse_in_document_order_with_their_entries() {
         let c = parse(DOC).unwrap();
         assert_eq!(
-            c.versions.iter().map(|v| v.tag.as_str()).collect::<Vec<_>>(),
+            c.versions
+                .iter()
+                .map(|v| v.tag.as_str())
+                .collect::<Vec<_>>(),
             vec!["protocol/v2", "protocol/v1"]
         );
         assert_eq!(c.entries().count(), 2);
@@ -489,7 +495,10 @@ mod tests {
         assert_eq!(e.id, "C-07");
         assert_eq!(e.kind, ChangeKind::Behavioral);
         assert_eq!(e.clause_file(), "loop-protocol.md");
-        assert_eq!(e.evidence_tasks(), vec!["voice-schedule", "island-workbench"]);
+        assert_eq!(
+            e.evidence_tasks(),
+            vec!["voice-schedule", "island-workbench"]
+        );
         assert_eq!(e.predicted_impact.scope, Scope::Task);
         assert_eq!(e.eval.as_deref(), Some("evals/self-check-not-applicable/"));
         assert_eq!(e.realized_impact, None);
@@ -516,18 +525,18 @@ mod tests {
         let e = &c.version("protocol/v2").unwrap().entries[0];
         let problems = check_entry(
             e,
-            &has(&[
-                "loop-protocol.md",
-                "evals/self-check-not-applicable/",
-            ]),
+            &has(&["loop-protocol.md", "evals/self-check-not-applicable/"]),
         );
         assert_eq!(problems, vec![]);
     }
 
     #[test]
     fn a_behavioral_change_without_a_case_is_rejected() {
-        let c = parse(&DOC.replace("  eval: evals/self-check-not-applicable/\n", "  eval: null\n"))
-            .unwrap();
+        let c = parse(&DOC.replace(
+            "  eval: evals/self-check-not-applicable/\n",
+            "  eval: null\n",
+        ))
+        .unwrap();
         let e = &c.version("protocol/v2").unwrap().entries[0];
         let problems = check_entry(e, &has(&["loop-protocol.md"]));
         assert!(problems.contains(&EntryProblem::MissingEval { id: "C-07".into() }));
@@ -585,7 +594,10 @@ mod tests {
     #[test]
     fn a_retire_names_a_case_that_is_gone_and_that_is_fine() {
         let doc = DOC
-            .replace("- id: C-07\n  kind: behavioral", "- id: C-07\n  kind: retire")
+            .replace(
+                "- id: C-07\n  kind: behavioral",
+                "- id: C-07\n  kind: retire",
+            )
             .replace("direction: down", "direction: flat");
         let c = parse(&doc).unwrap();
         let e = &c.version("protocol/v2").unwrap().entries[0];
@@ -620,11 +632,7 @@ mod tests {
     fn an_error_line_points_into_the_whole_file_not_into_its_section() {
         let doc = DOC.replace("kind: behavioral", "kind: tweak");
         let e = parse(&doc).unwrap_err();
-        let want = doc
-            .lines()
-            .position(|l| l.contains("kind: tweak"))
-            .unwrap()
-            + 1;
+        let want = doc.lines().position(|l| l.contains("kind: tweak")).unwrap() + 1;
         assert_eq!(e.line, want);
     }
 

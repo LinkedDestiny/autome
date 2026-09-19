@@ -379,7 +379,9 @@ pub fn forbidden() -> Vec<Requirement> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhraseProblem {
     /// The file is not in this version at all.
-    FileMissing { file: String },
+    FileMissing {
+        file: String,
+    },
     Missing(Requirement),
     Present(Requirement),
 }
@@ -449,7 +451,10 @@ mod tests {
     #[test]
     fn deleting_a_required_sentence_is_caught_and_the_reason_is_reported() {
         let mut files = seed().clone();
-        let text = files.loop_protocol().unwrap().replace("证据不写进设计文档", "");
+        let text = files
+            .loop_protocol()
+            .unwrap()
+            .replace("证据不写进设计文档", "");
         files.insert(LOOP_PROTOCOL, text);
         let problems = check(&files);
         assert_eq!(problems.len(), 1, "{problems:?}");
@@ -459,7 +464,10 @@ mod tests {
     #[test]
     fn reintroducing_a_forbidden_sentence_is_caught() {
         let mut files = seed().clone();
-        let text = format!("{}\n没有提交的东西不会进入最终的合并\n", files.prompt("impl").unwrap());
+        let text = format!(
+            "{}\n没有提交的东西不会进入最终的合并\n",
+            files.prompt("impl").unwrap()
+        );
         files.insert("prompts/impl.md", text);
         let problems = check(&files);
         assert_eq!(problems.len(), 1, "{problems:?}");

@@ -121,8 +121,11 @@ impl RuntimeAdapter {
 /// widening) and when Git cannot answer at all — a guessed path would be worse
 /// than the status quo.
 fn git_dir_outside(cwd: &Path) -> Option<PathBuf> {
-    let out = crate::git::run(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .ok()?;
+    let out = crate::git::run(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
     if !out.ok() {
         return None;
     }
@@ -948,10 +951,8 @@ mod tests {
         // Without this, `git add` inside a worktree exits 128: the real Git
         // directory is `<repo>/.git/worktrees/<slug>`, outside the worktree
         // that `workspace-write` allows.
-        let repo = std::env::temp_dir().join(format!(
-            "automed-writable-root-{}",
-            std::process::id()
-        ));
+        let repo =
+            std::env::temp_dir().join(format!("automed-writable-root-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(&repo).unwrap();
         let repo = repo.canonicalize().unwrap();
@@ -961,13 +962,23 @@ mod tests {
         crate::git::run(repo, &["commit", "-q", "--allow-empty", "-m", "base"]).unwrap();
         crate::git::run(
             repo,
-            &["worktree", "add", "-q", worktree.to_str().unwrap(), "-b", "t"],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "t",
+            ],
         )
         .unwrap();
 
-        let args = build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), &worktree)
-            .join(" ");
-        assert!(args.contains("sandbox_workspace_write.writable_roots"), "{args}");
+        let args =
+            build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), &worktree).join(" ");
+        assert!(
+            args.contains("sandbox_workspace_write.writable_roots"),
+            "{args}"
+        );
         // The *common* directory, not `<repo>/.git/worktrees/<slug>`. The
         // narrower one lets `git add` take the lock and then fail on the
         // shared object store with `failed to insert into database`, which is
@@ -1019,7 +1030,8 @@ mod tests {
         // pointing at a task-file section that did not exist, so four real
         // sessions ran and produced nothing.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let p =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 p.contains(role.round_name()),
                 "{role} prompt does not say which round it is:\n{p}"
@@ -1034,7 +1046,8 @@ mod tests {
     #[test]
     fn every_role_prompt_names_the_files_it_reads_and_writes() {
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let p =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             // Every round reads the task file.
             assert!(p.contains("checkout-flow-task.md"), "{role}: {p}");
             // Every round is pointed at its brief, which is the index into
@@ -1071,7 +1084,8 @@ mod tests {
         // leaves behind. A sentence that is not true about the system will be
         // acted on as if it were.
         for role in Role::ALL {
-            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let prompt =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 prompt.contains("不是协议失败"),
                 "{role:?} is not told that a refused commit is survivable"
@@ -1086,7 +1100,8 @@ mod tests {
     #[test]
     fn every_role_prompt_says_what_protocol_failure_is_for() {
         for role in Role::ALL {
-            let prompt = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let prompt =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(
                 prompt.contains("`协议失败` 只用于一种情况"),
                 "{role:?} does not narrow what 协议失败 means"
@@ -1101,7 +1116,8 @@ mod tests {
         // brought nothing. The core sweeps up afterwards, but a round that
         // commits its own work produces a legible history.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let p =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(p.contains("git commit"), "{role}: {p}");
         }
     }
@@ -1157,7 +1173,8 @@ mod tests {
         // Before the design is approved there is no N. Saying "N = 0" would
         // be worse than saying nothing.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let p =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(!p.contains("实现预算 N"), "{role}: {p}");
         }
     }
@@ -1231,7 +1248,13 @@ mod tests {
         // S6. "End-to-end acceptance on real hardware" was made the last
         // milestone of a real run. It needs a real mouse and a real
         // microphone, so no session could ever close it.
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Plan }, &[], None, &templates())).unwrap();
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Plan },
+            &[],
+            None,
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("## 人工验收清单"), "{p}");
         assert!(p.contains("不做里程碑验收条件"), "{p}");
         // And the parser's lesson, stated where the table is written.
@@ -1243,7 +1266,8 @@ mod tests {
         // The core schedules; a round that relays would bypass the parallel
         // limit, pause, the role toggles and the budgets.
         for role in Role::ALL {
-            let p = build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
+            let p =
+                build_prompt(&spec(SessionKind::Role { role }, &[], None, &templates())).unwrap();
             assert!(p.contains("不要启动下一个会话"), "{role}: {p}");
         }
     }
@@ -1268,13 +1292,25 @@ mod tests {
 
     #[test]
     fn the_implement_round_is_forbidden_from_closing_a_milestone() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None, &templates())).unwrap();
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            None,
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("不得把里程碑标成 `已完成`"), "{p}");
     }
 
     #[test]
     fn the_audit_round_is_told_to_verify_independently() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &[], None, &templates())).unwrap();
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Audit },
+            &[],
+            None,
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("独立复验"), "{p}");
         assert!(p.contains("不要以实现轮的说法为准"), "{p}");
     }
@@ -1282,14 +1318,26 @@ mod tests {
     #[test]
     fn bound_skills_are_stated_as_mandatory() {
         let skills = vec!["conventions".to_string(), "vitest".to_string()];
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &skills, None, &templates())).unwrap();
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Impl },
+            &skills,
+            None,
+            &templates(),
+        ))
+        .unwrap();
         assert!(p.contains("必须使用"), "{p}");
         assert!(p.contains("conventions、vitest"), "{p}");
     }
 
     #[test]
     fn no_skills_means_no_skill_sentence() {
-        let p = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &[], None, &templates())).unwrap();
+        let p = build_prompt(&spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            None,
+            &templates(),
+        ))
+        .unwrap();
         assert!(!p.contains("必须使用"), "{p}");
     }
 
@@ -1419,7 +1467,10 @@ mod tests {
         // survives archival — and there is exactly one of it, so the task file
         // and the protocol can no longer disagree.
         let p = build_prompt(&spec(SessionKind::Intake, &[], None, &templates())).unwrap();
-        assert!(p.contains("docs/checkout-flow/protocol/loop-protocol.md"), "{p}");
+        assert!(
+            p.contains("docs/checkout-flow/protocol/loop-protocol.md"),
+            "{p}"
+        );
         assert!(p.contains("不要把协议抄进任务文件"), "{p}");
         assert!(!p.contains("逐字复制"), "{p}");
     }

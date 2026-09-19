@@ -72,11 +72,7 @@ impl CaseResult {
     }
 
     pub fn render(&self) -> String {
-        let mut s = format!(
-            "{} {}\n",
-            if self.passed() { "✓" } else { "✗" },
-            self.name
-        );
+        let mut s = format!("{} {}\n", if self.passed() { "✓" } else { "✗" }, self.name);
         for g in &self.graders {
             s.push_str(&format!(
                 "    {} {} [{}]\n",
@@ -254,19 +250,15 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
             }
         };
         let before = snapshot(&dir);
-        let stream = match runner.role_session(
-            &dir,
-            plan.role_runtime,
-            &prompt,
-            case.timeout_seconds,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                result.errors.push(format!("第 {} 次：{e}", run + 1));
-                let _ = std::fs::remove_dir_all(&dir);
-                continue;
-            }
-        };
+        let stream =
+            match runner.role_session(&dir, plan.role_runtime, &prompt, case.timeout_seconds) {
+                Ok(s) => s,
+                Err(e) => {
+                    result.errors.push(format!("第 {} 次：{e}", run + 1));
+                    let _ = std::fs::remove_dir_all(&dir);
+                    continue;
+                }
+            };
 
         // `max_turns` after the fact: neither CLI takes a flag for it, and a
         // case that needs more turns than it was written for is no longer
@@ -607,7 +599,11 @@ mod tests {
         run_case(&plan(&files, &dir), &case("template", 1, 15), &fake);
         let seen = fake.seen.borrow();
         assert_eq!(seen.len(), 1);
-        assert!(seen[0].contains("第 7 版的实现轮 prompt，demo。"), "{}", seen[0]);
+        assert!(
+            seen[0].contains("第 7 版的实现轮 prompt，demo。"),
+            "{}",
+            seen[0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

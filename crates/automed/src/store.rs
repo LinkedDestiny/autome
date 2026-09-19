@@ -320,7 +320,8 @@ impl Store {
                 );
                 "#,
             )?;
-            self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            self.conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(())
     }
@@ -655,15 +656,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn task_metrics(
-        &self,
-        id: &str,
-    ) -> Result<Option<autome_domain::metrics::TaskMetrics>> {
+    pub fn task_metrics(&self, id: &str) -> Result<Option<autome_domain::metrics::TaskMetrics>> {
         let raw: Option<String> = self
             .conn
-            .query_row("SELECT metrics FROM tasks WHERE id = ?1", params![id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT metrics FROM tasks WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?
             .flatten();
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
@@ -807,8 +807,19 @@ impl Store {
     pub fn list_rule_experiments(
         &self,
         project_id: &str,
-    ) -> Result<Vec<(String, String, String, String, f64, u32, String, String, Option<String>)>>
-    {
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            f64,
+            u32,
+            String,
+            String,
+            Option<String>,
+        )>,
+    > {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_file, body, metric, baseline, horizon, removed_at, state, outcome
              FROM rule_experiments WHERE project_id = ?1 ORDER BY removed_at",

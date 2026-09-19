@@ -12,7 +12,10 @@ use crate::dispatch::{Ctx, DispatchResult, rejected};
 /// Cheap and idempotent, so it runs whenever the panel asks rather than being
 /// scheduled: the answer changes only when a task ends, and asking then costs
 /// one pass over lessons the core already has in the event stream.
-fn refresh(ctx: &mut Ctx, project_id: &str) -> Result<Vec<curation::Proposal>, crate::dispatch::DispatchError> {
+fn refresh(
+    ctx: &mut Ctx,
+    project_id: &str,
+) -> Result<Vec<curation::Proposal>, crate::dispatch::DispatchError> {
     let project = ctx.store.get_project(project_id)?;
     let repo = std::path::PathBuf::from(&project.path);
     let mut per_task: Vec<(String, Vec<Lesson>)> = Vec::new();
@@ -165,7 +168,10 @@ pub fn decide(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     ))
 }
 
-fn experiments_json(ctx: &mut Ctx, project_id: &str) -> Result<Value, crate::dispatch::DispatchError> {
+fn experiments_json(
+    ctx: &mut Ctx,
+    project_id: &str,
+) -> Result<Value, crate::dispatch::DispatchError> {
     let rows = ctx.store.list_rule_experiments(project_id)?;
     let mut out = Vec::new();
     for (id, file, body, metric, baseline, horizon, removed_at, state, outcome) in rows {
@@ -214,8 +220,8 @@ pub fn retire(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let project = ctx.store.get_project(project_id)?;
     let repo = std::path::PathBuf::from(&project.path);
     let path = repo.join(file);
-    let existing = std::fs::read_to_string(&path)
-        .map_err(|e| rejected(format!("读不到 {file}：{e}")))?;
+    let existing =
+        std::fs::read_to_string(&path).map_err(|e| rejected(format!("读不到 {file}：{e}")))?;
     if !existing.contains(body) {
         return Err(rejected(format!("{file} 里没有这条规则")));
     }
@@ -247,11 +253,7 @@ pub fn retire(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 
     std::fs::write(&path, curation::remove(&existing, body))
         .map_err(|e| rejected(format!("无法写入 {file}：{e}")))?;
-    let _ = crate::git::commit_paths(
-        &repo,
-        &[file],
-        &format!("chore(autome): 移除实验 · {body}"),
-    );
+    let _ = crate::git::commit_paths(&repo, &[file], &format!("chore(autome): 移除实验 · {body}"));
 
     let id = ctx.store.start_rule_experiment(
         project_id,
@@ -317,9 +319,11 @@ pub fn restore(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 
     ctx.store
         .finish_rule_experiment(id, "restored", "指标变差，规则放回")?;
-    let seq = ctx
-        .store
-        .append_event("rule.restored", project_id, json!({ "id": id, "file": file }))?;
+    let seq = ctx.store.append_event(
+        "rule.restored",
+        project_id,
+        json!({ "id": id, "file": file }),
+    )?;
     Ok((
         json!({ "file": file }),
         vec![crate::dispatch::event(

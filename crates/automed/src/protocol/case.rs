@@ -243,8 +243,7 @@ mod tests {
             }
             cases += 1;
             let dir = path.trim_end_matches("case.yaml");
-            let case = parse(files.get(path).unwrap())
-                .unwrap_or_else(|e| panic!("{path}: {e}"));
+            let case = parse(files.get(path).unwrap()).unwrap_or_else(|e| panic!("{path}: {e}"));
             let bodies: Vec<(String, String)> = case
                 .graders
                 .iter()

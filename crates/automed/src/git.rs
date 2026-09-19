@@ -128,7 +128,11 @@ fn run_with_binary(
         // PATH is still needed: git shells out to its own subcommands.
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in sanitised_env() {
@@ -925,7 +929,10 @@ mod tests {
 
         assert!(err.contains("超过 1s"), "{err}");
         // Gave up near the deadline rather than after the child's own 30s.
-        assert!(waited < std::time::Duration::from_secs(5), "等了 {waited:?}");
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "等了 {waited:?}"
+        );
         // And actually killed it: `kill -0` fails once the process is gone.
         // Reaped by `child.wait()` inside the waiter, so this is not a zombie.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1360,7 +1367,8 @@ mod tests {
         // set AUTOMED_GIT_BINARY and unset it, and every test that happened to
         // spawn git in that window failed with a spurious "cannot start git".
         let dir = TempDir::new("no-binary");
-        let err = run_with_binary("/nonexistent/git", dir.path(), &["status"], &[], None).unwrap_err();
+        let err =
+            run_with_binary("/nonexistent/git", dir.path(), &["status"], &[], None).unwrap_err();
         assert!(err.detail.contains("无法启动"), "{err:?}");
     }
 }

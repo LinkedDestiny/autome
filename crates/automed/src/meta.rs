@@ -34,7 +34,10 @@ pub enum Trigger {
     /// Enough has happened since the last version to have something to say.
     TasksSinceRelease { count: usize },
     /// The same protocol-level lesson in two different tasks.
-    RepeatedLesson { proposal: String, tasks: Vec<String> },
+    RepeatedLesson {
+        proposal: String,
+        tasks: Vec<String>,
+    },
     /// A task stopped because a document would not parse or a guard fired.
     ProtocolFailure { task: String },
 }
@@ -99,7 +102,11 @@ pub struct TaskInput {
 }
 
 /// The files the core writes into `docs/<slug>/inputs/`.
-pub fn inputs(tasks: &[TaskInput], deferred: &[String], contradicted: &[String]) -> Vec<(String, String)> {
+pub fn inputs(
+    tasks: &[TaskInput],
+    deferred: &[String],
+    contradicted: &[String],
+) -> Vec<(String, String)> {
     vec![
         ("inputs/metrics.md".into(), metrics_md(tasks)),
         ("inputs/lessons.md".into(), lessons_md(tasks)),
@@ -107,7 +114,10 @@ pub fn inputs(tasks: &[TaskInput], deferred: &[String], contradicted: &[String])
             "inputs/retro-suggestions.md".into(),
             retro_suggestions_md(tasks),
         ),
-        ("inputs/failures.md".into(), failures_md(tasks, contradicted)),
+        (
+            "inputs/failures.md".into(),
+            failures_md(tasks, contradicted),
+        ),
         ("inputs/deferred.md".into(), deferred_md(deferred)),
     ]
 }
@@ -220,7 +230,12 @@ fn retro_suggestions_md(tasks: &[TaskInput]) -> String {
     for t in tasks {
         let Some(tail) = &t.retro_tail else { continue };
         any = true;
-        s.push_str(&format!("## {} · {}\n\n{}\n\n", t.slug, t.title, tail.trim()));
+        s.push_str(&format!(
+            "## {} · {}\n\n{}\n\n",
+            t.slug,
+            t.title,
+            tail.trim()
+        ));
     }
     if !any {
         s.push_str("没有任何任务留下终止总结。\n");
@@ -356,10 +371,11 @@ mod tests {
 
     #[test]
     fn three_finished_tasks_are_enough_to_suggest_an_iteration() {
-        assert!(triggers(3, &[], &[]).iter().any(|t| matches!(
-            t,
-            Trigger::TasksSinceRelease { count: 3 }
-        )));
+        assert!(
+            triggers(3, &[], &[])
+                .iter()
+                .any(|t| matches!(t, Trigger::TasksSinceRelease { count: 3 }))
+        );
         assert!(triggers(2, &[], &[]).is_empty());
     }
 
@@ -388,7 +404,11 @@ mod tests {
     #[test]
     fn the_metrics_table_names_the_version_each_task_ran_under() {
         let files = inputs(&[task("a", vec![])], &[], &[]);
-        let metrics = &files.iter().find(|(p, _)| p.ends_with("metrics.md")).unwrap().1;
+        let metrics = &files
+            .iter()
+            .find(|(p, _)| p.ends_with("metrics.md"))
+            .unwrap()
+            .1;
         assert!(metrics.contains("protocol/v1@abc"), "{metrics}");
         assert!(metrics.contains("| autome | a |"), "{metrics}");
         assert!(metrics.contains("escaping × 2"), "{metrics}");
@@ -407,11 +427,19 @@ mod tests {
             ),
             task(
                 "b",
-                vec![lesson("L-01", LessonLevel::Protocol, "审计要先跑负向对照。")],
+                vec![lesson(
+                    "L-01",
+                    LessonLevel::Protocol,
+                    "审计要先跑负向对照。",
+                )],
             ),
         ];
         let files = inputs(&tasks, &[], &[]);
-        let lessons = &files.iter().find(|(p, _)| p.ends_with("lessons.md")).unwrap().1;
+        let lessons = &files
+            .iter()
+            .find(|(p, _)| p.ends_with("lessons.md"))
+            .unwrap()
+            .1;
         assert!(lessons.contains("审计要先跑负向对照"), "{lessons}");
         assert!(lessons.contains("出现在 2 个任务"), "{lessons}");
         // A rule-level lesson is someone else's business.
@@ -439,7 +467,11 @@ mod tests {
             &[],
             &["C-07 预测 verification_gaps 会降，实际从 2.0 升到 5.0".into()],
         );
-        let f = &files.iter().find(|(p, _)| p.ends_with("failures.md")).unwrap().1;
+        let f = &files
+            .iter()
+            .find(|(p, _)| p.ends_with("failures.md"))
+            .unwrap()
+            .1;
         assert!(f.contains("C-07"), "{f}");
         assert!(f.contains("与预测相反的改动"), "{f}");
     }
@@ -456,7 +488,11 @@ mod tests {
     #[test]
     fn deferred_items_carry_over_from_the_last_iteration() {
         let files = inputs(&[], &["B-02 把收敛模式的阈值做成可配置".into()], &[]);
-        let d = &files.iter().find(|(p, _)| p.ends_with("deferred.md")).unwrap().1;
+        let d = &files
+            .iter()
+            .find(|(p, _)| p.ends_with("deferred.md"))
+            .unwrap()
+            .1;
         assert!(d.contains("B-02"), "{d}");
     }
 

@@ -308,10 +308,7 @@ fn counterpart(input: &Inputs<'_>) -> String {
 
 /// The paragraphs of a document that mention a milestone id.
 fn milestone_paragraphs(doc: &str, id: &str) -> Option<String> {
-    let kept: Vec<&str> = doc
-        .split("\n\n")
-        .filter(|p| p.contains(id))
-        .collect();
+    let kept: Vec<&str> = doc.split("\n\n").filter(|p| p.contains(id)).collect();
     (!kept.is_empty()).then(|| kept.join("\n\n"))
 }
 
@@ -442,7 +439,10 @@ session-protocol = []
         assert!(s.contains("### 自审清单"), "{s}");
         assert!(s.contains("四项。"), "{s}");
         assert!(!s.contains("## 里程碑"), "{s}");
-        assert!(!s.ends_with('\n'), "trailing blank lines are the gap: {s:?}");
+        assert!(
+            !s.ends_with('\n'),
+            "trailing blank lines are the gap: {s:?}"
+        );
     }
 
     #[test]
@@ -492,7 +492,10 @@ session-protocol = []
     #[test]
     fn a_brief_says_it_is_an_index_and_names_the_authority() {
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-02"), vec![milestone("M-02", MilestoneState::Open, 1)]);
+        let s = status(
+            Some("M-02"),
+            vec![milestone("M-02", MilestoneState::Open, 1)],
+        );
         let brief = build(&inputs(Role::Impl, &s, &map, &[]));
         assert!(brief.contains("不是设计文档的替代品"), "{brief}");
         assert!(brief.contains("docs/checkout/checkout.md"), "{brief}");
@@ -501,9 +504,15 @@ session-protocol = []
     #[test]
     fn a_brief_carries_the_milestone_row_and_the_mapped_protocol_sections() {
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-02"), vec![milestone("M-02", MilestoneState::Open, 1)]);
+        let s = status(
+            Some("M-02"),
+            vec![milestone("M-02", MilestoneState::Open, 1)],
+        );
         let brief = build(&inputs(Role::Impl, &s, &map, &[]));
-        assert!(brief.contains("| M-02 | 开放 | M-02 的标题 | 1 |"), "{brief}");
+        assert!(
+            brief.contains("| M-02 | 开放 | M-02 的标题 | 1 |"),
+            "{brief}"
+        );
         assert!(brief.contains("## 实现循环"), "{brief}");
         assert!(brief.contains("### 自审清单"), "{brief}");
         assert!(brief.contains("## 状态块"), "{brief}");
@@ -514,8 +523,12 @@ session-protocol = []
     #[test]
     fn an_implementation_round_is_given_the_audit_paragraphs_about_its_milestone() {
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-02"), vec![milestone("M-02", MilestoneState::Open, 1)]);
-        let audit = "# 审计\n\n## 审计 #3\n\nM-01 通过。\n\nM-02 退回：转义写反了。\n\n无关的一段。\n";
+        let s = status(
+            Some("M-02"),
+            vec![milestone("M-02", MilestoneState::Open, 1)],
+        );
+        let audit =
+            "# 审计\n\n## 审计 #3\n\nM-01 通过。\n\nM-02 退回：转义写反了。\n\n无关的一段。\n";
         let mut i = inputs(Role::Impl, &s, &map, &[]);
         i.audit_doc = Some(audit);
         let brief = build(&i);
@@ -528,7 +541,10 @@ session-protocol = []
         // Independence is the whole point of the pair. A brief that pasted the
         // implementation round's reasoning in would verify the reasoning.
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-02"), vec![milestone("M-02", MilestoneState::Pending, 0)]);
+        let s = status(
+            Some("M-02"),
+            vec![milestone("M-02", MilestoneState::Pending, 0)],
+        );
         let evidence = vec![
             "M-02-r3-impl.md".to_string(),
             "M-02-r5-impl.md".to_string(),
@@ -536,14 +552,20 @@ session-protocol = []
         ];
         let brief = build(&inputs(Role::Audit, &s, &map, &evidence));
         assert!(brief.contains("M-02-r5-impl.md"), "{brief}");
-        assert!(!brief.contains("M-02-r3-impl.md"), "the newest one: {brief}");
+        assert!(
+            !brief.contains("M-02-r3-impl.md"),
+            "the newest one: {brief}"
+        );
         assert!(brief.contains("先不要读它"), "{brief}");
     }
 
     #[test]
     fn a_first_implementation_round_is_told_there_is_no_audit_yet() {
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-01"), vec![milestone("M-01", MilestoneState::Open, 0)]);
+        let s = status(
+            Some("M-01"),
+            vec![milestone("M-01", MilestoneState::Open, 0)],
+        );
         let brief = build(&inputs(Role::Impl, &s, &map, &[]));
         assert!(brief.contains("还没有审计轮跑过"), "{brief}");
     }
@@ -551,7 +573,10 @@ session-protocol = []
     #[test]
     fn the_budget_line_is_repeated_so_the_brief_stands_alone() {
         let map = parse_map(MAP).unwrap();
-        let s = status(Some("M-01"), vec![milestone("M-01", MilestoneState::Open, 0)]);
+        let s = status(
+            Some("M-01"),
+            vec![milestone("M-01", MilestoneState::Open, 0)],
+        );
         let brief = build(&inputs(Role::Impl, &s, &map, &[]));
         assert!(brief.contains("N = 35"), "{brief}");
     }

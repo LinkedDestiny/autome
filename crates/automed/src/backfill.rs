@@ -178,10 +178,7 @@ pub fn run(ctx: &mut Ctx) -> Vec<Filled> {
     let _ = crate::git::commit_paths(
         &repo.path,
         &["CHANGELOG.md"],
-        &format!(
-            "chore(protocol): 回填 {} 条改动的实际影响",
-            done.len()
-        ),
+        &format!("chore(protocol): 回填 {} 条改动的实际影响", done.len()),
     );
     for f in &done {
         let _ = ctx.store.append_event(

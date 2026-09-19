@@ -38,7 +38,11 @@ pub fn count_verdicts(worktree: &Path, doc_dir: &str) -> (u32, u32) {
     let mut gaps = 0;
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         // `M-xx-r<k>-audit.md`. The role suffix is what keeps an audit file
         // from colliding with the implementation round of the same k — before
         // it existed the two wrote to the same path and the second one won.

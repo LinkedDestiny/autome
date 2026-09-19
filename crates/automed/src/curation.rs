@@ -256,7 +256,12 @@ mod tests {
     use super::*;
     use autome_domain::lesson::LessonKey;
 
-    fn agg(level: LessonLevel, domain: LessonDomain, proposal: &str, tasks: &[&str]) -> AggregatedLesson {
+    fn agg(
+        level: LessonLevel,
+        domain: LessonDomain,
+        proposal: &str,
+        tasks: &[&str],
+    ) -> AggregatedLesson {
         AggregatedLesson {
             key: LessonKey {
                 domain,
@@ -373,7 +378,10 @@ mod tests {
     #[test]
     fn an_experiment_that_held_and_one_that_did_not() {
         assert_eq!(judge(2.0, &[2.0, 1.0, 2.0], 3), ExperimentVerdict::Held);
-        assert_eq!(judge(2.0, &[3.0, 3.0, 3.0], 3), ExperimentVerdict::Regressed);
+        assert_eq!(
+            judge(2.0, &[3.0, 3.0, 3.0], 3),
+            ExperimentVerdict::Regressed
+        );
         // Exactly at the baseline holds: the prediction was that nothing gets
         // worse, and nothing did.
         assert_eq!(judge(2.0, &[2.0, 2.0, 2.0], 3), ExperimentVerdict::Held);
@@ -396,7 +404,10 @@ mod tests {
             - 乙规则\n";
         let after = remove(existing, "甲规则");
         assert!(!after.contains("甲规则"), "{after}");
-        assert!(!after.contains("a L-01"), "an orphan comment survived:\n{after}");
+        assert!(
+            !after.contains("a L-01"),
+            "an orphan comment survived:\n{after}"
+        );
         assert!(after.contains("乙规则"), "{after}");
         assert!(after.contains("c L-01"), "{after}");
     }

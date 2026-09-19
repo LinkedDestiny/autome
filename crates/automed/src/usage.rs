@@ -135,7 +135,9 @@ fn parse_codex(stream: &str, wall_ms: Option<u64>) -> SessionMetrics {
             continue;
         }
         turns += 1;
-        let Some(usage) = o.get("usage") else { continue };
+        let Some(usage) = o.get("usage") else {
+            continue;
+        };
         seen_usage = true;
         // Codex's `input_tokens` is the whole prompt, cached part included;
         // Claude's is the uncached remainder. Subtract so the two columns mean
@@ -172,7 +174,11 @@ fn parse_codex(stream: &str, wall_ms: Option<u64>) -> SessionMetrics {
 /// Measures the two file-shaped numbers, which no CLI reports: how big the
 /// design document got, and how many evidence files exist. Both are read at
 /// reap time, from the worktree the session just left.
-pub fn measure_documents(worktree: &std::path::Path, doc_dir: &str, slug: &str) -> (Option<u64>, Option<u64>) {
+pub fn measure_documents(
+    worktree: &std::path::Path,
+    doc_dir: &str,
+    slug: &str,
+) -> (Option<u64>, Option<u64>) {
     let design = worktree.join(doc_dir).join(format!("{slug}.md"));
     let bytes = std::fs::metadata(&design).ok().map(|m| m.len());
     let evidence = worktree.join(doc_dir).join("evidence");

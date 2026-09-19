@@ -80,11 +80,15 @@ impl Report {
     }
 
     pub fn fails(&self) -> impl Iterator<Item = &Problem> {
-        self.problems.iter().filter(|p| p.severity == Severity::Fail)
+        self.problems
+            .iter()
+            .filter(|p| p.severity == Severity::Fail)
     }
 
     pub fn warnings(&self) -> impl Iterator<Item = &Problem> {
-        self.problems.iter().filter(|p| p.severity == Severity::Warn)
+        self.problems
+            .iter()
+            .filter(|p| p.severity == Severity::Warn)
     }
 
     pub fn render(&self) -> String {
@@ -355,7 +359,8 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
         }
     }
     if ok == paths.len() {
-        r.passed.push(format!("eval 用例 {ok} 个，可读且带阳性对照"));
+        r.passed
+            .push(format!("eval 用例 {ok} 个，可读且带阳性对照"));
     }
 }
 
@@ -423,7 +428,8 @@ fn layer_one_changelog(files: &ProtocolFiles, r: &mut Report) {
         r.problems
             .push(Problem::fail(L1, "CHANGELOG.md 里一条改动都没有"));
     } else {
-        r.passed.push(format!("CHANGELOG 条目 {entries} 条，门槛齐全"));
+        r.passed
+            .push(format!("CHANGELOG 条目 {entries} 条，门槛齐全"));
     }
 
     clause_coverage(files, &log, r);
@@ -482,11 +488,16 @@ fn clause_coverage(files: &ProtocolFiles, log: &Changelog, r: &mut Report) {
     let covered: Vec<&str> = log
         .clauses()
         .iter()
-        .filter_map(|c| c.split_once('#').map(|(_, h)| h.rsplit('/').next().unwrap_or(h)))
+        .filter_map(|c| {
+            c.split_once('#')
+                .map(|(_, h)| h.rsplit('/').next().unwrap_or(h))
+        })
         .collect();
     let mut uncovered = 0;
     for file in protocol::SIZED_FILES {
-        let Some(text) = files.get(file) else { continue };
+        let Some(text) = files.get(file) else {
+            continue;
+        };
         let mut heading = String::new();
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix('#') {
@@ -526,7 +537,9 @@ const L2: &str = "示例";
 fn layer_two(files: &ProtocolFiles, r: &mut Report) {
     let mut checked = 0;
     for file in protocol::SIZED_FILES {
-        let Some(text) = files.get(file) else { continue };
+        let Some(text) = files.get(file) else {
+            continue;
+        };
         for (line, block) in fenced_blocks(text) {
             let Some(doc) = example_document(&block) else {
                 continue;
@@ -549,7 +562,8 @@ fn layer_two(files: &ProtocolFiles, r: &mut Report) {
             "协议里一个状态块或里程碑表的示例都没有。会话要照着写的格式得有个样子。",
         ));
     } else {
-        r.passed.push(format!("状态块 / 里程碑表示例 {checked} 处可解析"));
+        r.passed
+            .push(format!("状态块 / 里程碑表示例 {checked} 处可解析"));
     }
 }
 
@@ -585,7 +599,11 @@ fn example_document(block: &str) -> Option<String> {
         return None;
     }
     let status: String = if is_status {
-        block.lines().map(concrete_field).collect::<Vec<_>>().join("\n")
+        block
+            .lines()
+            .map(concrete_field)
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         DEFAULT_STATUS.to_string()
     };
@@ -735,10 +753,10 @@ mod tests {
     #[test]
     fn editing_a_contract_region_is_refused() {
         let mut files = seed().clone();
-        let text = files
-            .loop_protocol()
-            .unwrap()
-            .replace("| 实现 impl | 推进最小编号的开放里程碑 | `待审` |", "| 实现 impl | 随便 | `已完成` |");
+        let text = files.loop_protocol().unwrap().replace(
+            "| 实现 impl | 推进最小编号的开放里程碑 | `待审` |",
+            "| 实现 impl | 随便 | `已完成` |",
+        );
         files.insert(autome_domain::protocol::LOOP_PROTOCOL, text);
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
@@ -757,16 +775,20 @@ mod tests {
         files.insert(autome_domain::protocol::LOOP_PROTOCOL, text);
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
-        assert!(details(&r).contains("证据不写进设计文档"), "{}", details(&r));
+        assert!(
+            details(&r).contains("证据不写进设计文档"),
+            "{}",
+            details(&r)
+        );
     }
 
     #[test]
     fn a_behavioral_change_with_no_case_is_refused() {
         let mut files = seed().clone();
-        let text = files
-            .get("CHANGELOG.md")
-            .unwrap()
-            .replace("  eval: evals/impl-writes-evidence-not-design/\n", "  eval: null\n");
+        let text = files.get("CHANGELOG.md").unwrap().replace(
+            "  eval: evals/impl-writes-evidence-not-design/\n",
+            "  eval: null\n",
+        );
         files.insert("CHANGELOG.md", text);
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
@@ -826,10 +848,10 @@ mod tests {
     #[test]
     fn an_example_milestone_table_with_a_blank_header_cell_is_refused() {
         let mut files = seed().clone();
-        let text = files
-            .loop_protocol()
-            .unwrap()
-            .replace("| ID | 状态 | 标题 | reopen | 领域 |", "|  | 状态 | 标题 | reopen | 领域 |");
+        let text = files.loop_protocol().unwrap().replace(
+            "| ID | 状态 | 标题 | reopen | 领域 |",
+            "|  | 状态 | 标题 | reopen | 领域 |",
+        );
         files.insert(autome_domain::protocol::LOOP_PROTOCOL, text);
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
@@ -889,10 +911,19 @@ mod tests {
             concrete_field("next-action: <下一轮要做的事>"),
             "next-action: 无"
         );
-        assert_eq!(concrete_field("current-milestone-reopens: r"), "current-milestone-reopens: 0");
-        assert_eq!(concrete_field("current-milestone: M-xx | 无"), "current-milestone: M-01");
+        assert_eq!(
+            concrete_field("current-milestone-reopens: r"),
+            "current-milestone-reopens: 0"
+        );
+        assert_eq!(
+            concrete_field("current-milestone: M-xx | 无"),
+            "current-milestone: M-01"
+        );
         // A filled-in example is left exactly as written.
-        assert_eq!(concrete_field("implementation-round: 7/35"), "implementation-round: 7/35");
+        assert_eq!(
+            concrete_field("implementation-round: 7/35"),
+            "implementation-round: 7/35"
+        );
     }
 
     #[test]
@@ -908,10 +939,7 @@ mod tests {
 
     /// Writes a version to a scratch directory, the way a checkout holds one.
     fn on_disk(tag: &str, files: &ProtocolFiles) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "autome-eval-{tag}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("autome-eval-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         for (path, content) in files.iter() {
             let full = dir.join(path);

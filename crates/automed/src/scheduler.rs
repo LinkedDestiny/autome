@@ -265,9 +265,10 @@ fn apply_guards(
     let retro = std::fs::read_to_string(&retro_path).unwrap_or_default();
     let retro_lines: Vec<&str> = retro.lines().filter(|l| !l.trim().is_empty()).collect();
     let retro_added = match &before {
-        Some(b) if retro_lines.len() > b.retro_lines => {
-            retro_lines[b.retro_lines..].iter().map(|l| l.to_string()).collect()
-        }
+        Some(b) if retro_lines.len() > b.retro_lines => retro_lines[b.retro_lines..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect(),
         _ => vec![],
     };
 
@@ -431,7 +432,13 @@ fn design_changed_outside_milestones(
     let design = task.design_doc();
     let diff = git::run(
         worktree,
-        &["diff", "--unified=0", &format!("{head}..HEAD"), "--", &design],
+        &[
+            "diff",
+            "--unified=0",
+            &format!("{head}..HEAD"),
+            "--",
+            &design,
+        ],
     )
     .ok()?;
     if !diff.ok() {
@@ -460,11 +467,7 @@ fn design_changed_outside_milestones(
 /// still has to be reaped and its task still has to advance. A failure here
 /// loses a row in a table; making it fatal would lose the task.
 fn record_usage(ctx: &mut Ctx, s: &Session, repo: &Path, task: &TaskRecord, ended_at: &str) {
-    let stream_path = repo.join(format!(
-        "{}/{}.jsonl",
-        SessionPaths::dir(&s.task_id),
-        s.id
-    ));
+    let stream_path = repo.join(format!("{}/{}.jsonl", SessionPaths::dir(&s.task_id), s.id));
     let stream = std::fs::read_to_string(&stream_path).unwrap_or_default();
     let wall_ms = wall_clock_ms(&s.started_at, ended_at);
     let mut metrics = crate::usage::parse(s.runtime, &stream, wall_ms);
@@ -762,8 +765,10 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         Action::RunCoreStep {
             node: Node::Cleanup
         }
-    ) || matches!(transition.next, TaskState::Failed { .. } | TaskState::Cancelled)
-        || (transition.next == TaskState::Done && task.metrics.is_none());
+    ) || matches!(
+        transition.next,
+        TaskState::Failed { .. } | TaskState::Cancelled
+    ) || (transition.next == TaskState::Done && task.metrics.is_none());
     if measure_now {
         if let Err(e) = write_task_metrics(ctx, task_id) {
             tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
@@ -1267,7 +1272,8 @@ pub fn needs_human_approval(ctx: &mut Ctx, task_id: &str) -> Result<Vec<String>>
 /// `copy_into_task` wrote.
 fn read_task_protocol(dir: &Path) -> Result<ProtocolFiles> {
     fn walk(root: &Path, dir: &Path, out: &mut ProtocolFiles) -> Result<()> {
-        for entry in std::fs::read_dir(dir).map_err(|e| err(format!("读取协议副本失败：{e}")))? {
+        for entry in std::fs::read_dir(dir).map_err(|e| err(format!("读取协议副本失败：{e}")))?
+        {
             let entry = entry.map_err(|e| err(format!("读取协议副本失败：{e}")))?;
             let path = entry.path();
             if path.is_dir() {
@@ -2902,7 +2908,10 @@ mod tests {
     #[test]
     fn a_session_started_long_ago_with_no_log_is_still_vanished() {
         let idle = session_idle_secs(Path::new("/nonexistent/log"), "2020-01-01T00:00:00Z");
-        assert!(idle >= autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
+        assert!(
+            idle >= autome_domain::session::VANISHED_AFTER_SECS,
+            "{idle}"
+        );
     }
 
     #[test]

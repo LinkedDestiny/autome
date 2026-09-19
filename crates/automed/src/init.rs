@@ -577,7 +577,6 @@ mod tests {
         super::init(repo, crate::protocol::seed())
     }
 
-
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     struct TempDir(PathBuf);

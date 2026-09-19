@@ -237,7 +237,10 @@ pub fn render_codex_line(line: &str) -> Option<String> {
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            Some(format!("=== turn failed · {} ===", truncate(detail, TOOL_ERROR_MAX)))
+            Some(format!(
+                "=== turn failed · {} ===",
+                truncate(detail, TOOL_ERROR_MAX)
+            ))
         }
         Some("item.completed") | Some("item.started") => render_codex_item(&object),
         Some(other) => Some(format!("· {other}")),
@@ -275,7 +278,10 @@ fn render_codex_item(object: &serde_json::Map<String, Value>) -> Option<String> 
         Some("reasoning") => started.then(|| "→ (thinking)".to_string()),
         Some("command_execution") => {
             if started {
-                return Some(format!("→ Bash {}", truncate(pick("command"), TOOL_SUMMARY_MAX)));
+                return Some(format!(
+                    "→ Bash {}",
+                    truncate(pick("command"), TOOL_SUMMARY_MAX)
+                ));
             }
             // Only a failure is worth a second line; a successful command's
             // output is the file contents it printed.
@@ -310,9 +316,9 @@ fn render_codex_item(object: &serde_json::Map<String, Value>) -> Option<String> 
                 truncate(pick("tool"), TOOL_SUMMARY_MAX)
             )
         }),
-        Some("web_search") => started.then(|| {
-            format!("→ WebSearch {}", truncate(pick("query"), TOOL_SUMMARY_MAX))
-        }),
+        Some("web_search") => {
+            started.then(|| format!("→ WebSearch {}", truncate(pick("query"), TOOL_SUMMARY_MAX)))
+        }
         Some("todo_list") => None,
         Some("error") => {
             (!started).then(|| format!("  ✗ {}", truncate(pick("message"), TOOL_ERROR_MAX)))

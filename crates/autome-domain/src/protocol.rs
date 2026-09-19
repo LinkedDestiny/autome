@@ -192,7 +192,6 @@ impl ProtocolFiles {
     pub fn prompt(&self, name: &str) -> Option<&str> {
         self.get(&format!("prompts/{name}.md"))
     }
-
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -565,8 +564,11 @@ mod tests {
 
     #[test]
     fn a_nameless_marker_is_an_error() {
-        let e = regions_in("x.md", "<!-- kernel-contract: -->\n1\n<!-- /kernel-contract -->\n")
-            .unwrap_err();
+        let e = regions_in(
+            "x.md",
+            "<!-- kernel-contract: -->\n1\n<!-- /kernel-contract -->\n",
+        )
+        .unwrap_err();
         assert!(matches!(e, ContractError::Unnamed { .. }));
     }
 

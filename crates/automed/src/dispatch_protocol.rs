@@ -154,12 +154,8 @@ pub fn improve(ctx: &mut Ctx) -> DispatchResult {
         )));
     }
 
-    let (payload, events) = crate::dispatch::task_create_in(
-        ctx,
-        &project.id,
-        crate::meta::REQUEST,
-        "改进 Loop 协议",
-    )?;
+    let (payload, events) =
+        crate::dispatch::task_create_in(ctx, &project.id, crate::meta::REQUEST, "改进 Loop 协议")?;
     Ok((payload, events))
 }
 
@@ -204,11 +200,9 @@ pub fn pin(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     config.loop_overrides.protocol = tag.clone();
     config_io::save_project(&repo_path, &config)?;
 
-    let seq = ctx.store.append_event(
-        "project.protocol_pinned",
-        project_id,
-        json!({ "tag": tag }),
-    )?;
+    let seq =
+        ctx.store
+            .append_event("project.protocol_pinned", project_id, json!({ "tag": tag }))?;
     Ok((
         json!({ "tag": tag }),
         vec![crate::dispatch::event(

@@ -291,5 +291,4 @@ mod tests {
         let roots = scan_roots("/Users/x/", "/Users/x/code/shop/");
         assert!(roots.iter().all(|(_, _, p)| !p.contains("//")));
     }
-
 }

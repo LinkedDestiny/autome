@@ -86,7 +86,11 @@ impl Block {
     /// this a typo'd key is simply ignored and the block quietly means
     /// something else than it reads.
     pub fn reject_unknown(&self, known: &[&str]) -> Result<(), Error> {
-        match self.fields.iter().find(|f| !known.contains(&f.key.as_str())) {
+        match self
+            .fields
+            .iter()
+            .find(|f| !known.contains(&f.key.as_str()))
+        {
             Some(f) => Err(err(f.line, format!("没有 `{}` 这个字段", f.key))),
             None => Ok(()),
         }

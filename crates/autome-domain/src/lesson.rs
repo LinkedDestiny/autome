@@ -283,9 +283,10 @@ pub fn parse_impact(line: usize, raw: &str) -> Result<PredictedImpact, Error> {
                 })?);
             }
             "scope" => {
-                scope = Some(Scope::parse(&v).ok_or_else(|| {
-                    err(line, format!("`{v}` 不是 scope（task / project）"))
-                })?);
+                scope = Some(
+                    Scope::parse(&v)
+                        .ok_or_else(|| err(line, format!("`{v}` 不是 scope（task / project）")))?,
+                );
             }
             "horizon" => {
                 horizon = Some(

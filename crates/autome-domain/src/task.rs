@@ -505,9 +505,7 @@ pub fn apply(
                     TaskState::Paused { resume: *node },
                     Action::None,
                 )),
-                TaskState::Active { .. } => {
-                    Err(reject("任务正在等待你，没有会话可暂停"))
-                }
+                TaskState::Active { .. } => Err(reject("任务正在等待你，没有会话可暂停")),
                 TaskState::Queued => Err(reject("任务尚未开始")),
                 _ => Err(reject("任务不在运行中")),
             };

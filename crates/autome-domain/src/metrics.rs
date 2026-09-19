@@ -17,7 +17,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 /// One session's usage, filled in when the session is reaped (plan §3.1).
 ///
 /// Every numeric field is `Option`: a session whose stream could not be parsed
@@ -69,9 +68,7 @@ impl SessionMetrics {
             self.output_tokens,
         ) {
             (None, None, None, None) => None,
-            (i, r, w, o) => {
-                Some(i.unwrap_or(0) + r.unwrap_or(0) + w.unwrap_or(0) + o.unwrap_or(0))
-            }
+            (i, r, w, o) => Some(i.unwrap_or(0) + r.unwrap_or(0) + w.unwrap_or(0) + o.unwrap_or(0)),
         }
     }
 }
@@ -359,10 +356,7 @@ mod tests {
         };
         assert!(!worse.matches(Direction::Flat));
 
-        let better = RealizedImpact {
-            after: 3.0,
-            ..same
-        };
+        let better = RealizedImpact { after: 3.0, ..same };
         assert!(better.matches(Direction::Flat));
         assert!(better.matches(Direction::Down));
     }

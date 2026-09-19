@@ -1263,15 +1263,43 @@ fn a_milestone_closed_and_then_reopened_is_counted_as_contradicted() {
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
     w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
     w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]));
+    w.doc_step(
+        4,
+        &slug,
+        &doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]),
+    );
     // implement M-01, audit closes it, implement M-02 …
-    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]));
-    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]));
-    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]));
+    w.doc_step(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]),
+    );
+    w.doc_step(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]),
+    );
+    w.doc_step(
+        7,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]),
+    );
     // … and this audit takes M-01 back, having closed it two rounds ago.
-    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "开放"), ("M-02", "已完成")]));
-    w.doc_step(9, &slug, &doc("实现中", 2, 3, &[("M-01", "待审"), ("M-02", "已完成")]));
-    w.doc_step(10, &slug, &doc("实现中", 2, 3, &[("M-01", "已完成"), ("M-02", "已完成")]));
+    w.doc_step(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "开放"), ("M-02", "已完成")]),
+    );
+    w.doc_step(
+        9,
+        &slug,
+        &doc("实现中", 2, 3, &[("M-01", "待审"), ("M-02", "已完成")]),
+    );
+    w.doc_step(
+        10,
+        &slug,
+        &doc("实现中", 2, 3, &[("M-01", "已完成"), ("M-02", "已完成")]),
+    );
     w.retro_step(11, &slug);
 
     let task_id = create_task(&mut w, request);
@@ -1426,9 +1454,10 @@ fn the_loop_ends_with_a_retro_round_whose_lessons_the_core_can_read() {
     // The retro round ran, as its own role, after the audit closed everything.
     let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
     assert!(
-        sessions
-            .iter()
-            .any(|s| s.kind == autome_domain::session::SessionKind::Role { role: autome_domain::role::Role::Retro }),
+        sessions.iter().any(|s| s.kind
+            == autome_domain::session::SessionKind::Role {
+                role: autome_domain::role::Role::Retro
+            }),
         "no retro session: {:?}",
         sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
     );
@@ -1543,8 +1572,8 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     // The task holds exactly one copy of the protocol, frozen at creation.
     let frozen = wt.join(format!("docs/{slug}/protocol/loop-protocol.md"));
     assert!(frozen.exists(), "{}", frozen.display());
-    let task_file = std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}-task.md")))
-        .unwrap_or_default();
+    let task_file =
+        std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}-task.md"))).unwrap_or_default();
     // The fake CLI writes no task file; what matters is that the scaffold no
     // longer carries a second copy to disagree with the first.
     let _ = task_file;
@@ -1572,8 +1601,8 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
         );
     }
 
-    let impl_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-1.md")))
-        .unwrap();
+    let impl_brief =
+        std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-1.md"))).unwrap();
     assert!(impl_brief.contains("| M-01 |"), "{impl_brief}");
     assert!(impl_brief.contains("## 实现循环"), "{impl_brief}");
     assert!(impl_brief.contains("不是设计文档的替代品"), "{impl_brief}");
@@ -1581,8 +1610,8 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     // The audit round is given the evidence *path* and told not to start
     // there: reading the implementation round's reasoning is what an
     // independent re-verification must not do.
-    let audit_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/audit-1.md")))
-        .unwrap();
+    let audit_brief =
+        std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/audit-1.md"))).unwrap();
     assert!(audit_brief.contains("M-01-r1-impl.md"), "{audit_brief}");
     assert!(audit_brief.contains("先不要读它"), "{audit_brief}");
 }
@@ -1653,7 +1682,10 @@ fn a_meta_task_runs_on_the_protocol_repository_with_its_evidence_assembled() {
         assert!(inputs.join(name).exists(), "missing inputs/{name}");
     }
     let metrics = std::fs::read_to_string(inputs.join("metrics.md")).unwrap();
-    assert!(metrics.contains(&slug), "the finished task is not cited:\n{metrics}");
+    assert!(
+        metrics.contains(&slug),
+        "the finished task is not cited:\n{metrics}"
+    );
     assert!(metrics.contains("protocol/v1@"), "{metrics}");
 
     // And the request carries the constraints that make a proposal checkable.
@@ -1769,7 +1801,10 @@ fn the_same_lesson_from_two_tasks_becomes_a_project_rule_after_the_user_approves
     assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
     let text = std::fs::read_to_string(&rule_file).unwrap();
     assert!(text.contains(lesson), "{text}");
-    assert!(text.contains("移除实验"), "the file explains itself:\n{text}");
+    assert!(
+        text.contains("移除实验"),
+        "the file explains itself:\n{text}"
+    );
 
     // And it is not offered again.
     let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
@@ -1792,14 +1827,21 @@ fn removing_a_rule_is_an_experiment_with_a_baseline_and_a_way_back() {
     run_a_task(&mut w, "second task", lesson);
 
     let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
-    let key = ok(&out)["proposals"][0]["key"].as_str().unwrap().to_string();
+    let key = ok(&out)["proposals"][0]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
     w.call(
         "rules.decide",
         json!({ "project_id": w.project_id, "key": key, "approve": true }),
     );
 
     let rule_file = w.repo.join(".autome/rules/verification.md");
-    assert!(std::fs::read_to_string(&rule_file).unwrap().contains(lesson));
+    assert!(
+        std::fs::read_to_string(&rule_file)
+            .unwrap()
+            .contains(lesson)
+    );
 
     let out = w.call(
         "rules.retire",
@@ -1814,7 +1856,10 @@ fn removing_a_rule_is_an_experiment_with_a_baseline_and_a_way_back() {
     assert_eq!(started["horizon"], 3, "{started}");
     let text = std::fs::read_to_string(&rule_file).unwrap();
     assert!(!text.contains(lesson), "{text}");
-    assert!(!text.contains("first-task L-01"), "an orphan comment:\n{text}");
+    assert!(
+        !text.contains("first-task L-01"),
+        "an orphan comment:\n{text}"
+    );
 
     // The experiment is running and not yet judgeable.
     let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));

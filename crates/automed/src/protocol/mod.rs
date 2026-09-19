@@ -52,10 +52,7 @@ const UPSTREAM_TAG_PREFIX: &str = "protocol/upstream-";
 /// stops being embedded is exactly the kind of thing that only shows up on a
 /// user's machine.
 const SEED: [(&str, &str); 13] = [
-    (
-        "loop-protocol.md",
-        include_str!("seed/loop-protocol.md"),
-    ),
+    ("loop-protocol.md", include_str!("seed/loop-protocol.md")),
     (
         "session-protocol.md",
         include_str!("seed/session-protocol.md"),
@@ -192,7 +189,10 @@ pub fn repo_path(autome_home: &Path) -> PathBuf {
 /// taking it as an argument, because the two callers — adding a project and
 /// the recovery pass — reach this from places that have a path and not a
 /// resolved configuration.
-pub fn resolve_for_project(autome_home: &Path, repo: &Path) -> Result<(ProtocolRef, ProtocolFiles)> {
+pub fn resolve_for_project(
+    autome_home: &Path,
+    repo: &Path,
+) -> Result<(ProtocolRef, ProtocolFiles)> {
     let pin = crate::config_io::load_project(repo)
         .ok()
         .and_then(|c| c.loop_overrides.protocol);
@@ -295,7 +295,10 @@ impl Repo {
         let cache = CACHE.get_or_init(Default::default);
         let key = (self.path.clone(), rev.to_string());
         let cacheable = rev.starts_with(TAG_PREFIX);
-        if cacheable && let Ok(map) = cache.lock() && let Some(hit) = map.get(&key) {
+        if cacheable
+            && let Ok(map) = cache.lock()
+            && let Some(hit) = map.get(&key)
+        {
             return Ok(hit.clone());
         }
 
@@ -326,7 +329,9 @@ impl Repo {
         let bytes = blobs.stdout.as_bytes();
         let mut at = 0usize;
         for name in names {
-            let rest = bytes.get(at..).ok_or_else(|| err("cat-file 的输出提前结束"))?;
+            let rest = bytes
+                .get(at..)
+                .ok_or_else(|| err("cat-file 的输出提前结束"))?;
             let eol = rest
                 .iter()
                 .position(|b| *b == b'\n')
@@ -380,7 +385,10 @@ impl Repo {
             if header.ends_with(" missing") {
                 continue;
             }
-            let Some(size) = header.rsplit(' ').next().and_then(|s| s.trim().parse::<usize>().ok())
+            let Some(size) = header
+                .rsplit(' ')
+                .next()
+                .and_then(|s| s.trim().parse::<usize>().ok())
             else {
                 break;
             };
@@ -613,8 +621,8 @@ pub fn read_dir_protocol(dir: &Path) -> Result<ProtocolFiles> {
 /// repository-relative with `/` separators.
 fn read_dir_files(root: &Path, dir: &Path) -> Result<ProtocolFiles> {
     let mut files = ProtocolFiles::new();
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| err(format!("无法读取 {}：{e}", dir.display())))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| err(format!("无法读取 {}：{e}", dir.display())))?;
     for entry in entries {
         let entry = entry.map_err(|e| err(format!("无法读取目录项：{e}")))?;
         let path = entry.path();
@@ -641,7 +649,11 @@ fn read_dir_files(root: &Path, dir: &Path) -> Result<ProtocolFiles> {
 /// Writes a task's frozen copy into `<worktree>/<doc_dir>/protocol/`.
 ///
 /// Returns the repository-relative paths written, for the caller to commit.
-pub fn copy_into_task(files: &ProtocolFiles, worktree: &Path, doc_dir: &str) -> Result<Vec<String>> {
+pub fn copy_into_task(
+    files: &ProtocolFiles,
+    worktree: &Path,
+    doc_dir: &str,
+) -> Result<Vec<String>> {
     let mut written = Vec::new();
     for (path, content) in files.iter() {
         // Eval fixtures are large and a task never reads them; the copy exists
@@ -672,10 +684,8 @@ mod tests {
 
     impl Home {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "autome-protocol-{tag}-{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("autome-protocol-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Home(dir)
@@ -710,10 +720,22 @@ mod tests {
         // panic at first use on a user's machine. Fail here instead.
         let regions = autome_domain::protocol::regions(seed()).expect("seed markers");
         let names: Vec<String> = regions.iter().map(|r| r.key()).collect();
-        assert!(names.contains(&format!("{SESSION_PROTOCOL}#status-block")), "{names:?}");
-        assert!(names.contains(&format!("{SESSION_PROTOCOL}#milestone-table")), "{names:?}");
-        assert!(names.contains(&format!("{SESSION_PROTOCOL}#boundaries")), "{names:?}");
-        assert!(names.contains(&format!("{LOOP_PROTOCOL}#roles")), "{names:?}");
+        assert!(
+            names.contains(&format!("{SESSION_PROTOCOL}#status-block")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&format!("{SESSION_PROTOCOL}#milestone-table")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&format!("{SESSION_PROTOCOL}#boundaries")),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&format!("{LOOP_PROTOCOL}#roles")),
+            "{names:?}"
+        );
         assert!(
             names.contains(&format!("{LOOP_PROTOCOL}#backlog-disputes")),
             "{names:?}"
@@ -828,7 +850,10 @@ mod tests {
         // Same content as v1, new name: the metrics rows for v2 stay true.
         assert_eq!(v3.hash, v1.hash);
         assert_ne!(v3.tag, v1.tag);
-        assert_eq!(repo.tags().unwrap(), vec!["protocol/v1", "protocol/v2", "protocol/v3"]);
+        assert_eq!(
+            repo.tags().unwrap(),
+            vec!["protocol/v1", "protocol/v2", "protocol/v3"]
+        );
         assert_eq!(repo.files_at(&v2.tag).unwrap().hash(), v2.hash);
     }
 

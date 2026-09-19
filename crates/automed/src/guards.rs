@@ -259,8 +259,14 @@ fn impl_had_a_target(round: &Round<'_>) -> Option<Finding> {
     let before = round.before?;
     // `all` is true on an empty list, so the "no milestones yet" case falls
     // out of the third clause without a test of its own.
-    if before.milestones.iter().any(|(_, s)| *s == MilestoneState::Open)
-        || before.milestones.iter().all(|(_, s)| *s == MilestoneState::Done)
+    if before
+        .milestones
+        .iter()
+        .any(|(_, s)| *s == MilestoneState::Open)
+        || before
+            .milestones
+            .iter()
+            .all(|(_, s)| *s == MilestoneState::Done)
     {
         return None;
     }
@@ -368,10 +374,7 @@ mod tests {
             current_milestone_reopens: 0,
             convergence_mode: ConvergenceMode::Normal,
             next_action: String::new(),
-            milestones: milestones
-                .iter()
-                .map(|(id, s)| milestone(id, *s))
-                .collect(),
+            milestones: milestones.iter().map(|(id, s)| milestone(id, *s)).collect(),
             backlog: vec![],
             disputes: vec![],
             manual_items: vec![],
@@ -400,7 +403,9 @@ mod tests {
             status,
             before: Some(before),
             retro_lines: before.retro_lines + 1,
-            retro_added: vec!["实现 #3 | M-01 | 待审 | docs/x/evidence/M-01-r3-impl.md | 无".into()],
+            retro_added: vec![
+                "实现 #3 | M-01 | 待审 | docs/x/evidence/M-01-r3-impl.md | 无".into(),
+            ],
             design_bytes: before.design_bytes,
             evidence_files: evidence.iter().map(|s| s.to_string()).collect(),
             design_changed_outside_milestones: Some(false),
@@ -439,10 +444,16 @@ mod tests {
         // every implementation round after the first milestone closes.
         let s = status(
             4,
-            &[("M-01", MilestoneState::Done), ("M-02", MilestoneState::Pending)],
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Pending),
+            ],
         );
         let before = snapshot(
-            &[("M-01", MilestoneState::Done), ("M-02", MilestoneState::Open)],
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Open),
+            ],
             4,
             20_000,
         );
@@ -573,7 +584,12 @@ mod tests {
     fn an_evidence_file_from_an_earlier_round_does_not_count_for_this_one() {
         let s = status(7, &[("M-01", MilestoneState::Pending)]);
         let before = snapshot(&[("M-01", MilestoneState::Open)], 4, 20_000);
-        let r = round(Role::Impl, &s, &before, &["M-01-r3-impl.md", "M-01-r5-impl.md"]);
+        let r = round(
+            Role::Impl,
+            &s,
+            &before,
+            &["M-01-r3-impl.md", "M-01-r5-impl.md"],
+        );
         assert_eq!(codes(&check(&r)), vec!["evidence_missing"]);
     }
 

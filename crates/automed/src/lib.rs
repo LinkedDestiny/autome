@@ -61,7 +61,7 @@ pub mod protocol;
 pub mod scheduler;
 pub mod skills;
 pub mod store;
+pub mod stream_render;
 pub mod task_metrics;
 pub mod usage;
 pub mod version_page;
-pub mod stream_render;

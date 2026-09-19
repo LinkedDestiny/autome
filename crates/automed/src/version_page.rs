@@ -254,7 +254,9 @@ mod tests {
         // that is the thing that means the audit stopped biting.
         assert!(rows[1].mean("reopen_total").unwrap() < rows[0].mean("reopen_total").unwrap());
         assert!(
-            rows[1].warnings.contains(&"closed_then_contradicted".to_string()),
+            rows[1]
+                .warnings
+                .contains(&"closed_then_contradicted".to_string()),
             "{:?}",
             rows[1].warnings
         );

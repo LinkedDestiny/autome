@@ -391,15 +391,11 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "protocol.improve" => crate::dispatch_protocol::improve(ctx),
 
         // ---- curation --------------------------------------------------
-        "rules.proposals" => {
-            crate::dispatch_curation::proposals(ctx, str_param(p, "project_id")?)
-        }
+        "rules.proposals" => crate::dispatch_curation::proposals(ctx, str_param(p, "project_id")?),
         "rules.decide" => crate::dispatch_curation::decide(ctx, p),
         "rules.retire" => crate::dispatch_curation::retire(ctx, p),
         "rules.restore" => crate::dispatch_curation::restore(ctx, p),
-        "protocol.versions" => {
-            crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
-        }
+        "protocol.versions" => crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?),
         "protocol.pin" => crate::dispatch_protocol::pin(ctx, p),
         "protocol.rollback" => crate::dispatch_protocol::rollback(ctx, p),
 
@@ -1216,7 +1212,9 @@ fn create(
         slug,
         // The intake session writes the real title; until then the request
         // itself is the most informative thing to show.
-        title: title.map(str::to_string).unwrap_or_else(|| first_line(request)),
+        title: title
+            .map(str::to_string)
+            .unwrap_or_else(|| first_line(request)),
         request: request.to_string(),
         attachments,
         doc_refs,

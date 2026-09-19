@@ -24,7 +24,10 @@ const REQUEST: &str = "\u{2}";
 const BRIEF: &str = "\u{3}";
 
 fn golden(name: &str) -> String {
-    let path = format!("{}/tests/golden/prompts/{name}.md", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/tests/golden/prompts/{name}.md",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
@@ -36,7 +39,10 @@ fn maybe_update_golden(name: &str, got: &str) -> bool {
     if std::env::var("AUTOME_UPDATE_GOLDEN").is_err() {
         return false;
     }
-    let path = format!("{}/tests/golden/prompts/{name}.md", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/tests/golden/prompts/{name}.md",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::write(&path, got).unwrap();
     true
 }
@@ -73,10 +79,7 @@ fn diff_report(name: &str, got: &str, want: &str) -> String {
     let w: Vec<&str> = want.lines().collect();
     for (i, (a, b)) in g.iter().zip(w.iter()).enumerate() {
         if a != b {
-            return format!(
-                "{name} 第 {} 行不一致：\n  现在：{a}\n  基准：{b}",
-                i + 1
-            );
+            return format!("{name} 第 {} 行不一致：\n  现在：{a}\n  基准：{b}", i + 1);
         }
     }
     format!(
@@ -185,12 +188,7 @@ fn the_retro_prompt_is_handed_the_tasks_numbers() {
         reopen_by_domain: vec![("promo-case".into(), 2)],
         ..Default::default()
     };
-    let mut s = spec(
-        SessionKind::Role {
-            role: Role::Retro,
-        },
-        &templates,
-    );
+    let mut s = spec(SessionKind::Role { role: Role::Retro }, &templates);
     s.task_metrics = Some(&metrics);
     let p = build_prompt(&s).unwrap();
     assert!(p.contains("15/35"), "{p}");
@@ -203,13 +201,7 @@ fn a_task_with_no_recorded_metrics_is_told_so_rather_than_shown_zeroes() {
     // A retro round handed a table of zeroes would write about a task that
     // went perfectly. Absence has to read as absence.
     let templates = automed::protocol::seed().clone();
-    let p = build_prompt(&spec(
-        SessionKind::Role {
-            role: Role::Retro,
-        },
-        &templates,
-    ))
-    .unwrap();
+    let p = build_prompt(&spec(SessionKind::Role { role: Role::Retro }, &templates)).unwrap();
     assert!(p.contains("没有记录到指标"), "{p}");
     assert!(!p.contains("| 实现缺陷 | 0 |"), "{p}");
 }
@@ -217,13 +209,12 @@ fn a_task_with_no_recorded_metrics_is_told_so_rather_than_shown_zeroes() {
 #[test]
 fn a_template_with_an_unknown_placeholder_is_refused_rather_than_shown_to_the_model() {
     let mut templates = automed::protocol::seed().clone();
-    let text = format!("{}\n还要参考 {{mood}}。\n", templates.prompt("impl").unwrap());
+    let text = format!(
+        "{}\n还要参考 {{mood}}。\n",
+        templates.prompt("impl").unwrap()
+    );
     templates.insert("prompts/impl.md", text);
-    let e = build_prompt(&spec(
-        SessionKind::Role { role: Role::Impl },
-        &templates,
-    ))
-    .unwrap_err();
+    let e = build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &templates)).unwrap_err();
     assert!(e.detail.contains("mood"), "{}", e.detail);
 }
 
@@ -237,24 +228,14 @@ fn braces_in_ordinary_prose_are_not_mistaken_for_placeholders() {
         templates.prompt("impl").unwrap()
     );
     templates.insert("prompts/impl.md", text);
-    assert!(
-        build_prompt(&spec(
-            SessionKind::Role { role: Role::Impl },
-            &templates
-        ))
-        .is_ok()
-    );
+    assert!(build_prompt(&spec(SessionKind::Role { role: Role::Impl }, &templates)).is_ok());
 }
 
 #[test]
 fn a_version_missing_a_role_template_names_the_role_rather_than_launching_blank() {
     let mut templates = automed::protocol::seed().clone();
     templates.remove("prompts/audit.md");
-    let e = build_prompt(&spec(
-        SessionKind::Role { role: Role::Audit },
-        &templates,
-    ))
-    .unwrap_err();
+    let e = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &templates)).unwrap_err();
     assert!(e.detail.contains("prompts/audit.md"), "{}", e.detail);
     assert!(e.detail.contains("审计轮"), "{}", e.detail);
 }
