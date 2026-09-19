@@ -12,7 +12,7 @@
 import {
   h, icon, text, reveal, tag, kvList, cardHead, activateOnKey,
 } from '../lib/dom.js';
-import { read, attempt, registerWrite } from '../lib/api.js';
+import { read, readOr, attempt, registerWrite } from '../lib/api.js';
 import * as theme from '../lib/theme.js';
 import * as labels from '../lib/labels.js';
 
@@ -24,7 +24,13 @@ const DESIGN_ROUND_OPTIONS = [5, 10, 15, 20, 30];
 const BUDGET_FACTOR_OPTIONS = [2, 3, 4, 5, 6, 8, 10];
 
 export async function load() {
-  return read('getConfig');
+  const config = await read('getConfig');
+  // Both degrade rather than blanking the screen: a settings page that cannot
+  // render because the protocol repository is missing would be a settings page
+  // you cannot use to fix anything.
+  const protocol = await readOr({ initialised: false }, 'protocol');
+  const triggers = await readOr({ triggers: [], suggest: false }, 'protocolTriggers');
+  return { ...config, protocol, triggers };
 }
 
 export function render(host, data, ctx) {
@@ -42,14 +48,53 @@ export function render(host, data, ctx) {
   screen.appendChild(
     h('div.cardgrid.cardgrid--2', [
       reveal(routingCard(data, ctx), 1),
-      reveal(loopCard(data, ctx), 2),
-      reveal(terminalCard(ctx), 3),
-      reveal(appearanceCard(data, ctx), 4),
-      reveal(aboutCard(), 5),
+      reveal(protocolCard(data, ctx), 2),
+      reveal(loopCard(data, ctx), 3),
+      reveal(terminalCard(ctx), 4),
+      reveal(appearanceCard(data, ctx), 5),
+      reveal(aboutCard(), 6),
     ])
   );
 
   host.appendChild(screen);
+}
+
+/// The Loop's own rules, and whether there is evidence worth changing them on.
+function protocolCard(data, ctx) {
+  const protocol = (data && data.protocol) || {};
+  const triggers = (data && data.triggers) || {};
+
+  const card = h('div.card.card--pad.col.card--link', {
+    tabindex: '0',
+    role: 'button',
+    onClick: () => ctx.navigate('protocol'),
+    onKeyDown: activateOnKey,
+  });
+  card.appendChild(
+    cardHead(
+      'Loop 协议',
+      triggers.suggest
+        ? tag('有证据可以改了', 'soft-yellow')
+        : tag(protocol.initialised ? '已固定' : '还没建', 'soft-green', 'check')
+    )
+  );
+  card.appendChild(
+    h('div.quiet', {
+      text: protocol.initialised
+        ? `当前 ${labels.protocolRef((protocol.current || {}).wire)} · 已发布 ${(protocol.tags || []).length} 版`
+        : '添加第一个项目时会从内置种子建好',
+    })
+  );
+  // The one sentence that explains why this screen exists at all.
+  card.appendChild(
+    h('div.quiet.mt-8', {
+      text: '规则是带版本的数据。任务创建时固定一份副本，之后发布新版也影响不到它。',
+    })
+  );
+  const cta = h('span.card__cta', { text: '打开协议版本 ' });
+  cta.appendChild(icon('arrow', 'ic--sm'));
+  card.appendChild(cta);
+  return card;
 }
 
 function routingCard(data, ctx) {

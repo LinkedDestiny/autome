@@ -43,6 +43,7 @@ impl SessionKind {
                 Role::Adjudicate => "裁决".into(),
                 Role::Impl => "实现".into(),
                 Role::Audit => "审计".into(),
+                Role::Retro => "复盘".into(),
             },
         }
     }
@@ -119,7 +120,9 @@ impl ExitMarker {
 }
 
 /// One session, as recorded in the task's session history (requirement T-14).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `Eq` is deliberately absent: `SessionMetrics` carries a cost in dollars,
+/// and a float has no total order worth pretending about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub task_id: String,
@@ -136,6 +139,21 @@ pub struct Session {
     pub lifecycle: SessionLifecycle,
     pub log_path: String,
     pub pid: Option<i32>,
+    /// The protocol version this session ran under, in wire form
+    /// (`protocol/v7@3f9a…`). `None` for sessions recorded before the protocol
+    /// left the binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_ref: Option<String>,
+    /// Hash of the project's `.autome/rules/` at launch. Rules change between
+    /// tasks, and a usage number that cannot say which rule set it was
+    /// produced under cannot be compared with another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_hash: Option<String>,
+    /// What the session cost, read out of the CLI's own stream when it is
+    /// reaped. Empty when the stream could not be parsed — deliberately not
+    /// zeroed, because zero is a claim.
+    #[serde(default, flatten)]
+    pub metrics: crate::metrics::SessionMetrics,
 }
 
 impl Session {
@@ -321,6 +339,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "p".into(),
             pid: Some(42),
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), s);

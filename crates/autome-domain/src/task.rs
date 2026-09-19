@@ -17,8 +17,8 @@ use crate::config::ResolvedConfig;
 use crate::role::Role;
 use crate::status_block::{DocStatus, ParseError, StatusBlock};
 
-/// A node where work happens or waits. The 13 nodes the task panel draws,
-/// minus the two terminal ones (`Done` is a `TaskState`, not a node).
+/// A node where work happens or waits. The nodes the task panel draws, minus
+/// the two terminal ones (`Done` is a `TaskState`, not a node).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Node {
@@ -29,6 +29,16 @@ pub enum Node {
     AwaitDesignApproval,
     Implement,
     Audit,
+    /// One pass over the whole run, once the implementation loop is done,
+    /// writing `docs/<slug>/lessons.md`. Before this existed, what a task
+    /// learned stayed in the task directory: the retro file was free prose,
+    /// nobody aggregated it, and the path from "we got this wrong three times"
+    /// to "the protocol says not to" ran through a human remembering.
+    ///
+    /// It sits before `Rebase` rather than after the merge so that the lessons
+    /// are written while the worktree still holds the evidence, and so that
+    /// they travel with the branch.
+    Retro,
     Rebase,
     AwaitMerge,
     Merging,
@@ -36,7 +46,7 @@ pub enum Node {
 }
 
 impl Node {
-    pub const ALL: [Node; 11] = [
+    pub const ALL: [Node; 12] = [
         Node::Intake,
         Node::Design,
         Node::Review,
@@ -44,6 +54,7 @@ impl Node {
         Node::AwaitDesignApproval,
         Node::Implement,
         Node::Audit,
+        Node::Retro,
         Node::Rebase,
         Node::AwaitMerge,
         Node::Merging,
@@ -60,6 +71,7 @@ impl Node {
             Node::Adjudicate => Some(Role::Adjudicate),
             Node::Implement => Some(Role::Impl),
             Node::Audit => Some(Role::Audit),
+            Node::Retro => Some(Role::Retro),
             // Intake runs a session too, but as a fixed system step on a
             // dedicated prompt, not as one of the five configurable roles.
             _ => None,
@@ -92,6 +104,7 @@ impl Node {
             Node::AwaitDesignApproval => "await_design_approval",
             Node::Implement => "implement",
             Node::Audit => "audit",
+            Node::Retro => "retro",
             Node::Rebase => "rebase",
             Node::AwaitMerge => "await_merge",
             Node::Merging => "merging",
@@ -268,6 +281,17 @@ pub enum SessionOutcome {
     MissingArtifact {
         path: String,
     },
+    /// The document parsed, and the core's own checks rejected what the round
+    /// did (plan §4.D): an implementation round claiming a milestone closed,
+    /// or a loop round that left no evidence file.
+    ///
+    /// Separate from `Unparseable` because the two are fixed differently — one
+    /// is a format error on a specific line, the other is a round having done
+    /// something the protocol reserves for a different round — and because a
+    /// person reading the failure panel needs to be told which.
+    GuardFailed {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,12 +444,32 @@ fn after_review(config: &ResolvedConfig) -> Transition {
     }
 }
 
+/// Where a finished implementation loop goes: through the retro round when it
+/// is enabled, straight to rebase when it is not (requirement C-05).
+fn after_the_loop(config: &ResolvedConfig) -> Transition {
+    if config.is_enabled(Role::Retro) {
+        Transition::active(
+            Node::Retro,
+            Action::StartRole {
+                role: Role::Retro,
+                inject: None,
+            },
+        )
+    } else {
+        Transition::active(Node::Rebase, Action::RunCoreStep { node: Node::Rebase })
+    }
+}
+
 /// The implementation-side successor after an implement session, when audit
 /// is disabled (requirement C-05): no independent check, so "no milestone is
 /// still open" is the exit condition.
-fn after_implement_without_audit(status: &StatusBlock, budget_n: u32) -> Transition {
+fn after_implement_without_audit(
+    status: &StatusBlock,
+    budget_n: u32,
+    config: &ResolvedConfig,
+) -> Transition {
     if status.no_open_milestones() {
-        Transition::active(Node::Rebase, Action::RunCoreStep { node: Node::Rebase })
+        after_the_loop(config)
     } else if status.impl_round >= budget_n {
         Transition::fail(
             Node::Implement,
@@ -537,7 +581,12 @@ pub fn apply(
             let node = *node;
             match node {
                 Node::Intake => Ok(Transition::active(Node::Intake, Action::StartIntake)),
-                Node::Design | Node::Review | Node::Adjudicate | Node::Implement | Node::Audit => {
+                Node::Design
+                | Node::Review
+                | Node::Adjudicate
+                | Node::Implement
+                | Node::Audit
+                | Node::Retro => {
                     let role = node.role().expect("role nodes carry a role");
                     if !ctx.config.is_enabled(role) {
                         return Err(reject(
@@ -558,7 +607,7 @@ pub fn apply(
                 _ => Err(reject(
                     state,
                     "rerun_from",
-                    "只能从任务整理、五个角色节点或 rebase 重跑",
+                    "只能从任务整理、六个角色节点或 rebase 重跑",
                 )),
             }
         }
@@ -592,6 +641,14 @@ pub fn apply(
                         node,
                         FailureReason::Protocol {
                             detail: format!("缺少产物 {path}"),
+                        },
+                    ));
+                }
+                SessionOutcome::GuardFailed { detail } => {
+                    return Ok(Transition::fail(
+                        node,
+                        FailureReason::Protocol {
+                            detail: detail.clone(),
                         },
                     ));
                 }
@@ -663,16 +720,13 @@ pub fn apply(
                             },
                         ))
                     } else {
-                        Ok(after_implement_without_audit(status, budget))
+                        Ok(after_implement_without_audit(status, budget, ctx.config))
                     }
                 }
                 Node::Audit => {
                     let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
                     if status.all_milestones_done() {
-                        Ok(Transition::active(
-                            Node::Rebase,
-                            Action::RunCoreStep { node: Node::Rebase },
-                        ))
+                        Ok(after_the_loop(ctx.config))
                     } else if status.impl_round >= budget {
                         Ok(Transition::fail(
                             node,
@@ -688,6 +742,13 @@ pub fn apply(
                         ))
                     }
                 }
+                // The retro round produces `lessons.md` and nothing the
+                // transition table reads; whatever it concluded, the next
+                // step is the rebase.
+                Node::Retro => Ok(Transition::active(
+                    Node::Rebase,
+                    Action::RunCoreStep { node: Node::Rebase },
+                )),
                 _ => unreachable!("core and waiting nodes were rejected above"),
             }
         }
@@ -1056,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_closing_everything_goes_to_rebase() {
+    fn audit_closing_everything_goes_to_the_retro_round() {
         let c = cfg();
         let t = apply(
             &active(Node::Audit),
@@ -1067,8 +1128,47 @@ mod tests {
             &ctx(&c),
         )
         .unwrap();
+        assert_eq!(t.next, active(Node::Retro));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Retro,
+                inject: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_retro_round_hands_off_to_the_rebase() {
+        let c = cfg();
+        let t = apply(
+            &active(Node::Retro),
+            &ended(block(
+                DocStatus::Implementing,
+                &[MilestoneState::Done, MilestoneState::Done],
+            )),
+            &ctx(&c),
+        )
+        .unwrap();
         assert_eq!(t.next, active(Node::Rebase));
         assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
+    }
+
+    #[test]
+    fn disabling_the_retro_round_goes_straight_from_audit_to_rebase() {
+        // Requirement C-05: every role can be switched off, and switching one
+        // off must not strand the task at the node it would have run.
+        let c = cfg_without(Role::Retro);
+        let t = apply(
+            &active(Node::Audit),
+            &ended(block(
+                DocStatus::Implementing,
+                &[MilestoneState::Done, MilestoneState::Done],
+            )),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Rebase));
     }
 
     #[test]
@@ -1153,7 +1253,9 @@ mod tests {
             &ctx(&c),
         )
         .unwrap();
-        assert_eq!(t.next, active(Node::Rebase));
+        // With no independent check, "no milestone is still open" ends the
+        // loop — and the loop ends at the retro round like any other.
+        assert_eq!(t.next, active(Node::Retro));
     }
 
     #[test]
@@ -1737,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_five_nodes_carry_a_configurable_role() {
+    fn exactly_six_nodes_carry_a_configurable_role() {
         let with_role: Vec<Node> = Node::ALL
             .into_iter()
             .filter(|n| n.role().is_some())
@@ -1749,7 +1851,8 @@ mod tests {
                 Node::Review,
                 Node::Adjudicate,
                 Node::Implement,
-                Node::Audit
+                Node::Audit,
+                Node::Retro
             ]
         );
     }

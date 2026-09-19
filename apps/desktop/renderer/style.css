@@ -264,7 +264,7 @@ body.offline .corepill .dot { background: var(--animal-error); }
 .screen.active { display: block; }
 .offline-banner { display: none; align-items: center; gap: 10px; margin: 0 0 18px; padding: 10px 16px; border-radius: 18px; border: 2px solid var(--animal-error); background: #fbe0e0; color: #8c2f2f; font-weight: 700; }
 body.offline .offline-banner { display: flex; }
-body.offline .btn--primary, body.offline .btn--danger, body.offline .btn--yellow, body.offline .write { opacity: .45; pointer-events: none; filter: saturate(.4); }
+body.offline .btn--primary, body.offline .btn--danger, body.offline .btn--go, body.offline .btn--util, body.offline .btn--yellow, body.offline .write { opacity: .45; pointer-events: none; filter: saturate(.4); }
 
 /* =====================================================================
    Components — hand-rolled to the pixel specs
@@ -286,6 +286,18 @@ body.offline .btn--primary, body.offline .btn--danger, body.offline .btn--yellow
 .btn--yellow { color: rgba(114,93,66,1); background: var(--animal-focus-yellow); border-color: var(--animal-focus-yellow); box-shadow: none; height: 40px; padding: 0 24px; font-size: 16px; }
 .btn--yellow:hover { color: rgba(114,93,66,1); background: rgba(255,204,0,.85); border-color: rgba(255,204,0,.85); transform: none; box-shadow: none; }
 .btn--text { background: transparent; border-color: transparent; box-shadow: none; }
+
+/* The task header's three actions: one shape, three colours. Teal acts on the
+   loop (继续/暂停/停止), blue opens a window onto it (打开终端), red ends it
+   (取消, which reuses `.btn--danger`). They share `.btn--primary`'s geometry —
+   the 5px ledge that presses in on click — so the colour is the only thing
+   telling them apart, which is what makes it readable at a glance. */
+.btn--go { color: #fff; background: var(--animal-primary); border-color: var(--animal-primary); box-shadow: 0 5px 0 0 var(--animal-primary-active); }
+.btn--go:hover { color: #fff; border-color: var(--animal-primary); transform: translateY(-1px); box-shadow: 0 6px 0 0 var(--animal-primary-active); }
+.btn--go:active { color: #fff; border-color: var(--animal-primary); transform: translateY(2px); box-shadow: 0 1px 0 0 var(--animal-primary-active); }
+.btn--util { color: #fff; background: var(--tile-blue); border-color: var(--tile-blue); box-shadow: 0 5px 0 0 color-mix(in srgb, var(--tile-blue) 70%, #000); }
+.btn--util:hover { color: #fff; border-color: var(--tile-blue); transform: translateY(-1px); box-shadow: 0 6px 0 0 color-mix(in srgb, var(--tile-blue) 70%, #000); }
+.btn--util:active { color: #fff; border-color: var(--tile-blue); transform: translateY(2px); box-shadow: 0 1px 0 0 color-mix(in srgb, var(--tile-blue) 70%, #000); }
 .btn--text:hover { background: rgba(25,200,185,.08); box-shadow: none; transform: none; }
 .btn--dashed { border-style: dashed; }
 .btn--loading { color: #fff; background: #0ec4b6; border: 4px solid #4de2da; background-image: repeating-linear-gradient(-45deg, #0ec4b6, #0ec4b6 10px, #01b0a7 10px, #01b0a7 20px); background-size: 28.28px 28.28px; animation: animal-btn-loading 1s linear infinite; box-shadow: none; pointer-events: none; }
@@ -874,6 +886,7 @@ body { font-size: 13px; }
 .docrow:hover { border-color: #d4c4a8; transform: translateY(-1px); }
 .docrow .ic { width: 16px; height: 16px; color: var(--animal-text-secondary); } .docrow small { color: var(--animal-text-secondary); font-weight: 600; }
 .lane--7 { grid-template-columns: repeat(7, minmax(0,1fr)); }
+.lane--8 { grid-template-columns: repeat(8, minmax(0,1fr)); }
 .lgraph .lane:last-child { margin-bottom: 44px; }
 .repo--wrap dd { white-space: normal; line-height: 1.45; }
 .lnode--err { border-color: var(--animal-error) !important; background: #fff0f0 !important; }
@@ -901,9 +914,68 @@ body { font-size: 13px; }
 .archrow { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 12px; background: var(--animal-bg-input); border: 1.5px solid var(--animal-border-light); font-size: 12.5px; font-weight: 600; }
 .archrow b { font-weight: 900; letter-spacing: .04em; color: var(--animal-text-secondary); font-size: 11.5px; }
 .archrow small { color: var(--animal-text-secondary); font-weight: 600; display: block; margin-top: 1px; }
-.route--13 .stone { min-width: 80px; }
-.hero__actions { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-.hero__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+/* The 14-node flow in two rows of seven, each column a share of the width.
+   It used to be one row with `overflow-x: auto`: at the default window the
+   right-hand nodes sat under the buttons, and any narrower and the end of the
+   flow — the part you are heading towards — was off-screen behind a
+   scrollbar. Seven columns divide 14 exactly, so the break is always between
+   `设计批准` and `实现` rather than wherever the width happens to put it. */
+.route--13 { flex-wrap: wrap; overflow: visible; row-gap: 10px; mask-image: none; -webkit-mask-image: none; }
+.route--13 .stone { flex: 0 0 calc(100% / 14); min-width: 0; }
+.route--13 .stone__lbl { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* Below this the 14 nodes stop fitting on one line, and the old answer was a
+   horizontal scrollbar — which hid the end of the flow, the part you are
+   heading towards. Two rows of seven instead: seven divides 14 exactly, so the
+   break always falls between 设计批准 and 实现 rather than wherever the width
+   happens to put it. Wide enough and it stays one row, because a second row
+   there would cost 43px of height for nothing.
+
+   A container query, not a media query: what decides whether fourteen nodes
+   fit is the width of this card, and that is the window minus the sidebar
+   minus the padding. Keying off the window means picking a breakpoint that is
+   right for one sidebar width and wrong the moment anything around it
+   changes. */
+@container (max-width: 1120px) {
+  .route--13 .stone { flex: 0 0 calc(100% / 7); }
+  /* The connector reaches for the next column; the last in a row has none. */
+  .route--13 .stone:nth-child(7n)::before { display: none; }
+}
+.hero__actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.hero__actions-last { margin-left: 4px; }
+.hero__meta { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* The hero reads top to bottom as four bands: what it is (+ its buttons),
+   how far along, where in the flow, where on disk. They used to interleave —
+   the buttons floated beside the title and overlapped the flow diagram, and
+   the round counters sat below the diagram, a whole row away from the state
+   pill that means the same kind of thing. */
+/* 8px, and the flow diagram gives up its own padding below: the bands used to
+   space themselves with their own margins, and adding a gap on top of those
+   made the card taller than the 944px budget U-11 holds the screen to. */
+/* `container-type` so the flow below can ask how wide this card actually is. */
+.hero { display: flex; flex-direction: column; gap: 6px; padding: 16px 26px 12px; container-type: inline-size; }
+.hero .route--hero { padding: 0; }
+.hero__top { display: flex; align-items: center; gap: 20px; }
+.hero__top .hero__title { flex: 1; min-width: 0; margin: 0; }
+
+/* The title is a button that looks like a heading: one line by default, the
+   whole request on click. Inheriting the type means the control is invisible
+   until you go near it, which is right for something you use rarely. */
+.hero__title-btn { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 0; border: 0; background: none; cursor: default; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; }
+.hero__title-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero__title-chev { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 6px; opacity: 0; transition: transform .2s var(--animal-ease), opacity .2s var(--animal-ease); }
+/* Only a title that is actually cut off offers the control. */
+.hero__title--over .hero__title-btn { cursor: pointer; }
+.hero__title--over .hero__title-chev { opacity: .55; }
+.hero__title--over .hero__title-btn:hover { color: var(--animal-primary); }
+.hero__title--over .hero__title-btn:hover .hero__title-chev { opacity: 1; }
+.hero__title-btn:focus-visible { outline: 2px solid var(--animal-primary); outline-offset: 3px; border-radius: 6px; }
+.hero__title-btn[aria-expanded="true"] .hero__title-text { white-space: normal; overflow: visible; }
+.hero__title-btn[aria-expanded="true"] .hero__title-chev { transform: rotate(180deg); }
+/* Rides at the end of the meta row, pushed right so the coloured chips and the
+   quiet facts do not read as one undifferentiated run of text. */
+.hero__ident { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; font-size: 12px; font-weight: 600; color: var(--animal-text-muted); }
+.hero__ident-sep { opacity: .45; }
 
 /* ===================================================================
    Layer 7 - renderer-only additions
@@ -975,3 +1047,19 @@ body { font-size: 13px; }
   background: var(--animal-bg-input); color: var(--animal-text-body);
 }
 .artefact__text:focus { outline: none; border-color: var(--animal-primary); }
+
+/* ---------------------------------------------------------------------------
+   指标表与 diff 块
+   ---------------------------------------------------------------------------
+   Both carry numbers and paths a person compares by eye, so both are
+   monospaced-ish and dense. The table scrolls horizontally rather than
+   wrapping cells: a wrapped row loses the alignment that makes a column
+   readable, and the columns are what the table is for. */
+.metrics { width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 12px; display: block; overflow-x: auto; white-space: nowrap; }
+.metrics th, .metrics td { padding: 7px 12px; text-align: left; border-bottom: 2px solid var(--animal-border-light); }
+.metrics th { color: var(--animal-text-secondary); font-weight: 800; letter-spacing: .04em; position: sticky; top: 0; background: var(--animal-bg-card); }
+.metrics td { font-weight: 700; color: var(--animal-text-body); font-variant-numeric: tabular-nums; }
+.metrics tbody tr:hover { background: var(--animal-bg-input); }
+.metrics td .tag { margin-left: 8px; }
+
+.diff { margin: 10px 0 0; padding: 12px 14px; border-radius: 14px; background: var(--animal-bg-input); border: 2px solid var(--animal-border-light); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--animal-text-body); }

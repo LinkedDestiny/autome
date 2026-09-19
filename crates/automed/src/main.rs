@@ -31,13 +31,67 @@ fn main() {
     // is readable. It must produce no tracing noise on stderr — stderr is
     // merged into the same pipe it is rendering.
     if std::env::args().nth(1).as_deref() == Some("render-stream") {
+        // Both CLIs stream JSONL now, and their event vocabularies have
+        // nothing in common, so the wrapper says which one it is piping. An
+        // absent or unknown name falls back to Claude, which is what every
+        // wrapper written before this argument existed passes.
+        let runtime = std::env::args()
+            .nth(2)
+            .and_then(|s| autome_domain::role::Runtime::parse(&s))
+            .unwrap_or(autome_domain::role::Runtime::Claude);
         let stdin = io::stdin();
         let mut stdout = io::stdout();
-        if let Err(e) = automed::stream_render::render_stream(stdin.lock(), &mut stdout) {
+        if let Err(e) = automed::stream_render::render_stream(runtime, stdin.lock(), &mut stdout) {
             eprintln!("render-stream: {e}");
             std::process::exit(1);
         }
         return;
+    }
+
+    // `automed protocol eval [<dir>]` is the gate a protocol version has to
+    // pass. Also a filter rather than the daemon: a meta task's audit round
+    // runs it as an ordinary command and reads the exit code, and the desktop
+    // app calls the same function over IPC.
+    if std::env::args().nth(1).as_deref() == Some("protocol")
+        && std::env::args().nth(2).as_deref() == Some("eval")
+    {
+        let args: Vec<String> = std::env::args().skip(3).collect();
+        // Defaults to the working directory, which is what a meta task's
+        // audit round has checked out — the version being proposed, not the
+        // one installed.
+        let dir = std::path::PathBuf::from(
+            args.iter()
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_else(|| ".".into()),
+        );
+        let (report, mut code) = automed::protocol::eval::run(&dir);
+        print!("{report}");
+
+        // The behaviour layer costs money, so it never runs unless asked for
+        // by name. `--changed` is the audit round's form: the cases the
+        // proposed changes reference, plus the three baselines.
+        use automed::protocol::eval::Scope;
+        let scope = if args.iter().any(|a| a == "--changed") {
+            Some(Scope::Changed)
+        } else if args.iter().any(|a| a == "--behaviour" || a == "--behavior") {
+            Some(Scope::All)
+        } else {
+            None
+        };
+        if let Some(scope) = scope {
+            let tag = args
+                .iter()
+                .position(|a| a == "--tag")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| "未发布".into());
+            let (behaviour, behaviour_code) =
+                automed::protocol::eval::run_behaviour(&dir, scope, &tag);
+            print!("{behaviour}");
+            code = code.max(behaviour_code);
+        }
+        std::process::exit(code);
     }
 
     tracing_subscriber::fmt().with_writer(io::stderr).init();

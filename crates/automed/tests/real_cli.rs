@@ -271,7 +271,7 @@ fn each_cli_exits_on_its_own_when_invoked_the_way_the_launcher_invokes_it() {
             effort: None,
             skills: vec![],
         };
-        let args = automed::launcher::build_args(&config);
+        let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
 
         let dir = std::env::temp_dir().join(format!(
             "automed-exit-{}-{}",
@@ -557,7 +557,7 @@ fn the_terminal_hop_starts_the_wrapper() {
     }
     let dir = std::env::temp_dir().join(format!("automed-term-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    automed::init::init(&dir).unwrap();
+    automed::init::init(&dir, &automed::protocol::seed()).unwrap();
 
     let session_dir = dir.join(".autome/output/sessions/T-term");
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -636,7 +636,7 @@ fn a_claude_session_can_actually_run_a_command() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config);
+    let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-bash-{}", std::process::id()));
@@ -703,7 +703,7 @@ fn a_claude_session_log_records_the_tools_it_ran() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config);
+    let args = automed::launcher::build_args(&config, std::path::Path::new("/nonexistent-so-git-cannot-answer"));
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-log-{}", std::process::id()));
@@ -735,7 +735,11 @@ fn a_claude_session_log_records_the_tools_it_ran() {
 
     // Render it the way the wrapper does.
     let mut rendered = Vec::new();
-    automed::stream_render::render_stream(std::io::BufReader::new(raw.as_bytes()), &mut rendered)
+    automed::stream_render::render_stream(
+        autome_domain::role::Runtime::Claude,
+        std::io::BufReader::new(raw.as_bytes()),
+        &mut rendered,
+    )
         .unwrap();
     let text = String::from_utf8(rendered).unwrap();
     let _ = std::fs::remove_dir_all(&dir);

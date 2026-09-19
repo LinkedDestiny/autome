@@ -1,0 +1,11 @@
+              # 评审轮独立复核设计，只提六类问题，并且不读裁决记录
+              name: reviewer-independence
+              role: review
+              description: 评审轮独立复核设计，只提六类问题，并且不读裁决记录
+              runs: 3
+              max_turns: 12
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/findings-are-traceable.md
+- graders/no-adjudication-read.md

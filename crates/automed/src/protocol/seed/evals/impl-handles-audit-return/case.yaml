@@ -1,0 +1,11 @@
+              # 实现轮先处理审计退回项，并把判别检查搬进项目测试体系
+              name: impl-handles-audit-return
+              role: impl
+              description: 实现轮先处理审计退回项，并把判别检查搬进项目测试体系
+              runs: 3
+              max_turns: 15
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/discriminating-check-became-a-test.md
+- graders/returned-milestone-first.md

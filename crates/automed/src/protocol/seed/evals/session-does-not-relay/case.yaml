@@ -1,0 +1,10 @@
+# 会话完成本轮就结束，不自己启动下一个节点
+name: session-does-not-relay
+role: impl
+description: 会话完成本轮就结束，不自己启动下一个节点
+runs: 3
+max_turns: 12
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/stopped-after-one-round.md

@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('autome', {
     environment: () => read('env.get')(),
     installRecipe: (component) => read('env.install_recipe')({ component }),
     eventsSince: (afterSeq) => read('events.since')({ after_seq: afterSeq }),
+
+    // The protocol repository and what each of its versions cost.
+    protocol: () => read('protocol.get')(),
+    protocolVersions: (projectId) => read('protocol.versions')({ project_id: projectId }),
+    protocolEval: () => read('protocol.eval')(),
+    protocolTriggers: () => read('protocol.triggers')(),
   },
 
   write: {
@@ -112,6 +118,25 @@ contextBridge.exposeInMainWorld('autome', {
     login: (component) => write('env.login')({ component }),
 
     tick: () => write('scheduler.tick')(),
+
+    // A retro round on a task that already stopped: the failure panel's
+    // button. Failed tasks never reach the retro node on their own.
+    retroTask: (taskId) => write('task.retro')({ task_id: taskId }),
+
+    pinProtocol: (projectId, tag) =>
+      write('protocol.pin')({ project_id: projectId, tag: tag || null }),
+    // Rolling back is a *forward* commit; the core refuses to move a tag.
+    rollbackProtocol: (tag) => write('protocol.rollback')({ tag }),
+    improveProtocol: () => write('protocol.improve')(),
+
+    // `rules.proposals` recomputes and stores the pending proposals, so it is
+    // a write even though it reads like a query.
+    ruleProposals: (projectId) => write('rules.proposals')({ project_id: projectId }),
+    decideRule: (projectId, key, approve) =>
+      write('rules.decide')({ project_id: projectId, key, approve }),
+    retireRule: (projectId, file, body) =>
+      write('rules.retire')({ project_id: projectId, file, body }),
+    restoreRule: (projectId, id) => write('rules.restore')({ project_id: projectId, id }),
 
     // Opening things is by identifier, never by path: Main resolves the
     // path from the core's own answer.

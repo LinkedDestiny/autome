@@ -1,0 +1,10 @@
+# 里程碑一节只放里程碑表，对比表放到别处
+name: plan-milestone-section-holds-one-table
+role: plan
+description: 里程碑一节只放里程碑表，对比表放到别处
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/milestone-section-parses.md

@@ -164,6 +164,25 @@ impl World {
     }
 
     /// Queues the script the Nth session will run.
+    /// What every loop round leaves behind, which the core now checks for
+    /// (plan §4.D): `docs/<slug>/evidence/M-xx-r<k>-<role>.md`, where `k` is
+    /// the implementation round in the status block the session just wrote.
+    ///
+    /// Both suffixes, because a step script does not know which role is
+    /// running it — the same script stands in for the implementation round and
+    /// the audit round of the same `k`, and writing only one of the two names
+    /// is exactly the collision the suffix exists to prevent.
+    const EVIDENCE: &'static str = r#"
+k=$(grep -m1 '^implementation-round:' "docs/$SLUG/$SLUG.md" 2>/dev/null \
+  | sed 's#[^0-9]*\([0-9]*\)/.*#\1#')
+if [ -n "${k:-}" ]; then
+  mkdir -p "docs/$SLUG/evidence"
+  printf '命令：fake\n结果：通过\n' > "docs/$SLUG/evidence/M-01-r$k-impl.md"
+  printf '复验：fake\n结论：通过\n' > "docs/$SLUG/evidence/M-01-r$k-audit.md"
+  printf '轮次 | M-01 | 通过 | e | 无\n' >> "docs/$SLUG/retro.md"
+fi
+"#;
+
     fn step(&self, n: u32, script: &str) {
         let path = self.repo.join(format!(".autome/fake/{n}.sh"));
         std::fs::write(path, script).unwrap();
@@ -187,22 +206,107 @@ impl World {
 
     /// What a session writes: the design document for its task, committed.
     fn doc_script(slug: &str, n: u32, body: &str, prelude: &str) -> String {
+        let evidence = Self::EVIDENCE;
         format!(
             r#"set -e
+SLUG={slug}
 {prelude}
 mkdir -p "docs/{slug}"
 cat > "docs/{slug}/{slug}.md" <<'AUTOME_EOF'
 {body}
 AUTOME_EOF
+{evidence}
 git add -A docs >/dev/null 2>&1 || true
 git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>&1 || true
 "#
         )
     }
 
+    /// What a CLI prints alongside its work.
+    ///
+    /// Both runtimes point at the same stand-in, and which renderer the
+    /// wrapper uses depends on the role's configured runtime — so a step
+    /// prints both vocabularies and lets each side pick out its own. The other
+    /// line passes through as an unknown event, which is what the renderers do
+    /// with anything they do not recognise.
+    const FAKE_USAGE: &'static str = concat!(
+        r#"{"type":"assistant","message":{"id":"msg_1","usage":{"input_tokens":10,"#,
+        r#""cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":5}}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","total_cost_usd":0.25,"num_turns":3,"#,
+        r#""duration_api_ms":4000,"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"#,
+        r#""cache_read_input_tokens":40,"output_tokens":5}}"#,
+        "\n",
+        r#"{"type":"turn.completed","usage":{"input_tokens":150,"cached_input_tokens":40,"#,
+        r#""cache_write_input_tokens":100,"output_tokens":5,"reasoning_output_tokens":0}}"#,
+    );
+
+    /// A step that also prints usage, the way a real CLI does.
+    ///
+    /// Both runtimes point at the same stand-in, and which renderer the
+    /// wrapper uses depends on the role's configured runtime — so the step
+    /// prints both vocabularies and lets each side pick out its own. The
+    /// other line passes through as an unknown event, which is what the
+    /// renderers do with anything they do not recognise.
+    fn doc_step_with_usage(&self, n: u32, slug: &str, body: &str) {
+        let usage = Self::FAKE_USAGE;
+        self.step(
+            n,
+            &format!(
+                "{}cat <<'AUTOME_USAGE'\n{usage}\nAUTOME_USAGE\n",
+                Self::doc_script(slug, n, body, "")
+            ),
+        );
+    }
+
+    /// What the retro round does: write `docs/<slug>/lessons.md` and leave
+    /// the design document alone.
+    fn retro_step(&self, n: u32, slug: &str) {
+        self.retro_step_learning(n, slug, "证据文件必须逐字写出跑过的命令");
+    }
+
+    /// The same, with the lesson's sentence chosen by the caller — so two
+    /// tasks can learn the same thing, which is what turns it into a rule.
+    fn retro_step_learning(&self, n: u32, slug: &str, proposal: &str) {
+        let usage = Self::FAKE_USAGE;
+        self.step(
+            n,
+            &format!(
+                r#"set -e
+mkdir -p "docs/{slug}"
+cat > "docs/{slug}/lessons.md" <<'AUTOME_EOF'
+# 教训
+
+```yaml
+- id: L-01
+  domain: verification
+  symptom: 审计 #1 在 M-01 上要自己跑一遍验收命令
+  root_cause: 实现轮的证据只写了结论，没有写命令
+  evidence: docs/{slug}/lessons.md
+  level: rule
+  proposal: {proposal}
+  predicted_impact: {{metric: verification_gaps, direction: down, scope: task, horizon: 3}}
+```
+AUTOME_EOF
+git add -A docs >/dev/null 2>&1 || true
+git -c user.name=fake -c user.email=f@f commit -q -m "session {n} retro" >/dev/null 2>&1 || true
+cat <<'AUTOME_USAGE'
+{usage}
+AUTOME_USAGE
+"#
+            ),
+        );
+    }
+
     /// A step that writes a design document into the task's worktree and
     /// commits it, which is what every real session does.
     fn doc_step(&self, n: u32, slug: &str, body: &str) {
+        self.step(n, &Self::doc_script(slug, n, body, ""));
+    }
+
+    /// A round that writes its document and leaves no evidence file. What
+    /// every round did before the core started checking.
+    fn doc_step_without_evidence(&self, n: u32, slug: &str, body: &str) {
         self.step(
             n,
             &format!(
@@ -456,6 +560,7 @@ fn a_task_runs_from_one_line_to_a_merge_commit() {
     //   4 adjudicate  -> 实现中 with two open milestones (design is final)
     //   5 implement   -> both pending
     //   6 audit       -> both done
+    //   7 retro       -> lessons.md
     let request = "add cart checkout";
     let slug = slug_for(request);
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
@@ -476,6 +581,7 @@ fn a_task_runs_from_one_line_to_a_merge_commit() {
         &slug,
         &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "已完成")]),
     );
+    w.retro_step(7, &slug);
 
     let task_id = create_task(&mut w, request);
     w.settle();
@@ -541,6 +647,7 @@ fn a_dirty_main_worktree_blocks_the_merge_and_leaves_the_users_file_alone() {
     w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
     w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
     w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
     let task_id = create_task(&mut w, request);
     w.settle();
     w.call("task.approve", json!({ "task_id": task_id }));
@@ -610,6 +717,7 @@ fn the_merge_panel_reports_what_the_core_would_actually_do() {
     w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
     w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
     w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
     let task_id = create_task(&mut w, request);
     w.settle();
     w.call("task.approve", json!({ "task_id": task_id }));
@@ -1066,4 +1174,662 @@ fn a_freshly_added_project_has_a_clean_worktree_even_with_a_task_running() {
         "the main worktree must still read clean: {:?}",
         automed::git::dirty_paths(&w.repo).unwrap()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the observation layer (plan §4.A)
+// ---------------------------------------------------------------------------
+
+/// The core ran for months recording that a session happened and nothing about
+/// what it cost. Both CLIs were writing it the whole time.
+#[test]
+fn every_session_records_what_it_cost_and_the_finished_task_is_measured() {
+    needs_git!();
+    let mut w = World::new("usage");
+
+    let request = "measure me";
+    let slug = slug_for(request);
+    w.doc_step_with_usage(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step_with_usage(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step_with_usage(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step_with_usage(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step_with_usage(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_with_usage(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // Every finished session has tokens and turns. Neither number existed
+    // before; both come out of the CLI's own stream.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(sessions.len() >= 6, "sessions: {}", sessions.len());
+    for s in &sessions {
+        assert!(
+            s.metrics.total_tokens().unwrap_or(0) > 0,
+            "{} ({}) recorded no tokens",
+            s.id,
+            s.runtime
+        );
+        assert!(s.metrics.turns.is_some(), "{} recorded no turns", s.id);
+        assert!(
+            s.protocol_ref.is_some(),
+            "{} is not attributed to a protocol version",
+            s.id
+        );
+    }
+
+    // Cost is recorded for Claude and deliberately absent for Codex: Codex
+    // reports no price, and inventing one from a table we maintain would
+    // produce a number that looks authoritative and is not.
+    for s in &sessions {
+        match s.runtime {
+            autome_domain::role::Runtime::Claude => {
+                assert!(s.metrics.cost_usd.is_some(), "{} has no cost", s.id)
+            }
+            autome_domain::role::Runtime::Codex => {
+                assert_eq!(s.metrics.cost_usd, None, "{} invented a price", s.id)
+            }
+        }
+    }
+
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    let metrics = w.ctx.store.task_metrics(&task_id).unwrap().unwrap();
+    assert_eq!(metrics.milestones, 1);
+    assert_eq!(metrics.impl_rounds_used, 1);
+    assert!(metrics.total_tokens > 0);
+    assert!(metrics.total_turns > 0);
+    assert!(
+        metrics.protocol_ref.is_some(),
+        "the task is not attributed to a protocol version"
+    );
+}
+
+/// A closed milestone that is later taken back is the direct measurement of an
+/// audit going soft — and it cannot be read off the finished document, which
+/// shows the milestone as open and says nothing about it having been closed.
+#[test]
+fn a_milestone_closed_and_then_reopened_is_counted_as_contradicted() {
+    needs_git!();
+    let mut w = World::new("contradicted");
+
+    let request = "soft audit";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]));
+    // implement M-01, audit closes it, implement M-02 …
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]));
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]));
+    // … and this audit takes M-01 back, having closed it two rounds ago.
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "开放"), ("M-02", "已完成")]));
+    w.doc_step(9, &slug, &doc("实现中", 2, 3, &[("M-01", "待审"), ("M-02", "已完成")]));
+    w.doc_step(10, &slug, &doc("实现中", 2, 3, &[("M-01", "已完成"), ("M-02", "已完成")]));
+    w.retro_step(11, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    let metrics = w.ctx.store.task_metrics(&task_id).unwrap().unwrap();
+    assert_eq!(
+        metrics.closed_then_contradicted, 1,
+        "M-01 was closed and then taken back"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the deterministic guards (plan §4.D)
+// ---------------------------------------------------------------------------
+
+/// Reads the failure reason a task stopped with.
+fn failure_detail(w: &World, task_id: &str) -> String {
+    let state = w.ctx.store.get_task(task_id).unwrap().state;
+    serde_json::to_value(&state)
+        .unwrap()
+        .get("reason")
+        .and_then(|r| r.get("detail"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The one rule the whole generation/evaluation split rests on. It was a
+/// sentence in the protocol and nothing else; now the core checks it.
+#[test]
+fn an_implementation_round_that_closes_a_milestone_stops_the_task() {
+    needs_git!();
+    let mut w = World::new("guard-close");
+    let request = "close it yourself";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // The implementation round claims the thing only an audit may claim.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert_eq!(w.state(&task_id), "failed");
+    let detail = failure_detail(&w, &task_id);
+    assert!(detail.contains("M-01"), "{detail}");
+    assert!(detail.contains("只有审计轮"), "{detail}");
+
+    // And the core did not quietly put the cell back: doing that would leave
+    // the commit history and the session log telling different stories.
+    let design = w
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/{slug}.md"));
+    let text = std::fs::read_to_string(&design).unwrap();
+    assert!(text.contains("| M-01 | 已完成"), "{text}");
+}
+
+/// A loop round with no evidence file has left nothing for the next round to
+/// read, and the audit nothing to check against.
+#[test]
+fn a_loop_round_that_leaves_no_evidence_stops_the_task() {
+    needs_git!();
+    let mut w = World::new("guard-evidence");
+    let request = "no evidence";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step_without_evidence(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert_eq!(w.state(&task_id), "failed");
+    let detail = failure_detail(&w, &task_id);
+    assert!(detail.contains("-r1-impl.md"), "{detail}");
+}
+
+/// A design document that keeps growing is a warning, not a failure: it is a
+/// trend worth seeing, and stopping a task over it would cost more than it
+/// saves.
+#[test]
+fn a_design_document_that_balloons_is_warned_about_and_the_loop_keeps_going() {
+    needs_git!();
+    let mut w = World::new("guard-size");
+    let request = "grow the doc";
+    let slug = slug_for(request);
+    // 12KB of padding in one round, over the 10KB step warning.
+    let padding = "证据正文。".repeat(3000);
+    let fat = format!(
+        "{}\n\n## 附录\n\n{padding}\n",
+        doc("实现中", 2, 1, &[("M-01", "待审")])
+    );
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &fat);
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    // The Loop reached the merge gate regardless.
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    let warnings = w.ctx.store.count_events(&task_id, "guard.warning").unwrap();
+    assert!(warnings > 0, "the growth was not recorded");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the retro round (plan §E1)
+// ---------------------------------------------------------------------------
+
+/// What a task learned used to die in its directory. Now the loop ends with a
+/// round whose whole job is to write it down in a form the core can read.
+#[test]
+fn the_loop_ends_with_a_retro_round_whose_lessons_the_core_can_read() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.kind == autome_domain::session::SessionKind::Role { role: autome_domain::role::Role::Retro }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+}
+
+/// A failed task never reaches the retro node, and a failed task is the most
+/// informative kind there is. The user can ask for one.
+#[test]
+fn a_stopped_task_can_be_sent_through_a_retro_round_by_hand() {
+    needs_git!();
+    let mut w = World::new("retro-manual");
+    let request = "fail then learn";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // The implementation round claims the milestone closed; the core stops.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(6, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.state(&task_id), "failed");
+
+    let before = w.ctx.store.get_task(&task_id).unwrap().state;
+    let out = w.call("task.retro", json!({ "task_id": task_id }));
+    assert!(
+        matches!(out.reply.outcome, ReplyOutcome::Ok { .. }),
+        "{:?}",
+        out.reply.outcome
+    );
+    w.settle();
+
+    // The task is exactly where it was: a retro changes nothing about where a
+    // task stands, it only records what the run taught.
+    assert_eq!(w.ctx.store.get_task(&task_id).unwrap().state, before);
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+}
+
+#[test]
+fn a_running_task_refuses_a_retro_by_hand() {
+    needs_git!();
+    let mut w = World::new("retro-running");
+    let request = "still going";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let task_id = create_task(&mut w, request);
+    w.settle();
+
+    // Waiting for approval is still a running task; the retro round will get
+    // its turn at the end of the loop.
+    let out = w.call("task.retro", json!({ "task_id": task_id }));
+    assert!(
+        matches!(out.reply.outcome, ReplyOutcome::Error { .. }),
+        "{:?}",
+        out.reply.outcome
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the per-round brief and the single protocol copy (plan §B)
+// ---------------------------------------------------------------------------
+
+/// Every session used to open by reading the whole design document, which
+/// reached 230–335KB across three real runs and sat in the context for every
+/// turn after. The brief is the index the core can assemble instead.
+#[test]
+fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
+    needs_git!();
+    let mut w = World::new("brief");
+    let request = "brief me";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+
+    // The task holds exactly one copy of the protocol, frozen at creation.
+    let frozen = wt.join(format!("docs/{slug}/protocol/loop-protocol.md"));
+    assert!(frozen.exists(), "{}", frozen.display());
+    let task_file = std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}-task.md")))
+        .unwrap_or_default();
+    // The fake CLI writes no task file; what matters is that the scaffold no
+    // longer carries a second copy to disagree with the first.
+    let _ = task_file;
+    assert!(
+        !w.repo.join(".autome/skill/loop-protocol.md").exists(),
+        "the project scaffold still mirrors the protocol"
+    );
+
+    // And the task recorded which version it is being held to.
+    let task = w.ctx.store.get_task(&task_id).unwrap();
+    let protocol_ref = task.protocol_ref.expect("no protocol_ref");
+    assert!(protocol_ref.starts_with("protocol/v1@"), "{protocol_ref}");
+
+    // Each role that ran got a brief of its own, naming the milestone it is
+    // about and carrying the protocol sections its role is mapped to.
+    let briefs = std::fs::read_dir(wt.join(format!("docs/{slug}/brief")))
+        .expect("no brief directory")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    for role in ["plan", "review", "adjudicate", "impl", "audit", "retro"] {
+        assert!(
+            briefs.iter().any(|b| b.starts_with(role)),
+            "{role} got no brief: {briefs:?}"
+        );
+    }
+
+    let impl_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-1.md")))
+        .unwrap();
+    assert!(impl_brief.contains("| M-01 |"), "{impl_brief}");
+    assert!(impl_brief.contains("## 实现循环"), "{impl_brief}");
+    assert!(impl_brief.contains("不是设计文档的替代品"), "{impl_brief}");
+
+    // The audit round is given the evidence *path* and told not to start
+    // there: reading the implementation round's reasoning is what an
+    // independent re-verification must not do.
+    let audit_brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/audit-1.md")))
+        .unwrap();
+    assert!(audit_brief.contains("M-01-r1-impl.md"), "{audit_brief}");
+    assert!(audit_brief.contains("先不要读它"), "{audit_brief}");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: the meta task (plan §6)
+// ---------------------------------------------------------------------------
+
+/// Improving the protocol is an ordinary Loop task on an ordinary project.
+/// What the core adds is the evidence, because a session cannot read the store
+/// and should not be trusted to summarise its own history.
+#[test]
+fn a_meta_task_runs_on_the_protocol_repository_with_its_evidence_assembled() {
+    needs_git!();
+    let mut w = World::new("meta");
+
+    // A finished task in an ordinary project, so there is something to cite.
+    let request = "teach me something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    // The protocol repository is a project the scheduler already knows how to
+    // run, registered rather than special-cased.
+    let out = w.call("protocol.improve", json!({}));
+    let payload = ok(&out);
+    let meta_id = payload["task"]["id"].as_str().unwrap().to_string();
+    let meta_slug = payload["task"]["slug"].as_str().unwrap().to_string();
+
+    let projects = w.ctx.store.list_projects().unwrap();
+    let protocol = projects
+        .iter()
+        .find(|p| p.display_name == "Loop 协议")
+        .expect("the protocol repository is not a project");
+    assert_eq!(protocol.parallel_limit, 1, "two meta tasks would conflict");
+
+    // A second one is refused while the first is unfinished.
+    let again = w.call("protocol.improve", json!({}));
+    assert!(
+        matches!(again.reply.outcome, ReplyOutcome::Error { .. }),
+        "{:?}",
+        again.reply.outcome
+    );
+
+    // The evidence is in the meta task's own directory, on its own branch.
+    let wt = std::path::Path::new(&protocol.path)
+        .join(".worktree")
+        .join(&meta_slug);
+    let inputs = wt.join(format!("docs/{meta_slug}/inputs"));
+    for name in [
+        "metrics.md",
+        "lessons.md",
+        "retro-suggestions.md",
+        "failures.md",
+        "deferred.md",
+    ] {
+        assert!(inputs.join(name).exists(), "missing inputs/{name}");
+    }
+    let metrics = std::fs::read_to_string(inputs.join("metrics.md")).unwrap();
+    assert!(metrics.contains(&slug), "the finished task is not cited:\n{metrics}");
+    assert!(metrics.contains("protocol/v1@"), "{metrics}");
+
+    // And the request carries the constraints that make a proposal checkable.
+    let task = w.ctx.store.get_task(&meta_id).unwrap();
+    assert!(task.request.contains("契约区"), "{}", task.request);
+    assert!(task.request.contains("两个任务"), "{}", task.request);
+}
+
+/// Nothing starts by itself. The triggers are a suggestion with a reason
+/// attached.
+#[test]
+fn the_app_suggests_an_iteration_only_once_there_is_something_to_say() {
+    needs_git!();
+    let mut w = World::new("meta-trigger");
+    let out = w.call("protocol.triggers", json!({}));
+    let before = ok(&out).clone();
+    assert_eq!(before["suggest"], false, "{before}");
+
+    let request = "one finished task";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // The implementation round claims the close; the guard stops the task.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.state(&task_id), "failed");
+
+    // One protocol failure is enough on its own: a task that could not be
+    // held to the rules is the most direct evidence there is about them.
+    let out = w.call("protocol.triggers", json!({}));
+    let after = ok(&out).clone();
+    assert_eq!(after["suggest"], true, "{after}");
+    let reasons = after["triggers"].as_array().unwrap();
+    assert!(
+        reasons.iter().any(|r| r.as_str().unwrap().contains(&slug)),
+        "{after}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: a lesson becoming a rule (plan §E2, §E3)
+// ---------------------------------------------------------------------------
+
+/// Runs one whole task to a merge, with a retro that learns `proposal`.
+fn run_a_task(w: &mut World, request: &str, proposal: &str) -> String {
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step_learning(7, &slug, proposal);
+    let id = create_task(w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": id }));
+    w.settle();
+    w.call("task.merge", json!({ "task_id": id }));
+    w.settle();
+    // The step counter is per repository, so the next task starts again at 1.
+    std::fs::write(w.repo.join(".autome/fake/next"), "1").unwrap();
+    id
+}
+
+/// One task is a bad week. Two is a rule.
+#[test]
+fn the_same_lesson_from_two_tasks_becomes_a_project_rule_after_the_user_approves() {
+    needs_git!();
+    let mut w = World::new("curation");
+    let lesson = "证据文件必须逐字写出跑过的命令";
+
+    run_a_task(&mut w, "first task", lesson);
+
+    // After one task there is nothing to propose.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_one = ok(&out).clone();
+    assert_eq!(
+        after_one["proposals"].as_array().unwrap().len(),
+        0,
+        "{after_one}"
+    );
+
+    run_a_task(&mut w, "second task", lesson);
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_two = ok(&out).clone();
+    let proposals = after_two["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 1, "{after_two}");
+    let p = &proposals[0];
+    assert_eq!(p["file"], ".autome/rules/verification.md");
+    assert_eq!(p["tasks"].as_array().unwrap().len(), 2, "{p}");
+    // What the user approves is the exact text that gets written, provenance
+    // included.
+    let diff = p["diff"].as_str().unwrap();
+    assert!(diff.contains(lesson), "{diff}");
+    assert!(diff.contains("since:"), "{diff}");
+    assert!(diff.contains("first-task"), "{diff}");
+
+    // Nothing is written until the user says so.
+    let rule_file = w.repo.join(".autome/rules/verification.md");
+    assert!(!rule_file.exists(), "the rule was written without approval");
+
+    let key = p["key"].as_str().unwrap().to_string();
+    let out = w.call(
+        "rules.decide",
+        json!({ "project_id": w.project_id, "key": key, "approve": true }),
+    );
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(text.contains(lesson), "{text}");
+    assert!(text.contains("移除实验"), "the file explains itself:\n{text}");
+
+    // And it is not offered again.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let after_approve = ok(&out).clone();
+    assert_eq!(
+        after_approve["proposals"].as_array().unwrap().len(),
+        0,
+        "{after_approve}"
+    );
+}
+
+/// A rule is never retired for having gone quiet: its absence from recent
+/// lessons is caused by its presence. Removal is an experiment.
+#[test]
+fn removing_a_rule_is_an_experiment_with_a_baseline_and_a_way_back() {
+    needs_git!();
+    let mut w = World::new("retire");
+    let lesson = "证据文件必须逐字写出跑过的命令";
+    run_a_task(&mut w, "first task", lesson);
+    run_a_task(&mut w, "second task", lesson);
+
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let key = ok(&out)["proposals"][0]["key"].as_str().unwrap().to_string();
+    w.call(
+        "rules.decide",
+        json!({ "project_id": w.project_id, "key": key, "approve": true }),
+    );
+
+    let rule_file = w.repo.join(".autome/rules/verification.md");
+    assert!(std::fs::read_to_string(&rule_file).unwrap().contains(lesson));
+
+    let out = w.call(
+        "rules.retire",
+        json!({
+            "project_id": w.project_id,
+            "file": ".autome/rules/verification.md",
+            "body": lesson,
+        }),
+    );
+    let started = ok(&out).clone();
+    assert_eq!(started["metric"], "verification_gaps", "{started}");
+    assert_eq!(started["horizon"], 3, "{started}");
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(!text.contains(lesson), "{text}");
+    assert!(!text.contains("first-task L-01"), "an orphan comment:\n{text}");
+
+    // The experiment is running and not yet judgeable.
+    let out = w.call("rules.proposals", json!({ "project_id": w.project_id }));
+    let listed = ok(&out).clone();
+    let experiments = listed["experiments"].as_array().unwrap();
+    assert_eq!(experiments.len(), 1, "{listed}");
+    assert_eq!(experiments[0]["verdict"], "还没到期", "{listed}");
+
+    // And there is a way back.
+    let id = experiments[0]["id"].as_str().unwrap().to_string();
+    let out = w.call(
+        "rules.restore",
+        json!({ "project_id": w.project_id, "id": id }),
+    );
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Ok { .. }));
+    let text = std::fs::read_to_string(&rule_file).unwrap();
+    assert!(text.contains(lesson), "{text}");
 }

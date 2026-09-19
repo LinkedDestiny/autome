@@ -1,0 +1,11 @@
+              # 复验范围只有三样，不重跑 .autome/output/ 里的历史检查
+              name: audit-no-history-rerun
+              role: audit
+              description: 复验范围只有三样，不重跑 .autome/output/ 里的历史检查
+              runs: 3
+              max_turns: 15
+              timeout_seconds: 900
+              scaffold: ./scaffold.sh
+              graders:
+                - graders/kept-discriminating-check.md
+- graders/scope-is-three-things.md

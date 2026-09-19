@@ -241,9 +241,9 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
     }
 }
 
-struct DispatchError {
-    code: ReplyErrorCode,
-    message: String,
+pub struct DispatchError {
+    pub code: ReplyErrorCode,
+    pub message: String,
 }
 
 fn bad_params(msg: impl Into<String>) -> DispatchError {
@@ -260,7 +260,7 @@ fn internal(msg: impl Into<String>) -> DispatchError {
     }
 }
 
-fn rejected(msg: impl Into<String>) -> DispatchError {
+pub fn rejected(msg: impl Into<String>) -> DispatchError {
     DispatchError {
         code: ReplyErrorCode::TransitionRejected,
         message: msg.into(),
@@ -299,6 +299,15 @@ impl From<git::GitError> for DispatchError {
     }
 }
 
+impl From<crate::protocol::ProtocolError> for DispatchError {
+    fn from(e: crate::protocol::ProtocolError) -> Self {
+        DispatchError {
+            code: ReplyErrorCode::Internal,
+            message: e.to_string(),
+        }
+    }
+}
+
 impl From<init::InitError> for DispatchError {
     fn from(e: init::InitError) -> Self {
         DispatchError {
@@ -319,7 +328,7 @@ impl From<scheduler::SchedulerError> for DispatchError {
     }
 }
 
-type DispatchResult = std::result::Result<(Value, Vec<Event>), DispatchError>;
+pub type DispatchResult = std::result::Result<(Value, Vec<Event>), DispatchError>;
 
 fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
     let p = &command.params;
@@ -358,6 +367,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
                 extra_rounds: u32_param(p, "extra_rounds")?,
             },
         ),
+        "task.retro" => task_retro(ctx, str_param(p, "task_id")?),
         "task.rerun_from" => {
             let raw = str_param(p, "node")?;
             let node = Node::parse(raw).ok_or_else(|| bad_params(format!("未知节点 `{raw}`")))?;
@@ -380,6 +390,25 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "config.reset_role" => config_reset_role(ctx, p),
         "config.set_loop" => config_set_loop(ctx, p),
         "config.set_theme" => config_set_theme(ctx, p),
+
+        // ---- protocol ------------------------------------------------
+        "protocol.get" => crate::dispatch_protocol::get(ctx),
+        "protocol.eval" => crate::dispatch_protocol::eval(ctx),
+        "protocol.triggers" => crate::dispatch_protocol::triggers(ctx),
+        "protocol.improve" => crate::dispatch_protocol::improve(ctx),
+
+        // ---- curation --------------------------------------------------
+        "rules.proposals" => {
+            crate::dispatch_curation::proposals(ctx, str_param(p, "project_id")?)
+        }
+        "rules.decide" => crate::dispatch_curation::decide(ctx, p),
+        "rules.retire" => crate::dispatch_curation::retire(ctx, p),
+        "rules.restore" => crate::dispatch_curation::restore(ctx, p),
+        "protocol.versions" => {
+            crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?)
+        }
+        "protocol.pin" => crate::dispatch_protocol::pin(ctx, p),
+        "protocol.rollback" => crate::dispatch_protocol::rollback(ctx, p),
 
         // ---- environment -------------------------------------------------
         "env.get" => env_get(ctx),
@@ -488,6 +517,8 @@ fn task_json(t: &crate::store::TaskRecord) -> Value {
         "completed_at": t.completed_at,
         "merge_commit": t.merge_commit,
         "archived": t.is_archived(),
+        "protocol_ref": t.protocol_ref,
+        "metrics": t.metrics,
     })
 }
 
@@ -563,7 +594,12 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
     let default_branch = git::default_branch(&canonical)
         .ok_or_else(|| rejected(format!("{} 没有可用的默认分支", canonical.display())))?;
 
-    let report = init::init(&canonical)?;
+    // A brand-new project has no pin yet, so this resolves to the newest tag.
+    // It still goes through the resolver so that adopting a directory whose
+    // `.autome/config.toml` already pins a version honours that pin.
+    let (protocol_ref, protocol) =
+        crate::protocol::resolve_for_project(&ctx.autome_home, &canonical)?;
+    let report = init::init(&canonical, &protocol)?;
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let project = Project {
@@ -588,6 +624,7 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
     Ok((
         json!({
             "project": project,
+            "protocol_ref": protocol_ref.to_wire(),
             "init": report.steps.iter().map(|s| json!({
                 "path": s.path,
                 "action": format!("{:?}", s.action).to_lowercase(),
@@ -1091,6 +1128,7 @@ fn role_label(role: Role) -> &'static str {
         Role::Adjudicate => "裁决",
         Role::Impl => "实现",
         Role::Audit => "审计",
+        Role::Retro => "复盘",
     }
 }
 
@@ -1140,7 +1178,34 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         })
         .unwrap_or_default();
 
-    let base = autome_domain::project::slugify(&request);
+    create(ctx, project_id, &request, None, attachments, doc_refs)
+}
+
+/// Creates a task with a fixed request and title, for the one caller that has
+/// both: `protocol.improve`.
+///
+/// A meta task's request is not something a user types. The constraints in it
+/// — two tasks' worth of evidence, a metric the core records, an eval case for
+/// anything behavioural — are what make a proposal checkable, and a user
+/// typing their own request would be typing around them.
+pub fn task_create_in(
+    ctx: &mut Ctx,
+    project_id: &str,
+    request: &str,
+    title: &str,
+) -> DispatchResult {
+    create(ctx, project_id, request, Some(title), vec![], vec![])
+}
+
+fn create(
+    ctx: &mut Ctx,
+    project_id: &str,
+    request: &str,
+    title: Option<&str>,
+    attachments: Vec<String>,
+    doc_refs: Vec<String>,
+) -> DispatchResult {
+    let base = autome_domain::project::slugify(title.unwrap_or(request));
     let slug = {
         let taken: Vec<String> = ctx
             .store
@@ -1158,8 +1223,8 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         slug,
         // The intake session writes the real title; until then the request
         // itself is the most informative thing to show.
-        title: first_line(&request),
-        request,
+        title: title.map(str::to_string).unwrap_or_else(|| first_line(request)),
+        request: request.to_string(),
         attachments,
         doc_refs,
         state: TaskState::Queued,
@@ -1168,6 +1233,12 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         completed_at: None,
         merge_commit: None,
         archived_at: None,
+        // All three are filled in by the scheduler: the protocol version and
+        // the rules hash when the first session starts, the metrics when the
+        // task reaches a terminal state.
+        protocol_ref: None,
+        rules_hash: None,
+        metrics: None,
     };
     ctx.store.insert_task(&task)?;
     let seq = ctx
@@ -1217,6 +1288,18 @@ fn queue_position(
 
 /// The whole task panel in one call (requirement U-06): state, progress from
 /// the design document, sessions, decisions and produced files.
+/// `task.retro` — run a retro round on a task that has already stopped.
+fn task_retro(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    scheduler::start_retro(ctx, task_id)?;
+    let seq = ctx
+        .store
+        .append_event("task.retro_started", task_id, json!({}))?;
+    Ok((
+        json!({ "started": true }),
+        vec![event(seq, "task.retro_started", task_id, json!({}))],
+    ))
+}
+
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
@@ -1242,6 +1325,13 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "documents": documents(&worktree, &task),
             "worktree": worktree.to_string_lossy(),
             "next_role": scheduler::next_role(&task.state),
+            // Empty for every ordinary task. For a meta task it names the
+            // changes the review and audit rounds were not competent to judge,
+            // and both stopping points show it.
+            "needs_human_approval": scheduler::needs_human_approval(ctx, task_id)?,
+            // Running totals, for a task still in flight. `task.metrics` is
+            // the final aggregate and only exists once the task has ended.
+            "so_far": running_totals(&sessions),
         }),
         vec![],
     ))
@@ -1329,6 +1419,41 @@ fn session_json(s: &autome_domain::session::Session) -> Value {
         "ended_at": s.ended_at,
         "lifecycle": s.lifecycle,
         "running": s.is_running(),
+        "protocol_ref": s.protocol_ref,
+        // Absent rather than zeroed when the stream could not be read: a card
+        // showing "0 tokens" for a session that produced work is worse than a
+        // card showing nothing.
+        "metrics": (!s.metrics.is_empty()).then(|| s.metrics.clone()),
+    })
+}
+
+/// What a task has spent so far, summed across its finished sessions.
+///
+/// Cost is `null` unless at least one session reported one. A task run
+/// entirely on Codex has an unknown cost, not a zero one — Codex reports no
+/// price, and a table of prices we maintained ourselves would produce a number
+/// that looks authoritative and is not.
+fn running_totals(sessions: &[autome_domain::session::Session]) -> Value {
+    let mut tokens = 0u64;
+    let mut turns = 0u64;
+    let mut cost: Option<f64> = None;
+    let mut measured = 0u32;
+    for s in sessions {
+        if s.metrics.is_empty() {
+            continue;
+        }
+        measured += 1;
+        tokens += s.metrics.total_tokens().unwrap_or(0);
+        turns += s.metrics.turns.unwrap_or(0);
+        if let Some(c) = s.metrics.cost_usd {
+            cost = Some(cost.unwrap_or(0.0) + c);
+        }
+    }
+    json!({
+        "sessions_measured": measured,
+        "total_tokens": tokens,
+        "total_turns": turns,
+        "total_cost_usd": cost,
     })
 }
 
@@ -1863,7 +1988,7 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn event(seq: u64, kind: &str, subject: &str, payload: Value) -> Event {
+pub fn event(seq: u64, kind: &str, subject: &str, payload: Value) -> Event {
     Event {
         event_seq: seq,
         event_id: new_id("evt"),
@@ -1903,7 +2028,7 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 14] = [
+pub const READ_METHODS: [&str; 18] = [
     "project.list",
     "project.get",
     "project.onboarding.artefacts",
@@ -1918,6 +2043,10 @@ pub const READ_METHODS: [&str; 14] = [
     "skills.list",
     "events.since",
     "env.detect",
+    "protocol.get",
+    "protocol.versions",
+    "protocol.eval",
+    "protocol.triggers",
 ];
 
 #[cfg(test)]
@@ -2262,7 +2391,10 @@ mod tests {
         let id = sb.add_project("p");
         let out = handle_command(sb.ctx(), &cmd("project.get", json!({ "project_id": id })));
         let payload = ok_payload(&out);
-        assert_eq!(payload["config"]["roles"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            payload["config"]["roles"].as_array().unwrap().len(),
+            Role::ALL.len()
+        );
         assert!(payload["violations"].as_array().unwrap().is_empty());
         let rules = payload["rules"].as_array().unwrap();
         assert!(rules.iter().any(|r| r == "AGENTS.md"), "{rules:?}");
@@ -2305,6 +2437,9 @@ mod tests {
             completed_at: None,
             merge_commit: None,
             archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2348,6 +2483,9 @@ mod tests {
             completed_at: None,
             merge_commit: None,
             archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2380,6 +2518,9 @@ mod tests {
                 completed_at: None,
                 merge_commit: None,
                 archived_at: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: None,
             })
             .unwrap();
         let out = handle_command(sb.ctx(), &cmd("project.remove", json!({"project_id": id})));

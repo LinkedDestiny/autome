@@ -37,6 +37,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'task.decide',
   'task.extend_budget',
   'task.rerun_from',
+  'task.retro',
   'task.archive',
   'task.restore',
   'config.set_role',
@@ -49,6 +50,13 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'scheduler.tick',
   'open.path',
   'open.terminal',
+  'protocol.pin',
+  'protocol.rollback',
+  'protocol.improve',
+  'rules.proposals',
+  'rules.decide',
+  'rules.retire',
+  'rules.restore',
 ]);
 
 // Ops whose params may contain prose the user typed, and the cap on it. A

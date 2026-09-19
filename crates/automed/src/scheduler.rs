@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use autome_domain::config::{self, ResolvedConfig};
 use autome_domain::project::Project;
+use autome_domain::protocol::{ProtocolFiles, ProtocolRef};
 use autome_domain::role::Role;
 use autome_domain::session::{
     self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths,
@@ -34,6 +35,7 @@ use autome_domain::task::{
 use serde_json::json;
 
 use crate::dispatch::Ctx;
+use crate::guards;
 use crate::store::{TaskRecord, now_iso};
 use crate::{config_io, git, launcher, skills};
 
@@ -186,7 +188,17 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .ok()
         .and_then(|t| ExitMarker::parse(&t));
     let alive = s.pid.map(launcher::pid_alive).unwrap_or(false);
-    let idle = log_idle_secs(&repo.join(SessionPaths::log(&s.task_id, &s.id)));
+    // A session cannot have been idle longer than it has existed.
+    //
+    // `log_idle_secs` reports a missing log as maximally idle, which is right
+    // for a log that was never written — but between the core recording a
+    // session and the terminal actually starting the wrapper there is a window
+    // where the log does not exist yet. On an unloaded machine that window is
+    // milliseconds; on a busy one it is long enough that the very next tick
+    // declared a just-launched session vanished and failed the task. Both of
+    // those are the same bug, and this is the floor that closes it.
+    let idle = log_idle_secs(&repo.join(SessionPaths::log(&s.task_id, &s.id)))
+        .min(secs_since(&s.started_at).unwrap_or(u64::MAX));
 
     let lifecycle = session::classify(marker.as_ref(), alive, idle);
     if lifecycle.is_running() {
@@ -198,10 +210,23 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .map(|m| m.ended_at.clone())
         .unwrap_or_else(now_iso);
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
+    record_usage(ctx, s, &repo, &task, &ended_at);
 
     // Onboarding sessions are not part of a task's Loop; the project page
     // advances its own wizard.
     if s.kind == SessionKind::Onboarding {
+        return Ok(true);
+    }
+
+    // A retro run from the failure panel is not part of the Loop. The task is
+    // already terminal, it stays where it is, and the transition table would
+    // rightly reject a `SessionEnded` against a finished task. Handling it
+    // here rather than adding a state to the machine is deliberate: "read the
+    // run and write down what it taught us" changes nothing about where the
+    // task is, and a state that exists only to come back from is a state.
+    if s.kind.role() == Some(Role::Retro) && !matches!(task.state, TaskState::Active { .. }) {
+        sweep_commit(&repo, &task, s)?;
+        check_lessons(ctx, &task, &repo)?;
         return Ok(true);
     }
 
@@ -213,9 +238,301 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // makes forgetting recoverable rather than silent.
     sweep_commit(&repo, &task, s)?;
 
-    let outcome = read_outcome(&repo, &task, &lifecycle);
+    let outcome = apply_guards(ctx, s, &repo, &task, read_outcome(&repo, &task, &lifecycle))?;
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
+}
+
+/// The one place a round's output is admitted (plan §4.D).
+///
+/// Only a document that parsed is checked: a round that could not produce a
+/// readable status block has already failed, and piling a second complaint on
+/// top would bury the one a person can act on.
+fn apply_guards(
+    ctx: &mut Ctx,
+    session: &Session,
+    repo: &Path,
+    task: &TaskRecord,
+    outcome: SessionOutcome,
+) -> Result<SessionOutcome> {
+    let SessionOutcome::Ok { status } = &outcome else {
+        return Ok(outcome);
+    };
+    let Some(role) = session.kind.role() else {
+        return Ok(outcome);
+    };
+
+    let worktree = worktree_path(repo, &task.slug);
+    let before: Option<guards::Snapshot> = ctx
+        .store
+        .last_event(&task.id, "task.snapshot")?
+        .and_then(|v| serde_json::from_value(v).ok());
+
+    let retro_path = worktree.join(format!("{}/retro.md", task.doc_dir()));
+    let retro = std::fs::read_to_string(&retro_path).unwrap_or_default();
+    let retro_lines: Vec<&str> = retro.lines().filter(|l| !l.trim().is_empty()).collect();
+    let retro_added = match &before {
+        Some(b) if retro_lines.len() > b.retro_lines => {
+            retro_lines[b.retro_lines..].iter().map(|l| l.to_string()).collect()
+        }
+        _ => vec![],
+    };
+
+    let design_bytes = std::fs::metadata(worktree.join(task.design_doc()))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let round = guards::Round {
+        role,
+        status,
+        before: before.as_ref(),
+        retro_lines: retro_lines.len(),
+        retro_added,
+        design_bytes,
+        evidence_files: evidence_filenames(&worktree, &task.doc_dir()),
+        changed_paths: vec![],
+        design_changed_outside_milestones: design_changed_outside_milestones(
+            &worktree,
+            task,
+            before.as_ref(),
+            ctx,
+        ),
+    };
+    let findings = guards::check(&round);
+
+    // Before the snapshot is replaced: a milestone that was closed and has
+    // just been taken back can only be seen by comparing the two, and the
+    // finished document shows it as open with nothing to say it was ever
+    // closed.
+    if let Some(b) = &before {
+        for id in crate::task_metrics::newly_contradicted(&b.milestones, status) {
+            ctx.store.append_event(
+                "milestone.contradicted",
+                &task.id,
+                json!({ "milestone": id }),
+            )?;
+        }
+    }
+
+    // The snapshot is written whatever the verdict: the next round has to be
+    // compared against what this one actually left, not against what it would
+    // have left had it behaved.
+    ctx.store.append_event(
+        "task.snapshot",
+        &task.id,
+        json!(guards::Snapshot {
+            milestones: crate::task_metrics::snapshot(status),
+            retro_lines: round.retro_lines,
+            design_bytes,
+        }),
+    )?;
+    if let Ok(head) = git::head_sha(&worktree) {
+        ctx.store
+            .append_event("task.head", &task.id, json!({ "sha": head }))?;
+    }
+
+    for f in &findings {
+        ctx.store.append_event(
+            match f.level {
+                guards::Level::Error => "guard.failed",
+                guards::Level::Warning => "guard.warning",
+            },
+            &task.id,
+            json!({ "code": f.code, "detail": f.detail, "role": role.as_str() }),
+        )?;
+    }
+
+    if role == Role::Retro {
+        check_lessons(ctx, task, repo)?;
+    }
+
+    match findings.iter().find(|f| f.level == guards::Level::Error) {
+        Some(f) => Ok(SessionOutcome::GuardFailed {
+            detail: f.detail.clone(),
+        }),
+        None => Ok(outcome),
+    }
+}
+
+/// Reads `docs/<slug>/lessons.md` and records whether it parsed.
+///
+/// A malformed lessons file does not fail the task — the task is over, and
+/// failing it now would be punishing the wrong round for the wrong thing. But
+/// it does have to be visible: a lesson the core cannot read is a lesson that
+/// silently never reaches a rule, and "we wrote it down" would be false.
+fn check_lessons(ctx: &mut Ctx, task: &TaskRecord, repo: &Path) -> Result<()> {
+    let path = worktree_path(repo, &task.slug)
+        .join(task.doc_dir())
+        .join("lessons.md");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        ctx.store.append_event(
+            "guard.warning",
+            &task.id,
+            json!({
+                "code": "lessons_missing",
+                "detail": format!("复盘轮没有写 {}/lessons.md。", task.doc_dir()),
+            }),
+        )?;
+        return Ok(());
+    };
+    match autome_domain::lesson::parse(&text) {
+        Ok(lessons) => {
+            ctx.store.append_event(
+                "task.lessons",
+                &task.id,
+                json!({
+                    "count": lessons.len(),
+                    "lessons": lessons,
+                }),
+            )?;
+        }
+        Err(e) => {
+            ctx.store.append_event(
+                "guard.warning",
+                &task.id,
+                json!({
+                    "code": "lessons_unparseable",
+                    "detail": format!("lessons.md 读不出来：{e}"),
+                }),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn evidence_filenames(worktree: &Path, doc_dir: &str) -> Vec<String> {
+    let dir = worktree.join(doc_dir).join("evidence");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
+    let mut out: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Whether the session changed the design document beyond its milestone table.
+///
+/// Answered from the commit history rather than by storing the previous
+/// document: a design document runs to hundreds of kilobytes, and keeping a
+/// copy of each one in the event stream to diff against would cost more than
+/// the check is worth. `None` when there is nothing to diff against — the
+/// first round, or a worktree git cannot read — because a guess here would
+/// warn about rounds that did nothing wrong.
+fn design_changed_outside_milestones(
+    worktree: &Path,
+    task: &TaskRecord,
+    before: Option<&guards::Snapshot>,
+    ctx: &Ctx,
+) -> Option<bool> {
+    before?;
+    let head = ctx
+        .store
+        .last_event(&task.id, "task.head")
+        .ok()??
+        .get("sha")?
+        .as_str()?
+        .to_string();
+    let design = task.design_doc();
+    let diff = git::run(
+        worktree,
+        &["diff", "--unified=0", &format!("{head}..HEAD"), "--", &design],
+    )
+    .ok()?;
+    if !diff.ok() {
+        return None;
+    }
+    // Changed lines only, and only the ones that are not milestone-table rows.
+    // A table row is `| M-01 | 待审 | … |`; anything else the audit touched is
+    // prose it was not asked to touch.
+    let touched_prose = diff
+        .stdout
+        .lines()
+        .filter(|l| {
+            (l.starts_with('+') || l.starts_with('-'))
+                && !l.starts_with("+++")
+                && !l.starts_with("---")
+        })
+        .map(|l| l[1..].trim())
+        .filter(|l| !l.is_empty())
+        .any(|l| !(l.starts_with("| M-") || l.starts_with("最新证据：")));
+    Some(touched_prose)
+}
+
+/// Reads what the session cost out of its raw stream and records it.
+///
+/// Best-effort on purpose: a session whose `.jsonl` is missing or truncated
+/// still has to be reaped and its task still has to advance. A failure here
+/// loses a row in a table; making it fatal would lose the task.
+fn record_usage(ctx: &mut Ctx, s: &Session, repo: &Path, task: &TaskRecord, ended_at: &str) {
+    let stream_path = repo.join(format!(
+        "{}/{}.jsonl",
+        SessionPaths::dir(&s.task_id),
+        s.id
+    ));
+    let stream = std::fs::read_to_string(&stream_path).unwrap_or_default();
+    let wall_ms = wall_clock_ms(&s.started_at, ended_at);
+    let mut metrics = crate::usage::parse(s.runtime, &stream, wall_ms);
+
+    let worktree = worktree_path(repo, &task.slug);
+    let (bytes, files) = crate::usage::measure_documents(&worktree, &task.doc_dir(), &task.slug);
+    metrics.design_doc_bytes = bytes;
+    metrics.evidence_files = files;
+
+    if metrics.is_empty() {
+        // Worth an event rather than a silent gap: a runtime that stops
+        // reporting usage would otherwise show up months later as a version
+        // with no numbers and no explanation.
+        let _ = ctx.store.append_event(
+            "session.usage_missing",
+            &s.task_id,
+            json!({ "session_id": s.id, "runtime": s.runtime.as_str() }),
+        );
+        return;
+    }
+    if let Err(e) = ctx.store.set_session_metrics(&s.id, &metrics) {
+        tracing::warn!(session = %s.id, error = %e, "could not record session usage");
+    }
+}
+
+/// Seconds since an RFC 3339 timestamp. `None` when it cannot be parsed, so
+/// the caller can fall back rather than treat an unreadable timestamp as now.
+fn secs_since(ts: &str) -> Option<u64> {
+    let then = epoch_secs(ts)?;
+    let now = epoch_secs(&now_iso())?;
+    Some((now - then).max(0) as u64)
+}
+
+/// Milliseconds between two RFC 3339 timestamps, for the runtime that does not
+/// report a duration of its own. `None` when either cannot be read, rather
+/// than a zero that would read as an instant session.
+fn wall_clock_ms(started_at: &str, ended_at: &str) -> Option<u64> {
+    let start = epoch_secs(started_at)?;
+    let end = epoch_secs(ended_at)?;
+    (end >= start).then(|| ((end - start) * 1000) as u64)
+}
+
+/// Parses `YYYY-MM-DDTHH:MM:SSZ`, the one format `store::now_iso` writes.
+fn epoch_secs(ts: &str) -> Option<i64> {
+    let bytes = ts.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, b: usize| ts.get(a..b)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // Days from civil (Howard Hinnant), the inverse of `store::format_iso`.
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
 /// Commits whatever a session left behind in its own worktree.
@@ -344,7 +661,7 @@ pub fn apply_trigger(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<
 /// The other order would leave a running session the store knows nothing
 /// about, which is not.
 fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
-    let task = ctx.store.get_task(task_id)?;
+    let mut task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let resolved = resolve_config(ctx, &project)?;
 
@@ -379,6 +696,18 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     ctx.store.set_task_state(task_id, &transition.next)?;
     if let Some(n) = budget {
         ctx.store.set_task_budget(task_id, n)?;
+        // Also on the record `perform` is about to read. It was loaded at the
+        // top of this function, so without this the store says 75 and the
+        // prompt the very next session gets says 35 — the panel and the round
+        // disagree about the denominator, and the round is the one that acts
+        // on it. A real run hit this the round after a merge added eight
+        // backlog items: the budget went 35 → 75 and the session was told
+        // `32/35`, four rounds from an ending that was no longer there.
+        //
+        // The protocol answers "who owns N" with "the core states it in the
+        // prompt", so a stale number here is not a display bug — it is the
+        // core telling the session something untrue about its own budget.
+        task.budget_n = Some(n);
     }
     if transition.consumes_decisions {
         ctx.store.consume_decisions(task_id)?;
@@ -394,8 +723,110 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         json!({ "state": transition.next, "trigger": trigger_name(trigger) }),
     )?;
 
+    // Counted rather than derived from the final state: a task can fail on a
+    // protocol error, be re-run from an earlier node, and fail again. The last
+    // state remembers one of those; the version page needs all of them.
+    if let TaskState::Failed {
+        reason: FailureReason::Protocol { detail },
+        at,
+    } = &transition.next
+    {
+        ctx.store.append_event(
+            "task.protocol_failure",
+            task_id,
+            json!({ "node": at.as_str(), "detail": detail }),
+        )?;
+    }
+
+    // A task is measured while its worktree still exists. That rules out
+    // waiting for `Done`: `Done` is reached *from* cleanup, which has already
+    // deleted the worktree the evidence files live in. So the measurement
+    // happens one step earlier, on the way into cleanup — and on the way into
+    // Failed or Cancelled, which a task reaches with its worktree intact.
+    //
+    // A task that went wrong is the most informative kind there is, so the
+    // failing paths are measured too.
+    let measure_now = matches!(
+        transition.action,
+        Action::RunCoreStep {
+            node: Node::Cleanup
+        }
+    ) || matches!(transition.next, TaskState::Failed { .. } | TaskState::Cancelled)
+        || (transition.next == TaskState::Done && task.metrics.is_none());
+    if measure_now {
+        if let Err(e) = write_task_metrics(ctx, task_id) {
+            tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
+        }
+        // A new sample just arrived, which is the only thing that can make a
+        // past prediction judgeable. The core fills the outcome in, never the
+        // person who proposed the change: a claim scored by its author is not
+        // a claim.
+        for filled in crate::backfill::run(ctx) {
+            tracing::info!(
+                entry = %filled.id,
+                metric = %filled.metric,
+                held_up = filled.held_up,
+                "protocol change measured"
+            );
+        }
+    }
+
     perform(ctx, &task, &project, &resolved, &transition)?;
     Ok(true)
+}
+
+/// Folds a finished task into `TaskMetrics` and stores it.
+fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    let repo = PathBuf::from(&project.path);
+    let worktree = worktree_path(&repo, &task.slug);
+
+    let status = read_status(&project, &task);
+    let design = std::fs::read_to_string(worktree.join(task.design_doc())).unwrap_or_default();
+    let (impl_defects, verification_gaps) =
+        crate::task_metrics::count_verdicts(&worktree, &task.doc_dir());
+
+    let sessions = ctx.store.list_sessions(task_id)?;
+    let mut total_tokens = 0u64;
+    let mut total_turns = 0u64;
+    let mut cost: Option<f64> = None;
+    for s in &sessions {
+        total_tokens += s.metrics.total_tokens().unwrap_or(0);
+        total_turns += s.metrics.turns.unwrap_or(0);
+        if let Some(c) = s.metrics.cost_usd {
+            // Only Claude reports a price. Summing what exists and leaving the
+            // total absent when nothing does is the honest form: a task run
+            // entirely on Codex costs an unknown amount, not zero.
+            cost = Some(cost.unwrap_or(0.0) + c);
+        }
+    }
+
+    let counts = crate::task_metrics::Counts {
+        protocol_failures: ctx.store.count_events(task_id, "task.protocol_failure")?,
+        closed_then_contradicted: ctx.store.count_events(task_id, "milestone.contradicted")?,
+        impl_defects,
+        verification_gaps,
+        manual_items_open: crate::task_metrics::count_manual_items(&design),
+        total_cost_usd: cost,
+        total_tokens,
+        total_turns,
+    };
+
+    let metrics = crate::task_metrics::aggregate(
+        status.as_ref(),
+        task.budget_n.unwrap_or(0),
+        task.protocol_ref.clone(),
+        task.rules_hash.clone(),
+        counts,
+    );
+    ctx.store.set_task_metrics(task_id, &metrics)?;
+    ctx.store.append_event(
+        "task.metrics",
+        task_id,
+        serde_json::to_value(&metrics).unwrap_or_else(|_| json!({})),
+    )?;
+    Ok(())
 }
 
 /// N is computed from the *initial* milestone count when the design is
@@ -532,8 +963,15 @@ fn start_session(
         git::worktree_prune(&repo)?;
         let rel = format!(".worktree/{}", task.slug);
         git::worktree_add(&repo, &rel, &task.branch(), &project.default_branch)?;
-        write_task_inputs(&repo, &worktree, task)?;
+        write_task_inputs(ctx, task, project, &worktree)?;
     }
+
+    // Which rules this task is held to, decided once and then frozen. A task
+    // that started under v6 keeps running under v6 even if the user releases
+    // v7 in the middle of it — protocol principle 6 as a property of the
+    // filesystem rather than a sentence a session has to remember.
+    let (protocol_ref, protocol) = freeze_protocol(ctx, task, resolved, &worktree)?;
+    let rules_hash = rules_hash(&repo);
 
     let role_config = match kind.role() {
         Some(role) => resolved.role(role).config.clone(),
@@ -551,9 +989,35 @@ fn start_session(
         }
         _ => None,
     };
+    // The retro round writes against the task's measured numbers rather than
+    // its recollection of the run, so it is the one round handed them.
+    let task_metrics = match kind.role() {
+        Some(Role::Retro) => ctx.store.task_metrics(&task.id)?,
+        _ => None,
+    };
+    // Written before the prompt that points at it. A round told to read a
+    // brief that is not there would go and read the design document instead,
+    // which is the thing the brief exists to make optional.
+    let brief_path = match kind.role() {
+        Some(role) => write_brief(
+            ctx,
+            &task,
+            &worktree,
+            &protocol,
+            role,
+            round,
+            budget.as_ref(),
+            &decisions,
+        )?,
+        None => String::new(),
+    };
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
+        templates: &protocol,
+        brief_path: &brief_path,
         slug: &task.slug,
+        design_rounds: resolved.loop_defaults.design_rounds,
+        task_metrics: task_metrics.as_ref(),
         budget,
         request: &task.request,
         skills: &role_config.skills,
@@ -561,7 +1025,7 @@ fn start_session(
         decisions: &decisions,
         attachments: &task.attachments,
         doc_refs: &task.doc_refs,
-    });
+    })?;
 
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
@@ -570,7 +1034,7 @@ fn start_session(
         cwd: &worktree,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config),
+        args: launcher::build_args(&role_config, &worktree),
         prompt,
         title: launcher::tab_title(&task.id, kind, round),
         mode: ctx.launch_mode,
@@ -591,6 +1055,10 @@ fn start_session(
         lifecycle: SessionLifecycle::Running,
         log_path: launched.log_path.clone(),
         pid,
+        protocol_ref: Some(protocol_ref.to_wire()),
+        rules_hash,
+        // Filled in when the session is reaped and its stream is read.
+        metrics: Default::default(),
     })?;
     ctx.store.append_event(
         "session.started",
@@ -621,28 +1089,267 @@ fn read_pid(repo: &Path, task_id: &str, session_id: &str) -> Option<i32> {
     None
 }
 
-/// Copies attachments into the worktree's task directory and commits them, so
-/// the agent can read them and they travel with the branch (requirement T-01).
-fn write_task_inputs(repo: &Path, worktree: &Path, task: &TaskRecord) -> Result<()> {
-    if task.attachments.is_empty() {
-        return Ok(());
+/// Resolves the protocol version for a task and, the first time, freezes a
+/// copy of it into `docs/<slug>/protocol/`.
+///
+/// After that the copy *is* the version: it is read back from the worktree
+/// rather than re-resolved, so releasing a new protocol tag cannot change the
+/// rules a running task is being held to. That is protocol principle 6, and it
+/// used to rest on the intake round having pasted the rules into the task file
+/// and every later round choosing not to look anywhere else.
+fn freeze_protocol(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    resolved: &ResolvedConfig,
+    worktree: &Path,
+) -> Result<(ProtocolRef, ProtocolFiles)> {
+    let dir = worktree
+        .join(task.doc_dir())
+        .join(crate::protocol::TASK_SUBDIR);
+
+    if let Some(recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
+        && dir.exists()
+    {
+        let files = read_task_protocol(&dir)?;
+        // A mismatch means someone edited the frozen copy. The file wins, as
+        // everywhere else in this system, but the disagreement is recorded
+        // rather than smoothed over: every metric this task produces is
+        // attributed to a version, and this is the one moment the attribution
+        // can be seen to be wrong.
+        let hash = files.hash();
+        if hash != recorded.hash {
+            ctx.store.append_event(
+                "integrity_warning",
+                &task.id,
+                json!({
+                    "what": "protocol_copy_edited",
+                    "recorded": recorded.to_wire(),
+                    "actual_hash": hash,
+                }),
+            )?;
+            return Ok((ProtocolRef::new(recorded.tag, hash), files));
+        }
+        return Ok((recorded, files));
     }
-    let dest = worktree.join(task.doc_dir()).join("attachments");
-    std::fs::create_dir_all(&dest).map_err(|e| err(format!("无法创建附件目录：{e}")))?;
-    for source in &task.attachments {
-        let name = Path::new(source)
-            .file_name()
-            .ok_or_else(|| err(format!("附件路径无效：{source}")))?;
-        std::fs::copy(source, dest.join(name))
-            .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
-    }
-    let rel = format!("{}/attachments", task.doc_dir());
+
+    let repo = PathBuf::from(&ctx.store.get_project(&task.project_id)?.path);
+    let pin = resolved.protocol_pin.clone();
+    let (protocol_ref, files) = crate::protocol::ensure(&ctx.autome_home)
+        .and_then(|r| r.resolve(pin.as_deref()))
+        .map_err(|e| err(e.to_string()))?;
+
+    let written = crate::protocol::copy_into_task(&files, worktree, &task.doc_dir())
+        .map_err(|e| err(e.to_string()))?;
+    let refs: Vec<&str> = written.iter().map(String::as_str).collect();
     git::commit_paths(
         worktree,
+        &refs,
+        &format!("chore(autome): {} 固定协议 {}", task.id, protocol_ref.tag),
+    )?;
+    ctx.store
+        .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
+    let _ = repo;
+    Ok((protocol_ref, files))
+}
+
+/// Assembles this round's brief and commits it.
+///
+/// Best-effort in one direction only: if the brief cannot be written the
+/// session still starts, because a missing index is worse than no session but
+/// much better than a stalled task. The prompt points at it either way, and a
+/// round that finds nothing there falls back to the design document — which is
+/// exactly what every round did before this existed.
+#[allow(clippy::too_many_arguments)]
+fn write_brief(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    worktree: &Path,
+    protocol: &ProtocolFiles,
+    role: Role,
+    round: u32,
+    budget: Option<&launcher::BudgetLine>,
+    decisions: &[crate::store::DecisionRecord],
+) -> Result<String> {
+    let rel = crate::brief::path(&task.doc_dir(), role, round);
+    let map = match protocol.get("brief-map.toml").map(crate::brief::parse_map) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            // A malformed map costs the brief its protocol sections and
+            // nothing else, but it is a defect in the protocol version and
+            // must not pass unremarked.
+            ctx.store.append_event(
+                "guard.warning",
+                &task.id,
+                json!({ "code": "brief_map_unreadable", "detail": e }),
+            )?;
+            crate::brief::BriefMap::default()
+        }
+        None => crate::brief::BriefMap::default(),
+    };
+
+    let read = |rel: String| std::fs::read_to_string(worktree.join(rel)).ok();
+    let audit_doc = read(format!("{}/{}-audit.md", task.doc_dir(), task.slug));
+    let status = read(task.design_doc()).and_then(|t| status_block::parse(&t).ok());
+    let evidence = evidence_filenames(worktree, &task.doc_dir());
+
+    let text = crate::brief::build(&crate::brief::Inputs {
+        role,
+        slug: &task.slug,
+        round,
+        status: status.as_ref(),
+        audit_doc: audit_doc.as_deref(),
+        evidence: &evidence,
+        loop_protocol: protocol.loop_protocol().unwrap_or_default(),
+        session_protocol: protocol.session_protocol().unwrap_or_default(),
+        map: &map,
+        budget_line: budget.map(|b| {
+            format!(
+                "本轮是第 {} 轮，实现预算 N = {}。分母由 Autome 计算。\n",
+                b.round, b.limit
+            )
+        }),
+        decisions: (!decisions.is_empty()).then(|| {
+            let mut s = String::from("\n用户已对以下待决条目作出决定：\n\n");
+            for d in decisions {
+                s.push_str(&format!("- {} {}\n", d.item_id, d.text));
+            }
+            s
+        }),
+    });
+
+    let full = worktree.join(&rel);
+    if let Some(parent) = full.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::write(&full, text).is_err() {
+        tracing::warn!(task = %task.id, path = %rel, "could not write the brief");
+        return Ok(rel);
+    }
+    let _ = git::commit_paths(
+        worktree,
         &[&rel],
+        &format!("chore(autome): {} {} 简报", task.id, role.as_str()),
+    );
+    Ok(rel)
+}
+
+/// Which changes on this branch the review and audit rounds were not
+/// competent to judge — a change to their own prompts.
+///
+/// Recorded at the design stopping point and again at the merge gate, because
+/// those are the two places a human is looking. There is no clever fix for the
+/// self-reference: an evaluator judging the rules it is evaluated under is a
+/// fixed point, not a check.
+pub fn needs_human_approval(ctx: &mut Ctx, task_id: &str) -> Result<Vec<String>> {
+    let task = ctx.store.get_task(task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
+    if !crate::meta_store::is_protocol_project(ctx, &project) {
+        return Ok(vec![]);
+    }
+    let repo = PathBuf::from(&project.path);
+    let changed = git::change_summary(&repo, &project.default_branch, &task.branch())
+        .map(|s| s.files.into_iter().map(|f| f.path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(crate::meta::needs_human_approval(&changed))
+}
+
+/// Reads a task's frozen copy back. Only the files the copy contains — eval
+/// fixtures are deliberately not copied, so the hash here is over the same set
+/// `copy_into_task` wrote.
+fn read_task_protocol(dir: &Path) -> Result<ProtocolFiles> {
+    fn walk(root: &Path, dir: &Path, out: &mut ProtocolFiles) -> Result<()> {
+        for entry in std::fs::read_dir(dir).map_err(|e| err(format!("读取协议副本失败：{e}")))? {
+            let entry = entry.map_err(|e| err(format!("读取协议副本失败：{e}")))?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out)?;
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|_| err("协议副本里出现了目录之外的路径"))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel, text);
+            }
+        }
+        Ok(())
+    }
+    let mut out = ProtocolFiles::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+/// A hash over `.autome/rules/`, so a usage number can say which rule set
+/// produced it. Rules change between tasks; two numbers taken under different
+/// rules are not the same measurement.
+fn rules_hash(repo: &Path) -> Option<String> {
+    let dir = repo.join(".autome/rules");
+    let mut files = ProtocolFiles::new();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        files.insert(name, std::fs::read_to_string(&path).ok()?);
+    }
+    Some(files.hash())
+}
+
+/// Everything the core puts into a task's directory before the first session
+/// opens it: the user's attachments, and — for a meta task — the evidence it
+/// is asked to propose changes from.
+fn write_task_inputs(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    worktree: &Path,
+) -> Result<()> {
+    let mut paths: Vec<String> = Vec::new();
+
+    if !task.attachments.is_empty() {
+        let dest = worktree.join(task.doc_dir()).join("attachments");
+        std::fs::create_dir_all(&dest).map_err(|e| err(format!("无法创建附件目录：{e}")))?;
+        for source in &task.attachments {
+            let name = Path::new(source)
+                .file_name()
+                .ok_or_else(|| err(format!("附件路径无效：{source}")))?;
+            std::fs::copy(source, dest.join(name))
+                .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
+        }
+        paths.push(format!("{}/attachments", task.doc_dir()));
+    }
+
+    // A meta task cannot assemble its own evidence: a session cannot read the
+    // store, cannot see other projects' tasks, and should not be trusted to
+    // summarise its own history from memory.
+    if crate::meta_store::is_protocol_project(ctx, project) {
+        let tasks = crate::meta_store::collect(ctx)?;
+        let deferred = crate::meta_store::deferred(ctx, &project.id)?;
+        let contradicted = crate::meta_store::contradicted(ctx)?;
+        for (rel, body) in crate::meta::inputs(&tasks, &deferred, &contradicted) {
+            let full = worktree.join(task.doc_dir()).join(&rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| err(format!("无法创建 {}：{e}", parent.display())))?;
+            }
+            std::fs::write(&full, body)
+                .map_err(|e| err(format!("无法写入 {}：{e}", full.display())))?;
+        }
+        paths.push(format!("{}/inputs", task.doc_dir()));
+    }
+
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    git::commit_paths(
+        worktree,
+        &refs,
         &format!("chore(autome): {} inputs", task.id),
     )?;
-    let _ = repo;
     Ok(())
 }
 
@@ -803,7 +1510,19 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
                 continue;
             }
             let _ = git::worktree_prune(path);
-            match crate::init::init(path) {
+            // The protocol is resolved per project: one of them may be pinned
+            // to an older version, and refreshing it to the newest would be
+            // exactly the silent rule change pinning exists to prevent.
+            let protocol = match crate::protocol::resolve_for_project(&ctx.autome_home, path) {
+                Ok((_, files)) => files,
+                Err(e) => {
+                    report
+                        .errors
+                        .push(format!("{}：读取协议版本失败 {e}", p.display_name));
+                    continue;
+                }
+            };
+            match crate::init::init(path, &protocol) {
                 Ok(done) => {
                     for step in done
                         .steps
@@ -875,6 +1594,44 @@ fn redispatch(ctx: &mut Ctx, task_id: &str, node: Node) -> Result<()> {
     start_session(ctx, &task, &project, &resolved, kind, None)
 }
 
+/// Starts a retro round on a task that has already stopped.
+///
+/// The user's button on the failure panel. A task that failed or was cancelled
+/// is the most informative kind there is, and it is also the kind that never
+/// reaches the retro node — so the only way its lessons get written is if
+/// someone asks. Deliberately manual rather than automatic: a failed task has
+/// often failed for a reason the user already understands, and spending a
+/// session to have it explained back is not always worth it.
+pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+    let task = ctx.store.get_task(task_id)?;
+    if matches!(task.state, TaskState::Active { .. } | TaskState::Queued) {
+        return Err(err("任务还在跑，复盘轮会在它停下时自己跑一次"));
+    }
+    if ctx.store.running_session(task_id)?.is_some() {
+        return Err(err("这个任务已经有一个会话在跑了"));
+    }
+    let project = ctx.store.get_project(&task.project_id)?;
+    let resolved = resolve_config(ctx, &project)?;
+    if !resolved.is_enabled(Role::Retro) {
+        return Err(err("复盘轮在这个项目里是关着的"));
+    }
+    let worktree = worktree_path(Path::new(&project.path), &task.slug);
+    if !worktree.exists() {
+        // Cleanup removes the worktree after a merge, and the evidence the
+        // retro round reads lives in it. Saying so beats starting a session
+        // that finds an empty directory.
+        return Err(err("任务的 worktree 已经清理掉了，复盘轮读不到证据"));
+    }
+    start_session(
+        ctx,
+        &task,
+        &project,
+        &resolved,
+        SessionKind::Role { role: Role::Retro },
+        None,
+    )
+}
+
 /// Starts the Onboarding session (design §10, requirement C-02 step 3).
 ///
 /// Unlike every other session this one has no task and no worktree: it runs in
@@ -887,9 +1644,18 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let repo = PathBuf::from(&project.path);
     let role_config = launcher::system_role_config();
 
+    // Onboarding has no task and therefore no frozen copy; it runs under
+    // whatever version the project resolves to right now, which is correct:
+    // nothing it produces is attributed to a protocol version.
+    let (_, protocol) = crate::protocol::resolve_for_project(&ctx.autome_home, &repo)
+        .map_err(|e| err(e.to_string()))?;
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
+        templates: &protocol,
+        brief_path: "",
         slug: "onboarding",
+        design_rounds: 0,
+        task_metrics: None,
         budget: None,
         request: "",
         skills: &[],
@@ -897,7 +1663,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         decisions: &[],
         attachments: &[],
         doc_refs: &[],
-    });
+    })?;
 
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
@@ -906,7 +1672,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         cwd: &repo,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config),
+        args: launcher::build_args(&role_config, &repo),
         prompt,
         title: format!("autome · {} · Onboarding", project.display_name),
         mode: ctx.launch_mode,
@@ -1074,7 +1840,7 @@ mod tests {
             std::fs::create_dir_all(&repo).unwrap();
 
             git::init(&repo, "main").unwrap();
-            crate::init::init(&repo).unwrap();
+            crate::init::init(&repo, &crate::protocol::seed()).unwrap();
             std::fs::write(repo.join("README.md"), "hi\n").unwrap();
             git::commit_paths(
                 &repo,
@@ -1120,6 +1886,9 @@ mod tests {
                 completed_at: None,
                 merge_commit: None,
                 archived_at: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: None,
             };
             self.ctx.store.insert_task(&task).unwrap();
             task
@@ -1284,6 +2053,63 @@ mod tests {
         assert!(n >= 5, "budget {n}");
     }
 
+    /// The prompt of the session a budget change starts must carry the new
+    /// budget, not the one the task had when `advance` began.
+    ///
+    /// Both numbers come from the same `TaskRecord`, and it is read once at
+    /// the top of `advance` — so a transition that computes a budget wrote it
+    /// to the store and then handed `perform` the record from before. On the
+    /// approval path `budget_n` was still `None`, which does not render as a
+    /// stale number but as no budget line at all: implementation round 1 was
+    /// never told what N is, on every task.
+    ///
+    /// The protocol puts N in the prompt precisely because a session cannot
+    /// derive it, and a real run already showed what happens when the two
+    /// sides disagree — the session declared the budget spent, the core
+    /// scheduled another round anyway, and the round after that invented a
+    /// user decision to explain the contradiction.
+    #[test]
+    fn the_first_implementation_round_is_told_the_budget_just_computed() {
+        needs_git!();
+        let mut w = World::new("budget-prompt");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+        w.write_design(
+            &task,
+            &design_doc(
+                "实现中",
+                &[
+                    ("M-01", MilestoneState::Open),
+                    ("M-02", MilestoneState::Open),
+                    ("M-03", MilestoneState::Open),
+                    ("M-04", MilestoneState::Open),
+                    ("M-05", MilestoneState::Open),
+                ],
+                "",
+            ),
+        );
+        let _ = advance(&mut w.ctx, "T-1", &Trigger::Approve);
+        assert_eq!(w.ctx.store.get_task("T-1").unwrap().budget_n, Some(25));
+
+        let dir = w.repo.join(".autome/output/sessions/T-1");
+        let prompt = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "prompt"))
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .expect("the approval started a session, so a prompt was written");
+        assert!(
+            prompt.contains("N = 25"),
+            "本轮 prompt 没有拿到刚算出的预算：\n{prompt}"
+        );
+    }
+
     #[test]
     fn approving_a_five_milestone_design_gets_five_times_the_factor() {
         // The bug this replaced: N was the factor alone, so a five-milestone
@@ -1379,11 +2205,30 @@ mod tests {
     }
 
     #[test]
-    fn an_audit_closing_every_milestone_reaches_rebase() {
+    fn an_audit_closing_every_milestone_reaches_the_retro_round() {
         needs_git!();
         let mut w = World::new("audit-done");
         w.add_task("T-1", "a");
         w.set_state("T-1", TaskState::Active { node: Node::Audit });
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        let doc = design_doc(
+            "实现中",
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Done),
+            ],
+            "",
+        );
+        let _ = advance(&mut w.ctx, "T-1", &ended_ok(&doc));
+        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Retro });
+    }
+
+    #[test]
+    fn the_retro_round_hands_off_to_the_rebase() {
+        needs_git!();
+        let mut w = World::new("retro-done");
+        w.add_task("T-1", "a");
+        w.set_state("T-1", TaskState::Active { node: Node::Retro });
         w.ctx.store.set_task_budget("T-1", 25).unwrap();
         let doc = design_doc(
             "实现中",
@@ -1418,6 +2263,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         // Write a clean exit marker, so the document is what decides.
@@ -1477,6 +2325,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1544,6 +2395,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1613,6 +2467,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -1628,10 +2485,14 @@ mod tests {
         .unwrap();
 
         reap_session(&mut w.ctx, &session).unwrap();
-        assert_eq!(
-            git::head_sha(&wt).unwrap(),
-            after_own_commit,
-            "a clean worktree must not produce an empty sweep commit"
+        // Reaping also advances the task, and the next session freezes the
+        // protocol into the task directory — so HEAD legitimately moves. What
+        // must not be there is a sweep commit: the round committed its own
+        // work and there was nothing left over.
+        let subjects = git::commit_subjects(&wt, &after_own_commit, "HEAD").unwrap();
+        assert!(
+            !subjects.iter().any(|s| s.contains("未提交的剩余改动")),
+            "a clean worktree must not produce an empty sweep commit: {subjects:?}"
         );
     }
 
@@ -1661,6 +2522,9 @@ mod tests {
             log_path: "l".into(),
             // Our own pid is certainly alive.
             pid: Some(std::process::id() as i32),
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         assert!(!reap_session(&mut w.ctx, &session).unwrap());
@@ -1969,6 +2833,9 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
         };
         w.ctx.store.insert_session(&session).unwrap();
         let dir = w.repo.join(SessionPaths::dir("T-1"));
@@ -2033,6 +2900,29 @@ mod tests {
         let mut w = World::new("idle");
         let report = tick(&mut w.ctx);
         assert!(report.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn a_session_started_a_moment_ago_is_not_idle_however_absent_its_log_is() {
+        // The bug: `log_idle_secs` reports a missing log as `u64::MAX`, and
+        // between recording a session and the terminal starting the wrapper
+        // the log does not exist. On a loaded machine that window was long
+        // enough for the next tick to declare the session vanished and fail
+        // the task before it had run at all.
+        let started = now_iso();
+        let idle = u64::MAX.min(secs_since(&started).unwrap_or(u64::MAX));
+        assert!(idle < autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
+    }
+
+    #[test]
+    fn a_session_started_long_ago_with_no_log_is_still_vanished() {
+        let idle = u64::MAX.min(secs_since("2020-01-01T00:00:00Z").unwrap_or(u64::MAX));
+        assert!(idle >= autome_domain::session::VANISHED_AFTER_SECS, "{idle}");
+    }
+
+    #[test]
+    fn an_unreadable_start_timestamp_does_not_make_a_session_look_fresh_forever() {
+        assert_eq!(secs_since("not a timestamp"), None);
     }
 
     #[test]

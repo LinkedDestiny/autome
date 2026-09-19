@@ -69,12 +69,16 @@ export function render(host, data, ctx) {
   screen.appendChild(
     h('div.cardgrid.cardgrid--3.mt-12', [
       reveal(stopCard(data, ctx, node), 5),
-      reveal(documentsCard(data), 6),
-      reveal(sessionsCard(data), 7),
+      reveal(usageCard(data), 6),
+      reveal(documentsCard(data), 7),
     ])
   );
 
+  screen.appendChild(h('div.cardgrid.cardgrid--3.mt-12', [reveal(sessionsCard(data), 8)]));
+
   host.appendChild(screen);
+  // After the append: the title has no width until it is in the document.
+  markTitleOverflow(screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,30 +94,120 @@ function hero(data, ctx) {
 
   const card = h('div.card.hero.card--pattern.card--pattern-teal');
 
-  const meta = h('div.hero__meta');
-  meta.appendChild(pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon));
-  if (task.branch) meta.appendChild(tag(`分支 ${task.branch}`, 'outlined'));
-  if (data && data.worktree) meta.appendChild(tag(data.worktree, 'outlined'));
-  if (task.created_at) {
-    meta.appendChild(tag(`创建 ${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`, 'outlined'));
-  }
-  if (state.state === 'queued' && data.queue_position) {
-    meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
-  }
-
+  // Band 1 — what it is, and the buttons that act on it. One line: the title
+  // is the raw request and can be a paragraph long, and letting it wrap pushes
+  // everything below it around as tasks come and go. The full text is in the
+  // tooltip and, in full, in the task document.
   card.appendChild(
-    h('div.row.align-start', [
-      h('div', [
-        h('h2.hero__title', { text: `${task.id || ''} · ${task.title || task.request || task.slug || ''}` }),
-        meta,
-      ]),
+    h('div.hero__top', [
+      heroTitle(task),
       heroActions(data, ctx),
     ])
   );
 
+  // Band 2 — how far along, and where it lives. The state pill and the round
+  // counters answer the same question and belong on the same line; they used
+  // to sit in two rows with the whole flow diagram between them.
+  //
+  // Branch/worktree/age ride along at the end of this row rather than getting
+  // a row of their own: a fourth band pushed the screen past the 944px U-11
+  // holds it to, and they are the least urgent thing on the card — a quiet
+  // line beside the chips says that better than three outlined tags did, the
+  // widest of which was the path.
+  const meta = h('div.hero__meta');
+  meta.appendChild(pill.spinning ? spinnerTag(pill.label, pill.variant) : tag(pill.label, pill.variant, pill.icon));
+  if (state.state === 'queued' && data.queue_position) {
+    meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
+  }
+  roundTags(status, task, data).forEach((t) => meta.appendChild(t));
+  meta.appendChild(heroIdent(task, data));
+  card.appendChild(meta);
+
+  // Band 3 — where it is in the flow, across the full width of the card.
   card.appendChild(flowRoute(node, state));
-  card.appendChild(roundTags(status, task, data));
   return card;
+}
+
+/**
+ * The title, clamped to one line and expandable by clicking it.
+ *
+ * The title is the task's whole request sentence. Left to wrap it is three
+ * lines of heading and every band below it moves as tasks come and go; cut to
+ * one line it is unreadable exactly when it matters — a long request whose
+ * distinguishing half is past the ellipsis. So it is one line by default and
+ * the full text on demand.
+ *
+ * A real `<button>` rather than a click handler on the `<h2>`: this is the one
+ * thing on the card you can operate with the keyboard and not see, and the
+ * button gets focus, Enter/Space and a name from the browser for free.
+ *
+ * `markTitleOverflow` decides afterwards whether the control is offered at
+ * all — a short title has nothing to expand, and a chevron that does nothing
+ * when clicked is worse than no chevron.
+ */
+function heroTitle(task) {
+  const full = `${task.id || ''} · ${task.title || task.request || task.slug || ''}`;
+  const label = h('span.hero__title-text', { text: full });
+  const btn = h(
+    'button.hero__title-btn',
+    {
+      type: 'button',
+      'aria-expanded': 'false',
+      onClick: (e) => {
+        const el = e.currentTarget;
+        const open = el.getAttribute('aria-expanded') === 'true';
+        el.setAttribute('aria-expanded', open ? 'false' : 'true');
+      },
+    },
+    [label, icon('chev', 'hero__title-chev')]
+  );
+  return h('h2.hero__title', { title: full }, [btn]);
+}
+
+/**
+ * Marks the titles that actually overflow, once they are laid out.
+ *
+ * Width is not knowable while the card is being built, so this runs after the
+ * screen is in the document. Until it does the control is hidden, which is the
+ * safe way round: a title that turns out to need expanding gains the chevron a
+ * frame later, rather than every title showing one and most doing nothing.
+ */
+function markTitleOverflow(host) {
+  requestAnimationFrame(() => {
+    host.querySelectorAll('.hero__title-text').forEach((el) => {
+      const over = el.scrollWidth > el.clientWidth + 1;
+      el.closest('.hero__title').classList.toggle('hero__title--over', over);
+      if (!over) el.closest('.hero__title-btn').setAttribute('aria-expanded', 'false');
+    });
+  });
+}
+
+/** `/Users/dannie/project/x` → `~/project/x`. The home prefix is the same on
+ *  every row and pushes the part that differs off the end of the line. */
+function tildeHome(path) {
+  return String(path).replace(/^\/Users\/[^/]+\//, '~/');
+}
+
+/** Branch, worktree and age: the identifying facts, none of them urgent. */
+function heroIdent(task, data) {
+  const row = h('div.hero__ident');
+  const parts = [];
+  if (task.branch) parts.push(h('span', { text: `分支 ${task.branch}` }));
+  if (data && data.worktree) {
+    parts.push(h('span', { text: tildeHome(data.worktree), title: data.worktree }));
+  }
+  if (task.created_at) {
+    parts.push(
+      h('span', {
+        text: `创建 ${labels.clock(task.created_at)} · 已存在 ${labels.duration(task.created_at)}`,
+      })
+    );
+  }
+  parts.forEach((part, i) => {
+    if (i) row.appendChild(h('span.hero__ident-sep', { text: '·' }));
+    row.appendChild(part);
+  });
+  return row;
 }
 
 /**
@@ -127,10 +221,14 @@ function heroActions(data, ctx) {
   const row = h('div.hero__actions');
   const running = state.state === 'active';
 
+  // All three carry the same shape and differ only in colour: teal acts on the
+  // loop, blue opens a window onto it, red ends it. Weight used to carry the
+  // meaning instead — two filled buttons and a bare one — which said these
+  // were three unrelated controls rather than three things you can do here.
   if (running) {
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -144,7 +242,7 @@ function heroActions(data, ctx) {
     );
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -160,7 +258,7 @@ function heroActions(data, ctx) {
   if (state.state === 'paused' || state.state === 'stopped') {
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm.btn--primary', {
+        h('button.btn.btn--sm.btn--go', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -174,17 +272,13 @@ function heroActions(data, ctx) {
     );
   }
   if (!['done', 'cancelled'].includes(state.state)) {
+    // Opening a terminal is a utility, not the thing you came here to do, so
+    // it does not carry the same weight as 继续/暂停. Two filled buttons of
+    // equal weight with a bare one between them read as three unrelated
+    // controls.
     row.appendChild(
       registerWrite(
-        h('button.btn.btn--sm.btn--text', {
-          type: 'button',
-          onClick: () => confirmCancel(task, ctx),
-        }, [text('取消')])
-      )
-    );
-    row.appendChild(
-      registerWrite(
-        h('button.btn.btn--sm.btn--primary', {
+        h('button.btn.btn--sm.btn--util', {
           type: 'button',
           onClick: () =>
             attempt({
@@ -193,6 +287,15 @@ function heroActions(data, ctx) {
               run: (write) => write.openTerminal(task.id),
             }),
         }, [icon('term'), text('打开终端')])
+      )
+    );
+    // Last, and set apart: the one button here you cannot undo.
+    row.appendChild(
+      registerWrite(
+        h('button.btn.btn--sm.btn--danger.hero__actions-last', {
+          type: 'button',
+          onClick: () => confirmCancel(task, ctx),
+        }, [text('取消')])
       )
     );
   }
@@ -254,35 +357,31 @@ function flowRoute(node, state) {
  *  — an unreadable document means we do not know the round, and saying "1/15"
  *  would be an invention. */
 function roundTags(status, task, data) {
-  const row = h('div.row.gap-6');
   if (!status) {
-    row.appendChild(
+    return [
       tag(
         data && data.status_error
           ? '设计文档的状态块还读不到 · 轮次未知'
           : '设计文档还没有生成 · 轮次未知',
         'dashed-brown'
-      )
-    );
-    return row;
+      ),
+    ];
   }
-  row.appendChild(
-    tag(`设计循环 ${status.design_round} / ${status.design_round_limit} 轮`, 'soft-green')
-  );
   const budget = task.budget_n || status.impl_round_limit;
-  row.appendChild(tag(`实现循环 ${status.impl_round} / ${budget} 轮`, 'soft-teal'));
-  row.appendChild(
+  const tags = [
+    tag(`设计循环 ${status.design_round} / ${status.design_round_limit} 轮`, 'soft-green'),
+    tag(`实现循环 ${status.impl_round} / ${budget} 轮`, 'soft-teal'),
     tag(
       `reopen ${status.current_milestone_reopens || 0} · convergence ${status.convergence_mode}`,
       'soft-brown'
-    )
-  );
+    ),
+  ];
   const backlog = ((data && data.decisions) || []).filter((d) => d.kind === 'backlog').length;
   const disputes = ((data && data.decisions) || []).filter((d) => d.kind === 'dispute').length;
   if (backlog || disputes) {
-    row.appendChild(tag(`Backlog ${backlog} · 争议项 ${disputes}`, 'soft-brown'));
+    tags.push(tag(`Backlog ${backlog} · 争议项 ${disputes}`, 'soft-brown'));
   }
-  return row;
+  return tags;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +469,59 @@ function milestonesCard(status, data) {
     const bar = progress(done / total, `${Math.round((done / total) * 100)}%`);
     bar.classList.add('mt-8');
     card.appendChild(bar);
+  }
+  return card;
+}
+
+/// What the task has cost so far, and which version of the rules it is being
+/// held to.
+///
+/// Every number here is absent rather than zero when nothing measured it. A
+/// task run entirely on Codex has an unknown cost — Codex reports no price —
+/// and a dash says that where `$0.00` would be a claim.
+function usageCard(data) {
+  const task = (data && data.task) || {};
+  const soFar = (data && data.so_far) || {};
+  const metrics = task.metrics;
+  const card = h('div.card.card--pad.col', [
+    cardHead('用量', tag(metrics ? '已终结' : '进行中', metrics ? 'outlined' : 'soft-blue')),
+  ]);
+
+  const rows = [
+    ['协议版本', labels.protocolRef(task.protocol_ref)],
+    ['费用', labels.cost(metrics ? metrics.total_cost_usd : soFar.total_cost_usd)],
+    ['tokens', labels.tokens(metrics ? metrics.total_tokens : soFar.total_tokens)],
+    ['turns', labels.count(metrics ? metrics.total_turns : soFar.total_turns)],
+  ];
+  if (metrics) {
+    rows.push(['设计轮', labels.ratio(metrics.design_rounds_used, metrics.design_rounds_limit)]);
+    rows.push(['实现轮', labels.ratio(metrics.impl_rounds_used, metrics.budget_n)]);
+    rows.push(['reopen', labels.count(metrics.reopen_total)]);
+    rows.push(['实现缺陷 / 验证缺口',
+      `${labels.count(metrics.impl_defects)} / ${labels.count(metrics.verification_gaps)}`]);
+    if (metrics.closed_then_contradicted) {
+      rows.push(['关闭后被推翻', labels.count(metrics.closed_then_contradicted)]);
+    }
+  } else {
+    const status = data.status_block;
+    if (status) {
+      rows.push(['设计轮', labels.ratio(status.design_round, status.design_round_limit)]);
+      rows.push(['实现轮', labels.ratio(status.impl_round, status.impl_round_limit)]);
+    }
+  }
+  card.appendChild(repoList(rows));
+
+  if (!metrics && !soFar.sessions_measured) {
+    card.appendChild(
+      h('div.quiet.mt-8', {
+        text: '还没有会话留下用量。CLI 的原始事件流读不出来时这里是空的——空着比填 0 诚实。',
+      })
+    );
+  }
+  if (metrics && typeof metrics.total_cost_usd !== 'number') {
+    card.appendChild(
+      h('div.quiet.mt-8', { text: '费用未知：Codex 不报价，Autome 不自己编一张价格表。' })
+    );
   }
   return card;
 }
@@ -574,15 +726,37 @@ function stopCard(data, ctx, node) {
     failedFace(card, data, ctx);
   } else if (node === 'await_design_approval') {
     card.appendChild(cardHead('批准设计', tag('等待你', 'solid-yellow')));
+    humanApprovalNotice(card, data);
     approveFace(card, data, ctx);
   } else if (node === 'await_merge') {
     card.appendChild(cardHead(`合并到 ${(data.project || {}).default_branch || 'main'}`, tag('等待你', 'solid-green')));
+    humanApprovalNotice(card, data);
     mergeFace(card, data, ctx);
   } else {
     card.appendChild(cardHead('停顿面板', tag('当前无需操作', 'outlined')));
     idleFace(card, state);
   }
   return card;
+}
+
+/// Changes the review and audit rounds were not competent to judge.
+///
+/// Only ever non-empty for a meta task — one that edits the protocol itself —
+/// and then only for edits to those two rounds' own prompts. There is no
+/// clever fix for the self-reference: an evaluator judging the rules it is
+/// evaluated under is a fixed point, not a check. So it lands here, at both
+/// gates, where a person is already looking.
+function humanApprovalNotice(card, data) {
+  const files = (data && data.needs_human_approval) || [];
+  if (!files.length) return;
+  card.appendChild(
+    h('div.alertbar', [text(`需人工特批：${files.join('、')}`)])
+  );
+  card.appendChild(
+    h('div.quiet', {
+      text: '这次改动动了评审轮或审计轮自己的 prompt。它们判不了这个——一个评测者去审自己被评测所依据的规则，那是不动点不是检查。这一条只能你看。',
+    })
+  );
 }
 
 function idleFace(card, state) {
@@ -758,6 +932,21 @@ function failedFace(card, data, ctx) {
             onDone: () => ctx.refresh(),
           }),
       }, [text('追加 5 轮继续')])
+    )
+  );
+  row.appendChild(
+    registerWrite(
+      h('button.btn.btn--sm', {
+        type: 'button',
+        title: '跑一轮复盘，把这次失败教给后面的任务。任务停在原地不动。',
+        onClick: () =>
+          attempt({
+            label: '复盘这次失败',
+            success: '复盘轮已启动，任务状态不变。',
+            run: (write) => write.retroTask(task.id),
+            onDone: () => ctx.refresh(),
+          }),
+      }, [text('复盘一次')])
     )
   );
   row.appendChild(

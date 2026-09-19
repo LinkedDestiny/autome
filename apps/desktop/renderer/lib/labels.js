@@ -20,6 +20,7 @@ export const NODE_LABELS = {
   await_design_approval: '设计批准',
   implement: '实现',
   audit: '审计',
+  retro: '复盘',
   rebase: 'rebase',
   await_merge: '待合并',
   merging: '合并',
@@ -27,10 +28,10 @@ export const NODE_LABELS = {
 };
 
 /**
- * The 13 stones of requirement T-03's node flow. `received` and `done` are
- * not `Node` values — the first is the moment before intake, the last is
- * `TaskState::Done` — but the user sees one line, so the flow carries all
- * thirteen and the two synthetic ones are marked as such.
+ * The stones of requirement T-03's node flow. `received` and `done` are not
+ * `Node` values — the first is the moment before intake, the last is
+ * `TaskState::Done` — but the user sees one line, so the flow carries them
+ * too, marked as synthetic.
  */
 export const FLOW = [
   { key: 'received', label: '已接收', synthetic: true },
@@ -41,6 +42,7 @@ export const FLOW = [
   { key: 'await_design_approval', label: '设计批准' },
   { key: 'implement', label: '实现' },
   { key: 'audit', label: '审计' },
+  { key: 'retro', label: '复盘' },
   { key: 'rebase', label: 'rebase' },
   { key: 'await_merge', label: '待合并' },
   { key: 'merging', label: '合并' },
@@ -54,6 +56,7 @@ export const ROLE_LABELS = {
   adjudicate: '裁决',
   impl: '实现',
   audit: '审计',
+  retro: '复盘',
 };
 
 /** The role a node runs, mirroring `Node::role()`. `null` = system or human. */
@@ -63,6 +66,7 @@ export const NODE_ROLE = {
   adjudicate: 'adjudicate',
   implement: 'impl',
   audit: 'audit',
+  retro: 'retro',
 };
 
 export const RUNTIME_LABELS = { claude: 'Claude Code', codex: 'Codex' };
@@ -162,6 +166,7 @@ export function taskStatus(task) {
         return { label: nodeLabel(node), variant: 'solid-blue', spinning: true };
       }
       if (node === 'audit') return { label: '审计', variant: 'solid-purple', spinning: true };
+      if (node === 'retro') return { label: '复盘', variant: 'solid-purple', spinning: true };
       if (node === 'implement') return { label: '实现', variant: 'solid-teal', spinning: true };
       return { label: nodeLabel(node), variant: 'solid-teal', spinning: true };
     }
@@ -266,4 +271,72 @@ const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' }
 
 export function themeLabel(value) {
   return THEME_LABELS[value] || value || '跟随系统';
+}
+
+// ---------------------------------------------------------------------------
+// Numbers
+// ---------------------------------------------------------------------------
+//
+// One rule across all of these: **absent reads as absent.** A task run
+// entirely on Codex has an unknown cost, not a zero one — Codex reports no
+// price — and a dash says that where `$0.00` would be a claim.
+
+/** `$1.23`, or `—` when nothing reported a price. */
+export function cost(usd) {
+  if (typeof usd !== 'number' || !Number.isFinite(usd)) return '—';
+  return usd >= 10 ? `$${usd.toFixed(1)}` : `$${usd.toFixed(2)}`;
+}
+
+/** `12.3k`, `1.2M`. Token counts are large and their last digits say nothing. */
+export function tokens(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+export function count(n) {
+  return typeof n === 'number' && Number.isFinite(n) ? String(n) : '—';
+}
+
+/** `9/35`, the two numbers a round budget is. */
+export function ratio(used, limit) {
+  if (typeof used !== 'number') return '—';
+  return typeof limit === 'number' && limit > 0 ? `${used}/${limit}` : String(used);
+}
+
+/** `protocol/v7 (3f9a12cd)` — the tag is the name, the hash is the identity. */
+export function protocolRef(wire) {
+  if (typeof wire !== 'string' || !wire) return '—';
+  const at = wire.lastIndexOf('@');
+  if (at < 0) return wire;
+  return `${wire.slice(0, at)} (${wire.slice(at + 1, at + 9)})`;
+}
+
+/** The metric names the core records, in the order the version page shows. */
+export const METRIC_LABELS = {
+  design_rounds_used: '设计轮',
+  impl_rounds_used: '实现轮',
+  reopen_total: 'reopen',
+  impl_defects: '实现缺陷',
+  verification_gaps: '验证缺口',
+  protocol_failures: '协议失败',
+  closed_then_contradicted: '关闭后被推翻',
+  manual_items_open: '人工未确认',
+  total_tokens: 'tokens',
+  total_turns: 'turns',
+  total_cost_usd: '费用',
+  mean_request_input: '每次请求输入',
+};
+
+export function metricLabel(key) {
+  return METRIC_LABELS[key] || key;
+}
+
+/** Formats a metric's mean for the version page, by what kind of number it is. */
+export function metricValue(key, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  if (key === 'total_cost_usd') return cost(value);
+  if (key === 'total_tokens' || key === 'mean_request_input') return tokens(Math.round(value));
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }

@@ -473,11 +473,192 @@ const TASK_UNREADABLE_DOC_PANEL = {
     '里程碑表第 2124 行格式错误：状态 `loadSchedules()` 不是 开放 / 待审 / 已完成',
 };
 
+/* The protocol page. Deliberately busy: one version with enough tasks to be a
+ * measurement and one without, a prediction that held and one that did not,
+ * and a gate with a warning on it. The empty case is the one a renderer gets
+ * right by accident. */
+const PROTOCOL = {
+  initialised: true,
+  path: '/Users/x/.autome/protocol',
+  tags: ['protocol/v1', 'protocol/v2'],
+  current: {
+    tag: 'protocol/v2',
+    hash: '3f9a12cd7b40e1a2',
+    wire: 'protocol/v2@3f9a12cd7b40e1a2',
+  },
+  files: ['loop-protocol.md', 'session-protocol.md', 'CHANGELOG.md'],
+  bytes: 20602,
+  byte_budget: 24576,
+  contract_breaches: [],
+  working_tree_differs: true,
+  changelog: {
+    versions: [
+      {
+        tag: 'protocol/v2',
+        entries: [
+          {
+            id: 'C-07',
+            kind: 'behavioral',
+            clause: 'loop-protocol.md#实现循环/自审清单',
+            evidence: ['voice-schedule L-01', 'island-workbench L-04'],
+            predicted_impact: {
+              metric: 'verification_gaps',
+              direction: 'down',
+              scope: 'task',
+              horizon: 3,
+            },
+            eval: 'evals/impl-self-check-before-pending/',
+            realized_impact: null,
+          },
+        ],
+      },
+      {
+        tag: 'protocol/v1',
+        entries: [
+          {
+            id: 'C-01',
+            kind: 'clarify',
+            clause: 'session-protocol.md#状态块',
+            evidence: ['voice-schedule L-09', 'dashboard-mvp L-02'],
+            predicted_impact: {
+              metric: 'protocol_failures',
+              direction: 'down',
+              scope: 'project',
+              horizon: 3,
+            },
+            eval: null,
+            realized_impact: {
+              metric: 'protocol_failures',
+              before: 0.3,
+              after: 1.2,
+              samples_before: 3,
+              samples_after: 3,
+            },
+          },
+        ],
+      },
+    ],
+  },
+};
+
+const PROTOCOL_GATE = {
+  initialised: true,
+  ok: true,
+  passed: ['内核契约区 5 处，标记成对、内容未变', '协议正文 20602 / 24576 字节'],
+  failures: [],
+  warnings: [
+    {
+      layer: '静态',
+      detail: '26 行带「必须 / 不得 / 不要」的条文，没有任何 CHANGELOG 条目说明它为什么在。',
+    },
+  ],
+};
+
+const PROTOCOL_SCREEN = {
+  protocol: PROTOCOL,
+  gate: PROTOCOL_GATE,
+  triggers: {
+    suggest: true,
+    triggers: [
+      '自上一版协议以来完成了 4 个任务',
+      '「审计要先跑负向对照」在 2 个任务里各出现了一次：voice-schedule、island-workbench',
+    ],
+  },
+  versions: {
+    rows: [
+      {
+        protocol_ref: 'protocol/v1@aa11',
+        tag: 'protocol/v1',
+        samples: 4,
+        enough_samples: true,
+        means: { reopen_total: 5.5, impl_defects: 3, closed_then_contradicted: 0, total_turns: 180 },
+        warnings: [],
+      },
+      {
+        protocol_ref: 'protocol/v2@3f9a12cd7b40e1a2',
+        tag: 'protocol/v2',
+        samples: 2,
+        enough_samples: false,
+        means: { reopen_total: 2, impl_defects: 1, closed_then_contradicted: 1, total_turns: 120 },
+        warnings: [],
+      },
+    ],
+    metric_names: ['reopen_total', 'impl_defects', 'closed_then_contradicted', 'total_turns'],
+    changelog_by_tag: {},
+  },
+  projectId: 'prj_island',
+  projectName: '岛屿商店',
+};
+
+/* A finished task, so the usage card has something to show — including a cost
+ * that is absent because the task ran on Codex, which reports no price. */
+const TASK_MEASURED = {
+  ...TASK_MERGE,
+  protocol_ref: 'protocol/v2@3f9a12cd7b40e1a2',
+  metrics: {
+    protocol_ref: 'protocol/v2@3f9a12cd7b40e1a2',
+    design_rounds_used: 2,
+    design_rounds_limit: 15,
+    impl_rounds_used: 9,
+    budget_n: 35,
+    milestones: 5,
+    reopen_total: 3,
+    reopen_by_domain: [['escaping', 2]],
+    impl_defects: 2,
+    verification_gaps: 4,
+    protocol_failures: 0,
+    closed_then_contradicted: 1,
+    manual_items_open: 2,
+    total_tokens: 1843000,
+    total_turns: 214,
+  },
+};
+
+const TASK_MEASURED_PANEL = {
+  ...TASK_AT_MERGE,
+  task: TASK_MEASURED,
+  so_far: { sessions_measured: 12, total_tokens: 1843000, total_turns: 214, total_cost_usd: null },
+  needs_human_approval: ['prompts/review.md'],
+};
+
+/* The shape the hero actually meets in production, which the short fixture
+ * above never exercised: the intake round sets the title to the whole request
+ * sentence, and the slug — and therefore the branch and the worktree path — is
+ * the CJK request text. On 2026-09-17 this filled the status row edge to edge,
+ * pushed the intervention buttons onto their own line, and left them sitting
+ * on top of the node flow. */
+const TASK_LONG_IDENTITY_PANEL = {
+  ...FIXTURES.task,
+  task: {
+    ...FIXTURES.task.task,
+    id: 'T-2',
+    title:
+      '开发一个 Mac 端的桌面组件：支持长按语音输入，将录下的语音转成文字，根据文字内容自动生成日程，并在日程开始前 30 分钟提醒用户。',
+    slug: '开发一个-mac-端的桌面组件-2',
+    branch: 'autome/开发一个-mac-端的桌面组件-2',
+  },
+  worktree: '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
+  changes: null,
+};
+
 module.exports = {
   FIXTURES,
+  PROTOCOL_SCREEN,
+  TASK_MEASURED_PANEL,
+  TASK_LONG_IDENTITY_PANEL,
   TASK_AT_MERGE,
   TASK_FAILED_PANEL,
   TASK_APPROVE_PANEL,
   TASK_UNREADABLE_DOC_PANEL,
-  SCREEN_IDS: ['dash', 'projects', 'project', 'task', 'routing', 'settings', 'env', 'skills'],
+  SCREEN_IDS: [
+    'dash',
+    'projects',
+    'project',
+    'task',
+    'routing',
+    'protocol',
+    'settings',
+    'env',
+    'skills',
+  ],
 };

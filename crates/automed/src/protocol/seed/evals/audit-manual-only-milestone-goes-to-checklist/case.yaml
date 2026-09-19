@@ -1,0 +1,10 @@
+# 只剩人工验收项的里程碑，审计轮转清单并关闭，不得保持 `待审`
+name: audit-manual-only-milestone-goes-to-checklist
+role: audit
+description: 只剩人工验收项的里程碑，审计轮转清单并关闭，不得保持 `待审`
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/manual-items-move-and-the-milestone-closes.md

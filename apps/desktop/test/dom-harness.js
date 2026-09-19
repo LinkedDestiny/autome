@@ -25,6 +25,7 @@
 // Not a *.test.js file: it needs `app`/`BrowserWindow`, so it runs under
 // `electron`, not `node --test`. See dom.test.js, which spawns it.
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { app, BrowserWindow } = require('electron');
 const appProtocol = require('../src/app-protocol');
@@ -34,6 +35,9 @@ const {
   TASK_FAILED_PANEL,
   TASK_APPROVE_PANEL,
   TASK_UNREADABLE_DOC_PANEL,
+  TASK_MEASURED_PANEL,
+  TASK_LONG_IDENTITY_PANEL,
+  PROTOCOL_SCREEN,
   SCREEN_IDS,
 } = require('./fixtures');
 
@@ -43,6 +47,24 @@ appProtocol.registerSchemeAsPrivileged();
 // these the dimensions of the web page, not of the window plus its chrome —
 // otherwise the measurement would be of a viewport nobody ships.
 const VIEWPORT = { width: 1512, height: 944 };
+
+// The node flow's length, read from the renderer's own table rather than
+// written down here. A hard-coded 13 meant that adding the retro round made
+// four unrelated assertions fail while saying nothing about what broke.
+// Likewise for the role count: the graph draws one box per role, and writing
+// the number here again means adding a role fails this test rather than the
+// one that would have said what broke.
+const ROLE_COUNT = (() => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/screens/routing.js'), 'utf8');
+  const block = src.slice(src.indexOf('const ROLE_NODES'));
+  return block.slice(0, block.indexOf('};')).match(/^\s+\w+: \[/gm).length;
+})();
+
+const FLOW_STONES = (() => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/lib/labels.js'), 'utf8');
+  const block = src.slice(src.indexOf('export const FLOW'));
+  return block.slice(0, block.indexOf('];')).match(/\{ key:/g).length;
+})();
 
 const results = [];
 const consoleMessages = [];
@@ -414,8 +436,8 @@ async function run() {
       };
     }, fixtureId);
     check(
-      `the stopping panel shows the ${name} face, and the 13-node flow renders in full`,
-      outcome.threw === null && outcome.titles.includes(expected) && outcome.stones === 13,
+      `the stopping panel shows the ${name} face, and the whole node flow renders`,
+      outcome.threw === null && outcome.titles.includes(expected) && outcome.stones === FLOW_STONES,
       outcome
     );
   }
@@ -440,7 +462,7 @@ async function run() {
   });
   check(
     'an unreadable status block names the offending line in the milestone card',
-    unreadable.stones === 13 &&
+    unreadable.stones === FLOW_STONES &&
       unreadable.texts.some((t) => t.includes('第 2124 行') && t.includes('读不出来')),
     unreadable
   );
@@ -466,6 +488,137 @@ async function run() {
     'with the main worktree dirty, the merge button is present but disabled and states the blocker',
     mergeBlocked.found && mergeBlocked.disabled === true && /未提交改动/.test(mergeBlocked.title || ''),
     mergeBlocked
+  );
+
+  // ---- the hero under a production-shaped title and path -----------------
+  //
+  // The short fixture never showed the problem: in production the title is the
+  // whole request sentence and the slug — so the branch and the worktree path
+  // — is the CJK request text. That filled the header edge to edge, pushed the
+  // buttons onto a line of their own and left them sitting on the node flow.
+  //
+  // What is asserted is the arrangement, not the pixels: bands in order and
+  // nothing overflowing sideways. A height assertion here would fail on the
+  // first font change and say nothing about whether the header reads.
+  const heroLayout = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
+      params: { taskId: 'T-2' },
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const box = (sel) => {
+      const el = host.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, width: r.width, height: Math.round(r.height) };
+    };
+    const route = host.querySelector('.route');
+    const rows = new Set(
+      Array.from(host.querySelectorAll('.stone')).map((s) =>
+        Math.round(s.getBoundingClientRect().top)
+      )
+    );
+    // Narrow the card and read the flow again. This is the case the layout
+    // exists for: at 1512 the fourteen nodes fit on one line either way, so a
+    // check only at full width passes just as well against the old
+    // `overflow-x: auto` and proves nothing. Squeezing the container is also
+    // what makes this a test of the container query rather than of the window.
+    const hero = host.querySelector('.hero');
+    hero.style.maxWidth = '900px';
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const narrowRoute = host.querySelector('.route');
+    const narrow = {
+      rows: new Set(
+        Array.from(host.querySelectorAll('.stone')).map((s) =>
+          Math.round(s.getBoundingClientRect().top)
+        )
+      ).size,
+      scrollsX: narrowRoute.scrollWidth > narrowRoute.clientWidth + 1,
+    };
+    hero.style.maxWidth = '';
+    await new Promise((r) => requestAnimationFrame(r));
+
+    const titleText = host.querySelector('.hero__title-text');
+    const titleBtn = host.querySelector('.hero__title-btn');
+    const collapsed = Math.round(titleText.getBoundingClientRect().height);
+    titleBtn.click();
+    await new Promise((r) => requestAnimationFrame(r));
+    const expanded = Math.round(titleText.getBoundingClientRect().height);
+    titleBtn.click();
+    return {
+      actions: box('.hero__actions'),
+      meta: box('.hero__meta'),
+      route: box('.route'),
+      ident: host.querySelector('.hero__ident').textContent,
+      identTitle: host.querySelector('.hero__ident span[title]').getAttribute('title'),
+      routeScrollsX: route.scrollWidth > route.clientWidth + 1,
+      overflowsX: host.scrollWidth > host.clientWidth,
+      stoneRows: rows.size,
+      narrow,
+      titleOffered: host.querySelector('.hero__title').classList.contains('hero__title--over'),
+      collapsed,
+      expanded,
+    };
+  });
+  check(
+    'the hero keeps the buttons on the title line and off the node flow, and the flow needs no sideways scroll',
+    heroLayout.actions !== null &&
+      heroLayout.meta !== null &&
+      heroLayout.route !== null &&
+      // Bands in order: title+buttons, then the chips, then the flow.
+      heroLayout.actions.bottom <= heroLayout.meta.top &&
+      heroLayout.meta.bottom <= heroLayout.route.top &&
+      !heroLayout.overflowsX &&
+      // The scrollbar this layout exists to remove.
+      !heroLayout.routeScrollsX &&
+      // Wide enough for one row here; the second row is for narrow cards.
+      heroLayout.stoneRows === 1,
+    heroLayout
+  );
+  check(
+    'a card too narrow for fourteen nodes breaks them into two rows of seven rather than scrolling',
+    heroLayout.narrow.rows === 2 && !heroLayout.narrow.scrollsX,
+    heroLayout.narrow
+  );
+  check(
+    'a title too long for one line offers the expander, and clicking it shows the rest',
+    heroLayout.titleOffered && heroLayout.expanded > heroLayout.collapsed,
+    heroLayout
+  );
+  check(
+    'the worktree is shortened for reading but keeps the absolute path on hover',
+    heroLayout.ident.includes('~/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2') &&
+      heroLayout.identTitle ===
+        '/Users/dannie/project/voice-schedule/.worktree/开发一个-mac-端的桌面组件-2',
+    heroLayout
+  );
+
+  // Spreading the header out is only an improvement if the screen still fits.
+  const longFit = await evaluate(async () => {
+    const api = await import('autome://app/lib/api.js');
+    api.setConnected(true);
+    api.resetWriteControls();
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-long').textContent), {
+      params: { taskId: 'T-2' },
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { scrollHeight: host.scrollHeight, clientHeight: host.clientHeight };
+  });
+  check(
+    'the task panel still fits 1512x944 with a full-sentence title and an absolute worktree path',
+    longFit.scrollHeight <= longFit.clientHeight,
+    longFit
   );
 
   // ---- C-06: SAME-MODEL paints the node red and disables save ------------
@@ -505,9 +658,79 @@ async function run() {
     sameModel
   );
   check(
-    'the routing graph has five configurable role nodes, four grey fixed steps and two yellow human stops (C-04, U-08)',
-    sameModel.roleNodes === 5 && sameModel.fixedNodes === 4 && sameModel.humanNodes === 2,
-    sameModel
+    'every role in the config gets a configurable node, and the fixed steps and human stops stay inert (C-04, U-08)',
+    sameModel.roleNodes === ROLE_COUNT && sameModel.fixedNodes === 4 && sameModel.humanNodes === 2,
+    { ...sameModel, expectedRoleNodes: ROLE_COUNT }
+  );
+
+  // ---- the usage card, and what the two gates have to disclose ----------
+  //
+  // Every number is absent rather than zero when nothing measured it. A task
+  // run entirely on Codex has an unknown cost — Codex reports no price — and a
+  // dash says that where `$0.00` would be a claim.
+  const usage = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-task-measured').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    const titles = Array.from(host.querySelectorAll('.card__title')).map((t) => t.textContent);
+    return {
+      titles,
+      text: host.textContent,
+      alerts: Array.from(host.querySelectorAll('.alertbar')).map((a) => a.textContent),
+    };
+  });
+  check(
+    'the usage card shows tokens and rounds, and says a cost it does not know is unknown',
+    usage.titles.includes('用量') &&
+      usage.text.includes('1.8M') &&
+      usage.text.includes('9/35') &&
+      usage.text.includes('protocol/v2') &&
+      usage.text.includes('Codex 不报价'),
+    usage
+  );
+  check(
+    'a change the review round could not judge is disclosed at the gate (plan §6.3)',
+    usage.alerts.some((a) => a.includes('需人工特批') && a.includes('prompts/review.md')),
+    usage
+  );
+
+  // ---- the version page states its own limits ---------------------------
+  const version = await evaluate(async () => {
+    const module = await import('autome://app/screens/protocol.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(host, JSON.parse(document.getElementById('fx-protocol').textContent), {
+      params: {},
+      navigate() {},
+      refresh() {},
+      connected: true,
+    });
+    return {
+      text: host.textContent,
+      rows: host.querySelectorAll('.metrics tbody tr').length,
+      tags: Array.from(host.querySelectorAll('.tag')).map((t) => t.textContent),
+    };
+  });
+  check(
+    'the version page says 样本不足 rather than drawing a line between two points',
+    version.rows === 2 && version.text.includes('样本不足'),
+    version
+  );
+  check(
+    'a prediction the numbers went against is labelled as such, not quietly dropped',
+    version.tags.some((t) => t.includes('与预测相反')),
+    version
+  );
+  check(
+    'rolling back is offered as a forward commit, not as moving a tag',
+    version.text.includes('回到这一版的内容'),
+    version
   );
 
   // ---- the router maps each nav item to its screen -----------------------
@@ -726,6 +949,9 @@ function fixtureInjector() {
     'task-failed': TASK_FAILED_PANEL,
     'task-approve': TASK_APPROVE_PANEL,
     'task-unreadable': TASK_UNREADABLE_DOC_PANEL,
+    'task-measured': TASK_MEASURED_PANEL,
+    'task-long': TASK_LONG_IDENTITY_PANEL,
+    protocol: PROTOCOL_SCREEN,
   });
   return `(() => {
     const blobs = ${JSON.stringify(blobs)};

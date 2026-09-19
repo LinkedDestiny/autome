@@ -9,26 +9,59 @@
 //!
 //! - [`ipc`] — framed JSON-RPC over stdio, the only channel to Electron Main.
 //! - [`dispatch`] — the command table: every method the Renderer can call.
+//! - [`dispatch_protocol`] — the protocol repository and version page half of
+//!   that table.
+//! - [`dispatch_curation`] — the rule-proposal and removal-experiment half.
 //! - [`store`] — SQLite: project registry, task index, session ledger, the
 //!   user's decisions, and the event stream the UI resyncs against.
+//! - [`backfill`] — telling a past protocol change whether it was right.
+//! - [`brief`] — the four paragraphs a round is handed before it opens the
+//!   design document.
+//! - [`curation`] — from a lesson two tasks learned to a rule the next one is
+//!   held to, and the experiment that removes one again.
 //! - [`config_io`] — the two TOML files, with sparse project overrides
 //!   preserved across a write.
 //! - [`git`] — the operations table from design §6, and nothing else.
+//! - [`guards`] — what the core checks after a session, instead of asking a
+//!   round to remember.
 //! - [`init`] — the `.autome/` scaffold, including the session wrapper script.
 //! - [`env_probe`] — the four local components.
 //! - [`launcher`] — prompt construction, the CLI adapter table, and starting
 //!   a session in a visible terminal.
+//! - [`meta`] — improving the protocol as an ordinary Loop task, and the
+//!   evidence the core assembles for it.
+//! - [`meta_store`] — the half of that which reaches for the store and the
+//!   repositories.
+//! - [`protocol`] — the `~/.autome/protocol/` repository: versions, tags, the
+//!   kernel contract, and a task's frozen copy.
 //! - [`scheduler`] — the one place a transition is applied and acted on.
 //! - [`skills`] — the read-only skill inventory scan.
+//! - [`task_metrics`] — one task folded into the numbers a later decision can
+//!   be made on.
+//! - [`usage`] — what a session cost, read out of the CLI's own event stream.
+//! - [`version_page`] — what each protocol version cost, and whether its
+//!   changes did what they said they would.
 
+pub mod backfill;
+pub mod brief;
 pub mod config_io;
+pub mod curation;
 pub mod dispatch;
+pub mod dispatch_curation;
+pub mod dispatch_protocol;
 pub mod env_probe;
 pub mod git;
+pub mod guards;
 pub mod init;
 pub mod ipc;
 pub mod launcher;
+pub mod meta;
+pub mod meta_store;
+pub mod protocol;
 pub mod scheduler;
 pub mod skills;
 pub mod store;
+pub mod task_metrics;
+pub mod usage;
+pub mod version_page;
 pub mod stream_render;
