@@ -262,13 +262,63 @@ impl Repo {
     /// The files at a tag. Read out of the object database rather than the
     /// working tree, so a version stays readable while the user has something
     /// else checked out.
+    /// Every file in a revision, in two git processes rather than one per file.
+    ///
+    /// The first version ran `git show <rev>:<path>` in a loop. The seed is 92
+    /// files, so reading one revision cost 93 processes — about 2.6s — and
+    /// `resolve()` is on the path of `protocol.get` and `protocol.triggers`,
+    /// which the protocol screen calls on arrival. Opening it took five
+    /// seconds of spawning.
+    ///
+    /// `ls-tree -z` for the names and blob ids, then one `cat-file --batch`
+    /// fed all the ids at once. `-z` rather than plain `ls-tree` because git
+    /// quotes and escapes paths outside ASCII otherwise, and the eval fixtures
+    /// are Chinese.
     pub fn files_at(&self, rev: &str) -> Result<ProtocolFiles> {
-        let listing = git::run_ok(&self.path, &["ls-tree", "-r", "--name-only", rev])?;
+        let listing = git::run_ok(&self.path, &["ls-tree", "-r", "-z", rev])?;
+        let mut names: Vec<String> = Vec::new();
+        let mut ids = String::new();
+        // `<mode> <type> <sha>\t<path>` per NUL-terminated record.
+        for record in listing.stdout.split('\0').filter(|r| !r.is_empty()) {
+            let Some((meta, path)) = record.split_once('\t') else {
+                continue;
+            };
+            let Some(sha) = meta.split_whitespace().nth(2) else {
+                continue;
+            };
+            names.push(path.to_string());
+            ids.push_str(sha);
+            ids.push('\n');
+        }
         let mut files = ProtocolFiles::new();
-        for path in listing.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let spec = format!("{rev}:{path}");
-            let blob = git::run_ok(&self.path, &["show", &spec])?;
-            files.insert(path, blob.stdout);
+        if names.is_empty() {
+            return Ok(files);
+        }
+
+        let blobs = git::run_ok_with_stdin(&self.path, &["cat-file", "--batch"], &ids)?;
+        // `--batch` answers each id with `<sha> <type> <size>\n`, the bytes,
+        // and a newline. Walking it by the declared size is the only way that
+        // survives a file which itself contains the header shape.
+        let bytes = blobs.stdout.as_bytes();
+        let mut at = 0usize;
+        for name in names {
+            let rest = bytes.get(at..).ok_or_else(|| err("cat-file 的输出提前结束"))?;
+            let eol = rest
+                .iter()
+                .position(|b| *b == b'\n')
+                .ok_or_else(|| err(format!("cat-file 没有给出 {name} 的头部")))?;
+            let header = String::from_utf8_lossy(&rest[..eol]);
+            let size: usize = header
+                .rsplit(' ')
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .ok_or_else(|| err(format!("cat-file 的头部读不出大小：{header}")))?;
+            at += eol + 1;
+            let content = bytes
+                .get(at..at + size)
+                .ok_or_else(|| err(format!("cat-file 的 {name} 比声明的短")))?;
+            files.insert(&name, String::from_utf8_lossy(content).into_owned());
+            at += size + 1;
         }
         Ok(files)
     }

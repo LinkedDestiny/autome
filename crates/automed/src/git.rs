@@ -212,6 +212,66 @@ fn wait_with_timeout(
     })
 }
 
+/// Runs git with `input` on its stdin, and fails on a non-zero exit.
+///
+/// For the plumbing commands that take a list of things to do rather than one
+/// argument — `cat-file --batch` above all, which turns "read ninety-two
+/// blobs" from ninety-two processes into one.
+///
+/// stdin is written on its own thread. `wait_with_timeout` already drains
+/// stdout and stderr on theirs, and writing inline instead would deadlock the
+/// moment git's output filled the pipe before it had finished reading ours.
+pub fn run_ok_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Result<Output> {
+    use std::io::Write;
+    let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+    let mut cmd = Command::new(git_binary());
+    cmd.current_dir(cwd)
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in sanitised_env() {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().map_err(|e| GitError {
+        argv: argv.clone(),
+        code: None,
+        stderr: String::new(),
+        detail: format!("无法启动 git：{e}"),
+    })?;
+    if let Some(mut pipe) = child.stdin.take() {
+        let owned = input.to_string();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(owned.as_bytes());
+            // Dropping closes the pipe, which is what tells `--batch` to stop.
+        });
+    }
+    let out = wait_with_timeout(child, GIT_TIMEOUT_SECS).map_err(|detail| GitError {
+        argv: argv.clone(),
+        code: None,
+        stderr: String::new(),
+        detail,
+    })?;
+    let result = Output {
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code().unwrap_or(-1),
+    };
+    if result.ok() {
+        Ok(result)
+    } else {
+        Err(GitError {
+            argv,
+            code: Some(result.code),
+            stderr: result.stderr,
+            detail: String::new(),
+        })
+    }
+}
+
 /// Runs git and fails on a non-zero exit.
 pub fn run_ok(cwd: &Path, args: &[&str]) -> Result<Output> {
     let out = run(cwd, args)?;
