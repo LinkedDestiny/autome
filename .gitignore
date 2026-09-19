@@ -9,3 +9,6 @@ dist/
 # Packaging outputs
 apps/desktop/core/
 apps/desktop/dist/
+
+# Claude Code scratch worktrees
+.claude/worktrees/
