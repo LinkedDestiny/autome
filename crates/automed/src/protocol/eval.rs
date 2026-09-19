@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn editing_a_contract_region_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .loop_protocol()
             .unwrap()
@@ -753,7 +753,7 @@ mod tests {
     fn deleting_a_clause_a_changelog_entry_points_at_is_refused() {
         // The evidence trail is the point of the changelog; a dangling clause
         // breaks it silently.
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .loop_protocol()
             .unwrap()
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn a_behavioral_change_with_no_case_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .get("CHANGELOG.md")
             .unwrap()
@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn a_protocol_over_the_size_budget_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = format!(
             "{}\n{}",
             files.loop_protocol().unwrap(),
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn a_template_asking_for_something_the_core_does_not_fill_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = format!("{}\n参考 {{mood}}。\n", files.prompt("impl").unwrap());
         files.insert("prompts/impl.md", text);
         let r = check(&files);
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn a_loop_round_template_that_lost_its_budget_placeholder_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files.prompt("impl").unwrap().replace("{budget_line}", "");
         files.insert("prompts/impl.md", text);
         let r = check(&files);
@@ -816,7 +816,7 @@ mod tests {
         // 2026-09-16: a table the document's own reader could not parse cost a
         // whole task. A protocol that *prints* such a format is worse than one
         // that prints none.
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files.session_protocol().unwrap().replace(
             "current-milestone: M-xx | 无",
             "current-milestone-id: M-xx | 无",
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn an_example_milestone_table_with_a_blank_header_cell_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .loop_protocol()
             .unwrap()
@@ -843,7 +843,7 @@ mod tests {
     fn a_code_sample_that_is_not_a_status_block_is_not_parsed() {
         // The protocol shows shell commands too, and feeding those to the
         // status-block parser would fail for reasons that say nothing.
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = format!(
             "{}\n\n```sh\ncargo test -- --nocapture\n```\n",
             files.loop_protocol().unwrap()
@@ -866,7 +866,7 @@ mod tests {
 
     #[test]
     fn a_changed_run_covers_the_new_cases_and_the_three_baselines() {
-        let files = seed();
+        let files = seed().clone();
         let cases = changed_cases(&files, "protocol/v1");
         for baseline in BASELINE_CASES {
             assert!(cases.contains(&baseline.to_string()), "{cases:?}");
@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn renaming_a_status_field_in_the_legend_is_caught() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .session_protocol()
             .unwrap()
@@ -942,7 +942,7 @@ mod tests {
         // The audit round of a meta task reads the exit code, so the two
         // failures have to be distinguishable: one means "this version is not
         // acceptable", the other means "there was nothing to look at".
-        let mut files = seed();
+        let mut files = seed().clone();
         files.remove("CHANGELOG.md");
         let dir = on_disk("bad", &files);
         let (report, code) = run(&dir);
@@ -955,7 +955,7 @@ mod tests {
 
     #[test]
     fn a_brief_map_pointing_at_a_renamed_heading_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files
             .loop_protocol()
             .unwrap()
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn a_case_that_could_never_say_anything_is_caught_before_it_is_paid_for() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let path = "evals/auditor-rerun/graders/reopened-the-false-pass.md";
         let text = files.get(path).unwrap().replace("阳性对照", "说明");
         files.insert(path, text);
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn a_case_whose_scaffold_is_missing_is_caught_statically() {
-        let mut files = seed();
+        let mut files = seed().clone();
         files.remove("evals/auditor-rerun/scaffold.sh");
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn a_version_with_no_changelog_at_all_is_refused() {
-        let mut files = seed();
+        let mut files = seed().clone();
         files.remove("CHANGELOG.md");
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());

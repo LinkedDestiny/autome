@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_case_passes_when_the_majority_of_runs_pass() {
-        let files = crate::protocol::seed();
+        let files = crate::protocol::seed().clone();
         let dir = case_dir("majority");
         let fake = Fake::new(
             vec![Ok(stream(3)), Ok(stream(3)), Ok(stream(3))],
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_case_fails_when_the_majority_of_runs_fail() {
-        let files = crate::protocol::seed();
+        let files = crate::protocol::seed().clone();
         let dir = case_dir("minority");
         let fake = Fake::new(
             vec![Ok(stream(3)), Ok(stream(3)), Ok(stream(3))],
@@ -582,7 +582,7 @@ mod tests {
     fn a_run_that_needed_more_turns_than_the_case_allows_fails_it() {
         // A case is written to assert the first few steps of a round. One that
         // suddenly needs twenty turns is asserting something else.
-        let files = crate::protocol::seed();
+        let files = crate::protocol::seed().clone();
         let dir = case_dir("budget");
         let fake = Fake::new(vec![Ok(stream(40))], vec![Ok("VERDICT: 1".into())]);
         let r = run_case(&plan(&files, &dir), &case("budget", 1, 15), &fake);
@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn a_session_that_would_not_start_is_an_error_not_a_verdict() {
         // "The CLI is missing" must not read as "the protocol failed".
-        let files = crate::protocol::seed();
+        let files = crate::protocol::seed().clone();
         let dir = case_dir("broken");
         let fake = Fake::new(vec![Err("找不到 claude".into())], vec![]);
         let r = run_case(&plan(&files, &dir), &case("broken", 1, 15), &fake);
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn the_round_is_handed_the_template_from_the_version_under_test() {
         // The whole point: a case run against v7 must exercise v7's prompt.
-        let mut files = crate::protocol::seed();
+        let mut files = crate::protocol::seed().clone();
         files.insert("prompts/impl.md", "第 7 版的实现轮 prompt，{slug}。");
         let dir = case_dir("template");
         let fake = Fake::new(vec![Ok(stream(1))], vec![Ok("VERDICT: 1".into())]);
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn no_placeholder_reaches_the_model_even_though_a_case_has_no_brief() {
-        let files = crate::protocol::seed();
+        let files = crate::protocol::seed().clone();
         let rendered = render_prompt(files.prompt("impl").unwrap(), "demo");
         assert!(!rendered.contains("{brief_path}"), "{rendered}");
         assert!(!rendered.contains("{budget_line}"), "{rendered}");
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn a_version_without_the_role_template_reports_that_rather_than_running() {
-        let mut files = crate::protocol::seed();
+        let mut files = crate::protocol::seed().clone();
         files.remove("prompts/impl.md");
         let dir = case_dir("missing");
         let fake = Fake::new(vec![], vec![]);

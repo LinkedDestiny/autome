@@ -25,7 +25,8 @@ pub fn get(ctx: &mut Ctx) -> DispatchResult {
         ));
     };
     let tags = repo.tags()?;
-    let (current, files) = repo.resolve(None)?;
+    // The list this payload carries is the same one `resolve` would fetch.
+    let (current, files) = repo.resolve_within(None, &tags)?;
     let log = files
         .get("CHANGELOG.md")
         .map(changelog::parse)

@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn deleting_a_required_sentence_is_caught_and_the_reason_is_reported() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = files.loop_protocol().unwrap().replace("证据不写进设计文档", "");
         files.insert(LOOP_PROTOCOL, text);
         let problems = check(&files);
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn reintroducing_a_forbidden_sentence_is_caught() {
-        let mut files = seed();
+        let mut files = seed().clone();
         let text = format!("{}\n没有提交的东西不会进入最终的合并\n", files.prompt("impl").unwrap());
         files.insert("prompts/impl.md", text);
         let problems = check(&files);
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_is_reported_once_rather_than_per_phrase() {
-        let mut files = seed();
+        let mut files = seed().clone();
         files.remove("prompts/audit.md");
         let problems = check(&files);
         let file_missing: Vec<_> = problems

@@ -580,7 +580,7 @@ mod tests {
     /// to be spelled out thirty times. Production always passes the version
     /// the *project* resolved to, which may not be the seed.
     fn init(repo: &Path) -> Result<InitReport> {
-        super::init(repo, &crate::protocol::seed())
+        super::init(repo, crate::protocol::seed())
     }
 
 

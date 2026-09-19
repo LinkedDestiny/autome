@@ -79,14 +79,24 @@ const SEED: [(&str, &str); 13] = [
 ];
 
 /// The seed as a version, including the generated `contract.toml`.
-pub fn seed() -> ProtocolFiles {
-    let mut files = ProtocolFiles::from_pairs(SEED);
-    for (path, content) in eval_seed() {
-        files.insert(path, content);
-    }
-    let toml = render_contract_toml(&contract_regions_of(&files));
-    files.insert("contract.toml", toml);
-    files
+///
+/// Built once. It is 91 `include_str!` slices into a map, plus a hash of every
+/// contract region, plus the rendered `contract.toml` — all deterministic, and
+/// `ensure()` calls it on every project add, every pin, every rollback and the
+/// first session of every task. `expected_contract()` already memoised the
+/// half of it that it needed; this memoises the whole thing so the other
+/// callers stop paying too.
+pub fn seed() -> &'static ProtocolFiles {
+    static CELL: OnceLock<ProtocolFiles> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let mut files = ProtocolFiles::from_pairs(SEED);
+        for (path, content) in eval_seed() {
+            files.insert(path, content);
+        }
+        let toml = render_contract_toml(&contract_regions_of(&files));
+        files.insert("contract.toml", toml);
+        files
+    })
 }
 
 /// Eval cases, kept separate from `SEED` only because there are many of them
@@ -115,7 +125,7 @@ fn contract_regions_of(files: &ProtocolFiles) -> Vec<ContractRegion> {
 /// human-readable copy with no authority.
 pub fn expected_contract() -> &'static [ContractRegion] {
     static CELL: OnceLock<Vec<ContractRegion>> = OnceLock::new();
-    CELL.get_or_init(|| contract_regions_of(&seed()))
+    CELL.get_or_init(|| contract_regions_of(seed()))
 }
 
 fn render_contract_toml(regions: &[ContractRegion]) -> String {
@@ -217,7 +227,7 @@ pub fn ensure(autome_home: &Path) -> Result<Repo> {
         std::fs::create_dir_all(&path)
             .map_err(|e| err(format!("无法创建协议仓库目录 {}：{e}", path.display())))?;
         git::init(&path, "main")?;
-        write_files(&path, &seed())?;
+        write_files(&path, seed())?;
         commit_all(&path, "chore(protocol): 协议 v1，从二进制内置的种子初始化")?;
         git::run_ok(&path, &["tag", "-f", &format!("{TAG_PREFIX}1")])?;
         return Ok(repo);
@@ -275,6 +285,25 @@ impl Repo {
     /// quotes and escapes paths outside ASCII otherwise, and the eval fixtures
     /// are Chinese.
     pub fn files_at(&self, rev: &str) -> Result<ProtocolFiles> {
+        // Memoised per (repository, tag). A tag's content cannot change here:
+        // `release` and `revert_to` both only ever create a *new* tag, and the
+        // one `tag -f` is in `ensure`'s "repository does not exist yet" branch,
+        // where no entry can exist. The protocol screen pays for this read
+        // three times on arrival — `get`, `triggers` and `eval` all route
+        // through `resolve` — and the answer is byte-identical each time.
+        //
+        // Keyed on the revision string as given, so a caller that passes a SHA
+        // or `HEAD` rather than a tag simply misses the cache rather than
+        // getting a stale answer for a moving name.
+        static CACHE: OnceLock<std::sync::Mutex<BTreeMap<(PathBuf, String), ProtocolFiles>>> =
+            OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        let key = (self.path.clone(), rev.to_string());
+        let cacheable = rev.starts_with(TAG_PREFIX);
+        if cacheable && let Ok(map) = cache.lock() && let Some(hit) = map.get(&key) {
+            return Ok(hit.clone());
+        }
+
         let listing = git::run_ok(&self.path, &["ls-tree", "-r", "-z", rev])?;
         let mut names: Vec<String> = Vec::new();
         let mut ids = String::new();
@@ -319,6 +348,9 @@ impl Repo {
                 .ok_or_else(|| err(format!("cat-file 的 {name} 比声明的短")))?;
             files.insert(&name, String::from_utf8_lossy(content).into_owned());
             at += size + 1;
+        }
+        if cacheable && let Ok(mut map) = cache.lock() {
+            map.insert(key, files.clone());
         }
         Ok(files)
     }
@@ -391,17 +423,33 @@ impl Repo {
     /// have is an error rather than a silent fallback — the point of pinning is
     /// that it is honoured.
     pub fn resolve(&self, pin: Option<&str>) -> Result<(ProtocolRef, ProtocolFiles)> {
+        self.resolve_within(pin, &self.tags()?)
+    }
+
+    /// `resolve` for a caller that has already listed the tags.
+    ///
+    /// `protocol.get` needs the list anyway — it puts it in the payload — and
+    /// then `resolve` listed them again, so opening the protocol screen ran
+    /// `git tag --list` twice for one answer.
+    pub fn resolve_within(
+        &self,
+        pin: Option<&str>,
+        tags: &[String],
+    ) -> Result<(ProtocolRef, ProtocolFiles)> {
         let tag = match pin {
             Some(p) if !p.trim().is_empty() => {
                 let p = p.trim().to_string();
-                if !self.tags()?.contains(&p) {
+                if !tags.contains(&p) {
                     return Err(err(format!(
                         "项目固定了协议版本 `{p}`，但本机的协议仓库里没有这个标签"
                     )));
                 }
                 p
             }
-            _ => self.latest_tag()?,
+            _ => tags
+                .last()
+                .cloned()
+                .ok_or_else(|| err("协议仓库里没有任何 protocol/vN 标签"))?,
         };
         let files = self.files_at(&tag)?;
         let hash = files.hash();
@@ -443,7 +491,7 @@ impl Repo {
     /// After a binary upgrade, put the new seed on its own tag so the user can
     /// diff and merge. Never touches `main`.
     fn offer_upstream(&self) -> Result<()> {
-        self.offer_upstream_of(&seed(), &format!("{TAG_PREFIX}{SEED_VERSION}-upstream"))
+        self.offer_upstream_of(seed(), &format!("{TAG_PREFIX}{SEED_VERSION}-upstream"))
     }
 
     /// The body of `offer_upstream`, with the seed and tag passed in so a test
@@ -656,7 +704,7 @@ mod tests {
 
     #[test]
     fn the_seed_carries_both_protocol_files_and_a_template_per_role() {
-        let s = seed();
+        let s = seed().clone();
         assert!(s.loop_protocol().is_some());
         assert!(s.session_protocol().is_some());
         for role in ["plan", "review", "adjudicate", "impl", "audit", "retro"] {
@@ -689,7 +737,7 @@ mod tests {
 
     #[test]
     fn the_generated_contract_toml_lists_every_region_but_carries_no_authority() {
-        let s = seed();
+        let s = seed().clone();
         let toml = s.get("contract.toml").unwrap();
         for r in expected_contract() {
             assert!(toml.contains(&r.hash), "contract.toml misses {}", r.key());
@@ -703,7 +751,7 @@ mod tests {
 
     #[test]
     fn the_protocol_text_fits_the_size_budget() {
-        let s = seed();
+        let s = seed().clone();
         assert!(
             s.sized_bytes() <= autome_domain::protocol::SIZE_BUDGET_BYTES,
             "协议正文 {} 字节，超过 {} 的上限",
@@ -902,7 +950,7 @@ mod tests {
 
         // The binary is upgraded: a seed that differs from every released
         // version.
-        let mut next_seed = seed();
+        let mut next_seed = seed().clone();
         let upstream_text = format!("{}\n上游新加的条文。\n", next_seed.loop_protocol().unwrap());
         next_seed.insert(LOOP_PROTOCOL, upstream_text);
         let tag = "protocol/v2-upstream";

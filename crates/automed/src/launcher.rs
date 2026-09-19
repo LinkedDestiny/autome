@@ -971,7 +971,7 @@ mod tests {
     /// the wording, which lives in the protocol repository and is checked by
     /// `protocol::phrases`.
     fn templates() -> autome_domain::protocol::ProtocolFiles {
-        crate::protocol::seed()
+        crate::protocol::seed().clone()
     }
 
     fn spec<'a>(

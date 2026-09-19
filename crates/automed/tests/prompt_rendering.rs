@@ -60,7 +60,7 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
 }
 
 fn rendered(kind: SessionKind) -> String {
-    let templates = automed::protocol::seed();
+    let templates = automed::protocol::seed().clone();
     build_prompt(&spec(kind, &templates))
         .unwrap()
         .replace(SLUG, "{slug}")
@@ -122,7 +122,7 @@ fn the_budget_placeholder_sits_where_the_core_used_to_write_the_budget_line() {
             .split_once("{budget_line}")
             .unwrap_or_else(|| panic!("{} 的基准里没有 {{budget_line}}", role.as_str()));
 
-        let templates = automed::protocol::seed();
+        let templates = automed::protocol::seed().clone();
         let mut s = spec(SessionKind::Role { role }, &templates);
         s.budget = Some(automed::launcher::BudgetLine {
             round: 7,
@@ -165,7 +165,7 @@ fn a_project_that_lowered_its_design_round_limit_gets_that_limit_in_the_skeleton
     // Before the move this was the literal `15` regardless of configuration,
     // so a project with `design_rounds = 8` got an intake prompt telling it to
     // write `0/15`.
-    let templates = automed::protocol::seed();
+    let templates = automed::protocol::seed().clone();
     let mut s = spec(SessionKind::Intake, &templates);
     s.design_rounds = 8;
     let p = build_prompt(&s).unwrap();
@@ -176,7 +176,7 @@ fn a_project_that_lowered_its_design_round_limit_gets_that_limit_in_the_skeleton
 #[test]
 fn the_retro_prompt_is_handed_the_tasks_numbers() {
     use autome_domain::metrics::TaskMetrics;
-    let templates = automed::protocol::seed();
+    let templates = automed::protocol::seed().clone();
     let metrics = TaskMetrics {
         impl_rounds_used: 15,
         budget_n: 35,
@@ -202,7 +202,7 @@ fn the_retro_prompt_is_handed_the_tasks_numbers() {
 fn a_task_with_no_recorded_metrics_is_told_so_rather_than_shown_zeroes() {
     // A retro round handed a table of zeroes would write about a task that
     // went perfectly. Absence has to read as absence.
-    let templates = automed::protocol::seed();
+    let templates = automed::protocol::seed().clone();
     let p = build_prompt(&spec(
         SessionKind::Role {
             role: Role::Retro,
@@ -216,7 +216,7 @@ fn a_task_with_no_recorded_metrics_is_told_so_rather_than_shown_zeroes() {
 
 #[test]
 fn a_template_with_an_unknown_placeholder_is_refused_rather_than_shown_to_the_model() {
-    let mut templates = automed::protocol::seed();
+    let mut templates = automed::protocol::seed().clone();
     let text = format!("{}\n还要参考 {{mood}}。\n", templates.prompt("impl").unwrap());
     templates.insert("prompts/impl.md", text);
     let e = build_prompt(&spec(
@@ -231,7 +231,7 @@ fn a_template_with_an_unknown_placeholder_is_refused_rather_than_shown_to_the_mo
 fn braces_in_ordinary_prose_are_not_mistaken_for_placeholders() {
     // The protocol text contains code samples and JSON. A check that rejected
     // those would be unusable.
-    let mut templates = automed::protocol::seed();
+    let mut templates = automed::protocol::seed().clone();
     let text = format!(
         "{}\n示例：`{{ \"status\": \"ok\" }}`，以及 {{M-01}}。\n",
         templates.prompt("impl").unwrap()
@@ -248,7 +248,7 @@ fn braces_in_ordinary_prose_are_not_mistaken_for_placeholders() {
 
 #[test]
 fn a_version_missing_a_role_template_names_the_role_rather_than_launching_blank() {
-    let mut templates = automed::protocol::seed();
+    let mut templates = automed::protocol::seed().clone();
     templates.remove("prompts/audit.md");
     let e = build_prompt(&spec(
         SessionKind::Role { role: Role::Audit },

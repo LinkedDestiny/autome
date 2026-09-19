@@ -1842,7 +1842,7 @@ mod tests {
             std::fs::create_dir_all(&repo).unwrap();
 
             git::init(&repo, "main").unwrap();
-            crate::init::init(&repo, &crate::protocol::seed()).unwrap();
+            crate::init::init(&repo, crate::protocol::seed()).unwrap();
             std::fs::write(repo.join("README.md"), "hi\n").unwrap();
             git::commit_paths(
                 &repo,
