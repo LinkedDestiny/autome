@@ -62,31 +62,17 @@ pub fn count_verdicts(worktree: &Path, doc_dir: &str) -> (u32, u32) {
     (defects, gaps)
 }
 
-/// Counts unticked lines in the design document's `## 人工验收清单`.
+/// How many `## 人工验收清单` entries the user has not ticked off yet.
 ///
-/// Both `- [ ]` checkboxes and bare `- H-01 …` lines count as open; the
-/// protocol asks for one line per item and does not mandate a checkbox, and a
-/// list the user has not touched is exactly the thing being measured.
-///
-/// The heading is matched at the start of a line, not anywhere in the text.
-/// Searching the whole string found the *first* mention instead — and a
-/// document that names the section in prose before it reaches it (a
-/// `next-action` saying "由用户逐条确认 `## 人工验收清单`" is the obvious way)
-/// would have its body bounded by the next heading after that sentence, and
-/// report zero open items however many it really had. That count is what the
-/// merge gate is meant to lean on.
-pub fn count_manual_items(design: &str) -> u32 {
-    const HEADING: &str = "## 人工验收清单";
-    let mut lines = design.lines().skip_while(|l| l.trim_end() != HEADING);
-    if lines.next().is_none() {
-        return 0;
-    }
-    lines
-        .take_while(|l| !l.starts_with("## "))
-        .map(str::trim)
-        .filter(|l| l.starts_with("- ") || l.starts_with("* "))
-        .filter(|l| !l.contains("[x]") && !l.contains("[X]"))
-        .count() as u32
+/// Reads the parsed document rather than scanning the text again. The
+/// hand-written scanner this replaces was the fourth one over the same file
+/// and had already re-acquired the bugs the real parser fixed years earlier:
+/// it counted bullets inside fenced code blocks (documents show their own
+/// structure as examples), and `## 人工验收清单（4 项）` missed the heading
+/// entirely and reported zero — the same "reports zero however many it really
+/// had" failure the line-start fix had just closed, one keystroke away.
+pub fn manual_items_open(status: &StatusBlock) -> u32 {
+    status.manual_items.iter().filter(|i| !i.ticked).count() as u32
 }
 
 /// Milestones that went from `已完成` back to any other state between two
@@ -203,6 +189,7 @@ mod tests {
             milestones,
             backlog: vec![],
             disputes: vec![],
+            manual_items: vec![],
         }
     }
 
@@ -283,34 +270,69 @@ mod tests {
         assert_eq!(newly_contradicted(&before, &after), vec!["M-01"]);
     }
 
+    /// Drives the real parser, which is the point of the change: every one of
+    /// these cases is something the hand-written scanner got wrong or was one
+    /// keystroke from getting wrong.
+    fn manual(doc: &str) -> u32 {
+        manual_items_open(&autome_domain::status_block::parse(doc).expect("parses"))
+    }
+
+    fn doc_with(sections: &str) -> String {
+        format!(
+            "status: 实现中\ndesign-round: 1/15\nimplementation-round: 3/10\n\
+             current-milestone: M-01\ncurrent-milestone-reopens: 0\n\
+             convergence-mode: normal\nnext-action: 无\n\n# T\n\n\
+             ## 里程碑\n\n| ID | 状态 | 标题 | reopen | 领域 |\n|---|---|---|---|---|\n\
+             | M-01 | 开放 | 甲 | 0 | |\n\n{sections}"
+        )
+    }
+
     #[test]
     fn manual_items_are_counted_until_they_are_ticked() {
-        let doc = "# T\n\n## 人工验收清单\n\n- H-01 长按三秒\n- [x] H-02 已确认\n- H-03 看横幅\n\n## 里程碑\n\n- 不算\n";
-        assert_eq!(count_manual_items(doc), 2);
+        let d = doc_with("## 人工验收清单\n\n- H-01 长按三秒\n- [x] H-02 已确认\n- H-03 看横幅\n");
+        assert_eq!(manual(&d), 2);
     }
 
     #[test]
     fn a_design_document_without_the_section_has_no_open_items() {
-        assert_eq!(count_manual_items("# T\n\n## 里程碑\n\n- M-01\n"), 0);
+        assert_eq!(manual(&doc_with("## Backlog\n\n- B-01 只是待办\n")), 0);
     }
 
     #[test]
     fn the_manual_list_stops_at_the_next_heading() {
-        // The bug this guards: reading to end of file counted every bullet in
-        // the rest of the document as an unconfirmed manual check.
-        let doc = "## 人工验收清单\n\n- H-01\n\n## Backlog\n\n- B-01\n- B-02\n- B-03\n";
-        assert_eq!(count_manual_items(doc), 1);
+        let d = doc_with("## 人工验收清单\n\n- H-01\n\n## Backlog\n\n- B-01\n- B-02\n- B-03\n");
+        assert_eq!(manual(&d), 1);
     }
 
     #[test]
     fn naming_the_section_in_prose_does_not_shadow_the_real_one() {
-        // A real document did exactly this: `next-action` said "由用户逐条确认
-        // `## 人工验收清单`", which is the first match in the file. Bounding
-        // the body from there ends at the next heading — the four real items
-        // were reported as zero.
-        let doc = "# T\n\nnext-action: 由用户逐条确认 `## 人工验收清单` 后合并。\n\n\
-                   ## 任务\n\n略\n\n## 人工验收清单\n\n- H-01 长按\n- H-02 横幅\n\n## Backlog\n\n- B-01\n";
-        assert_eq!(count_manual_items(doc), 2);
+        // A real document did this: `next-action` said "由用户逐条确认
+        // `## 人工验收清单`". A scanner that searched the whole text bounded
+        // the section from that sentence and reported zero.
+        let d = doc_with(
+            "next-action 提到了 `## 人工验收清单`。\n\n## 任务\n\n略\n\n\
+             ## 人工验收清单\n\n- H-01 长按\n- H-02 横幅\n\n## Backlog\n\n- B-01\n",
+        );
+        assert_eq!(manual(&d), 2);
+    }
+
+    #[test]
+    fn a_fenced_example_of_the_section_is_not_the_section() {
+        // Design documents show their own structure. The parser skips fences
+        // wholesale; the scanner this replaces counted the example.
+        let d = doc_with(
+            "```\n## 人工验收清单\n\n- H-99 这是示例\n```\n\n\
+             ## 人工验收清单\n\n- H-01 真的那条\n",
+        );
+        assert_eq!(manual(&d), 1);
+    }
+
+    #[test]
+    fn a_heading_with_a_count_after_it_is_still_the_section() {
+        // `classify_heading` already tolerated `## Backlog（3）`; the scanner
+        // required an exact match and would have reported zero here.
+        let d = doc_with("## 人工验收清单（4 项）\n\n- H-01 甲\n- H-02 乙\n");
+        assert_eq!(manual(&d), 2);
     }
 
     #[test]

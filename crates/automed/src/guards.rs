@@ -376,6 +376,7 @@ mod tests {
                 .collect(),
             backlog: vec![],
             disputes: vec![],
+            manual_items: vec![],
         }
     }
 

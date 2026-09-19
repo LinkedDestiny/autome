@@ -383,6 +383,7 @@ session-protocol = []
             milestones,
             backlog: vec![],
             disputes: vec![],
+            manual_items: vec![],
         }
     }
 

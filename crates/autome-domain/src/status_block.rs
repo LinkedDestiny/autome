@@ -158,6 +158,17 @@ pub struct BacklogItem {
     pub text: String,
 }
 
+/// One `## 人工验收清单` entry: a check only a person can carry out — a real
+/// mouse, a real microphone, a banner seen with eyes. It never blocks a
+/// milestone; the user ticks it off before pressing merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualItem {
+    pub id: String,
+    pub text: String,
+    /// `- [x] H-01 …`. Untouched items are what "still to confirm" counts.
+    pub ticked: bool,
+}
+
 /// One `## 争议项` entry: a claim frozen after two re-raises, awaiting the
 /// user's ruling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +194,7 @@ pub struct StatusBlock {
     pub milestones: Vec<Milestone>,
     pub backlog: Vec<BacklogItem>,
     pub disputes: Vec<DisputeItem>,
+    pub manual_items: Vec<ManualItem>,
 }
 
 impl StatusBlock {
@@ -390,6 +402,7 @@ enum Section {
     Milestones,
     Backlog,
     Disputes,
+    ManualAcceptance,
     Other,
 }
 
@@ -402,6 +415,8 @@ fn classify_heading(heading: &str) -> Section {
         Section::Backlog
     } else if h.starts_with("争议项") {
         Section::Disputes
+    } else if h.starts_with("人工验收清单") {
+        Section::ManualAcceptance
     } else {
         Section::Other
     }
@@ -428,6 +443,7 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
     let mut seen_milestone_table = false;
     let mut backlog: Vec<BacklogItem> = Vec::new();
     let mut disputes: Vec<DisputeItem> = Vec::new();
+    let mut manual_items: Vec<ManualItem> = Vec::new();
 
     let mut section = Section::Preamble;
     let mut in_fence = false;
@@ -621,6 +637,26 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                     backlog.push(BacklogItem { id, text: body });
                 }
             }
+            Section::ManualAcceptance => {
+                if let Some(text) = bullet_text(trimmed)
+                    && !text.is_empty()
+                {
+                    // `- [x] H-01 …` / `- [ ] H-01 …` / `- H-01 …` all occur;
+                    // the protocol asks for one line per item and does not
+                    // mandate a checkbox.
+                    let (ticked, rest) = match text.split_at_checked(3) {
+                        Some(("[x]", r)) | Some(("[X]", r)) => (true, r.trim_start()),
+                        Some(("[ ]", r)) => (false, r.trim_start()),
+                        _ => (false, text),
+                    };
+                    let (id, body) = split_id(rest, manual_items.len(), "H-");
+                    manual_items.push(ManualItem {
+                        id,
+                        text: body,
+                        ticked,
+                    });
+                }
+            }
             Section::Disputes => {
                 if let Some(text) = bullet_text(trimmed)
                     && !text.is_empty()
@@ -678,6 +714,7 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
         milestones,
         backlog,
         disputes,
+        manual_items,
     })
 }
 

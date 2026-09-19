@@ -783,7 +783,6 @@ fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     let worktree = worktree_path(&repo, &task.slug);
 
     let status = read_status(&project, &task);
-    let design = std::fs::read_to_string(worktree.join(task.design_doc())).unwrap_or_default();
     let (impl_defects, verification_gaps) =
         crate::task_metrics::count_verdicts(&worktree, &task.doc_dir());
 
@@ -807,7 +806,10 @@ fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
         closed_then_contradicted: ctx.store.count_events(task_id, "milestone.contradicted")?,
         impl_defects,
         verification_gaps,
-        manual_items_open: crate::task_metrics::count_manual_items(&design),
+        manual_items_open: status
+            .as_ref()
+            .map(crate::task_metrics::manual_items_open)
+            .unwrap_or(0),
         total_cost_usd: cost,
         total_tokens,
         total_turns,

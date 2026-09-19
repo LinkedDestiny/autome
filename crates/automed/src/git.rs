@@ -906,6 +906,75 @@ mod tests {
         assert!(out.ok());
     }
 
+    /// The deadline half of `wait_with_timeout`, which had no test at all —
+    /// the backoff that replaced its flat 20ms poll touched this loop, and
+    /// "does it still give up, and does it still kill the child" was resting
+    /// on nothing.
+    ///
+    /// Driven with `sh` rather than git: the behaviour under test belongs to
+    /// the waiter, and a command that reliably outlives its deadline is easier
+    /// to ask `sh` for than git.
+    #[test]
+    fn a_command_that_outlives_its_deadline_is_killed_and_reported() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh is available");
+        let pid = child.id();
+
+        let started = std::time::Instant::now();
+        let err = wait_with_timeout(child, 1).unwrap_err();
+        let waited = started.elapsed();
+
+        assert!(err.contains("超过 1s"), "{err}");
+        // Gave up near the deadline rather than after the child's own 30s.
+        assert!(waited < std::time::Duration::from_secs(5), "等了 {waited:?}");
+        // And actually killed it: `kill -0` fails once the process is gone.
+        // Reaped by `child.wait()` inside the waiter, so this is not a zombie.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let alive = Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(!alive, "子进程 {pid} 超时后仍在运行");
+    }
+
+    /// The backoff must not make a fast command slower than the command is.
+    ///
+    /// Measured as the best of several runs rather than a single one: the
+    /// suite runs hundreds of tests in parallel, and a wall-clock bound on one
+    /// sample fails on a loaded machine for reasons that have nothing to do
+    /// with the poll. The flat 20ms sleep this replaced could not produce a
+    /// fast sample at all, so the minimum still tells the two apart.
+    #[test]
+    fn a_command_that_finishes_quickly_is_not_held_by_the_poll() {
+        let best = (0..5)
+            .map(|_| {
+                let child = Command::new("/bin/sh")
+                    .args(["-c", "exit 0"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("sh is available");
+                let started = std::time::Instant::now();
+                wait_with_timeout(child, 600).unwrap();
+                started.elapsed()
+            })
+            .min()
+            .unwrap();
+        assert!(
+            best < std::time::Duration::from_millis(15),
+            "退避没有生效：最快一次也等了 {best:?}"
+        );
+    }
+
     #[test]
     fn init_creates_a_repo_with_the_requested_default_branch() {
         needs_git!();
