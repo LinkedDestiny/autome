@@ -49,6 +49,29 @@ never opens a pull request, and never merges without you pressing the button.
   mirrored from the authoring repository; see below.
 - `docs/adr/` — the two decisions that shaped the repository.
 
+## Where your state lives
+
+One home, `~/.autome`, overridable with `AUTOME_HOME`:
+
+```
+~/.autome/
+├── config.toml                 # global defaults; yours to edit
+├── protocol/                   # the protocol repository, a real git repo
+└── state/
+    └── automed.sqlite3         # registry, session ledger, your decisions
+```
+
+Per-project overrides live in each repository's `.autome/config.toml` and are
+committed; task progress lives in the design document's status block, on the
+branch. `AUTOMED_DB_PATH` overrides the database alone, which is how the test
+suites get one each.
+
+The database used to default to `automed.sqlite3` in the working directory,
+and the desktop app kept its own under Electron's `userData`. That made a
+second installation the CLI could not see, and put the only ledger in a
+directory Chromium owns — where, on the machine this was found on, a dead
+prototype's database had been squatting on the path.
+
 ## Authority
 
 The specification lives in the sibling 1.x repository as a read-only reference

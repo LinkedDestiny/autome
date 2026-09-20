@@ -96,8 +96,23 @@ fn main() {
 
     tracing_subscriber::fmt().with_writer(io::stderr).init();
 
-    let db_path =
-        std::env::var("AUTOMED_DB_PATH").unwrap_or_else(|_| "automed.sqlite3".to_string());
+    let autome_home = automed::config_io::default_global_dir();
+    // The ledger lives with the rest of this machine's Autome state, under
+    // `AUTOME_HOME` (`~/.autome` by default) — one home, so "what does Autome
+    // know" has one answer and one thing to back up.
+    //
+    // It used to default to `automed.sqlite3` in the working directory, which
+    // meant running the core from a different directory silently started a
+    // second, empty installation. That is not a hypothetical: this machine
+    // accumulated four of them, and the desktop app's own copy sat in
+    // Electron's `userData` where a dead prototype's file could squat on the
+    // path unnoticed. `AUTOMED_DB_PATH` still overrides, for the tests that
+    // need their own and for anyone who keeps state elsewhere on purpose.
+    let db_path = std::env::var("AUTOMED_DB_PATH").unwrap_or_else(|_| {
+        automed::config_io::default_db_path(&autome_home)
+            .to_string_lossy()
+            .into_owned()
+    });
     let store = match Store::open(&db_path) {
         Ok(store) => store,
         Err(e) => {
@@ -105,7 +120,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let autome_home = automed::config_io::default_global_dir();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let mut ctx = Ctx::new(store, autome_home, home);
 

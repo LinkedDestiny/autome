@@ -67,6 +67,16 @@ pub fn default_global_dir() -> PathBuf {
     PathBuf::from(home).join(".autome")
 }
 
+/// Where the ledger lives: `<AUTOME_HOME>/state/automed.sqlite3`.
+///
+/// Under the home rather than beside `config.toml` because the two are for
+/// different readers — the config is the user's to edit, and everything under
+/// `state/` is the core's to own. One home either way: a machine's Autome
+/// state is one thing to find, to copy, and to back up.
+pub fn default_db_path(autome_home: &Path) -> PathBuf {
+    autome_home.join("state").join("automed.sqlite3")
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -540,6 +550,22 @@ mod tests {
     use super::*;
     use autome_domain::config::{Provenance, resolve};
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// The ledger follows the home, so pointing `AUTOME_HOME` somewhere else
+    /// moves the whole installation rather than half of it. A test that ran
+    /// against the developer's real `~/.autome` would be writing their state,
+    /// so every suite here passes its own home — and that only works because
+    /// the path is derived from it.
+    #[test]
+    fn the_database_lives_under_the_home_it_belongs_to() {
+        let home = Path::new("/tmp/some-home");
+        assert_eq!(
+            default_db_path(home),
+            Path::new("/tmp/some-home/state/automed.sqlite3")
+        );
+        // And it is not beside config.toml, which is the user's to edit.
+        assert_ne!(default_db_path(home).parent(), Some(home));
+    }
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

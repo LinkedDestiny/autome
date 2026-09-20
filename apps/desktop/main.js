@@ -447,8 +447,12 @@ app.whenReady().then(async () => {
   registerReadChannel();
   registerWriteChannel();
 
-  coreDbPath =
-    process.env.AUTOMED_DB_PATH || path.join(app.getPath('userData'), 'automed.sqlite3');
+  // `null` means "wherever the core keeps it" — `AUTOME_HOME/state`, which is
+  // where the config and the protocol repository already live. The shell has
+  // no business choosing a home for state it does not own, and the one it
+  // used to choose (Electron's `userData`) made the app's installation a
+  // second, separate one from the CLI's.
+  coreDbPath = process.env.AUTOMED_DB_PATH || null;
   startSidecar(coreDbPath);
   createMainWindow();
   startTicking();

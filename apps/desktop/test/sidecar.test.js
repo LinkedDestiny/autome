@@ -247,6 +247,27 @@ test('a pending request() is rejected if the process exits before replying', asy
   fs.rmSync(dbPath, { force: true });
 });
 
+test('with no database named, the core puts one under its own home', async () => {
+  // The shell stopped naming a path: the core's state belongs with the rest
+  // of the core's state, and Electron's `userData` was a second installation
+  // that nothing but the app could see. Verified against the real binary,
+  // with `AUTOME_HOME` pointed at a temporary directory — which is also what
+  // keeps this test off the developer's real `~/.autome`.
+  const home = tempHome('own-home');
+  const sidecar = new AutomedSidecar({
+    env: { AUTOME_HOME: home },
+    onEvent: () => {},
+  }).start();
+
+  const expected = path.join(home, 'state', 'automed.sqlite3');
+  await waitFor(() => fs.existsSync(expected));
+  const reply = await sidecar.request(aWrite('req-home', 'cmd-home'));
+  assert.equal(reply.outcome.status, 'ok', 'the core is usable at its own default path');
+
+  await sidecar.stop();
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('a binary that is not there is reported, not thrown past Main', async () => {
   // Node reports a failed spawn as an `error` event and never emits `exit`.
   // Unhandled, that event throws out of the event loop — in production, out

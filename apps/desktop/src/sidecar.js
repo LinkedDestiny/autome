@@ -152,8 +152,14 @@ class AutomedSidecar {
 
   start() {
     if (this._child) throw new Error('sidecar already started');
+    // No `dbPath` means the core picks its own — `AUTOME_HOME/state`, the one
+    // place this machine's Autome state lives. The shell used to name
+    // Electron's `userData` here, which put the ledger in a directory
+    // Chromium owns and split the installation in two.
+    const env = { ...process.env, ...this._env };
+    if (this._dbPath) env.AUTOMED_DB_PATH = this._dbPath;
     this._child = spawn(this._binaryPath, [], {
-      env: { ...process.env, ...this._env, AUTOMED_DB_PATH: this._dbPath },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this._child.stdout.on('data', (chunk) => this._decoder.push(chunk));
