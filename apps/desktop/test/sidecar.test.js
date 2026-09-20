@@ -20,13 +20,33 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { AutomedSidecar, defaultBinaryPath } = require('../src/sidecar');
 
+// Everything these helpers hand out, removed when the process ends.
+//
+// Cleaning up at the end of each test was the rule, and the rule was kept
+// about half the time: four tests deleted their database and not their home,
+// so every run since left four directories behind — 636 of them by the time
+// anyone counted. A test that throws halfway leaves its own, too. Registering
+// the path where it is created is the only version of this that cannot be
+// forgotten, so the per-test deletions are gone: there is one mechanism.
+const scratch = [];
+process.on('exit', () => {
+  for (const target of scratch) fs.rmSync(target, { recursive: true, force: true });
+});
+
 function tempDbPath(label) {
-  return path.join(os.tmpdir(), `automed-desktop-e2e-${label}-${crypto.randomUUID()}.sqlite3`);
+  const file = path.join(
+    os.tmpdir(),
+    `automed-desktop-e2e-${label}-${crypto.randomUUID()}.sqlite3`
+  );
+  // SQLite's WAL and shared-memory files sit beside it and outlive it.
+  scratch.push(file, `${file}-wal`, `${file}-shm`);
+  return file;
 }
 
 function tempHome(label) {
   const dir = path.join(os.tmpdir(), `automed-desktop-home-${label}-${crypto.randomUUID()}`);
   fs.mkdirSync(dir, { recursive: true });
+  scratch.push(dir);
   return dir;
 }
 
@@ -96,6 +116,29 @@ test('the packaged location wins over the development build, but only if it is t
   }
 });
 
+test('no test starts a real core against the developer own ~/.autome', () => {
+  // Since the ledger moved under `AUTOME_HOME`, forgetting to set it here
+  // does not merely read the developer's config — it writes their projects,
+  // tasks and session history. The cost of the mistake went up, so it stops
+  // being a thing to remember and becomes a thing that is checked.
+  //
+  // A sidecar in this file therefore either names an `AUTOME_HOME`, or names
+  // a `binaryPath` that cannot start a core at all (the missing-binary case).
+  const source = fs.readFileSync(__filename, 'utf8');
+  const offenders = [];
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf('new AutomedSidecar({', from);
+    if (at < 0) break;
+    from = at + 1;
+    const block = source.slice(at, at + 400);
+    if (!block.includes('AUTOME_HOME') && !block.includes('binaryPath')) {
+      offenders.push(source.slice(0, at).split('\n').length);
+    }
+  }
+  assert.deepEqual(offenders, [], `sidecar started without AUTOME_HOME at line(s) ${offenders}`);
+});
+
 test('automed binary is built before running sidecar e2e tests', () => {
   assert.ok(
     fs.existsSync(defaultBinaryPath()),
@@ -116,8 +159,6 @@ test('a command round-trips through the real binary and emits its event', async 
   assert.equal(events[0].event_seq, 1);
 
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('the event stream continues across a restart against the same database', async () => {
@@ -140,8 +181,6 @@ test('the event stream continues across a restart against the same database', as
   assert.equal(secondEvents[0].event_seq, 2, 'the stream position survived the restart');
 
   await second.stop();
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('request() resolves with the Reply correlated by request_id', async () => {
@@ -160,8 +199,6 @@ test('request() resolves with the Reply correlated by request_id', async () => {
   await waitFor(() => events.length === 1);
 
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('an unknown method still produces exactly one reply, so a caller never hangs', async () => {
@@ -178,8 +215,6 @@ test('an unknown method still produces exactly one reply, so a caller never hang
   assert.equal(reply.outcome.code, 'unknown_method');
 
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('two in-flight request() calls each resolve to their own reply even if replies arrive out of order', async () => {
@@ -201,7 +236,6 @@ test('two in-flight request() calls each resolve to their own reply even if repl
   assert.equal(replySecond.request_id, 'req-ooo-2');
 
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
 });
 
 test('request() rejects a second call reusing an in-flight request_id', async () => {
@@ -216,7 +250,6 @@ test('request() rejects a second call reusing an in-flight request_id', async ()
 
   firstPending.catch(() => {}); // it will reject once stop() below tears the process down
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
 });
 
 test('request() rejects when no reply arrives before the timeout', async () => {
@@ -231,7 +264,6 @@ test('request() rejects when no reply arrives before the timeout', async () => {
   );
 
   await sidecar.stop();
-  fs.rmSync(dbPath, { force: true });
 });
 
 test('a pending request() is rejected if the process exits before replying', async () => {
@@ -244,7 +276,6 @@ test('a pending request() is rejected if the process exits before replying', asy
   await sidecar.stop(); // closes stdin with nothing written; Core sees EOF and exits cleanly
 
   await assert.rejects(pending, /exited before replying/);
-  fs.rmSync(dbPath, { force: true });
 });
 
 test('with no database named, the core puts one under its own home', async () => {
@@ -265,7 +296,6 @@ test('with no database named, the core puts one under its own home', async () =>
   assert.equal(reply.outcome.status, 'ok', 'the core is usable at its own default path');
 
   await sidecar.stop();
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('a binary that is not there is reported, not thrown past Main', async () => {
@@ -312,8 +342,6 @@ test('a core that refuses to start is quoted, not merely counted', async () => {
   assert.ok(!reason.includes('db_path='), reason);
   assert.ok(reason.startsWith(conn), reason);
 
-  fs.rmSync(conn, { force: true });
-  fs.rmSync(dbPath, { force: true });
 });
 
 test('sending to a core that has exited throws with the reason, instead of an uncaught EPIPE', async () => {
@@ -337,8 +365,6 @@ test('sending to a core that has exited throws with the reason, instead of an un
   // stdin would surface here as an uncaught exception.
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test('a stop we asked for is not reported as a crash', async () => {
@@ -357,8 +383,6 @@ test('a stop we asked for is not reported as a crash', async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(exits.length, 0);
 
-  fs.rmSync(dbPath, { force: true });
-  fs.rmSync(home, { recursive: true, force: true });
 });
 
 async function waitFor(predicate, timeoutMs = 5000) {

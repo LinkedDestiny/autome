@@ -551,6 +551,48 @@ mod tests {
     use autome_domain::config::{Provenance, resolve};
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// `default_global_dir` reads the environment, so it answers with the
+    /// *developer's* home when a test calls it — and since the ledger now
+    /// lives under that home, a library function that reached for it would
+    /// have tests writing real projects and real session history.
+    ///
+    /// Exactly one caller is allowed: the binary's entrypoint, which resolves
+    /// it once and hands it down. Everything else takes the home it is given,
+    /// which is what lets every suite pass a temporary one.
+    #[test]
+    fn only_the_entrypoint_resolves_the_real_home() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // main.rs is the allowed caller; this file defines it.
+                if name == "main.rs" || name == "config_io.rs" {
+                    continue;
+                }
+                if std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("default_global_dir(")
+                {
+                    offenders.push(name.to_string());
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these reach for the real ~/.autome instead of taking the home they are given: {offenders:?}"
+        );
+    }
+
     /// The ledger follows the home, so pointing `AUTOME_HOME` somewhere else
     /// moves the whole installation rather than half of it. A test that ran
     /// against the developer's real `~/.autome` would be writing their state,
