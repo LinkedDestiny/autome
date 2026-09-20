@@ -20,6 +20,7 @@
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron');
 const { AutomedSidecar } = require('./src/sidecar');
+const { nextRestart } = require('./src/core-restart');
 const appProtocol = require('./src/app-protocol');
 const ipcGate = require('./src/ipc-gate');
 const writeGate = require('./src/write-gate');
@@ -30,6 +31,11 @@ let mainWindow = null;
 let sidecar = null;
 let requestCounter = 0;
 let commandCounter = 0;
+// Where the core's database lives, so the banner's restart button can start a
+// core with the same one Main started the first one with.
+let coreDbPath = null;
+// Consecutive starts that did not survive; see src/core-restart.js.
+let coreQuickFailures = 0;
 
 // Two independent generators: §14 needs `command_id` to stay stable across a
 // retry, which only holds if it is not also incremented every time a
@@ -133,11 +139,13 @@ function registerWriteChannel() {
     if (!validated.ok) throw new Error(`rejected: ${validated.message}`);
     const { op, params } = validated;
 
-    // Three ops are handled entirely in Main, because each is a capability
-    // the renderer must not have.
+    // These are handled entirely in Main: the first three are capabilities
+    // the renderer must not have, and `core.restart` is the one op that
+    // cannot reach the core — it exists precisely because there is none.
     if (op === 'project.pick') return pickProject();
     if (op === 'open.path') return openPath(params);
     if (op === 'open.terminal') return openTerminal(params);
+    if (op === 'core.restart') return restartCore();
     if (op === 'env.install') return runInstall(params);
     if (op === 'env.login') return runLogin(params);
 
@@ -325,14 +333,43 @@ function broadcast(channel, payload) {
 }
 
 function startSidecar(dbPath) {
-  sidecar = new AutomedSidecar({
+  const startedAt = Date.now();
+  let instance = null;
+  instance = new AutomedSidecar({
     dbPath,
     onEvent: (event) => broadcast('autome:event', event),
     onStderrLine: (line) => console.error('[automed]', line),
     onExit: (code, signal) => {
       console.log('[automed] exited', { code, signal });
       sidecar = null;
-      broadcast('autome:core-status', { connected: false, code, signal });
+      // The core's own last words. A fatal startup failure — a database it
+      // will not open, a binary that is not there — is reported on stderr and
+      // nowhere else, so without this the window can only say that the core
+      // is unreachable, never why.
+      const reason = instance.failureReason();
+      const decision = nextRestart({
+        ranForMs: Date.now() - startedAt,
+        quickFailures: coreQuickFailures,
+      });
+      coreQuickFailures = decision.quickFailures;
+
+      if (!decision.restart) {
+        console.error(
+          `[automed] gave up after ${decision.quickFailures} failed starts:`,
+          reason || `code=${code} signal=${signal}`
+        );
+        broadcast('autome:core-status', {
+          connected: false,
+          fatal: true,
+          reason,
+          attempts: decision.quickFailures,
+          code,
+          signal,
+        });
+        return;
+      }
+
+      broadcast('autome:core-status', { connected: false, fatal: false, reason, code, signal });
       // The core is the only place business state lives, so a dead core means
       // a dead app. Restart it rather than leaving the window showing a
       // frozen projection.
@@ -341,10 +378,32 @@ function startSidecar(dbPath) {
           startSidecar(dbPath);
           broadcast('autome:core-status', { connected: true, restarted: true });
         }
-      }, 1000);
+      }, decision.delayMs);
     },
   }).start();
+  sidecar = instance;
   return sidecar;
+}
+
+/**
+ * The banner's button once Main has stopped restarting the core by itself.
+ *
+ * Deliberately verified rather than optimistic: it starts a core and then
+ * makes one real call, so a user who has just moved the offending database
+ * aside is told it worked, and a user who has not is handed the same sentence
+ * again instead of a window that claims to be connected for one second.
+ */
+async function restartCore() {
+  if (sidecar) return { already_running: true };
+  coreQuickFailures = 0;
+  const started = startSidecar(coreDbPath);
+  try {
+    await callCore('scheduler.tick', {});
+  } catch (err) {
+    throw new Error(started.failureReason() || err.message);
+  }
+  broadcast('autome:core-status', { connected: true, restarted: true });
+  return { restarted: true };
 }
 
 // The core does not run its own timer: the polling interval is a UI decision,
@@ -388,9 +447,9 @@ app.whenReady().then(async () => {
   registerReadChannel();
   registerWriteChannel();
 
-  const dbPath =
+  coreDbPath =
     process.env.AUTOMED_DB_PATH || path.join(app.getPath('userData'), 'automed.sqlite3');
-  startSidecar(dbPath);
+  startSidecar(coreDbPath);
   createMainWindow();
   startTicking();
 

@@ -141,6 +141,10 @@ contextBridge.exposeInMainWorld('autome', {
         name,
       }),
     openTerminal: (taskId) => write('open.terminal')({ task_id: taskId }),
+
+    // The only write that does not reach the core: Main handles it, because
+    // the core it would start is the one that is not running.
+    restartCore: () => write('core.restart')(),
   },
 
   // Core-pushed events. The renderer subscribes once and re-reads what it

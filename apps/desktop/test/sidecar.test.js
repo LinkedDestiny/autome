@@ -247,6 +247,99 @@ test('a pending request() is rejected if the process exits before replying', asy
   fs.rmSync(dbPath, { force: true });
 });
 
+test('a binary that is not there is reported, not thrown past Main', async () => {
+  // Node reports a failed spawn as an `error` event and never emits `exit`.
+  // Unhandled, that event throws out of the event loop — in production, out
+  // of Electron Main, which is the process that would have reported it.
+  const exits = [];
+  const sidecar = new AutomedSidecar({
+    binaryPath: path.join(os.tmpdir(), `no-such-automed-${crypto.randomUUID()}`),
+    dbPath: tempDbPath('missing-binary'),
+    onExit: (code, signal) => exits.push({ code, signal }),
+  }).start();
+
+  await waitFor(() => exits.length === 1);
+  assert.match(sidecar.failureReason(), /无法启动内核/);
+  assert.equal(exits.length, 1, 'exactly one notification, whichever way the child ended');
+});
+
+test('a core that refuses to start is quoted, not merely counted', async () => {
+  // The real failure: a database at the app's path that another program
+  // wrote. The core says so on stderr and exits; that sentence is the only
+  // thing the window can show the user, so the sidecar has to keep it.
+  const dbPath = tempDbPath('foreign-db');
+  const conn = path.join(os.tmpdir(), `foreign-${crypto.randomUUID()}.sqlite3`);
+  const { execFileSync } = require('node:child_process');
+  execFileSync('sqlite3', [conn, 'CREATE TABLE projects (id TEXT PRIMARY KEY);']);
+
+  const exits = [];
+  const sidecar = new AutomedSidecar({
+    dbPath: conn,
+    env: { AUTOME_HOME: tempHome('foreign-db') },
+    onExit: (code, signal) => exits.push({ code, signal }),
+  }).start();
+
+  await waitFor(() => exits.length === 1);
+  const reason = sidecar.failureReason();
+  assert.match(reason, /不是 Autome 2\.0 的数据库/);
+  // Stripped of everything that was written for a terminal rather than for a
+  // person: colours, timestamp, the English event name, the trailing fields.
+  // What is left is one sentence, which is what a banner can hold.
+  assert.ok(!reason.includes('\u001b['), reason);
+  assert.ok(!reason.startsWith('20'), reason);
+  assert.ok(!reason.includes('failed to open the store'), reason);
+  assert.ok(!reason.includes('db_path='), reason);
+  assert.ok(reason.startsWith(conn), reason);
+
+  fs.rmSync(conn, { force: true });
+  fs.rmSync(dbPath, { force: true });
+});
+
+test('sending to a core that has exited throws with the reason, instead of an uncaught EPIPE', async () => {
+  const dbPath = tempDbPath('epipe');
+  const home = tempHome('epipe');
+  const exits = [];
+  const sidecar = new AutomedSidecar({
+    dbPath,
+    env: { AUTOME_HOME: home },
+    onExit: (code, signal) => exits.push({ code, signal }),
+  }).start();
+
+  // Kill the core out from under the sidecar, the way a crash would.
+  sidecar._child.kill('SIGKILL');
+  await waitFor(() => exits.length === 1);
+
+  assert.throws(() => sidecar.send(aWrite()), /内核已退出/);
+  await assert.rejects(sidecar.request(aWrite('req-epipe', 'cmd-epipe')), /内核已退出/);
+
+  // And nothing lands on the event loop afterwards: an unhandled 'error' on
+  // stdin would surface here as an uncaught exception.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  fs.rmSync(dbPath, { force: true });
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('a stop we asked for is not reported as a crash', async () => {
+  // Otherwise every quit would spend one of the restart policy's three
+  // strikes, and a quit during a restart would look like a failing core.
+  const dbPath = tempDbPath('deliberate-stop');
+  const home = tempHome('deliberate-stop');
+  const exits = [];
+  const sidecar = new AutomedSidecar({
+    dbPath,
+    env: { AUTOME_HOME: home },
+    onExit: (code, signal) => exits.push({ code, signal }),
+  }).start();
+
+  await sidecar.stop();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(exits.length, 0);
+
+  fs.rmSync(dbPath, { force: true });
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 async function waitFor(predicate, timeoutMs = 5000) {
   const start = Date.now();
   while (!predicate()) {

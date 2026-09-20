@@ -305,6 +305,47 @@ async function run() {
     disconnected
   );
 
+  // ---- a core that will not start says so, in the window ----------------
+  // The failure this pins: the core refused to open its database, exited,
+  // was restarted a second later, refused again, and kept doing it — while
+  // the only thing on screen was "内核不可达". The reason exists; it was
+  // simply never carried from the core's stderr to the user's eyes.
+  const fatalReason = '/tmp/x.sqlite3 不是 Autome 2.0 的数据库：它已经有 `projects` 表';
+  win.webContents.send('autome:core-status', {
+    connected: false,
+    fatal: true,
+    reason: fatalReason,
+    attempts: 3,
+  });
+  const fatalBanner = await evaluate(async (reason) => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const banner = document.querySelector('.offline-banner');
+    return {
+      text: banner.textContent,
+      carriesTheReason: banner.textContent.includes(reason),
+      button: banner.querySelector('button').textContent,
+    };
+  }, fatalReason);
+  check(
+    'a core that has stopped being restarted puts its own reason in the banner, and offers a restart',
+    fatalBanner.carriesTheReason && fatalBanner.button === '重启内核',
+    fatalBanner
+  );
+
+  // And the ordinary case is unchanged: a core that is coming back gets the
+  // sentence that says to wait, not one that asks the user to act.
+  win.webContents.send('autome:core-status', { connected: false, fatal: false, reason: null });
+  const transientBanner = await evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const banner = document.querySelector('.offline-banner');
+    return { text: banner.textContent, button: banner.querySelector('button').textContent };
+  });
+  check(
+    'a core that is still being restarted keeps the wait-it-out banner',
+    transientBanner.text.includes('内核不可达') && transientBanner.button === '重试',
+    transientBanner
+  );
+
   // Requirement: never render unverified state as verified — every write
   // control must be genuinely disabled, not merely dimmed by CSS.
   const writesDisabled = await evaluate(async () => {

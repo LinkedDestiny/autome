@@ -183,10 +183,16 @@ impl Store {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap_or(0);
+        self.refuse_a_database_that_is_not_ours(version)?;
 
         if version < 1 {
+            // Every block below is one transaction, `user_version` included.
+            // A crash between creating the tables and recording the version
+            // would otherwise leave a database that is ours but cannot say
+            // so — indistinguishable, to the guard above, from a stranger's.
             self.conn.execute_batch(
                 r#"
+                BEGIN;
                 CREATE TABLE projects (
                     id              TEXT PRIMARY KEY,
                     path            TEXT NOT NULL UNIQUE,
@@ -254,9 +260,10 @@ impl Store {
                     at         TEXT NOT NULL
                 );
                 CREATE INDEX events_by_subject ON events (subject_id, seq);
+                PRAGMA user_version = 1;
+                COMMIT;
                 "#,
             )?;
-            self.conn.pragma_update(None, "user_version", 1)?;
         }
 
         // v2: the observation layer. Until now the ledger recorded that a
@@ -271,6 +278,7 @@ impl Store {
         if version < 2 {
             self.conn.execute_batch(
                 r#"
+                BEGIN;
                 ALTER TABLE tasks ADD COLUMN protocol_ref TEXT;
                 ALTER TABLE tasks ADD COLUMN rules_hash TEXT;
                 ALTER TABLE tasks ADD COLUMN metrics TEXT;
@@ -318,10 +326,57 @@ impl Store {
                     state       TEXT NOT NULL,
                     outcome     TEXT
                 );
+                PRAGMA user_version = 2;
+                COMMIT;
                 "#,
             )?;
-            self.conn
-                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+        Ok(())
+    }
+
+    /// The gate in front of `migrate`, and the reason it exists.
+    ///
+    /// `migrate` decides what to do from `user_version` alone. That is right
+    /// for our own databases and wrong for every other file that can end up
+    /// at the same path: an earlier prototype's, a newer build's, or one a
+    /// user copied there by hand. A stranger's database reads as version 0,
+    /// so the v1 block runs against tables that already exist and SQLite
+    /// answers `table projects already exists` — a sentence about SQL, thrown
+    /// from a process that then exits, to a shell that restarts it and gets
+    /// the same sentence a second later, forever.
+    ///
+    /// So the two cases are named here instead. Neither is recoverable by
+    /// retrying, and both say which file and what to do about it.
+    fn refuse_a_database_that_is_not_ours(&self, version: i64) -> Result<()> {
+        if version == 0 {
+            let occupant: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT name FROM sqlite_master
+                     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                     ORDER BY name LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(table) = occupant {
+                return Err(StoreError::Conflict {
+                    detail: format!(
+                        "{} 不是 Autome 2.0 的数据库：它已经有 `{table}` 表，却没有记录 schema 版本。\
+                         把这个文件改名移开（连同 -wal 和 -shm），重新启动会新建一个空库。",
+                        self.db_path.display()
+                    ),
+                });
+            }
+        }
+        if version > SCHEMA_VERSION {
+            return Err(StoreError::Conflict {
+                detail: format!(
+                    "{} 的 schema 版本是 {version}，这个 automed 只认到 {SCHEMA_VERSION}。\
+                     它是更新的版本写的：用那个版本打开，或者把文件改名移开后重新启动。",
+                    self.db_path.display()
+                ),
+            });
         }
         Ok(())
     }
@@ -2056,6 +2111,93 @@ mod tests {
         remove_db(&path);
         Store::open(&path).unwrap();
         Store::open(&path).unwrap();
+        let s = Store::open(&path).unwrap();
+        let v: i64 = s
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        drop(s);
+        remove_db(&path);
+    }
+
+    /// The bug this guards, in full: the desktop app's database path held a
+    /// file an earlier prototype had written — different tables, no
+    /// `user_version`. `migrate` read version 0, ran the v1 block, and SQLite
+    /// said `table projects already exists`. The core exited, Electron
+    /// restarted it a second later, and the loop ran for as long as the app
+    /// was open while the window said only "内核不可达".
+    #[test]
+    fn a_database_that_is_not_ours_is_refused_by_name() {
+        let path = std::env::temp_dir().join(format!(
+            "automed-store-foreign-{}.sqlite3",
+            std::process::id()
+        ));
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            // An earlier prototype's shape: event-sourced projections, and
+            // one table name that collides with ours.
+            conn.execute_batch(
+                "CREATE TABLE task_projections (aggregate_id TEXT PRIMARY KEY, state_json TEXT);
+                 CREATE TABLE projects (id TEXT PRIMARY KEY);",
+            )
+            .unwrap();
+        }
+
+        let message = match Store::open(&path) {
+            Ok(_) => panic!("a stranger's database was opened as if it were ours"),
+            Err(e) => e.to_string(),
+        };
+        // The file, so the user knows which one to move; the table, so they
+        // can tell a stranger's database from a corrupt one of ours; and what
+        // to do, because retrying is not it.
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains("projects"), "{message}");
+        assert!(message.contains("改名移开"), "{message}");
+        assert!(!message.contains("already exists"), "{message}");
+
+        remove_db(&path);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_rather_than_downgraded() {
+        let path = std::env::temp_dir().join(format!(
+            "automed-store-newer-{}.sqlite3",
+            std::process::id()
+        ));
+        remove_db(&path);
+        {
+            let s = Store::open(&path).unwrap();
+            s.conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
+        }
+
+        let message = match Store::open(&path) {
+            Ok(_) => panic!("a newer database was opened by an older build"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            message.contains(&(SCHEMA_VERSION + 1).to_string()),
+            "{message}"
+        );
+        assert!(message.contains(&SCHEMA_VERSION.to_string()), "{message}");
+
+        remove_db(&path);
+    }
+
+    /// An empty file at the path is not a stranger's database — it is where
+    /// every first run starts.
+    #[test]
+    fn an_empty_file_at_the_path_still_migrates() {
+        let path = std::env::temp_dir().join(format!(
+            "automed-store-empty-{}.sqlite3",
+            std::process::id()
+        ));
+        remove_db(&path);
+        std::fs::write(&path, b"").unwrap();
+
         let s = Store::open(&path).unwrap();
         let v: i64 = s
             .conn

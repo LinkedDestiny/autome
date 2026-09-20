@@ -21,6 +21,11 @@ const { encodeFrame, FrameDecoder } = require('./framing');
 
 const MAX_FRAME_LEN = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+// Enough of the core's stderr to explain why it died, and not a byte more:
+// this is kept so a failure can be *named* in the window, not so the app can
+// hold a log.
+const DIAGNOSTIC_LINES = 40;
+const MAX_REASON_LENGTH = 400;
 
 /**
  * Where the `automed` binary lives, in the three situations that exist.
@@ -75,6 +80,46 @@ class AutomedSidecar {
       this._handleOutbound(JSON.parse(frame.toString('utf8')));
     }, MAX_FRAME_LEN);
     this._env = env;
+    // The last few stderr lines, kept so `failureReason()` can say why the
+    // core died rather than only that it did.
+    this._diagnostics = [];
+    this._exited = false;
+    this._stopping = false;
+  }
+
+  _remember(line) {
+    this._diagnostics.push(line);
+    if (this._diagnostics.length > DIAGNOSTIC_LINES) this._diagnostics.shift();
+  }
+
+  /**
+   * One sentence for why the core is not running, taken from its own stderr.
+   *
+   * The core reports a fatal startup failure the only way it can — a
+   * `tracing` line on stderr, then exit — so that line is the reason, and
+   * the window has nothing else to show the user.
+   *
+   * What comes back is the sentence the core wrote for a person, without the
+   * apparatus around it: the ANSI colours, the timestamp and target prefix,
+   * the English event name in front of it, and the structured fields trailing
+   * behind. `tracing` puts the human-readable part in `error=`, so that is
+   * what a banner gets when it is there.
+   */
+  failureReason() {
+    const plain = this._diagnostics
+      .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trim())
+      .filter(Boolean);
+    if (!plain.length) return null;
+    const line = [...plain].reverse().find((l) => /\bERROR\b/.test(l)) || plain[plain.length - 1];
+
+    const body = line.replace(/^.*?\bautomed\b:\s*/, '').replace(/^ERROR\s+/, '');
+    const field = /(?:^|\s)error=([\s\S]*)$/.exec(body);
+    const message =
+      (field ? field[1] : body).replace(/(\s+\w+=(?:"[^"]*"|\S+))+$/, '').trim() || line;
+
+    return message.length > MAX_REASON_LENGTH
+      ? `${message.slice(0, MAX_REASON_LENGTH)}…`
+      : message;
   }
 
   _handleOutbound(outbound) {
@@ -118,23 +163,64 @@ class AutomedSidecar {
       stderrTail += chunk;
       const lines = stderrTail.split('\n');
       stderrTail = lines.pop();
-      for (const line of lines) this._onStderrLine(line);
+      for (const line of lines) {
+        this._remember(line);
+        this._onStderrLine(line);
+      }
     });
-    this._child.on('exit', (code, signal) => {
-      this._rejectAllPending(
-        new Error(`automed process exited before replying (code=${code}, signal=${signal})`)
-      );
-      this._onExit(code, signal);
+    // A binary that is missing or not executable fails here, not at `exit`:
+    // Node reports it as an `error` event and never emits `exit` at all.
+    // Without this listener that event is an unhandled `error`, which throws
+    // out of the event loop and takes Main down — the one failure mode the
+    // window can least afford, since Main is what would have reported it.
+    this._child.on('error', (err) => {
+      this._remember(`ERROR 无法启动内核 ${this._binaryPath}：${err.message}`);
+      this._finish(null, null);
     });
+    // stdin reports a write to a dead process asynchronously, on the stream,
+    // after `send()` has already returned. Unhandled, that is an uncaught
+    // EPIPE in Main. `send()` throws synchronously for the same condition;
+    // this is only here so the late echo of it is not fatal.
+    this._child.stdin.on('error', (err) => {
+      this._remember(`ERROR 写入内核失败：${err.message}`);
+    });
+    this._child.on('exit', (code, signal) => this._finish(code, signal));
     return this;
+  }
+
+  // Both ways a child can end — `exit` and a failed spawn — converge here, so
+  // callers get exactly one notification either way.
+  _finish(code, signal) {
+    if (this._exited) return;
+    this._exited = true;
+    this._rejectAllPending(
+      new Error(`automed process exited before replying (code=${code}, signal=${signal})`)
+    );
+    if (this._stopping) return;
+    this._onExit(code, signal);
   }
 
   // Fire-and-forget: writes the Command frame and returns immediately,
   // without waiting for (or even decoding) its Reply. Prefer `request()`
   // for any caller that needs to know the outcome.
+  //
+  // Throws rather than writing into a closed pipe: a dead core is a fact the
+  // caller has to handle, and `request()` turns this into a rejection.
   send(command) {
     if (!this._child) throw new Error('sidecar not started');
-    this._child.stdin.write(encodeFrame(Buffer.from(JSON.stringify(command), 'utf8')));
+    if (this._exited || !this._child.stdin.writable) {
+      throw new Error(`内核已退出，命令没有送达${this._because()}`);
+    }
+    try {
+      this._child.stdin.write(encodeFrame(Buffer.from(JSON.stringify(command), 'utf8')));
+    } catch (err) {
+      throw new Error(`写入内核失败：${err.message}`);
+    }
+  }
+
+  _because() {
+    const reason = this.failureReason();
+    return reason ? `：${reason}` : '';
   }
 
   // Sends `command` and resolves with its decoded Reply, correlated by
@@ -170,6 +256,9 @@ class AutomedSidecar {
   async stop(graceMs = 2000) {
     if (!this._child) return;
     const child = this._child;
+    // A stop we asked for is not a crash, and must not be counted as one by
+    // whatever restart policy is watching `onExit`.
+    this._stopping = true;
     this._child = null;
     child.stdin.end();
     await new Promise((resolve) => {

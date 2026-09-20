@@ -22,7 +22,7 @@
 import { h, clear, icon, text } from './lib/dom.js';
 import {
   isConnected, onConnectionChange, setConnected, onEvent, onCoreStatus,
-  readOr, resetWriteControls,
+  readOr, resetWriteControls, attempt,
 } from './lib/api.js';
 import { notify } from './lib/notify.js';
 import * as theme from './lib/theme.js';
@@ -361,23 +361,68 @@ function renderRecent(projectEntries) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Why the core is not running, once Main has stopped restarting it, or `null`
+ * while a restart is still coming. The distinction is the whole point: a
+ * core that is being restarted is a blink the user can wait out, and one that
+ * has failed to start three times is a fact they have to act on.
+ */
+let coreFailure = null;
+let bannerMessage = null;
+let bannerButton = null;
+
+/**
  * The offline banner. `body.offline` also drives the design's own dimming of
  * write affordances, but the real gate is `registerWrite` setting `disabled`
  * — CSS `pointer-events: none` is a look, not a lock.
  */
 function connectionBanner() {
-  const banner = h('div.offline-banner', [
-    icon('warn'),
-    text('内核不可达：显示的是最后一次读到的内容，所有写操作已禁用。'),
-  ]);
-  banner.appendChild(
-    h('button.btn.btn--sm.ml-auto', { type: 'button', onClick: () => refresh() }, [text('重试')])
-  );
+  bannerMessage = h('span');
+  bannerButton = h('button.btn.btn--sm.ml-auto', {
+    type: 'button',
+    onClick: () => retryCore(),
+  });
+  const banner = h('div.offline-banner', [icon('warn'), bannerMessage, bannerButton]);
+  paintConnectionBanner();
   return banner;
+}
+
+/**
+ * Writes the current failure into the banner already on screen. The banner is
+ * built once per render, but the core can die between renders — and the
+ * moment it does is exactly when its reason is worth reading.
+ */
+function paintConnectionBanner() {
+  if (!bannerMessage || !bannerButton) return;
+  if (coreFailure) {
+    bannerMessage.textContent = `内核起不来：${coreFailure}`;
+    bannerButton.textContent = '重启内核';
+  } else {
+    bannerMessage.textContent = '内核不可达：显示的是最后一次读到的内容，所有写操作已禁用。';
+    bannerButton.textContent = '重试';
+  }
+}
+
+/**
+ * The banner's button. While a restart is still expected it retries the read;
+ * once Main has given up, only a new core will help, so it asks for one — and
+ * the answer is the core's own sentence either way.
+ */
+async function retryCore() {
+  if (!coreFailure) return refresh();
+  const outcome = await attempt({
+    label: '重启内核',
+    run: (write) => write.restartCore(),
+    success: '内核已经起来了',
+  });
+  if (!outcome.ok) return;
+  coreFailure = null;
+  paintConnectionBanner();
+  await refresh();
 }
 
 function applyConnection(connected) {
   document.body.classList.toggle('offline', !connected);
+  paintConnectionBanner();
   renderCorePill();
 }
 
@@ -412,11 +457,24 @@ export function start() {
     const connected = Boolean(status && status.connected);
     setConnected(connected);
     if (connected) {
+      coreFailure = null;
+      paintConnectionBanner();
       notify('info', '内核已恢复', status && status.restarted ? '自动重启完成，正在重新读取。' : undefined);
       queueRefresh();
-    } else {
-      notify('warning', '内核已断开', '写操作已禁用，正在等待自动重启。');
+      return;
     }
+    // `fatal` means Main has stopped restarting it: retrying on a timer would
+    // only repeat a failure that is not going to resolve itself, so the
+    // reason goes on screen and the next attempt is the user's.
+    if (status && status.fatal) {
+      coreFailure = status.reason || `内核连续 ${status.attempts || 0} 次启动失败，没有留下原因`;
+      paintConnectionBanner();
+      notify('error', '内核起不来', `${coreFailure} 处理之后点「重启内核」。`);
+      return;
+    }
+    coreFailure = null;
+    paintConnectionBanner();
+    notify('warning', '内核已断开', '写操作已禁用，正在等待自动重启。');
   });
 
   renderNav();
