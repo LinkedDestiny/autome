@@ -547,7 +547,18 @@ fn epoch_secs(ts: &str) -> Option<i64> {
 /// Labelled as a sweep, so a reader can tell it apart from a commit the agent
 /// made deliberately.
 fn sweep_commit(project: &Project, task: &TaskRecord, session: &Session) -> Result<()> {
-    let worktree = task_cwd(project, &task.slug);
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+    for slot in &layout.repos {
+        sweep_one(&slot.worktree, task, session)?;
+    }
+    Ok(())
+}
+
+/// Sweeps one checkout. A workspace task has several, and a round that edited
+/// two repositories and committed in neither would otherwise lose the half
+/// the sweep did not look at.
+fn sweep_one(worktree: &Path, task: &TaskRecord, session: &Session) -> Result<()> {
+    let worktree = worktree.to_path_buf();
     if !worktree.exists() {
         return Ok(());
     }
@@ -648,12 +659,18 @@ fn read_outcome(
 /// for the wrong one compiles, runs, and writes the design document where
 /// nobody reads it.
 fn task_cwd(project: &Project, slug: &str) -> PathBuf {
-    TaskLayout::single(project, slug).cwd
+    // Neither of these depends on *which* repositories the task is working
+    // in — a workspace task's directory and its document checkout are the
+    // same two places whatever the set contains — so an empty set is the
+    // right thing to ask with, and asking this way is what keeps
+    // `working_repos` (which reads the document out of the document
+    // checkout) from having to know the set before it can find it.
+    TaskLayout::of(project, slug, &[]).cwd
 }
 
 /// The checkout holding `<doc_root>/<slug>/…`.
 fn task_docs_root(project: &Project, slug: &str) -> PathBuf {
-    TaskLayout::single(project, slug).docs_root
+    TaskLayout::of(project, slug, &[]).docs_root
 }
 
 /// Starts queued tasks while their project has a free slot (design §8).
@@ -1034,6 +1051,26 @@ fn perform(
     }
 }
 
+/// The repositories a workspace task is working in, as its own design
+/// document names them.
+///
+/// The set lives in the document rather than in a table beside it, for the
+/// same reason every other fact about a task's progress does: it travels with
+/// the branch, it survives a machine change, and a second copy in SQLite is a
+/// second answer to the same question. The intake round writes the `repos:`
+/// line; later rounds may add to it.
+///
+/// Empty for a single-repository project, which has one repository and no
+/// line to read.
+fn working_repos(project: &Project, task: &TaskRecord) -> Vec<String> {
+    if !project.is_workspace() {
+        return Vec::new();
+    }
+    read_status(project, task)
+        .map(|s| s.repos)
+        .unwrap_or_default()
+}
+
 /// Starts a session for a node. Failures here become a task failure rather
 /// than an error the user has to interpret: a missing CLI or a blocked
 /// configuration is a fact about the task's situation, not a bug.
@@ -1047,15 +1084,44 @@ fn start_session(
 ) -> Result<()> {
     let repo = PathBuf::from(&project.path);
 
-    // The worktree is created lazily, on the first session that needs it: a
-    // queued task should not hold a checkout.
-    let worktree = task_cwd(project, &task.slug);
-    if !worktree.exists() {
-        git::worktree_prune(&repo)?;
-        let rel = format!(".worktree/{}", task.slug);
-        git::worktree_add(&repo, &rel, &task.branch(), &project.default_branch)?;
-        write_task_inputs(ctx, task, project, &worktree)?;
+    // Which repositories this task works in. For a workspace it is whatever
+    // the intake round wrote into the design document's `repos:` line, read
+    // back from the document rather than kept in a table of its own — task
+    // progress lives in the repository, and a second copy in SQLite is a
+    // second answer to the same question.
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+
+    // Checkouts are created lazily, on the first session that needs one: a
+    // queued task should not hold one. A workspace grows its set as the
+    // document names more repositories, so this runs for every session and
+    // creates only what is missing.
+    let first_time = !layout.docs_root.exists();
+    for slot in &layout.repos {
+        if slot.worktree.exists() {
+            continue;
+        }
+        // The directory a checkout goes *into*, never the checkout's own path:
+        // `git worktree add` creates that itself, and pre-creating it makes
+        // the add a no-op that leaves a plain directory where a checkout
+        // should be. For a single repository that directory is `.worktree/`,
+        // which is gitignored — so everything the task then wrote was ignored
+        // too, and the first `git add` said so.
+        if let Some(parent) = slot.worktree.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| err(format!("无法创建 {}：{e}", parent.display())))?;
+        }
+        git::worktree_prune(&slot.repo_root)?;
+        git::worktree_add(
+            &slot.repo_root,
+            &slot.worktree.to_string_lossy(),
+            &slot.branch,
+            &slot.base,
+        )?;
     }
+    if first_time {
+        write_task_inputs(ctx, task, project, &layout.docs_root)?;
+    }
+    let worktree = layout.docs_root.clone();
 
     // Which rules this task is held to, decided once and then frozen. A task
     // that started under v6 keeps running under v6 even if the user releases
@@ -1102,12 +1168,26 @@ fn start_session(
         )?,
         None => String::new(),
     };
+    // Where this round runs.
+    //
+    // Every round but one runs in the task's own directory. The intake round
+    // of a workspace runs at the workspace root instead: it is the round that
+    // decides *which* repositories the task touches, and it cannot decide that
+    // from inside a directory holding only the one checkout that exists before
+    // it has spoken. The same shape as the onboarding round, which has run at
+    // the project root since the beginning.
+    let session_cwd = if project.is_workspace() && kind == SessionKind::Intake {
+        repo.clone()
+    } else {
+        layout.cwd.clone()
+    };
+
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         templates: &protocol,
         brief_path: &brief_path,
         slug: &task.slug,
-        doc_dir: &TaskLayout::single(project, &task.slug).doc_dir_from_cwd(&task.doc_dir()),
+        doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
         design_rounds: resolved.loop_defaults.design_rounds,
         task_metrics: task_metrics.as_ref(),
         budget,
@@ -1123,10 +1203,10 @@ fn start_session(
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id: &session_id,
         task_id: &task.id,
-        cwd: &worktree,
+        cwd: &session_cwd,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config, &worktree),
+        args: launcher::build_args(&role_config, &layout.worktrees()),
         prompt,
         mode: ctx.launch_mode,
     })?;
@@ -1446,33 +1526,12 @@ fn write_task_inputs(
 /// Runs a core step and feeds the result back through the transition table.
 fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     let project = ctx.store.get_project(&task.project_id)?;
-    let repo = PathBuf::from(&project.path);
-    let worktree = task_cwd(&project, &task.slug);
+    let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, task));
 
     let result = match node {
-        Node::Rebase => match git::rebase(&worktree, &project.default_branch) {
-            Ok(git::RebaseOutcome::Clean) => CoreStepResult::Ok,
-            Ok(git::RebaseOutcome::Conflict { files, detail }) => {
-                CoreStepResult::Conflict { files, detail }
-            }
-            Err(e) => CoreStepResult::Failed {
-                detail: e.to_string(),
-            },
-        },
-        Node::Merging => {
-            let message = format!("merge(autome): {} {}", task.id, task.title);
-            match git::merge_task_branch(&repo, &project.default_branch, &task.branch(), &message) {
-                Ok(git::MergeOutcome::Merged { commit }) => {
-                    ctx.store.complete_task(&task.id, Some(&commit))?;
-                    CoreStepResult::Ok
-                }
-                Ok(git::MergeOutcome::Blocked { detail }) => CoreStepResult::Blocked { detail },
-                Err(e) => CoreStepResult::Failed {
-                    detail: e.to_string(),
-                },
-            }
-        }
-        Node::Cleanup => match cleanup(&repo, &worktree, task) {
+        Node::Rebase => rebase_all(&layout),
+        Node::Merging => merge_all(ctx, task, &layout)?,
+        Node::Cleanup => match cleanup(&layout) {
             Ok(()) => CoreStepResult::Ok,
             Err(e) => CoreStepResult::Failed {
                 detail: e.to_string(),
@@ -1487,18 +1546,152 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     Ok(())
 }
 
+/// Rebases every checkout onto its own base.
+///
+/// Any member conflicting stops the sweep and sends the task back to the
+/// implementation round with the files named. The paths are prefixed with the
+/// member's name, which is not decoration: the session's working directory is
+/// the one the checkouts sit in, so `backend/src/a.rs` is literally the path
+/// the round will type.
+fn rebase_all(layout: &TaskLayout) -> CoreStepResult {
+    let mut conflicts: Vec<String> = Vec::new();
+    let mut detail = String::new();
+    for slot in &layout.repos {
+        match git::rebase(&slot.worktree, &slot.base) {
+            Ok(git::RebaseOutcome::Clean) => {}
+            Ok(git::RebaseOutcome::Conflict { files, detail: d }) => {
+                conflicts.extend(files.into_iter().map(|f| prefixed(slot, &f)));
+                if detail.is_empty() {
+                    detail = d;
+                }
+            }
+            Err(e) => {
+                return CoreStepResult::Failed {
+                    detail: format!("{}{e}", where_(slot)),
+                };
+            }
+        }
+    }
+    if conflicts.is_empty() {
+        CoreStepResult::Ok
+    } else {
+        CoreStepResult::Conflict {
+            files: conflicts,
+            detail,
+        }
+    }
+}
+
+/// Merges every repository the task worked in, documents last.
+///
+/// N merges cannot be atomic, and pretending otherwise — rolling the earlier
+/// ones back — would mean `git reset --hard` on branches the user asked to
+/// have merged. So the honest shape is: merge what can be merged, report what
+/// could not, and let the user fix it and press again.
+///
+/// **Documents last.** The design document is the record of what happened; if
+/// it landed on `main` while a code repository was still blocked, `main` would
+/// carry a claim nothing else backs.
+///
+/// Idempotent by construction: a branch already contained in its base is
+/// skipped, asked of git rather than of a table, so a second press cannot
+/// produce a second merge commit.
+fn merge_all(ctx: &mut Ctx, task: &TaskRecord, layout: &TaskLayout) -> Result<CoreStepResult> {
+    let message = format!("merge(autome): {} {}", task.id, task.title);
+    let mut order: Vec<&crate::layout::RepoSlot> =
+        layout.repos.iter().filter(|r| !r.is_docs).collect();
+    order.push(layout.docs());
+
+    let mut merged: Vec<String> = Vec::new();
+    let mut blocked: Vec<String> = Vec::new();
+    let mut last_commit: Option<String> = None;
+
+    for slot in order {
+        if git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false) {
+            // Already in, from an earlier press or because the round changed
+            // nothing here. Either way there is nothing to merge.
+            continue;
+        }
+        match git::merge_task_branch(&slot.repo_root, &slot.base, &slot.branch, &message) {
+            Ok(git::MergeOutcome::Merged { commit }) => {
+                ctx.store.append_event(
+                    "merge.repo",
+                    &task.id,
+                    json!({ "repo": slot.name, "commit": commit }),
+                )?;
+                last_commit = Some(commit);
+                merged.push(slot.name.clone());
+            }
+            Ok(git::MergeOutcome::Blocked { detail }) => {
+                ctx.store.append_event(
+                    "merge.repo",
+                    &task.id,
+                    json!({ "repo": slot.name, "blocked": detail }),
+                )?;
+                blocked.push(format!("{}{detail}", where_(slot)));
+            }
+            Err(e) => {
+                return Ok(CoreStepResult::Failed {
+                    detail: format!("{}{e}", where_(slot)),
+                });
+            }
+        }
+    }
+
+    if !blocked.is_empty() {
+        let done = if merged.is_empty() {
+            String::new()
+        } else {
+            format!("已合并 {}；", merged.join("、"))
+        };
+        return Ok(CoreStepResult::Blocked {
+            detail: format!("{done}{}", blocked.join("；")),
+        });
+    }
+    // The commit recorded on the task is the last one, which is the document
+    // repository's — the one that carries the record of the whole task.
+    ctx.store.complete_task(&task.id, last_commit.as_deref())?;
+    Ok(CoreStepResult::Ok)
+}
+
+/// `backend/` in front of a path, for a workspace. Nothing for a single
+/// repository, whose slot has no name and whose paths are already right.
+fn prefixed(slot: &crate::layout::RepoSlot, path: &str) -> String {
+    if slot.name.is_empty() {
+        path.to_string()
+    } else {
+        format!("{}/{path}", slot.name)
+    }
+}
+
+/// `backend：` in front of a message, for the same reason.
+fn where_(slot: &crate::layout::RepoSlot) -> String {
+    if slot.name.is_empty() {
+        String::new()
+    } else {
+        format!("{}：", slot.name)
+    }
+}
+
 /// Removes the worktree and branch after a successful merge (requirement
 /// P-05). Not forced: a dirty worktree at this point means something
 /// unexpected, and the transition table treats a cleanup failure as
 /// non-fatal precisely so it can be surfaced rather than silently discarded.
-fn cleanup(repo: &Path, worktree: &Path, task: &TaskRecord) -> Result<()> {
-    if worktree.exists() {
-        let rel = format!(".worktree/{}", task.slug);
-        git::worktree_remove(repo, &rel, false)?;
+fn cleanup(layout: &TaskLayout) -> Result<()> {
+    for slot in &layout.repos {
+        if slot.worktree.exists() {
+            git::worktree_remove(&slot.repo_root, &slot.worktree.to_string_lossy(), false)?;
+        }
+        git::worktree_prune(&slot.repo_root)?;
+        if git::branch_exists(&slot.repo_root, &slot.branch) {
+            git::branch_delete(&slot.repo_root, &slot.branch, false)?;
+        }
     }
-    git::worktree_prune(repo)?;
-    if git::branch_exists(repo, &task.branch()) {
-        git::branch_delete(repo, &task.branch(), false)?;
+    // The directory the checkouts sat in is Autome's, not a repository's, and
+    // `git worktree remove` does not take it away. An empty one left behind
+    // would make the next task with the same slug look already started.
+    if layout.cwd.exists() {
+        let _ = std::fs::remove_dir(&layout.cwd);
     }
     Ok(())
 }
@@ -1766,7 +1959,10 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         cwd: &repo,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config, &repo),
+        // Onboarding runs in the project root. For a repository that is a
+        // checkout and `git_common_dirs` finds nothing outside it; for a
+        // workspace it is not a repository at all and finds nothing either.
+        args: launcher::build_args(&role_config, &[repo.as_path()]),
         prompt,
         mode: ctx.launch_mode,
     })?;

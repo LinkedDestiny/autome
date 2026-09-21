@@ -514,6 +514,9 @@ fn task_json(t: &crate::store::TaskRecord) -> Value {
         "archived": t.is_archived(),
         "protocol_ref": t.protocol_ref,
         "metrics": t.metrics,
+        // Where this task's documents live inside the repository holding
+        // them, frozen when it was created. The panel opens paths under it.
+        "doc_dir": t.doc_dir(),
     })
 }
 
@@ -1339,14 +1342,6 @@ fn create(
     doc_refs: Vec<String>,
 ) -> DispatchResult {
     let project = ctx.store.get_project(project_id)?;
-    // A workspace task means one branch per repository it touches, which the
-    // loop does not do yet. Refusing it by name beats starting one that
-    // cannot finish — which is how this whole line of work began.
-    if project.is_workspace() {
-        return Err(rejected(
-            "工作区项目还不能接任务：多仓任务（每个仓一条分支、一次合并）还没接通",
-        ));
-    }
     let doc_root = resolve_doc_root(
         &project,
         &config_io::load_project(std::path::Path::new(&project.path))?,
@@ -2572,9 +2567,14 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_refuses_tasks_by_name_until_multi_repo_lands() {
+    fn a_workspace_task_starts_in_its_document_repository() {
+        // Before the intake round has named anything, the only repository a
+        // workspace task works in is the one holding its documents — and the
+        // documents go under the workspace's own document root, not the
+        // member's top level, which already belongs to whoever owns that
+        // repository.
         needs_git!();
-        let mut sb = Sandbox::new("ws-task");
+        let mut sb = Sandbox::new("ws-first-task");
         let target = sb.path("ws");
         workspace_at(&target, &[("docs", "main"), ("backend", "main")]);
         let out = handle_command(
@@ -2593,13 +2593,42 @@ mod tests {
             sb.ctx(),
             &cmd(
                 "task.create",
-                json!({ "project_id": id, "request": "做点什么" }),
+                json!({ "project_id": id, "request": "加一个后台看板" }),
             ),
         );
-        let message = err_message(&out);
+        let payload = ok_payload(&out);
+        let slug = payload["task"]["slug"].as_str().unwrap().to_string();
+        assert_eq!(
+            payload["task"]["doc_dir"],
+            json!(format!("autome/{slug}")),
+            "the workspace default keeps Autome out of the document repository's top level"
+        );
+
+        // Creating the task starts its intake round, which checks out only
+        // what it needs: the document repository. `backend` is not checked out
+        // because nothing has said the task touches it yet — that is the
+        // intake round's job, and it says so in the document.
+        let dir = target.join(".worktree").join(&slug);
         assert!(
-            message.contains("工作区") && message.contains("还没接通"),
-            "a refusal the user can act on, got: {message}"
+            dir.join("docs").join(".git").exists(),
+            "the document repository is checked out"
+        );
+        assert!(
+            !dir.join("backend").exists(),
+            "a repository nobody has named is not checked out"
+        );
+        // And the checkout sits *beside* the others rather than containing
+        // them, so an agent's relative paths mean what they mean in the real
+        // workspace.
+        assert!(
+            dir.join("docs").join("autome").join(&slug).exists(),
+            "the task's documents are under the workspace's document root"
+        );
+        // Every member repository still has exactly one branch of its own plus
+        // the task's, and `backend` has not been touched at all.
+        assert!(
+            !git::branch_exists(&target.join("backend"), &format!("autome/{slug}")),
+            "no branch is cut in a repository the task has not named"
         );
     }
 

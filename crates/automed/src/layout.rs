@@ -159,11 +159,22 @@ impl TaskLayout {
     /// workspace the session starts one level up, beside the member
     /// checkouts, so the same directory is `<docs-member>/<doc_root>/<slug>`.
     pub fn doc_dir_from_cwd(&self, doc_dir: &str) -> String {
-        match self.docs_root.strip_prefix(&self.cwd) {
+        self.doc_dir_seen_from(&self.cwd, doc_dir)
+    }
+
+    /// The same, for a round that runs somewhere other than `cwd`.
+    ///
+    /// One round does: a workspace's intake runs at the workspace root,
+    /// because it is the round that decides which repositories the task
+    /// touches and it cannot see them from inside the task's directory. From
+    /// up there the documents are `.worktree/<slug>/<docs-member>/…`, and the
+    /// prompt has to say so or the round writes nothing anybody reads.
+    pub fn doc_dir_seen_from(&self, cwd: &Path, doc_dir: &str) -> String {
+        match self.docs_root.strip_prefix(cwd) {
             Ok(prefix) if prefix.as_os_str().is_empty() => doc_dir.to_string(),
             Ok(prefix) => format!("{}/{doc_dir}", prefix.display()),
-            // The documents are not under the working directory at all, which
-            // no constructor produces. Naming the directory the session cannot
+            // The documents are not under that directory at all, which no
+            // constructor produces. Naming a directory the session cannot
             // reach would be worse than naming the one it can.
             Err(_) => doc_dir.to_string(),
         }

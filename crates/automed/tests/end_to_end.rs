@@ -35,14 +35,23 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// being process-global.
 const FAKE_CLI: &str = r#"#!/bin/sh
 # Stand-in for claude/codex in the end-to-end suite.
-# Locates the repository root from the worktree we were started in, then runs
-# the next queued step script. Each step writes whatever a model would have
-# written for that node.
+# Finds the project root by walking up from wherever we were started, then
+# runs the next queued step script. Each step writes whatever a model would
+# have written for that node.
+#
+# Walking up rather than asking git: a workspace task's working directory is
+# not inside any repository — it is the directory the member checkouts sit in
+# — and `git rev-parse` there answers nothing (or, worse, names a stray
+# repository above it). `.autome/` sits at the project root in both shapes,
+# so looking for it finds the same place either way.
 set -u
-common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 90
-repo=$(dirname "$common")
-fake="$repo/.autome/fake"
-[ -d "$fake" ] || exit 91
+dir=$PWD
+fake=""
+while [ "$dir" != "/" ]; do
+  if [ -d "$dir/.autome/fake" ]; then fake="$dir/.autome/fake"; break; fi
+  dir=$(dirname "$dir")
+done
+[ -n "$fake" ] || exit 90
 # The counter is per-repository by default, which is what a single-task test
 # wants: steps 1,2,3... are that task's successive rounds. A test running
 # several tasks in one repository needs one counter each, or task A consumes
@@ -1988,4 +1997,280 @@ fn a_rule_gone_quiet_is_offered_for_removal_with_arguments_retire_accepts() {
         0,
         "a restored rule is not offered for removal again:\n{restored}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces: one project, several independent repositories
+// ---------------------------------------------------------------------------
+
+/// A workspace and its member repositories, laid out the way people actually
+/// have one: a plain directory, each child its own repository with its own
+/// history, nothing at the root.
+struct Workspace {
+    root: PathBuf,
+    ctx: Ctx,
+    project_id: String,
+}
+
+impl Workspace {
+    fn new(tag: &str, members: &[&str]) -> Self {
+        install_fake_cli();
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("automed-ws-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let autome_home = root.join("autome-home");
+        let home = root.join("home");
+        let ws = root.join("ws");
+        for d in [&autome_home, &home, &ws] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for m in members {
+            let dir = ws.join(m);
+            std::fs::create_dir_all(&dir).unwrap();
+            automed::git::init(&dir, "main").unwrap();
+            std::fs::write(dir.join("README.md"), format!("{m}\n")).unwrap();
+            automed::git::commit_paths(&dir, &["README.md"], "initial").unwrap();
+        }
+
+        let store = Store::open_in_memory().unwrap();
+        let mut ctx = Ctx::new(store, &autome_home, &home).headless();
+        let added = call(
+            &mut ctx,
+            "project.add",
+            json!({ "path": ws.to_str().unwrap(), "workspace": true, "docs_repo": "docs" }),
+        );
+        let project_id = ok(&added)["project"]["id"].as_str().unwrap().to_string();
+        call(
+            &mut ctx,
+            "project.onboarding.skip",
+            json!({ "project_id": project_id }),
+        );
+
+        std::fs::create_dir_all(ws.join(".autome/fake")).unwrap();
+        std::fs::write(ws.join(".autome/fake/next"), "1").unwrap();
+
+        Workspace {
+            root,
+            ctx,
+            project_id,
+        }
+    }
+
+    fn ws(&self) -> PathBuf {
+        self.root.join("ws")
+    }
+
+    fn member(&self, name: &str) -> PathBuf {
+        self.ws().join(name)
+    }
+
+    fn step(&self, n: u32, script: &str) {
+        std::fs::write(self.ws().join(format!(".autome/fake/{n}.sh")), script).unwrap();
+    }
+
+    /// What a round writes, from wherever that round runs.
+    ///
+    /// `docs_prefix` is the path from this round's working directory to the
+    /// document checkout: empty for every round but intake, which runs at the
+    /// workspace root and therefore has to reach down into `.worktree/`.
+    fn doc_step(&self, n: u32, slug: &str, docs_prefix: &str, body: &str, extra: &str) {
+        let doc_dir = if docs_prefix.is_empty() {
+            format!("docs/autome/{slug}")
+        } else {
+            format!("{docs_prefix}/docs/autome/{slug}")
+        };
+        let docs_checkout = if docs_prefix.is_empty() {
+            "docs".to_string()
+        } else {
+            format!("{docs_prefix}/docs")
+        };
+        self.step(
+            n,
+            &format!(
+                r#"set -e
+mkdir -p "{doc_dir}/evidence"
+cat > "{doc_dir}/{slug}.md" <<'AUTOME_EOF'
+{body}
+AUTOME_EOF
+k=$(grep -m1 '^implementation-round:' "{doc_dir}/{slug}.md" | sed 's#[^0-9]*\([0-9]*\)/.*#\1#')
+if [ -n "${{k:-}}" ] && [ "$k" != "0" ]; then
+  printf '命令：fake\n结果：通过\n' > "{doc_dir}/evidence/M-01-r$k-impl.md"
+  printf '复验：fake\n结论：通过\n' > "{doc_dir}/evidence/M-01-r$k-audit.md"
+  printf '轮次 | M-01 | 通过 | e | 无\n' >> "{doc_dir}/retro.md"
+fi
+{extra}
+cd "{docs_checkout}"
+git add -A . >/dev/null 2>&1 || true
+git -c user.name=fake -c user.email=f@f commit -q -m "docs {n}" >/dev/null 2>&1 || true
+"#
+            ),
+        );
+    }
+
+    fn settle(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            automed::scheduler::tick(&mut self.ctx);
+            let tasks = self.ctx.store.list_unfinished().unwrap();
+            let busy = tasks.iter().any(|t| {
+                matches!(t.state, autome_domain::task::TaskState::Active { node } if !node.awaits_user())
+            }) || !self.ctx.store.all_running_sessions().unwrap().is_empty();
+            if !busy {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop never reached quiet"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+    }
+
+    fn node(&self, task_id: &str) -> Option<String> {
+        match self.ctx.store.get_task(task_id).unwrap().state {
+            autome_domain::task::TaskState::Active { node } => Some(node.as_str().to_string()),
+            _ => None,
+        }
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn a_workspace_task_branches_in_every_repository_it_names_and_merges_them_all() {
+    needs_git!();
+    let mut w = Workspace::new("multi", &["docs", "backend", "untouched"]);
+    let request = "add a dashboard";
+    let slug = slug_for(request);
+
+    // 1 intake runs at the workspace root — it is the round that decides which
+    //   repositories the task touches, and it says so in `repos:`.
+    w.doc_step(
+        1,
+        &slug,
+        ".worktree/add-a-dashboard",
+        &ws_doc("设计中", 0, 0, &[], "backend"),
+        "",
+    );
+    // Every later round runs in the task's own directory, beside the checkouts.
+    w.doc_step(2, &slug, "", &ws_doc("设计中", 1, 0, &[], "backend"), "");
+    w.doc_step(3, &slug, "", &ws_doc("设计中", 1, 0, &[], "backend"), "");
+    w.doc_step(
+        4,
+        &slug,
+        "",
+        &ws_doc("实现中", 2, 0, &[("M-01", "开放")], "backend"),
+        "",
+    );
+    // The implementation round changes code in the *other* repository and
+    // commits it there. That commit is the thing the merge has to carry.
+    w.doc_step(
+        5,
+        &slug,
+        "",
+        &ws_doc("实现中", 2, 1, &[("M-01", "待审")], "backend"),
+        r#"printf 'dashboard\n' > backend/feature.txt
+(cd backend && git add -A . && git -c user.name=fake -c user.email=f@f commit -q -m "feat: dashboard")"#,
+    );
+    w.doc_step(
+        6,
+        &slug,
+        "",
+        &ws_doc("实现中", 2, 1, &[("M-01", "已完成")], "backend"),
+        "",
+    );
+    w.doc_step(
+        7,
+        &slug,
+        "",
+        &ws_doc("已完成", 2, 1, &[("M-01", "已完成")], "backend"),
+        &format!("printf '教训\n' > docs/autome/{slug}/lessons.md"),
+    );
+
+    let created = call(
+        &mut w.ctx,
+        "task.create",
+        json!({ "project_id": w.project_id, "request": request }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
+    w.settle();
+
+    // The intake round named `backend`, so it has a checkout and a branch; the
+    // repository nobody named has neither.
+    let dir = w.ws().join(".worktree").join(&slug);
+    assert!(dir.join("docs").exists(), "documents");
+    assert!(
+        dir.join("backend").exists(),
+        "the repository the round named"
+    );
+    assert!(
+        !dir.join("untouched").exists(),
+        "a repository nobody named is left alone"
+    );
+    assert!(automed::git::branch_exists(
+        &w.member("backend"),
+        &format!("autome/{slug}")
+    ));
+    assert!(!automed::git::branch_exists(
+        &w.member("untouched"),
+        &format!("autome/{slug}")
+    ));
+
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    call(&mut w.ctx, "task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // One press, every repository.
+    call(&mut w.ctx, "task.merge", json!({ "task_id": task_id }));
+    w.settle();
+
+    let task = w.ctx.store.get_task(&task_id).unwrap();
+    assert!(
+        matches!(task.state, autome_domain::task::TaskState::Done),
+        "got {:?}",
+        task.state
+    );
+    // The code landed on the member's own default branch…
+    assert!(
+        w.member("backend").join("feature.txt").exists(),
+        "the code repository's main carries the change"
+    );
+    // …and so did the record of what happened.
+    assert!(
+        w.member("docs")
+            .join(format!("autome/{slug}/{slug}.md"))
+            .exists(),
+        "the document repository's main carries the design document"
+    );
+    // Cleanup removed every checkout and every branch, in every member.
+    assert!(!dir.exists(), "the task directory is gone");
+    for m in ["docs", "backend"] {
+        assert!(
+            !automed::git::branch_exists(&w.member(m), &format!("autome/{slug}")),
+            "{m} still has the task branch"
+        );
+    }
+}
+
+/// A design document for a workspace task: the status block plus the `repos:`
+/// line that names what it works in.
+fn ws_doc(
+    status: &str,
+    design_round: u32,
+    impl_round: u32,
+    milestones: &[(&str, &str)],
+    repos: &str,
+) -> String {
+    let base = doc(status, design_round, impl_round, milestones);
+    base.replacen(
+        "next-action: 无",
+        &format!("next-action: 无\nrepos: {repos}"),
+        1,
+    )
 }
