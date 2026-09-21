@@ -787,8 +787,56 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         }
     }
 
-    perform(ctx, &task, &project, &resolved, &transition)?;
+    if let Err(e) = perform(ctx, &task, &project, &resolved, &transition) {
+        record_failed_action(ctx, task_id, &transition, &e);
+        return Err(e);
+    }
     Ok(true)
+}
+
+/// Turns an action that could not be carried out into a task the user can see
+/// has stopped, and why.
+///
+/// The state was already written (see the ordering note on `advance`), so an
+/// action that then fails leaves a task *active at a node with no session*.
+/// Nothing retries it: `fill_slots` only looks at queued tasks, and `recover`
+/// only runs at startup. Before this existed, the error went to a
+/// `tracing::warn` nobody reads and the task sat on the dashboard as "运行中"
+/// forever — which is exactly how a workspace directory whose `docs/` is a
+/// nested repository stalled its first task with no message at all.
+///
+/// `FailureReason::Config` is the right reason and not a new variant:
+/// "一个配置问题挡住了启动" is what a missing CLI, a SAME-MODEL collision and
+/// an unwritable document root all are, and the failure panel already renders
+/// it. `start_session`'s own doc comment promised this behaviour; only the
+/// code was missing.
+///
+/// Best-effort by construction: the caller is already returning an error, and
+/// failing to *record* a failure must not replace the original one.
+fn record_failed_action(
+    ctx: &mut Ctx,
+    task_id: &str,
+    transition: &Transition,
+    error: &SchedulerError,
+) {
+    let TaskState::Active { node } = transition.next else {
+        return;
+    };
+    let failed = TaskState::Failed {
+        reason: FailureReason::Config {
+            detail: error.to_string(),
+        },
+        at: node,
+    };
+    if let Err(e) = ctx.store.set_task_state(task_id, &failed) {
+        tracing::error!(task = %task_id, error = %e, "could not record a failed launch");
+        return;
+    }
+    let _ = ctx.store.append_event(
+        "task.updated",
+        task_id,
+        json!({ "state": failed, "trigger": "action_failed" }),
+    );
 }
 
 /// Folds a finished task into `TaskMetrics` and stores it.
@@ -2740,6 +2788,95 @@ mod tests {
         assert_eq!(std::fs::read_to_string(archived).unwrap(), "设计内容\n");
         assert!(!w.repo.join(".worktree/a").exists());
         assert!(!git::branch_exists(&w.repo, "autome/a"));
+    }
+
+    // ---- a launch that fails is a failure the user can see -----------------
+
+    /// Reproduces the real failure this behaviour was found through: `docs/`
+    /// is an independent Git repository, so the outer repository holds it as a
+    /// gitlink and `git add docs/<slug>/…` refuses. The first thing a session
+    /// commits is its frozen protocol copy, so the task dies before its first
+    /// round — with the worktree and the protocol copy already on disk, which
+    /// is what made it look like it had started.
+    fn nest_a_repository_under_docs(w: &mut World, task: &TaskRecord) {
+        let wt = w.with_worktree(task);
+        let docs = wt.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        git::init(&docs, "main").unwrap();
+        std::fs::write(docs.join("README.md"), "独立的文档仓库\n").unwrap();
+        git::commit_paths(&docs, &["README.md"], "docs init").unwrap();
+        // Exactly what the onboarding init commit did to the user's directory.
+        git::commit_paths(&wt, &["docs"], "record docs as a gitlink").unwrap();
+    }
+
+    #[test]
+    fn a_task_whose_session_cannot_start_fails_visibly_rather_than_sitting_active() {
+        // The defect this pins: `advance` writes the new state *before*
+        // performing the action, so an action that fails used to leave the task
+        // Active at a node with no session — and nothing retries that.
+        // `fill_slots` only looks at queued tasks, so it sat on the dashboard as
+        // 运行中, forever, with the reason in a `tracing::warn` nobody reads.
+        let mut w = World::new("launch-fails");
+        let task = w.add_task("T-1", "t1");
+        nest_a_repository_under_docs(&mut w, &task);
+
+        let report = tick(&mut w.ctx);
+
+        match w.state("T-1") {
+            TaskState::Failed {
+                reason: FailureReason::Config { detail },
+                at,
+            } => {
+                assert_eq!(at, Node::Intake, "the node it failed at is named");
+                assert!(
+                    detail.contains("嵌套") && detail.contains("docs"),
+                    "the reason names the nested repository and what to do: {detail}"
+                );
+            }
+            other => panic!("expected a visible failure, got {other:?}"),
+        }
+        assert!(
+            w.ctx.store.running_session("T-1").unwrap().is_none(),
+            "no session was started, which is the whole problem"
+        );
+        assert!(
+            !report.tasks_started.contains(&"T-1".to_string()),
+            "a task that could not start was not started"
+        );
+
+        let kinds: Vec<String> = w
+            .ctx
+            .store
+            .events_since(0, 100)
+            .unwrap()
+            .into_iter()
+            .map(|(_, kind, _)| kind)
+            .collect();
+        assert!(
+            kinds.iter().filter(|k| *k == "task.updated").count() >= 2,
+            "the failure is in the event stream, not only in the row: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_launch_does_not_block_the_rest_of_the_queue() {
+        // The queue must survive one task it cannot start. `fill_slots` already
+        // intended this — it catches the error per task — but a task left
+        // Active also holds a slot it is not using, so the recorded failure is
+        // what actually frees the queue.
+        let mut w = World::new("launch-fails-queue");
+        let broken = w.add_task("T-1", "t1");
+        w.add_task("T-2", "t2");
+        nest_a_repository_under_docs(&mut w, &broken);
+
+        tick(&mut w.ctx);
+
+        assert!(matches!(w.state("T-1"), TaskState::Failed { .. }));
+        assert!(
+            matches!(w.state("T-2"), TaskState::Active { node: Node::Intake }),
+            "the healthy task behind it still started, got {:?}",
+            w.state("T-2")
+        );
     }
 
     // ---- slots -----------------------------------------------------------

@@ -399,6 +399,37 @@ pub fn head_sha(repo: &Path) -> Result<String> {
 // Commits
 // ---------------------------------------------------------------------------
 
+/// Rewrites git's "is in submodule" refusal into a sentence someone can act on.
+///
+/// `git add docs/x/y.md` fails with `fatal: Pathspec '…' is in submodule
+/// 'docs'` when `docs/` is a *nested repository* — its own checkout, recorded
+/// in the outer index as a gitlink. git's wording says what it will not do and
+/// nothing about why or what to change, and the same words appear whether the
+/// nesting was deliberate (an independent docs repository) or accidental (a
+/// `git init` over a directory that already held repositories).
+///
+/// One real directory hit exactly this and the task stalled with the raw
+/// sentence nowhere the user could see it, so the extra clause names the
+/// directory and points at the two ways out.
+fn explain_nested_repository(mut e: GitError) -> GitError {
+    const MARKER: &str = "is in submodule";
+    if !e.stderr.contains(MARKER) && !e.detail.contains(MARKER) {
+        return e;
+    }
+    let nested = e
+        .stderr
+        .rsplit_once(MARKER)
+        .map(|(_, rest)| rest.trim().trim_matches(['\'', '"', '.', ' ']).to_string())
+        .filter(|s| !s.is_empty() && s.len() < 200)
+        .unwrap_or_else(|| "那个目录".to_string());
+    e.detail = format!(
+        "{} —— `{nested}` 是一个嵌套的 git 仓库，外层仓库只能把它记成一条 gitlink，\
+         没法提交它里面的文件。要么把任务文档换到别的目录，要么把这个目录从外层仓库里挪开。",
+        e.detail
+    );
+    e
+}
+
 /// Stages the given paths and commits them under Autome's identity.
 ///
 /// Used for exactly two things: the init commit (requirement C-03) and the
@@ -411,7 +442,7 @@ pub fn commit_paths(repo: &Path, paths: &[&str], message: &str) -> Result<Option
     }
     let mut args = vec!["add", "--"];
     args.extend_from_slice(paths);
-    run_ok(repo, &args)?;
+    run_ok(repo, &args).map_err(explain_nested_repository)?;
 
     // Nothing staged means nothing to do: re-running init on an unchanged
     // repository must not produce an empty commit.
@@ -878,6 +909,44 @@ mod tests {
         assert!(env.contains_key("GIT_EDITOR"));
         assert!(env.contains_key("GIT_SEQUENCE_EDITOR"));
         assert_eq!(env.get("LC_ALL").map(String::as_str), Some("C"));
+    }
+
+    fn add_error(stderr: &str) -> GitError {
+        GitError {
+            argv: vec!["add".into()],
+            code: Some(128),
+            stderr: stderr.to_string(),
+            detail: first_meaningful_line(stderr).unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn a_nested_repository_refusal_says_which_directory_and_what_to_do() {
+        // Verbatim from the machine this was found on.
+        let e = explain_nested_repository(add_error(
+            "fatal: Pathspec 'docs/做一个新的dashboard面板/protocol/prompts/intake.md' \
+             is in submodule 'docs'\n",
+        ));
+        assert!(e.detail.contains("docs"), "{}", e.detail);
+        assert!(e.detail.contains("嵌套"), "{}", e.detail);
+        // git's own sentence is kept: it is what a search engine matches on.
+        assert!(e.detail.contains("fatal: Pathspec"), "{}", e.detail);
+    }
+
+    #[test]
+    fn an_unrelated_git_failure_is_passed_through_untouched() {
+        let before = add_error("fatal: not a git repository\n");
+        let after = explain_nested_repository(before.clone());
+        assert_eq!(after.detail, before.detail);
+    }
+
+    #[test]
+    fn an_unparseable_submodule_name_still_produces_usable_advice() {
+        // The marker is there but the name is not where we expect it. Better a
+        // vaguer sentence than a panic or a misnamed directory.
+        let e = explain_nested_repository(add_error("error: is in submodule\n"));
+        assert!(e.detail.contains("嵌套"), "{}", e.detail);
+        assert!(!e.detail.contains("``"), "no empty name: {}", e.detail);
     }
 
     #[test]
