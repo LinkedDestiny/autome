@@ -21,6 +21,7 @@ const path = require('node:path');
 const { app, BrowserWindow, ipcMain, session, dialog, shell } = require('electron');
 const { AutomedSidecar } = require('./src/sidecar');
 const { nextRestart } = require('./src/core-restart');
+const { corePathEnv } = require('./src/login-path');
 const appProtocol = require('./src/app-protocol');
 const ipcGate = require('./src/ipc-gate');
 const writeGate = require('./src/write-gate');
@@ -36,6 +37,10 @@ let commandCounter = 0;
 let coreDbPath = null;
 // Consecutive starts that did not survive; see src/core-restart.js.
 let coreQuickFailures = 0;
+// The PATH overlay for the core, resolved once from the login shell (see
+// src/login-path.js) rather than per start: a restart loop must not spawn a
+// shell per attempt, and the user's PATH does not change between them.
+let coreEnv;
 
 // Two independent generators: §14 needs `command_id` to stay stable across a
 // retry, which only holds if it is not also incremented every time a
@@ -334,9 +339,18 @@ function broadcast(channel, payload) {
 
 function startSidecar(dbPath) {
   const startedAt = Date.now();
+  // A GUI launch inherits launchd's PATH, in which `claude`, `codex`, `npm`
+  // and `brew` do not exist — the core would then probe a fully-provisioned
+  // machine and report them 未安装. Resolved lazily so the log line lands once,
+  // next to the start it applies to.
+  if (coreEnv === undefined) {
+    coreEnv = corePathEnv();
+    if (coreEnv) console.log('[automed] core PATH from login shell:', coreEnv.PATH);
+  }
   let instance = null;
   instance = new AutomedSidecar({
     dbPath,
+    env: coreEnv || undefined,
     onEvent: (event) => broadcast('autome:event', event),
     onStderrLine: (line) => console.error('[automed]', line),
     onExit: (code, signal) => {
