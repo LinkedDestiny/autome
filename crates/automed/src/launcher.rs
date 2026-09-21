@@ -746,9 +746,37 @@ fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // A session runs `git` itself — that is how a round's work gets committed
+    // — and `GIT_DIR`, `GIT_INDEX_FILE` and their relatives override the
+    // directory it is standing in. Whatever set them, it was not the user
+    // asking for this round to commit somewhere else.
+    //
+    // This is not hypothetical: a Git hook exports them, so a core started
+    // from one hands every session a git pointed at the hook's repository.
+    // Found because the end-to-end suite runs from a post-commit hook, where
+    // the one test that did not swallow git's exit code reported 128 — and
+    // the ones that did swallow it had been passing for the wrong reason.
+    //
+    // The core's own git calls were never exposed: `git::run` clears the
+    // environment outright. This is the other half of the same rule.
+    strip_git_env(&mut cmd);
     cmd.spawn()
         .map_err(|e| err(format!("无法启动包装脚本：{e}")))?;
     Ok(Terminal::Headless)
+}
+
+/// Removes every `GIT_*` variable from a child's environment.
+///
+/// All of them rather than a list of the dangerous ones: a session is meant to
+/// behave like a shell the user opened in that checkout, and every `GIT_*` it
+/// would inherit came from whatever started Autome rather than from the user.
+/// Sessions never push, so nothing here is load-bearing for authentication.
+fn strip_git_env(cmd: &mut Command) {
+    for (key, _) in std::env::vars() {
+        if key.starts_with("GIT_") {
+            cmd.env_remove(key);
+        }
+    }
 }
 
 /// A single `sh -c`-safe command line: `cd <dir> && <wrapper> <args...>`.
@@ -1046,6 +1074,32 @@ mod tests {
         assert!(!claude.contains("writable_roots"), "{claude}");
 
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn a_session_does_not_inherit_a_git_that_points_somewhere_else() {
+        // `GIT_DIR` and friends override the directory git is standing in. A
+        // session runs git itself, so inheriting them means a round's work is
+        // committed into whatever repository set them — a Git hook, most
+        // likely, since hooks export them and a core can be started from one.
+        //
+        // Asserted on the spawn rather than on a launch, because the effect is
+        // the child's environment and nothing else observes it.
+        let mut cmd = std::process::Command::new("/bin/sh");
+        let before = ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"];
+        for key in before {
+            unsafe { std::env::set_var(key, "/somewhere/else") };
+        }
+        strip_git_env(&mut cmd);
+        let removed: Vec<&str> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .filter_map(|(k, _)| k.to_str())
+            .collect();
+        for key in before {
+            assert!(removed.contains(&key), "{key} still reaches the session");
+            unsafe { std::env::remove_var(key) };
+        }
     }
 
     #[test]

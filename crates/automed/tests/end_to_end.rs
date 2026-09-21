@@ -2160,8 +2160,29 @@ git -c user.name=fake -c user.email=f@f commit -q -m "docs {n}" >/dev/null 2>&1 
             .into_iter()
             .map(|(seq, kind, payload)| format!("{seq} {kind} {payload}"))
             .collect();
+        // The session logs say what the stand-in's git actually printed,
+        // which is the difference between "exit 128" and a cause.
+        let mut logs = String::new();
+        let dir = self.ws().join(".autome/output/sessions").join(task_id);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut names: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "log"))
+                .collect();
+            names.sort();
+            for path in names {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let tail: Vec<&str> = text.lines().rev().take(12).collect();
+                logs.push_str(&format!(
+                    "\n  --- {} ---\n  {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    tail.into_iter().rev().collect::<Vec<_>>().join("\n  ")
+                ));
+            }
+        }
         format!(
-            "state={:?}\n跑过的步骤={history}\n事件=\n  {}",
+            "state={:?}\n跑过的步骤={history}\n事件=\n  {}\n会话日志:{logs}",
             task.state,
             events.join("\n  ")
         )
