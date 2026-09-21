@@ -594,6 +594,38 @@ impl Store {
         Ok(out)
     }
 
+    /// Writes a project over the row that already has its id.
+    ///
+    /// Exists for one caller: adding back a directory that was removed from
+    /// the registry. The row is still there — `path` is UNIQUE, so it has to
+    /// be — and the user is entitled to re-add a directory Autome never
+    /// touched on its way out (P-08). Everything the add decided is written,
+    /// including `removed_at: None`, which is what brings it back.
+    pub fn replace_project(&self, project: &Project) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE projects SET path = ?2, display_name = ?3, default_branch = ?4,
+                                 parallel_limit = ?5, onboarding = ?6, disposition = ?7,
+                                 added_at = ?8, removed_at = ?9,
+                                 kind = ?10, members = ?11, docs_repo = ?12
+             WHERE id = ?1",
+            params![
+                project.id,
+                project.path,
+                project.display_name,
+                project.default_branch,
+                project.parallel_limit as i64,
+                serde_json::to_string(&project.onboarding)?,
+                serde_json::to_string(&project.disposition)?,
+                project.added_at,
+                project.removed_at,
+                serde_json::to_string(&project.kind)?,
+                serde_json::to_string(&project.members)?,
+                project.docs_repo,
+            ],
+        )?;
+        self.require_one(n, "项目", &project.id)
+    }
+
     pub fn update_project_onboarding(&self, id: &str, onboarding: Onboarding) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE projects SET onboarding = ?2 WHERE id = ?1",

@@ -563,11 +563,22 @@ fn project_add(
         .map_err(|e| internal(format!("无法解析路径：{e}")))?;
     let canonical_str = canonical.to_string_lossy().into_owned();
 
-    if let Some(existing) = ctx.store.project_by_path(&canonical_str)?
-        && existing.is_active()
-    {
-        return Err(rejected("该目录已经是一个项目".to_string()));
-    }
+    // A directory that was removed from the registry can be added again: P-08
+    // says removal touches nothing on disk, so there is nothing to stop the
+    // user changing their mind — but `projects.path` is UNIQUE, so the row is
+    // still sitting on the path and the insert used to come back as "该目录已
+    // 经是一个项目" about a project that is not there any more.
+    //
+    // The old row is reused rather than replaced. Its id is what the removed
+    // project's tasks still point at, and dropping it would orphan their
+    // history to make room for a project at the same path.
+    let readding = match ctx.store.project_by_path(&canonical_str)? {
+        Some(existing) if existing.is_active() => {
+            return Err(rejected("该目录已经是一个项目".to_string()));
+        }
+        Some(removed) => Some(removed.id),
+        None => None,
+    };
 
     // Nested projects would make `.worktree/` and `.autome/` ambiguous.
     for other in ctx.store.list_projects()? {
@@ -623,7 +634,7 @@ fn project_add(
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let project = Project {
-        id: new_id("prj"),
+        id: readding.clone().unwrap_or_else(|| new_id("prj")),
         path: canonical_str.clone(),
         display_name: project::display_name_from_path(&canonical_str),
         default_branch,
@@ -640,7 +651,10 @@ fn project_add(
         members: if workspace { members } else { Vec::new() },
         docs_repo: if workspace { docs_repo } else { None },
     };
-    ctx.store.insert_project(&project)?;
+    match &readding {
+        Some(_) => ctx.store.replace_project(&project)?,
+        None => ctx.store.insert_project(&project)?,
+    }
 
     let seq = ctx.store.append_event(
         "project.added",
@@ -2600,6 +2614,113 @@ mod tests {
             ),
         );
         assert!(err_message(&out).contains("文档仓库"));
+    }
+
+    #[test]
+    fn a_removed_directory_can_be_added_back() {
+        // P-08: removing a project touches nothing on disk, so the user is
+        // entitled to change their mind. `projects.path` is UNIQUE, so the
+        // removed row still sits on the path — and the insert used to come
+        // back as "该目录已经是一个项目" about a project that is not there.
+        needs_git!();
+        let mut sb = Sandbox::new("re-add");
+        let target = sb.path("p");
+        std::fs::create_dir_all(&target).unwrap();
+        let params = json!({ "path": target.to_str().unwrap() });
+
+        let first = handle_command(sb.ctx(), &cmd("project.add", params.clone()));
+        let id = ok_payload(&first)["project"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        handle_command(
+            sb.ctx(),
+            &cmd("project.remove", json!({ "project_id": id })),
+        );
+
+        let again = handle_command(sb.ctx(), &cmd("project.add", params));
+        let payload = ok_payload(&again);
+        assert_eq!(
+            payload["project"]["id"],
+            json!(id),
+            "the same row comes back, so the removed project's tasks still point at something"
+        );
+        assert_eq!(payload["project"]["removed_at"], json!(null));
+        assert_eq!(
+            sb.ctx().store.list_projects().unwrap().len(),
+            1,
+            "one project, not two rows fighting over one path"
+        );
+    }
+
+    #[test]
+    fn a_workspace_can_change_shape_when_it_is_added_back() {
+        // The repair path for a directory that was added as a repository by
+        // mistake: remove it, clean up, add it back as what it actually is.
+        needs_git!();
+        let mut sb = Sandbox::new("re-add-ws");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("docs", "main"), ("backend", "main")]);
+        let first = handle_command(
+            sb.ctx(),
+            &cmd("project.add", json!({ "path": target.to_str().unwrap() })),
+        );
+        let id = ok_payload(&first)["project"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(ok_payload(&first)["project"]["kind"], json!("repo"));
+        handle_command(
+            sb.ctx(),
+            &cmd("project.remove", json!({ "project_id": id })),
+        );
+
+        let again = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({ "path": target.to_str().unwrap(), "workspace": true, "docs_repo": "docs" }),
+            ),
+        );
+        let payload = ok_payload(&again);
+        assert_eq!(payload["project"]["kind"], json!("workspace"));
+        assert_eq!(payload["project"]["docs_repo"], json!("docs"));
+    }
+
+    #[test]
+    fn the_scaffold_never_writes_through_a_symlinked_agents_file() {
+        // A workspace root's AGENTS.md is routinely a link into one of the
+        // member repositories. Following it means editing a tracked file in a
+        // repository Autome does not own the commits for, and the user finds
+        // out from `git status` somewhere they did not ask it to touch.
+        needs_git!();
+        let mut sb = Sandbox::new("symlink-agents");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("docs", "main"), ("backend", "main")]);
+        let real = target.join("docs/WORKSPACE_AGENTS.md");
+        std::fs::write(&real, "用户自己的规范\n").unwrap();
+        std::os::unix::fs::symlink("docs/WORKSPACE_AGENTS.md", target.join("AGENTS.md")).unwrap();
+
+        handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({ "path": target.to_str().unwrap(), "workspace": true, "docs_repo": "docs" }),
+            ),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "用户自己的规范\n",
+            "the linked-to file is untouched"
+        );
+        assert!(
+            std::fs::symlink_metadata(target.join("AGENTS.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "and the link itself was not replaced by a regular file"
+        );
     }
 
     #[test]

@@ -366,6 +366,24 @@ const AGENTS_END: &str = "<!-- autome:end -->";
 /// nothing the user wrote around it.
 fn append_agents_md(repo: &Path, report: &mut InitReport) -> Result<()> {
     let path = repo.join("AGENTS.md");
+
+    // A symlink is somebody else's file. In a workspace the root `AGENTS.md`
+    // is routinely a link into one of the member repositories — the user's
+    // own convention for "the instructions for everything here" — and
+    // following it means Autome silently modifying a *tracked* file in a
+    // repository it does not own the commits for. The user finds out from
+    // `git status` in a repository they did not ask Autome to touch.
+    //
+    // A real directory did exactly this: the block landed inside a docs
+    // repository with its own remote.
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        report.steps.push(InitStep {
+            path: "AGENTS.md".into(),
+            action: Action::Kept,
+        });
+        return Ok(());
+    }
+
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let section = agents_section();
 
