@@ -192,6 +192,7 @@ mod tests {
             current_milestone_reopens: 0,
             convergence_mode: ConvergenceMode::Normal,
             next_action: String::new(),
+            repos: vec![],
             milestones,
             backlog: vec![],
             disputes: vec![],

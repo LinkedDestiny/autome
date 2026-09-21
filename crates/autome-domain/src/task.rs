@@ -932,6 +932,7 @@ mod tests {
             current_milestone_reopens: 0,
             convergence_mode: ConvergenceMode::Normal,
             next_action: "无".into(),
+            repos: vec![],
             milestones: states
                 .iter()
                 .enumerate()

@@ -82,6 +82,58 @@ impl TaskLayout {
         }
     }
 
+    /// The layout of a task in a workspace project.
+    ///
+    /// `working` is the members the task actually touches, as the intake round
+    /// named them. The document repository is always present and always first:
+    /// a task that could not record what it did is not a task, and merging the
+    /// record before the code it describes would put a claim on `main` that
+    /// nothing else backs (see the merge order in `run_core_step`).
+    ///
+    /// Names that are not members of this workspace are dropped rather than
+    /// guessed at. They come from a document a model wrote, and creating a
+    /// checkout for `../../etc` because it appeared in a `repos:` line is not
+    /// a thing this should be able to do.
+    pub fn workspace(project: &Project, slug: &str, working: &[String]) -> TaskLayout {
+        let docs_name = project.docs_repo.clone().unwrap_or_default();
+        let mut names: Vec<String> = vec![docs_name.clone()];
+        for name in working {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+
+        let repos = names
+            .into_iter()
+            .filter_map(|name| {
+                let member = project.members.iter().find(|m| m.name == name)?;
+                Some(RepoSlot {
+                    repo_root: PathBuf::from(project.member_path(&member.name)),
+                    worktree: PathBuf::from(project.member_worktree(slug, &member.name)),
+                    branch: Project::branch_name(slug),
+                    base: member.default_branch.clone(),
+                    is_docs: member.name == docs_name,
+                    name: member.name.clone(),
+                })
+            })
+            .collect();
+
+        TaskLayout {
+            cwd: PathBuf::from(project.worktree_path(slug)),
+            docs_root: PathBuf::from(project.docs_worktree(slug)),
+            repos,
+        }
+    }
+
+    /// The layout for a task in either kind of project.
+    pub fn of(project: &Project, slug: &str, working: &[String]) -> TaskLayout {
+        if project.is_workspace() {
+            TaskLayout::workspace(project, slug, working)
+        } else {
+            TaskLayout::single(project, slug)
+        }
+    }
+
     /// The repository holding the documents.
     ///
     /// Always present: a task with no document repository could not record
@@ -152,5 +204,101 @@ mod tests {
         let mut p = project("/x/repo");
         p.default_branch = "trunk".into();
         assert_eq!(TaskLayout::single(&p, "s").docs().base, "trunk");
+    }
+
+    fn workspace(members: &[(&str, &str)], docs: &str) -> Project {
+        let mut p = project("/x/ws");
+        p.kind = ProjectKind::Workspace;
+        p.docs_repo = Some(docs.into());
+        p.members = members
+            .iter()
+            .map(|(name, branch)| autome_domain::project::Member {
+                name: (*name).into(),
+                default_branch: (*branch).into(),
+            })
+            .collect();
+        p
+    }
+
+    #[test]
+    fn a_workspace_task_runs_beside_its_checkouts_not_inside_one() {
+        let p = workspace(&[("docs", "main"), ("backend", "master")], "docs");
+        let layout = TaskLayout::workspace(&p, "s", &["backend".into()]);
+
+        assert_eq!(layout.cwd, PathBuf::from("/x/ws/.worktree/s"));
+        assert_eq!(layout.docs_root, PathBuf::from("/x/ws/.worktree/s/docs"));
+        assert_ne!(
+            layout.cwd, layout.docs_root,
+            "the two answers diverge here, which is the whole reason they have two names"
+        );
+        // The member directories are named after the members, so an agent's
+        // relative paths mean the same thing here as in the real workspace.
+        assert_eq!(
+            layout.worktrees(),
+            vec![
+                Path::new("/x/ws/.worktree/s/docs"),
+                Path::new("/x/ws/.worktree/s/backend"),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_member_branches_from_its_own_default() {
+        let p = workspace(&[("docs", "main"), ("backend", "master")], "docs");
+        let layout = TaskLayout::workspace(&p, "s", &["backend".into()]);
+        let backend = layout.repos.iter().find(|r| r.name == "backend").unwrap();
+        assert_eq!(
+            backend.base, "master",
+            "one repo's main is another's master"
+        );
+        assert_eq!(backend.repo_root, PathBuf::from("/x/ws/backend"));
+        assert_eq!(
+            backend.branch, "autome/s",
+            "the same branch name everywhere"
+        );
+        assert!(!backend.is_docs);
+    }
+
+    #[test]
+    fn the_document_repository_is_always_present_and_always_first() {
+        let p = workspace(&[("docs", "main"), ("backend", "main")], "docs");
+        // Even when the round names only code repositories.
+        let layout = TaskLayout::workspace(&p, "s", &["backend".into()]);
+        assert_eq!(layout.repos[0].name, "docs");
+        assert!(layout.docs().is_docs);
+        // And naming it explicitly does not give it two slots.
+        let twice = TaskLayout::workspace(&p, "s", &["docs".into(), "backend".into()]);
+        assert_eq!(twice.repos.len(), 2);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_member_is_dropped_not_guessed_at() {
+        // `repos:` comes out of a document a model wrote. Creating a checkout
+        // for `../../etc` because it appeared there is not a thing this gets
+        // to do.
+        let p = workspace(&[("docs", "main"), ("backend", "main")], "docs");
+        let layout = TaskLayout::workspace(&p, "s", &["../../etc".into(), "nope".into()]);
+        assert_eq!(
+            layout
+                .repos
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs"]
+        );
+    }
+
+    #[test]
+    fn of_picks_the_shape_from_the_project() {
+        let repo = project("/x/repo");
+        assert_eq!(
+            TaskLayout::of(&repo, "s", &[]),
+            TaskLayout::single(&repo, "s")
+        );
+        let ws = workspace(&[("docs", "main")], "docs");
+        assert_eq!(
+            TaskLayout::of(&ws, "s", &[]),
+            TaskLayout::workspace(&ws, "s", &[])
+        );
     }
 }

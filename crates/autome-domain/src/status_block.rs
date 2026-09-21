@@ -191,6 +191,16 @@ pub struct StatusBlock {
     pub current_milestone_reopens: u32,
     pub convergence_mode: ConvergenceMode,
     pub next_action: String,
+    /// The repositories this task works in, named by the intake round in a
+    /// workspace project (`repos: 仓库A, 仓库B`).
+    ///
+    /// **Optional, and it has to stay optional.** A missing required field
+    /// fails the whole document, so making this one required would turn every
+    /// task document already written — and every fixture and eval case — into
+    /// a protocol failure at once. Empty means "whatever the project already
+    /// decided", which is the single-repository answer and therefore
+    /// backwards-compatible by construction.
+    pub repos: Vec<String>,
     pub milestones: Vec<Milestone>,
     pub backlog: Vec<BacklogItem>,
     pub disputes: Vec<DisputeItem>,
@@ -433,6 +443,7 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
     let mut reopens: Option<u32> = None;
     let mut convergence: Option<ConvergenceMode> = None;
     let mut next_action: Option<String> = None;
+    let mut repos: Option<Vec<String>> = None;
 
     let mut milestones: Vec<Milestone> = Vec::new();
     // A document has exactly one milestone table. Once it has been read, a
@@ -540,6 +551,23 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
                         "next-action" => {
                             set_once(next_action.is_some())?;
                             next_action = Some(value.to_string());
+                        }
+                        "repos" => {
+                            set_once(repos.is_some())?;
+                            // Comma-separated names, the separator the rest of
+                            // the block already uses for lists a human writes.
+                            // A `无`/`-` is how every other optional field in
+                            // this document says "nothing", so it says nothing
+                            // here too rather than becoming a repository
+                            // called 无.
+                            repos = Some(
+                                value
+                                    .split([',', '，'])
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty() && *v != "无" && *v != "-")
+                                    .map(str::to_string)
+                                    .collect::<Vec<_>>(),
+                            );
                         }
                         _ => {}
                     }
@@ -706,6 +734,7 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
         current_milestone_reopens,
         convergence_mode,
         next_action,
+        repos: repos.unwrap_or_default(),
         milestones,
         backlog,
         disputes,
@@ -715,6 +744,69 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A block with every required field and nothing optional — the shape of
+    /// every task document written before workspaces existed.
+    const WITHOUT_REPOS: &str = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/15
+implementation-round: 0/25
+current-milestone: 无
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 交评审
+-->
+";
+
+    #[test]
+    fn a_document_without_repos_still_parses() {
+        // The load-bearing backwards-compatibility assertion. `repos:` is
+        // optional, and the parser fails a document that is missing a
+        // *required* field — so the day this becomes required is the day every
+        // task already in flight, every fixture and every eval case turns into
+        // a protocol failure at once.
+        let parsed = parse(WITHOUT_REPOS).expect("a document from before workspaces existed");
+        assert!(parsed.repos.is_empty(), "absent means 'nothing was said'");
+    }
+
+    #[test]
+    fn repos_is_a_comma_separated_list_of_names() {
+        let doc = WITHOUT_REPOS.replace(
+            "next-action: 交评审",
+            "next-action: 交评审\nrepos: offchat-backend-service, offchat-miniprogram",
+        );
+        assert_eq!(
+            parse(&doc).unwrap().repos,
+            vec!["offchat-backend-service", "offchat-miniprogram"]
+        );
+    }
+
+    #[test]
+    fn repos_tolerates_the_punctuation_a_person_actually_types() {
+        // A round writing Chinese prose reaches for the full-width comma, and
+        // the same round writes 无 for "none" in every other field of this
+        // block. Both must mean what they look like they mean.
+        let with_fullwidth = WITHOUT_REPOS.replace(
+            "next-action: 交评审",
+            "next-action: 交评审\nrepos: docs，backend ,  frontend",
+        );
+        assert_eq!(
+            parse(&with_fullwidth).unwrap().repos,
+            vec!["docs", "backend", "frontend"]
+        );
+
+        for none in ["无", "-", ""] {
+            let doc = WITHOUT_REPOS.replace(
+                "next-action: 交评审",
+                &format!("next-action: 交评审\nrepos: {none}"),
+            );
+            assert!(
+                parse(&doc).unwrap().repos.is_empty(),
+                "`repos: {none}` is not a repository called {none}"
+            );
+        }
+    }
 
     /// From a design document a real session wrote on 2026-09-16. It was
     /// rejected with "里程碑表第 286 行格式错误：状态 `import AVFoundation\`
