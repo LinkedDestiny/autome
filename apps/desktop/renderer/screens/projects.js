@@ -34,7 +34,7 @@ export function render(host, data, ctx) {
   screen.appendChild(
     h('div.pagehead', [
       h('h1.ribbon.ribbon--blue', [h('span.ribbon__front', { text: '我的项目' })]),
-      h('span.pagehead__sub', { text: '项目 = 一个目录 · 不是 Git 仓库会自动 init · 任务都在项目下' }),
+      h('span.pagehead__sub', { text: '项目 = 一个目录 · 单个仓库会自动 init · 一堆独立仓库按工作区收编 · 任务都在项目下' }),
       h('div.pagehead__actions', [
         registerWrite(
           h('button.btn.btn--primary', { type: 'button', onClick: () => addProject(ctx) }, [
@@ -133,10 +133,91 @@ export async function addProject(ctx) {
     run: (write) => write.pickProject(),
     onDone: async (result) => {
       if (!result || result.cancelled) return;
-      const project = result.project || result;
-      if (project && project.id) ctx.navigate('project', { projectId: project.id });
-      else await ctx.refresh();
+      // A directory holding several repositories is not something Autome
+      // decides about on its own: `git init` over one of those quietly makes
+      // every member a gitlink, and the first task then dies committing its
+      // own documents. Main holds the path and asks.
+      if (result.pending) return askAboutWorkspace(result.probe, ctx);
+      await landProject(result, ctx);
     },
+  });
+}
+
+async function landProject(result, ctx) {
+  const project = (result && result.project) || result;
+  if (project && project.id) ctx.navigate('project', { projectId: project.id });
+  else await ctx.refresh();
+}
+
+/**
+ * The one question a multi-repository directory raises: is this a workspace,
+ * and if so which member holds the task documents?
+ *
+ * Phrased as two real options rather than a warning with an OK button,
+ * because both answers are legitimate — someone may genuinely want a
+ * repository that contains repositories — and only the user knows which they
+ * meant.
+ */
+function askAboutWorkspace(probe, ctx) {
+  const members = probe.members || [];
+  const select = h('select.select');
+  for (const member of members) {
+    const option = h('option', { value: member.name, text: member.name });
+    if (member.name === probe.suggested_docs_repo) option.selected = true;
+    select.appendChild(option);
+  }
+
+  const confirm = (workspace) => async () => {
+    close();
+    await attempt({
+      label: workspace ? '添加工作区' : '添加项目',
+      success: false,
+      run: (write) =>
+        write.confirmProject({ workspace, docsRepo: workspace ? select.value : undefined }),
+      onDone: (result) => landProject(result, ctx),
+    });
+  };
+
+  // Which answer is offered first follows the probe. A directory that is
+  // already a repository *and* holds several is asked about too, but there the
+  // safe default is to leave it as the repository it already is.
+  const workspaceFirst = Boolean(probe.suggest_workspace);
+  const asWorkspace = h(
+    `button.btn${workspaceFirst ? '.btn--primary' : ''}`,
+    { type: 'button', onClick: confirm(true) },
+    [workspaceFirst ? icon('check') : null, text('按工作区添加')]
+  );
+  const asRepo = h(
+    `button.btn${workspaceFirst ? '' : '.btn--primary'}`,
+    { type: 'button', onClick: confirm(false) },
+    [workspaceFirst ? null : icon('check'), text('当成单个仓库')]
+  );
+
+  openModal({
+    title: '这个目录里有好几个仓库',
+    lead: probe.path,
+    body: [
+      h('p.quiet', {
+        text:
+          `找到 ${members.length} 个各自独立的仓库：${members.map((m) => m.name).join('、')}。` +
+          '按工作区添加的话，Autome 不会在这个目录上执行 git init，也不会在它的根目录提交任何东西。',
+      }),
+      probe.is_repo_root
+        ? h('p.quiet.mt-6', {
+            text:
+              '这个目录本身也已经是一个 Git 仓库了。如果那个仓库是 Autome 之前自己建的，' +
+              '它会把每个子仓库记成 gitlink，任务文档提交不进去——那种情况该按工作区添加，' +
+              '并把外层那个仓库删掉。',
+          })
+        : null,
+      h('div.row.mt-8', [h('label', { text: '任务文档放进哪个仓库' }), select]),
+      h('p.quiet.mt-6', {
+        text: '文档会落在那个仓库的 autome/<任务>/ 下，可以之后在 .autome/config.toml 里改。',
+      }),
+    ],
+    footer: workspaceFirst
+      ? [closeButton('取消'), asRepo, asWorkspace]
+      : [closeButton('取消'), asWorkspace, asRepo],
   });
 }
 

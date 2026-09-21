@@ -21,6 +21,7 @@
 // path, and only Main may supply one (see `project.pick` below).
 const ALLOWED_WRITE_OPS = Object.freeze([
   'project.pick',
+  'project.confirm',
   'project.onboarding.advance',
   'project.onboarding.skip',
   'project.onboarding.run',
@@ -227,6 +228,13 @@ function validateOpSpecific(op, params) {
     // the core enforces the same list, and both are deliberate.
     if (!['docs/agent-project-profile.md', 'AGENTS.md'].includes(params.path)) {
       return { ok: false, message: 'path must be the profile or AGENTS.md' };
+    }
+  }
+  if (op === 'project.confirm') {
+    // A member repository is a directory name directly under the workspace,
+    // so a path-shaped one is either a mistake or an attempt to walk out.
+    if (typeof params.docs_repo === 'string' && looksLikeAPath(params.docs_repo)) {
+      return { ok: false, message: 'docs_repo must be a name, not a path' };
     }
   }
   if (op === 'config.set_role' || op === 'config.reset_role') {

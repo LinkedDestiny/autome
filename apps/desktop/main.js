@@ -148,6 +148,7 @@ function registerWriteChannel() {
     // the renderer must not have, and `core.restart` is the one op that
     // cannot reach the core — it exists precisely because there is none.
     if (op === 'project.pick') return pickProject();
+    if (op === 'project.confirm') return confirmProject(params);
     if (op === 'open.path') return openPath(params);
     if (op === 'open.terminal') return openTerminal(params);
     if (op === 'core.restart') return restartCore();
@@ -157,6 +158,11 @@ function registerWriteChannel() {
     return callCore(op, params);
   });
 }
+
+// The directory a pick is waiting on the user's answer about. Held in Main,
+// never handed to the renderer: the renderer answers a question *about* the
+// directory Main chose, and still cannot name one of its own.
+let pendingPick = null;
 
 // Main owns the dialog, so the path never originates in the renderer.
 async function pickProject() {
@@ -168,7 +174,46 @@ async function pickProject() {
   if (result.canceled || result.filePaths.length === 0) {
     return { cancelled: true };
   }
-  return callCore('project.add', { path: result.filePaths[0] });
+  // `picked`, not `path`: this module imports `node:path` under that name and
+  // shadowing it here would be a trap for the next person who reaches for it.
+  const picked = result.filePaths[0];
+
+  // Ask what the directory *is* before doing anything to it. This used to be
+  // the same call as adding it, so the first time anyone learned a directory
+  // held several repositories was after `git init` had already made a mess of
+  // it.
+  const probe = await callCore('project.probe', { path: picked });
+  // Asked whenever the directory holds repositories, not only when the probe
+  // recommends a workspace. A directory that is *already* a repository and
+  // also holds several is exactly what a wrongly-initialised workspace looks
+  // like — the case this whole feature came from — and adding it silently as
+  // one repository is how it got that way. `suggest_workspace` still decides
+  // which answer the window offers first.
+  if ((probe.members || []).length < 2) {
+    pendingPick = null;
+    return callCore('project.add', { path: picked });
+  }
+  pendingPick = { path: picked, probe };
+  return { pending: true, probe };
+}
+
+/**
+ * The renderer's answer to that question: a kind and, for a workspace, which
+ * member repository holds the documents. No path — Main still has that.
+ */
+async function confirmProject(params) {
+  if (!pendingPick) throw new Error('没有待确认的目录，请重新选择');
+  const picked = pendingPick.path;
+  const workspace = Boolean(params.workspace);
+  if (workspace && !pendingPick.probe.members.some((m) => m.name === params.docs_repo)) {
+    throw new Error(`${params.docs_repo} 不是这个目录下的仓库`);
+  }
+  pendingPick = null;
+  return callCore('project.add', {
+    path: picked,
+    workspace,
+    docs_repo: workspace ? params.docs_repo : undefined,
+  });
 }
 
 // Resolves an identifier to a path by asking the core, then reveals it. The

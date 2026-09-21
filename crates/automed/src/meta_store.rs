@@ -51,6 +51,11 @@ pub fn ensure_project(ctx: &mut Ctx) -> Result<Project> {
         disposition: AddDisposition::CreatedAndInitialised,
         added_at: now_iso(),
         removed_at: None,
+        // The protocol repository is one repository, and the only project
+        // Autome creates for itself.
+        kind: autome_domain::project::ProjectKind::Repo,
+        members: Vec::new(),
+        docs_repo: None,
     };
     ctx.store.insert_project(&project)?;
     ctx.store.append_event(

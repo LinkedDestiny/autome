@@ -70,15 +70,62 @@ pub enum AddDisposition {
     InitialisedExisting,
     /// The directory was already a Git repository; nothing was initialised.
     AdoptedExisting,
+    /// The directory holds several independent repositories and was adopted as
+    /// a workspace. **Nothing was initialised** — the whole point.
+    AdoptedWorkspace,
+}
+
+/// What a project *is*, structurally.
+///
+/// P-01 has one answer — "a directory; if it is not a repository, `git init`".
+/// That is wrong for a directory whose children are each their own repository
+/// with their own remote, a layout people use to develop across repositories.
+/// Running `git init` over one of those produces an outer repository that
+/// records each child as a gitlink, and every later `git add child/…` fails
+/// with "is in submodule". It happened on a real machine and cost a task.
+///
+/// So a project is one of two shapes, decided once at `project.add` and never
+/// inferred again: guessing on every read would mean the answer could change
+/// under a running task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    /// One Git repository. Everything 2.0 shipped with; `members` is empty.
+    #[default]
+    Repo,
+    /// A plain directory holding several independent repositories. Autome
+    /// never initialises it and never commits at its root.
+    Workspace,
+}
+
+/// One repository inside a workspace.
+///
+/// `name` is both the directory name under the workspace root and the
+/// identifier the rest of the system uses, so there is exactly one string to
+/// keep true. The absolute path is derived (`Project::member_path`) rather
+/// than stored: two spellings of the same location is how a project that was
+/// moved on disk starts lying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub name: String,
+    /// This repository's own default branch — they need not agree across a
+    /// workspace, and a task branches from each one separately.
+    pub default_branch: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
-    /// Canonical absolute path to the repository root.
+    /// Canonical absolute path to the repository root, or to the workspace
+    /// directory when `kind` is `Workspace`.
     pub path: String,
     pub display_name: String,
     /// The branch task branches are cut from and merged back into (P-03).
+    ///
+    /// For a workspace this is the docs repository's default branch — each
+    /// member carries its own in `members`, and this field stays populated so
+    /// that everything reading it keeps getting a truthful answer rather than
+    /// an empty string.
     pub default_branch: String,
     pub parallel_limit: u32,
     pub onboarding: Onboarding,
@@ -87,16 +134,71 @@ pub struct Project {
     /// Set when the project is removed from Autome's registry. The directory
     /// itself is never touched (requirement P-08).
     pub removed_at: Option<String>,
+    /// All three default so that a row written before workspaces existed
+    /// deserialises as the single-repository project it is.
+    #[serde(default)]
+    pub kind: ProjectKind,
+    /// The repositories inside a workspace, in discovery order. Empty for a
+    /// `Repo` project.
+    #[serde(default)]
+    pub members: Vec<Member>,
+    /// Which member holds the task documents. `None` for a `Repo` project,
+    /// where the project itself does.
+    #[serde(default)]
+    pub docs_repo: Option<String>,
 }
+
+/// Where task documents go inside the repository that holds them, when
+/// nothing says otherwise.
+///
+/// A workspace's docs repository is a real repository with a real layout of
+/// its own, so Autome takes a named subdirectory in it rather than scattering
+/// `<slug>/` directories through someone's `prd/` and `reports/`. A
+/// single-repository project keeps `docs/`, which is where its documents have
+/// always been.
+pub const DEFAULT_DOC_ROOT_REPO: &str = "docs";
+pub const DEFAULT_DOC_ROOT_WORKSPACE: &str = "autome";
 
 impl Project {
     pub fn is_active(&self) -> bool {
         self.removed_at.is_none()
     }
 
-    /// `.worktree/<slug>` relative to the repository root (requirement P-05).
+    pub fn is_workspace(&self) -> bool {
+        self.kind == ProjectKind::Workspace
+    }
+
+    /// The task's own directory: `.worktree/<slug>`, and the session's cwd
+    /// (requirement P-05).
+    ///
+    /// For a `Repo` project it *is* the checkout. For a workspace it is a
+    /// plain directory holding one checkout per member, named after the
+    /// member — so the layout inside matches the workspace itself and an
+    /// agent's relative paths mean the same thing in both.
     pub fn worktree_path(&self, slug: &str) -> String {
         format!("{}/.worktree/{slug}", self.path)
+    }
+
+    /// Absolute path of one member repository.
+    pub fn member_path(&self, member: &str) -> String {
+        format!("{}/{member}", self.path)
+    }
+
+    /// Where one member's checkout goes inside the task's directory.
+    pub fn member_worktree(&self, slug: &str, member: &str) -> String {
+        format!("{}/{member}", self.worktree_path(slug))
+    }
+
+    /// The checkout that holds the task's documents.
+    ///
+    /// The identity that makes a workspace the general case and a single
+    /// repository the N=1 case of it: for a `Repo` project this is exactly
+    /// `worktree_path`, so every caller can be written once.
+    pub fn docs_worktree(&self, slug: &str) -> String {
+        match &self.docs_repo {
+            Some(member) => self.member_worktree(slug, member),
+            None => self.worktree_path(slug),
+        }
     }
 
     /// The branch name for a task's worktree.
@@ -104,15 +206,61 @@ impl Project {
         format!("autome/{slug}")
     }
 
-    /// Where a task's documents live on its own branch.
-    pub fn doc_dir(slug: &str) -> String {
-        format!("docs/{slug}")
+    /// Where a task's documents live inside the repository that holds them.
+    pub fn doc_dir(root: &str, slug: &str) -> String {
+        format!("{}/{slug}", root.trim_end_matches('/'))
     }
 
     /// Where a task's documents go once archived (requirement T-12).
-    pub fn archive_dir(slug: &str) -> String {
-        format!("docs/.archive/{slug}")
+    pub fn archive_dir(root: &str, slug: &str) -> String {
+        format!("{}/.archive/{slug}", root.trim_end_matches('/'))
     }
+
+    /// This project's document root when its configuration does not name one.
+    pub fn default_doc_root(&self) -> &'static str {
+        if self.is_workspace() {
+            DEFAULT_DOC_ROOT_WORKSPACE
+        } else {
+            DEFAULT_DOC_ROOT_REPO
+        }
+    }
+}
+
+/// Whether a project may use `root` as its document root, and why not.
+///
+/// The rules keep the documents inside the repository that is supposed to hold
+/// them, and out of the directories that are not documents:
+///
+/// * relative, so they travel with the branch rather than landing somewhere on
+///   the machine no clone will have;
+/// * no `..`, for the same reason — and because a root that escapes the
+///   checkout would have Autome committing outside the tree it was given;
+/// * not Git's or Autome's own directory.
+pub fn validate_doc_root(root: &str) -> Result<(), String> {
+    if root.trim().is_empty() {
+        return Err("文档目录不能为空".to_string());
+    }
+    if root.trim() != root {
+        return Err("文档目录首尾不能有空格".to_string());
+    }
+    if root.starts_with('/') || root.contains(':') || root.contains('\\') {
+        return Err(format!("文档目录要用仓库内的相对路径，`{root}` 不是"));
+    }
+    for part in root.split('/') {
+        if part.is_empty() {
+            return Err(format!("文档目录里有空的一段：`{root}`"));
+        }
+        if part == "." || part == ".." {
+            return Err(format!("文档目录不能包含 `{part}`：`{root}`"));
+        }
+    }
+    let first = root.split('/').next().unwrap_or_default();
+    if matches!(first, ".git" | ".autome" | ".worktree") {
+        return Err(format!(
+            "`{first}` 是 Git 或 Autome 自己的目录，不能放任务文档"
+        ));
+    }
+    Ok(())
 }
 
 /// Derives a project's display name from its path. Falls back to the whole
@@ -267,6 +415,9 @@ mod tests {
             disposition: AddDisposition::AdoptedExisting,
             added_at: "2026-09-15T00:00:00Z".into(),
             removed_at: None,
+            kind: ProjectKind::Repo,
+            members: Vec::new(),
+            docs_repo: None,
         };
         assert_eq!(
             p.worktree_path("checkout-flow"),
@@ -276,11 +427,26 @@ mod tests {
             Project::branch_name("checkout-flow"),
             "autome/checkout-flow"
         );
-        assert_eq!(Project::doc_dir("checkout-flow"), "docs/checkout-flow");
         assert_eq!(
-            Project::archive_dir("checkout-flow"),
+            Project::doc_dir("docs", "checkout-flow"),
+            "docs/checkout-flow"
+        );
+        assert_eq!(
+            Project::archive_dir("docs", "checkout-flow"),
             "docs/.archive/checkout-flow"
         );
+        // The identity the whole workspace model rests on: a single
+        // repository is the one-member case, so the checkout that holds the
+        // documents *is* the task's directory. Every caller can then be
+        // written once. If this ever stops holding, the design document of a
+        // single-repo task starts being written somewhere nobody reads it,
+        // and the task fails at round one for a reason that points at the
+        // wrong layer entirely.
+        assert_eq!(
+            p.docs_worktree("checkout-flow"),
+            p.worktree_path("checkout-flow")
+        );
+        assert_eq!(p.default_doc_root(), "docs");
         assert!(p.is_active());
     }
 
@@ -388,6 +554,9 @@ mod tests {
             disposition: AddDisposition::CreatedAndInitialised,
             added_at: "t".into(),
             removed_at: None,
+            kind: ProjectKind::Repo,
+            members: Vec::new(),
+            docs_repo: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);

@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use autome_domain::project::{AddDisposition, Onboarding, Project};
+use autome_domain::project::{AddDisposition, Member, Onboarding, Project, ProjectKind};
 use autome_domain::role::Runtime;
 use autome_domain::session::{Session, SessionKind, SessionLifecycle};
 use autome_domain::task::{Disposition, PendingDecisions, TaskState};
@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -96,16 +96,36 @@ pub struct TaskRecord {
     pub rules_hash: Option<String>,
     /// Aggregated once the task reaches a terminal state.
     pub metrics: Option<autome_domain::metrics::TaskMetrics>,
+    /// Where this task's documents go inside the repository that holds them,
+    /// frozen at creation from the project's configuration.
+    ///
+    /// Frozen, like `protocol_ref`, and for the same reason: the answer names
+    /// paths that are already committed on a branch. A user who changes the
+    /// setting halfway through must not have a running task's documents
+    /// silently split across two directories. `None` is every task written
+    /// before this existed, and means `docs/`.
+    pub doc_root: Option<String>,
 }
 
 impl TaskRecord {
     pub fn branch(&self) -> String {
         autome_domain::project::Project::branch_name(&self.slug)
     }
-    pub fn doc_dir(&self) -> String {
-        autome_domain::project::Project::doc_dir(&self.slug)
+    /// The document root this task was created under.
+    pub fn doc_root(&self) -> &str {
+        self.doc_root
+            .as_deref()
+            .unwrap_or(autome_domain::project::DEFAULT_DOC_ROOT_REPO)
     }
-    /// `docs/<slug>/<slug>.md` — the design document the scheduler parses.
+    pub fn doc_dir(&self) -> String {
+        autome_domain::project::Project::doc_dir(self.doc_root(), &self.slug)
+    }
+    /// Where this task's documents go once archived (requirement T-12) — under
+    /// the same root they live in, never a second one.
+    pub fn archive_dir(&self) -> String {
+        autome_domain::project::Project::archive_dir(self.doc_root(), &self.slug)
+    }
+    /// `<doc_root>/<slug>/<slug>.md` — the design document the scheduler parses.
     pub fn design_doc(&self) -> String {
         format!("{}/{}.md", self.doc_dir(), self.slug)
     }
@@ -331,6 +351,35 @@ impl Store {
                 "#,
             )?;
         }
+
+        // v3: a project need not be one Git repository. Some directories hold
+        // several independent ones and exist to be developed across — and
+        // running `git init` over such a directory, which is what P-01 said to
+        // do, records each child as a gitlink and makes every later
+        // `git add child/…` fail. See `ProjectKind`.
+        //
+        // `doc_root` joins `protocol_ref` as a per-task frozen decision: a
+        // workspace keeps its task documents in one member repository under a
+        // named subdirectory, and moving that setting must not move the
+        // documents of a task already running.
+        //
+        // Every column is nullable with no default: NULL reads as "the answer
+        // from before workspaces existed", which is what every existing row
+        // means.
+        if version < 3 {
+            self.conn.execute_batch(
+                r#"
+                BEGIN;
+                ALTER TABLE projects ADD COLUMN kind TEXT;
+                ALTER TABLE projects ADD COLUMN members TEXT;
+                ALTER TABLE projects ADD COLUMN docs_repo TEXT;
+
+                ALTER TABLE tasks ADD COLUMN doc_root TEXT;
+                PRAGMA user_version = 3;
+                COMMIT;
+                "#,
+            )?;
+        }
         Ok(())
     }
 
@@ -469,8 +518,9 @@ impl Store {
         self.conn
             .execute(
                 "INSERT INTO projects (id, path, display_name, default_branch, parallel_limit,
-                                       onboarding, disposition, added_at, removed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                       onboarding, disposition, added_at, removed_at,
+                                       kind, members, docs_repo)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     project.id,
                     project.path,
@@ -481,6 +531,9 @@ impl Store {
                     serde_json::to_string(&project.disposition)?,
                     project.added_at,
                     project.removed_at,
+                    serde_json::to_string(&project.kind)?,
+                    serde_json::to_string(&project.members)?,
+                    project.docs_repo,
                 ],
             )
             .map_err(|e| match e {
@@ -499,9 +552,7 @@ impl Store {
     pub fn get_project(&self, id: &str) -> Result<Project> {
         self.conn
             .query_row(
-                "SELECT id, path, display_name, default_branch, parallel_limit, onboarding,
-                        disposition, added_at, removed_at
-                 FROM projects WHERE id = ?1",
+                &format!("{PROJECT_SELECT_BASE} WHERE id = ?1"),
                 params![id],
                 row_to_project,
             )
@@ -519,9 +570,7 @@ impl Store {
         match self
             .conn
             .query_row(
-                "SELECT id, path, display_name, default_branch, parallel_limit, onboarding,
-                        disposition, added_at, removed_at
-                 FROM projects WHERE path = ?1",
+                &format!("{PROJECT_SELECT_BASE} WHERE path = ?1"),
                 params![path],
                 row_to_project,
             )
@@ -534,11 +583,9 @@ impl Store {
 
     /// Active projects, newest first.
     pub fn list_projects(&self) -> Result<Vec<Project>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, display_name, default_branch, parallel_limit, onboarding,
-                    disposition, added_at, removed_at
-             FROM projects WHERE removed_at IS NULL ORDER BY added_at DESC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "{PROJECT_SELECT_BASE} WHERE removed_at IS NULL ORDER BY added_at DESC"
+        ))?;
         let rows = stmt.query_map([], row_to_project)?;
         let mut out = Vec::new();
         for row in rows {
@@ -581,8 +628,9 @@ impl Store {
             .execute(
                 "INSERT INTO tasks (id, project_id, slug, title, request, attachments, doc_refs,
                                     state, budget_n, created_at, completed_at, merge_commit,
-                                    archived_at, protocol_ref, rules_hash, metrics)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                    archived_at, protocol_ref, rules_hash, metrics, doc_root)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                         ?17)",
                 params![
                     task.id,
                     task.project_id,
@@ -603,6 +651,7 @@ impl Store {
                         .as_ref()
                         .map(serde_json::to_string)
                         .transpose()?,
+                    task.doc_root,
                 ],
             )
             .map_err(|e| match &e {
@@ -1268,13 +1317,21 @@ impl Store {
     }
 }
 
+/// The project columns, in the order `row_to_project` reads them. One string
+/// for three queries: a column added to the table and to two of the three is a
+/// project that reads differently depending on how it was looked up.
+const PROJECT_SELECT_BASE: &str =
+    "SELECT id, path, display_name, default_branch, parallel_limit, onboarding,
+            disposition, added_at, removed_at, kind, members, docs_repo
+     FROM projects";
+
 const TASK_SELECT_BASE: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
             state, budget_n, created_at, completed_at, merge_commit, archived_at,
-            protocol_ref, rules_hash, metrics FROM tasks";
+            protocol_ref, rules_hash, metrics, doc_root FROM tasks";
 
 const TASK_SELECT: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
             state, budget_n, created_at, completed_at, merge_commit, archived_at,
-            protocol_ref, rules_hash, metrics
+            protocol_ref, rules_hash, metrics, doc_root
      FROM tasks WHERE id = ?1";
 
 const SESSION_SELECT_BASE: &str = "SELECT id, task_id, kind, runtime, model, effort, skills, round,
@@ -1289,6 +1346,10 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> RowResult<Project> {
     let onboarding: String = r.get(5)?;
     let disposition: String = r.get(6)?;
     let parallel: i64 = r.get(4)?;
+    // NULL in all three is a row written before workspaces existed, and means
+    // the only thing a project could be then: one repository.
+    let kind: Option<String> = r.get(9)?;
+    let members: Option<String> = r.get(10)?;
     Ok((|| {
         Ok(Project {
             id: r.get(0)?,
@@ -1300,6 +1361,15 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> RowResult<Project> {
             disposition: serde_json::from_str::<AddDisposition>(&disposition)?,
             added_at: r.get(7)?,
             removed_at: r.get(8)?,
+            kind: match kind {
+                Some(k) => serde_json::from_str::<ProjectKind>(&k)?,
+                None => ProjectKind::default(),
+            },
+            members: match members {
+                Some(m) => serde_json::from_str::<Vec<Member>>(&m)?,
+                None => Vec::new(),
+            },
+            docs_repo: r.get(11)?,
         })
     })()
     .map_err(|e: Box<dyn std::error::Error>| {
@@ -1326,6 +1396,9 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> RowResult<TaskRecord> {
         r.get::<_, Option<String>>(14)?,
     );
     let metrics: Option<String> = r.get(15)?;
+    // NULL is every task created before the document root was configurable,
+    // and `TaskRecord::doc_root` reads it as the `docs/` those tasks used.
+    let doc_root: Option<String> = r.get(16)?;
     Ok(
         (|| -> std::result::Result<TaskRecord, serde_json::Error> {
             Ok(TaskRecord {
@@ -1345,6 +1418,7 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> RowResult<TaskRecord> {
                 protocol_ref: base.9,
                 rules_hash: base.10,
                 metrics: metrics.as_deref().map(serde_json::from_str).transpose()?,
+                doc_root,
             })
         })(),
     )
@@ -1498,6 +1572,9 @@ mod tests {
             disposition: AddDisposition::AdoptedExisting,
             added_at: now_iso(),
             removed_at: None,
+            kind: ProjectKind::Repo,
+            members: Vec::new(),
+            docs_repo: None,
         }
     }
 
@@ -1519,6 +1596,7 @@ mod tests {
             protocol_ref: None,
             rules_hash: None,
             metrics: None,
+            doc_root: None,
         }
     }
 

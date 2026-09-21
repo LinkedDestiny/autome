@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('autome', {
   write: {
     // Main owns the directory picker; the renderer never names a path.
     pickProject: () => write('project.pick')(),
+    // Answers the question `pickProject` asks about a directory that holds
+    // several repositories. Carries a choice, never a path.
+    confirmProject: ({ workspace, docsRepo }) =>
+      write('project.confirm')({ workspace: Boolean(workspace), docs_repo: docsRepo }),
     advanceOnboarding: (projectId) =>
       write('project.onboarding.advance')({ project_id: projectId }),
     skipOnboarding: (projectId) => write('project.onboarding.skip')({ project_id: projectId }),

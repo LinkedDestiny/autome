@@ -1488,7 +1488,7 @@ fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()
     if worktree.exists() {
         let source = worktree.join(task.doc_dir());
         if source.exists() {
-            let dest = repo.join(autome_domain::project::Project::archive_dir(&task.slug));
+            let dest = repo.join(task.archive_dir());
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -1898,6 +1898,9 @@ mod tests {
                 disposition: autome_domain::project::AddDisposition::AdoptedExisting,
                 added_at: now_iso(),
                 removed_at: None,
+                kind: autome_domain::project::ProjectKind::Repo,
+                members: Vec::new(),
+                docs_repo: None,
             };
             store.insert_project(&project).unwrap();
             let ctx = Ctx::new(store, &autome_home, &home).dry();
@@ -1927,6 +1930,7 @@ mod tests {
                 protocol_ref: None,
                 rules_hash: None,
                 metrics: None,
+                doc_root: None,
             };
             self.ctx.store.insert_task(&task).unwrap();
             task

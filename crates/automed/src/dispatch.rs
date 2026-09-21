@@ -15,7 +15,7 @@
 
 use autome_domain::config::{self, ConfigViolation, ProjectConfig, RoleOverrides};
 use autome_domain::environment::{self, Component};
-use autome_domain::project::{self, AddDisposition, Onboarding, Project};
+use autome_domain::project::{self, AddDisposition, Onboarding, Project, ProjectKind};
 use autome_domain::role::{Role, Runtime};
 use autome_domain::status_block::{self, StatusBlock};
 use autome_domain::task::{Disposition, Node, TaskState, Trigger};
@@ -329,7 +329,13 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         // ---- projects ----------------------------------------------------
         "project.list" => project_list(ctx),
         "project.get" => project_get(ctx, str_param(p, "project_id")?),
-        "project.add" => project_add(ctx, str_param(p, "path")?),
+        "project.probe" => project_probe(ctx, str_param(p, "path")?),
+        "project.add" => project_add(
+            ctx,
+            str_param(p, "path")?,
+            bool_param(p, "workspace"),
+            opt_str_param(p, "docs_repo").map(str::to_string),
+        ),
         "project.remove" => project_remove(ctx, str_param(p, "project_id")?),
         "project.onboarding.advance" => onboarding_step(ctx, str_param(p, "project_id")?, true),
         "project.onboarding.skip" => onboarding_step(ctx, str_param(p, "project_id")?, false),
@@ -535,7 +541,12 @@ fn rule_files(repo: &str) -> Vec<String> {
 /// The whole sequence is here rather than split across layers because it has
 /// to be all-or-nothing from the user's point of view: they picked a
 /// directory, and either it is now a project or nothing happened.
-fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
+fn project_add(
+    ctx: &mut Ctx,
+    raw_path: &str,
+    workspace: bool,
+    docs_repo: Option<String>,
+) -> DispatchResult {
     let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
 
     if path.exists() && !path.is_dir() {
@@ -571,24 +582,44 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
     }
 
     let was_repo = git::is_repo_root(&canonical);
-    if !was_repo {
-        git::init(&canonical, "main")?;
-    }
-    let disposition = match (existed, was_repo) {
-        (false, _) => AddDisposition::CreatedAndInitialised,
-        (true, false) => AddDisposition::InitialisedExisting,
-        (true, true) => AddDisposition::AdoptedExisting,
-    };
+    let members = discover_members(&canonical);
 
-    let default_branch = git::default_branch(&canonical)
-        .ok_or_else(|| rejected(format!("{} 没有可用的默认分支", canonical.display())))?;
+    // A workspace is adopted, never initialised. `git init` over a directory
+    // whose children are repositories produces an outer repository holding
+    // each of them as a gitlink, and every later `git add child/…` fails with
+    // "is in submodule" — which is how a real directory lost its first task.
+    let (disposition, default_branch) = if workspace {
+        let docs = docs_repo
+            .as_deref()
+            .ok_or_else(|| bad_params("工作区项目要指定一个文档仓库"))?;
+        let member = members
+            .iter()
+            .find(|m| m.name == docs)
+            .ok_or_else(|| bad_params(format!("{docs} 不是这个目录下的仓库")))?;
+        (
+            AddDisposition::AdoptedWorkspace,
+            member.default_branch.clone(),
+        )
+    } else {
+        if !was_repo {
+            git::init(&canonical, "main")?;
+        }
+        let branch = git::default_branch(&canonical)
+            .ok_or_else(|| rejected(format!("{} 没有可用的默认分支", canonical.display())))?;
+        let disposition = match (existed, was_repo) {
+            (false, _) => AddDisposition::CreatedAndInitialised,
+            (true, false) => AddDisposition::InitialisedExisting,
+            (true, true) => AddDisposition::AdoptedExisting,
+        };
+        (disposition, branch)
+    };
 
     // A brand-new project has no pin yet, so this resolves to the newest tag.
     // It still goes through the resolver so that adopting a directory whose
     // `.autome/config.toml` already pins a version honours that pin.
     let (protocol_ref, protocol) =
         crate::protocol::resolve_for_project(&ctx.autome_home, &canonical)?;
-    let report = init::init(&canonical, &protocol)?;
+    let report = init::init_kind(&canonical, &protocol, workspace)?;
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let project = Project {
@@ -601,6 +632,13 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
         disposition,
         added_at: now_iso(),
         removed_at: None,
+        kind: if workspace {
+            ProjectKind::Workspace
+        } else {
+            ProjectKind::Repo
+        },
+        members: if workspace { members } else { Vec::new() },
+        docs_repo: if workspace { docs_repo } else { None },
     };
     ctx.store.insert_project(&project)?;
 
@@ -621,6 +659,98 @@ fn project_add(ctx: &mut Ctx, raw_path: &str) -> DispatchResult {
             "pending_commit": report.paths_to_commit(),
         }),
         vec![event(seq, "project.added", &project.id, json!({}))],
+    ))
+}
+
+/// This project's document root: what its configuration says, or its own
+/// default.
+///
+/// Validated here rather than at load: a malformed `doc_root` must stop the
+/// one task being created, not make the whole project unreadable. The user
+/// sees the sentence while they are looking at the thing they just typed.
+fn resolve_doc_root(
+    project: &Project,
+    config: &autome_domain::config::ProjectConfig,
+) -> Result<String, DispatchError> {
+    match config.doc_root.as_deref() {
+        Some(root) => {
+            project::validate_doc_root(root).map_err(bad_params)?;
+            Ok(root.trim_end_matches('/').to_string())
+        }
+        None => Ok(project.default_doc_root().to_string()),
+    }
+}
+
+/// The repositories directly inside `dir`, in name order.
+///
+/// Immediate children only, and only real repository roots. Walking deeper
+/// would find a repository vendored inside another project's `node_modules`
+/// and offer it as a place to put task documents; one level is the layout
+/// people actually use for "several repositories I develop across", and it is
+/// the layout that can be explained in one sentence in the UI.
+///
+/// Name order rather than filesystem order so that the picker, the stored
+/// member list and the merge report all agree, on every machine.
+fn discover_members(dir: &std::path::Path) -> Vec<project::Member> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| !name.starts_with('.'))
+        .filter(|name| git::is_repo_root(&dir.join(name)))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let default_branch =
+                git::default_branch(&dir.join(&name)).unwrap_or_else(|| "main".to_string());
+            project::Member {
+                name,
+                default_branch,
+            }
+        })
+        .collect()
+}
+
+/// What a directory looks like, before anything is done to it.
+///
+/// Read-only and side-effect free, which is the point: `project.add` used to
+/// be the first moment anyone learned what the directory was, and by then it
+/// had already been `git init`-ed. The window asks this first and puts the
+/// answer in front of the user.
+///
+/// The suggestion is a suggestion. A directory that is *already* a repository
+/// and *also* holds several — which is exactly what a wrongly-initialised
+/// workspace looks like — is reported as both, because only the user knows
+/// which one they meant.
+fn project_probe(ctx: &Ctx, raw_path: &str) -> DispatchResult {
+    let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
+    let exists = path.is_dir();
+    let is_repo_root = exists && git::is_repo_root(&path);
+    let members = if exists {
+        discover_members(&path)
+    } else {
+        Vec::new()
+    };
+    let suggest_workspace = !is_repo_root && members.len() >= 2;
+    Ok((
+        json!({
+            "path": path.to_string_lossy(),
+            "exists": exists,
+            "is_repo_root": is_repo_root,
+            "members": members,
+            "suggest_workspace": suggest_workspace,
+            "suggested_docs_repo": members
+                .iter()
+                .find(|m| m.name == project::DEFAULT_DOC_ROOT_REPO)
+                .or_else(|| members.first())
+                .map(|m| m.name.clone()),
+        }),
+        vec![],
     ))
 }
 
@@ -1194,6 +1324,20 @@ fn create(
     attachments: Vec<String>,
     doc_refs: Vec<String>,
 ) -> DispatchResult {
+    let project = ctx.store.get_project(project_id)?;
+    // A workspace task means one branch per repository it touches, which the
+    // loop does not do yet. Refusing it by name beats starting one that
+    // cannot finish — which is how this whole line of work began.
+    if project.is_workspace() {
+        return Err(rejected(
+            "工作区项目还不能接任务：多仓任务（每个仓一条分支、一次合并）还没接通",
+        ));
+    }
+    let doc_root = resolve_doc_root(
+        &project,
+        &config_io::load_project(std::path::Path::new(&project.path))?,
+    )?;
+
     let base = autome_domain::project::slugify(title.unwrap_or(request));
     let slug = {
         let taken: Vec<String> = ctx
@@ -1230,6 +1374,10 @@ fn create(
         protocol_ref: None,
         rules_hash: None,
         metrics: None,
+        // Frozen here, like the protocol version: the documents this task is
+        // about to create are committed at these paths, and a setting changed
+        // halfway through must not split them across two directories.
+        doc_root: Some(doc_root),
     };
     ctx.store.insert_task(&task)?;
     let seq = ctx
@@ -1610,7 +1758,7 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
     let project = ctx.store.get_project(&task.project_id)?;
     let repo = std::path::PathBuf::from(&project.path);
     let live = repo.join(task.doc_dir());
-    let archived = repo.join(autome_domain::project::Project::archive_dir(&task.slug));
+    let archived = repo.join(task.archive_dir());
 
     let (from, to) = if archive {
         (&live, &archived)
@@ -2019,8 +2167,9 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 18] = [
+pub const READ_METHODS: [&str; 19] = [
     "project.list",
+    "project.probe",
     "project.get",
     "project.onboarding.artefacts",
     "task.get",
@@ -2264,6 +2413,195 @@ mod tests {
         );
     }
 
+    // ---- workspaces --------------------------------------------------------
+
+    /// A directory holding several independent repositories, as people
+    /// actually lay one out: each child its own repository, nothing at the
+    /// root.
+    fn workspace_at(dir: &std::path::Path, members: &[(&str, &str)]) {
+        std::fs::create_dir_all(dir).unwrap();
+        for (name, branch) in members {
+            let member = dir.join(name);
+            std::fs::create_dir_all(&member).unwrap();
+            git::init(&member, branch).unwrap();
+            std::fs::write(member.join("README.md"), format!("{name}\n")).unwrap();
+            git::commit_paths(&member, &["README.md"], "init").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_directory_of_repositories_is_probed_as_a_workspace_without_touching_it() {
+        needs_git!();
+        let mut sb = Sandbox::new("probe-ws");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("docs", "main"), ("backend", "master")]);
+
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.probe", json!({ "path": target.to_str().unwrap() })),
+        );
+        let payload = ok_payload(&out);
+        assert_eq!(payload["suggest_workspace"], json!(true));
+        assert_eq!(payload["is_repo_root"], json!(false));
+        assert_eq!(
+            payload["members"],
+            json!([
+                { "name": "backend", "default_branch": "master" },
+                { "name": "docs", "default_branch": "main" },
+            ]),
+            "name order, and each member's own default branch"
+        );
+        assert_eq!(
+            payload["suggested_docs_repo"],
+            json!("docs"),
+            "a member actually called docs is the obvious suggestion"
+        );
+        // Probing is a question, not an action.
+        assert!(!target.join(".git").exists(), "probe must not initialise");
+        assert!(!target.join(".autome").exists(), "probe must not scaffold");
+    }
+
+    #[test]
+    fn a_single_repository_is_not_suggested_as_a_workspace() {
+        needs_git!();
+        let mut sb = Sandbox::new("probe-repo");
+        let target = sb.path("repo");
+        std::fs::create_dir_all(&target).unwrap();
+        git::init(&target, "main").unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.probe", json!({ "path": target.to_str().unwrap() })),
+        );
+        let payload = ok_payload(&out);
+        assert_eq!(payload["is_repo_root"], json!(true));
+        assert_eq!(payload["suggest_workspace"], json!(false));
+    }
+
+    #[test]
+    fn adding_a_workspace_initialises_nothing_and_leaves_every_member_alone() {
+        // The closing test for the defect this whole feature came from: a
+        // `git init` at the workspace root recorded each member as a gitlink,
+        // and the first task died committing its own documents.
+        needs_git!();
+        let mut sb = Sandbox::new("add-ws");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("docs", "main"), ("backend", "master")]);
+        let heads: Vec<String> = ["docs", "backend"]
+            .iter()
+            .map(|m| git::head_sha(&target.join(m)).unwrap())
+            .collect();
+
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({
+                    "path": target.to_str().unwrap(),
+                    "workspace": true,
+                    "docs_repo": "docs",
+                }),
+            ),
+        );
+        let payload = ok_payload(&out);
+
+        assert_eq!(
+            payload.pointer("/project/disposition").unwrap(),
+            &json!("adopted_workspace")
+        );
+        assert_eq!(
+            payload.pointer("/project/kind").unwrap(),
+            &json!("workspace")
+        );
+        assert_eq!(
+            payload.pointer("/project/docs_repo").unwrap(),
+            &json!("docs")
+        );
+        assert_eq!(
+            payload.pointer("/project/default_branch").unwrap(),
+            &json!("main"),
+            "the document repository's branch stands in for the project's"
+        );
+
+        assert!(
+            !target.join(".git").exists(),
+            "the whole point: no repository is created at the workspace root"
+        );
+        assert!(
+            !target.join(".gitignore").exists(),
+            "nothing tracks the root, so there is nothing to ignore"
+        );
+        assert!(
+            !target.join("docs").join(".autome").exists(),
+            "members are not scaffolded"
+        );
+        for (m, before) in ["docs", "backend"].iter().zip(&heads) {
+            assert_eq!(
+                &git::head_sha(&target.join(m)).unwrap(),
+                before,
+                "{m} was not committed into"
+            );
+        }
+        // The scaffold Autome keeps beside every project is still there.
+        assert!(target.join(".autome/skill/run_session.sh").exists());
+    }
+
+    #[test]
+    fn a_workspace_refuses_tasks_by_name_until_multi_repo_lands() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-task");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("docs", "main"), ("backend", "main")]);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({ "path": target.to_str().unwrap(), "workspace": true, "docs_repo": "docs" }),
+            ),
+        );
+        let id = ok_payload(&out)["project"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({ "project_id": id, "request": "做点什么" }),
+            ),
+        );
+        let message = err_message(&out);
+        assert!(
+            message.contains("工作区") && message.contains("还没接通"),
+            "a refusal the user can act on, got: {message}"
+        );
+    }
+
+    #[test]
+    fn a_workspace_needs_a_document_repository_that_exists() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-nodocs");
+        let target = sb.path("ws");
+        workspace_at(&target, &[("a", "main"), ("b", "main")]);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({ "path": target.to_str().unwrap(), "workspace": true, "docs_repo": "nope" }),
+            ),
+        );
+        assert!(err_message(&out).contains("nope"));
+
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({ "path": target.to_str().unwrap(), "workspace": true }),
+            ),
+        );
+        assert!(err_message(&out).contains("文档仓库"));
+    }
+
     #[test]
     fn adding_the_same_directory_twice_is_refused() {
         needs_git!();
@@ -2431,6 +2769,7 @@ mod tests {
             protocol_ref: None,
             rules_hash: None,
             metrics: None,
+            doc_root: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2477,6 +2816,7 @@ mod tests {
             protocol_ref: None,
             rules_hash: None,
             metrics: None,
+            doc_root: None,
         };
         let worktree = sb.path("wt");
         let dir = worktree.join(task.doc_dir());
@@ -2512,6 +2852,7 @@ mod tests {
                 protocol_ref: None,
                 rules_hash: None,
                 metrics: None,
+                doc_root: None,
             })
             .unwrap();
         let out = handle_command(sb.ctx(), &cmd("project.remove", json!({"project_id": id})));

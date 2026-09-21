@@ -112,6 +112,18 @@ impl InitReport {
 /// the rules in force. A *task's* authoritative copy is the one frozen into
 /// its own `docs/<slug>/protocol/` at creation time.
 pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
+    init_kind(repo, protocol, false)
+}
+
+/// The scaffold, told whether the directory is a workspace.
+///
+/// A workspace root is not a repository, so two of the steps below would be
+/// writing into nothing: `docs/` belongs to the member repository that holds
+/// the documents, not to the root, and a `.gitignore` at a root no repository
+/// tracks ignores nothing. Everything else — the wrapper script, the rules
+/// directory, the session output tree — is filesystem state Autome keeps
+/// beside the project either way.
+pub fn init_kind(repo: &Path, protocol: &ProtocolFiles, workspace: bool) -> Result<InitReport> {
     let _ = protocol;
     let mut report = InitReport::default();
 
@@ -121,9 +133,11 @@ pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
         ".autome/skill",
         ".autome/output",
         ".autome/output/sessions",
-        "docs",
     ] {
         create_dir(repo, dir)?;
+    }
+    if !workspace {
+        create_dir(repo, "docs")?;
     }
 
     // Owned by Autome: refreshed when the version marker is stale.
@@ -154,7 +168,12 @@ pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
     // format. Init only guarantees the directory exists; an absent file
     // already means "inherit everything".
 
-    append_gitignore(repo, &mut report)?;
+    // Nothing at a workspace root is tracked, so there is nothing to ignore.
+    // Each member repository keeps its own ignores, and `.worktree/` lives at
+    // the root — outside every member — so no member needs one either.
+    if !workspace {
+        append_gitignore(repo, &mut report)?;
+    }
     append_agents_md(repo, &mut report)?;
 
     Ok(report)

@@ -249,6 +249,19 @@ pub struct ProjectConfig {
     pub loop_overrides: LoopOverrides,
     #[serde(default)]
     pub roles: BTreeMap<Role, RoleOverrides>,
+    /// Where this project's task documents go inside the repository that
+    /// holds them.
+    ///
+    /// Project-only, with no global counterpart, for the same reason
+    /// `protocol` has none: there is no sensible machine-wide answer. It is a
+    /// fact about one repository's layout — whether `docs/` is free, whether
+    /// it is somebody else's independent repository, whether the team already
+    /// keeps `prd/` and `reports/` at the root.
+    ///
+    /// `None` means the project's own default: `docs/` for a single
+    /// repository, `autome/` inside a workspace's document repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_root: Option<String>,
 }
 
 impl ProjectConfig {
