@@ -42,6 +42,24 @@ export function render(host, data, ctx) {
   const skills = (data && data.skills) || [];
   const projectId = data.projectId || null;
 
+  // 技能 is a sidebar destination, so globally it has no parent and no crumb.
+  // Scoped to a project it does: it is opened from that project's 规则与技能
+  // card, and the sidebar's own 技能 button goes to the global list, so
+  // without this the way back was 项目 → the list → find the project again.
+  // The scope toggle below shows *which* project, not a way out of it.
+  if (projectId) {
+    screen.appendChild(
+      h('div.crumb', [
+        h('button', {
+          type: 'button',
+          onClick: () => ctx.navigate('project', { projectId }),
+        }, [text(data.projectName || '项目')]),
+        h('span.sep', { text: '›' }),
+        h('b', { text: '技能' }),
+      ])
+    );
+  }
+
   screen.appendChild(
     h('div.pagehead', [
       h('h1.ribbon.ribbon--purple', [h('span.ribbon__front', { text: '技能' })]),

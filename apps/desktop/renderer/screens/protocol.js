@@ -44,11 +44,20 @@ export function render(host, data, ctx) {
   const screen = h('div.screen.active', { 'data-screen': 'protocol' });
   const p = data.protocol || {};
 
+  // The crumb names where this page was opened from, not where it usually
+  // lives. It is reachable two ways — 全局设置, and a project's 指标 section
+  // via 按版本看 — and a crumb that always said 全局设置 stranded the second
+  // one: the project it was showing versions *for* had no way back.
   screen.appendChild(
     h('div.crumb', [
-      h('button', { type: 'button', onClick: () => ctx.navigate('settings') }, [
-        text('全局设置'),
-      ]),
+      data.projectId
+        ? h('button', {
+            type: 'button',
+            onClick: () => ctx.navigate('project', { projectId: data.projectId }),
+          }, [text(data.projectName || '项目')])
+        : h('button', { type: 'button', onClick: () => ctx.navigate('settings') }, [
+            text('全局设置'),
+          ]),
       h('span.sep', { text: '›' }),
       h('b', { text: '协议版本' }),
     ])

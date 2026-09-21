@@ -856,6 +856,48 @@ async function run() {
     routerMap
   );
 
+  // ---- opened from a project, you can get back to it ---------------------
+  //
+  // There is no history stack and no back gesture (app.js says so), so a
+  // screen entered with a `projectId` has to carry the way back itself. Two
+  // did not: 技能 rendered no crumb at all, and 协议版本's crumb always said
+  // 全局设置 — so clicking either card on a project panel was one-way, and
+  // the sidebar's own buttons land on the *global* version of both.
+  const backToProject = await evaluate(async () => {
+    const out = [];
+    for (const screenId of ['skills', 'protocol', 'routing']) {
+      // eslint-disable-next-line no-await-in-loop
+      const module = await import(`autome://app/screens/${screenId}.js`);
+      const data = {
+        ...JSON.parse(document.getElementById(`fx-${screenId}`).textContent),
+        projectId: 'prj_island',
+        projectName: '岛屿商店',
+      };
+      const host = document.getElementById('main');
+      host.replaceChildren();
+      const navigations = [];
+      module.render(host, data, {
+        params: { projectId: 'prj_island' },
+        navigate: (id, params) => navigations.push([id, (params || {}).projectId || null]),
+        refresh() {},
+        connected: true,
+      });
+      const crumbs = Array.from(host.querySelectorAll('.crumb button'));
+      for (const button of crumbs) button.click();
+      out.push({
+        screen: screenId,
+        crumbs: crumbs.length,
+        back: navigations.some(([id, projectId]) => id === 'project' && projectId === 'prj_island'),
+      });
+    }
+    return out;
+  });
+  check(
+    'a project-scoped 技能 / 协议版本 / 路由图 offers its way back to that project',
+    backToProject.length === 3 && backToProject.every((row) => row.crumbs > 0 && row.back),
+    backToProject
+  );
+
   // ---- U-11: one screen, no vertical scroll -----------------------------
   for (const id of SCREEN_IDS) {
     const fit = await evaluate(async (screenId) => {
