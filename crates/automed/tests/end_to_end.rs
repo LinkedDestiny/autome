@@ -2108,15 +2108,28 @@ git -c user.name=fake -c user.email=f@f commit -q -m "docs {n}" >/dev/null 2>&1 
         );
     }
 
+    /// The same settling rule the single-repository harness uses, rather than
+    /// a second one: a test that waits differently from every other test here
+    /// is a test whose failures mean something different from theirs.
     fn settle(&mut self) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             automed::scheduler::tick(&mut self.ctx);
-            let tasks = self.ctx.store.list_unfinished().unwrap();
-            let busy = tasks.iter().any(|t| {
-                matches!(t.state, autome_domain::task::TaskState::Active { node } if !node.awaits_user())
-            }) || !self.ctx.store.all_running_sessions().unwrap().is_empty();
-            if !busy {
+            let sessions = self.ctx.store.all_running_sessions().unwrap_or_default();
+            let pending = !sessions.is_empty()
+                || self
+                    .ctx
+                    .store
+                    .list_unfinished()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|t| {
+                        let v = serde_json::to_value(&t.state).unwrap();
+                        let state = v.get("state").and_then(Value::as_str).unwrap_or("");
+                        let node = v.get("node").and_then(Value::as_str).unwrap_or("");
+                        state == "queued" || matches!(node, "rebase" | "merging" | "cleanup")
+                    });
+            if !pending {
                 return;
             }
             assert!(
@@ -2125,6 +2138,33 @@ git -c user.name=fake -c user.email=f@f commit -q -m "docs {n}" >/dev/null 2>&1 
             );
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
+    }
+
+    /// Everything known about why a task is not where it should be.
+    ///
+    /// This test failed twice in CI and never once on this machine, across
+    /// twenty repeats and a full `ci-local.sh` run. Rather than guess at a
+    /// cause that cannot be reproduced, the next failure is made to say what
+    /// happened: the state, the rounds the stand-in actually ran, and the
+    /// events the core recorded.
+    fn why(&self, task_id: &str) -> String {
+        let task = self.ctx.store.get_task(task_id).unwrap();
+        let history = std::fs::read_to_string(self.ws().join(".autome/fake/history"))
+            .unwrap_or_else(|_| "(没有 history)".into())
+            .replace('\n', " ");
+        let events: Vec<String> = self
+            .ctx
+            .store
+            .events_since(0, 200)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(seq, kind, payload)| format!("{seq} {kind} {payload}"))
+            .collect();
+        format!(
+            "state={:?}\n跑过的步骤={history}\n事件=\n  {}",
+            task.state,
+            events.join("\n  ")
+        )
     }
 
     fn node(&self, task_id: &str) -> Option<String> {
@@ -2221,10 +2261,20 @@ fn a_workspace_task_branches_in_every_repository_it_names_and_merges_them_all() 
         &format!("autome/{slug}")
     ));
 
-    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    assert_eq!(
+        w.node(&task_id).as_deref(),
+        Some("await_design_approval"),
+        "{}",
+        w.why(&task_id)
+    );
     call(&mut w.ctx, "task.approve", json!({ "task_id": task_id }));
     w.settle();
-    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.node(&task_id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        w.why(&task_id)
+    );
 
     // One press, every repository.
     call(&mut w.ctx, "task.merge", json!({ "task_id": task_id }));
@@ -2233,8 +2283,8 @@ fn a_workspace_task_branches_in_every_repository_it_names_and_merges_them_all() 
     let task = w.ctx.store.get_task(&task_id).unwrap();
     assert!(
         matches!(task.state, autome_domain::task::TaskState::Done),
-        "got {:?}",
-        task.state
+        "{}",
+        w.why(&task_id)
     );
     // The code landed on the member's own default branch…
     assert!(
