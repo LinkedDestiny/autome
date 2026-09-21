@@ -459,27 +459,60 @@ fn after_the_loop(config: &ResolvedConfig) -> Transition {
 /// The implementation-side successor after an implement session, when audit
 /// is disabled (requirement C-05): no independent check, so "no milestone is
 /// still open" is the exit condition.
-fn after_implement_without_audit(
-    status: &StatusBlock,
-    budget_n: u32,
-    config: &ResolvedConfig,
-) -> Transition {
+fn after_implement_without_audit(status: &StatusBlock, budget_n: u32, ctx: &Context) -> Transition {
     if status.no_open_milestones() {
-        after_the_loop(config)
+        after_the_loop(ctx.config)
     } else if status.impl_round >= budget_n {
         Transition::fail(
             Node::Implement,
             FailureReason::ImplBudget { limit: budget_n },
         )
     } else {
+        start_impl(ctx, None)
+    }
+}
+
+/// Starts an implementation round, absorbing whatever the user has marked
+/// 纳入 since the last one (T-09).
+///
+/// The decision used to be held until the merge stopping point, which put it
+/// at the worst possible moment: hours after it was made, at the one moment
+/// the user was asking to *finish*, the 合并 button sent the task back to the
+/// implementation loop instead. It happened to a real task twice, and both
+/// times the round that followed ended in a protocol failure nobody had asked
+/// for. Absorbed at the top of each implementation round, the decision takes
+/// effect where the work is, and the round it changes is the next one.
+///
+/// The budget grows by the configured factor per included item, exactly as
+/// the merge stopping point used to do it: the extra work is not paid for out
+/// of the original N.
+///
+/// `base` is the budget the caller had already decided on, for the one caller
+/// that has one (追加轮次). `None` means "whatever the task already had".
+///
+/// A round that is already carrying an injection — a rebase conflict — keeps
+/// it. That round has one job, and the Backlog items wait for the next one,
+/// which is at most one round away.
+fn start_impl(ctx: &Context, base: Option<u32>) -> Transition {
+    let start = |inject| {
         Transition::active(
             Node::Implement,
             Action::StartRole {
                 role: Role::Impl,
-                inject: None,
+                inject,
             },
         )
+    };
+    if ctx.decisions.included == 0 {
+        return match base {
+            Some(n) => start(None).with_budget(n),
+            None => start(None),
+        };
     }
+    let extra = ctx.config.loop_defaults.budget_factor * ctx.decisions.included;
+    start(Some(Inject::Decisions))
+        .with_budget(base.or(ctx.budget_n).unwrap_or(0) + extra)
+        .consuming()
 }
 
 /// Applies a trigger. Returns the next state plus the side effect to perform,
@@ -549,14 +582,7 @@ pub fn apply(
                 return Err(reject("追加轮次必须大于 0"));
             }
             match reason {
-                FailureReason::ImplBudget { limit } => Ok(Transition::active(
-                    Node::Implement,
-                    Action::StartRole {
-                        role: Role::Impl,
-                        inject: None,
-                    },
-                )
-                .with_budget(limit + extra)),
+                FailureReason::ImplBudget { limit } => Ok(start_impl(ctx, Some(limit + extra))),
                 FailureReason::DesignBudget { .. } => Ok(Transition::active(
                     Node::Design,
                     Action::StartRole {
@@ -702,7 +728,7 @@ pub fn apply(
                             },
                         ))
                     } else {
-                        Ok(after_implement_without_audit(status, budget, ctx.config))
+                        Ok(after_implement_without_audit(status, budget, ctx))
                     }
                 }
                 Node::Audit => {
@@ -715,13 +741,7 @@ pub fn apply(
                             FailureReason::ImplBudget { limit: budget },
                         ))
                     } else {
-                        Ok(Transition::active(
-                            Node::Implement,
-                            Action::StartRole {
-                                role: Role::Impl,
-                                inject: None,
-                            },
-                        ))
+                        Ok(start_impl(ctx, None))
                     }
                 }
                 // The retro round produces `lessons.md` and nothing the
@@ -790,22 +810,13 @@ pub fn apply(
             },
             Trigger::Merge,
         ) => {
+            // An item marked 纳入 while the task sits *here* has no later
+            // implementation round to be picked up by, so this stopping point
+            // keeps absorbing them — it is the only remaining way such a
+            // decision can take effect. Everything decided during the loop was
+            // already absorbed by the round after it (`start_impl`).
             if ctx.decisions.included > 0 {
-                // Included Backlog items become new milestones; the task goes
-                // back to implement and returns here after audit (T-09). The
-                // budget grows by the configured factor per new milestone so
-                // the extra work is not paid for out of the original N.
-                let extra = ctx.config.loop_defaults.budget_factor * ctx.decisions.included;
-                let n = ctx.budget_n.unwrap_or(0) + extra;
-                return Ok(Transition::active(
-                    Node::Implement,
-                    Action::StartRole {
-                        role: Role::Impl,
-                        inject: Some(Inject::Decisions),
-                    },
-                )
-                .with_budget(n)
-                .consuming());
+                return Ok(start_impl(ctx, None));
             }
             Ok(Transition::active(
                 Node::Merging,
@@ -1429,10 +1440,134 @@ mod tests {
         assert!(t.consumes_decisions);
     }
 
+    // ---- Backlog absorbed at the top of each implementation round --------
+
+    /// A context with `included` Backlog items waiting to be absorbed.
+    fn with_included(c: &ResolvedConfig, included: u32, budget: u32) -> Context<'_> {
+        Context {
+            config: c,
+            budget_n: Some(budget),
+            decisions: PendingDecisions { included, ruled: 0 },
+        }
+    }
+
+    #[test]
+    fn an_audit_that_reopens_absorbs_the_backlog_items_decided_since_the_last_round() {
+        // The behaviour this replaces held every included item until the merge
+        // stopping point, so a decision made during the loop did nothing for
+        // hours and then turned the 合并 button into "go back to work".
+        let c = cfg();
+        let context = with_included(&c, 2, 25);
+        let doc = block(DocStatus::Implementing, &[MilestoneState::Open]);
+        let t = apply(
+            &active(Node::Audit),
+            &Trigger::SessionEnded {
+                outcome: SessionOutcome::Ok {
+                    status: Box::new(doc),
+                },
+            },
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(t.next, active(Node::Implement));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: Some(Inject::Decisions),
+            },
+            "the round is told what it is picking up"
+        );
+        assert!(t.consumes_decisions, "and they are not picked up twice");
+        assert_eq!(t.budget_n, Some(35), "25 + factor(5) × 2 new milestones");
+    }
+
+    #[test]
+    fn an_implementation_round_with_nothing_decided_is_unchanged() {
+        let c = cfg();
+        let context = ctx(&c);
+        let doc = block(DocStatus::Implementing, &[MilestoneState::Open]);
+        let t = apply(
+            &active(Node::Audit),
+            &Trigger::SessionEnded {
+                outcome: SessionOutcome::Ok {
+                    status: Box::new(doc),
+                },
+            },
+            &context,
+        )
+        .unwrap();
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: None,
+            }
+        );
+        assert!(!t.consumes_decisions);
+        assert_eq!(t.budget_n, None, "no decision, no budget change");
+    }
+
+    #[test]
+    fn a_rebase_conflict_round_keeps_its_own_injection() {
+        // That round has one job. The Backlog items wait for the next one,
+        // which is at most one round away.
+        let c = cfg();
+        let context = with_included(&c, 1, 25);
+        let t = apply(
+            &active(Node::Rebase),
+            &Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Conflict {
+                    files: vec!["a.rs".into()],
+                    detail: "冲突".into(),
+                },
+            },
+            &context,
+        )
+        .unwrap();
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: Some(Inject::RebaseConflict {
+                    files: vec!["a.rs".into()]
+                }),
+            }
+        );
+        assert!(
+            !t.consumes_decisions,
+            "nothing was absorbed, so nothing is spent"
+        );
+    }
+
+    #[test]
+    fn extending_the_budget_absorbs_what_is_waiting_too() {
+        let c = cfg();
+        let context = with_included(&c, 1, 25);
+        let failed = TaskState::Failed {
+            at: Node::Implement,
+            reason: FailureReason::ImplBudget { limit: 25 },
+        };
+        let t = apply(
+            &failed,
+            &Trigger::ExtendBudget { extra_rounds: 10 },
+            &context,
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        // The user's 10 extra rounds, plus factor(5) for the item being taken on.
+        assert_eq!(t.budget_n, Some(40));
+        assert!(t.consumes_decisions);
+    }
+
     // ---- merge stopping point -------------------------------------------
 
     #[test]
-    fn merging_with_an_included_backlog_item_goes_back_to_implement() {
+    fn merging_with_an_item_decided_while_waiting_here_still_goes_back_to_implement() {
+        // The only absorption this stopping point still does: an item decided
+        // while the task sits here has no later round to be picked up by.
         let c = cfg();
         let context = Context {
             config: &c,

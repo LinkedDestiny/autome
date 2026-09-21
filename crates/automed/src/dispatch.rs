@@ -1845,6 +1845,12 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "total_deleted": summary.total_deleted,
             "subjects": subjects,
             "mergeable": blocking.is_empty() && on_top,
+            // What pressing merge will actually do. A Backlog item marked
+            // 纳入 turns into new work at this stopping point (T-09), so the
+            // task goes back to the implementation loop instead of merging —
+            // and the panel that says 合并到 main has to know, or it promises
+            // something the core will not do.
+            "pending_decisions": ctx.store.pending_decisions(task_id)?,
             "blocked_by": if !blocking.is_empty() {
                 json!({ "kind": "dirty_worktree", "paths": blocking })
             } else if !on_top {

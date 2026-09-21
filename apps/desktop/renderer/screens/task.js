@@ -865,13 +865,20 @@ function mergeFace(card, data, ctx) {
     return;
   }
 
-  card.appendChild(
-    repoList([
-      ['分支', `${changes.branch} → ${changes.into}`],
-      ['提交', `${changes.commits} commits · ${changes.files.length} 文件 +${changes.total_added} −${changes.total_deleted}`],
-      ['主工作树', changes.mergeable ? '干净 · 可以合并' : blockedText(changes.blocked_by)],
-    ])
-  );
+  // A Backlog item marked 纳入 turns into new work *at this stopping point*
+  // (T-09): the core sends the task back to the implementation loop and grows
+  // its budget instead of merging. A button that says 合并到 main and then
+  // does that is lying, and it lied to a real user twice — once on 09-17 and
+  // again today, each time costing a round that ended in a protocol failure.
+  const included = (changes.pending_decisions || {}).included || 0;
+
+  const rows = [
+    ['分支', `${changes.branch} → ${changes.into}`],
+    ['提交', `${changes.commits} commits · ${changes.files.length} 文件 +${changes.total_added} −${changes.total_deleted}`],
+    ['主工作树', changes.mergeable ? '干净 · 可以合并' : blockedText(changes.blocked_by)],
+  ];
+  if (included) rows.push(['Backlog', backlogText(included)]);
+  card.appendChild(repoList(rows));
 
   const row = h('div.row.gap-6.mt-8');
   row.appendChild(
@@ -886,12 +893,14 @@ function mergeFace(card, data, ctx) {
       type: 'button',
       onClick: () =>
         attempt({
-          label: `已合并到 ${changes.into}`,
-          success: 'worktree 与分支已清理，任务完成。',
+          label: included ? '已回到实现轮' : `已合并到 ${changes.into}`,
+          success: included
+            ? `${included} 个 Backlog 项会先做完，做完后回到这里。`
+            : 'worktree 与分支已清理，任务完成。',
           run: (write) => write.mergeTask(task.id),
           onDone: () => ctx.refresh(),
         }),
-    }, [text(`合并到 ${changes.into}`)])
+    }, [text(included ? `先做 ${included} 个 Backlog 项` : `合并到 ${changes.into}`)])
   );
   // T-07's preconditions are the core's to enforce, but offering a button that
   // can only fail is worse than saying why it is not offered.
@@ -901,6 +910,17 @@ function mergeFace(card, data, ctx) {
   }
   row.appendChild(mergeButton);
   card.appendChild(row);
+}
+
+/**
+ * What N included Backlog items mean for the button next to this line.
+ *
+ * Said in the panel rather than only in the button, because the button is
+ * read last: by the time someone reaches it they have already decided from
+ * the rows above that this is a merge.
+ */
+function backlogText(included) {
+  return `${included} 项标记为纳入 · 会先变成新里程碑做完，再回到这里`;
 }
 
 function blockedText(blocked) {
@@ -1176,20 +1196,23 @@ export async function openMergeModal(taskId, ctx) {
     return;
   }
 
+  const included = (changes.pending_decisions || {}).included || 0;
   const mergeButton = registerWrite(
     h('button.btn.btn--yellow.ml-auto', {
       type: 'button',
       onClick: () =>
         attempt({
-          label: `已合并到 ${changes.into}`,
-          success: 'worktree 与分支已清理，任务完成。',
+          label: included ? '已回到实现轮' : `已合并到 ${changes.into}`,
+          success: included
+            ? `${included} 个 Backlog 项会先做完，做完后回到这里。`
+            : 'worktree 与分支已清理，任务完成。',
           run: (write) => write.mergeTask(taskId),
           onDone: () => {
             close();
             return ctx.refresh();
           },
         }),
-    }, [text('合并')])
+    }, [text(included ? `先做 ${included} 个 Backlog 项` : '合并')])
   );
   if (!changes.mergeable) {
     mergeButton.disabled = true;
