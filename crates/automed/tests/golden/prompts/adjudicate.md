@@ -2,13 +2,13 @@
 
 {budget_line}先读本轮简报 `{brief_path}`——它是 Autome 给的索引：本里程碑那一行、上一轮对手轮的结论、与本轮相关的协议小节、预算与用户表态。设计文档仍然是权威，需要什么就去读什么，但多数轮次不必整份拉进来。
 
-先读 `docs/{slug}/{slug}-task.md`、`docs/{slug}/{slug}.md` 和本轮的 `docs/{slug}/{slug}-review.md`；如果 `docs/{slug}/{slug}-adjudication.md` 已存在，读它了解此前的裁决与复提计数。
+先读 `{doc_dir}/{slug}-task.md`、`{doc_dir}/{slug}.md` 和本轮的 `{doc_dir}/{slug}-review.md`；如果 `{doc_dir}/{slug}-adjudication.md` 已存在，读它了解此前的裁决与复提计数。
 
 本轮产出三件事：
 
-1. **追加**（不是覆盖）到 `docs/{slug}/{slug}-adjudication.md`：本轮轮次、评审结论，以及逐条裁决记录（稳定 ID、主张摘要、设计位置、裁决、证据或理由、修改落点、复提计数）。复提计数达到 2 的主张冻结为争议项，写进 `docs/{slug}/{slug}.md` 的「## 争议项」小节。
-2. 按采纳的裁决修改 `docs/{slug}/{slug}.md`，并把 `design-round` 加 1。
-3. **判断设计是否定稿。** 若已没有剩余的六类问题：把 `docs/{slug}/{slug}.md` 状态块的 `status` 从 `设计中` 改为 `实现中`，并填好完整的里程碑表——这是 Autome 判断「可以停下来等用户批准」的唯一信号。若仍有问题，`status` 保持 `设计中`。
+1. **追加**（不是覆盖）到 `{doc_dir}/{slug}-adjudication.md`：本轮轮次、评审结论，以及逐条裁决记录（稳定 ID、主张摘要、设计位置、裁决、证据或理由、修改落点、复提计数）。复提计数达到 2 的主张冻结为争议项，写进 `{doc_dir}/{slug}.md` 的「## 争议项」小节。
+2. 按采纳的裁决修改 `{doc_dir}/{slug}.md`，并把 `design-round` 加 1。
+3. **判断设计是否定稿。** 若已没有剩余的六类问题：把 `{doc_dir}/{slug}.md` 状态块的 `status` 从 `设计中` 改为 `实现中`，并填好完整的里程碑表——这是 Autome 判断「可以停下来等用户批准」的唯一信号。若仍有问题，`status` 保持 `设计中`。
 
 注意：状态块里的 `design-round` 只由本轮增加，评审轮不增加。
 
@@ -17,4 +17,4 @@
 
 `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——该记录就记录、该退回里程碑就退回，让 Loop 继续走。
 
-状态块格式必须严格符合 `docs/{slug}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。
+状态块格式必须严格符合 `{doc_dir}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。

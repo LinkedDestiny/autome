@@ -6,16 +6,16 @@
 
 {task_metrics}
 
-然后读 `docs/{slug}/{slug}-task.md`（这次任务本来要做什么）、`docs/{slug}/retro.md`、`docs/{slug}/evidence/` 下的全部证据文件、`docs/{slug}/{slug}-audit.md` 与 `docs/{slug}/{slug}-adjudication.md`。证据文件多的话按里程碑从后往前读，先读被退回过的那些。
+然后读 `{doc_dir}/{slug}-task.md`（这次任务本来要做什么）、`{doc_dir}/retro.md`、`{doc_dir}/evidence/` 下的全部证据文件、`{doc_dir}/{slug}-audit.md` 与 `{doc_dir}/{slug}-adjudication.md`。证据文件多的话按里程碑从后往前读，先读被退回过的那些。
 
-本轮产出：覆盖写 `docs/{slug}/lessons.md`，把这次运行里可以带走的教训写成条目。每条一个 YAML 块，字段固定：
+本轮产出：覆盖写 `{doc_dir}/lessons.md`，把这次运行里可以带走的教训写成条目。每条一个 YAML 块，字段固定：
 
 ```yaml
 - id: L-01
   domain: verification
   symptom: 审计 #3 在 M-02 因情形表第 4 行未覆盖退回
   root_cause: 实现轮自审清单「情形表逐行」被写成「不适用」但未说明
-  evidence: docs/{slug}/evidence/M-02-r5-audit.md
+  evidence: {doc_dir}/evidence/M-02-r5-audit.md
   level: rule
   proposal: 所有标「不适用」的自审项必须引用设计文档中证明其不适用的条款
   predicted_impact: {metric: verification_gaps, direction: down, scope: task, horizon: 3}
@@ -38,4 +38,4 @@
 
 `协议失败` 只用于一种情况：你无法让设计文档符合协议格式。环境问题、工具缺失、提交不上、拿不到某条人工验收证据，都不是协议失败——该记录就记录、该退回里程碑就退回，让 Loop 继续走。
 
-状态块格式必须严格符合 `docs/{slug}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。
+状态块格式必须严格符合 `{doc_dir}/protocol/session-protocol.md` 的规定；格式错一次即判协议失败，任务会停下等人。

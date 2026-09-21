@@ -285,6 +285,16 @@ pub struct PromptSpec<'a> {
     /// the rules it started under.
     pub templates: &'a autome_domain::protocol::ProtocolFiles,
     pub slug: &'a str,
+    /// The task's document directory as *this round* sees it: relative to the
+    /// directory the session starts in.
+    ///
+    /// The templates used to spell `docs/{slug}` out, 54 times across seven
+    /// files. That is right for a single repository and wrong for a workspace,
+    /// where the session starts beside the member checkouts rather than inside
+    /// one and the same directory is `<docs-member>/<doc_root>/<slug>`. A
+    /// round told to write somewhere it cannot reach produces no document, and
+    /// the loop reads that as a round that did nothing.
+    pub doc_dir: &'a str,
     /// The project's design-round limit, for the skeleton status block the
     /// intake round writes.
     pub design_rounds: u32,
@@ -406,6 +416,7 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
     };
 
     let rendered = template
+        .replace("{doc_dir}", spec.doc_dir)
         .replace("{slug}", spec.slug)
         .replace("{budget_line}", &budget_line)
         .replace("{brief_path}", spec.brief_path)
@@ -525,7 +536,7 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             "用户提供的附件（已复制到任务目录）：\n{}\n\n",
             spec.attachments
                 .iter()
-                .map(|a| format!("- docs/{}/attachments/{a}", spec.slug))
+                .map(|a| format!("- {}/attachments/{a}", spec.doc_dir))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
@@ -542,6 +553,7 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
     }
 
     let rendered = template
+        .replace("{doc_dir}", spec.doc_dir)
         .replace("{request}", spec.request)
         .replace("{inputs}", &inputs)
         .replace("{slug}", spec.slug)
@@ -898,6 +910,7 @@ mod tests {
             templates,
             brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
+            doc_dir: "docs/checkout-flow",
             design_rounds: 15,
             task_metrics: None,
             budget: None,

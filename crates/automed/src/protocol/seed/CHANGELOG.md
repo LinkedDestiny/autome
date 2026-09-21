@@ -120,6 +120,30 @@ v1 是把 1.x 跑了几个月得到的规则原样出仓，加上 2026-09-16 那
   realized_impact: null
 ```
 
+## protocol/v2
+
+一条 `clarify`：把任务文档的位置从模板里挪出来，改由内核按每一轮自己的工作目录填。
+
+```yaml
+- id: C-15
+  kind: clarify
+  clause: prompts/intake.md
+  evidence: [offchat 工作区无法起第一轮, voice-schedule 路径与 cwd 一致因而一直正确]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+七个模板里 `docs/{slug}/` 一共出现 54 次。对"一个项目 = 一个仓库"这是对的：会话的
+工作目录就是那个检出，文档就在它下面的 `docs/<slug>/`。对工作区项目它是错的——会话
+起在各成员检出**旁边**，同一个目录从它的角度看是 `<文档仓>/<doc_root>/<slug>/`。
+一轮被告知写到它够不着的地方，产出就是没有产出，而循环会把这读成"这一轮什么也没做"。
+
+现在模板写 `{doc_dir}`，由内核按该轮的工作目录算出相对路径填进去。单仓项目填出来
+逐字节还是 `docs/<slug>`，所以这条对既有项目不改变任何行为——golden 基线的 diff 就是
+28 行纯占位符替换，别的一个字没动。预测因此是 `flat`：单仓项目的协议失败数不该动，
+这条改动如果让它变差，就是这次改错了。
+
 ## 关于 C-13 / C-14
 
 C-06 已经写过「要真人才能看到的结果不作为里程碑验收条件」，但它只对设计轮说。

@@ -1107,6 +1107,7 @@ fn start_session(
         templates: &protocol,
         brief_path: &brief_path,
         slug: &task.slug,
+        doc_dir: &TaskLayout::single(project, &task.slug).doc_dir_from_cwd(&task.doc_dir()),
         design_rounds: resolved.loop_defaults.design_rounds,
         task_metrics: task_metrics.as_ref(),
         budget,
@@ -1743,6 +1744,10 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         templates: &protocol,
         brief_path: "",
         slug: "onboarding",
+        // Onboarding writes the project profile and AGENTS.md at the
+        // repository root; it has no task and no document directory, and its
+        // template asks for neither.
+        doc_dir: "",
         design_rounds: 0,
         task_metrics: None,
         budget: None,

@@ -22,6 +22,7 @@ use automed::launcher::{PromptSpec, build_prompt};
 const SLUG: &str = "\u{1}";
 const REQUEST: &str = "\u{2}";
 const BRIEF: &str = "\u{3}";
+const DOC_DIR: &str = "\u{4}";
 
 fn golden(name: &str) -> String {
     let path = format!(
@@ -53,6 +54,7 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
         templates,
         brief_path: BRIEF,
         slug: SLUG,
+        doc_dir: DOC_DIR,
         design_rounds: 15,
         task_metrics: None,
         budget: None,
@@ -69,6 +71,7 @@ fn rendered(kind: SessionKind) -> String {
     let templates = automed::protocol::seed().clone();
     build_prompt(&spec(kind, &templates))
         .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
         .replace(SLUG, "{slug}")
         .replace(REQUEST, "{request}")
         .replace(BRIEF, "{brief_path}")
@@ -133,6 +136,7 @@ fn the_budget_placeholder_sits_where_the_core_used_to_write_the_budget_line() {
         });
         let got = build_prompt(&s)
             .unwrap()
+            .replace(DOC_DIR, "{doc_dir}")
             .replace(SLUG, "{slug}")
             .replace(BRIEF, "{brief_path}");
 

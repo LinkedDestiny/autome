@@ -149,6 +149,25 @@ impl TaskLayout {
     pub fn worktrees(&self) -> Vec<&Path> {
         self.repos.iter().map(|r| r.worktree.as_path()).collect()
     }
+
+    /// The task's document directory **as the session sees it** — relative to
+    /// the directory it is started in.
+    ///
+    /// Every prompt tells the round where to read and write, and it can only
+    /// say so in the round's own terms. For a single repository that is
+    /// `docs/<slug>`, exactly what the templates used to hard-code. For a
+    /// workspace the session starts one level up, beside the member
+    /// checkouts, so the same directory is `<docs-member>/<doc_root>/<slug>`.
+    pub fn doc_dir_from_cwd(&self, doc_dir: &str) -> String {
+        match self.docs_root.strip_prefix(&self.cwd) {
+            Ok(prefix) if prefix.as_os_str().is_empty() => doc_dir.to_string(),
+            Ok(prefix) => format!("{}/{doc_dir}", prefix.display()),
+            // The documents are not under the working directory at all, which
+            // no constructor produces. Naming the directory the session cannot
+            // reach would be worse than naming the one it can.
+            Err(_) => doc_dir.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +304,25 @@ mod tests {
                 .map(|r| r.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["docs"]
+        );
+    }
+
+    #[test]
+    fn the_document_directory_is_named_in_the_sessions_own_terms() {
+        // Every prompt tells the round where to read and write, and it can
+        // only say so relative to where the round was started.
+        let repo = project("/x/repo");
+        assert_eq!(
+            TaskLayout::single(&repo, "s").doc_dir_from_cwd("docs/s"),
+            "docs/s",
+            "a single repository sees exactly what the templates used to hard-code"
+        );
+
+        let ws = workspace(&[("docs", "main"), ("backend", "main")], "docs");
+        assert_eq!(
+            TaskLayout::workspace(&ws, "s", &[]).doc_dir_from_cwd("autome/s"),
+            "docs/autome/s",
+            "a workspace session starts one level up, beside the checkouts"
         );
     }
 

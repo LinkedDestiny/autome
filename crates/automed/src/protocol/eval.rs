@@ -365,8 +365,12 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
 }
 
 /// Placeholders a template may use.
-const KNOWN_PLACEHOLDERS: [&str; 8] = [
+const KNOWN_PLACEHOLDERS: [&str; 9] = [
     "slug",
+    // The task's document directory as the round sees it. Not the same string
+    // for every project: a workspace session starts beside its member
+    // checkouts rather than inside one.
+    "doc_dir",
     "request",
     "inputs",
     "brief_path",
