@@ -1456,10 +1456,13 @@ fn task_retro(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
-    let repo = std::path::PathBuf::from(&project.path);
-    let worktree = repo.join(".worktree").join(&task.slug);
+    // The status block is read from the checkout holding the documents, which
+    // is a different place from the session's working directory once a project
+    // can be a workspace. This used to spell the path out again by hand,
+    // independently of the scheduler's copy of the same rule.
+    let layout = crate::layout::TaskLayout::single(&project, &task.slug);
 
-    let doc = read_status_block(&worktree, &task);
+    let doc = read_status_block(&layout.docs_root, &task);
     let status = doc.block();
     let sessions = ctx.store.list_sessions(task_id)?;
     let decisions = ctx.store.list_decisions(task_id)?;
@@ -1475,8 +1478,11 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
             "decisions": decisions.iter().map(decision_json).collect::<Vec<_>>(),
             "pending_decisions": ctx.store.pending_decisions(task_id)?,
-            "documents": documents(&worktree, &task),
-            "worktree": worktree.to_string_lossy(),
+            "documents": documents(&layout.docs_root, &task),
+            // What "打开 worktree" opens: the session's working directory,
+            // which for a workspace is the directory the member checkouts sit
+            // in rather than a checkout itself.
+            "worktree": layout.cwd.to_string_lossy(),
             "next_role": scheduler::next_role(&task.state),
             // Empty for every ordinary task. For a meta task it names the
             // changes the review and audit rounds were not competent to judge,

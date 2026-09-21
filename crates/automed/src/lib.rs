@@ -55,6 +55,7 @@ pub mod guards;
 pub mod init;
 pub mod ipc;
 pub mod launcher;
+pub mod layout;
 pub mod meta;
 pub mod meta_store;
 pub mod protocol;

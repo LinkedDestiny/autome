@@ -36,6 +36,7 @@ use serde_json::json;
 
 use crate::dispatch::Ctx;
 use crate::guards;
+use crate::layout::TaskLayout;
 use crate::store::{TaskRecord, now_iso};
 use crate::{config_io, git, launcher, skills};
 
@@ -203,7 +204,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         .map(|m| m.ended_at.clone())
         .unwrap_or_else(now_iso);
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
-    record_usage(ctx, s, &repo, &task, &ended_at);
+    record_usage(ctx, s, &project, &task, &ended_at);
 
     // Onboarding sessions are not part of a task's Loop; the project page
     // advances its own wizard.
@@ -218,8 +219,8 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // run and write down what it taught us" changes nothing about where the
     // task is, and a state that exists only to come back from is a state.
     if s.kind.role() == Some(Role::Retro) && !matches!(task.state, TaskState::Active { .. }) {
-        sweep_commit(&repo, &task, s)?;
-        check_lessons(ctx, &task, &repo)?;
+        sweep_commit(&project, &task, s)?;
+        check_lessons(ctx, &task, &project)?;
         return Ok(true);
     }
 
@@ -229,9 +230,15 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // branch was identical to its base and the merge would have brought
     // nothing across. The prompt asks each round to commit; this is what
     // makes forgetting recoverable rather than silent.
-    sweep_commit(&repo, &task, s)?;
+    sweep_commit(&project, &task, s)?;
 
-    let outcome = apply_guards(ctx, s, &repo, &task, read_outcome(&repo, &task, &lifecycle))?;
+    let outcome = apply_guards(
+        ctx,
+        s,
+        &project,
+        &task,
+        read_outcome(&project, &task, &lifecycle),
+    )?;
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
 }
@@ -244,7 +251,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
 fn apply_guards(
     ctx: &mut Ctx,
     session: &Session,
-    repo: &Path,
+    project: &Project,
     task: &TaskRecord,
     outcome: SessionOutcome,
 ) -> Result<SessionOutcome> {
@@ -255,7 +262,7 @@ fn apply_guards(
         return Ok(outcome);
     };
 
-    let worktree = worktree_path(repo, &task.slug);
+    let worktree = task_docs_root(project, &task.slug);
     let before: Option<guards::Snapshot> = ctx
         .store
         .last_event(&task.id, "task.snapshot")?
@@ -336,7 +343,7 @@ fn apply_guards(
     }
 
     if role == Role::Retro {
-        check_lessons(ctx, task, repo)?;
+        check_lessons(ctx, task, project)?;
     }
 
     match findings.iter().find(|f| f.level == guards::Level::Error) {
@@ -353,8 +360,8 @@ fn apply_guards(
 /// failing it now would be punishing the wrong round for the wrong thing. But
 /// it does have to be visible: a lesson the core cannot read is a lesson that
 /// silently never reaches a rule, and "we wrote it down" would be false.
-fn check_lessons(ctx: &mut Ctx, task: &TaskRecord, repo: &Path) -> Result<()> {
-    let path = worktree_path(repo, &task.slug)
+fn check_lessons(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
+    let path = task_docs_root(project, &task.slug)
         .join(task.doc_dir())
         .join("lessons.md");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -466,13 +473,17 @@ fn design_changed_outside_milestones(
 /// Best-effort on purpose: a session whose `.jsonl` is missing or truncated
 /// still has to be reaped and its task still has to advance. A failure here
 /// loses a row in a table; making it fatal would lose the task.
-fn record_usage(ctx: &mut Ctx, s: &Session, repo: &Path, task: &TaskRecord, ended_at: &str) {
+fn record_usage(ctx: &mut Ctx, s: &Session, project: &Project, task: &TaskRecord, ended_at: &str) {
+    // The session's own output lives beside the project, not in the task's
+    // checkout — one directory per task under `.autome/output/`, which is
+    // where the wrapper script writes and where the panel reads.
+    let repo = Path::new(&project.path);
     let stream_path = repo.join(format!("{}/{}.jsonl", SessionPaths::dir(&s.task_id), s.id));
     let stream = std::fs::read_to_string(&stream_path).unwrap_or_default();
     let wall_ms = wall_clock_ms(&s.started_at, ended_at);
     let mut metrics = crate::usage::parse(s.runtime, &stream, wall_ms);
 
-    let worktree = worktree_path(repo, &task.slug);
+    let worktree = task_docs_root(project, &task.slug);
     let (bytes, files) = crate::usage::measure_documents(&worktree, &task.doc_dir(), &task.slug);
     metrics.design_doc_bytes = bytes;
     metrics.evidence_files = files;
@@ -535,8 +546,8 @@ fn epoch_secs(ts: &str) -> Option<i64> {
 /// Scoped to the worktree, so it can only ever pick up the task's own work.
 /// Labelled as a sweep, so a reader can tell it apart from a commit the agent
 /// made deliberately.
-fn sweep_commit(repo: &Path, task: &TaskRecord, session: &Session) -> Result<()> {
-    let worktree = worktree_path(repo, &task.slug);
+fn sweep_commit(project: &Project, task: &TaskRecord, session: &Session) -> Result<()> {
+    let worktree = task_cwd(project, &task.slug);
     if !worktree.exists() {
         return Ok(());
     }
@@ -596,7 +607,11 @@ fn session_idle_secs(log: &Path, started_at: &str) -> u64 {
 /// Turns a finished session into the outcome the transition table expects
 /// (design §7.3): a clean exit means "read the document", anything else is a
 /// crash, and a document that will not parse is a protocol failure.
-fn read_outcome(repo: &Path, task: &TaskRecord, lifecycle: &SessionLifecycle) -> SessionOutcome {
+fn read_outcome(
+    project: &Project,
+    task: &TaskRecord,
+    lifecycle: &SessionLifecycle,
+) -> SessionOutcome {
     if !lifecycle.should_parse_document() {
         return SessionOutcome::Crashed {
             detail: match lifecycle {
@@ -610,7 +625,7 @@ fn read_outcome(repo: &Path, task: &TaskRecord, lifecycle: &SessionLifecycle) ->
 
     // The document lives on the task branch, so it is read from the worktree,
     // not from the repository root.
-    let doc = worktree_path(repo, &task.slug).join(task.design_doc());
+    let doc = task_docs_root(project, &task.slug).join(task.design_doc());
     let Ok(text) = std::fs::read_to_string(&doc) else {
         return SessionOutcome::MissingArtifact {
             path: task.design_doc(),
@@ -624,8 +639,21 @@ fn read_outcome(repo: &Path, task: &TaskRecord, lifecycle: &SessionLifecycle) ->
     }
 }
 
-fn worktree_path(repo: &Path, slug: &str) -> PathBuf {
-    repo.join(".worktree").join(slug)
+/// Where this task's session runs.
+///
+/// Distinct from `task_docs_root` even though they are equal today, and that
+/// is the point of having two names: for a workspace the session runs in a
+/// directory holding one checkout per member repository, and the documents
+/// live inside the member designated to hold them. A call site that reaches
+/// for the wrong one compiles, runs, and writes the design document where
+/// nobody reads it.
+fn task_cwd(project: &Project, slug: &str) -> PathBuf {
+    TaskLayout::single(project, slug).cwd
+}
+
+/// The checkout holding `<doc_root>/<slug>/…`.
+fn task_docs_root(project: &Project, slug: &str) -> PathBuf {
+    TaskLayout::single(project, slug).docs_root
 }
 
 /// Starts queued tasks while their project has a free slot (design §8).
@@ -843,8 +871,7 @@ fn record_failed_action(
 fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
-    let repo = PathBuf::from(&project.path);
-    let worktree = worktree_path(&repo, &task.slug);
+    let worktree = task_docs_root(&project, &task.slug);
 
     let status = read_status(&project, &task);
     let (impl_defects, verification_gaps) =
@@ -934,8 +961,7 @@ fn resolve_budget(
 
 /// Reads and parses the task's design document, if it is there and valid.
 fn read_status(project: &Project, task: &TaskRecord) -> Option<StatusBlock> {
-    let repo = Path::new(&project.path);
-    let doc = worktree_path(repo, &task.slug).join(task.design_doc());
+    let doc = task_docs_root(project, &task.slug).join(task.design_doc());
     let text = std::fs::read_to_string(doc).ok()?;
     status_block::parse(&text).ok()
 }
@@ -1023,7 +1049,7 @@ fn start_session(
 
     // The worktree is created lazily, on the first session that needs it: a
     // queued task should not hold a checkout.
-    let worktree = worktree_path(&repo, &task.slug);
+    let worktree = task_cwd(project, &task.slug);
     if !worktree.exists() {
         git::worktree_prune(&repo)?;
         let rel = format!(".worktree/{}", task.slug);
@@ -1420,7 +1446,7 @@ fn write_task_inputs(
 fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     let project = ctx.store.get_project(&task.project_id)?;
     let repo = PathBuf::from(&project.path);
-    let worktree = worktree_path(&repo, &task.slug);
+    let worktree = task_cwd(&project, &task.slug);
 
     let result = match node {
         Node::Rebase => match git::rebase(&worktree, &project.default_branch) {
@@ -1483,7 +1509,7 @@ fn cleanup(repo: &Path, worktree: &Path, task: &TaskRecord) -> Result<()> {
 /// `docs/.archive/` in the main worktree keeps the record of what was tried.
 fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
     let repo = PathBuf::from(&project.path);
-    let worktree = worktree_path(&repo, &task.slug);
+    let worktree = task_docs_root(project, &task.slug);
 
     if worktree.exists() {
         let source = worktree.join(task.doc_dir());
@@ -1678,7 +1704,7 @@ pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     if !resolved.is_enabled(Role::Retro) {
         return Err(err("复盘轮在这个项目里是关着的"));
     }
-    let worktree = worktree_path(Path::new(&project.path), &task.slug);
+    let worktree = task_cwd(&project, &task.slug);
     if !worktree.exists() {
         // Cleanup removes the worktree after a merge, and the evidence the
         // retro round reads lives in it. Saying so beats starting a session
