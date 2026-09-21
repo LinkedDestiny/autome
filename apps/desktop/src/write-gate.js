@@ -59,6 +59,14 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'rules.restore',
 ]);
 
+// The roles, in the graph order `Role::ALL` uses (crates/autome-domain/
+// src/role.rs). A copy, because the core is Rust and this is the boundary in
+// front of it — but a copy the suite pins to the original, since the list
+// that was here before had five entries and the core had six. `retro` was
+// added to the loop and never to this line, so saving the 复盘 role was
+// refused by Main with "unknown role" before the core ever saw it.
+const ROLES = Object.freeze(['plan', 'review', 'adjudicate', 'impl', 'audit', 'retro']);
+
 // Ops whose params may contain prose the user typed, and the cap on it. A
 // one-line request and a rejection reason are the only two.
 const PROSE_FIELDS = Object.freeze({
@@ -222,7 +230,7 @@ function validateOpSpecific(op, params) {
     }
   }
   if (op === 'config.set_role' || op === 'config.reset_role') {
-    if (!['plan', 'review', 'adjudicate', 'impl', 'audit'].includes(params.role)) {
+    if (!ROLES.includes(params.role)) {
       return { ok: false, message: 'unknown role' };
     }
     if (params.runtime !== undefined && !['claude', 'codex'].includes(params.runtime)) {
@@ -252,6 +260,7 @@ function validateWriteRequest(request) {
 module.exports = {
   ALLOWED_WRITE_OPS,
   ARRAY_FIELDS,
+  ROLES,
   MAX_ARRAY_ENTRIES,
   MAX_PAYLOAD_JSON_LENGTH,
   MAX_PROSE_LENGTH,
