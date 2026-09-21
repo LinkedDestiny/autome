@@ -71,6 +71,26 @@ const PROSE_FIELDS = Object.freeze({
 const MAX_PROSE_LENGTH = 8000;
 const MAX_DOCUMENT_LENGTH = 256 * 1024;
 
+// Ops whose params may carry a list, and which keys may be one. A table
+// rather than a condition, because the previous version of this was a
+// condition — `op !== 'task.create'` — and it silently killed two features:
+// the routing screen saves a role by sending its whole skill list (S-03: a
+// binding *is* a role's skill list), and it sends that list on every save,
+// even an empty one, so *every* role save was refused. Nothing caught it
+// because the gate's tests agreed with the gate rather than with its callers.
+const ARRAY_FIELDS = Object.freeze({
+  'task.create': ['attachments', 'doc_refs'],
+  'config.set_role': ['skills'],
+});
+// Attachments on a request, or skills bound to a role. Well above anything a
+// person would pick by hand, and the payload cap bounds the total anyway.
+const MAX_ARRAY_ENTRIES = 256;
+const MAX_ARRAY_ITEM_LENGTH = 1024;
+// Keys whose entries name something on disk by *name*, never by path. A skill
+// is a directory under one of the runtimes' skill roots, so its name is a
+// single segment; `../` in one has no legitimate reading.
+const NAME_ONLY_ARRAYS = Object.freeze(['skills']);
+
 // The payload cap, per op. One op legitimately carries a whole document —
 // the Onboarding wizard's in-app editor — and giving every op that headroom
 // would mean a buggy renderer could wedge half a megabyte of attachment paths
@@ -119,13 +139,21 @@ function validateShape(op, params) {
   for (const [key, value] of Object.entries(params)) {
     if (value === null || value === undefined) continue;
     if (Array.isArray(value)) {
-      // Only `task.create` carries arrays, and only of short strings.
-      if (op !== 'task.create') {
-        return { ok: false, message: `${op} params must not contain arrays` };
+      if (!(ARRAY_FIELDS[op] || []).includes(key)) {
+        return { ok: false, message: `${op} params must not contain an array at ${key}` };
+      }
+      if (value.length > MAX_ARRAY_ENTRIES) {
+        return { ok: false, message: `${key} must hold at most ${MAX_ARRAY_ENTRIES} entries` };
       }
       for (const item of value) {
-        if (typeof item !== 'string' || item.length > 1024) {
+        if (typeof item !== 'string' || item.length > MAX_ARRAY_ITEM_LENGTH) {
           return { ok: false, message: `${key} entries must be short strings` };
+        }
+        if (item.includes('\u0000')) {
+          return { ok: false, message: `${key} entries must not contain a null byte` };
+        }
+        if (NAME_ONLY_ARRAYS.includes(key) && (!item || looksLikeAPath(item))) {
+          return { ok: false, message: `${key} entries must be names, not paths` };
         }
       }
       continue;
@@ -223,6 +251,8 @@ function validateWriteRequest(request) {
 
 module.exports = {
   ALLOWED_WRITE_OPS,
+  ARRAY_FIELDS,
+  MAX_ARRAY_ENTRIES,
   MAX_PAYLOAD_JSON_LENGTH,
   MAX_PROSE_LENGTH,
   MAX_DOCUMENT_LENGTH,
