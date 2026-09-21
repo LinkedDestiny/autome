@@ -7,7 +7,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
-    "package": "../../scripts/package.sh"
+    "package": "../../scripts/package.sh",
+    "shots": "electron tools/screenshots.js"
   },
   "devDependencies": {
     "electron": "43.2.0"
