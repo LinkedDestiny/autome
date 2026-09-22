@@ -2368,6 +2368,69 @@ fn a_round_that_forgets_the_repos_line_does_not_lose_the_repository() {
     );
 }
 
+#[test]
+fn cancelling_a_workspace_task_takes_every_checkout_and_branch_with_it() {
+    // Cancel used to be written for one repository: it removed a checkout
+    // that was not one, deleted a branch in a directory that was not a
+    // repository, and archived the documents to the workspace root where
+    // nothing tracks them. Every call was `let _ =`, so all of it failed in
+    // silence and left the checkouts and branches behind.
+    needs_git!();
+    let mut w = Workspace::new("cancel", &["docs", "backend"]);
+    let request = "add a dashboard";
+    let slug = slug_for(request);
+
+    w.doc_step(
+        1,
+        &slug,
+        ".worktree/add-a-dashboard",
+        &ws_doc("设计中", 0, 0, &[], "backend"),
+        "",
+    );
+    w.doc_step(2, &slug, "", &ws_doc("设计中", 1, 0, &[], "backend"), "");
+
+    let created = call(
+        &mut w.ctx,
+        "task.create",
+        json!({ "project_id": w.project_id, "request": request }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
+    w.settle();
+
+    let dir = w.ws().join(".worktree").join(&slug);
+    assert!(dir.join("backend").exists(), "{}", w.why(&task_id));
+
+    call(&mut w.ctx, "task.cancel", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert!(!dir.exists(), "the task's directory is gone");
+    for m in ["docs", "backend"] {
+        assert!(
+            !automed::git::branch_exists(&w.member(m), &format!("autome/{slug}")),
+            "{m} still has the cancelled task's branch"
+        );
+    }
+    // A repository the task only checked out is left exactly as it was.
+    assert!(
+        automed::git::is_clean(&w.member("backend")).unwrap_or(false),
+        "backend was left dirty"
+    );
+    // The record of what was tried goes to the repository that holds the
+    // documents, not to the workspace root.
+    // Deliberately uncommitted, as the single-repository archive has always
+    // been: moving a directory is Autome's, committing it is the user's.
+    assert!(
+        w.member("docs")
+            .join(format!("autome/.archive/{slug}"))
+            .exists(),
+        "the documents were archived in the document repository"
+    );
+    assert!(
+        !w.ws().join(format!("autome/.archive/{slug}")).exists(),
+        "and not at the workspace root"
+    );
+}
+
 /// A design document for a workspace task: the status block plus the `repos:`
 /// line that names what it works in.
 fn ws_doc(

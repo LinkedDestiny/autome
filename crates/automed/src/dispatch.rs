@@ -358,7 +358,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "task.pause" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Pause),
         "task.resume" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Resume),
         "task.stop" => task_stop(ctx, str_param(p, "task_id")?),
-        "task.cancel" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Cancel),
+        "task.cancel" => task_cancel(ctx, str_param(p, "task_id")?),
         "task.extend_budget" => task_trigger(
             ctx,
             str_param(p, "task_id")?,
@@ -1699,10 +1699,26 @@ fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResul
     ))
 }
 
+/// Cancel kills the running session first, for the same reason stop does —
+/// and more urgently, because cancel then *deletes the checkout underneath
+/// it*. A cancelled task used to leave its session running: a CLI writing
+/// into a directory the core was removing, still costing money, for a task
+/// the user had just said they did not want.
+fn task_cancel(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    stop_running_session(ctx, task_id)?;
+    task_trigger(ctx, task_id, Trigger::Cancel)
+}
+
 /// Stop kills the running session first, then applies the trigger — the
 /// reverse order would leave a process writing to a log for a task the store
 /// has already moved on from (requirement T-08).
 fn task_stop(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    stop_running_session(ctx, task_id)?;
+    task_trigger(ctx, task_id, Trigger::Stop)
+}
+
+/// Kills whatever session this task has running and records it as killed.
+fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchError> {
     if let Some(session) = ctx.store.running_session(task_id)? {
         if let Some(pid) = session.pid {
             let _ = crate::launcher::stop_session(pid);
@@ -1713,7 +1729,7 @@ fn task_stop(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             &now_iso(),
         )?;
     }
-    task_trigger(ctx, task_id, Trigger::Stop)
+    Ok(())
 }
 
 /// Records the user's disposition of one Backlog item or dispute
@@ -2988,6 +3004,47 @@ mod tests {
         let docs = documents(&worktree, &task);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["label"], "任务文件");
+    }
+
+    #[test]
+    fn cancelling_a_task_kills_the_session_it_was_running() {
+        // Cancel deletes the checkout the session is writing into. Leaving the
+        // process alive meant a CLI still costing money, still writing, for a
+        // task the user had just said they did not want — and `stop`, the
+        // gentler button, had always killed it.
+        needs_git!();
+        let mut sb = Sandbox::new("cancel-kills");
+        let id = sb.add_project("p");
+        // A worktree is cut from the default branch, which does not exist
+        // until something is committed on it.
+        let repo = sb.path("p");
+        std::fs::write(repo.join("README.md"), "hi\n").unwrap();
+        git::commit_paths(&repo, &["README.md"], "initial").unwrap();
+
+        let created = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({ "project_id": id, "request": "做点什么" }),
+            ),
+        );
+        let task_id = ok_payload(&created)["task"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        handle_command(sb.ctx(), &cmd("scheduler.tick", json!({})));
+        assert!(
+            sb.ctx().store.running_session(&task_id).unwrap().is_some(),
+            "the task should have a session to kill; state={:?}",
+            sb.ctx().store.get_task(&task_id).unwrap().state
+        );
+
+        handle_command(sb.ctx(), &cmd("task.cancel", json!({ "task_id": task_id })));
+
+        assert!(
+            sb.ctx().store.running_session(&task_id).unwrap().is_none(),
+            "the session is recorded as finished, not left running"
+        );
     }
 
     #[test]

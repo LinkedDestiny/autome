@@ -1730,26 +1730,43 @@ fn cleanup(layout: &TaskLayout) -> Result<()> {
 /// the branch first would destroy them (design §6). Copying them to
 /// `docs/.archive/` in the main worktree keeps the record of what was tried.
 fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
-    let repo = PathBuf::from(&project.path);
-    let worktree = task_docs_root(project, &task.slug);
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
 
-    if worktree.exists() {
-        let source = worktree.join(task.doc_dir());
+    // The documents first, while the branch that holds them still exists.
+    if layout.docs_root.exists() {
+        let source = layout.docs_root.join(task.doc_dir());
         if source.exists() {
-            let dest = repo.join(task.archive_dir());
+            // Into the repository that holds this project's documents — the
+            // member's own checkout for a workspace, which is where the rest
+            // of them are. Archiving into the workspace root would put the
+            // record of a cancelled task somewhere no repository tracks.
+            let dest = PathBuf::from(match &project.docs_repo {
+                Some(member) => project.member_path(member),
+                None => project.path.clone(),
+            })
+            .join(task.archive_dir());
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = copy_dir(&source, &dest);
         }
-        let rel = format!(".worktree/{}", task.slug);
-        // Forced: the user asked for the work to go away, so uncommitted
-        // changes inside the worktree are exactly what they are discarding.
-        let _ = git::worktree_remove(&repo, &rel, true);
     }
-    let _ = git::worktree_prune(&repo);
-    if git::branch_exists(&repo, &task.branch()) {
-        let _ = git::branch_delete(&repo, &task.branch(), true);
+
+    // Then every checkout and every branch, in every repository the task
+    // worked in. Forced: the user asked for the work to go away, so
+    // uncommitted changes inside a checkout are exactly what they are
+    // discarding.
+    for slot in &layout.repos {
+        if slot.worktree.exists() {
+            let _ = git::worktree_remove(&slot.repo_root, &slot.worktree.to_string_lossy(), true);
+        }
+        let _ = git::worktree_prune(&slot.repo_root);
+        if git::branch_exists(&slot.repo_root, &slot.branch) {
+            let _ = git::branch_delete(&slot.repo_root, &slot.branch, true);
+        }
+    }
+    if layout.cwd.exists() {
+        let _ = std::fs::remove_dir(&layout.cwd);
     }
     ctx.store.set_task_archived(&task.id, true)?;
     Ok(())
