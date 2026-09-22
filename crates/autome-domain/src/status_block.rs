@@ -386,6 +386,25 @@ fn is_separator_row(cells: &[&str]) -> bool {
 }
 
 /// Strips one leading `-` or `*` bullet. Returns `None` for a non-bullet line.
+/// The text of the item a continuation line belongs to, if there is one.
+///
+/// Borrowed mutably so the caller can extend it in place: an item's text is
+/// built up as the lines arrive, and copying it out and back would be the
+/// same code with a place for the two copies to disagree.
+fn last_text_mut<'a>(
+    section: Section,
+    backlog: &'a mut [BacklogItem],
+    disputes: &'a mut [DisputeItem],
+    manual_items: &'a mut [ManualItem],
+) -> Option<&'a mut String> {
+    match section {
+        Section::Backlog => backlog.last_mut().map(|i| &mut i.text),
+        Section::Disputes => disputes.last_mut().map(|i| &mut i.text),
+        Section::ManualAcceptance => manual_items.last_mut().map(|i| &mut i.text),
+        _ => None,
+    }
+}
+
 fn bullet_text(line: &str) -> Option<&str> {
     let t = line.trim_start();
     for marker in ["- ", "* "] {
@@ -471,6 +490,9 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
     let mut section = Section::Preamble;
     let mut in_fence = false;
+    // Blank lines seen since the last bullet, so a list item written with a
+    // blank line inside it keeps its shape instead of being cut there.
+    let mut blank_run = 0usize;
     // Where we are relative to the milestone table. A `##里程碑` section
     // holds prose as well as the table, and prose contains pipes: an inline
     // `grep "a\|b"`, a shell alternation, a sentence with a vertical bar.
@@ -488,6 +510,37 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
         }
         if in_fence {
             continue;
+        }
+
+        // A list item's continuation line, in any of the three bullet
+        // sections. These items are prose a person reads and rules on, and a
+        // design round writes them across several indented lines — the shape
+        // Markdown defines for one item. Taking only the first line handed the
+        // user half a sentence to rule on: a real dispute read "事实：仓库里
+        // 没有" and stopped there, with the fact it was about on the next
+        // line.
+        //
+        // Indentation is what distinguishes a continuation from a new
+        // paragraph, so an unindented line still ends the item.
+        if !trimmed.is_empty()
+            && line.starts_with([' ', '\t'])
+            && bullet_text(trimmed).is_none()
+            && !trimmed.starts_with('#')
+            && let Some(last) =
+                last_text_mut(section, &mut backlog, &mut disputes, &mut manual_items)
+        {
+            if blank_run > 0 {
+                last.push(' ');
+            }
+            last.push(' ');
+            last.push_str(trimmed);
+            blank_run = 0;
+            continue;
+        }
+        if trimmed.is_empty() {
+            blank_run += 1;
+        } else {
+            blank_run = 0;
         }
 
         if let Some(rest) = trimmed.strip_prefix("## ") {
@@ -820,6 +873,85 @@ next-action: 交评审
                 "`repos: {none}` is not a repository called {none}"
             );
         }
+    }
+
+    #[test]
+    fn a_bullet_written_across_several_lines_keeps_all_of_it() {
+        // From a real adjudication round. The user rules on these, and the
+        // panel showed "事实：仓库里没有" — the fact itself was on the next
+        // line, and the button next to it said 保存裁定.
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/15
+implementation-round: 0/25
+current-milestone: 无
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 无
+-->
+
+## 争议项
+
+- C-D3 R-7 的效果层在本任务内不可交付。事实：仓库里没有
+  群内 AI 回复执行器，`qwen` 的既有用途只有帖子撰写辅助。
+
+  若用户期望的是接通，这需要一个单独的任务。
+- C-D4 第二条，独立的一条。
+
+## Backlog
+
+- B-01 一条建议，
+  它的下半句在这里。
+";
+        let parsed = parse(doc).unwrap();
+        assert_eq!(parsed.disputes.len(), 2, "两条，不是一条也不是三条");
+        assert!(
+            parsed.disputes[0].text.contains("群内 AI 回复执行器"),
+            "续行丢了：{}",
+            parsed.disputes[0].text
+        );
+        assert!(
+            parsed.disputes[0].text.contains("单独的任务"),
+            "空行之后的续行也要留住：{}",
+            parsed.disputes[0].text
+        );
+        assert_eq!(parsed.disputes[1].id, "C-D4", "下一条 bullet 另起一条");
+        assert!(
+            !parsed.disputes[1].text.contains("单独的任务"),
+            "两条不能黏在一起：{}",
+            parsed.disputes[1].text
+        );
+        assert!(parsed.backlog[0].text.contains("下半句"), "Backlog 同理");
+    }
+
+    #[test]
+    fn an_unindented_line_after_a_bullet_ends_it() {
+        // Indentation is what Markdown uses to say "still the same item". An
+        // ordinary paragraph after the list is not part of the last item.
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/15
+implementation-round: 0/25
+current-milestone: 无
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 无
+-->
+
+## 争议项
+
+- C-D1 一条争议。
+这是后面的一段散文，不属于它。
+";
+        let parsed = parse(doc).unwrap();
+        assert_eq!(parsed.disputes.len(), 1);
+        assert!(
+            !parsed.disputes[0].text.contains("散文"),
+            "{}",
+            parsed.disputes[0].text
+        );
     }
 
     #[test]

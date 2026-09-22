@@ -1455,7 +1455,11 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     // is a different place from the session's working directory once a project
     // can be a workspace. This used to spell the path out again by hand,
     // independently of the scheduler's copy of the same rule.
-    let layout = crate::layout::TaskLayout::single(&project, &task.slug);
+    // `of`, not `single`: a workspace task's documents live inside the member
+    // repository that holds them, and `single` would look one directory up —
+    // where the panel found nothing and said "无法查看设计稿" about a design
+    // document that was right there.
+    let layout = crate::layout::TaskLayout::of(&project, &task.slug, &[]);
 
     let doc = read_status_block(&layout.docs_root, &task);
     let status = doc.block();
