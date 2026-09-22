@@ -334,10 +334,24 @@ enum TableRegion {
 /// about milestones, so it no longer qualifies. A milestone table that really
 /// does omit the header now fails as `NoMilestonesAfterDesign`, which names
 /// the actual problem instead of blaming an unrelated row.
+///
+/// The first column is not enough on its own. A design round wrote a
+/// `## 里程碑依赖` section — a legitimate thing to write — whose table is
+/// `| ID | 前置 | 说明 |`. Its first column is `ID`, so it opened a milestone
+/// table body, and the first row's `—` under 前置 was read as a milestone
+/// state. The task was failed for a protocol error it had not committed.
+///
+/// So the *second* column decides: a milestone row's second cell is its
+/// state, and the parser reads it from there. A table that does not say
+/// 状态 there is not the milestone table, whatever its first column says.
 fn is_milestone_header(cells: &[&str]) -> bool {
-    cells
+    let first = cells
         .first()
-        .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑")
+        .is_some_and(|c| c.eq_ignore_ascii_case("id") || *c == "里程碑");
+    let second = cells
+        .get(1)
+        .is_some_and(|c| c.starts_with("状态") || c.eq_ignore_ascii_case("state"));
+    first && second
 }
 
 /// `d/N` — the shape both round fields use.
@@ -806,6 +820,55 @@ next-action: 交评审
                 "`repos: {none}` is not a repository called {none}"
             );
         }
+    }
+
+    #[test]
+    fn a_dependency_table_is_not_the_milestone_table() {
+        // From a design round on 2026-09-22. `## 里程碑依赖` is a legitimate
+        // section to write, and its table's first column is `ID` — which used
+        // to be the whole test. The first row's `—` under 前置 was read as a
+        // milestone state and the task was failed for a protocol error it had
+        // not committed.
+        let doc = "\
+<!-- autome:status
+status: 设计中
+design-round: 1/15
+implementation-round: 0/25
+current-milestone: 无
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 无
+-->
+
+## 里程碑
+
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 开放 | 数据形状与迁移 | 0 | |
+| M-02 | 开放 | 仓储与应用服务 | 0 | |
+
+## 里程碑依赖
+
+| ID | 前置 | 说明 |
+|---|---|---|
+| M-01 | — | 先立数据形状与迁移 |
+| M-02 | M-01 | 仓储与应用服务 |
+";
+        let parsed = parse(doc).expect("the dependency table is not the milestone table");
+        assert_eq!(parsed.milestones.len(), 2);
+        assert_eq!(parsed.milestones[0].state, MilestoneState::Open);
+    }
+
+    #[test]
+    fn a_table_whose_second_column_is_not_the_state_is_skipped_wherever_it_sits() {
+        // The same rule, stated on its own: the milestone table is the one
+        // that carries states, and the parser reads them from the second
+        // column. Anything else in the section is prose with pipes in it.
+        assert!(is_milestone_header(&["ID", "状态", "标题"]));
+        assert!(is_milestone_header(&["里程碑", "状态"]));
+        assert!(!is_milestone_header(&["ID", "前置", "说明"]));
+        assert!(!is_milestone_header(&["ID", "结果", "证据"]));
+        assert!(!is_milestone_header(&["ID"]));
     }
 
     /// From a design document a real session wrote on 2026-09-16. It was
