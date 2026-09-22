@@ -1475,7 +1475,10 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "status_error": doc.error().is_some(),
             "status_error_detail": doc.error(),
             "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
-            "decisions": decisions.iter().map(decision_json).collect::<Vec<_>>(),
+            "decisions": decisions
+                .iter()
+                .map(|d| decision_json(d, status))
+                .collect::<Vec<_>>(),
             "pending_decisions": ctx.store.pending_decisions(task_id)?,
             "documents": documents(&layout.docs_root, &task),
             // What "打开 worktree" opens: the session's working directory,
@@ -1615,11 +1618,35 @@ fn running_totals(sessions: &[autome_domain::session::Session]) -> Value {
     })
 }
 
-fn decision_json(d: &crate::store::DecisionRecord) -> Value {
+/// One decision, with its text taken from the document rather than from the
+/// row.
+///
+/// The row remembers what the *user* decided; the prose it is about belongs to
+/// the design document, which is where every other fact about a task's
+/// progress lives. Reading it back from there means the panel shows what the
+/// document says today — including the rest of a sentence that an older
+/// parser cut off, without waiting for a session to end and re-sync it.
+///
+/// Falls back to the stored copy when the item is no longer in the document:
+/// a decision the user already made is still theirs to see.
+fn decision_json(d: &crate::store::DecisionRecord, status: Option<&StatusBlock>) -> Value {
+    let fresh = status.and_then(|s| match d.kind.as_str() {
+        "backlog" => s
+            .backlog
+            .iter()
+            .find(|b| b.id == d.item_id)
+            .map(|b| b.text.clone()),
+        "dispute" => s
+            .disputes
+            .iter()
+            .find(|x| x.id == d.item_id)
+            .map(|x| x.text.clone()),
+        _ => None,
+    });
     json!({
         "kind": d.kind,
         "item_id": d.item_id,
-        "text": d.text,
+        "text": fresh.unwrap_or_else(|| d.text.clone()),
         "disposition": d.disposition,
         "ruling": d.ruling,
         "consumed": d.consumed_at.is_some(),
@@ -3008,6 +3035,56 @@ mod tests {
         let docs = documents(&worktree, &task);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["label"], "任务文件");
+    }
+
+    #[test]
+    fn a_decision_shows_what_the_document_says_now() {
+        // The row remembers the user's disposition; the prose belongs to the
+        // document. A dispute stored by an older parser read "事实：仓库里没有"
+        // and stopped — the panel put that half-sentence next to a 保存裁定
+        // button. Reading the text back from the document fixes it without
+        // waiting for a session to end and re-sync.
+        use autome_domain::status_block::{BacklogItem, DisputeItem};
+        let stored = crate::store::DecisionRecord {
+            task_id: "T-1".into(),
+            kind: "dispute".into(),
+            item_id: "C-D3".into(),
+            text: "事实：仓库里没有".into(),
+            disposition: autome_domain::task::Disposition::None,
+            ruling: None,
+            consumed_at: None,
+        };
+        let mut block = status_block::parse(
+            "status: 设计中\ndesign-round: 1/15\nimplementation-round: 0/25\n\
+             current-milestone: 无\ncurrent-milestone-reopens: 0\n\
+             convergence-mode: normal\nnext-action: 无\n",
+        )
+        .unwrap();
+        block.disputes = vec![DisputeItem {
+            id: "C-D3".into(),
+            text: "事实：仓库里没有 群内 AI 回复执行器".into(),
+        }];
+        block.backlog = vec![BacklogItem {
+            id: "B-01".into(),
+            text: "完整的一条".into(),
+        }];
+
+        let shown = decision_json(&stored, Some(&block));
+        assert_eq!(shown["text"], json!("事实：仓库里没有 群内 AI 回复执行器"));
+
+        // An item the document no longer carries keeps what the user saw.
+        let gone = crate::store::DecisionRecord {
+            item_id: "C-D9".into(),
+            ..stored.clone()
+        };
+        assert_eq!(
+            decision_json(&gone, Some(&block))["text"],
+            json!("事实：仓库里没有")
+        );
+        assert_eq!(
+            decision_json(&gone, None)["text"],
+            json!("事实：仓库里没有")
+        );
     }
 
     #[test]
