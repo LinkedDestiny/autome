@@ -1066,9 +1066,37 @@ fn working_repos(project: &Project, task: &TaskRecord) -> Vec<String> {
     if !project.is_workspace() {
         return Vec::new();
     }
-    read_status(project, task)
+    // Whatever is already checked out, plus whatever the document now names.
+    //
+    // The union, not the document alone. A round that rewrites the status
+    // block and forgets the `repos:` line would otherwise shrink the set, and
+    // a repository dropped from it keeps its branch and its commits while
+    // silently falling out of the rebase, the merge and the cleanup — work
+    // that is done, committed, and never lands. The protocol tells every
+    // round to preserve the line; this is what makes forgetting recoverable
+    // rather than silent, the same way the sweep does for an uncommitted
+    // round.
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(task_cwd(project, &task.slug)) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && let Some(name) = entry.file_name().to_str()
+                && !name.starts_with('.')
+            {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+    }
+    for declared in read_status(project, task)
         .map(|s| s.repos)
         .unwrap_or_default()
+    {
+        if !names.contains(&declared) {
+            names.push(declared);
+        }
+    }
+    names
 }
 
 /// Starts a session for a node. Failures here become a task failure rather

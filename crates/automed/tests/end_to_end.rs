@@ -2329,6 +2329,45 @@ fn a_workspace_task_branches_in_every_repository_it_names_and_merges_them_all() 
     }
 }
 
+#[test]
+fn a_round_that_forgets_the_repos_line_does_not_lose_the_repository() {
+    // The set is the union of what is checked out and what the document says.
+    // A round that rewrites the status block without `repos:` would otherwise
+    // drop a repository that has a branch and commits — silently out of the
+    // rebase, the merge and the cleanup, with its work done and never landed.
+    needs_git!();
+    let mut w = Workspace::new("forgets", &["docs", "backend"]);
+    let request = "add a dashboard";
+    let slug = slug_for(request);
+
+    w.doc_step(
+        1,
+        &slug,
+        ".worktree/add-a-dashboard",
+        &ws_doc("设计中", 0, 0, &[], "backend"),
+        "",
+    );
+    // From here on the document says nothing about repositories at all.
+    for n in 2..=3 {
+        w.doc_step(n, &slug, "", &doc("设计中", 1, 0, &[]), "");
+    }
+
+    let created = call(
+        &mut w.ctx,
+        "task.create",
+        json!({ "project_id": w.project_id, "request": request }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
+    w.settle();
+
+    let dir = w.ws().join(".worktree").join(&slug);
+    assert!(
+        dir.join("backend").exists(),
+        "the checkout the first round asked for is still there: {}",
+        w.why(&task_id)
+    );
+}
+
 /// A design document for a workspace task: the status block plus the `repos:`
 /// line that names what it works in.
 fn ws_doc(

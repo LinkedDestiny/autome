@@ -134,6 +134,29 @@ v1 是把 1.x 跑了几个月得到的规则原样出仓，加上 2026-09-16 那
   realized_impact: null
 ```
 
+```yaml
+- id: C-16
+  kind: clarify
+  clause: prompts/intake.md
+  evidence: [T-3 工作区第一个任务死在协议副本提交, T-4 整理轮没写 repos 而设计轮自己去建 worktree]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+状态块新增可选的 `repos:` 行：工作区项目里，写下一个仓库名就是请 Autome 为它建检出
+和分支。整理轮负责写第一版，后面的轮次只增不减——删掉一个名字不撤销任何东西，只会让
+那个仓库的改动在合并时被漏掉。硬性边界那一条也跟着改：工作目录在工作区项目里是一个
+装着若干检出的目录，每个子目录是独立仓库，在任一子目录里提交都可以，跨出去不行。
+
+**为什么归为 clarify 而不是 behavioral。** 对这套协议跑过的每一个项目——全是单仓库
+——指令明说省略这一行，其余一字未动，golden 基线的 diff 对那些轮次是纯增文本。新增的
+义务只存在于一种协议写成时还不存在的项目形态里。要是你认为这仍然是行为改动，那就该
+补一个工作区夹具的 eval 用例；现在没有，这是这条记录里最该被质疑的地方。
+
+没有这段文字的时候，T-4 的整理轮不知道有 `repos:` 这回事，于是设计文档的 next-action
+写着"为 offchat-backend-service 建 worktree"——那是内核的活，而它以为是自己的。
+
 七个模板里 `docs/{slug}/` 一共出现 54 次。对"一个项目 = 一个仓库"这是对的：会话的
 工作目录就是那个检出，文档就在它下面的 `docs/<slug>/`。对工作区项目它是错的——会话
 起在各成员检出**旁边**，同一个目录从它的角度看是 `<文档仓>/<doc_root>/<slug>/`。
