@@ -283,6 +283,18 @@ pub fn first_meaningful_line(stderr: &str) -> Option<String> {
 // Repository shape
 // ---------------------------------------------------------------------------
 
+/// Whether `path` is inside a Git working tree at all.
+///
+/// Distinct from `is_repo_root`, which asks whether it is the *top* of one. A
+/// workspace task's working directory is neither: it holds one checkout per
+/// member repository and is itself just a directory.
+pub fn is_inside_work_tree(path: &Path) -> bool {
+    match run(path, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(out) => out.ok() && out.line() == "true",
+        Err(_) => false,
+    }
+}
+
 /// Whether `path` is inside a Git working tree, and if so whether it is the
 /// root of one.
 pub fn is_repo_root(path: &Path) -> bool {

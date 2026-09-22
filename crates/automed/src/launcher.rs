@@ -71,6 +71,20 @@ pub struct RuntimeAdapter {
     pub model_flag: &'static str,
     /// The flag that selects an effort/reasoning level, when the CLI has one.
     pub effort_flag: Option<&'static str>,
+    /// The flag that lets the CLI run somewhere that is not itself a Git
+    /// repository, for the runtimes that otherwise refuse.
+    ///
+    /// A workspace task's working directory is exactly that: a plain
+    /// directory holding one checkout per member repository. Codex declines —
+    /// "Not inside a trusted directory and --skip-git-repo-check was not
+    /// specified" — and the round exits 1 before reading anything.
+    ///
+    /// What the check protects against is "this directory has no version
+    /// control, so nothing you do here can be undone". That is not the
+    /// situation: every subdirectory is a repository, on its own branch. So
+    /// the flag is passed only where the working directory really is outside
+    /// one, and the guard keeps its meaning everywhere it has one.
+    pub no_repo_flag: Option<&'static str>,
 }
 
 impl RuntimeAdapter {
@@ -213,6 +227,8 @@ pub const ADAPTERS: [RuntimeAdapter; 2] = [
         ],
         model_flag: "--model",
         effort_flag: Some("--effort"),
+        // Claude Code runs anywhere; it has no such check to disable.
+        no_repo_flag: None,
     },
     RuntimeAdapter {
         runtime: Runtime::Codex,
@@ -228,6 +244,7 @@ pub const ADAPTERS: [RuntimeAdapter; 2] = [
         // Codex takes reasoning effort as a config override rather than a
         // dedicated flag.
         effort_flag: Some("--config"),
+        no_repo_flag: Some("--skip-git-repo-check"),
     },
 ];
 
@@ -240,13 +257,20 @@ pub fn adapter(runtime: Runtime) -> &'static RuntimeAdapter {
 
 /// Builds the argv after the binary. Returned separately from the binary so
 /// the wrapper script receives them as distinct arguments.
-pub fn build_args(config: &RoleConfig, worktrees: &[&Path]) -> Vec<String> {
+pub fn build_args(config: &RoleConfig, cwd: &Path, worktrees: &[&Path]) -> Vec<String> {
     let a = adapter(config.runtime);
     let mut args: Vec<String> = a
         .autonomous_flags
         .iter()
         .map(|s| (*s).to_string())
         .collect();
+    // Only where the working directory really is outside a repository — a
+    // workspace task's, which holds the checkouts rather than being one.
+    if let Some(flag) = a.no_repo_flag
+        && !crate::git::is_inside_work_tree(cwd)
+    {
+        args.push(flag.to_string());
+    }
     // Only the runtime that has a sandbox pays for the probe: `git rev-parse`
     // is a process, and `extra_writable_roots` returns nothing for Claude.
     //
@@ -986,6 +1010,12 @@ mod tests {
         &[]
     }
 
+    /// A directory git cannot answer about, for the tests that only care
+    /// about flags.
+    fn nowhere() -> &'static Path {
+        Path::new("/nonexistent-so-git-cannot-answer")
+    }
+
     /// One checkout, as every single-repository task has.
     fn one(worktree: &Path) -> Vec<&Path> {
         vec![worktree]
@@ -994,20 +1024,28 @@ mod tests {
     #[test]
     fn an_absent_effort_adds_no_flag_on_either_runtime() {
         assert!(
-            !build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), no_repo())
-                .join(" ")
-                .contains("reasoning_effort")
+            !build_args(
+                &role_config(Runtime::Codex, "gpt-5.6-sol", None),
+                nowhere(),
+                no_repo()
+            )
+            .join(" ")
+            .contains("reasoning_effort")
         );
         assert!(
-            !build_args(&role_config(Runtime::Claude, "opus", None), no_repo())
-                .join(" ")
-                .contains("--effort")
+            !build_args(
+                &role_config(Runtime::Claude, "opus", None),
+                nowhere(),
+                no_repo()
+            )
+            .join(" ")
+            .contains("--effort")
         );
     }
 
     #[test]
     fn an_empty_model_adds_no_model_flag() {
-        let args = build_args(&system_role_config(), no_repo());
+        let args = build_args(&system_role_config(), nowhere(), no_repo());
         assert!(!args.contains(&"--model".to_string()), "{args:?}");
     }
 
@@ -1040,6 +1078,7 @@ mod tests {
 
         let args = build_args(
             &role_config(Runtime::Codex, "gpt-5.6-sol", None),
+            &worktree,
             &one(&worktree),
         )
         .join(" ");
@@ -1063,17 +1102,55 @@ mod tests {
         // sandbox, so nothing is widened.
         let at_repo = build_args(
             &role_config(Runtime::Codex, "gpt-5.6-sol", None),
+            repo,
             &one(repo),
         )
         .join(" ");
         assert!(!at_repo.contains("writable_roots"), "{at_repo}");
 
         // Claude has no sandbox of its own to widen.
-        let claude =
-            build_args(&role_config(Runtime::Claude, "opus", None), &one(&worktree)).join(" ");
+        let claude = build_args(
+            &role_config(Runtime::Claude, "opus", None),
+            &worktree,
+            &one(&worktree),
+        )
+        .join(" ");
         assert!(!claude.contains("writable_roots"), "{claude}");
 
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn a_working_directory_that_is_not_a_repository_gets_the_flag_that_allows_it() {
+        // A workspace task's working directory holds one checkout per member
+        // repository and is not one itself. Codex refuses to start there —
+        // "Not inside a trusted directory" — and the round exits 1 before it
+        // has read anything. A real review round died exactly that way.
+        let ws = std::env::temp_dir().join(format!("automed-norepo-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let args =
+            build_args(&role_config(Runtime::Codex, "gpt-5.6-sol", None), &ws, &[]).join(" ");
+        assert!(args.contains("--skip-git-repo-check"), "{args}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn inside_a_repository_the_check_is_left_alone() {
+        // The guard means something there — "this directory has no version
+        // control" — so it keeps it. Passing the flag unconditionally would
+        // have been one line shorter and would have turned it off everywhere.
+        let repo = std::env::temp_dir().join(format!("automed-isrepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        crate::git::init(&repo, "main").unwrap();
+        let args = build_args(
+            &role_config(Runtime::Codex, "gpt-5.6-sol", None),
+            &repo,
+            &[],
+        )
+        .join(" ");
+        assert!(!args.contains("--skip-git-repo-check"), "{args}");
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

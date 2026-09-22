@@ -243,6 +243,12 @@ fn every_adapter_flag_exists_in_the_cli_it_is_passed_to() {
         if let Some(effort) = adapter.effort_flag {
             expected.push(effort);
         }
+        // Passed only for a workspace task, whose working directory is not a
+        // repository — but a flag the CLI has renamed is the same failure
+        // whether it is passed always or sometimes.
+        if let Some(no_repo) = adapter.no_repo_flag {
+            expected.push(no_repo);
+        }
         for flag in expected {
             assert!(
                 text.contains(flag),
@@ -271,7 +277,11 @@ fn each_cli_exits_on_its_own_when_invoked_the_way_the_launcher_invokes_it() {
             effort: None,
             skills: vec![],
         };
-        let args = automed::launcher::build_args(&config, &[]);
+        let args = automed::launcher::build_args(
+            &config,
+            std::path::Path::new("/nonexistent-so-git-cannot-answer"),
+            &[],
+        );
 
         let dir = std::env::temp_dir().join(format!(
             "automed-exit-{}-{}",
@@ -636,7 +646,11 @@ fn a_claude_session_can_actually_run_a_command() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config, &[]);
+    let args = automed::launcher::build_args(
+        &config,
+        std::path::Path::new("/nonexistent-so-git-cannot-answer"),
+        &[],
+    );
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-bash-{}", std::process::id()));
@@ -703,7 +717,11 @@ fn a_claude_session_log_records_the_tools_it_ran() {
         enabled: true,
         skills: Vec::new(),
     };
-    let args = automed::launcher::build_args(&config, &[]);
+    let args = automed::launcher::build_args(
+        &config,
+        std::path::Path::new("/nonexistent-so-git-cannot-answer"),
+        &[],
+    );
     let adapter = automed::launcher::adapter(autome_domain::role::Runtime::Claude);
 
     let dir = std::env::temp_dir().join(format!("automed-realcli-log-{}", std::process::id()));
