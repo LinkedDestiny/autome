@@ -202,8 +202,36 @@ class AutomedSidecar {
     this._rejectAllPending(
       new Error(`automed process exited before replying (code=${code}, signal=${signal})`)
     );
+    this._releasePipes();
     if (this._stopping) return;
     this._onExit(code, signal);
+  }
+
+  /**
+   * Closes the three stdio streams of a process that is over.
+   *
+   * `spawn` creates the pipes before it knows whether the binary is even
+   * there, so a failed start leaves three open handles behind — nothing is
+   * reading them and nothing ever will, but they are enough to keep a Node
+   * event loop from draining. A process that holds them never exits: the
+   * desktop test suite, run where the core had not been built, finished every
+   * test and then sat there until CI killed the runner forty-five minutes
+   * later.
+   *
+   * Idempotent and defensive: this runs on the failure path, where a stream
+   * may be half-constructed, and throwing here would replace a clear error
+   * with an obscure one.
+   */
+  _releasePipes(child = this._child) {
+    if (!child) return;
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      try {
+        if (stream && !stream.destroyed) stream.destroy();
+      } catch {
+        // Nothing to do about a stream that will not close; the process is
+        // already gone and the handle is the operating system's problem now.
+      }
+    }
   }
 
   // Fire-and-forget: writes the Command frame and returns immediately,
@@ -266,10 +294,16 @@ class AutomedSidecar {
     // whatever restart policy is watching `onExit`.
     this._stopping = true;
     this._child = null;
+    // A child that never started has no process to wait for, and — worse —
+    // no pid to signal. See `killIfRunning`.
+    if (child.pid === undefined) {
+      this._releasePipes(child);
+      return;
+    }
     child.stdin.end();
     await new Promise((resolve) => {
       const timer = setTimeout(() => {
-        child.kill('SIGKILL');
+        killIfRunning(child);
         resolve();
       }, graceMs);
       child.once('exit', () => {
@@ -280,4 +314,29 @@ class AutomedSidecar {
   }
 }
 
-module.exports = { AutomedSidecar, defaultBinaryPath, packagedBinaryPath };
+/**
+ * Signals a child, but only one that actually exists.
+ *
+ * `spawn` returns a ChildProcess before it knows whether the binary is there.
+ * When it is not, the object has an internal handle but **no pid** — and
+ * `kill()` on that object does not throw, does not return, and does not kill
+ * a child: it takes down the calling process, and with it everything in its
+ * process group. Quitting Autome after a core that failed to start would have
+ * killed the app itself, with no log line and no window, which is the one
+ * failure mode a shell whose job is to report failures cannot have.
+ *
+ * Returns whether a signal was actually sent, so a caller can tell "killed" from
+ * "there was nothing to kill".
+ */
+function killIfRunning(child, signal = 'SIGKILL') {
+  if (!child || child.pid === undefined || child.exitCode !== null) return false;
+  try {
+    child.kill(signal);
+    return true;
+  } catch {
+    // Already gone between the check and the call. Nothing to do.
+    return false;
+  }
+}
+
+module.exports = { AutomedSidecar, defaultBinaryPath, packagedBinaryPath, killIfRunning };

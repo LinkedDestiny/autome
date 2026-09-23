@@ -18,7 +18,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { AutomedSidecar, defaultBinaryPath } = require('../src/sidecar');
+const { AutomedSidecar, defaultBinaryPath, killIfRunning } = require('../src/sidecar');
 
 // Everything these helpers hand out, removed when the process ends.
 //
@@ -354,8 +354,12 @@ test('sending to a core that has exited throws with the reason, instead of an un
     onExit: (code, signal) => exits.push({ code, signal }),
   }).start();
 
-  // Kill the core out from under the sidecar, the way a crash would.
-  sidecar._child.kill('SIGKILL');
+  // Kill the core out from under the sidecar, the way a crash would — through
+  // the guarded helper, because `kill()` on a child that never started takes
+  // down the caller rather than the child, and a suite run before `cargo
+  // build` is exactly that case. When there is no core to kill, the state
+  // this test wants already holds.
+  killIfRunning(sidecar._child);
   await waitFor(() => exits.length === 1);
 
   assert.throws(() => sidecar.send(aWrite()), /内核已退出/);
@@ -365,6 +369,34 @@ test('sending to a core that has exited throws with the reason, instead of an un
   // stdin would surface here as an uncaught exception.
   await new Promise((resolve) => setTimeout(resolve, 100));
 
+});
+
+test('signalling a core that never started does not take the caller down with it', async () => {
+  // `spawn` hands back a ChildProcess before it knows whether the binary is
+  // there. When it is not, that object has no pid — and in the same tick,
+  // while its internal handle is still around, `kill()` on it does not throw,
+  // does not return, and does not kill a child: it signals the caller's own
+  // process group. The caller dies.
+  //
+  // The window is narrow — a tick later the handle is gone and the same call
+  // is harmless — which is exactly why it survived: nothing in the product
+  // kills a child that fast. The test suite does, to simulate a crash, and a
+  // run where the core had not been built took *itself* out. Nothing was
+  // reported, because the reporter was the process that died; CI noticed
+  // forty-five minutes later when the runner hit its own limit.
+  //
+  // Reaching the assertion below at all is the test: a regression here does
+  // not fail, it vanishes.
+  const sidecar = new AutomedSidecar({
+    binaryPath: path.join(os.tmpdir(), `no-such-automed-${crypto.randomUUID()}`),
+    dbPath: tempDbPath('kill-unstarted'),
+    env: { AUTOME_HOME: tempHome('kill-unstarted') },
+  }).start();
+
+  assert.equal(sidecar._child.pid, undefined, 'the premise: a child that never started');
+  assert.equal(killIfRunning(sidecar._child), false, 'nothing was signalled');
+  await sidecar.stop();
+  assert.ok(true, 'still here');
 });
 
 test('a stop we asked for is not reported as a crash', async () => {

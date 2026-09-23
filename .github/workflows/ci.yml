@@ -67,6 +67,12 @@ jobs:
       - name: Install
         working-directory: apps/desktop
         run: npm ci || npm install
+      # The suite's sidecar half drives the real core binary. Without it those
+      # tests fail on their own precondition assert — the job would be red for
+      # a reason that has nothing to do with the shell, or (before the fix that
+      # came with this line) would hang until the runner's limit.
+      - name: Build the core the sidecar tests drive
+        run: cargo build -p automed
       # T4/T6: the IPC gates, the shell, and the renderer's screen tests
       # including the one-screen height measurement.
       - name: Test
