@@ -1062,7 +1062,7 @@ fn perform(
 ///
 /// Empty for a single-repository project, which has one repository and no
 /// line to read.
-fn working_repos(project: &Project, task: &TaskRecord) -> Vec<String> {
+pub fn working_repos(project: &Project, task: &TaskRecord) -> Vec<String> {
     if !project.is_workspace() {
         return Vec::new();
     }

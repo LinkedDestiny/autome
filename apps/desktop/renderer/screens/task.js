@@ -872,11 +872,20 @@ function mergeFace(card, data, ctx) {
   // again today, each time costing a round that ended in a protocol failure.
   const included = (changes.pending_decisions || {}).included || 0;
 
-  const rows = [
-    ['分支', `${changes.branch} → ${changes.into}`],
-    ['提交', `${changes.commits} commits · ${changes.files.length} 文件 +${changes.total_added} −${changes.total_deleted}`],
-    ['主工作树', changes.mergeable ? '干净 · 可以合并' : blockedText(changes.blocked_by)],
-  ];
+  // One row per repository the task worked in. A single-repository project
+  // has exactly one, which reads the way this panel always has; a workspace
+  // task has one per repository it named, in the order the merge takes them.
+  const repos = changes.repos || [];
+  const rows = repos.map((r) => [
+    r.name || '分支',
+    repoSummary(r),
+  ]);
+  if (repos.length > 1) {
+    rows.push([
+      '合计',
+      `${changes.commits} commits · ${changes.files.length} 文件 +${changes.total_added} −${changes.total_deleted}`,
+    ]);
+  }
   if (included) rows.push(['Backlog', backlogText(included)]);
   card.appendChild(repoList(rows));
 
@@ -900,7 +909,7 @@ function mergeFace(card, data, ctx) {
           run: (write) => write.mergeTask(task.id),
           onDone: () => ctx.refresh(),
         }),
-    }, [text(included ? `先做 ${included} 个 Backlog 项` : `合并到 ${changes.into}`)])
+    }, [text(mergeButtonText(changes, included))])
   );
   // T-07's preconditions are the core's to enforce, but offering a button that
   // can only fail is worse than saying why it is not offered.
@@ -919,6 +928,34 @@ function mergeFace(card, data, ctx) {
  * read last: by the time someone reaches it they have already decided from
  * the rows above that this is a merge.
  */
+/**
+ * One repository's line in the merge panel.
+ *
+ * Says what will happen to it, not just how big it is: a repository already
+ * merged or with nothing in it is skipped by the core, and a panel that
+ * showed only a commit count would have the user pressing merge for a
+ * repository that has nothing to merge.
+ */
+/**
+ * What the button will do, said in the button.
+ *
+ * A workspace task merges several repositories at once, and "合并到 main" does
+ * not say how many — nor that some of them are already in.
+ */
+function mergeButtonText(changes, included) {
+  if (included) return `先做 ${included} 个 Backlog 项`;
+  const left = (changes.repos || []).filter((r) => !r.merged && !r.unchanged);
+  if (left.length > 1) return `合并 ${left.length} 个仓库到 ${changes.into}`;
+  return `合并到 ${changes.into}`;
+}
+
+function repoSummary(r) {
+  if (r.merged) return `已合并 · ${r.branch} → ${r.into}`;
+  if (r.unchanged) return `无改动 · 跳过`;
+  const size = `${r.commits} commits · ${(r.files || []).length} 文件 +${r.total_added} −${r.total_deleted}`;
+  return r.mergeable ? `${size} · 可以合并` : `${size} · ${blockedText(r.blocked_by)}`;
+}
+
 function backlogText(included) {
   return `${included} 项标记为纳入 · 会先变成新里程碑做完，再回到这里`;
 }
@@ -1212,7 +1249,7 @@ export async function openMergeModal(taskId, ctx) {
             return ctx.refresh();
           },
         }),
-    }, [text(included ? `先做 ${included} 个 Backlog 项` : '合并')])
+    }, [text(mergeButtonText(changes, included))])
   );
   if (!changes.mergeable) {
     mergeButton.disabled = true;

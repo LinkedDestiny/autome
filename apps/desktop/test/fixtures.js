@@ -441,6 +441,27 @@ const TASK_AT_MERGE = {
   status_block: { ...FIXTURES.task.status_block, milestones_done: 5, status: 'done' },
   changes: {
     available: true,
+    // A single-repository task: one row, which is how this panel has always
+    // read. `repos` carries it because the core now always sends the list.
+    repos: [
+      {
+        name: '',
+        branch: 'autome/search-suggest',
+        into: 'main',
+        commits: 3,
+        files: [
+          { path: 'src/search/suggest.ts', added: 120, deleted: 4 },
+          { path: 'src/search/suggest.spec.ts', added: 83, deleted: 0 },
+        ],
+        total_added: 203,
+        total_deleted: 18,
+        subjects: ['feat(search): suggest endpoint', 'test(search): suggest cases'],
+        merged: false,
+        unchanged: false,
+        mergeable: false,
+        blocked_by: { kind: 'dirty_worktree', paths: ['src/app.ts'] },
+      },
+    ],
     branch: 'autome/search-suggest',
     into: 'main',
     commits: 3,
@@ -453,6 +474,89 @@ const TASK_AT_MERGE = {
     subjects: ['feat(search): suggest endpoint', 'test(search): suggest cases'],
     mergeable: false,
     blocked_by: { kind: 'dirty_worktree', paths: ['src/app.ts'] },
+  },
+};
+
+/* The same stop in a workspace project: four repositories, one already in,
+ * one with nothing in it, one blocked. The panel has to say which is which —
+ * a single commit count would have the user pressing merge for a repository
+ * that has nothing to merge. */
+const TASK_AT_MERGE_WORKSPACE = {
+  ...FIXTURES.task,
+  task: TASK_MERGE,
+  status_block: { ...FIXTURES.task.status_block, milestones_done: 5, status: 'done' },
+  changes: {
+    available: true,
+    repos: [
+      {
+        name: 'docs',
+        branch: 'autome/search-suggest',
+        into: 'main',
+        commits: 2,
+        files: [{ path: 'autome/search-suggest/search-suggest.md', added: 310, deleted: 0 }],
+        total_added: 310,
+        total_deleted: 0,
+        subjects: ['docs(autome): 设计轮 2'],
+        merged: false,
+        unchanged: false,
+        mergeable: true,
+        blocked_by: null,
+      },
+      {
+        name: 'backend',
+        branch: 'autome/search-suggest',
+        into: 'master',
+        commits: 5,
+        files: [{ path: 'internal/suggest/service.go', added: 200, deleted: 12 }],
+        total_added: 200,
+        total_deleted: 12,
+        subjects: ['feat(suggest): endpoint'],
+        merged: true,
+        unchanged: false,
+        mergeable: true,
+        blocked_by: null,
+      },
+      {
+        name: 'deploy',
+        branch: 'autome/search-suggest',
+        into: 'main',
+        commits: 0,
+        files: [],
+        total_added: 0,
+        total_deleted: 0,
+        subjects: [],
+        merged: false,
+        unchanged: true,
+        mergeable: true,
+        blocked_by: null,
+      },
+      {
+        name: 'admin',
+        branch: 'autome/search-suggest',
+        into: 'main',
+        commits: 3,
+        files: [{ path: 'src/pages/Suggest.tsx', added: 90, deleted: 1 }],
+        total_added: 90,
+        total_deleted: 1,
+        subjects: ['feat(admin): suggest page'],
+        merged: false,
+        unchanged: false,
+        mergeable: false,
+        blocked_by: { kind: 'dirty_worktree', paths: ['src/app.tsx'] },
+      },
+    ],
+    branch: 'autome/search-suggest',
+    into: 'main',
+    commits: 5,
+    files: [
+      { path: 'autome/search-suggest/search-suggest.md', added: 310, deleted: 0 },
+      { path: 'src/pages/Suggest.tsx', added: 90, deleted: 1 },
+    ],
+    total_added: 400,
+    total_deleted: 1,
+    subjects: ['docs(autome): 设计轮 2', 'feat(admin): suggest page'],
+    mergeable: false,
+    blocked_by: { kind: 'dirty_worktree', paths: ['src/app.tsx'] },
   },
 };
 
@@ -643,6 +747,7 @@ const TASK_LONG_IDENTITY_PANEL = {
 module.exports = {
   FIXTURES,
   PROTOCOL_SCREEN,
+  TASK_AT_MERGE_WORKSPACE,
   TASK_MEASURED_PANEL,
   TASK_LONG_IDENTITY_PANEL,
   TASK_AT_MERGE,

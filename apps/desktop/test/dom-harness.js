@@ -38,6 +38,7 @@ const {
   TASK_MEASURED_PANEL,
   TASK_LONG_IDENTITY_PANEL,
   PROTOCOL_SCREEN,
+  TASK_AT_MERGE_WORKSPACE,
   SCREEN_IDS,
 } = require('./fixtures');
 
@@ -856,6 +857,49 @@ async function run() {
     routerMap
   );
 
+  // ---- the merge panel of a workspace task --------------------------------
+  //
+  // A workspace task merges several repositories at once. The panel used to
+  // ask one repository — the workspace root, which is not one — and got back
+  // "the branch is gone": no rows, no button, and a task parked at the merge
+  // stop with nothing to press.
+  const workspaceMerge = await evaluate(async () => {
+    const module = await import('autome://app/screens/task.js');
+    const host = document.getElementById('main');
+    host.replaceChildren();
+    module.render(
+      host,
+      JSON.parse(document.getElementById('fx-task-merge-workspace').textContent),
+      { params: { taskId: 'T-013' }, navigate() {}, refresh() {}, connected: true }
+    );
+    const rows = Array.from(host.querySelectorAll('dl.repo dt')).map((e) => e.textContent);
+    const values = Array.from(host.querySelectorAll('dl.repo dd')).map((e) => e.textContent);
+    const button = Array.from(host.querySelectorAll('button')).find((b) =>
+      b.textContent.includes('合并')
+    );
+    return {
+      rows,
+      values,
+      button: button ? button.textContent : null,
+      disabled: button ? button.disabled : null,
+    };
+  });
+  check(
+    'a workspace merge panel names every repository and says what each one needs',
+    ['docs', 'backend', 'deploy', 'admin'].every((n) => workspaceMerge.rows.includes(n)) &&
+      workspaceMerge.values.some((v) => v.includes('已合并')) &&
+      workspaceMerge.values.some((v) => v.includes('无改动')) &&
+      workspaceMerge.values.some((v) => v.includes('未提交改动')),
+    workspaceMerge
+  );
+  check(
+    'its button counts what is actually left to merge, and is refused while one is blocked',
+    workspaceMerge.button !== null &&
+      workspaceMerge.button.includes('2 个仓库') &&
+      workspaceMerge.disabled === true,
+    workspaceMerge
+  );
+
   // ---- opened from a project, you can get back to it ---------------------
   //
   // There is no history stack and no back gesture (app.js says so), so a
@@ -1119,6 +1163,7 @@ function fixtureInjector() {
     'task-measured': TASK_MEASURED_PANEL,
     'task-long': TASK_LONG_IDENTITY_PANEL,
     protocol: PROTOCOL_SCREEN,
+    'task-merge-workspace': TASK_AT_MERGE_WORKSPACE,
   });
   return `(() => {
     const blobs = ${JSON.stringify(blobs)};

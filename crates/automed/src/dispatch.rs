@@ -1862,23 +1862,36 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
 fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
-    let repo = std::path::PathBuf::from(&project.path);
-    if !git::branch_exists(&repo, &task.branch()) {
-        return Ok((json!({ "available": false }), vec![]));
-    }
-    let summary = git::change_summary(&repo, &project.default_branch, &task.branch())?;
-    let subjects = git::commit_subjects(&repo, &project.default_branch, &task.branch())?;
-    // The same judgement `merge_task_branch` makes, not a stricter one: the
-    // panel must not tell the user a merge is blocked that the core would
-    // happily perform, nor the reverse.
-    let blocking = git::conflicting_dirty_paths(&repo, &project.default_branch, &task.branch())
-        .unwrap_or_default();
-    let on_top = git::is_ancestor(&repo, &project.default_branch, &task.branch()).unwrap_or(false);
-    Ok((
-        json!({
-            "available": true,
-            "branch": task.branch(),
-            "into": project.default_branch,
+    let layout = crate::layout::TaskLayout::of(
+        &project,
+        &task.slug,
+        &crate::scheduler::working_repos(&project, &task),
+    );
+
+    // One row per repository the task worked in, in the order the merge will
+    // take them. A single-repository project has exactly one, which is what
+    // the panel drew before workspaces existed.
+    let mut repos: Vec<Value> = Vec::new();
+    for slot in &layout.repos {
+        if !git::branch_exists(&slot.repo_root, &slot.branch) {
+            continue;
+        }
+        let summary = git::change_summary(&slot.repo_root, &slot.base, &slot.branch)?;
+        let subjects = git::commit_subjects(&slot.repo_root, &slot.base, &slot.branch)?;
+        // Already in, from an earlier press or because the task changed
+        // nothing here. `merge_all` skips exactly this case, so the panel has
+        // to show it rather than offering to merge nothing.
+        let merged = git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false);
+        // The same judgement `merge_task_branch` makes, not a stricter one:
+        // the panel must not tell the user a merge is blocked that the core
+        // would happily perform, nor the reverse.
+        let blocking = git::conflicting_dirty_paths(&slot.repo_root, &slot.base, &slot.branch)
+            .unwrap_or_default();
+        let on_top = git::is_ancestor(&slot.repo_root, &slot.base, &slot.branch).unwrap_or(false);
+        repos.push(json!({
+            "name": slot.name,
+            "branch": slot.branch,
+            "into": slot.base,
             "commits": summary.commits,
             "files": summary.files.iter().map(|f| json!({
                 "path": f.path, "added": f.added, "deleted": f.deleted
@@ -1886,13 +1899,9 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "total_added": summary.total_added,
             "total_deleted": summary.total_deleted,
             "subjects": subjects,
+            "merged": merged,
+            "unchanged": summary.commits == 0,
             "mergeable": blocking.is_empty() && on_top,
-            // What pressing merge will actually do. A Backlog item marked
-            // 纳入 turns into new work at this stopping point (T-09), so the
-            // task goes back to the implementation loop instead of merging —
-            // and the panel that says 合并到 main has to know, or it promises
-            // something the core will not do.
-            "pending_decisions": ctx.store.pending_decisions(task_id)?,
             "blocked_by": if !blocking.is_empty() {
                 json!({ "kind": "dirty_worktree", "paths": blocking })
             } else if !on_top {
@@ -1900,6 +1909,58 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             } else {
                 Value::Null
             },
+        }));
+    }
+
+    if repos.is_empty() {
+        return Ok((json!({ "available": false }), vec![]));
+    }
+
+    // What is left to do decides whether the button is offered: a repository
+    // already merged, or with nothing in it, is not a reason to refuse.
+    let outstanding: Vec<&Value> = repos
+        .iter()
+        .filter(|r| r["merged"] != json!(true) && r["unchanged"] != json!(true))
+        .collect();
+    let mergeable =
+        !outstanding.is_empty() && outstanding.iter().all(|r| r["mergeable"] == json!(true));
+    let blocked_by = outstanding
+        .iter()
+        .find(|r| r["mergeable"] != json!(true))
+        .map(|r| r["blocked_by"].clone())
+        .unwrap_or(Value::Null);
+
+    let total = |key: &str| -> i64 {
+        repos
+            .iter()
+            .filter(|r| r["merged"] != json!(true))
+            .filter_map(|r| r[key].as_i64())
+            .sum()
+    };
+
+    Ok((
+        json!({
+            "available": true,
+            "repos": repos,
+            // The single-repository shape, kept so every existing caller and
+            // test reads the same fields: for one repository these *are* that
+            // repository's numbers, and for a workspace they are the totals of
+            // everything still to merge.
+            "branch": task.branch(),
+            "into": layout.docs().base,
+            "commits": total("commits"),
+            "files": repos.iter().flat_map(|r| r["files"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
+            "total_added": total("total_added"),
+            "total_deleted": total("total_deleted"),
+            "subjects": repos.iter().flat_map(|r| r["subjects"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
+            "mergeable": mergeable,
+            // What pressing merge will actually do. A Backlog item marked
+            // 纳入 turns into new work at this stopping point (T-09), so the
+            // task goes back to the implementation loop instead of merging —
+            // and the panel that says 合并到 main has to know, or it promises
+            // something the core will not do.
+            "pending_decisions": ctx.store.pending_decisions(task_id)?,
+            "blocked_by": blocked_by,
         }),
         vec![],
     ))
