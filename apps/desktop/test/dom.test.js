@@ -11,6 +11,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -34,20 +35,46 @@ test('electron dom harness: real-DOM assertions against the actual renderer', { 
   }
 
   const harnessPath = path.join(__dirname, 'dom-harness.js');
-  const proc = spawnSync(electronBinary, [harnessPath], {
-    cwd: path.join(__dirname, '..'),
-    encoding: 'utf8',
-    timeout: 30000,
-    env: Object.assign({}, process.env, { ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }),
-  });
+  // Through files rather than pipes, and that is the whole point of the
+  // detour: `spawnSync`'s timeout kills the *child*, then keeps reading its
+  // pipes until they close — and Electron's helper processes inherit them.
+  // On a CI runner the helpers outlived the kill, the read never ended, and
+  // the job sat there for 45 minutes before the runner's own limit put it
+  // down. With file descriptors there is no pipe for anyone to hold open, so
+  // the timeout below actually bounds the step.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'autome-dom-'));
+  const outPath = path.join(scratch, 'checks.json');
+  const errPath = path.join(scratch, 'stderr.txt');
+  const outFd = fs.openSync(outPath, 'w');
+  const errFd = fs.openSync(errPath, 'w');
+  let proc;
+  try {
+    proc = spawnSync(electronBinary, [harnessPath], {
+      cwd: path.join(__dirname, '..'),
+      timeout: 60000,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', outFd, errFd],
+      env: Object.assign({}, process.env, { ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }),
+    });
+  } finally {
+    fs.closeSync(outFd);
+    fs.closeSync(errFd);
+  }
+  const stdout = fs.readFileSync(outPath, 'utf8');
+  const stderr = fs.readFileSync(errPath, 'utf8');
+  fs.rmSync(scratch, { recursive: true, force: true });
 
-  assert.equal(proc.status, 0, `dom-harness.js exited ${proc.status}, stderr:\n${proc.stderr}`);
+  assert.ok(
+    !proc.error || proc.error.code !== 'ETIMEDOUT',
+    `dom-harness.js did not finish within 60s. stderr:\n${stderr}`
+  );
+  assert.equal(proc.status, 0, `dom-harness.js exited ${proc.status}, stderr:\n${stderr}`);
 
   let checks;
   try {
-    checks = JSON.parse(proc.stdout.trim());
+    checks = JSON.parse(stdout.trim());
   } catch (err) {
-    assert.fail(`dom-harness.js did not print valid JSON.\nstdout:\n${proc.stdout}\nstderr:\n${proc.stderr}`);
+    assert.fail(`dom-harness.js did not print valid JSON.\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   }
 
   assert.ok(Array.isArray(checks) && checks.length > 0, 'dom-harness.js reported zero checks');

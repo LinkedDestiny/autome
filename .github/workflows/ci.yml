@@ -13,6 +13,8 @@ concurrency:
 
 jobs:
   rust:
+    # A hung step must fail in minutes, not sit at the runner's own limit.
+    timeout-minutes: 30
     # macOS because the product is macOS-only (plan D9) and because the git,
     # worktree and process tests exercise real platform behaviour. Running them
     # on Linux would test a platform we do not ship.
@@ -52,6 +54,10 @@ jobs:
         run: cargo test --test real_cli every_adapter_flag -- --nocapture
 
   desktop:
+    # A hung step must fail in minutes, not sit at the runner's own limit.
+    # The desktop job once held a runner for 45 minutes on a test that takes
+    # under two seconds locally.
+    timeout-minutes: 20
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +77,10 @@ jobs:
   # runs by hand breaks quietly and is discovered at release, which is the one
   # time it must not.
   package:
+    # A hung step must fail in minutes, not sit at the runner's own limit.
+    # The desktop job once held a runner for 45 minutes on a test that takes
+    # under two seconds locally.
+    timeout-minutes: 20
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +106,10 @@ jobs:
   # already cross-checks the read side by parsing dispatch.rs; this job fails
   # loudly if the file it parses ever moves.
   contract:
+    # A hung step must fail in minutes, not sit at the runner's own limit.
+    # The desktop job once held a runner for 45 minutes on a test that takes
+    # under two seconds locally.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
