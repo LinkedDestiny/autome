@@ -58,7 +58,10 @@ the suite, and ship a build.
   review as any other code change.
 - `realized_impact` in the changelog is no longer filled in automatically;
   the version page's measured columns are the record.
-- The seed's own `README.md` described the repository it used to be copied
-  into. Rewriting it changed the content hash, so it shipped as
-  `protocol/v3` (C-17) rather than silently giving v2 a second hash; the rule
-  text and templates are byte-identical to v2.
+- The version numbering restarted. The built-in protocol is `protocol/v1`,
+  and the seed's changelog holds that one section: the history of the
+  repository's v1–v3 went with the repository. The rule text is not rolled
+  back — it is what those iterations produced, including the workspace
+  document paths. Task records from before the restart had their
+  `protocol_ref` cleared, so the version page does not show an old `v1`
+  beside the new one under the same name.

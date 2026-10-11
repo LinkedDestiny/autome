@@ -786,14 +786,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_behavioral_change_with_no_case_is_refused() {
+    /// The seed with one more version appended to its changelog, holding a
+    /// single `behavioral` entry whose `eval` is `eval`. Built here rather
+    /// than borrowed from the seed's history, which restarted at v1 with no
+    /// behavioural entry in it.
+    fn with_behavioral_entry(eval: &str) -> ProtocolFiles {
         let mut files = seed().clone();
-        let text = files.get("CHANGELOG.md").unwrap().replace(
-            "  eval: evals/impl-writes-evidence-not-design/\n",
-            "  eval: null\n",
+        let text = format!(
+            "{}\n## protocol/v2\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
+             clause: prompts/impl.md\n  evidence: [T-1 一处, T-2 另一处]\n  \
+             predicted_impact: {{metric: protocol_failures, direction: down, scope: task, horizon: 3}}\n  \
+             eval: {eval}\n  realized_impact: null\n```\n",
+            files.get("CHANGELOG.md").unwrap()
         );
         files.insert("CHANGELOG.md", text);
+        files
+    }
+
+    #[test]
+    fn a_behavioral_change_with_no_case_is_refused() {
+        let files = with_behavioral_entry("null");
+        assert!(
+            !check(&with_behavioral_entry(
+                "evals/impl-self-check-before-pending/"
+            ))
+            .failed()
+        );
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
         assert!(details(&r).contains("eval"), "{}", details(&r));
@@ -888,8 +906,8 @@ mod tests {
 
     #[test]
     fn a_changed_run_covers_the_new_cases_and_the_three_baselines() {
-        let files = seed().clone();
-        let cases = changed_cases(&files, "protocol/v1");
+        let files = with_behavioral_entry("evals/impl-self-check-before-pending/");
+        let cases = changed_cases(&files, "protocol/v2");
         for baseline in BASELINE_CASES {
             assert!(cases.contains(&baseline.to_string()), "{cases:?}");
         }
