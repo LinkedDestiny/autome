@@ -39,11 +39,9 @@ contextBridge.exposeInMainWorld('autome', {
     environment: () => read('env.get')(),
     installRecipe: (component) => read('env.install_recipe')({ component }),
 
-    // The protocol repository and what each of its versions cost.
+    // The built-in protocol and what each of its versions cost.
     protocol: () => read('protocol.get')(),
     protocolVersions: (projectId) => read('protocol.versions')({ project_id: projectId }),
-    protocolEval: () => read('protocol.eval')(),
-    protocolTriggers: () => read('protocol.triggers')(),
   },
 
   write: {
@@ -120,10 +118,6 @@ contextBridge.exposeInMainWorld('autome', {
     // A retro round on a task that already stopped: the failure panel's
     // button. Failed tasks never reach the retro node on their own.
     retroTask: (taskId) => write('task.retro')({ task_id: taskId }),
-
-    // Rolling back is a *forward* commit; the core refuses to move a tag.
-    rollbackProtocol: (tag) => write('protocol.rollback')({ tag }),
-    improveProtocol: () => write('protocol.improve')(),
 
     // `rules.proposals` recomputes and stores the pending proposals, so it is
     // a write even though it reads like a query.

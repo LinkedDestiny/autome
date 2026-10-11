@@ -47,11 +47,6 @@ impl Default for LoopDefaults {
 }
 
 /// The sparse counterpart of `LoopDefaults`: `None` means "inherit".
-///
-/// `protocol` has no global counterpart on purpose. There is no sensible
-/// machine-wide "everyone runs v5"; the useful default is "whatever the
-/// protocol repository's newest tag is", and that is what absence means. A
-/// project pins only when it has a reason to stay behind.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,9 +55,6 @@ pub struct LoopOverrides {
     pub design_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_factor: Option<u32>,
-    /// A `protocol/vN` tag this project stays on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
 }
 
 /// One role's fully-resolved execution profile (requirement C-04).
@@ -252,8 +244,8 @@ pub struct ProjectConfig {
     /// Where this project's task documents go inside the repository that
     /// holds them.
     ///
-    /// Project-only, with no global counterpart, for the same reason
-    /// `protocol` has none: there is no sensible machine-wide answer. It is a
+    /// Project-only, with no global counterpart: there is no sensible
+    /// machine-wide answer. It is a
     /// fact about one repository's layout — whether `docs/` is free, whether
     /// it is somebody else's independent repository, whether the team already
     /// keeps `prd/` and `reports/` at the root.
@@ -291,10 +283,6 @@ pub struct ResolvedRole {
 pub struct ResolvedConfig {
     pub loop_defaults: LoopDefaults,
     pub roles: Vec<ResolvedRole>,
-    /// The project's protocol pin, if it has one. `None` means "follow the
-    /// protocol repository's newest tag", which is what most projects do.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol_pin: Option<String>,
 }
 
 impl ResolvedConfig {
@@ -357,7 +345,6 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             budget_factor,
         },
         roles,
-        protocol_pin: project.loop_overrides.protocol.clone(),
     }
 }
 

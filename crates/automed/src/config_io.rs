@@ -253,11 +253,6 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                 .get("budget_factor")
                 .and_then(toml::Value::as_integer)
                 .map(|v| v.clamp(0, u32::MAX as i64) as u32),
-            protocol: t
-                .get("protocol")
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-                .filter(|s| !s.trim().is_empty()),
         };
     }
 
@@ -391,12 +386,9 @@ pub fn save_project(repo: &Path, config: &ProjectConfig) -> Result<()> {
             "budget_factor",
             config.loop_overrides.budget_factor,
         );
-        match &config.loop_overrides.protocol {
-            Some(tag) => loop_table["protocol"] = value(tag.as_str()),
-            None => {
-                loop_table.remove("protocol");
-            }
-        }
+        // A protocol pin from before the protocol was built in. Nothing reads
+        // it any more; dropping it on the next save keeps the file honest.
+        loop_table.remove("protocol");
     }
 
     {

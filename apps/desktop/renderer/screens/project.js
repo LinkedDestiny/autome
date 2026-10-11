@@ -27,8 +27,8 @@ export async function load(ctx) {
   // concerns apart; a failure here must not blank the whole project page, so
   // it degrades to "not listed" rather than to an error screen.
   const skills = await readOr({ skills: [] }, 'listSkills', projectId);
-  // The version table needs the protocol repository; a project page that
-  // refused to render because it is missing would be a page you cannot use to
+  // Degrades rather than blanking the page: a project page that refused to
+  // render because the version table failed would be a page you cannot use to
   // fix anything.
   const versions = await readOr({ rows: [] }, 'protocolVersions', projectId);
   return { ...project, skills: skills.skills || [], versions };

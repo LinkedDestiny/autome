@@ -320,7 +320,8 @@ mod tests {
 
     #[test]
     fn a_protocol_level_lesson_is_not_a_project_rule() {
-        // It goes to a meta task instead.
+        // It is evidence for a change to the protocol itself, which is made
+        // in the autome-v2 source, not in the project.
         let l = agg(
             LessonLevel::Protocol,
             LessonDomain::Verification,

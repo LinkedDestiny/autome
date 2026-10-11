@@ -776,11 +776,6 @@ async function run() {
       usage.text.includes('Codex 不报价'),
     usage
   );
-  check(
-    'a change the review round could not judge is disclosed at the gate (plan §6.3)',
-    usage.alerts.some((a) => a.includes('需人工特批') && a.includes('prompts/review.md')),
-    usage
-  );
 
   // ---- the version page states its own limits ---------------------------
   const version = await evaluate(async () => {
@@ -797,6 +792,7 @@ async function run() {
       text: host.textContent,
       rows: host.querySelectorAll('.metrics tbody tr').length,
       tags: Array.from(host.querySelectorAll('.tag')).map((t) => t.textContent),
+      buttons: host.querySelectorAll('button').length,
     };
   });
   check(
@@ -810,8 +806,12 @@ async function run() {
     version
   );
   check(
-    'rolling back is offered as a forward commit, not as moving a tag',
-    version.text.includes('回到这一版的内容'),
+    'the version page says the protocol is built in and offers nothing to change it in-app',
+    version.text.includes('随 Autome 内置') &&
+      version.text.includes('重新部署') &&
+      !version.text.includes('回到这一版的内容') &&
+      !version.text.includes('改进 Loop') &&
+      version.buttons === 1,
     version
   );
 

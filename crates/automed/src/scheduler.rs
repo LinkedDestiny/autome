@@ -814,22 +814,8 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         transition.next,
         TaskState::Failed { .. } | TaskState::Cancelled
     ) || (transition.next == TaskState::Done && task.metrics.is_none());
-    if measure_now {
-        if let Err(e) = write_task_metrics(ctx, task_id) {
-            tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
-        }
-        // A new sample just arrived, which is the only thing that can make a
-        // past prediction judgeable. The core fills the outcome in, never the
-        // person who proposed the change: a claim scored by its author is not
-        // a claim.
-        for filled in crate::backfill::run(ctx) {
-            tracing::info!(
-                entry = %filled.id,
-                metric = %filled.metric,
-                held_up = filled.held_up,
-                "protocol change measured"
-            );
-        }
+    if measure_now && let Err(e) = write_task_metrics(ctx, task_id) {
+        tracing::warn!(task = %task_id, error = %e, "could not aggregate task metrics");
     }
 
     if let Err(e) = perform(ctx, &task, &project, &resolved, &transition) {
@@ -1147,7 +1133,7 @@ fn start_session(
         )?;
     }
     if first_time {
-        write_task_inputs(ctx, task, project, &layout.docs_root)?;
+        write_task_inputs(task, &layout.docs_root)?;
     }
     let worktree = layout.docs_root.clone();
 
@@ -1155,7 +1141,7 @@ fn start_session(
     // that started under v6 keeps running under v6 even if the user releases
     // v7 in the middle of it — protocol principle 6 as a property of the
     // filesystem rather than a sentence a session has to remember.
-    let (protocol_ref, protocol) = freeze_protocol(ctx, task, resolved, &worktree)?;
+    let (protocol_ref, protocol) = freeze_protocol(ctx, task, &worktree)?;
     let rules_hash = rules_hash(&repo);
 
     let role_config = match kind.role() {
@@ -1291,18 +1277,17 @@ fn read_pid(repo: &Path, task_id: &str, session_id: &str) -> Option<i32> {
     None
 }
 
-/// Resolves the protocol version for a task and, the first time, freezes a
-/// copy of it into `docs/<slug>/protocol/`.
+/// The protocol version for a task: the first time, the one built into this
+/// binary, frozen as a copy into `docs/<slug>/protocol/`.
 ///
 /// After that the copy *is* the version: it is read back from the worktree
-/// rather than re-resolved, so releasing a new protocol tag cannot change the
-/// rules a running task is being held to. That is protocol principle 6, and it
+/// rather than taken from the binary again, so installing a newer build cannot
+/// change the rules a running task is being held to. That is protocol principle 6, and it
 /// used to rest on the intake round having pasted the rules into the task file
 /// and every later round choosing not to look anywhere else.
 fn freeze_protocol(
     ctx: &mut Ctx,
     task: &TaskRecord,
-    resolved: &ResolvedConfig,
     worktree: &Path,
 ) -> Result<(ProtocolRef, ProtocolFiles)> {
     let dir = worktree
@@ -1334,10 +1319,7 @@ fn freeze_protocol(
         return Ok((recorded, files));
     }
 
-    let pin = resolved.protocol_pin.clone();
-    let (protocol_ref, files) = crate::protocol::ensure(&ctx.autome_home)
-        .and_then(|r| r.resolve(pin.as_deref()))
-        .map_err(|e| err(e.to_string()))?;
+    let (protocol_ref, files) = crate::protocol::current().clone();
 
     let written = crate::protocol::copy_into_task(&files, worktree, &task.doc_dir())
         .map_err(|e| err(e.to_string()))?;
@@ -1437,26 +1419,6 @@ fn write_brief(
     Ok(shown)
 }
 
-/// Which changes on this branch the review and audit rounds were not
-/// competent to judge — a change to their own prompts.
-///
-/// Recorded at the design stopping point and again at the merge gate, because
-/// those are the two places a human is looking. There is no clever fix for the
-/// self-reference: an evaluator judging the rules it is evaluated under is a
-/// fixed point, not a check.
-pub fn needs_human_approval(ctx: &mut Ctx, task_id: &str) -> Result<Vec<String>> {
-    let task = ctx.store.get_task(task_id)?;
-    let project = ctx.store.get_project(&task.project_id)?;
-    if !crate::meta_store::is_protocol_project(ctx, &project) {
-        return Ok(vec![]);
-    }
-    let repo = PathBuf::from(&project.path);
-    let changed = git::change_summary(&repo, &project.default_branch, &task.branch())
-        .map(|s| s.files.into_iter().map(|f| f.path).collect::<Vec<_>>())
-        .unwrap_or_default();
-    Ok(crate::meta::needs_human_approval(&changed))
-}
-
 /// Reads a task's frozen copy back. Only the files the copy contains — eval
 /// fixtures are deliberately not copied, so the hash here is over the same set
 /// `copy_into_task` wrote.
@@ -1504,14 +1466,8 @@ fn rules_hash(repo: &Path) -> Option<String> {
 }
 
 /// Everything the core puts into a task's directory before the first session
-/// opens it: the user's attachments, and — for a meta task — the evidence it
-/// is asked to propose changes from.
-fn write_task_inputs(
-    ctx: &mut Ctx,
-    task: &TaskRecord,
-    project: &Project,
-    worktree: &Path,
-) -> Result<()> {
+/// opens it: the user's attachments.
+fn write_task_inputs(task: &TaskRecord, worktree: &Path) -> Result<()> {
     let mut paths: Vec<String> = Vec::new();
 
     if !task.attachments.is_empty() {
@@ -1525,25 +1481,6 @@ fn write_task_inputs(
                 .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
         }
         paths.push(format!("{}/attachments", task.doc_dir()));
-    }
-
-    // A meta task cannot assemble its own evidence: a session cannot read the
-    // store, cannot see other projects' tasks, and should not be trusted to
-    // summarise its own history from memory.
-    if crate::meta_store::is_protocol_project(ctx, project) {
-        let tasks = crate::meta_store::collect(ctx)?;
-        let deferred = crate::meta_store::deferred(ctx, &project.id)?;
-        let contradicted = crate::meta_store::contradicted(ctx)?;
-        for (rel, body) in crate::meta::inputs(&tasks, &deferred, &contradicted) {
-            let full = worktree.join(task.doc_dir()).join(&rel);
-            if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| err(format!("无法创建 {}：{e}", parent.display())))?;
-            }
-            std::fs::write(&full, body)
-                .map_err(|e| err(format!("无法写入 {}：{e}", full.display())))?;
-        }
-        paths.push(format!("{}/inputs", task.doc_dir()));
     }
 
     if paths.is_empty() {
@@ -1818,6 +1755,48 @@ fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
 // Recovery
 // ---------------------------------------------------------------------------
 
+/// Unregisters the built-in "Loop 协议" project an older build created.
+///
+/// The protocol used to be a git repository at `~/.autome/protocol/` that
+/// Autome registered as a project of its own, so that a meta task could edit
+/// it. The protocol now ships in the binary (see `crate::protocol::current`),
+/// and a project left pointing at that directory would only be scaffolded and
+/// scheduled for nothing. Its unfinished tasks are cancelled rather than left
+/// to run; the directory itself is not touched, as with every removal.
+fn retire_protocol_project(ctx: &mut Ctx, report: &mut TickReport) {
+    // Compared canonically: a registered path went through `canonicalize` on
+    // `project.add`, and `~/.autome` may sit behind a symlink.
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let legacy = canonical(&ctx.autome_home.join("protocol"));
+    let Ok(projects) = ctx.store.list_projects() else {
+        return;
+    };
+    for p in projects
+        .iter()
+        .filter(|p| canonical(Path::new(&p.path)) == legacy)
+    {
+        let result = (|| -> Result<()> {
+            for task in ctx.store.list_tasks(&p.id)? {
+                if !task.state.is_terminal() {
+                    ctx.store.set_task_state(&task.id, &TaskState::Cancelled)?;
+                }
+            }
+            ctx.store.remove_project(&p.id)?;
+            ctx.store.append_event(
+                "project.removed",
+                &p.id,
+                json!({ "reason": "protocol_built_in" }),
+            )?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            report
+                .errors
+                .push(format!("{}：移除内置协议项目失败 {e}", p.display_name));
+        }
+    }
+}
+
 /// Startup reconciliation (design §13, §2).
 ///
 /// For every unfinished task: if its session is still alive, leave it alone;
@@ -1826,6 +1805,8 @@ fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
 /// than a task that appears to be running forever.
 pub fn recover(ctx: &mut Ctx) -> TickReport {
     let mut report = TickReport::default();
+
+    retire_protocol_project(ctx, &mut report);
 
     // A worktree registration whose directory is gone would block re-creating
     // the same path; clearing them is safe and cheap.
@@ -1845,19 +1826,7 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
                 continue;
             }
             let _ = git::worktree_prune(path);
-            // The protocol is resolved per project: one of them may be pinned
-            // to an older version, and refreshing it to the newest would be
-            // exactly the silent rule change pinning exists to prevent.
-            let protocol = match crate::protocol::resolve_for_project(&ctx.autome_home, path) {
-                Ok((_, files)) => files,
-                Err(e) => {
-                    report
-                        .errors
-                        .push(format!("{}：读取协议版本失败 {e}", p.display_name));
-                    continue;
-                }
-            };
-            match crate::init::init(path, &protocol) {
+            match crate::init::init(path) {
                 Ok(done) => {
                     for step in done
                         .steps
@@ -1979,14 +1948,13 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let repo = PathBuf::from(&project.path);
     let role_config = launcher::system_role_config();
 
-    // Onboarding has no task and therefore no frozen copy; it runs under
-    // whatever version the project resolves to right now, which is correct:
-    // nothing it produces is attributed to a protocol version.
-    let (_, protocol) = crate::protocol::resolve_for_project(&ctx.autome_home, &repo)
-        .map_err(|e| err(e.to_string()))?;
+    // Onboarding has no task and therefore no frozen copy; it runs under the
+    // built-in version, which is correct: nothing it produces is attributed
+    // to a protocol version.
+    let (_, protocol) = crate::protocol::current();
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
-        templates: &protocol,
+        templates: protocol,
         brief_path: "",
         slug: "onboarding",
         // Onboarding writes the project profile and AGENTS.md at the
@@ -2157,7 +2125,7 @@ mod tests {
             std::fs::create_dir_all(&repo).unwrap();
 
             git::init(&repo, "main").unwrap();
-            crate::init::init(&repo, crate::protocol::seed()).unwrap();
+            crate::init::init(&repo).unwrap();
             std::fs::write(repo.join("README.md"), "hi\n").unwrap();
             git::commit_paths(
                 &repo,

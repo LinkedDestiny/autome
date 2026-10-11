@@ -9,7 +9,7 @@
 //!
 //! - [`ipc`] — framed JSON-RPC over stdio, the only channel to Electron Main.
 //! - [`dispatch`] — the command table: every method the Renderer can call.
-//! - [`dispatch_protocol`] — the protocol repository and version page half of
+//! - [`dispatch_protocol`] — the built-in protocol and version page half of
 //!   that table.
 //! - [`dispatch_curation`] — the rule-proposal and removal-experiment half.
 //! - [`store`] — SQLite: project registry, task index, session ledger, the
@@ -32,8 +32,8 @@
 //!   evidence the core assembles for it.
 //! - [`meta_store`] — the half of that which reaches for the store and the
 //!   repositories.
-//! - [`protocol`] — the `~/.autome/protocol/` repository: versions, tags, the
-//!   kernel contract, and a task's frozen copy.
+//! - [`protocol`] — the protocol compiled into the binary: its version, the
+//!   kernel contract, eval, and a task's frozen copy.
 //! - [`scheduler`] — the one place a transition is applied and acted on.
 //! - [`skills`] — the read-only skill inventory scan.
 //! - [`task_metrics`] — one task folded into the numbers a later decision can
@@ -42,7 +42,6 @@
 //! - [`version_page`] — what each protocol version cost, and whether its
 //!   changes did what they said they would.
 
-pub mod backfill;
 pub mod brief;
 pub mod config_io;
 pub mod curation;
@@ -56,8 +55,6 @@ pub mod init;
 pub mod ipc;
 pub mod launcher;
 pub mod layout;
-pub mod meta;
-pub mod meta_store;
 pub mod protocol;
 pub mod scheduler;
 pub mod skills;

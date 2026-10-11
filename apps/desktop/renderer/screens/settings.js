@@ -25,12 +25,11 @@ const BUDGET_FACTOR_OPTIONS = [2, 3, 4, 5, 6, 8, 10];
 
 export async function load() {
   const config = await read('getConfig');
-  // Both degrade rather than blanking the screen: a settings page that cannot
-  // render because the protocol repository is missing would be a settings page
-  // you cannot use to fix anything.
-  const protocol = await readOr({ initialised: false }, 'protocol');
-  const triggers = await readOr({ triggers: [], suggest: false }, 'protocolTriggers');
-  return { ...config, protocol, triggers };
+  // Degrades rather than blanking the screen: a settings page that cannot
+  // render because one read failed would be a settings page you cannot use to
+  // fix anything.
+  const protocol = await readOr({}, 'protocol');
+  return { ...config, protocol };
 }
 
 export function render(host, data, ctx) {
@@ -59,10 +58,9 @@ export function render(host, data, ctx) {
   host.appendChild(screen);
 }
 
-/// The Loop's own rules, and whether there is evidence worth changing them on.
+/// The Loop's own rules: which version is built in.
 function protocolCard(data, ctx) {
   const protocol = (data && data.protocol) || {};
-  const triggers = (data && data.triggers) || {};
 
   const card = h('div.card.card--pad.col.card--link', {
     tabindex: '0',
@@ -70,25 +68,16 @@ function protocolCard(data, ctx) {
     onClick: () => ctx.navigate('protocol'),
     onKeyDown: activateOnKey,
   });
-  card.appendChild(
-    cardHead(
-      'Loop 协议',
-      triggers.suggest
-        ? tag('有证据可以改了', 'soft-yellow')
-        : tag(protocol.initialised ? '已固定' : '还没建', 'soft-green', 'check')
-    )
-  );
+  card.appendChild(cardHead('Loop 协议', tag('内置', 'soft-green', 'check')));
   card.appendChild(
     h('div.quiet', {
-      text: protocol.initialised
-        ? `当前 ${labels.protocolRef((protocol.current || {}).wire)} · 已发布 ${(protocol.tags || []).length} 版`
-        : '添加第一个项目时会从内置种子建好',
+      text: `当前 ${labels.protocolRef((protocol.current || {}).wire)} · 随 Autome 发布`,
     })
   );
   // The one sentence that explains why this screen exists at all.
   card.appendChild(
     h('div.quiet.mt-8', {
-      text: '规则是带版本的数据。任务创建时固定一份副本，之后发布新版也影响不到它。',
+      text: '任务创建时固定一份副本，之后换了新版本也影响不到它。要改协议，改 autome-v2 源码后重新部署。',
     })
   );
   const cta = h('span.card__cta', { text: '打开协议版本 ' });

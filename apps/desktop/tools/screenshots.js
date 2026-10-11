@@ -96,10 +96,6 @@ function payloadFor(method) {
       return FIXTURES.env;
     case 'protocol.get':
       return PROTOCOL_SCREEN.protocol;
-    case 'protocol.eval':
-      return PROTOCOL_SCREEN.gate;
-    case 'protocol.triggers':
-      return PROTOCOL_SCREEN.triggers;
     case 'protocol.versions':
       return PROTOCOL_SCREEN.versions;
     default:

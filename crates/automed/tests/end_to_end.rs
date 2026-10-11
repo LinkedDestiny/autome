@@ -1602,7 +1602,13 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     // And the task recorded which version it is being held to.
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
-    assert!(protocol_ref.starts_with("protocol/v1@"), "{protocol_ref}");
+    assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
+    assert!(protocol_ref.starts_with("protocol/v3@"), "{protocol_ref}");
+    // Taken from the binary: nothing on this machine holds the protocol.
+    assert!(
+        !w.ctx.autome_home.join("protocol").exists(),
+        "a protocol repository was created"
+    );
 
     // Each role that ran got a brief of its own, naming the milestone it is
     // about and carrying the protocol sections its role is mapped to.
@@ -1634,116 +1640,46 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario: the meta task (plan §6)
+// Scenario: the protocol is built in
 // ---------------------------------------------------------------------------
 
-/// Improving the protocol is an ordinary Loop task on an ordinary project.
-/// What the core adds is the evidence, because a session cannot read the store
-/// and should not be trusted to summarise its own history.
+/// An older build registered `~/.autome/protocol/` as a project of its own so
+/// a meta task could edit it. The protocol now ships in the binary; recovery
+/// unregisters that project and cancels what was queued on it, and leaves the
+/// directory alone.
 #[test]
-fn a_meta_task_runs_on_the_protocol_repository_with_its_evidence_assembled() {
+fn recovery_retires_the_old_built_in_protocol_project() {
     needs_git!();
-    let mut w = World::new("meta");
+    let mut w = World::new("retire-protocol");
+    let legacy = w.ctx.autome_home.join("protocol");
+    std::fs::create_dir_all(&legacy).unwrap();
+    automed::git::init(&legacy, "main").unwrap();
+    std::fs::write(legacy.join("loop-protocol.md"), "# Loop 协议\n").unwrap();
+    automed::git::commit_paths(&legacy, &["loop-protocol.md"], "v1").unwrap();
 
-    // A finished task in an ordinary project, so there is something to cite.
-    let request = "teach me something";
-    let slug = slug_for(request);
-    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
-    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
-    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
-    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
-    w.retro_step(7, &slug);
-    let task_id = create_task(&mut w, request);
-    w.settle();
-    w.call("task.approve", json!({ "task_id": task_id }));
-    w.settle();
-    w.call("task.merge", json!({ "task_id": task_id }));
-    w.settle();
+    let added = w.call("project.add", json!({ "path": legacy.to_str().unwrap() }));
+    let legacy_id = ok(&added)["project"]["id"].as_str().unwrap().to_string();
+    let created = w.call(
+        "task.create",
+        json!({ "project_id": legacy_id, "request": "改进 Loop 协议" }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
 
-    // The protocol repository is a project the scheduler already knows how to
-    // run, registered rather than special-cased.
-    let out = w.call("protocol.improve", json!({}));
-    let payload = ok(&out);
-    let meta_id = payload["task"]["id"].as_str().unwrap().to_string();
-    let meta_slug = payload["task"]["slug"].as_str().unwrap().to_string();
+    automed::scheduler::recover(&mut w.ctx);
 
     let projects = w.ctx.store.list_projects().unwrap();
-    let protocol = projects
-        .iter()
-        .find(|p| p.display_name == "Loop 协议")
-        .expect("the protocol repository is not a project");
-    assert_eq!(protocol.parallel_limit, 1, "two meta tasks would conflict");
-
-    // A second one is refused while the first is unfinished.
-    let again = w.call("protocol.improve", json!({}));
     assert!(
-        matches!(again.reply.outcome, ReplyOutcome::Error { .. }),
-        "{:?}",
-        again.reply.outcome
+        projects.iter().all(|p| p.id != legacy_id),
+        "the protocol project is still registered"
     );
-
-    // The evidence is in the meta task's own directory, on its own branch.
-    let wt = std::path::Path::new(&protocol.path)
-        .join(".worktree")
-        .join(&meta_slug);
-    let inputs = wt.join(format!("docs/{meta_slug}/inputs"));
-    for name in [
-        "metrics.md",
-        "lessons.md",
-        "retro-suggestions.md",
-        "failures.md",
-        "deferred.md",
-    ] {
-        assert!(inputs.join(name).exists(), "missing inputs/{name}");
-    }
-    let metrics = std::fs::read_to_string(inputs.join("metrics.md")).unwrap();
     assert!(
-        metrics.contains(&slug),
-        "the finished task is not cited:\n{metrics}"
+        projects.iter().any(|p| p.id == w.project_id),
+        "an ordinary project was removed with it"
     );
-    assert!(metrics.contains("protocol/v1@"), "{metrics}");
-
-    // And the request carries the constraints that make a proposal checkable.
-    let task = w.ctx.store.get_task(&meta_id).unwrap();
-    assert!(task.request.contains("契约区"), "{}", task.request);
-    assert!(task.request.contains("两个任务"), "{}", task.request);
-}
-
-/// Nothing starts by itself. The triggers are a suggestion with a reason
-/// attached.
-#[test]
-fn the_app_suggests_an_iteration_only_once_there_is_something_to_say() {
-    needs_git!();
-    let mut w = World::new("meta-trigger");
-    let out = w.call("protocol.triggers", json!({}));
-    let before = ok(&out).clone();
-    assert_eq!(before["suggest"], false, "{before}");
-
-    let request = "one finished task";
-    let slug = slug_for(request);
-    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
-    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
-    // The implementation round claims the close; the guard stops the task.
-    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
-    let task_id = create_task(&mut w, request);
-    w.settle();
-    w.call("task.approve", json!({ "task_id": task_id }));
-    w.settle();
-    assert_eq!(w.state(&task_id), "failed");
-
-    // One protocol failure is enough on its own: a task that could not be
-    // held to the rules is the most direct evidence there is about them.
-    let out = w.call("protocol.triggers", json!({}));
-    let after = ok(&out).clone();
-    assert_eq!(after["suggest"], true, "{after}");
-    let reasons = after["triggers"].as_array().unwrap();
+    assert_eq!(w.state(&task_id), "cancelled");
     assert!(
-        reasons.iter().any(|r| r.as_str().unwrap().contains(&slug)),
-        "{after}"
+        legacy.join("loop-protocol.md").exists(),
+        "the directory was touched"
     );
 }
 

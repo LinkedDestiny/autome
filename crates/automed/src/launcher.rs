@@ -964,7 +964,7 @@ mod tests {
 
     /// The seed's templates. Tests here are about *rendering* — which
     /// placeholder gets what, which round is handed a budget line — not about
-    /// the wording, which lives in the protocol repository and is checked by
+    /// the wording, which lives in `protocol/seed/` and is checked by
     /// `protocol::phrases`.
     fn templates() -> autome_domain::protocol::ProtocolFiles {
         crate::protocol::seed().clone()
@@ -1831,7 +1831,7 @@ mod tests {
         // a sandbox the test had already deleted.
         let dir = std::env::temp_dir().join(format!("automed-dry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir, crate::protocol::seed()).unwrap();
+        crate::init::init(&dir).unwrap();
         let launched = launch(&LaunchSpec {
             session_id: "s-dry",
             task_id: "T-1",
@@ -1891,7 +1891,7 @@ mod tests {
     fn launching_writes_the_prompt_file_before_it_needs_the_terminal() {
         let dir = std::env::temp_dir().join(format!("automed-launch2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        crate::init::init(&dir, crate::protocol::seed()).unwrap();
+        crate::init::init(&dir).unwrap();
         let spec = LaunchSpec {
             session_id: "s1",
             task_id: "T-1",

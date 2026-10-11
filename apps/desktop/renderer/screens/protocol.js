@@ -1,23 +1,21 @@
 // 协议版本 — plan §6.5 and §6.6.
 //
-// The page exists to put evidence in one place, and it deliberately stops
-// there. There is no automatic acceptance, no automatic rollback, and no
-// ratchet: this system produces single digits of tasks a month across projects
-// of wildly different difficulty, and a ratchet needs samples. What it can do
-// honestly is show what each version's tasks cost, what each change predicted,
-// and what happened — and then get out of the way.
+// The protocol ships with Autome: it is compiled into the core from the
+// autome-v2 source, and changing it means editing that source and redeploying.
+// There is no protocol repository, no pinning and no rollback on this machine.
+// What the page can still do honestly is show which version is built in, what
+// each version's tasks cost, and what each change predicted — and then get out
+// of the way.
 //
-// Three rules it holds to, all of them about not overclaiming:
+// Two rules it holds to, both about not overclaiming:
 //
 //  - Fewer than three tasks says "样本不足" instead of drawing a line between
 //    two points.
 //  - Comparisons are within one project. Cross-project rows are listed and
 //    never differenced.
-//  - Rolling back is a *forward* commit. The button says so, because a user
-//    who thinks they moved a tag will be surprised by the version number.
 
-import { h, icon, text, tag, cardHead, sectionHead, empty, repoList } from '../lib/dom.js';
-import { read, readOr, attempt, registerWrite } from '../lib/api.js';
+import { h, text, tag, cardHead, sectionHead, empty, repoList } from '../lib/dom.js';
+import { read, readOr } from '../lib/api.js';
 import * as labels from '../lib/labels.js';
 
 export const id = 'protocol';
@@ -26,8 +24,6 @@ export const nav = 'settings';
 export async function load(ctx) {
   const projectId = ctx.params.projectId || null;
   const protocol = await read('protocol');
-  const gate = await readOr({ initialised: false }, 'protocolEval');
-  const triggers = await readOr({ triggers: [], suggest: false }, 'protocolTriggers');
   const versions = projectId
     ? await readOr({ rows: [] }, 'protocolVersions', projectId)
     : { rows: [], metric_names: [], changelog_by_tag: {} };
@@ -37,7 +33,7 @@ export async function load(ctx) {
     const entry = (list.projects || []).find((p) => p.project && p.project.id === projectId);
     projectName = entry ? entry.project.display_name : projectId;
   }
-  return { protocol, gate, triggers, versions, projectId, projectName };
+  return { protocol, versions, projectId, projectName };
 }
 
 export function render(host, data, ctx) {
@@ -67,23 +63,12 @@ export function render(host, data, ctx) {
     h('div.pagehead.pagehead--tight', [
       h('h1.ribbon.ribbon--blue', [h('span.ribbon__front', { text: '协议版本' })]),
       h('span.pagehead__sub', {
-        text: p.initialised
-          ? `${p.path} · 当前 ${labels.protocolRef((p.current || {}).wire)}`
-          : '还没有协议仓库——添加第一个项目时会建好',
+        text: `随 Autome 内置 · 当前 ${labels.protocolRef((p.current || {}).wire)}`,
       }),
-      h('div.pagehead__actions', [improveButton(data, ctx)]),
     ])
   );
 
-  if (!p.initialised) {
-    screen.appendChild(empty('协议仓库会在你添加第一个项目时建好，内容来自 Autome 自带的种子。'));
-    host.appendChild(screen);
-    return;
-  }
-
-  screen.appendChild(
-    h('div.cardgrid.cardgrid--3', [currentCard(p), gateCard(data.gate), triggersCard(data, ctx)])
-  );
+  screen.appendChild(h('div.cardgrid.cardgrid--2', [currentCard(p), sourceCard()]));
 
   screen.appendChild(
     sectionHead(
@@ -95,34 +80,10 @@ export function render(host, data, ctx) {
   );
   screen.appendChild(versionTable(data));
 
-  screen.appendChild(sectionHead('改动与它们的预测', '每条改动预测了一个指标，结果由 Autome 回填'));
+  screen.appendChild(sectionHead('改动与它们的预测', '每条改动预测了一个指标'));
   screen.appendChild(changelog(data));
 
   host.appendChild(screen);
-}
-
-function improveButton(data, ctx) {
-  const suggest = (data.triggers || {}).suggest;
-  const button = registerWrite(
-    h(
-      `button.btn${suggest ? '.btn--primary' : ''}`,
-      {
-        type: 'button',
-        onClick: () =>
-          attempt({
-            label: '改进 Loop',
-            success: '协议仓库上开了一个新任务',
-            run: (write) => write.improveProtocol(),
-            onDone: () => ctx.refresh(),
-          }),
-      },
-      [icon('plus'), text('改进 Loop')]
-    )
-  );
-  if (!suggest) {
-    button.title = '现在也可以开，只是还没有攒够证据';
-  }
-  return button;
 }
 
 function currentCard(p) {
@@ -131,76 +92,21 @@ function currentCard(p) {
     ['当前版本', current.tag || '—'],
     ['内容哈希', (current.hash || '').slice(0, 16) || '—'],
     ['正文字节', `${p.bytes ?? '—'} / ${p.byte_budget ?? '—'}`],
-    ['已发布', `${(p.tags || []).length} 版`],
   ];
-  const card = h('div.card', [cardHead('当前'), repoList(rows)]);
-  if (p.working_tree_differs) {
-    // Not an error: editing the repository directly is allowed. But "I changed
-    // the protocol and nothing happened" needs an explanation, and this is it.
-    card.appendChild(
-      h('div.quiet', {
-        text: '工作区和最新标签不一致。已经在跑的任务不受影响——它们各自持有一份副本——新任务用的也还是最新标签那一版，直到你发布。',
-      })
-    );
-  }
-  if ((p.contract_breaches || []).length) {
-    card.appendChild(
-      h('div.alertbar', [
-        text(`契约区被改动了 ${p.contract_breaches.length} 处，这一版不能用`),
-      ])
-    );
-    for (const b of p.contract_breaches) card.appendChild(h('div.quiet', { text: b }));
-  }
-  return card;
+  return h('div.card', [cardHead('当前', tag('内置', 'soft-green', 'check')), repoList(rows)]);
 }
 
-function gateCard(gate) {
-  if (!gate || !gate.initialised) {
-    return h('div.card', [cardHead('eval 门'), empty('还没有协议仓库')]);
-  }
-  const head = cardHead(
-    'eval 门',
-    gate.ok ? tag('通过', 'soft-green') : tag(`${gate.failures.length} 项不通过`, 'soft-red')
-  );
-  const card = h('div.card', [head]);
-  card.appendChild(
+/// Where the rules come from, and the one way to change them.
+function sourceCard() {
+  return h('div.card', [
+    cardHead('怎么改'),
     h('div.quiet', {
-      text: '静态层与示例层，对着协议仓库的工作区跑。行为层要真跑 CLI，只在元任务的审计轮跑。',
-    })
-  );
-  for (const f of gate.failures || []) {
-    card.appendChild(h('div.quiet', { text: `✗ [${f.layer}] ${f.detail}` }));
-  }
-  for (const w of gate.warnings || []) {
-    card.appendChild(h('div.quiet', { text: `! [${w.layer}] ${w.detail}` }));
-  }
-  if (gate.ok && !(gate.warnings || []).length) {
-    card.appendChild(h('div.quiet', { text: `${(gate.passed || []).length} 项检查全部通过` }));
-  }
-  return card;
-}
-
-function triggersCard(data, ctx) {
-  const t = data.triggers || {};
-  const card = h('div.card', [
-    cardHead('要不要改协议', t.suggest ? tag('有证据了', 'soft-yellow') : null),
+      text: '协议随 Autome 一起发布。要改它，在 autome-v2 源码里改 crates/automed/src/protocol/seed/，跑过 eval 后重新部署。',
+    }),
+    h('div.quiet.mt-8', {
+      text: '任务创建时固定一份副本，之后换了新版本也影响不到已经在跑的任务。',
+    }),
   ]);
-  if (!(t.triggers || []).length) {
-    card.appendChild(
-      h('div.quiet', {
-        text: '还没有攒够证据。要么是完成的任务还不够多，要么是还没有同一条教训在两个任务里重复出现。',
-      })
-    );
-  } else {
-    for (const reason of t.triggers) card.appendChild(h('div.quiet', { text: `· ${reason}` }));
-    card.appendChild(
-      h('div.quiet', {
-        text: '这些只是提示。一次协议迭代要花掉一整个 Loop 的会话，开不开由你。',
-      })
-    );
-  }
-  const _ = ctx;
-  return card;
 }
 
 function versionTable(data) {
@@ -247,32 +153,10 @@ function changelog(data) {
 
   const wrap = h('div');
   for (const version of versions) {
-    wrap.appendChild(sectionHead(version.tag, `${version.entries.length} 条改动`, rollbackRow(version, data)));
+    wrap.appendChild(sectionHead(version.tag, `${version.entries.length} 条改动`));
     for (const entry of version.entries) wrap.appendChild(entryCard(entry));
   }
   return wrap;
-}
-
-function rollbackRow(version, data) {
-  const current = ((data.protocol || {}).current || {}).tag;
-  if (version.tag === current || version.tag === '未发布') return null;
-  return [
-    registerWrite(
-      h('button.btn.btn--sm', {
-        type: 'button',
-        // Deliberately explicit about what this does. A user expecting the tag
-        // to move will be surprised by the new version number, and surprise
-        // about version numbers is how a metrics table stops being trusted.
-        title: '生成一个内容与该版本相同的新版本，不移动标签',
-        onClick: () =>
-          attempt({
-            label: `回到 ${version.tag} 的内容`,
-            success: '已生成一个内容相同的新版本',
-            run: (write) => write.rollbackProtocol(version.tag),
-          }),
-      }, [text('回到这一版的内容')])
-    ),
-  ];
 }
 
 function entryCard(entry) {

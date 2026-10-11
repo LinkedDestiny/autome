@@ -52,8 +52,6 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   // Handled by Main, never forwarded: it is what the offline banner offers
   // after Main has stopped restarting a core that will not start.
   'core.restart',
-  'protocol.rollback',
-  'protocol.improve',
   'rules.proposals',
   'rules.decide',
   'rules.retire',

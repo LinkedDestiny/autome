@@ -15,8 +15,6 @@
 
 use std::path::{Path, PathBuf};
 
-use autome_domain::protocol::ProtocolFiles;
-
 /// Bumped when `run_session.sh` or `session-protocol.md` change in a way that
 /// an existing project must pick up. Files carrying an older marker are
 /// rewritten; files with no marker at all are left alone, because the user has
@@ -30,8 +28,8 @@ use autome_domain::protocol::ProtocolFiles;
 /// stop being milestone acceptance, and the audit may again conclude
 /// "验证缺口".
 ///
-/// 6: the protocol left the binary. The rule text now lives in
-/// `~/.autome/protocol/` and arrives here as an argument, with
+/// 6: the protocol left the scaffold. The rule text lives in
+/// `crate::protocol` and is frozen into each task, with
 /// `<!-- kernel-contract: … -->` markers around the regions the core parses.
 ///
 /// 7: the deterministic guards. Evidence filenames gained a role suffix —
@@ -105,14 +103,10 @@ impl InitReport {
 
 /// Writes the scaffold into `repo`. Idempotent.
 ///
-/// `protocol` is the version this project resolved to — the caller gets it
-/// from `~/.autome/protocol/`, not from a constant here. The two rule files
-/// are mirrored into `.autome/skill/` so that a human reading the repository,
-/// and the onboarding session which runs outside any task worktree, can see
-/// the rules in force. A *task's* authoritative copy is the one frozen into
-/// its own `docs/<slug>/protocol/` at creation time.
-pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
-    init_kind(repo, protocol, false)
+/// The protocol is not part of it: a task's copy is frozen into its own
+/// `docs/<slug>/protocol/` at creation time (see below).
+pub fn init(repo: &Path) -> Result<InitReport> {
+    init_kind(repo, false)
 }
 
 /// The scaffold, told whether the directory is a workspace.
@@ -123,8 +117,7 @@ pub fn init(repo: &Path, protocol: &ProtocolFiles) -> Result<InitReport> {
 /// tracks ignores nothing. Everything else — the wrapper script, the rules
 /// directory, the session output tree — is filesystem state Autome keeps
 /// beside the project either way.
-pub fn init_kind(repo: &Path, protocol: &ProtocolFiles, workspace: bool) -> Result<InitReport> {
-    let _ = protocol;
+pub fn init_kind(repo: &Path, workspace: bool) -> Result<InitReport> {
     let mut report = InitReport::default();
 
     for dir in [
@@ -152,7 +145,7 @@ pub fn init_kind(repo: &Path, protocol: &ProtocolFiles, workspace: bool) -> Resu
     // frozen into its own `docs/<slug>/protocol/` at creation time, which is
     // what makes its rules unchangeable mid-run. A third copy in the project
     // scaffold would be a second answer to "what are the rules", and the two
-    // would drift the first time someone edited `~/.autome/protocol/`.
+    // would drift the first time the protocol changed.
     remove_stale(repo, ".autome/skill/session-protocol.md", &mut report);
     remove_stale(repo, ".autome/skill/loop-protocol.md", &mut report);
 
@@ -574,11 +567,8 @@ exit "$code"
 }
 
 // The Loop protocol and the session protocol used to be two constants right
-// here. They now live in `~/.autome/protocol/`, seeded from
-// `crate::protocol::seed()`, and arrive as an argument to `init`. See that
-// module for why: a rule set nobody can change is a rule set that cannot
-// learn, and the retro round had been writing improvement suggestions into a
-// dead end for months.
+// here. They now live in `crate::protocol` with the prompt templates and eval
+// cases, versioned by their own changelog.
 
 const RULES_README_MD: &str = r#"# 项目规则
 
@@ -606,13 +596,6 @@ pub fn wrapper_script(repo: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
-
-    /// Tests call `init` through this so the protocol argument does not have
-    /// to be spelled out thirty times. Production always passes the version
-    /// the *project* resolved to, which may not be the seed.
-    fn init(repo: &Path) -> Result<InitReport> {
-        super::init(repo, crate::protocol::seed())
-    }
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

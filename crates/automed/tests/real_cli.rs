@@ -567,7 +567,7 @@ fn the_terminal_hop_starts_the_wrapper() {
     }
     let dir = std::env::temp_dir().join(format!("automed-term-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    automed::init::init(&dir, automed::protocol::seed()).unwrap();
+    automed::init::init(&dir).unwrap();
 
     let session_dir = dir.join(".autome/output/sessions/T-term");
     std::fs::create_dir_all(&session_dir).unwrap();

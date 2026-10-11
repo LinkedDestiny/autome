@@ -578,13 +578,9 @@ const TASK_UNREADABLE_DOC_PANEL = {
 };
 
 /* The protocol page. Deliberately busy: one version with enough tasks to be a
- * measurement and one without, a prediction that held and one that did not,
- * and a gate with a warning on it. The empty case is the one a renderer gets
- * right by accident. */
+ * measurement and one without, and a prediction that held and one that did
+ * not. The empty case is the one a renderer gets right by accident. */
 const PROTOCOL = {
-  initialised: true,
-  path: '/Users/x/.autome/protocol',
-  tags: ['protocol/v1', 'protocol/v2'],
   current: {
     tag: 'protocol/v2',
     hash: '3f9a12cd7b40e1a2',
@@ -592,8 +588,6 @@ const PROTOCOL = {
   },
   bytes: 20602,
   byte_budget: 24576,
-  contract_breaches: [],
-  working_tree_differs: true,
   changelog: {
     versions: [
       {
@@ -644,29 +638,8 @@ const PROTOCOL = {
   },
 };
 
-const PROTOCOL_GATE = {
-  initialised: true,
-  ok: true,
-  passed: ['内核契约区 5 处，标记成对、内容未变', '协议正文 20602 / 24576 字节'],
-  failures: [],
-  warnings: [
-    {
-      layer: '静态',
-      detail: '26 行带「必须 / 不得 / 不要」的条文，没有任何 CHANGELOG 条目说明它为什么在。',
-    },
-  ],
-};
-
 const PROTOCOL_SCREEN = {
   protocol: PROTOCOL,
-  gate: PROTOCOL_GATE,
-  triggers: {
-    suggest: true,
-    triggers: [
-      '自上一版协议以来完成了 4 个任务',
-      '「审计要先跑负向对照」在 2 个任务里各出现了一次：voice-schedule、island-workbench',
-    ],
-  },
   versions: {
     rows: [
       {
@@ -721,7 +694,6 @@ const TASK_MEASURED_PANEL = {
   ...TASK_AT_MERGE,
   task: TASK_MEASURED,
   so_far: { sessions_measured: 12, total_tokens: 1843000, total_turns: 214, total_cost_usd: null },
-  needs_human_approval: ['prompts/review.md'],
 };
 
 /* The shape the hero actually meets in production, which the short fixture

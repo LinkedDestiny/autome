@@ -48,17 +48,15 @@ fn main() {
         return;
     }
 
-    // `automed protocol eval [<dir>]` is the gate a protocol version has to
-    // pass. Also a filter rather than the daemon: a meta task's audit round
-    // runs it as an ordinary command and reads the exit code, and the desktop
-    // app calls the same function over IPC.
+    // `automed protocol eval [<dir>]` is the gate a protocol change has to
+    // pass before it ships: run it against `crates/automed/src/protocol/seed`
+    // after editing the protocol. A filter rather than the daemon.
     if std::env::args().nth(1).as_deref() == Some("protocol")
         && std::env::args().nth(2).as_deref() == Some("eval")
     {
         let args: Vec<String> = std::env::args().skip(3).collect();
-        // Defaults to the working directory, which is what a meta task's
-        // audit round has checked out — the version being proposed, not the
-        // one installed.
+        // Defaults to the working directory: the version being proposed, not
+        // the one built into this binary.
         let dir = std::path::PathBuf::from(
             args.iter()
                 .find(|a| !a.starts_with("--"))

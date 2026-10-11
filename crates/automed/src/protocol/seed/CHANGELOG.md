@@ -180,3 +180,27 @@ C-06 已经写过「要真人才能看到的结果不作为里程碑验收条件
 C-13 把出口写进审计轮的结论一节并点明「没有第四种结论」，C-14 把 C-06 的适用范围
 从设计轮扩到任何轮次。配套的内核守卫是 `guards::audit_moved_the_table` 与
 `guards::impl_had_a_target`：条文靠自觉的那一半，这次由代码兜住。
+
+## protocol/v3
+
+一条 `clarify`：协议不再有自己的仓库，README 跟着改写。规则正文、prompt 模板、
+brief-map 与 eval 用例和 v2 逐字节相同，这一版的哈希变化只来自 `README.md`。
+
+```yaml
+- id: C-17
+  kind: clarify
+  clause: README.md
+  evidence: [T-7 内置「Loop 协议」项目的第一个会话因缺少 run_session.sh 起不来, 协议仓库 main 停在 v1 而 v2 是手打在旁支上的标签]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+v2 的 README 写的是 `~/.autome/protocol/` 那个仓库：内置项目、`protocol/vN` 标签、
+「回到此版本」、设置页的「改进 Loop」。那套机制只做了一半——新种子只会落在
+`protocol/upstream-*` 标签上，合并后的元任务也没有东西给它打新版本——于是整个
+仓库被去掉了（ADR-0003）。协议现在只以 autome-v2 的
+`crates/automed/src/protocol/seed/` 为准，随 Autome 发布；改协议就是改代码。
+
+README 每个任务都会冻结一份，会话不读它来决定行为，所以归为 clarify。预测 `flat`：
+这一版不该让任何指标变化，变了就说明 README 之外还有东西被改了。

@@ -392,18 +392,13 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
 
         // ---- protocol ------------------------------------------------
         "protocol.get" => crate::dispatch_protocol::get(ctx),
-        "protocol.eval" => crate::dispatch_protocol::eval(ctx),
-        "protocol.triggers" => crate::dispatch_protocol::triggers(ctx),
-        "protocol.improve" => crate::dispatch_protocol::improve(ctx),
+        "protocol.versions" => crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?),
 
         // ---- curation --------------------------------------------------
         "rules.proposals" => crate::dispatch_curation::proposals(ctx, str_param(p, "project_id")?),
         "rules.decide" => crate::dispatch_curation::decide(ctx, p),
         "rules.retire" => crate::dispatch_curation::retire(ctx, p),
         "rules.restore" => crate::dispatch_curation::restore(ctx, p),
-        "protocol.versions" => crate::dispatch_protocol::versions(ctx, str_param(p, "project_id")?),
-        "protocol.pin" => crate::dispatch_protocol::pin(ctx, p),
-        "protocol.rollback" => crate::dispatch_protocol::rollback(ctx, p),
 
         // ---- environment -------------------------------------------------
         "env.get" => env_get(ctx),
@@ -628,12 +623,7 @@ fn project_add(
         (disposition, branch)
     };
 
-    // A brand-new project has no pin yet, so this resolves to the newest tag.
-    // It still goes through the resolver so that adopting a directory whose
-    // `.autome/config.toml` already pins a version honours that pin.
-    let (protocol_ref, protocol) =
-        crate::protocol::resolve_for_project(&ctx.autome_home, &canonical)?;
-    let report = init::init_kind(&canonical, &protocol, workspace)?;
+    let report = init::init_kind(&canonical, workspace)?;
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let project = Project {
@@ -668,7 +658,7 @@ fn project_add(
     Ok((
         json!({
             "project": project,
-            "protocol_ref": protocol_ref.to_wire(),
+            "protocol_ref": crate::protocol::current().0.to_wire(),
             "init": report.steps.iter().map(|s| json!({
                 "path": s.path,
                 "action": format!("{:?}", s.action).to_lowercase(),
@@ -1314,30 +1304,13 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         })
         .unwrap_or_default();
 
-    create(ctx, project_id, &request, None, attachments, doc_refs)
-}
-
-/// Creates a task with a fixed request and title, for the one caller that has
-/// both: `protocol.improve`.
-///
-/// A meta task's request is not something a user types. The constraints in it
-/// — two tasks' worth of evidence, a metric the core records, an eval case for
-/// anything behavioural — are what make a proposal checkable, and a user
-/// typing their own request would be typing around them.
-pub fn task_create_in(
-    ctx: &mut Ctx,
-    project_id: &str,
-    request: &str,
-    title: &str,
-) -> DispatchResult {
-    create(ctx, project_id, request, Some(title), vec![], vec![])
+    create(ctx, project_id, &request, attachments, doc_refs)
 }
 
 fn create(
     ctx: &mut Ctx,
     project_id: &str,
     request: &str,
-    title: Option<&str>,
     attachments: Vec<String>,
     doc_refs: Vec<String>,
 ) -> DispatchResult {
@@ -1347,7 +1320,7 @@ fn create(
         &config_io::load_project(std::path::Path::new(&project.path))?,
     )?;
 
-    let base = autome_domain::project::slugify(title.unwrap_or(request));
+    let base = autome_domain::project::slugify(request);
     let slug = {
         let taken: Vec<String> = ctx
             .store
@@ -1365,9 +1338,7 @@ fn create(
         slug,
         // The intake session writes the real title; until then the request
         // itself is the most informative thing to show.
-        title: title
-            .map(str::to_string)
-            .unwrap_or_else(|| first_line(request)),
+        title: first_line(request),
         request: request.to_string(),
         attachments,
         doc_refs,
@@ -1486,10 +1457,6 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             // in rather than a checkout itself.
             "worktree": layout.cwd.to_string_lossy(),
             "next_role": scheduler::next_role(&task.state),
-            // Empty for every ordinary task. For a meta task it names the
-            // changes the review and audit rounds were not competent to judge,
-            // and both stopping points show it.
-            "needs_human_approval": scheduler::needs_human_approval(ctx, task_id)?,
             // Running totals, for a task still in flight. `task.metrics` is
             // the final aggregate and only exists once the task has ended.
             "so_far": running_totals(&sessions),
@@ -2296,7 +2263,7 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 19] = [
+pub const READ_METHODS: [&str; 17] = [
     "project.list",
     "project.probe",
     "project.get",
@@ -2314,8 +2281,6 @@ pub const READ_METHODS: [&str; 19] = [
     "env.detect",
     "protocol.get",
     "protocol.versions",
-    "protocol.eval",
-    "protocol.triggers",
 ];
 
 #[cfg(test)]

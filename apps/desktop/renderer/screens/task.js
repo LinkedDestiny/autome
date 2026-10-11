@@ -725,37 +725,15 @@ function stopCard(data, ctx, node) {
     failedFace(card, data, ctx);
   } else if (node === 'await_design_approval') {
     card.appendChild(cardHead('批准设计', tag('等待你', 'solid-yellow')));
-    humanApprovalNotice(card, data);
     approveFace(card, data, ctx);
   } else if (node === 'await_merge') {
     card.appendChild(cardHead(`合并到 ${(data.project || {}).default_branch || 'main'}`, tag('等待你', 'solid-green')));
-    humanApprovalNotice(card, data);
     mergeFace(card, data, ctx);
   } else {
     card.appendChild(cardHead('停顿面板', tag('当前无需操作', 'outlined')));
     idleFace(card, state);
   }
   return card;
-}
-
-/// Changes the review and audit rounds were not competent to judge.
-///
-/// Only ever non-empty for a meta task — one that edits the protocol itself —
-/// and then only for edits to those two rounds' own prompts. There is no
-/// clever fix for the self-reference: an evaluator judging the rules it is
-/// evaluated under is a fixed point, not a check. So it lands here, at both
-/// gates, where a person is already looking.
-function humanApprovalNotice(card, data) {
-  const files = (data && data.needs_human_approval) || [];
-  if (!files.length) return;
-  card.appendChild(
-    h('div.alertbar', [text(`需人工特批：${files.join('、')}`)])
-  );
-  card.appendChild(
-    h('div.quiet', {
-      text: '这次改动动了评审轮或审计轮自己的 prompt。它们判不了这个——一个评测者去审自己被评测所依据的规则，那是不动点不是检查。这一条只能你看。',
-    })
-  );
 }
 
 function idleFace(card, state) {

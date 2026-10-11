@@ -1,5 +1,7 @@
 # Loop 机制的剩余优化空间与自我改进体系（v2，经审计精细化）
 
+> **2026-10-11 部分作废**：协议仓库 `~/.autome/protocol/`、版本固定、回滚、upstream 标签、元任务这几部分已被 `docs/adr/0003-protocol-is-built-in.md` 取代——协议只以 autome-v2 源码里的 `crates/automed/src/protocol/seed/` 为准，随 App 发布。
+
 日期：2026-09-17。承接 `2026-09-16-loop-v1-protocol-audit.md`（S1–S7 已落地，脚手架 v5，尚无真实运行验证）。
 
 v2 相对 v1 的修订来自两处：对代码现状的逐条核对（§2 的"代码核对"列），以及一次对抗式审计（30 条，主要修正见 §9）。
