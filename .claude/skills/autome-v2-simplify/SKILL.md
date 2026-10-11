@@ -34,7 +34,7 @@ members 恰好两个：`crates/autome-domain`、`crates/automed`。
 | `docs/development` | 从 1.x 授权仓库镜像过来的需求与技术设计，见 §0.5。 |
 | `docs/design` | 交互设计 HTML 稿，同为镜像。 |
 | `docs/plans` | 计划、审计与提案，审计落盘处，见 §0.9。 |
-| `legacy/loop-plugin` | 1.x Bash 插件，36 个跟踪文件，历史参照，不参与构建。 |
+| `plugins/` | `loop` 插件（1.x 的 Loop 工作方式），Claude Code / Codex / Cursor 三套 manifest 共用 `loop/skills/`，不参与 Rust/Electron 构建。 |
 | `scripts` | `gen-eval-seed.py`、`package.sh`。 |
 
 架构总览读 `README.md` 的「The shape of it」与「Layout」两节。
@@ -149,7 +149,7 @@ sh scripts/package.sh
 
 - `crates/automed/tests/**`（`end_to_end.rs`、`real_cli.rs`、`prompt_rendering.rs`、`fixtures/`、`golden/`）
 - `apps/desktop/test/**`
-- `docs/**`、`legacy/**`
+- `docs/**`、`plugins/**`
 - `graphify-out/**`（未跟踪的分析产物）
 
 **模糊地带**，单独判断：
@@ -267,7 +267,7 @@ authoring repository"*。权威在 1.x 仓库的 `autome/docs/plans/`。
   README 明写取舍——*"A stand-in cannot catch a flag that does not exist, or one that means
   something other than what you assumed — and that is the class of bug that bit this project hardest."*
   不要合并成一套。
-- **`legacy/loop-plugin`**：1.x 的历史参照，不参与构建。删不删是产品决策，不是熵回收。
+- **`plugins/loop`**：仍在用的插件（用户的 Claude Code 从这里加载），不参与本仓库构建。删不删、改不改是产品决策，不是熵回收。
   （它在本仓库内，不违反 ADR-0001 的「不得引用 1.x 路径」——那条禁的是构建/测试/发布步骤指向外部仓库。）
 - **`curation.rs` 的 `removal_experiments` / `Rule` / `RemovalExperiment` / `RETIREMENT_IDLE_TASKS`**：
   生产消费者确实是 0，2026-09-19 那轮有两个子代理各自独立把它报成死代码——**都是错的**。
@@ -321,7 +321,7 @@ authoring repository"*。权威在 1.x 仓库的 `autome/docs/plans/`。
 - **electron-builder 打包清单**（`apps/desktop/package.json` 的 `build.files`、`extraResources`）：
   按路径 glob 生效，新增目录不在清单里就不会进 `.app`——只有 `sh scripts/package.sh` 能发现。
 - **根配置**：`rust-toolchain.toml`。
-- **`legacy/loop-plugin/.claude-plugin/plugin.json`**：插件入口（不参与本仓库构建）。
+- **`plugins/loop/.{claude,codex,cursor}-plugin/plugin.json`**：三个宿主的插件入口（不参与本仓库构建）。
 
 ### 0.9 审计记录落点
 

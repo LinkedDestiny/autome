@@ -1,0 +1,20 @@
+{
+  "name": "autome",
+  "interface": {
+    "displayName": "Autome"
+  },
+  "plugins": [
+    {
+      "name": "loop",
+      "source": {
+        "source": "local",
+        "path": "./loop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

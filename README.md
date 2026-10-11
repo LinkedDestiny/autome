@@ -143,6 +143,8 @@ sh scripts/ci-local.sh && sh scripts/package.sh
 ## Layout
 
 - `protocol/` — the Loop protocol: rules, prompt templates, eval cases.
+- `plugins/` — the `loop` plugin, the 1.x way of running the same kind of
+  loop without the desktop app, packaged for Claude Code, Codex and Cursor.
 - `crates/autome-domain` — pure types and transitions. No I/O, no async, no
   SQLite. The six roles, the configuration overlay and its validation, the
   design-document parser, the task state machine.
