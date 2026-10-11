@@ -156,6 +156,10 @@ pub fn section(text: &str, heading: &str) -> Option<String> {
 pub struct Inputs<'a> {
     pub role: Role,
     pub slug: &'a str,
+    /// The task's document directory as the session sees it — the same value
+    /// the prompt's `{doc_dir}` gets. `docs/<slug>` for a single repository
+    /// on the default root, but not for a workspace or a configured root.
+    pub doc_dir: &'a str,
     pub round: u32,
     pub status: Option<&'a StatusBlock>,
     /// The audit document, for an implementation round.
@@ -196,11 +200,11 @@ pub fn focus(status: &StatusBlock) -> Option<&Milestone> {
 pub fn build(input: &Inputs<'_>) -> String {
     let mut s = format!(
         "# {} 简报 · 第 {} 轮\n\n\
-         这份简报是索引，不是设计文档的替代品。设计文档 `docs/{}/{}.md` 仍然是\
+         这份简报是索引，不是设计文档的替代品。设计文档 `{}/{}.md` 仍然是\
          权威，本轮需要什么就去读什么——但先读这里，多数轮次不必整份拉进来。\n",
         input.role.round_name(),
         input.round,
-        input.slug,
+        input.doc_dir,
         input.slug
     );
 
@@ -235,8 +239,8 @@ pub fn build(input: &Inputs<'_>) -> String {
     if !sections.loop_protocol.is_empty() || !sections.session_protocol.is_empty() {
         s.push_str("\n## 本轮相关的协议小节\n\n");
         s.push_str(&format!(
-            "全文在 `docs/{}/protocol/`。下面是与本轮直接相关的几节。\n",
-            input.slug
+            "全文在 `{}/protocol/`。下面是与本轮直接相关的几节。\n",
+            input.doc_dir
         ));
         for (text, headings) in [
             (input.loop_protocol, &sections.loop_protocol),
@@ -282,8 +286,8 @@ fn counterpart(input: &Inputs<'_>) -> String {
             match milestone_paragraphs(doc, &id) {
                 Some(body) => format!("审计文件里关于 {id} 的部分：\n\n{body}\n"),
                 None => format!(
-                    "审计文件里没有提到 {id}。全文在 `docs/{}/{}-audit.md`。\n",
-                    input.slug, input.slug
+                    "审计文件里没有提到 {id}。全文在 `{}/{}-audit.md`。\n",
+                    input.doc_dir, input.slug
                 ),
             }
         }
@@ -293,10 +297,10 @@ fn counterpart(input: &Inputs<'_>) -> String {
             };
             match latest_evidence(input.evidence, &id, "impl") {
                 Some(file) => format!(
-                    "本轮要复验的是 {id}，实现轮的证据在 `docs/{}/evidence/{file}`。\n\n\
+                    "本轮要复验的是 {id}，实现轮的证据在 `{}/evidence/{file}`。\n\n\
                      **先不要读它。** 独立复验的意思是自己跑验收命令、自己构造\
                      判别检查；读完实现轮的推理再去验证，验的就是那套推理而不是产品。\n",
-                    input.slug
+                    input.doc_dir
                 ),
                 None => format!("{id} 还没有实现轮的证据文件。\n"),
             }
@@ -394,6 +398,7 @@ session-protocol = []
         Inputs {
             role,
             slug: "checkout",
+            doc_dir: "docs/checkout",
             round: 3,
             status: Some(status),
             audit_doc: None,
@@ -558,6 +563,31 @@ session-protocol = []
             "the newest one: {brief}"
         );
         assert!(brief.contains("先不要读它"), "{brief}");
+    }
+
+    #[test]
+    fn every_path_in_the_brief_is_the_one_the_session_can_reach() {
+        // A workspace session starts beside the member checkouts, so its
+        // documents are `<docs-member>/docs/<slug>`. The brief once said
+        // `docs/<slug>` regardless, contradicting the prompt beside it.
+        let map = parse_map(MAP).unwrap();
+        let s = status(
+            Some("M-02"),
+            vec![milestone("M-02", MilestoneState::Pending, 0)],
+        );
+        let evidence = vec!["M-02-r5-impl.md".to_string()];
+        let mut input = inputs(Role::Audit, &s, &map, &evidence);
+        input.doc_dir = "docs-repo/docs/checkout";
+        let brief = build(&input);
+        assert!(
+            brief.contains("`docs-repo/docs/checkout/checkout.md`"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("`docs-repo/docs/checkout/evidence/M-02-r5-impl.md`"),
+            "{brief}"
+        );
+        assert!(!brief.contains("`docs/checkout"), "{brief}");
     }
 
     #[test]

@@ -1188,6 +1188,9 @@ fn start_session(
             ctx,
             task,
             &worktree,
+            // Every round with a brief runs in the task's own directory; only
+            // a workspace's intake runs elsewhere, and intake has no brief.
+            &layout.doc_dir_from_cwd(&task.doc_dir()),
             &protocol,
             role,
             round,
@@ -1361,6 +1364,7 @@ fn write_brief(
     ctx: &mut Ctx,
     task: &TaskRecord,
     worktree: &Path,
+    session_doc_dir: &str,
     protocol: &ProtocolFiles,
     role: Role,
     round: u32,
@@ -1368,6 +1372,8 @@ fn write_brief(
     decisions: &[crate::store::DecisionRecord],
 ) -> Result<String> {
     let rel = crate::brief::path(&task.doc_dir(), role, round);
+    // What the prompt names: the same file, from where the session stands.
+    let shown = crate::brief::path(session_doc_dir, role, round);
     let map = match protocol.get("brief-map.toml").map(crate::brief::parse_map) {
         Some(Ok(m)) => m,
         Some(Err(e)) => {
@@ -1392,6 +1398,7 @@ fn write_brief(
     let text = crate::brief::build(&crate::brief::Inputs {
         role,
         slug: &task.slug,
+        doc_dir: session_doc_dir,
         round,
         status: status.as_ref(),
         audit_doc: audit_doc.as_deref(),
@@ -1420,14 +1427,14 @@ fn write_brief(
     }
     if std::fs::write(&full, text).is_err() {
         tracing::warn!(task = %task.id, path = %rel, "could not write the brief");
-        return Ok(rel);
+        return Ok(shown);
     }
     let _ = git::commit_paths(
         worktree,
         &[&rel],
         &format!("chore(autome): {} {} 简报", task.id, role.as_str()),
     );
-    Ok(rel)
+    Ok(shown)
 }
 
 /// Which changes on this branch the review and audit rounds were not
