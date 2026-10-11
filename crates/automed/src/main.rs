@@ -49,7 +49,7 @@ fn main() {
     }
 
     // `automed protocol eval [<dir>]` is the gate a protocol change has to
-    // pass before it ships: run it against `crates/automed/src/protocol/seed`
+    // pass before it ships: run it against the root `protocol/` directory
     // after editing the protocol. A filter rather than the daemon.
     if std::env::args().nth(1).as_deref() == Some("protocol")
         && std::env::args().nth(2).as_deref() == Some("eval")

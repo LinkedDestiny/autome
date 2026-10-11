@@ -27,7 +27,7 @@ one.
 
 ## Decision
 
-The protocol's only home is `crates/automed/src/protocol/seed/`. The version
+The protocol's only home is `protocol/`. The version
 in force is the seed compiled into the running binary; its tag is the newest
 `## protocol/vN` heading in the seed's own `CHANGELOG.md`, and its identity is
 the content hash (`protocol::current()`).
@@ -49,7 +49,7 @@ save). Recovery unregisters a project at `~/.autome/protocol` left by an
 older build and cancels its unfinished tasks; the directory is not touched.
 
 To change the protocol: edit `seed/`, add a `## protocol/vN` section to its
-changelog, run `automed protocol eval crates/automed/src/protocol/seed`, run
+changelog, run `automed protocol eval protocol`, run
 the suite, and ship a build.
 
 ## Consequences

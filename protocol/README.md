@@ -3,7 +3,7 @@
 这里是 Loop 的规则本身：六个角色共同遵守的协议、每个角色的 prompt 模板、每轮简报
 摘哪些小节的映射，以及说明「某一版协议应该让会话做出什么行为」的 eval 用例。
 
-协议只有一个来源：autome-v2 仓库的 `crates/automed/src/protocol/seed/`，编译进
+协议只有一个来源：autome-v2 仓库的 `protocol/`，编译进
 `automed`，随 Autome 发布。本机没有别的副本，也没有可以单独发版、固定或回滚的协议
 仓库（ADR-0003）。
 
@@ -34,7 +34,7 @@
 
 1. 改这个目录下的文件，在 `CHANGELOG.md` 末尾加一节新的 `## protocol/vN`，每条改动
    一个块，写清 `kind`、依据、预测。
-2. `cargo run -p automed -- protocol eval crates/automed/src/protocol/seed`——静态门，
+2. `cargo run -p automed -- protocol eval protocol/`——静态门，
    不通过不能发。`--behaviour` 跑行为用例，要花钱。
 3. 改了 prompt 模板的，跑 `cargo test -p automed --test prompt_rendering`，确认 golden
    的差异就是你想要的，再用 `AUTOME_UPDATE_GOLDEN=1` 接受。

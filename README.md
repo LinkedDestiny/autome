@@ -105,17 +105,25 @@ repository by repository.
 
 ## The protocol
 
-The rules the roles run under — `loop-protocol.md`, `session-protocol.md`, one
-prompt template per role, the map of which protocol sections each round's
-brief carries, and the eval cases — live in
-`crates/automed/src/protocol/seed/` and are compiled into `automed`. There is
-no other copy on your machine (ADR-0003).
+The rules the roles run under live in [`protocol/`](protocol/) at the root of
+this repository and are compiled into `automed`. There is no other copy on your
+machine (ADR-0003).
+
+```
+protocol/
+├── loop-protocol.md        # the rules all six roles share
+├── session-protocol.md     # one session's boundaries and the status block format
+├── prompts/                # one template per role, plus intake and onboarding
+├── brief-map.toml          # which protocol sections each round's brief carries
+├── evals/                  # behaviour cases a protocol change is held to
+└── CHANGELOG.md            # what each version changed, and on what evidence
+```
 
 Each task freezes the whole protocol into `docs/<slug>/protocol/` before its
 first session and records the version it ran under as `protocol_ref`, a tag
 plus a content hash. Sessions read that copy, so installing a newer build
 never changes the rules of a task already running. The version is the newest
-`## protocol/vN` section of the seed's `CHANGELOG.md`; the protocol page shows
+`## protocol/vN` section of `protocol/CHANGELOG.md`; the protocol page shows
 it, its changelog, and what tasks cost under each version.
 
 Some regions of the protocol text are parsed by the core — the status block,
@@ -126,14 +134,15 @@ expected hashes; changing one means changing the parser too.
 To change the protocol:
 
 ```sh
-$EDITOR crates/automed/src/protocol/seed/…   # and add a `## protocol/vN` section to its CHANGELOG.md
-cargo run -p automed -- protocol eval crates/automed/src/protocol/seed
+$EDITOR protocol/…              # and add a `## protocol/vN` section to protocol/CHANGELOG.md
+cargo run -p automed -- protocol eval protocol/
 cargo test -p automed --test prompt_rendering  # golden prompts; AUTOME_UPDATE_GOLDEN=1 to accept
 sh scripts/ci-local.sh && sh scripts/package.sh
 ```
 
 ## Layout
 
+- `protocol/` — the Loop protocol: rules, prompt templates, eval cases.
 - `crates/autome-domain` — pure types and transitions. No I/O, no async, no
   SQLite. The six roles, the configuration overlay and its validation, the
   design-document parser, the task state machine.

@@ -101,7 +101,7 @@ function sourceCard() {
   return h('div.card', [
     cardHead('怎么改'),
     h('div.quiet', {
-      text: '协议随 Autome 一起发布。要改它，在 autome-v2 源码里改 crates/automed/src/protocol/seed/，跑过 eval 后重新部署。',
+      text: '协议随 Autome 一起发布。要改它，在 autome-v2 源码里改 protocol/，跑过 eval 后重新部署。',
     }),
     h('div.quiet.mt-8', {
       text: '任务创建时固定一份副本，之后换了新版本也影响不到已经在跑的任务。',

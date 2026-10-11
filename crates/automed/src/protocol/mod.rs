@@ -1,10 +1,10 @@
 //! The Loop protocol: rules, prompt templates and eval cases, compiled in.
 //!
-//! The rules the six roles run under live in `seed/`, in the autome-v2 source
-//! tree, and nowhere else. They briefly lived in a git repository of their own
+//! The rules the six roles run under live in `protocol/` at the root of the
+//! autome-v2 repository, and nowhere else. They briefly lived in a git repository of their own
 //! at `~/.autome/protocol/` with tags, pinning, rollback and a meta task that
 //! edited them; that was removed on 2026-10-11 (see [`current`]). Changing the
-//! protocol now means editing `seed/`, running `automed protocol eval` against
+//! protocol now means editing `protocol/`, running `automed protocol eval` against
 //! it, and shipping a build.
 //!
 //! Two properties this file exists to hold up:
@@ -34,28 +34,55 @@ const TAG_PREFIX: &str = "protocol/v";
 /// stops being embedded is exactly the kind of thing that only shows up on a
 /// user's machine.
 const SEED: [(&str, &str); 13] = [
-    ("loop-protocol.md", include_str!("seed/loop-protocol.md")),
+    (
+        "loop-protocol.md",
+        include_str!("../../../../protocol/loop-protocol.md"),
+    ),
     (
         "session-protocol.md",
-        include_str!("seed/session-protocol.md"),
+        include_str!("../../../../protocol/session-protocol.md"),
     ),
-    ("brief-map.toml", include_str!("seed/brief-map.toml")),
-    ("CHANGELOG.md", include_str!("seed/CHANGELOG.md")),
-    ("prompts/intake.md", include_str!("seed/prompts/intake.md")),
+    (
+        "brief-map.toml",
+        include_str!("../../../../protocol/brief-map.toml"),
+    ),
+    (
+        "CHANGELOG.md",
+        include_str!("../../../../protocol/CHANGELOG.md"),
+    ),
+    (
+        "prompts/intake.md",
+        include_str!("../../../../protocol/prompts/intake.md"),
+    ),
     (
         "prompts/onboarding.md",
-        include_str!("seed/prompts/onboarding.md"),
+        include_str!("../../../../protocol/prompts/onboarding.md"),
     ),
-    ("prompts/plan.md", include_str!("seed/prompts/plan.md")),
-    ("prompts/review.md", include_str!("seed/prompts/review.md")),
+    (
+        "prompts/plan.md",
+        include_str!("../../../../protocol/prompts/plan.md"),
+    ),
+    (
+        "prompts/review.md",
+        include_str!("../../../../protocol/prompts/review.md"),
+    ),
     (
         "prompts/adjudicate.md",
-        include_str!("seed/prompts/adjudicate.md"),
+        include_str!("../../../../protocol/prompts/adjudicate.md"),
     ),
-    ("prompts/impl.md", include_str!("seed/prompts/impl.md")),
-    ("prompts/audit.md", include_str!("seed/prompts/audit.md")),
-    ("prompts/retro.md", include_str!("seed/prompts/retro.md")),
-    ("README.md", include_str!("seed/README.md")),
+    (
+        "prompts/impl.md",
+        include_str!("../../../../protocol/prompts/impl.md"),
+    ),
+    (
+        "prompts/audit.md",
+        include_str!("../../../../protocol/prompts/audit.md"),
+    ),
+    (
+        "prompts/retro.md",
+        include_str!("../../../../protocol/prompts/retro.md"),
+    ),
+    ("README.md", include_str!("../../../../protocol/README.md")),
 ];
 
 /// The seed as a version, including the generated `contract.toml`.
@@ -163,7 +190,7 @@ fn err(detail: impl Into<String>) -> ProtocolError {
 /// tag, so `main` sat on v1 while v2 was the version in force, and a meta task
 /// branched from `main` would have rewritten v1 and silently dropped v2. The
 /// protocol now has one home, the autome-v2 source tree; changing it means
-/// editing `seed/` and shipping a build.
+/// editing `protocol/` and shipping a build.
 ///
 /// The tag is the newest `## protocol/vN` heading of the seed's own
 /// changelog, so a task's `protocol_ref` still names a version a person can
@@ -211,7 +238,7 @@ fn set_executable_if_script(path: &Path) {
 }
 
 /// Reads a directory of protocol files, for `autome protocol eval` run against
-/// an edited `seed/` or a task's frozen copy.
+/// an edited `protocol/` or a task's frozen copy.
 pub fn read_dir_protocol(dir: &Path) -> Result<ProtocolFiles> {
     if !dir.is_dir() {
         return Err(err(format!("{} 不是一个目录", dir.display())));

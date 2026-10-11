@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes the eval case tree under crates/automed/src/protocol/seed/evals/.
+"""Writes the eval case tree under protocol/evals/.
 
 The cases are authored here rather than as thirty loose files because they
 share a shape: a fixture that is a `docs/<slug>/` snapshot, a scaffold that
@@ -13,7 +13,7 @@ import pathlib
 import textwrap
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-OUT = ROOT / "crates/automed/src/protocol/seed/evals"
+OUT = ROOT / "protocol/evals"
 
 SCAFFOLD = """#!/usr/bin/env bash
 # 从 fixture/ 搭出最小 worktree。只有任务文档，没有项目代码——

@@ -964,7 +964,7 @@ mod tests {
 
     /// The seed's templates. Tests here are about *rendering* — which
     /// placeholder gets what, which round is handed a budget line — not about
-    /// the wording, which lives in `protocol/seed/` and is checked by
+    /// the wording, which lives in the root `protocol/` and is checked by
     /// `protocol::phrases`.
     fn templates() -> autome_domain::protocol::ProtocolFiles {
         crate::protocol::seed().clone()

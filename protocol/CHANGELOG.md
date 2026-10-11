@@ -11,7 +11,7 @@
 
 ## protocol/v1
 
-基线。协议从这一版起只以 autome-v2 的 `crates/automed/src/protocol/seed/` 为准、随
+基线。协议从这一版起只以 autome-v2 的 `protocol/` 为准、随
 Autome 发布（ADR-0003），此前在 `~/.autome/protocol/` 仓库里的版本号和改动记录随那个
 仓库一起清空，从这里重新起算。条文本身没有回退：它们是此前各轮迭代的结果，包括工作区
 项目的文档路径由内核按会话工作目录填写、状态块的 `repos:` 行。
