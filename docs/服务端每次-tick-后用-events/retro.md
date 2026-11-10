@@ -4,3 +4,4 @@
 实现 #1 | M-01 | 保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r1-impl.md | npm registry DNS失败，ws及类型包未安装
 实现 #2 | M-01 | 依赖声明修复，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r2-impl.md | registry DNS 失败且指定版本安装包未缓存
 实现 #3 | M-01 | 门禁修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r3-impl.md | registry ENOTFOUND，锁定包未缓存
+实现 #4 | M-01 | 门禁修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r4-impl.md | registry DNS 失败，锁定依赖安装失败

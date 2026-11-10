@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/20
+implementation-round: 4/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在可访问 npm registry 的环境安装锁文件依赖（当前缺 ws 与 @types/ws），重跑 sh scripts/ci-local.sh；通过后完成 M-01 剩余验收与负向对照
+next-action: 先恢复锁定依赖 ws 8.22.2 与 @types/ws 8.18.2 的安装条件（registry DNS 失败且缓存缺包），安装后重跑 sh scripts/ci-local.sh；通过后完成 M-01 剩余验收与负向对照
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r3-impl.md · 依赖安装仍受网络与缓存阻塞，保持开放 · 实现 #3
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r4-impl.md · 门禁失败复现，锁定依赖安装受阻，保持开放 · 实现 #4
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：
