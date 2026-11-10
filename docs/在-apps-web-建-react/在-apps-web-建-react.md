@@ -1,12 +1,12 @@
 # Web 面板骨架：apps/web 的 React Router 8 框架模式 + 自定义 Node 服务器
 
-status: 实现中
+status: 已完成
 design-round: 2/15
 implementation-round: 5/20
-current-milestone: M-04
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许本地监听的环境复验 M-04 全量 ci-local，取得 38/38 与 exit 0 后标待审
+next-action: 无
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -217,7 +217,7 @@ ExperimentalWarning 是否在入口过滤。
 | M-01 | 已完成 | RR8 工程与自定义服务器：dev 与 build+start 两条路径起服务 | 0 | |
 | M-02 | 已完成 | 进程入口的 Node 版本检查 | 0 | |
 | M-03 | 已完成 | node:sqlite 双运行时验证脚本 | 0 | |
-| M-04 | 开放 | lint、类型检查与 ci-local / ci.yml 接入 | 0 | |
+| M-04 | 已完成 | lint、类型检查与 ci-local / ci.yml 接入 | 0 | |
 
 ## 里程碑说明
 
@@ -256,7 +256,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-04 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-04-r5-impl.md · 环境阻塞，保留开放 · 实现 #5
+最新证据：docs/在-apps-web-建-react/evidence/M-04-r5-audit.md · 通过 · 审计 #4
 
 - 验收命令：`rm -rf apps/web/node_modules && sh scripts/ci-local.sh > .autome/output/m04.txt 2>&1; echo "exit=$?"; tail -25 .autome/output/m04.txt`
 - 预期：exit=0；汇总里 Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract（新 worktree 里还有 Desktop install）与 Web install、Web lint、Web typecheck、Web test、Web build 全部 `ok`；Web test 步骤报 5 个文件、38 个用例通过（基线 32，新增 ci-config 6 个：ci.yml 有 `web` job 且 `timeout-minutes`、`macos-14`；`setup-node` 为 `'22'` 且 Install 为 `npm ci`；lint/typecheck/test/build 四步齐全；ci.yml 每个 job 都有 `timeout-minutes`；ci-local 仅在缺 `node_modules` 时 `run 'Web install'` 且用 `npm ci`；ci-local 四行 `run 'Web …'` 在 package 分支之外）；证据记录 Web 各步耗时。
