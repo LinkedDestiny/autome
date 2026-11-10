@@ -49,6 +49,7 @@ pub mod dispatch;
 pub mod dispatch_curation;
 pub mod dispatch_protocol;
 pub mod driver_lock;
+pub mod entry;
 pub mod env_probe;
 pub mod gate;
 pub mod git;

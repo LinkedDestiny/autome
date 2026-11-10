@@ -560,6 +560,33 @@ impl Store {
     }
 
     /// Events after `after_seq`, oldest first. The Renderer's resync path.
+    /// `events_since`, with the subject each event is about — the task, the
+    /// project or the alert. The command line's `run` names the task on every
+    /// line it prints.
+    pub fn events_since_with_subject(
+        &self,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<(u64, String, String, Value)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, kind, subject_id, payload FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![after_seq as i64, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, kind, subject, payload) = row?;
+            out.push((seq, kind, subject, serde_json::from_str(&payload)?));
+        }
+        Ok(out)
+    }
+
     pub fn events_since(&self, after_seq: u64, limit: u32) -> Result<Vec<(u64, String, Value)>> {
         let mut stmt = self.conn.prepare(
             "SELECT seq, kind, payload FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",

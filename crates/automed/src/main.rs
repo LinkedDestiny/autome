@@ -25,71 +25,37 @@ fn write_outbound(writer: &mut impl io::Write, outbound: &Outbound) -> Result<()
 /// from real environment/profile data.
 const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
 
+const USAGE: &str = "automed — Autome 的内核（桌面端经 stdio 与它通信）
+
+用法：
+  automed                         读 stdin 上的 JSON-RPC 帧（桌面端用）
+  automed render-stream [runtime] 把 CLI 的 JSONL 渲染成可读日志（会话包装脚本用）
+  automed protocol eval [dir] [--changed|--behaviour] [--tag X]
+  automed --version | --help
+
+人在终端里用的是 `autome` 命令，见 `autome --help`。
+";
+
 fn main() {
-    // `automed render-stream` is a filter, not the daemon: the session wrapper
-    // pipes a CLI's `stream-json` output through it so the log a human opens
-    // is readable. It must produce no tracing noise on stderr — stderr is
-    // merged into the same pipe it is rendering.
-    if std::env::args().nth(1).as_deref() == Some("render-stream") {
-        // Both CLIs stream JSONL now, and their event vocabularies have
-        // nothing in common, so the wrapper says which one it is piping. An
-        // absent or unknown name falls back to Claude, which is what every
-        // wrapper written before this argument existed passes.
-        let runtime = std::env::args()
-            .nth(2)
-            .and_then(|s| autome_domain::role::Runtime::parse(&s))
-            .unwrap_or(autome_domain::role::Runtime::Claude);
-        let stdin = io::stdin();
-        let mut stdout = io::stdout();
-        if let Err(e) = automed::stream_render::render_stream(runtime, stdin.lock(), &mut stdout) {
-            eprintln!("render-stream: {e}");
-            std::process::exit(1);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        // A filter, not the daemon: the session wrapper pipes a CLI's
+        // `stream-json` output through it so the log a human opens is
+        // readable. It must produce no tracing noise on stderr — stderr is
+        // merged into the same pipe it is rendering.
+        Some("render-stream") => std::process::exit(automed::entry::render_stream_main(&args[1..])),
+        Some("protocol") if args.get(1).map(String::as_str) == Some("eval") => {
+            std::process::exit(automed::entry::protocol_eval_main(&args[2..]))
         }
-        return;
-    }
-
-    // `automed protocol eval [<dir>]` is the gate a protocol change has to
-    // pass before it ships: run it against the root `protocol/` directory
-    // after editing the protocol. A filter rather than the daemon.
-    if std::env::args().nth(1).as_deref() == Some("protocol")
-        && std::env::args().nth(2).as_deref() == Some("eval")
-    {
-        let args: Vec<String> = std::env::args().skip(3).collect();
-        // Defaults to the working directory: the version being proposed, not
-        // the one built into this binary.
-        let dir = std::path::PathBuf::from(
-            args.iter()
-                .find(|a| !a.starts_with("--"))
-                .cloned()
-                .unwrap_or_else(|| ".".into()),
-        );
-        let (report, mut code) = automed::protocol::eval::run(&dir);
-        print!("{report}");
-
-        // The behaviour layer costs money, so it never runs unless asked for
-        // by name. `--changed` is the audit round's form: the cases the
-        // proposed changes reference, plus the three baselines.
-        use automed::protocol::eval::Scope;
-        let scope = if args.iter().any(|a| a == "--changed") {
-            Some(Scope::Changed)
-        } else if args.iter().any(|a| a == "--behaviour" || a == "--behavior") {
-            Some(Scope::All)
-        } else {
-            None
-        };
-        if let Some(scope) = scope {
-            let tag = args
-                .iter()
-                .position(|a| a == "--tag")
-                .and_then(|i| args.get(i + 1))
-                .cloned()
-                .unwrap_or_else(|| "未发布".into());
-            let (behaviour, behaviour_code) =
-                automed::protocol::eval::run_behaviour(&dir, scope, &tag);
-            print!("{behaviour}");
-            code = code.max(behaviour_code);
+        Some("--help" | "-h" | "help") => {
+            print!("{USAGE}");
+            return;
         }
-        std::process::exit(code);
+        Some("--version" | "-V") => {
+            println!("automed {}", automed::entry::VERSION);
+            return;
+        }
+        _ => {}
     }
 
     tracing_subscriber::fmt().with_writer(io::stderr).init();
@@ -97,20 +63,10 @@ fn main() {
     let autome_home = automed::config_io::default_global_dir();
     // The ledger lives with the rest of this machine's Autome state, under
     // `AUTOME_HOME` (`~/.autome` by default) — one home, so "what does Autome
-    // know" has one answer and one thing to back up.
-    //
-    // It used to default to `automed.sqlite3` in the working directory, which
-    // meant running the core from a different directory silently started a
-    // second, empty installation. That is not a hypothetical: this machine
-    // accumulated four of them, and the desktop app's own copy sat in
-    // Electron's `userData` where a dead prototype's file could squat on the
-    // path unnoticed. `AUTOMED_DB_PATH` still overrides, for the tests that
-    // need their own and for anyone who keeps state elsewhere on purpose.
-    let db_path = std::env::var("AUTOMED_DB_PATH").unwrap_or_else(|_| {
-        automed::config_io::default_db_path(&autome_home)
-            .to_string_lossy()
-            .into_owned()
-    });
+    // know" has one answer and one thing to back up. See `entry::ledger_path`.
+    let db_path = automed::entry::ledger_path(&autome_home)
+        .to_string_lossy()
+        .into_owned();
     let store = match Store::open(&db_path) {
         Ok(store) => store,
         Err(e) => {

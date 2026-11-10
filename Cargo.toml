@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/autome-domain", "crates/automed"]
+members = ["crates/autome-domain", "crates/automed", "crates/autome-cli"]
 
 [workspace.package]
 edition = "2024"

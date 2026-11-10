@@ -33,8 +33,8 @@
 - Electron Main 启动 `automed` sidecar（单实例，framed JSON-RPC over stdio，沿用 autome-v2 现有实现）。sidecar 崩溃时 Main 重启它，Renderer 显示「内核重连中」。
 - 会话进程由包装脚本 `.autome/skill/run_session.sh` 在终端中启动。脚本职责：写 pid 文件；执行 CLI；tee 输出到日志；结束后写退出标记（exit code、结束时间）。
 - automed 用文件系统 watcher 监听 `.autome/output/sessions/`，并以 5 秒轮询兜底。退出标记出现即视为会话结束。
-- 停止 = 读 pid 文件，向进程组发 SIGTERM，3 秒后 SIGKILL，随后写「已停止」标记。
-- 应用重启后 automed 扫描所有项目的 `.autome/output/sessions/`：有 pid 且进程存活 → 会话仍在运行；有退出标记未消费 → 立即消费并推进；无标记且进程不存在 → 判定会话崩溃，任务进入失败状态供用户选择。
+- 停止 = 读 pid 文件，向进程组发 SIGTERM，3 秒后 SIGKILL，随后写「已停止」标记。包装脚本以 `process_group(0)` 启动，自成进程组，所以这一枪打得到它拉起的 CLI；也因此在终端里对 `autome run` 按 Ctrl-C 不会连带杀掉会话。
+- 应用重启后 automed 扫描所有项目的 `.autome/output/sessions/`：有 pid 且进程存活 → 会话仍在运行；有退出标记未消费 → 立即消费并推进；无标记且进程不存在 → 判定会话崩溃，按 §8.1 的重试策略处理，用尽后任务进入失败状态供用户选择。
 
 ## 3. 文件布局
 
@@ -131,11 +131,11 @@ Task 的 `milestones`、`backlog`、`disputes`、轮次与 `convergence_mode` �
 
 ```text
 Queued · Intake · Design · Review · Adjudicate · AwaitDesignApproval
-Implement · Audit · Rebase · AwaitMerge · Merging · Cleanup · Done
+Implement · Gate · Audit · Retro · Rebase · MergeGate · AwaitMerge · Merging · MainCheck · Cleanup · Done
 Paused(resume_node) · Stopped(node) · Failed(reason) · Cancelled
 ```
 
-界面上的 13 个节点对应 Intake…Done；Queued、Paused、Stopped、Failed 以芯片叠加显示。
+界面上的节点线对应 Intake…Done；Queued、Paused、Stopped、Failed 以芯片叠加显示。Gate、MergeGate、MainCheck 只在项目配置了 `[gate]` 时经过（§8.1），节点线上不单占一格，显示在它所检查的那一步（实现、rebase、合并）上。
 
 ### 5.2 角色与会话 prompt
 
@@ -245,6 +245,17 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 - 排队按 created_at 升序。槽位释放后立即启动队首。
 - 单个任务同一时刻最多一个会话。
 - 暂停在当前会话结束后生效；恢复时若槽位不足则排队。
+- 一次 tick 的顺序：收已结束的会话 → 启动到点的重试 → 跑内核步骤（rebase、门禁、合并、清理）→ 填空槽位。
+
+### 8.1 驱动锁、门禁、重试与冷却、表态租约
+
+**驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
+
+**宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同则沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。每次门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
+
+**重试与冷却。** 会话结果为崩溃（非零退出、进程消失）且不是人叫停的，不推进，写一行 `session_retries`，退避 `backoff_seconds × 2^(n-1)` 后由 tick 重派，带着原来的注入。次数上限为 `[retry] attempts`（默认 2），用尽才 Failed。输出不可解析、缺产物、守卫失败不重试——那是协议问题。崩溃输出里能认出限流（429、rate limit、usage limit、overloaded）时，给这个 CLI 写一条冷却（10 分钟起，连续限流翻倍，最长 60 分钟；CLI 给了重置时间就用它），这次不计入次数。冷却期间要启动的角色，若改派到另一个 CLI 仍满足 SAME-MODEL 的分离（按 runtime 粒度判断），就改派并记 `session.rerouted`；否则任务留在原节点，等冷却结束。
+
+**表态租约。** 用户对 Backlog 与争议项的表态，不再在会话启动前就记为已消费。启动带 `Decisions` 注入的会话时，把「已表态、未消费、未被别的会话带走」的条目标上 `carried_by = 会话`，prompt 与简报只列这批。会话正常结束才写 `consumed_by`；崩溃、守卫失败或被叫停，就清掉 `carried_by`，下一个会话重新带上。复盘关闭时的忽略项等没有会话可携带的路径，照旧直接消费。
 
 ## 9. 配置解析
 
@@ -278,7 +289,7 @@ Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为
 
 ## 13. 持久化与恢复
 
-SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog 与争议项的表态及消费状态）、`events`（append-only，界面事件流与审计用）。
+SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog 与争议项的表态，及携带 / 消费它的会话）、`events`（append-only，界面事件流与审计用）、`session_retries`（等待重派的崩溃轮次）、`runtime_cooldowns`（限流中的 CLI）、`project_alerts`（项目级报警，如合并后 main 门禁失败）。
 
 事实分工：任务文档与状态块是任务进度的事实来源；SQLite 保存登记、索引、台账与表态。两者不一致时以文件为准并记录一条 `integrity_warning` 事件。
 
@@ -291,6 +302,8 @@ SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
 
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
+
+命令行 `autome`（`crates/autome-cli`）不走这条管道：它链接 `automed` 库，在本进程内用同一个 `dispatch::handle_command` 处理每条命令，打开同一个数据库，受同一把驱动锁约束（§8.1）。因此 CLI 与桌面端不存在两份实现；CLI 自己只有参数解析和输出格式。会话包装脚本用 `current_exe() render-stream` 渲染日志，所以 `autome` 与 `automed` 一样必须支持 `render-stream` 和 `protocol eval` 两个子命令。
 
 ## 15. Electron 工作台
 

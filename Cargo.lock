@@ -24,6 +24,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "autome-cli"
+version = "0.1.0"
+dependencies = [
+ "autome-domain",
+ "automed",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "autome-domain"
 version = "0.1.0"
 dependencies = [

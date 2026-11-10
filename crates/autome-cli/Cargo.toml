@@ -1,0 +1,18 @@
+[package]
+name = "autome-cli"
+version = "0.1.0"
+description = "Autome 命令行：不开桌面端也能从一句话需求跑到合并"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "autome"
+path = "src/main.rs"
+
+[dependencies]
+automed = { path = "../automed" }
+autome-domain = { path = "../autome-domain" }
+serde_json.workspace = true
+libc.workspace = true

@@ -1592,6 +1592,9 @@ fn session_json(s: &autome_domain::session::Session) -> Value {
         "ended_at": s.ended_at,
         "lifecycle": s.lifecycle,
         "running": s.is_running(),
+        // Where the readable log is, for `autome logs --follow`. Read-only:
+        // nothing the renderer sends back ever names a path.
+        "log_path": s.log_path,
         "protocol_ref": s.protocol_ref,
         // Absent rather than zeroed when the stream could not be read: a card
         // showing "0 tokens" for a session that produced work is worse than a
@@ -2314,11 +2317,11 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         .and_then(Value::as_u64)
         .unwrap_or(200)
         .min(1000) as u32;
-    let events = ctx.store.events_since(after, limit)?;
+    let events = ctx.store.events_since_with_subject(after, limit)?;
     Ok((
         json!({
-            "events": events.iter().map(|(seq, kind, payload)| json!({
-                "seq": seq, "kind": kind, "payload": payload
+            "events": events.iter().map(|(seq, kind, subject, payload)| json!({
+                "seq": seq, "kind": kind, "subject": subject, "payload": payload
             })).collect::<Vec<_>>(),
             "latest_seq": ctx.store.latest_seq()?,
         }),

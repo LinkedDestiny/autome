@@ -72,7 +72,8 @@ Three properties the design turns on:
   design, audit from implementation, and retro from implementation. A
   configuration that violates this cannot be saved.
 
-Sessions run in a visible terminal, so you can watch them. Autome never pushes,
+Sessions run in the background, each in a process group of its own; the task
+panel and `autome logs -f` follow their logs live. Autome never pushes,
 never opens a pull request, and never merges without you pressing the button.
 
 ## The Loop
@@ -102,6 +103,87 @@ A project is either one repository or a **workspace**: a directory holding
 several independent repositories, one of which keeps the documents. A
 workspace task gets a worktree in each repository it touches and is merged
 repository by repository.
+
+### Host gate, retries and cooldowns
+
+Three things the core does on its own, none of which needs a prompt to
+cooperate. All of them are off or harmless until configured, and configured in
+the project's `.autome/config.toml`:
+
+```toml
+[gate]
+command = "make check"     # run with sh -c in the task's worktree
+timeout_minutes = 30       # the default; a gate that runs longer has failed
+
+[retry]
+attempts = 2               # the default; 0 restores "a crash fails the task"
+backoff_seconds = 60       # doubles each time: 1, 2, 4 minutes
+```
+
+- **The gate.** With `[gate]` set, Autome runs the command itself after every
+  implementation round, on the commit that round produced, and only an exit
+  code of 0 lets the round reach audit. A failure goes straight back to
+  implementation with the command and the log's tail in the prompt. It runs
+  again on the rebased head before the merge stopping point (skipped when the
+  head already passed), and once more on `main` after the merge — that last
+  run cannot undo the merge, so a failure there raises an alert on the
+  dashboard instead. The audit round's brief says what the host saw, so the
+  auditor reads a verdict it did not have to take on trust.
+- **Retries.** A session that crashes — non-zero exit, process gone — is
+  started again after a backoff instead of failing the task. A session that
+  wrote nonsense is not retried; that is a protocol problem, not bad luck.
+- **Rate limits.** A crash whose output says 429, rate limit, usage limit or
+  overloaded puts that CLI in a cooldown (10 minutes, doubling while it keeps
+  happening, an hour at most, or until the reset time the CLI printed) and
+  does not count as an attempt. While Claude Code cools down, its roles move
+  to Codex when that still keeps generation and evaluation on different
+  models, and wait otherwise.
+
+Decisions you take on Backlog items and disputes are handed to the next
+session that runs, and stay yours until that session finishes cleanly: if it
+crashes, the next one carries them again.
+
+## The command line
+
+`autome` drives the same Loop from a terminal. It is not a client of the
+desktop app — it links the core and opens the same ledger, so a task started
+in one shows up in the other, and either can approve or merge it.
+
+```sh
+sh scripts/install-cli.sh               # in a checkout: build, install to ~/.local/bin
+sh scripts/install-cli.sh --from dist/autome-0.1.0-aarch64-apple-darwin.tar.gz
+curl -fsSL https://raw.githubusercontent.com/LinkedDestiny/autome/main/scripts/install-cli.sh | sh
+                                        # elsewhere: the latest release (AUTOME_VERSION to pin)
+cargo install --path crates/autome-cli  # or plainly, with Rust
+```
+
+`PREFIX` picks the directory. The installer checks the tarball's `.sha256`,
+refuses an unverified download, and finishes with `autome doctor`.
+
+```sh
+autome doctor                            # Git, Claude Code, Codex, logins; where state lives
+autome project add ~/code/shop --skip-onboarding
+cd ~/code/shop
+autome task new "购物车加一个结算按钮"    # -p picks the project when not inside it
+autome run                               # drives the Loop; prints what happens
+autome status                            # what waits on you, what runs, alerts
+autome approve cart                      # a task by id or slug prefix
+autome merge cart
+```
+
+`autome run` is what moves things. The desktop app moves them too while it is
+open; the two take turns through a lock beside the database, so running both
+never starts a session twice. `autome run --until-idle` returns when nothing
+is left that does not need a person, which is what scripts want. Ctrl-C stops
+driving and leaves running sessions alone; the next `run`, or the app, picks
+up their results.
+
+Every command takes `--json`. Exit status is 0 on success, 1 when the core
+refused or something failed, 2 for a mistake on the command line.
+`autome rpc <method> '<json>'` reaches any JSON-RPC method the desktop uses.
+`autome help` lists the rest: reject with feedback, pause, resume, stop,
+cancel, rerun from a node, extend the budget, decide Backlog items and
+disputes, follow a session's log, dismiss alerts.
 
 ## The protocol
 
@@ -149,8 +231,11 @@ sh scripts/ci-local.sh && sh scripts/package.sh
   SQLite. The six roles, the configuration overlay and its validation, the
   design-document parser, the task state machine.
 - `crates/automed` — everything that touches the outside world: SQLite, Git,
-  the session launcher, the scheduler, the protocol and its eval, the
-  environment probe, the skill scan, and the JSON-RPC surface.
+  the session launcher, the scheduler, the host gate, the protocol and its
+  eval, the environment probe, the skill scan, and the JSON-RPC surface.
+- `crates/autome-cli` — the `autome` command. Links `automed` and calls the
+  same dispatcher the desktop's requests reach; no logic of its own beyond
+  argument parsing and printing.
 - `apps/desktop` — the Electron shell. Two IPC channels with two independent
   allowlists; the renderer can never name a filesystem path.
 - `docs/development/` — the requirements and the technical design. These are
@@ -167,7 +252,8 @@ One home, `~/.autome`, overridable with `AUTOME_HOME`:
 ~/.autome/
 ├── config.toml                 # global defaults; yours to edit
 └── state/
-    └── automed.sqlite3         # registry, session ledger, your decisions
+    ├── automed.sqlite3         # registry, session ledger, your decisions, alerts
+    └── automed.sqlite3.driver.lock   # held while one driver ticks the scheduler
 ```
 
 Each project carries the rest in its own repository, committed so it follows
@@ -179,7 +265,7 @@ the repository between machines:
 │   ├── config.toml             # this project's overrides; absent fields inherit
 │   ├── rules/                  # project rules every role must follow
 │   ├── skill/run_session.sh    # the session wrapper; Autome-owned, refreshed
-│   └── output/                 # session logs (gitignored)
+│   └── output/                 # session logs and gates/<task>/ gate logs (gitignored)
 ├── .worktree/<slug>/           # one checkout per running task (gitignored)
 └── docs/<slug>/                # the task's documents, on its branch
 ```
@@ -286,4 +372,6 @@ approval stop, implementation and an independent audit, to a merge commit on
 
 Not done: signing and notarisation have configuration but have never been run
 (no Developer ID here), there is no application icon, and `automed` is spawned
-without verifying its signature or holding a single-instance lock.
+without verifying its signature. Two drivers (the app and `autome run`) take
+turns on a lock rather than one being refused, and the CLI is packaged for
+Apple silicon only, because that is what CI builds on.

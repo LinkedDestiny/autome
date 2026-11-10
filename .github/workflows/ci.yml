@@ -107,6 +107,51 @@ jobs:
           path: apps/desktop/dist/*.dmg
           retention-days: 7
 
+  # The command line, as a user would get it: the release tarball, installed
+  # from that tarball into an empty prefix, answering --version and help.
+  # Uploaded so any push's binary can be tried without building it.
+  cli-package:
+    timeout-minutes: 20
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Package
+        run: sh scripts/package-cli.sh
+      - name: Install from the tarball
+        run: |
+          prefix=$(mktemp -d)
+          PREFIX="$prefix" sh scripts/install-cli.sh --from dist/autome-*.tar.gz
+          "$prefix/autome" --version
+          "$prefix/autome" help > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autome-cli
+          path: dist/autome-*.tar.gz*
+          retention-days: 7
+
+  # A pushed `v*` tag publishes the CLI tarball as a release asset — the file
+  # `install-cli.sh` downloads when it is run outside a checkout. Nothing else
+  # creates a release; pushing the tag is the decision to ship.
+  cli-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust, cli-package]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: autome-cli
+          path: dist
+      - name: The tag matches the crate version
+        run: |
+          ls dist/autome-"${GITHUB_REF_NAME#v}"-*.tar.gz
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/autome-*.tar.gz*
+
   # A guard rather than a gate: the two allowlists in the desktop shell must
   # stay in step with the core's own read/write split. The desktop suite
   # already cross-checks the read side by parsing dispatch.rs; this job fails

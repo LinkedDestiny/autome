@@ -8,8 +8,9 @@
 #
 # Usage:
 #   sh scripts/ci-local.sh              the fast jobs (~35s with a warm target/)
-#   sh scripts/ci-local.sh --package    also build the .app (minutes, and the
-#                                       first run downloads electron-builder)
+#   sh scripts/ci-local.sh --package    also build the .app and the CLI tarball
+#                                       (minutes; the first run downloads
+#                                       electron-builder)
 #
 # Every step runs even when an earlier one fails. The workflow's jobs are
 # parallel, so stopping at the first red would hide everything behind it — and
@@ -28,7 +29,7 @@ for arg in "$@"; do
   case "$arg" in
     --package) with_package=1 ;;
     -h | --help)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -109,6 +110,12 @@ run 'Contract' sh -c '
 # otherwise discovered at release, which is the one time it must not.
 if [ "$with_package" -eq 1 ]; then
   run 'Package' sh scripts/package.sh
+  run 'CLI package' sh -c '
+    sh scripts/package-cli.sh &&
+    prefix=$(mktemp -d) &&
+    PREFIX="$prefix" sh scripts/install-cli.sh --from dist/autome-*.tar.gz > /dev/null &&
+    "$prefix/autome" --version
+  '
   run 'Bundle carries a runnable core' sh -c '
     app="apps/desktop/dist/mac-arm64/Autome.app"
     test -x "$app/Contents/Resources/core/automed" &&
