@@ -18,3 +18,4 @@
 实现 #13 | M-01 | 依赖修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r13-impl.md | registry DNS 不可用且锁定包未缓存
 实现 #14 | M-01 | 依赖修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r14-impl.md | registry DNS 失败且锁定包未缓存
 实现 #15 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r15-impl.md | registry DNS 失败且锁定包未缓存
+实现 #16 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r16-impl.md | registry DNS 失败且锁定包未缓存
