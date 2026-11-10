@@ -10,3 +10,5 @@
 
 实现 #7 | M-01 | 开放（门禁修复受阻） | docs/服务端每次-tick-后用-events/evidence/M-01-r7-impl.md | registry DNS 失败，锁定依赖无完整缓存
 实现 #8 | M-01 | 开放（门禁修复受阻） | docs/服务端每次-tick-后用-events/evidence/M-01-r8-impl.md | 在线 DNS 失败、锁定版本无离线缓存
+
+实现 #9 | M-01 | 退回 + 依赖安装环境（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r9-impl.md | npm DNS 不通且锁定包无缓存

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 8/20
+implementation-round: 9/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 恢复锁定依赖 ws 8.22.2 与 @types/ws 8.18.2 的下载或完整缓存，安装后重跑 sh scripts/ci-local.sh；门禁通过后再继续 M-01 验收
+next-action: 为当前 worktree 提供锁定的 ws 8.22.2 与 @types/ws 8.18.2 下载能力或完整缓存，安装后原样重跑 sh scripts/ci-local.sh；通过后再继续 M-01 验收
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r8-impl.md · 在线 DNS 与离线缓存均阻塞，未取得绿色复验，保持开放 · 实现 #8
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r9-impl.md · 锁定依赖下载与缓存均不可用，未取得绿色复验，保持开放 · 实现 #9
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：
