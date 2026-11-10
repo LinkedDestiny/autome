@@ -6,3 +6,4 @@
 实现 #3 | M-01 | 门禁修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r3-impl.md | registry ENOTFOUND，锁定包未缓存
 实现 #4 | M-01 | 门禁修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r4-impl.md | registry DNS 失败，锁定依赖安装失败
 实现 #5 | M-01 | 门禁修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r5-impl.md | registry DNS 失败，锁定依赖未安装
+实现 #6 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r6-impl.md | registry DNS 不可达，锁定依赖无法安装
