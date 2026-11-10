@@ -1,4 +1,5 @@
 import express from 'express';
+import { securityMiddleware, installUpgradeGuard } from './security.ts';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,13 +12,18 @@ const root = resolve(import.meta.dirname, '..');
 export async function createHttpServer({ mode }: { mode: Mode }) {
   const app = express();
   const server = createServer(app);
+  const port = () => {
+    const address = server.address();
+    return address && typeof address === 'object' ? address.port : 0;
+  };
+  app.use(securityMiddleware(port));
   let closeMiddleware = async () => {};
   app.get('/healthz', (_req, res) => { res.json({ ok: true }); });
   if (mode === 'development') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       root,
-      server: { middlewareMode: true, hmr: { server } },
+      server: { middlewareMode: true, cors: false, hmr: { server } },
     });
     closeMiddleware = () => vite.close();
     app.use(vite.middlewares);
@@ -31,5 +37,6 @@ export async function createHttpServer({ mode }: { mode: Mode }) {
     const build = await import(pathToFileURL(resolve(root, 'build/server/index.js')).href);
     app.use(createRequestHandler({ build, mode }));
   }
-  return { server, closeMiddleware };
+  const registerUpgrade = installUpgradeGuard(server, port);
+  return { server, closeMiddleware, registerUpgrade };
 }

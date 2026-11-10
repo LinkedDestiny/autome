@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/25
+implementation-round: 4/25
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-04：server/security.ts 的 Host/Origin 检查与 upgrade 守卫（方案 §7），不含令牌与 Cookie
+next-action: 审计 M-04 并复验受沙箱阻塞的监听用例；通过后实现 M-05 网关接入与端到端
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -401,7 +401,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 | M-01 | 已完成 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
 | M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 已完成 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
-| M-04 | 开放 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
+| M-04 | 待审 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
 | M-05 | 开放 | 网关接入 startServer 与端到端 | 0 | |
 
 ## 里程碑说明
@@ -480,6 +480,8 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 - 负向对照：`MAX_QUICK_FAILURES` 改成 4，「连续 3 次转 offline」会因看到第 4 次 spawn 而失败；去掉在途标志，ticker「上一次未返回时不叠加」在 9 秒内会看到 3 次调用而不是 1 次；本地超时就清掉在途状态，「超时后仍不叠加」和 supervisor 的 `isTickBusy` 用例会失败；`skipped` 时记日志，「skipped 安静」和真实驱动锁用例都会失败；supervisor 不清理重启定时器，「延迟期间 stop」会看到新进程；`CALL_TIMEOUT_MS` 照搬 desktop 的 5000，`DRIVER_LOCK_WAIT` 交叉核对会失败。
 
 ### M-04 本机安全：Host、Origin 与 upgrade 守卫
+
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-04-r4-impl.md · 模块通过，监听环境阻塞待复验 · 实现 #4
 
 - 结果：`server/security.ts` 按方案 §7 实现，`createHttpServer` 装上 Host/Origin 中间件和 upgrade 守卫。全部用纯函数或
   假的 req/res/socket 测，不监听端口。没有任何令牌或 Cookie 代码。
