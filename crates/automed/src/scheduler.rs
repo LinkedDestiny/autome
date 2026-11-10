@@ -23,16 +23,16 @@ use std::path::{Path, PathBuf};
 use autome_domain::config::{self, ResolvedConfig};
 use autome_domain::project::Project;
 use autome_domain::protocol::{ProtocolFiles, ProtocolRef};
-use autome_domain::role::Role;
+use autome_domain::role::{Role, Runtime};
 use autome_domain::session::{
     self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths,
 };
 use autome_domain::status_block::{self, StatusBlock};
 use autome_domain::task::{
-    self, Action, CoreStepResult, FailureReason, Inject, Node, SessionOutcome, TaskState,
-    Transition, Trigger,
+    self, Action, CoreStepResult, FailureReason, GateOutcome, Inject, Node, SessionOutcome,
+    TaskState, Transition, Trigger,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::dispatch::Ctx;
 use crate::guards;
@@ -89,6 +89,8 @@ pub struct TickReport {
     pub tasks_advanced: Vec<String>,
     pub tasks_started: Vec<String>,
     pub errors: Vec<String>,
+    /// Another driver held the ledger, so this pass did nothing at all.
+    pub skipped: bool,
 }
 
 impl TickReport {
@@ -115,7 +117,39 @@ impl TickReport {
 
 /// One scheduling pass. Safe to call as often as the watcher fires; every step
 /// is idempotent, so a tick that races with another finds nothing to do.
+///
+/// "Races" across processes too: the pass runs under the driver lock, and a
+/// tick that finds another process holding it skips rather than waits. The
+/// other driver is doing exactly this work.
 pub fn tick(ctx: &mut Ctx) -> TickReport {
+    let took_lock = if ctx.driver_lock.is_some() {
+        false
+    } else {
+        match crate::driver_lock::try_acquire(ctx.store.path()) {
+            Ok(Some(lock)) => {
+                ctx.driver_lock = Some(lock);
+                true
+            }
+            Ok(None) => {
+                return TickReport {
+                    skipped: true,
+                    ..TickReport::default()
+                };
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "driver lock unavailable, ticking without it");
+                false
+            }
+        }
+    };
+    let report = tick_locked(ctx);
+    if took_lock {
+        ctx.driver_lock = None;
+    }
+    report
+}
+
+fn tick_locked(ctx: &mut Ctx) -> TickReport {
     let mut report = TickReport::default();
 
     // The first tick of a process recovers first. Doing it here rather than
@@ -146,6 +180,9 @@ pub fn tick(ctx: &mut Ctx) -> TickReport {
             Err(e) => report.errors.push(format!("{}: {e}", s.id)),
         }
     }
+
+    // 1b. Start any crashed round whose wait is over.
+    start_due_retries(ctx, &mut report);
 
     // 2. Run any core step a task is sitting on. These are synchronous and
     //    fast enough to do inline; a rebase on a huge repository is the worst
@@ -239,8 +276,143 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         &task,
         read_outcome(&project, &task, &lifecycle),
     )?;
+    // Settled before the transition, which counts what is still pending: a
+    // round that applied the user's decisions must not be handed them again.
+    if matches!(outcome, SessionOutcome::Ok { .. }) {
+        ctx.store.settle_decisions(&s.id)?;
+        ctx.store.clear_cooldown(s.runtime)?;
+    } else {
+        ctx.store.release_decisions(&s.id)?;
+    }
+    if let SessionOutcome::Crashed { detail } = &outcome
+        && schedule_retry(ctx, s, &project, &task, detail)?
+    {
+        return Ok(true);
+    }
     advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
     Ok(true)
+}
+
+/// Decides whether a crashed round runs again instead of failing the task.
+///
+/// A rate or usage limit is the provider saying "later": the CLI is put in a
+/// cooldown and the round waits for it, without counting against anything.
+/// Any other crash is retried `[retry] attempts` times, each wait twice the
+/// last, before the task fails the way it always did. The round is run again
+/// carrying whatever it was carrying — a gate failure, a rebase conflict, the
+/// user's decisions (which the crash has just handed back).
+///
+/// Returns whether a retry was scheduled.
+fn schedule_retry(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    detail: &str,
+) -> Result<bool> {
+    let TaskState::Active { node } = task.state else {
+        return Ok(false);
+    };
+    if node.is_core_step() || node.awaits_user() {
+        return Ok(false);
+    }
+    let stream = std::fs::read_to_string(Path::new(&project.path).join(format!(
+        "{}/{}.jsonl",
+        SessionPaths::dir(&s.task_id),
+        s.id
+    )))
+    .unwrap_or_default();
+    let transient = crate::usage::classify_failure(s.runtime, &stream, crate::store::epoch_now());
+    let policy = resolve_config(ctx, project)
+        .map(|r| r.retry)
+        .unwrap_or_default();
+    let attempts = ctx.store.retry_attempts(&task.id)?;
+
+    let (not_before, counted, reason) = match &transient {
+        Some(t) => {
+            let until = ctx.store.cool_down(s.runtime, &t.message, t.reset_at)?;
+            ctx.store.append_event(
+                "runtime.cooldown",
+                &task.id,
+                json!({ "runtime": s.runtime.as_str(), "until": until, "reason": t.message }),
+            )?;
+            // Due now rather than at `until`: starting it goes through
+            // `cooldown_route`, which sends it to the other CLI when that is
+            // allowed and only otherwise waits for the cooldown.
+            let _ = until;
+            (now_iso(), false, format!("限流：{}", t.message))
+        }
+        None if attempts < policy.attempts => {
+            let delay = policy.delay_secs(attempts + 1);
+            (crate::store::iso_in(delay as i64), true, detail.to_string())
+        }
+        None => return Ok(false),
+    };
+
+    let inject = carried_inject(ctx, &task.id, &s.id)?;
+    ctx.store.schedule_retry(
+        &task.id,
+        node,
+        &not_before,
+        inject.as_ref(),
+        &reason,
+        counted,
+    )?;
+    ctx.store.append_event(
+        "session.retry",
+        &task.id,
+        json!({
+            "session_id": s.id,
+            "node": node.as_str(),
+            "attempt": attempts + u32::from(counted),
+            "of": policy.attempts,
+            "not_before": not_before,
+            "rate_limited": transient.is_some(),
+            "reason": reason,
+        }),
+    )?;
+    Ok(true)
+}
+
+/// What a session was carrying when it started, read back from its
+/// `session.started` event.
+fn carried_inject(ctx: &Ctx, task_id: &str, session_id: &str) -> Result<Option<Inject>> {
+    Ok(ctx
+        .store
+        .last_event(task_id, "session.started")?
+        .filter(|v| v.get("session_id").and_then(Value::as_str) == Some(session_id))
+        .and_then(|v| v.get("inject").cloned())
+        .and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// Starts every crashed round whose wait is over.
+fn start_due_retries(ctx: &mut Ctx, report: &mut TickReport) {
+    let Ok(tasks) = ctx.store.list_unfinished() else {
+        return;
+    };
+    let now = now_iso();
+    for task in tasks {
+        let TaskState::Active { node } = task.state else {
+            continue;
+        };
+        let Ok(Some((at, not_before, inject))) = ctx.store.pending_retry(&task.id) else {
+            continue;
+        };
+        if at != node || not_before > now {
+            continue;
+        }
+        if matches!(ctx.store.running_session(&task.id), Ok(Some(_))) {
+            continue;
+        }
+        if let Err(e) = ctx.store.retry_started(&task.id) {
+            report.errors.push(format!("{}: {e}", task.id));
+            continue;
+        }
+        match redispatch_with(ctx, &task.id, node, inject.as_ref()) {
+            Ok(()) => report.tasks_started.push(task.id.clone()),
+            Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+        }
+    }
 }
 
 /// The one place a round's output is admitted (plan §4.D).
@@ -297,6 +469,8 @@ fn apply_guards(
             before.as_ref(),
             ctx,
         ),
+        repairing: carried_inject(ctx, &task.id, &session.id)?
+            .is_some_and(|i| matches!(i, Inject::GateFailed { .. })),
     };
     let findings = guards::check(&round);
 
@@ -753,6 +927,9 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     });
 
     ctx.store.set_task_state(task_id, &transition.next)?;
+    // The task moved: whatever crashes the last round had are behind it, and
+    // the next round starts with its full allowance of retries.
+    ctx.store.clear_retry(task_id)?;
     if let Some(n) = budget {
         ctx.store.set_task_budget(task_id, n)?;
         // Also on the record `perform` is about to read. It was loaded at the
@@ -768,7 +945,13 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         // core telling the session something untrue about its own budget.
         task.budget_n = Some(n);
     }
-    if transition.consumes_decisions {
+    // A transition that hands the decisions to a session leaves them to that
+    // session: it carries them into its prompt (`start_session`) and spends
+    // them only by ending well (`reap_session`). Consuming them here, before
+    // the session started, is how they used to vanish — the round meant to
+    // apply them read the unconsumed ones and found none. Only a transition
+    // with no session to carry them consumes them on the spot.
+    if transition.consumes_decisions && !hands_decisions_to_a_session(&transition.action) {
         ctx.store.consume_decisions(task_id)?;
     }
     if transition.next == TaskState::Done {
@@ -823,6 +1006,17 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         return Err(e);
     }
     Ok(true)
+}
+
+/// Whether this action starts a round that carries the user's decisions.
+fn hands_decisions_to_a_session(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::StartRole {
+            inject: Some(Inject::Decisions),
+            ..
+        }
+    )
 }
 
 /// Turns an action that could not be carried out into a task the user can see
@@ -969,6 +1163,25 @@ fn read_status(project: &Project, task: &TaskRecord) -> Option<StatusBlock> {
     status_block::parse(&text).ok()
 }
 
+/// One line for the audit round's brief: what the core's own run of the gate
+/// found, on which commit, and where the full output is.
+fn render_gate_line(result: &Value) -> Option<String> {
+    let sha = result.get("sha")?.as_str()?;
+    let command = result.get("command")?.as_str()?;
+    let ok = result.get("ok")?.as_bool()?;
+    let code = result
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    let log = result.get("log").and_then(Value::as_str).unwrap_or("");
+    let short = &sha[..sha.len().min(10)];
+    let verdict = if ok { "通过" } else { "未通过" };
+    Some(format!(
+        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}（退出码 {code}）。完整输出：`{log}`。\n\
+         这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
+    ))
+}
+
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
         Trigger::SlotAvailable => "slot_available",
@@ -983,6 +1196,7 @@ fn trigger_name(t: &Trigger) -> &'static str {
         Trigger::Cancel => "cancel",
         Trigger::ExtendBudget { .. } => "extend_budget",
         Trigger::RerunFrom { .. } => "rerun_from",
+        Trigger::GateDone { .. } => "gate_done",
     }
 }
 
@@ -1096,6 +1310,153 @@ fn start_session(
     kind: SessionKind,
     inject: Option<&Inject>,
 ) -> Result<()> {
+    // A CLI in a cooldown is not started. The round goes to the other CLI
+    // when that keeps generation and evaluation apart; otherwise it waits.
+    let rerouted;
+    let resolved = match cooldown_route(ctx, task, resolved, kind, inject)? {
+        Route::Launch => resolved,
+        Route::Rerouted(alt) => {
+            rerouted = alt;
+            &rerouted
+        }
+        Route::Deferred => return Ok(()),
+    };
+
+    // The session's id is fixed before anything else: a round carrying the
+    // user's decisions marks them as its own before its prompt is written, so
+    // the prompt, the brief and the ledger name one list.
+    let session_id = crate::store::new_id("ses");
+    let decisions = if matches!(inject, Some(Inject::Decisions)) {
+        ctx.store.carry_decisions(&task.id, &session_id)?
+    } else {
+        Vec::new()
+    };
+    let started = launch_session(
+        ctx,
+        task,
+        project,
+        resolved,
+        kind,
+        inject,
+        &session_id,
+        &decisions,
+    );
+    // A round that never started cannot apply anything. Without this the
+    // decisions would stay marked for a session that does not exist, and no
+    // later round would ever be handed them.
+    if started.is_err() && !decisions.is_empty() {
+        ctx.store.release_decisions(&session_id)?;
+    }
+    started
+}
+
+enum Route {
+    Launch,
+    Rerouted(ResolvedConfig),
+    Deferred,
+}
+
+/// Which pairs of roles must not share a CLI for a reroute to be allowed.
+/// Stricter than SAME-MODEL, which compares models: a rerouted role runs on
+/// the other CLI's default model, which nothing here can name, so the only
+/// safe test is that the CLIs themselves differ.
+const KEPT_APART: [(Role, Role); 3] = [
+    (Role::Review, Role::Plan),
+    (Role::Audit, Role::Impl),
+    (Role::Retro, Role::Impl),
+];
+
+fn cooldown_route(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    resolved: &ResolvedConfig,
+    kind: SessionKind,
+    inject: Option<&Inject>,
+) -> Result<Route> {
+    let runtime = match kind.role() {
+        Some(role) => resolved.role(role).config.runtime,
+        None => launcher::system_role_config().runtime,
+    };
+    let Some(until) = ctx.store.cooling_until(runtime)? else {
+        return Ok(Route::Launch);
+    };
+    let node = match kind {
+        SessionKind::Intake => Some(Node::Intake),
+        SessionKind::Role { role } => Node::ALL.into_iter().find(|n| n.role() == Some(role)),
+        SessionKind::Onboarding => None,
+    };
+    // A retro run by hand on a finished task is not part of the Loop and has
+    // nowhere to wait; it simply runs.
+    let active = matches!(
+        ctx.store.get_task(&task.id)?.state,
+        TaskState::Active { .. }
+    );
+    let (Some(node), true) = (node, active) else {
+        return Ok(Route::Launch);
+    };
+
+    if let Some(role) = kind.role() {
+        let other = match runtime {
+            Runtime::Claude => Runtime::Codex,
+            Runtime::Codex => Runtime::Claude,
+        };
+        let bound_skills = !resolved.role(role).config.skills.is_empty();
+        let clash = KEPT_APART.iter().any(|(a, b)| {
+            let partner = if *a == role {
+                *b
+            } else if *b == role {
+                *a
+            } else {
+                return false;
+            };
+            resolved.is_enabled(partner) && resolved.role(partner).config.runtime == other
+        });
+        if !bound_skills
+            && !clash
+            && ctx.store.cooling_until(other)?.is_none()
+            && launcher::resolve_binary(other).is_some()
+        {
+            let mut alt = resolved.clone();
+            if let Some(r) = alt.roles.iter_mut().find(|r| r.role == role) {
+                r.config.runtime = other;
+                r.config.model = String::new();
+                r.config.effort = None;
+            }
+            ctx.store.append_event(
+                "session.rerouted",
+                &task.id,
+                json!({
+                    "role": role.as_str(),
+                    "from": runtime.as_str(),
+                    "to": other.as_str(),
+                    "cooling_until": until,
+                }),
+            )?;
+            return Ok(Route::Rerouted(alt));
+        }
+    }
+
+    ctx.store
+        .schedule_retry(&task.id, node, &until, inject, "等待限流冷却", false)?;
+    ctx.store.append_event(
+        "session.deferred",
+        &task.id,
+        json!({ "node": node.as_str(), "runtime": runtime.as_str(), "until": until }),
+    )?;
+    Ok(Route::Deferred)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_session(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    resolved: &ResolvedConfig,
+    kind: SessionKind,
+    inject: Option<&Inject>,
+    session_id: &str,
+    decisions: &[crate::store::DecisionRecord],
+) -> Result<()> {
     let repo = PathBuf::from(&project.path);
 
     // Which repositories this task works in. For a workspace it is whatever
@@ -1149,7 +1510,6 @@ fn start_session(
         None => launcher::system_role_config(),
     };
 
-    let decisions = ctx.store.decisions_for_prompt(&task.id)?;
     // Read before the prompt is built, not after: the two rounds of the
     // implementation loop are told which round they are and what `N` is,
     // because neither is derivable inside the session (see launcher::BudgetLine).
@@ -1181,7 +1541,7 @@ fn start_session(
             role,
             round,
             budget.as_ref(),
-            &decisions,
+            decisions,
         )?,
         None => String::new(),
     };
@@ -1211,14 +1571,13 @@ fn start_session(
         request: &task.request,
         skills: &role_config.skills,
         inject,
-        decisions: &decisions,
+        decisions,
         attachments: &task.attachments,
         doc_refs: &task.doc_refs,
     })?;
 
-    let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
-        session_id: &session_id,
+        session_id,
         task_id: &task.id,
         cwd: &session_cwd,
         repo: &repo,
@@ -1228,9 +1587,9 @@ fn start_session(
         mode: ctx.launch_mode,
     })?;
 
-    let pid = read_pid(&repo, &task.id, &session_id);
+    let pid = read_pid(&repo, &task.id, session_id);
     ctx.store.insert_session(&Session {
-        id: session_id.clone(),
+        id: session_id.to_string(),
         task_id: task.id.clone(),
         kind,
         runtime: role_config.runtime,
@@ -1256,6 +1615,9 @@ fn start_session(
             "kind": kind,
             "round": round,
             "terminal": launched.terminal.as_str(),
+            "runtime": role_config.runtime.as_str(),
+            // What the round was carrying, so a crash can be retried with it.
+            "inject": inject,
         }),
     )?;
     Ok(())
@@ -1401,6 +1763,14 @@ fn write_brief(
             }
             s
         }),
+        gate: match role {
+            Role::Audit => ctx
+                .store
+                .last_event(&task.id, "gate.result")?
+                .as_ref()
+                .and_then(render_gate_line),
+            _ => None,
+        },
     });
 
     let full = worktree.join(&rel);
@@ -1503,6 +1873,7 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     let result = match node {
         Node::Rebase => rebase_all(&layout),
         Node::Merging => merge_all(ctx, task, &layout)?,
+        n if n.is_gate() => return run_gate(ctx, task, &project, &layout, n),
         Node::Cleanup => match cleanup(&layout) {
             Ok(()) => CoreStepResult::Ok,
             Err(e) => CoreStepResult::Failed {
@@ -1516,6 +1887,203 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
 
     advance(ctx, &task.id, &Trigger::CoreStepDone { node, result })?;
     Ok(())
+}
+
+/// One look at a task sitting on a gate node: start the run, wait for it, or
+/// collect it and move the task on.
+///
+/// The run is bound to a commit. For the two gates before the merge that is
+/// the task's own head (every checkout's, for a workspace); a run whose commit
+/// moved underneath it is thrown away and started again. After the merge it is
+/// the merge commit, checked out on its own beside the user's checkout.
+fn run_gate(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    layout: &TaskLayout,
+    node: Node,
+) -> Result<()> {
+    let resolved = resolve_config(ctx, project)?;
+    let repo = PathBuf::from(&project.path);
+    let Some(gate) = resolved.gate.clone() else {
+        // The gate was removed from the configuration while the task sat
+        // here. Nothing to run means nothing to stop for.
+        return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+    };
+
+    let (cwd, head) = match node {
+        Node::MainCheck => {
+            let commit = match (&task.merge_commit, project.is_workspace()) {
+                (Some(c), false) => c.clone(),
+                // A workspace merges repository by repository and has no one
+                // commit to check out. Its gates before the merge still ran.
+                _ => {
+                    ctx.store.append_event(
+                        "gate.skipped",
+                        &task.id,
+                        json!({ "node": node.as_str(), "reason": "没有单一的合并提交" }),
+                    )?;
+                    return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+                }
+            };
+            let rel = verify_dir(&commit);
+            if !repo.join(&rel).exists() {
+                git::worktree_prune(&repo)?;
+                git::worktree_add_detached(&repo, &rel, &commit)?;
+            }
+            (repo.join(&rel), commit)
+        }
+        _ => (layout.cwd.clone(), gate_head(layout)?),
+    };
+    let key = &head[..head.len().min(12)];
+    let job = crate::gate::Job::at(&repo, &task.id, node.as_str(), key);
+
+    if !job.exists() {
+        // The commit the user would merge is the one the implementation loop
+        // already gated, when the rebase had nothing to move: no second run.
+        if node == Node::MergeGate
+            && let Some(last) = ctx.store.last_event(&task.id, "gate.result")?
+            && last.get("ok").and_then(Value::as_bool) == Some(true)
+            && last.get("sha").and_then(Value::as_str) == Some(head.as_str())
+        {
+            ctx.store.append_event(
+                "gate.reused",
+                &task.id,
+                json!({ "node": node.as_str(), "sha": head }),
+            )?;
+            return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+        }
+        crate::gate::start(
+            &job,
+            &cwd,
+            &gate.command,
+            &[
+                ("AUTOME_TASK", task.id.as_str()),
+                ("AUTOME_HEAD", head.as_str()),
+                ("AUTOME_GATE_NODE", node.as_str()),
+            ],
+        )
+        .map_err(|e| err(format!("无法启动门禁：{e}")))?;
+        ctx.store.append_event(
+            "gate.started",
+            &task.id,
+            json!({
+                "node": node.as_str(),
+                "sha": head,
+                "command": gate.command,
+                "log": job.log.to_string_lossy(),
+            }),
+        )?;
+        return Ok(());
+    }
+
+    let exit_code = match crate::gate::poll(&job, gate.timeout_minutes) {
+        crate::gate::Poll::Running => return Ok(()),
+        crate::gate::Poll::Vanished => {
+            // Nothing is known about the code, so nothing is concluded: the
+            // next tick runs it again.
+            job.clear();
+            return Ok(());
+        }
+        crate::gate::Poll::Done { exit_code } => exit_code,
+    };
+    if node != Node::MainCheck && gate_head(layout)? != head {
+        job.clear();
+        return Ok(());
+    }
+
+    let ok = exit_code == 0;
+    let tail = crate::gate::tail(&job.log, 60);
+    ctx.store.append_event(
+        "gate.result",
+        &task.id,
+        json!({
+            "node": node.as_str(),
+            "sha": head,
+            "ok": ok,
+            "exit_code": exit_code,
+            "command": gate.command,
+            "log": job.log.to_string_lossy(),
+            "tail": tail,
+        }),
+    )?;
+
+    if node == Node::MainCheck {
+        let _ = git::worktree_remove(&repo, &verify_dir(&head), true);
+        if !ok {
+            let detail = format!(
+                "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`（退出码 {exit_code}）。\
+                 合并前，这个分支在 rebase 后的提交上通过了同一门禁，所以要么 main 在 rebase 之后又动过，\
+                 要么门禁本身不稳定。日志：{}\n\n{}",
+                task.id,
+                &head[..head.len().min(10)],
+                gate.command,
+                job.log.display(),
+                tail
+            );
+            let id =
+                ctx.store
+                    .raise_alert(&project.id, "main_gate_failed", Some(&task.id), &detail)?;
+            ctx.store.append_event(
+                "project.alert",
+                &project.id,
+                json!({ "alert_id": id, "kind": "main_gate_failed", "task_id": task.id }),
+            )?;
+        }
+    }
+
+    let outcome = if ok {
+        GateOutcome::Passed
+    } else {
+        GateOutcome::Failed {
+            head: head.clone(),
+            command: gate.command.clone(),
+            tail,
+        }
+    };
+    finish_gate(ctx, task, project, node, outcome)
+}
+
+fn finish_gate(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    node: Node,
+    outcome: GateOutcome,
+) -> Result<()> {
+    let status = read_status(project, task).map(Box::new);
+    advance(
+        ctx,
+        &task.id,
+        &Trigger::GateDone {
+            node,
+            outcome,
+            status,
+        },
+    )?;
+    Ok(())
+}
+
+/// The commit a task's gate is bound to. One repository: its head. A
+/// workspace: every checkout's head, folded into one id, so a commit in any of
+/// them invalidates the run.
+fn gate_head(layout: &TaskLayout) -> Result<String> {
+    let heads: Vec<String> = layout
+        .repos
+        .iter()
+        .map(|r| git::head_sha(&r.worktree))
+        .collect::<std::result::Result<_, _>>()?;
+    if heads.len() == 1 {
+        return Ok(heads.into_iter().next().unwrap_or_default());
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(heads.join("+").as_bytes());
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Where the merge commit is checked out for the gate after the merge.
+fn verify_dir(commit: &str) -> String {
+    format!(".worktree/_verify-{}", &commit[..commit.len().min(12)])
 }
 
 /// Rebases every checkout onto its own base.
@@ -1860,6 +2428,11 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
             // re-run by the next tick, and all three are idempotent.
             continue;
         }
+        if matches!(ctx.store.pending_retry(&task.id), Ok(Some(_))) {
+            // A round waiting out a backoff or a cooldown: the tick starts it
+            // when the wait is over, not the moment the core comes back.
+            continue;
+        }
         match ctx.store.running_session(&task.id) {
             Ok(Some(s)) => match reap_session(ctx, &s) {
                 Ok(true) => report.tasks_advanced.push(task.id.clone()),
@@ -1885,6 +2458,16 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
 
 /// Re-runs the node a task is already recorded as being in.
 fn redispatch(ctx: &mut Ctx, task_id: &str, node: Node) -> Result<()> {
+    redispatch_with(ctx, task_id, node, None)
+}
+
+/// Starts the round at `node` again, carrying `inject`.
+fn redispatch_with(
+    ctx: &mut Ctx,
+    task_id: &str,
+    node: Node,
+    inject: Option<&Inject>,
+) -> Result<()> {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let resolved = resolve_config(ctx, &project)?;
@@ -1895,7 +2478,7 @@ fn redispatch(ctx: &mut Ctx, task_id: &str, node: Node) -> Result<()> {
             None => return Ok(()),
         },
     };
-    start_session(ctx, &task, &project, &resolved, kind, None)
+    start_session(ctx, &task, &project, &resolved, kind, inject)
 }
 
 /// Starts a retro round on a task that has already stopped.
@@ -2631,6 +3214,12 @@ mod tests {
         )
         .unwrap();
 
+        // No retries: what is under test is how the crash itself is read.
+        let config = w.repo.join(".autome/config.toml");
+        let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+        text.push_str("\n[retry]\nattempts = 0\n");
+        std::fs::write(&config, text).unwrap();
+
         reap_session(&mut w.ctx, &session).unwrap();
         assert!(
             matches!(
@@ -2643,6 +3232,77 @@ mod tests {
             "{:?}",
             w.state("T-1")
         );
+    }
+
+    #[test]
+    fn a_crash_is_retried_with_a_backoff_before_it_fails_the_task() {
+        needs_git!();
+        let mut w = World::new("retry");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        // A perfectly good document that must NOT rescue a crashed session.
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
+        );
+        let session = Session {
+            id: "s1".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Role { role: Role::Impl },
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 1,
+            started_at: now_iso(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
+        };
+        w.ctx.store.insert_session(&session).unwrap();
+        let dir = w.repo.join(SessionPaths::dir("T-1"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s1.exit"),
+            ExitMarker {
+                exit_code: 137,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+
+        reap_session(&mut w.ctx, &session).unwrap();
+        // Still at the round, waiting out the first backoff rather than failed.
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        assert_eq!(w.ctx.store.retry_attempts("T-1").unwrap(), 1);
+        let (node, not_before, _) = w.ctx.store.pending_retry("T-1").unwrap().unwrap();
+        assert_eq!(node, Node::Implement);
+        assert!(
+            not_before > now_iso(),
+            "the default policy waits before retrying"
+        );
+        let event = w
+            .ctx
+            .store
+            .last_event("T-1", "session.retry")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["rate_limited"], serde_json::json!(false));
     }
 
     #[test]
@@ -2956,7 +3616,7 @@ mod tests {
     }
 
     #[test]
-    fn merging_with_an_included_backlog_item_returns_to_implement_and_consumes_it() {
+    fn merging_with_an_included_backlog_item_returns_to_implement_carrying_it() {
         needs_git!();
         let mut w = World::new("consume");
         w.add_task("T-1", "a");
@@ -2983,12 +3643,22 @@ mod tests {
                 node: Node::Implement
             }
         );
-        assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
+        // Carried by the implementation round, not consumed on the way in:
+        // the round that applies the item is the one that spends it.
+        let session = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        let decisions = w.ctx.store.list_decisions("T-1").unwrap();
+        assert_eq!(
+            decisions[0].carried_by.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert!(decisions[0].consumed_at.is_none());
         assert_eq!(
             w.ctx.store.get_task("T-1").unwrap().budget_n,
             Some(30),
             "the extra milestone is paid for out of a raised budget"
         );
+        w.ctx.store.settle_decisions(&session.id).unwrap();
+        assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
     }
 
     // ---- control ---------------------------------------------------------

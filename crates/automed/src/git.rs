@@ -495,6 +495,14 @@ pub fn worktree_add(repo: &Path, rel_path: &str, branch: &str, base: &str) -> Re
     Ok(())
 }
 
+/// `git worktree add --detach <path> <commit>`: a throwaway checkout of one
+/// commit, for running the project's gate on what was merged without touching
+/// the user's own checkout.
+pub fn worktree_add_detached(repo: &Path, rel_path: &str, commit: &str) -> Result<()> {
+    run_ok(repo, &["worktree", "add", "--detach", rel_path, commit])?;
+    Ok(())
+}
+
 /// Removes a worktree. `force` discards uncommitted changes inside it, which
 /// is correct on cancel (the user asked for the work to go away) and wrong on
 /// cleanup after a merge (where a dirty worktree means something unexpected

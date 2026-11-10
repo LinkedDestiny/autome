@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use autome_domain::project::{AddDisposition, Member, Onboarding, Project, ProjectKind};
 use autome_domain::role::Runtime;
 use autome_domain::session::{Session, SessionKind, SessionLifecycle};
-use autome_domain::task::{Disposition, PendingDecisions, TaskState};
+use autome_domain::task::{Disposition, Inject, Node, PendingDecisions, TaskState};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -149,7 +149,25 @@ pub struct DecisionRecord {
     /// Set once a transition has consumed this decision, so it is applied
     /// exactly once (design §5.3's `consumes_decisions`).
     pub consumed_at: Option<String>,
+    /// The session currently carrying this item into its round, if any.
+    pub carried_by: Option<String>,
 }
+
+/// Something a person should hear about that belongs to no running task.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AlertRecord {
+    pub id: String,
+    pub project_id: String,
+    pub kind: String,
+    pub task_id: Option<String>,
+    pub detail: String,
+    pub created_at: String,
+}
+
+/// A rate-limited CLI is left alone this long the first time, twice that the
+/// next, and never longer than an hour.
+pub const COOLDOWN_BASE_MINUTES: i64 = 10;
+pub const COOLDOWN_MAX_MINUTES: i64 = 60;
 
 /// `(key, domain, proposal, evidence, state)` for one rule proposal.
 pub type RuleProposalRow = (String, String, String, Vec<String>, String);
@@ -376,6 +394,60 @@ impl Store {
 
                 ALTER TABLE tasks ADD COLUMN doc_root TEXT;
                 PRAGMA user_version = 3;
+                COMMIT;
+                "#,
+            )?;
+        }
+        // v4, three additions that share one reason: the core takes on work
+        // it used to leave to a session or to the user.
+        //
+        // `carried_by` / `consumed_by`: a decision is a lease, not a flag.
+        // A session that starts carrying it marks it; only that session
+        // ending well consumes it, and one that crashes hands it back. Before
+        // this, decisions were consumed on the way *into* the round meant to
+        // apply them — which then read the unconsumed ones and found none.
+        //
+        // `runtime_cooldowns`: a CLI that answered "rate limited" is left
+        // alone until `until`, and a run of them backs off further.
+        //
+        // `project_alerts`: things a person should hear about that belong to
+        // no running task — main failing its gate after a merge, the first.
+        if version < 4 {
+            self.conn.execute_batch(
+                r#"
+                BEGIN;
+                ALTER TABLE decisions ADD COLUMN carried_by TEXT;
+                ALTER TABLE decisions ADD COLUMN consumed_by TEXT;
+
+                CREATE TABLE runtime_cooldowns (
+                    runtime TEXT PRIMARY KEY,
+                    until   TEXT NOT NULL,
+                    reason  TEXT NOT NULL,
+                    strikes INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE project_alerts (
+                    id           TEXT PRIMARY KEY,
+                    project_id   TEXT NOT NULL REFERENCES projects(id),
+                    kind         TEXT NOT NULL,
+                    task_id      TEXT,
+                    detail       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    dismissed_at TEXT
+                );
+                -- A crashed round waiting to be run again. One row per task:
+                -- `attempts` counts the crashes since the task last moved,
+                -- `not_before` is when the next attempt may start (NULL once
+                -- it has), `inject` is what the crashed round was carrying.
+                CREATE TABLE session_retries (
+                    task_id    TEXT PRIMARY KEY REFERENCES tasks(id),
+                    node       TEXT NOT NULL,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    not_before TEXT,
+                    inject     TEXT,
+                    reason     TEXT NOT NULL
+                );
+                PRAGMA user_version = 4;
                 COMMIT;
                 "#,
             )?;
@@ -1227,7 +1299,7 @@ impl Store {
             };
             let sql = format!(
                 "DELETE FROM decisions WHERE task_id = ?1 AND kind = ?2
-                 AND disposition = ?3 AND consumed_at IS NULL
+                 AND disposition = ?3 AND consumed_at IS NULL AND carried_by IS NULL
                  AND item_id NOT IN ({placeholders})"
             );
             let mut stmt = tx.prepare(&sql)?;
@@ -1270,25 +1342,33 @@ impl Store {
     }
 
     pub fn list_decisions(&self, task_id: &str) -> Result<Vec<DecisionRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT task_id, kind, item_id, text, disposition, ruling, consumed_at
-             FROM decisions WHERE task_id = ?1 ORDER BY kind, item_id",
-        )?;
-        let rows = stmt.query_map(params![task_id], |r| {
+        self.query_decisions("task_id = ?1", task_id)
+    }
+
+    fn query_decisions(&self, filter: &str, key: &str) -> Result<Vec<DecisionRecord>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT task_id, kind, item_id, text, disposition, ruling, consumed_at, carried_by
+             FROM decisions WHERE {filter} ORDER BY kind, item_id"
+        ))?;
+        let rows = stmt.query_map(params![key], |r| {
             let disposition: String = r.get(4)?;
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ),
                 disposition,
                 r.get::<_, Option<String>>(5)?,
                 r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (task_id, kind, item_id, text, disposition, ruling, consumed_at) = row?;
+            let ((task_id, kind, item_id, text), disposition, ruling, consumed_at, carried_by) =
+                row?;
             out.push(DecisionRecord {
                 task_id,
                 kind,
@@ -1297,6 +1377,7 @@ impl Store {
                 disposition: serde_json::from_str(&disposition)?,
                 ruling,
                 consumed_at,
+                carried_by,
             });
         }
         Ok(out)
@@ -1327,14 +1408,246 @@ impl Store {
         Ok(n as u32)
     }
 
-    /// The decided items a prompt should carry, for the injection the
-    /// transition asked for.
-    pub fn decisions_for_prompt(&self, task_id: &str) -> Result<Vec<DecisionRecord>> {
+    /// Hands a session the decided items nobody is carrying yet, and marks
+    /// them as its own. The session's prompt and brief get exactly this list.
+    ///
+    /// Marking rather than consuming: the decisions are applied by the round
+    /// that receives them, so they are only spent when that round ends well
+    /// (`settle_decisions`). A round that crashes hands them back
+    /// (`release_decisions`) and the next one carries them again.
+    pub fn carry_decisions(&self, task_id: &str, session_id: &str) -> Result<Vec<DecisionRecord>> {
+        let none = serde_json::to_string(&Disposition::None)?;
+        self.conn.execute(
+            "UPDATE decisions SET carried_by = ?2
+             WHERE task_id = ?1 AND consumed_at IS NULL AND carried_by IS NULL
+               AND disposition != ?3",
+            params![task_id, session_id, none],
+        )?;
+        self.query_decisions("carried_by = ?1", session_id)
+    }
+
+    /// The session carrying these ended well: they have been applied.
+    pub fn settle_decisions(&self, session_id: &str) -> Result<u32> {
+        let n = self.conn.execute(
+            "UPDATE decisions SET consumed_at = ?2, consumed_by = ?1, carried_by = NULL
+             WHERE carried_by = ?1 AND consumed_at IS NULL",
+            params![session_id, now_iso()],
+        )?;
+        Ok(n as u32)
+    }
+
+    /// The session carrying these did not finish its round: give them back.
+    pub fn release_decisions(&self, session_id: &str) -> Result<u32> {
+        let n = self.conn.execute(
+            "UPDATE decisions SET carried_by = NULL WHERE carried_by = ?1 AND consumed_at IS NULL",
+            params![session_id],
+        )?;
+        Ok(n as u32)
+    }
+
+    // -----------------------------------------------------------------
+    // Runtime cooldowns
+    // -----------------------------------------------------------------
+
+    /// Records that a CLI said "later". A second strike while the first is
+    /// recent doubles the wait, up to an hour; `reset_at`, when the CLI said
+    /// when, wins over the guess.
+    pub fn cool_down(
+        &self,
+        runtime: Runtime,
+        reason: &str,
+        reset_at: Option<i64>,
+    ) -> Result<String> {
+        let now = epoch_now();
+        let previous: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT until, strikes FROM runtime_cooldowns WHERE runtime = ?1",
+                params![runtime.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        // "Recent" is within an hour of the last cooldown ending: a limit hit
+        // again the day after is a new day, not a second strike.
+        let strikes = match previous {
+            Some((until, n)) if until >= format_iso(now - 3600) => n + 1,
+            _ => 1,
+        };
+        let minutes = (COOLDOWN_BASE_MINUTES << (strikes - 1).min(6)).min(COOLDOWN_MAX_MINUTES);
+        let guessed = now + minutes * 60;
+        let until = format_iso(reset_at.filter(|t| *t > now).unwrap_or(guessed));
+        self.conn.execute(
+            "INSERT INTO runtime_cooldowns (runtime, until, reason, strikes) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (runtime) DO UPDATE SET until = excluded.until,
+                 reason = excluded.reason, strikes = excluded.strikes",
+            params![runtime.as_str(), until, reason, strikes],
+        )?;
+        Ok(until)
+    }
+
+    /// When this CLI may be used again, if it is cooling down now.
+    pub fn cooling_until(&self, runtime: Runtime) -> Result<Option<String>> {
         Ok(self
-            .list_decisions(task_id)?
-            .into_iter()
-            .filter(|d| d.consumed_at.is_none() && d.disposition != Disposition::None)
-            .collect())
+            .conn
+            .query_row(
+                "SELECT until FROM runtime_cooldowns WHERE runtime = ?1 AND until > ?2",
+                params![runtime.as_str(), now_iso()],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Every CLI cooling down now, for the dashboard and `autome status`.
+    pub fn active_cooldowns(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT runtime, until, reason FROM runtime_cooldowns WHERE until > ?1 ORDER BY runtime",
+        )?;
+        let rows = stmt.query_map(params![now_iso()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// A round on this CLI finished: whatever limit it hit is behind it.
+    pub fn clear_cooldown(&self, runtime: Runtime) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM runtime_cooldowns WHERE runtime = ?1",
+            params![runtime.as_str()],
+        )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Session retries
+    // -----------------------------------------------------------------
+
+    /// Crashes counted against the round this task is sitting at.
+    pub fn retry_attempts(&self, task_id: &str) -> Result<u32> {
+        let n: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT attempts FROM session_retries WHERE task_id = ?1",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(n.unwrap_or(0) as u32)
+    }
+
+    /// Schedules the round at `node` to run again at `not_before`. `counted`
+    /// is false for a rate limit, which is the CLI's problem, not the round's.
+    pub fn schedule_retry(
+        &self,
+        task_id: &str,
+        node: Node,
+        not_before: &str,
+        inject: Option<&Inject>,
+        reason: &str,
+        counted: bool,
+    ) -> Result<()> {
+        let inject = inject.map(serde_json::to_string).transpose()?;
+        self.conn.execute(
+            "INSERT INTO session_retries (task_id, node, attempts, not_before, inject, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (task_id) DO UPDATE SET node = excluded.node,
+                 attempts = session_retries.attempts + ?3, not_before = excluded.not_before,
+                 inject = excluded.inject, reason = excluded.reason",
+            params![
+                task_id,
+                node.as_str(),
+                counted as i64,
+                not_before,
+                inject,
+                reason
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A retry still waiting to be started: `(node, not_before, inject)`.
+    pub fn pending_retry(&self, task_id: &str) -> Result<Option<(Node, String, Option<Inject>)>> {
+        let row: Option<(String, String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT node, not_before, inject FROM session_retries
+                 WHERE task_id = ?1 AND not_before IS NOT NULL",
+                params![task_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((node, not_before, inject)) = row else {
+            return Ok(None);
+        };
+        let Some(node) = Node::parse(&node) else {
+            return Ok(None);
+        };
+        let inject = inject.as_deref().map(serde_json::from_str).transpose()?;
+        Ok(Some((node, not_before, inject)))
+    }
+
+    /// The retry has been started; the attempt count stays until the task moves.
+    pub fn retry_started(&self, task_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE session_retries SET not_before = NULL WHERE task_id = ?1",
+            params![task_id],
+        )?;
+        Ok(())
+    }
+
+    /// The task moved on (or stopped): its crash count starts again from zero.
+    pub fn clear_retry(&self, task_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM session_retries WHERE task_id = ?1",
+            params![task_id],
+        )?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Project alerts
+    // -----------------------------------------------------------------
+
+    pub fn raise_alert(
+        &self,
+        project_id: &str,
+        kind: &str,
+        task_id: Option<&str>,
+        detail: &str,
+    ) -> Result<String> {
+        let id = new_id("alr");
+        self.conn.execute(
+            "INSERT INTO project_alerts (id, project_id, kind, task_id, detail, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, project_id, kind, task_id, detail, now_iso()],
+        )?;
+        Ok(id)
+    }
+
+    /// Alerts nobody has dismissed yet, newest first.
+    pub fn open_alerts(&self) -> Result<Vec<AlertRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, kind, task_id, detail, created_at FROM project_alerts
+             WHERE dismissed_at IS NULL ORDER BY created_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AlertRecord {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                kind: r.get(2)?,
+                task_id: r.get(3)?,
+                detail: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn dismiss_alert(&self, id: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE project_alerts SET dismissed_at = ?2 WHERE id = ?1 AND dismissed_at IS NULL",
+            params![id, now_iso()],
+        )?;
+        self.require_one(n, "报警", id)
     }
 
     fn require_one(&self, affected: usize, what: &str, id: &str) -> Result<()> {
@@ -1520,6 +1833,20 @@ pub fn now_iso() -> String {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     format_iso(secs)
+}
+
+pub fn epoch_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// `now + secs`, in the ledger's timestamp format. The format sorts as text,
+/// so "has this time passed" is a string comparison against `now_iso()`.
+pub fn iso_in(secs: i64) -> String {
+    format_iso(epoch_now() + secs)
 }
 
 pub fn format_iso(epoch_secs: i64) -> String {
@@ -2091,7 +2418,7 @@ mod tests {
     }
 
     #[test]
-    fn decisions_for_prompt_returns_only_decided_unconsumed_items() {
+    fn a_session_carries_only_decided_unconsumed_items() {
         let s = store();
         s.insert_project(&project("p1", "/a")).unwrap();
         s.insert_task(&task("T-1", "p1", "a")).unwrap();
@@ -2103,9 +2430,54 @@ mod tests {
         .unwrap();
         s.set_disposition("T-1", "backlog", "B-01", Disposition::Include, None)
             .unwrap();
-        let for_prompt = s.decisions_for_prompt("T-1").unwrap();
-        assert_eq!(for_prompt.len(), 1);
-        assert_eq!(for_prompt[0].item_id, "B-01");
+        let carried = s.carry_decisions("T-1", "ses-1").unwrap();
+        assert_eq!(carried.len(), 1);
+        assert_eq!(carried[0].item_id, "B-01");
+        assert_eq!(carried[0].carried_by.as_deref(), Some("ses-1"));
+        // Carried is not consumed: the transition table still counts it.
+        assert_eq!(s.pending_decisions("T-1").unwrap().included, 1);
+        // And a second session does not get the same item.
+        assert!(s.carry_decisions("T-1", "ses-2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_crashed_session_hands_its_decisions_back_and_a_good_one_spends_them() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_task(&task("T-1", "p1", "a")).unwrap();
+        s.sync_decisions("T-1", &[("B-01".into(), "x".into())], &[])
+            .unwrap();
+        s.set_disposition("T-1", "backlog", "B-01", Disposition::Include, None)
+            .unwrap();
+
+        s.carry_decisions("T-1", "ses-1").unwrap();
+        assert_eq!(s.release_decisions("ses-1").unwrap(), 1);
+        let again = s.carry_decisions("T-1", "ses-2").unwrap();
+        assert_eq!(
+            again.len(),
+            1,
+            "the next round carries what the crash dropped"
+        );
+
+        assert_eq!(s.settle_decisions("ses-2").unwrap(), 1);
+        assert_eq!(s.pending_decisions("T-1").unwrap().included, 0);
+        assert!(s.carry_decisions("T-1", "ses-3").unwrap().is_empty());
+        // Settled rows are not handed back by a late release either.
+        assert_eq!(s.release_decisions("ses-2").unwrap(), 0);
+    }
+
+    #[test]
+    fn a_carried_item_survives_the_document_dropping_it() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_task(&task("T-1", "p1", "a")).unwrap();
+        s.sync_decisions("T-1", &[("B-01".into(), "x".into())], &[])
+            .unwrap();
+        s.set_disposition("T-1", "backlog", "B-01", Disposition::Include, None)
+            .unwrap();
+        s.carry_decisions("T-1", "ses-1").unwrap();
+        s.sync_decisions("T-1", &[], &[]).unwrap();
+        assert_eq!(s.list_decisions("T-1").unwrap().len(), 1);
     }
 
     // ---- events ----------------------------------------------------------

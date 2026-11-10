@@ -56,6 +56,13 @@ pub struct Ctx {
     /// the app was closed, bringing the scaffold up to `SCAFFOLD_VERSION` —
     /// never ran outside the tests.
     pub recovered: bool,
+    /// The driver lock while this context holds it (see `driver_lock`).
+    /// Held for one tick or one write command, so the desktop app and the
+    /// `autome` command can drive the same ledger without both starting the
+    /// same round. A field rather than a guard on the stack because write
+    /// commands tick on their way out and the tick must see the lock is
+    /// already ours.
+    pub driver_lock: Option<crate::driver_lock::DriverLock>,
 }
 
 impl Ctx {
@@ -71,6 +78,7 @@ impl Ctx {
             environment: EnvCache::default(),
             launch_mode: crate::launcher::LaunchMode::Headless,
             recovered: false,
+            driver_lock: None,
         }
     }
 
@@ -202,6 +210,9 @@ impl EnvCache {
     }
 }
 
+/// How long a write command waits for another driver's tick to finish.
+const DRIVER_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
     if command.protocol_version != PROTOCOL_VERSION {
         return fail(
@@ -214,7 +225,35 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
         );
     }
 
-    match dispatch(ctx, command) {
+    // A write command holds the driver lock for its whole length: it may
+    // advance a task and start a session, and another driver must not do the
+    // same thing in between. The tick takes the lock itself, without waiting.
+    let mut took_lock = false;
+    if command.method != "scheduler.tick"
+        && !READ_METHODS.contains(&command.method.as_str())
+        && ctx.driver_lock.is_none()
+    {
+        match crate::driver_lock::acquire(ctx.store.path(), DRIVER_LOCK_WAIT) {
+            Ok(Some(lock)) => {
+                ctx.driver_lock = Some(lock);
+                took_lock = true;
+            }
+            Ok(None) => {
+                return fail(
+                    command,
+                    ReplyErrorCode::Internal,
+                    "另一个 Autome（桌面端或命令行）正占着状态库，稍后再试".into(),
+                );
+            }
+            Err(e) => tracing::warn!(error = %e, "driver lock unavailable, proceeding without it"),
+        }
+    }
+    let result = dispatch(ctx, command);
+    if took_lock {
+        ctx.driver_lock = None;
+    }
+
+    match result {
         Ok((payload, events)) => {
             let snapshot_seq = ctx.store.latest_seq().unwrap_or(0);
             Outcome {
@@ -342,6 +381,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "project.onboarding.run" => onboarding_run(ctx, str_param(p, "project_id")?),
         "project.onboarding.artefacts" => onboarding_artefacts(ctx, str_param(p, "project_id")?),
         "project.onboarding.save" => onboarding_save(ctx, p),
+        "project.alert.dismiss" => alert_dismiss(ctx, str_param(p, "alert_id")?),
 
         // ---- tasks -------------------------------------------------------
         "task.create" => task_create(ctx, p),
@@ -1460,6 +1500,11 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             // Running totals, for a task still in flight. `task.metrics` is
             // the final aggregate and only exists once the task has ended.
             "so_far": running_totals(&sessions),
+            // A crashed round waiting to start again, or one deferred by a
+            // rate-limit cooldown.
+            "retry": retry_json(ctx, task_id)?,
+            // The core's last run of the project gate on this task.
+            "gate": ctx.store.last_event(task_id, "gate.result")?,
         }),
         vec![],
     ))
@@ -1617,6 +1662,8 @@ fn decision_json(d: &crate::store::DecisionRecord, status: Option<&StatusBlock>)
         "disposition": d.disposition,
         "ruling": d.ruling,
         "consumed": d.consumed_at.is_some(),
+        // A round has taken it and has not finished yet.
+        "carried": d.carried_by.is_some(),
     })
 }
 
@@ -1717,6 +1764,13 @@ fn task_stop(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 
 /// Kills whatever session this task has running and records it as killed.
 fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchError> {
+    // A gate the task was waiting on goes with it: nobody will read the
+    // result, and a test suite must not keep running for nothing.
+    if let Ok(task) = ctx.store.get_task(task_id)
+        && let Ok(project) = ctx.store.get_project(&task.project_id)
+    {
+        crate::gate::stop_all(std::path::Path::new(&project.path), task_id);
+    }
     if let Some(session) = ctx.store.running_session(task_id)? {
         if let Some(pid) = session.pid {
             let _ = crate::launcher::stop_session(pid);
@@ -1726,6 +1780,8 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
             &autome_domain::session::SessionLifecycle::Killed,
             &now_iso(),
         )?;
+        // The round never finished, so whatever it carried was not applied.
+        ctx.store.release_decisions(&session.id)?;
     }
     Ok(())
 }
@@ -2002,6 +2058,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "task": task_json(&task),
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
+                "retry": retry_json(ctx, &task.id)?,
             });
             if task.state.awaits_user() {
                 waiting.push(entry);
@@ -2031,13 +2088,61 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
         None => json!({ "probed": false, "problems": [] }),
     };
 
+    // Project-level alerts sit beside "waiting": they want a person and belong
+    // to no running task — main failing its gate after a merge, so far.
+    let alerts: Vec<Value> = ctx.store.open_alerts()?.iter().map(alert_json).collect();
+    let cooldowns: Vec<Value> = ctx
+        .store
+        .active_cooldowns()?
+        .into_iter()
+        .map(|(runtime, until, reason)| json!({ "runtime": runtime, "until": until, "reason": reason }))
+        .collect();
+
     Ok((
         json!({
             "waiting": waiting,
             "running": running,
+            "alerts": alerts,
+            "cooldowns": cooldowns,
             "environment": environment,
         }),
         vec![],
+    ))
+}
+
+fn alert_json(a: &crate::store::AlertRecord) -> Value {
+    json!({
+        "id": a.id,
+        "project_id": a.project_id,
+        "kind": a.kind,
+        "task_id": a.task_id,
+        "detail": a.detail,
+        "created_at": a.created_at,
+    })
+}
+
+/// A crashed or deferred round waiting to start again, for the panel's
+/// "重试 / 冷却到 hh:mm" line. `null` when there is none.
+fn retry_json(ctx: &Ctx, task_id: &str) -> Result<Value, DispatchError> {
+    Ok(match ctx.store.pending_retry(task_id)? {
+        Some((node, not_before, _)) => json!({
+            "node": node.as_str(),
+            "not_before": not_before,
+            "attempts": ctx.store.retry_attempts(task_id)?,
+        }),
+        None => Value::Null,
+    })
+}
+
+/// `project.alert.dismiss`: the user has seen it.
+fn alert_dismiss(ctx: &mut Ctx, alert_id: &str) -> DispatchResult {
+    ctx.store.dismiss_alert(alert_id)?;
+    let seq = ctx
+        .store
+        .append_event("project.alert_dismissed", alert_id, json!({}))?;
+    Ok((
+        json!({ "dismissed": alert_id }),
+        vec![event(seq, "dashboard.updated", alert_id, json!({}))],
     ))
 }
 
@@ -2052,6 +2157,8 @@ fn scheduler_tick(ctx: &mut Ctx) -> DispatchResult {
             "tasks_advanced": report.tasks_advanced,
             "tasks_started": report.tasks_started,
             "errors": report.errors,
+            // Another driver held the ledger for this tick; nothing ran.
+            "skipped": report.skipped,
             "latest_seq": ctx.store.latest_seq()?,
             // The UI polls this; a change means a background probe finished
             // and `env.get` now has something new to say.
@@ -3079,6 +3186,7 @@ mod tests {
             disposition: autome_domain::task::Disposition::None,
             ruling: None,
             consumed_at: None,
+            carried_by: None,
         };
         let mut block = status_block::parse(
             "status: 设计中\ndesign-round: 1/15\nimplementation-round: 0/25\n\

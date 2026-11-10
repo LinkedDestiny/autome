@@ -37,6 +37,142 @@ pub fn parse(runtime: Runtime, stream: &str, wall_ms: Option<u64>) -> SessionMet
     }
 }
 
+/// A failure that is the CLI's provider saying "later", not the round going
+/// wrong. Read off the same stream as the usage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transient {
+    /// The provider's own words, trimmed, for the event and the panel.
+    pub message: String,
+    /// When the provider said the limit resets, as epoch seconds, if it said.
+    pub reset_at: Option<i64>,
+}
+
+/// Whether a failed session failed because of a rate or usage limit.
+///
+/// Only the error-shaped parts of the stream are read — a `result` event
+/// marked as an error, Codex's `turn.failed` and `error` events, and the
+/// non-JSON lines the wrapper merged in from stderr. Everything else is the
+/// round's own work, where "429" is as likely to be a line number as a status.
+///
+/// The phrases are the ones the two CLIs have printed: Claude's
+/// `usage limit reached|<epoch>` and `rate_limit_error`, Codex's
+/// `You've hit your usage limit … Try again in 2 hours` and
+/// `exceeded retry limit, last status: 429`. A wording this does not know
+/// falls through to an ordinary crash, which is retried anyway — just with
+/// the retry counted.
+pub fn classify_failure(runtime: Runtime, stream: &str, now_epoch: i64) -> Option<Transient> {
+    let mut texts: Vec<String> = Vec::new();
+    for line in stream.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with('{') {
+            texts.push(trimmed.to_string());
+            continue;
+        }
+        let Ok(Value::Object(o)) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let kind = o.get("type").and_then(Value::as_str).unwrap_or("");
+        let pick = |v: Option<&Value>| {
+            v.map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string())
+            })
+        };
+        match (runtime, kind) {
+            (Runtime::Claude, "result") => {
+                let is_error = o.get("is_error").and_then(Value::as_bool).unwrap_or(false)
+                    || o.get("subtype")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| s != "success");
+                if is_error {
+                    texts.extend(pick(o.get("result")));
+                    texts.extend(pick(o.get("error")));
+                }
+            }
+            (_, "error") => {
+                texts.extend(pick(o.get("message")));
+                texts.extend(pick(o.get("error")));
+            }
+            (Runtime::Codex, "turn.failed") => {
+                texts.extend(pick(o.get("error").and_then(|e| e.get("message"))));
+            }
+            _ => {}
+        }
+    }
+
+    const PHRASES: [&str; 12] = [
+        "rate limit",
+        "rate_limit",
+        "ratelimit",
+        "too many requests",
+        "usage limit",
+        "hit your limit",
+        "limit reached",
+        "quota exceeded",
+        "overloaded",
+        "status: 429",
+        " 429 ",
+        "error: 429",
+    ];
+    let hit = texts.into_iter().find(|t| {
+        let lower = format!(" {} ", t.to_lowercase());
+        PHRASES.iter().any(|p| lower.contains(p))
+    })?;
+    let reset_at = reset_epoch(&hit, now_epoch);
+    let mut message: String = hit.chars().take(300).collect();
+    if message.len() < hit.len() {
+        message.push('…');
+    }
+    Some(Transient { message, reset_at })
+}
+
+/// Reads a reset time out of a limit message: Claude's `…|1731000000`, or a
+/// relative `try again in 2 hours 13 minutes`.
+fn reset_epoch(text: &str, now: i64) -> Option<i64> {
+    if let Some((_, tail)) = text.rsplit_once('|') {
+        let digits: String = tail
+            .trim()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(epoch) = digits.parse::<i64>()
+            && epoch > now
+        {
+            return Some(epoch);
+        }
+    }
+    let lower = text.to_lowercase();
+    let after = lower.split("try again in").nth(1)?;
+    let mut secs = 0i64;
+    let words: Vec<&str> = after
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .filter(|w| !w.is_empty())
+        .take(8)
+        .collect();
+    for pair in words.windows(2) {
+        let Ok(n) = pair[0].parse::<i64>() else {
+            continue;
+        };
+        let unit = pair[1];
+        secs += if unit.starts_with("hour") || unit == "h" {
+            n * 3600
+        } else if unit.starts_with("min") || unit == "m" {
+            n * 60
+        } else if unit.starts_with("sec") || unit == "s" {
+            n
+        } else if unit.starts_with("day") {
+            n * 86_400
+        } else {
+            0
+        };
+    }
+    (secs > 0).then_some(now + secs)
+}
+
 fn objects(stream: &str) -> impl Iterator<Item = serde_json::Map<String, Value>> + '_ {
     stream.lines().filter_map(|line| {
         let line = line.trim();
@@ -194,6 +330,57 @@ pub fn measure_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- classify_failure ---------------------------------------------
+
+    const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn claudes_usage_limit_result_is_transient_with_its_reset_time() {
+        let stream = concat!(
+            r#"{"type":"system","subtype":"init"}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1800003600"}"#,
+        );
+        let t = classify_failure(Runtime::Claude, stream, NOW).expect("transient");
+        assert_eq!(t.reset_at, Some(1_800_003_600));
+    }
+
+    #[test]
+    fn claudes_api_429_is_transient() {
+        let stream = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}"}"#;
+        assert!(classify_failure(Runtime::Claude, stream, NOW).is_some());
+    }
+
+    #[test]
+    fn codexs_usage_limit_says_when_to_try_again() {
+        let stream = r#"{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro or try again in 2 hours 13 minutes."}}"#;
+        let t = classify_failure(Runtime::Codex, stream, NOW).expect("transient");
+        assert_eq!(t.reset_at, Some(NOW + 2 * 3600 + 13 * 60));
+    }
+
+    #[test]
+    fn codexs_exhausted_retries_on_429_is_transient() {
+        let stream = concat!(
+            "stream error: exceeded retry limit, last status: 429 Too Many Requests\n",
+            r#"{"type":"error","message":"exceeded retry limit, last status: 429 Too Many Requests"}"#,
+        );
+        assert!(classify_failure(Runtime::Codex, stream, NOW).is_some());
+    }
+
+    #[test]
+    fn a_round_that_merely_mentions_429_in_its_work_is_not_rate_limited() {
+        // The tool output is the round's own business: a test named
+        // `rate_limit_429` failing is a crash like any other.
+        let stream = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"fixing the rate limit test, status 429 expected"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"done"}"#,
+        );
+        assert_eq!(classify_failure(Runtime::Claude, stream, NOW), None);
+        let codex = r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"429 Too Many Requests"}}"#;
+        assert_eq!(classify_failure(Runtime::Codex, codex, NOW), None);
+    }
 
     /// Captured from Claude Code 2.1.261 on 2026-09-17. Trimmed to the fields
     /// this module reads, with the two-content-block repeat preserved: that

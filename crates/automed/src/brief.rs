@@ -174,6 +174,10 @@ pub struct Inputs<'a> {
     pub budget_line: Option<String>,
     /// What the user decided at the last stopping point, already rendered.
     pub decisions: Option<String>,
+    /// What the core's own run of the project gate found on the commit this
+    /// round is looking at, already rendered. For the audit round: the full
+    /// suite has been run once by someone other than the round being audited.
+    pub gate: Option<String>,
 }
 
 /// The milestone this round is about: the current one if the status block
@@ -263,6 +267,10 @@ pub fn build(input: &Inputs<'_>) -> String {
     }
     if let Some(d) = &input.decisions {
         s.push_str(d);
+    }
+    if let Some(g) = &input.gate {
+        s.push_str("\n## 宿主门禁\n\n");
+        s.push_str(g);
     }
     s
 }
@@ -408,6 +416,7 @@ session-protocol = []
             map,
             budget_line: Some("本轮是实现轮第 3 轮，N = 35。\n".into()),
             decisions: None,
+            gate: None,
         }
     }
 

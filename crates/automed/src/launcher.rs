@@ -406,6 +406,24 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         Some(Inject::Decisions) => {
             p.push_str(&render_decisions(spec.decisions));
         }
+        Some(Inject::GateFailed {
+            head,
+            command,
+            tail,
+        }) => {
+            // The output verbatim and the commit it came from: the round has
+            // to reproduce the failure before it can fix it, and "the gate
+            // failed" without either is a claim it cannot check.
+            let short = &head[..head.len().min(10)];
+            p.push_str(&format!(
+                "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，没有通过。输出末尾（原文）：\n\n\
+                 ```\n{tail}\n```\n\n\
+                 本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。\
+                 本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，\
+                 implementation-round 照常加一，照常写本轮的证据文件。\
+                 门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n"
+            ));
+        }
         None => {}
     }
 
@@ -784,8 +802,30 @@ fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
     // The core's own git calls were never exposed: `git::run` clears the
     // environment outright. This is the other half of the same rule.
     strip_git_env(&mut cmd);
-    cmd.spawn()
+    // Its own process group, with the wrapper as leader. Two things depend
+    // on it. `stop_session` signals `-pid`, the wrapper's group, so that the
+    // CLI the wrapper pipes from dies with it; a wrapper sitting in the core's
+    // group has no group of its own and the signal reached nothing. And a core
+    // run from a terminal — the `autome` command — must not hand its Ctrl-C to
+    // every session it started: the foreground group gets the SIGINT, and the
+    // sessions are meant to outlive the driver.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
         .map_err(|e| err(format!("无法启动包装脚本：{e}")))?;
+    // Somebody has to wait on the child or it stays a zombie for as long as
+    // the core runs, and a zombie still answers `kill(pid, 0)`. The exit
+    // marker decides how a session ended, so nothing reads this status; a
+    // thread per session is the cheapest way to reap exactly this child and
+    // no other — `waitpid(-1)` would steal the status of a `git` the core is
+    // waiting on.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(Terminal::Headless)
 }
 
@@ -795,7 +835,7 @@ fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
 /// behave like a shell the user opened in that checkout, and every `GIT_*` it
 /// would inherit came from whatever started Autome rather than from the user.
 /// Sessions never push, so nothing here is load-bearing for authentication.
-fn strip_git_env(cmd: &mut Command) {
+pub(crate) fn strip_git_env(cmd: &mut Command) {
     for (key, _) in std::env::vars() {
         if key.starts_with("GIT_") {
             cmd.env_remove(key);
@@ -909,7 +949,7 @@ pub fn stop_session(pid: i32) -> Result<()> {
     #[cfg(unix)]
     unsafe {
         // Negative pid targets the process group. The wrapper is the group
-        // leader because the terminal starts it as its own job.
+        // leader because `run_in_terminal` starts it in a group of its own.
         libc::kill(-pid, libc::SIGTERM);
         std::thread::sleep(std::time::Duration::from_millis(3000));
         if libc::kill(-pid, 0) == 0 {
@@ -1561,6 +1601,7 @@ mod tests {
                 disposition: Disposition::Include,
                 ruling: None,
                 consumed_at: None,
+                carried_by: None,
             },
             DecisionRecord {
                 task_id: "T-1".into(),
@@ -1570,6 +1611,7 @@ mod tests {
                 disposition: Disposition::Ignore,
                 ruling: None,
                 consumed_at: None,
+                carried_by: None,
             },
             DecisionRecord {
                 task_id: "T-1".into(),
@@ -1579,6 +1621,7 @@ mod tests {
                 disposition: Disposition::Ruled,
                 ruling: Some("按评审方，不敏感".into()),
                 consumed_at: None,
+                carried_by: None,
             },
         ];
         let tpl = templates();
@@ -1605,6 +1648,7 @@ mod tests {
             disposition: Disposition::None,
             ruling: None,
             consumed_at: None,
+            carried_by: None,
         }];
         let tpl = templates();
         let mut s = spec(

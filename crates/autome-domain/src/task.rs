@@ -28,6 +28,10 @@ pub enum Node {
     Adjudicate,
     AwaitDesignApproval,
     Implement,
+    /// The project's gate, run by the core on the commit the implementation
+    /// round just left, before the audit round is asked to believe it. Only
+    /// reached when the project configures `[gate]`.
+    Gate,
     Audit,
     /// One pass over the whole run, once the implementation loop is done,
     /// writing `docs/<slug>/lessons.md`. Before this existed, what a task
@@ -40,24 +44,35 @@ pub enum Node {
     /// they travel with the branch.
     Retro,
     Rebase,
+    /// The gate again, on the rebased commit — the one the merge will bring
+    /// across. The implementation-loop gate ran on a branch that has since
+    /// moved onto a newer base.
+    MergeGate,
     AwaitMerge,
     Merging,
+    /// The gate once more, on the merge commit, after the merge. The task is
+    /// merged whatever this finds: a failure here raises an alert on the
+    /// project rather than undoing anything.
+    MainCheck,
     Cleanup,
 }
 
 impl Node {
-    pub const ALL: [Node; 12] = [
+    pub const ALL: [Node; 15] = [
         Node::Intake,
         Node::Design,
         Node::Review,
         Node::Adjudicate,
         Node::AwaitDesignApproval,
         Node::Implement,
+        Node::Gate,
         Node::Audit,
         Node::Retro,
         Node::Rebase,
+        Node::MergeGate,
         Node::AwaitMerge,
         Node::Merging,
+        Node::MainCheck,
         Node::Cleanup,
     ];
 
@@ -92,7 +107,22 @@ impl Node {
 
     /// Whether the core drives this node itself, with no session at all.
     pub const fn is_core_step(self) -> bool {
-        matches!(self, Node::Rebase | Node::Merging | Node::Cleanup)
+        matches!(
+            self,
+            Node::Rebase
+                | Node::Merging
+                | Node::Cleanup
+                | Node::Gate
+                | Node::MergeGate
+                | Node::MainCheck
+        )
+    }
+
+    /// The core steps that run the project's gate. Unlike the other core
+    /// steps they take minutes, so the core starts them in the background and
+    /// collects the result on a later tick.
+    pub const fn is_gate(self) -> bool {
+        matches!(self, Node::Gate | Node::MergeGate | Node::MainCheck)
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -103,11 +133,14 @@ impl Node {
             Node::Adjudicate => "adjudicate",
             Node::AwaitDesignApproval => "await_design_approval",
             Node::Implement => "implement",
+            Node::Gate => "gate",
             Node::Audit => "audit",
             Node::Retro => "retro",
             Node::Rebase => "rebase",
+            Node::MergeGate => "merge_gate",
             Node::AwaitMerge => "await_merge",
             Node::Merging => "merging",
+            Node::MainCheck => "main_check",
             Node::Cleanup => "cleanup",
         }
     }
@@ -259,6 +292,29 @@ pub enum Trigger {
     RerunFrom {
         node: Node,
     },
+    /// The project's gate finished at one of the three gate nodes.
+    GateDone {
+        node: Node,
+        outcome: GateOutcome,
+        /// The design document as it stands, when it parsed. The gate after
+        /// an implementation round needs it for the same decisions the
+        /// implementation round's own ending would have made (budget, open
+        /// milestones); the other two ignore it.
+        status: Option<Box<StatusBlock>>,
+    },
+}
+
+/// What the gate said, on which commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "gate", rename_all = "snake_case")]
+pub enum GateOutcome {
+    Passed,
+    Failed {
+        head: String,
+        command: String,
+        /// The end of the gate's output: what the next round needs to see.
+        tail: String,
+    },
 }
 
 /// How a session ended. `Ok` carries the parsed document; the other variants
@@ -349,6 +405,12 @@ pub enum Inject {
     Decisions,
     /// Rebase left conflicts for the implement role to resolve.
     RebaseConflict { files: Vec<String> },
+    /// The project's gate failed on the commit this round has to fix.
+    GateFailed {
+        head: String,
+        command: String,
+        tail: String,
+    },
 }
 
 /// The result of applying a trigger.
@@ -718,6 +780,12 @@ pub fn apply(
                     }
                 }
                 Node::Implement => {
+                    if ctx.config.gate.is_some() {
+                        return Ok(Transition::active(
+                            Node::Gate,
+                            Action::RunCoreStep { node: Node::Gate },
+                        ));
+                    }
                     let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
                     if ctx.config.is_enabled(Role::Audit) {
                         Ok(Transition::active(
@@ -837,6 +905,14 @@ pub fn apply(
             }
             match (node, result) {
                 (Node::Rebase, CoreStepResult::Ok) => {
+                    if ctx.config.gate.is_some() {
+                        return Ok(Transition::active(
+                            Node::MergeGate,
+                            Action::RunCoreStep {
+                                node: Node::MergeGate,
+                            },
+                        ));
+                    }
                     Ok(Transition::active(Node::AwaitMerge, Action::None))
                 }
                 (Node::Rebase, CoreStepResult::Conflict { files, .. }) => Ok(Transition::active(
@@ -848,12 +924,22 @@ pub fn apply(
                         }),
                     },
                 )),
-                (Node::Merging, CoreStepResult::Ok) => Ok(Transition::active(
-                    Node::Cleanup,
-                    Action::RunCoreStep {
-                        node: Node::Cleanup,
-                    },
-                )),
+                (Node::Merging, CoreStepResult::Ok) => {
+                    if ctx.config.gate.is_some() {
+                        return Ok(Transition::active(
+                            Node::MainCheck,
+                            Action::RunCoreStep {
+                                node: Node::MainCheck,
+                            },
+                        ));
+                    }
+                    Ok(Transition::active(
+                        Node::Cleanup,
+                        Action::RunCoreStep {
+                            node: Node::Cleanup,
+                        },
+                    ))
+                }
                 // A blocked merge is not a failure: the user fixes their
                 // worktree and presses merge again (requirement T-07).
                 (Node::Merging, CoreStepResult::Blocked { .. }) => {
@@ -889,8 +975,111 @@ pub fn apply(
             }
         }
 
+        // ---- The gate -----------------------------------------------------
+        (
+            TaskState::Active { node },
+            Trigger::GateDone {
+                node: done,
+                outcome,
+                status,
+            },
+        ) => {
+            let node = *node;
+            if node != *done || !node.is_gate() {
+                return Err(reject("门禁结果与当前节点不符"));
+            }
+            after_gate(node, outcome, status.as_deref(), ctx)
+        }
+
         // ---- Everything else ----------------------------------------------
         _ => Err(reject("当前状态不接受该操作")),
+    }
+}
+
+/// Where each gate leads.
+///
+/// After an implementation round, a pass goes where that round would have
+/// gone without a gate, and a failure sends the work straight back to the
+/// implementation role carrying the gate's output — the same round-trip a
+/// rebase conflict makes, counted against the same budget so a gate that
+/// never passes ends the loop instead of running it forever.
+///
+/// Before the merge, a failure goes back the same way: the commit the user
+/// would be merging does not pass.
+///
+/// After the merge there is nothing to send back. The task is cleaned up
+/// either way; the core raises the alert itself.
+fn after_gate(
+    node: Node,
+    outcome: &GateOutcome,
+    status: Option<&StatusBlock>,
+    ctx: &Context,
+) -> Result<Transition, Rejected> {
+    let back_to_impl = |head: &str, command: &str, tail: &str| {
+        Transition::active(
+            Node::Implement,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: Some(Inject::GateFailed {
+                    head: head.to_string(),
+                    command: command.to_string(),
+                    tail: tail.to_string(),
+                }),
+            },
+        )
+    };
+    match (node, outcome) {
+        (Node::Gate, GateOutcome::Passed) => {
+            if ctx.config.is_enabled(Role::Audit) {
+                return Ok(Transition::active(
+                    Node::Audit,
+                    Action::StartRole {
+                        role: Role::Audit,
+                        inject: None,
+                    },
+                ));
+            }
+            let status = status.ok_or_else(|| reject("门禁通过，但读不到设计文档的状态块"))?;
+            let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
+            Ok(after_implement_without_audit(status, budget, ctx))
+        }
+        (
+            Node::Gate,
+            GateOutcome::Failed {
+                head,
+                command,
+                tail,
+            },
+        ) => {
+            if let Some(status) = status {
+                let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
+                if status.impl_round >= budget {
+                    return Ok(Transition::fail(
+                        Node::Gate,
+                        FailureReason::ImplBudget { limit: budget },
+                    ));
+                }
+            }
+            Ok(back_to_impl(head, command, tail))
+        }
+        (Node::MergeGate, GateOutcome::Passed) => {
+            Ok(Transition::active(Node::AwaitMerge, Action::None))
+        }
+        (
+            Node::MergeGate,
+            GateOutcome::Failed {
+                head,
+                command,
+                tail,
+            },
+        ) => Ok(back_to_impl(head, command, tail)),
+        (Node::MainCheck, _) => Ok(Transition::active(
+            Node::Cleanup,
+            Action::RunCoreStep {
+                node: Node::Cleanup,
+            },
+        )),
+        _ => Err(reject("不是门禁节点")),
     }
 }
 
@@ -971,6 +1160,226 @@ mod tests {
 
     fn active(node: Node) -> TaskState {
         TaskState::Active { node }
+    }
+
+    fn cfg_with_gate() -> ResolvedConfig {
+        let project = ProjectConfig {
+            gate: Some(crate::config::GateConfig {
+                command: "make check".into(),
+                timeout_minutes: 5,
+            }),
+            ..Default::default()
+        };
+        resolve(&GlobalConfig::default(), &project)
+    }
+
+    fn gate_done(node: Node, outcome: GateOutcome, status: Option<StatusBlock>) -> Trigger {
+        Trigger::GateDone {
+            node,
+            outcome,
+            status: status.map(Box::new),
+        }
+    }
+
+    fn red() -> GateOutcome {
+        GateOutcome::Failed {
+            head: "abc".into(),
+            command: "make check".into(),
+            tail: "1 failed".into(),
+        }
+    }
+
+    // ---- the gate --------------------------------------------------------
+
+    #[test]
+    fn with_no_gate_configured_nothing_about_the_loop_changes() {
+        let c = cfg();
+        let t = apply(
+            &active(Node::Implement),
+            &ended(block(DocStatus::Implementing, &[MilestoneState::Pending])),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Audit));
+        let rebased = apply(
+            &active(Node::Rebase),
+            &Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Ok,
+            },
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(rebased.next, active(Node::AwaitMerge));
+        let merged = apply(
+            &active(Node::Merging),
+            &Trigger::CoreStepDone {
+                node: Node::Merging,
+                result: CoreStepResult::Ok,
+            },
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(merged.next, active(Node::Cleanup));
+    }
+
+    #[test]
+    fn an_implementation_round_goes_through_the_gate_before_the_audit() {
+        let c = cfg_with_gate();
+        let t = apply(
+            &active(Node::Implement),
+            &ended(block(DocStatus::Implementing, &[MilestoneState::Pending])),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Gate));
+        assert_eq!(t.action, Action::RunCoreStep { node: Node::Gate });
+
+        let passed = apply(
+            &active(Node::Gate),
+            &gate_done(Node::Gate, GateOutcome::Passed, None),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(passed.next, active(Node::Audit));
+    }
+
+    #[test]
+    fn a_red_gate_sends_the_round_back_with_its_output() {
+        let c = cfg_with_gate();
+        let t = apply(
+            &active(Node::Gate),
+            &gate_done(
+                Node::Gate,
+                red(),
+                Some(block(DocStatus::Implementing, &[MilestoneState::Pending])),
+            ),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        assert!(matches!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: Some(Inject::GateFailed { .. })
+            }
+        ));
+    }
+
+    #[test]
+    fn a_gate_that_never_passes_ends_the_loop_at_the_budget() {
+        let c = cfg_with_gate();
+        let mut status = block(DocStatus::Implementing, &[MilestoneState::Pending]);
+        status.impl_round = 25;
+        let t = apply(
+            &active(Node::Gate),
+            &gate_done(Node::Gate, red(), Some(status)),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert!(matches!(
+            t.next,
+            TaskState::Failed {
+                reason: FailureReason::ImplBudget { limit: 25 },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn with_audit_off_a_passing_gate_decides_from_the_document() {
+        let mut c = cfg_with_gate();
+        c = ResolvedConfig {
+            roles: cfg_without(Role::Audit).roles,
+            ..c
+        };
+        let t = apply(
+            &active(Node::Gate),
+            &gate_done(
+                Node::Gate,
+                GateOutcome::Passed,
+                Some(block(DocStatus::Implementing, &[MilestoneState::Open])),
+            ),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Implement), "a milestone is still open");
+        assert!(
+            apply(
+                &active(Node::Gate),
+                &gate_done(Node::Gate, GateOutcome::Passed, None),
+                &ctx(&c)
+            )
+            .is_err(),
+            "and without the document there is nothing to decide from"
+        );
+    }
+
+    #[test]
+    fn the_rebased_commit_is_gated_before_the_merge_stop() {
+        let c = cfg_with_gate();
+        let t = apply(
+            &active(Node::Rebase),
+            &Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Ok,
+            },
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::MergeGate));
+        let green = apply(
+            &active(Node::MergeGate),
+            &gate_done(Node::MergeGate, GateOutcome::Passed, None),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(green.next, active(Node::AwaitMerge));
+        let failed = apply(
+            &active(Node::MergeGate),
+            &gate_done(Node::MergeGate, red(), None),
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(failed.next, active(Node::Implement));
+    }
+
+    #[test]
+    fn main_failing_after_the_merge_does_not_undo_it() {
+        let c = cfg_with_gate();
+        let merged = apply(
+            &active(Node::Merging),
+            &Trigger::CoreStepDone {
+                node: Node::Merging,
+                result: CoreStepResult::Ok,
+            },
+            &ctx(&c),
+        )
+        .unwrap();
+        assert_eq!(merged.next, active(Node::MainCheck));
+        for outcome in [GateOutcome::Passed, red()] {
+            let t = apply(
+                &active(Node::MainCheck),
+                &gate_done(Node::MainCheck, outcome, None),
+                &ctx(&c),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(Node::Cleanup));
+        }
+    }
+
+    #[test]
+    fn a_gate_result_for_another_node_is_refused() {
+        let c = cfg_with_gate();
+        assert!(
+            apply(
+                &active(Node::Audit),
+                &gate_done(Node::Gate, GateOutcome::Passed, None),
+                &ctx(&c)
+            )
+            .is_err()
+        );
     }
 
     // ---- happy path ------------------------------------------------------

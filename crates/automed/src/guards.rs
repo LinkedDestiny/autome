@@ -95,6 +95,11 @@ pub struct Round<'a> {
     /// Whether the session's edit to the design document touched anything
     /// beyond the milestone table. `None` when it could not be determined.
     pub design_changed_outside_milestones: Option<bool>,
+    /// The round was sent back to repair what the core's own gate found on
+    /// the commit it left, not to advance a milestone. Its milestone is
+    /// already `待审` and stays there until the gate passes and the audit
+    /// looks at it, so "nothing was open" is the expected start.
+    pub repairing: bool,
 }
 
 /// Runs every check that applies to this round.
@@ -256,6 +261,9 @@ fn audit_moved_the_table(round: &Round<'_>) -> Option<Finding> {
 /// this never fires. It is the second line: a task resumed by hand, or a design
 /// round that left every milestone `待审`, arrives here too.
 fn impl_had_a_target(round: &Round<'_>) -> Option<Finding> {
+    if round.repairing {
+        return None;
+    }
     let before = round.before?;
     // `all` is true on an empty list, so the "no milestones yet" case falls
     // out of the third clause without a test of its own.
@@ -410,6 +418,7 @@ mod tests {
             design_bytes: before.design_bytes,
             evidence_files: evidence.iter().map(|s| s.to_string()).collect(),
             design_changed_outside_milestones: Some(false),
+            repairing: false,
         }
     }
 
@@ -689,7 +698,22 @@ mod tests {
             design_bytes: 20_000,
             evidence_files: vec!["M-01-r1-impl.md".into()],
             design_changed_outside_milestones: None,
+            repairing: false,
         };
         assert_eq!(check(&r), vec![]);
+    }
+
+    #[test]
+    fn a_round_repairing_a_red_gate_needs_no_open_milestone() {
+        let s = status(31, &stuck_at_m07());
+        let before = snapshot(&stuck_at_m07(), 56, 60_000);
+        let mut r = round(Role::Impl, &s, &before, &["M-07-r31-impl.md"]);
+        assert_eq!(codes(&check(&r)), vec!["impl_had_no_target"]);
+        r.repairing = true;
+        assert_eq!(
+            check(&r),
+            vec![],
+            "sent back by the gate, it fixes rather than advances"
+        );
     }
 }

@@ -208,6 +208,11 @@ fi
         std::fs::write(dir.join(format!("{n}.sh")), script).unwrap();
     }
 
+    /// A design-document step that runs `prelude` first, in the worktree.
+    fn doc_step_for_prelude(&self, n: u32, slug: &str, body: &str, prelude: &str) {
+        self.step(n, &Self::doc_script(slug, n, body, prelude));
+    }
+
     /// `doc_step_with_prelude`, scoped to one task's worktree.
     fn doc_step_for(&self, slug: &str, n: u32, body: &str, prelude: &str) {
         self.step_for(slug, n, &Self::doc_script(slug, n, body, prelude));
@@ -388,8 +393,34 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
                 let node = v.get("node").and_then(Value::as_str).unwrap_or("");
                 // Queued tasks are waiting for a slot; core-step nodes are
                 // work the next tick performs. Both mean "not settled yet".
-                state == "queued" || matches!(node, "rebase" | "merging" | "cleanup")
+                state == "queued"
+                    || matches!(
+                        node,
+                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check"
+                    )
+                    // A crashed round whose retry is already due.
+                    || matches!(
+                        self.ctx.store.pending_retry(&t.id),
+                        Ok(Some((_, ref at, _))) if *at <= automed::store::now_iso()
+                    )
             })
+    }
+
+    /// Adds lines to the project's `.autome/config.toml` and commits them, so
+    /// the main worktree stays clean for the merge.
+    fn configure(&self, toml: &str) {
+        let path = self.repo.join(".autome/config.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.push('\n');
+        text.push_str(toml);
+        std::fs::write(&path, text).unwrap();
+        automed::git::commit_paths(&self.repo, &[".autome/config.toml"], "test config").unwrap();
+    }
+
+    /// The prompt the Nth session was given.
+    fn prompt(&self, n: u32) -> String {
+        std::fs::read_to_string(self.repo.join(format!(".autome/fake/{n}.prompt")))
+            .unwrap_or_default()
     }
 
     fn task_states(&self) -> Vec<(String, Value)> {
@@ -892,6 +923,10 @@ fn a_design_document_without_a_status_block_fails_the_task_once() {
 fn a_non_zero_exit_fails_the_task_even_with_a_valid_document() {
     needs_git!();
     let mut w = World::new("crash");
+    // Retried twice, with no wait, before the task fails. The two retries run
+    // steps 2 and 3, which do not exist — the stand-in exits 92 — so all
+    // three attempts crash.
+    w.configure("[retry]\nattempts = 2\nbackoff_seconds = 0\n");
     let request = "something else";
     let slug = slug_for(request);
     w.step(
@@ -910,6 +945,11 @@ exit 3
     let task_id = create_task(&mut w, request);
     w.settle();
 
+    assert_eq!(
+        w.sessions_run(),
+        vec!["1", "2", "3"],
+        "one try and two retries"
+    );
     assert_eq!(w.state(&task_id), "failed");
     let state = serde_json::to_value(w.ctx.store.get_task(&task_id).unwrap().state).unwrap();
     assert_eq!(
@@ -2382,4 +2422,341 @@ fn ws_doc(
         &format!("next-action: 无\nrepos: {repos}"),
         1,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Decisions are a lease: carried into the round that applies them
+// ---------------------------------------------------------------------------
+
+/// The regression the 2026-10-11 plan named and nothing tested: an included
+/// Backlog item has to appear in the prompt of the round meant to apply it,
+/// and a round that crashes must hand it to the next one rather than spend it.
+#[test]
+fn an_included_backlog_item_reaches_the_next_prompt_and_survives_a_crash() {
+    needs_git!();
+    let mut w = World::new("lease");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+    let request = "configurable limits";
+    let slug = slug_for(request);
+    let backlog = "\n## Backlog\n\n- B-01 次数上限要可配置\n";
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(
+        4,
+        &slug,
+        &format!("{}{backlog}", doc("实现中", 2, 0, &[("M-01", "开放")])),
+    );
+    // 5: the design round carrying the decision crashes before writing.
+    w.step(5, "exit 3\n");
+    // 6: its retry finishes the job; the review after it is not queued.
+    w.doc_step(
+        6,
+        &slug,
+        &doc("实现中", 3, 0, &[("M-01", "开放"), ("M-02", "开放")]),
+    );
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+
+    w.call(
+        "task.decide",
+        json!({ "task_id": task_id, "kind": "backlog", "item_id": "B-01", "disposition": "include" }),
+    );
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+
+    assert!(
+        w.prompt(5).contains("B-01 次数上限要可配置"),
+        "the round meant to apply the decision is told about it:\n{}",
+        w.prompt(5)
+    );
+    assert!(
+        w.prompt(6).contains("B-01 次数上限要可配置"),
+        "the retry after the crash carries it again:\n{}",
+        w.prompt(6)
+    );
+    let decisions = w.ctx.store.list_decisions(&task_id).unwrap();
+    let b01 = decisions.iter().find(|d| d.item_id == "B-01").unwrap();
+    assert!(
+        b01.consumed_at.is_some(),
+        "spent by the round that ended well"
+    );
+    assert!(b01.carried_by.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// The host-run gate
+// ---------------------------------------------------------------------------
+
+/// The project's gate as a script outside the repository: passes when the
+/// commit has a `gate-ok` file, and — when told to — fails on the checkout
+/// the core makes of the merge commit.
+fn write_gate_script(w: &World) -> PathBuf {
+    let script = w.root.join("gate.sh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"case "$PWD" in
+  *_verify-*) if [ -f "{root}/main-should-fail" ]; then echo "main is broken after the merge"; exit 1; fi ;;
+esac
+if [ -f gate-ok ]; then echo "gate fine on $AUTOME_HEAD"; exit 0; fi
+echo "gate says no: gate-ok is missing"
+exit 1
+"#,
+            root = w.root.display()
+        ),
+    )
+    .unwrap();
+    script
+}
+
+/// Runs a task through a gate that fails once and passes after the fix.
+/// Returns the task id; the task is left at the merge stopping point.
+fn run_gated_task(w: &mut World, request: &str) -> String {
+    let script = write_gate_script(w);
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        script.display()
+    ));
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    // 5: implementation round 1 claims it is done but leaves the gate red.
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    // 6: the round sent back by the gate fixes it.
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+
+    let task_id = create_task(w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    task_id
+}
+
+#[test]
+fn a_failing_gate_sends_the_work_back_and_a_passing_one_lets_it_merge() {
+    needs_git!();
+    let mut w = World::new("gate");
+    let task_id = run_gated_task(&mut w, "gated feature");
+
+    assert_eq!(
+        w.node(&task_id).as_deref(),
+        Some("await_merge"),
+        "sessions: {:?}, state: {:?}",
+        w.sessions_run(),
+        w.ctx.store.get_task(&task_id).unwrap().state
+    );
+    let prompt = w.prompt(6);
+    assert!(
+        prompt.contains("gate says no: gate-ok is missing"),
+        "the round after a red gate is shown its output:\n{prompt}"
+    );
+    assert!(prompt.contains("没有通过"), "{prompt}");
+    // The audit round's brief carries the core's own run.
+    let slug = slug_for("gated feature");
+    let briefs = w.repo.join(format!(".worktree/{slug}/docs/{slug}/brief"));
+    let audit_brief = std::fs::read_dir(&briefs)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains("audit"))
+        .expect("an audit brief");
+    let text = std::fs::read_to_string(audit_brief).unwrap();
+    assert!(
+        text.contains("## 宿主门禁") && text.contains("通过"),
+        "{text}"
+    );
+
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.state(&task_id), "done");
+    let result = w
+        .ctx
+        .store
+        .last_event(&task_id, "gate.result")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["node"], json!("main_check"));
+    assert_eq!(result["ok"], json!(true));
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+    assert!(
+        !w.repo
+            .join(".worktree")
+            .read_dir()
+            .map(|mut d| d.any(|e| {
+                e.map(|e| e.file_name().to_string_lossy().starts_with("_verify"))
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false),
+        "the checkout of the merge commit is removed"
+    );
+}
+
+#[test]
+fn main_failing_its_gate_after_a_merge_raises_an_alert_the_user_can_dismiss() {
+    needs_git!();
+    let mut w = World::new("maingate");
+    let task_id = run_gated_task(&mut w, "breaks main");
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+    std::fs::write(w.root.join("main-should-fail"), "").unwrap();
+
+    w.call("task.merge", json!({ "task_id": task_id }));
+    w.settle();
+    // The merge stands: the alert is about main, not a reason to undo it.
+    assert_eq!(w.state(&task_id), "done");
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "main_gate_failed");
+    assert!(alerts[0].detail.contains("main is broken after the merge"));
+
+    let dashboard = w.call("dashboard.get", json!({}));
+    let shown = ok(&dashboard)["alerts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(shown.len(), 1, "{:#}", ok(&dashboard));
+
+    w.call("project.alert.dismiss", json!({ "alert_id": alerts[0].id }));
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Rate limits
+// ---------------------------------------------------------------------------
+
+/// What Claude prints when the account is out of quota.
+const CLAUDE_LIMIT: &str = r#"{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|4102444800"}"#;
+
+#[test]
+fn a_rate_limited_round_moves_to_the_other_cli_when_that_keeps_roles_apart_and_waits_when_not() {
+    needs_git!();
+    let mut w = World::new("ratelimit");
+    let request = "limited";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    // 4: the adjudication round (Claude by default) hits the usage limit.
+    w.step(4, &format!("echo '{CLAUDE_LIMIT}'\nexit 1\n"));
+    // 5: the same round again, on Codex — adjudication shares a CLI with no
+    // role it must be kept apart from.
+    w.doc_step(5, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    assert_ne!(w.state(&task_id), "failed");
+    let rerouted = w
+        .ctx
+        .store
+        .last_event(&task_id, "session.rerouted")
+        .unwrap()
+        .unwrap();
+    assert_eq!(rerouted["role"], json!("adjudicate"));
+    assert_eq!(rerouted["to"], json!("codex"));
+    let until = w
+        .ctx
+        .store
+        .cooling_until(autome_domain::role::Runtime::Claude)
+        .unwrap()
+        .expect("Claude is cooling down");
+    assert!(
+        until.starts_with("2100-01-01"),
+        "the reset the CLI named: {until}"
+    );
+
+    // Implementation is Claude and audit is Codex: moving implementation to
+    // Codex would put the round and its auditor on one CLI. So it waits.
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("implement"));
+    assert!(w.ctx.store.running_session(&task_id).unwrap().is_none());
+    let deferred = w
+        .ctx
+        .store
+        .last_event(&task_id, "session.deferred")
+        .unwrap()
+        .unwrap();
+    assert_eq!(deferred["runtime"], json!("claude"));
+    let (_, not_before, _) = w.ctx.store.pending_retry(&task_id).unwrap().unwrap();
+    assert_eq!(not_before, until);
+    assert_eq!(w.sessions_run(), vec!["1", "2", "3", "4", "5"]);
+}
+
+// ---------------------------------------------------------------------------
+// One driver at a time
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_tick_skips_while_another_driver_holds_the_ledger() {
+    needs_git!();
+    let root = std::env::temp_dir().join(format!("automed-e2e-driver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let db = root.join("automed.sqlite3");
+    let mut ctx = Ctx::new(Store::open(&db).unwrap(), root.join("home"), root.join("h"));
+
+    // Another process — the desktop app, say — is mid-tick.
+    let held = automed::driver_lock::try_acquire(&db).unwrap().unwrap();
+    let report = automed::scheduler::tick(&mut ctx);
+    assert!(report.skipped, "{report:?}");
+    assert!(report.sessions_reaped.is_empty() && report.tasks_started.is_empty());
+
+    // A write command waits for it rather than interleaving; with the other
+    // driver gone it goes through, and so does the next tick.
+    drop(held);
+    assert!(!automed::scheduler::tick(&mut ctx).skipped);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// Stop takes the whole session down
+// ---------------------------------------------------------------------------
+
+/// The wrapper starts in a process group of its own, which is what `stop`
+/// signals. Before, it shared the core's group, `kill(-pid)` named a group
+/// that did not exist, and the CLI went on running with nobody reading it.
+#[test]
+fn stopping_a_task_kills_the_cli_the_wrapper_started() {
+    needs_git!();
+    let mut w = World::new("stopgroup");
+    let pid_file = w.repo.join(".autome/fake/cli.pid");
+    w.step(
+        1,
+        &format!("echo $$ > '{}'\nsleep 60\n", pid_file.display()),
+    );
+    let task_id = create_task(&mut w, "a long round");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !pid_file.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let cli: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(automed::launcher::pid_alive(cli));
+
+    w.call("task.stop", json!({ "task_id": task_id }));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while automed::launcher::pid_alive(cli) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !automed::launcher::pid_alive(cli),
+        "the CLI outlived the stop"
+    );
+    assert_eq!(w.state(&task_id), "stopped");
 }

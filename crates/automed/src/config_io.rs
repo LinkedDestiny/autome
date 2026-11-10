@@ -256,6 +256,48 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
         };
     }
 
+    if let Some(t) = doc.get("gate") {
+        let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        let command = t
+            .get("command")
+            .and_then(toml::Value::as_str)
+            .ok_or("[gate] 需要 command，例如 command = \"make check\"")?
+            .trim()
+            .to_string();
+        if !command.is_empty() {
+            let timeout_minutes = match t.get("timeout_minutes") {
+                None => autome_domain::config::DEFAULT_GATE_TIMEOUT_MINUTES,
+                Some(v) => v
+                    .as_integer()
+                    .filter(|m| *m > 0)
+                    .ok_or("[gate] timeout_minutes 必须是正整数")?
+                    .min(u32::MAX as i64) as u32,
+            };
+            config.gate = Some(autome_domain::config::GateConfig {
+                command,
+                timeout_minutes,
+            });
+        }
+    }
+
+    if let Some(t) = doc.get("retry") {
+        let t = t.as_table().ok_or("[retry] 不是一个表")?;
+        let mut policy = autome_domain::config::RetryPolicy::default();
+        if let Some(v) = t.get("attempts") {
+            policy.attempts =
+                v.as_integer()
+                    .filter(|n| (0..=10).contains(n))
+                    .ok_or("[retry] attempts 必须是 0 到 10 的整数")? as u32;
+        }
+        if let Some(v) = t.get("backoff_seconds") {
+            policy.backoff_seconds =
+                v.as_integer()
+                    .filter(|n| *n >= 0)
+                    .ok_or("[retry] backoff_seconds 必须是非负整数")? as u64;
+        }
+        config.retry = Some(policy);
+    }
+
     if let Some(roles) = doc.get("roles").and_then(toml::Value::as_table) {
         for (name, table) in roles {
             let Some(role) = Role::parse(name) else {
@@ -637,6 +679,48 @@ mod tests {
     fn a_missing_project_file_means_override_nothing() {
         let dir = TempDir::new("missing");
         assert_eq!(load_project(dir.path()).unwrap(), ProjectConfig::default());
+    }
+
+    #[test]
+    fn a_gate_and_a_retry_policy_are_read_from_the_project_file() {
+        let dir = TempDir::new("gate");
+        write_project(
+            dir.path(),
+            r#"
+[gate]
+command = "make check"
+timeout_minutes = 12
+
+[retry]
+attempts = 0
+"#,
+        );
+        let project = load_project(dir.path()).unwrap();
+        let gate = project.gate.clone().expect("a gate");
+        assert_eq!(gate.command, "make check");
+        assert_eq!(gate.timeout_minutes, 12);
+        let retry = project.retry.expect("a retry policy");
+        assert_eq!(retry.attempts, 0);
+        assert_eq!(
+            retry.backoff_seconds, 60,
+            "unstated fields keep their default"
+        );
+
+        // Saving a role change from the routing screen keeps the gate: the
+        // writer edits the tables it owns and leaves the rest of the file.
+        let mut edited = project.clone();
+        edited.loop_overrides.parallel = Some(2);
+        save_project(dir.path(), &edited).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().gate, Some(gate));
+    }
+
+    #[test]
+    fn a_gate_without_a_command_is_refused_and_an_empty_one_means_none() {
+        let dir = TempDir::new("gate-bad");
+        write_project(dir.path(), "[gate]\ntimeout_minutes = 5\n");
+        assert!(load_project(dir.path()).is_err());
+        write_project(dir.path(), "[gate]\ncommand = \"  \"\n");
+        assert_eq!(load_project(dir.path()).unwrap().gate, None);
     }
 
     #[test]

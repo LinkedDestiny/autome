@@ -254,6 +254,59 @@ pub struct ProjectConfig {
     /// repository, `autome/` inside a workspace's document repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_root: Option<String>,
+    /// The command the core runs itself, on the exact commit a round left
+    /// behind, before anyone is asked to believe that round. Project-only for
+    /// the same reason as `doc_root`: what "the checks pass" means is a fact
+    /// about one repository. `None` means the project has no gate and the
+    /// Loop runs exactly as it did before gates existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateConfig>,
+    /// How a session that crashed is retried before the task stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryPolicy>,
+}
+
+/// `[gate]` in a project's `.autome/config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateConfig {
+    /// Run with `sh -c` in the task's working directory.
+    pub command: String,
+    pub timeout_minutes: u32,
+}
+
+pub const DEFAULT_GATE_TIMEOUT_MINUTES: u32 = 30;
+
+/// `[retry]` in a project's `.autome/config.toml`.
+///
+/// A session that exits non-zero is more often a network blip or a CLI that
+/// fell over than a round that did something wrong, and a task that stops on
+/// the first one asks a person to press "rerun" for nothing. So a crash is
+/// retried a few times, waiting longer each time, before the task stops.
+/// A rate limit is not counted at all: it is the CLI saying "later", and the
+/// core waits for the cooldown instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    /// Retries after the first attempt. 0 restores "fail on the first crash".
+    pub attempts: u32,
+    /// The first wait; each retry doubles it.
+    pub backoff_seconds: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            attempts: 2,
+            backoff_seconds: 60,
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// How long to wait before retry number `attempt` (1-based).
+    pub fn delay_secs(&self, attempt: u32) -> u64 {
+        let doublings = attempt.saturating_sub(1).min(16);
+        self.backoff_seconds.saturating_mul(1u64 << doublings)
+    }
 }
 
 impl ProjectConfig {
@@ -283,6 +336,9 @@ pub struct ResolvedRole {
 pub struct ResolvedConfig {
     pub loop_defaults: LoopDefaults,
     pub roles: Vec<ResolvedRole>,
+    /// The project's gate, if it has one (see `ProjectConfig::gate`).
+    pub gate: Option<GateConfig>,
+    pub retry: RetryPolicy,
 }
 
 impl ResolvedConfig {
@@ -345,6 +401,8 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             budget_factor,
         },
         roles,
+        gate: project.gate.clone(),
+        retry: project.retry.unwrap_or_default(),
     }
 }
 
