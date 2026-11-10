@@ -9,3 +9,4 @@
 实现 #6 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r6-impl.md | registry DNS 不可达，锁定依赖无法安装
 
 实现 #7 | M-01 | 开放（门禁修复受阻） | docs/服务端每次-tick-后用-events/evidence/M-01-r7-impl.md | registry DNS 失败，锁定依赖无完整缓存
+实现 #8 | M-01 | 开放（门禁修复受阻） | docs/服务端每次-tick-后用-events/evidence/M-01-r8-impl.md | 在线 DNS 失败、锁定版本无离线缓存
