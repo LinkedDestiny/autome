@@ -3,3 +3,4 @@
 裁决 #1 | M-01 | 采纳 D4-P01（Node 下限回到 22，依赖降到 vite6/vitest3/eslint9+tsx）；设计定稿 | docs/在-apps-web-建-react/在-apps-web-建-react-adjudication.md | 无
 设计 #2 | M-01 | 按用户驳回意见改为 Node≥22.22.0、RR8、vite8/vitest5/eslint10、原生类型剥离去 tsx，关 B-D1-01；status 回到设计中 | docs/在-apps-web-建-react/在-apps-web-建-react.md | 无
 评审 #5 | M-01 | 通过 | docs/在-apps-web-建-react/在-apps-web-建-react-review.md | 无
+裁决 #2 | M-01 | 评审 #5 无阻塞问题，无需裁决；设计定稿，status 改为实现中，design-round 2/15 | docs/在-apps-web-建-react/在-apps-web-建-react-adjudication.md | 无

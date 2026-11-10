@@ -1,7 +1,7 @@
 # Web 面板骨架：apps/web 的 React Router 8 框架模式 + 自定义 Node 服务器
 
-status: 设计中
-design-round: 1/15
+status: 实现中
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
