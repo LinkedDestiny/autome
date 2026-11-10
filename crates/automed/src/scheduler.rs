@@ -1261,6 +1261,7 @@ fn render_gate_line(result: &Value) -> Option<String> {
 
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
+        Trigger::Start => "start",
         Trigger::SlotAvailable => "slot_available",
         Trigger::SessionEnded { .. } => "session_ended",
         Trigger::Approve => "approve",
@@ -1630,9 +1631,8 @@ fn launch_session(
             &slot.base,
         )?;
     }
-    if first_time {
-        write_task_inputs(task, &layout.docs_root)?;
-    }
+    let card = ctx.store.task_brief(&task.id)?;
+    write_task_inputs(task, card.as_deref(), &layout.docs_root, first_time)?;
     let worktree = layout.docs_root.clone();
 
     // Which rules this task is held to, decided once and then frozen. A task
@@ -1696,12 +1696,20 @@ fn launch_session(
         layout.cwd.clone()
     };
 
+    let card_path = (kind == SessionKind::Intake && card.is_some()).then(|| {
+        format!(
+            "{}/{}-card.md",
+            layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
+            task.slug
+        )
+    });
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         templates: &protocol,
         brief_path: &brief_path,
         slug: &task.slug,
         doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
+        card_path: card_path.as_deref(),
         design_rounds: resolved.loop_defaults.design_rounds,
         task_metrics: task_metrics.as_ref(),
         budget,
@@ -1973,11 +1981,16 @@ fn rules_hash(repo: &Path) -> Option<String> {
 }
 
 /// Everything the core puts into a task's directory before the first session
-/// opens it: the user's attachments.
-fn write_task_inputs(task: &TaskRecord, worktree: &Path) -> Result<()> {
+/// opens it: the user's task card and attachments.
+fn write_task_inputs(
+    task: &TaskRecord,
+    brief: Option<&str>,
+    worktree: &Path,
+    first_time: bool,
+) -> Result<()> {
     let mut paths: Vec<String> = Vec::new();
 
-    if !task.attachments.is_empty() {
+    if first_time && !task.attachments.is_empty() {
         let dest = worktree.join(task.doc_dir()).join("attachments");
         std::fs::create_dir_all(&dest).map_err(|e| err(format!("无法创建附件目录：{e}")))?;
         for source in &task.attachments {
@@ -1988,6 +2001,17 @@ fn write_task_inputs(task: &TaskRecord, worktree: &Path) -> Result<()> {
                 .map_err(|e| err(format!("无法复制附件 {source}：{e}")))?;
         }
         paths.push(format!("{}/attachments", task.doc_dir()));
+    }
+
+    if let Some(brief) = brief {
+        let path = format!("{}/{}-card.md", task.doc_dir(), task.slug);
+        let dest = worktree.join(&path);
+        if !dest.exists() {
+            std::fs::create_dir_all(dest.parent().unwrap())
+                .map_err(|e| err(format!("无法创建任务卡目录：{e}")))?;
+            std::fs::write(&dest, brief).map_err(|e| err(format!("无法写入任务卡：{e}")))?;
+        }
+        paths.push(path);
     }
 
     if paths.is_empty() {
@@ -2683,6 +2707,9 @@ fn redispatch_with(
 /// session to have it explained back is not always worth it.
 pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     let task = ctx.store.get_task(task_id)?;
+    if matches!(task.state, TaskState::Draft) {
+        return Err(err("任务还没开始，没有可复盘的内容"));
+    }
     if matches!(
         task.state,
         TaskState::Active { .. } | TaskState::Queued | TaskState::Requeued { .. }
@@ -2744,6 +2771,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         // repository root; it has no task and no document directory, and its
         // template asks for neither.
         doc_dir: "",
+        card_path: None,
         design_rounds: 0,
         task_metrics: None,
         budget: None,
@@ -2944,6 +2972,7 @@ mod tests {
 
         fn add_task(&mut self, id: &str, slug: &str) -> TaskRecord {
             let task = TaskRecord {
+                kind: autome_domain::task::TaskKind::Feature,
                 id: id.into(),
                 project_id: self.project_id.clone(),
                 slug: slug.into(),
@@ -4924,5 +4953,144 @@ mod tests {
             None
         );
         assert_eq!(next_role(&TaskState::Done), None);
+    }
+    mod task_card_retry {
+        use super::*;
+
+        #[test]
+        fn an_existing_card_is_committed_after_git_add_failed() {
+            let mut w = World::new("card-retry");
+            let mut task = w.add_task("retry", "retry");
+            task.doc_root = Some("plans".into());
+            let wt = w.with_worktree(&task);
+            let path = "plans/retry/retry-card.md";
+            let brief = "# 原文\r\n {request} \n";
+            let head = git::run_ok(&wt, &["rev-parse", "HEAD"]).unwrap().stdout;
+            let git_dir = git::run_ok(&wt, &["rev-parse", "--absolute-git-dir"])
+                .unwrap()
+                .stdout;
+            let lock = Path::new(git_dir.trim()).join("index.lock");
+            std::fs::write(&lock, "locked").unwrap();
+            let error = write_task_inputs(&task, Some(brief), &wt, true).unwrap_err();
+            assert!(error.to_string().contains("index.lock"), "{error}");
+            assert_eq!(std::fs::read(wt.join(path)).unwrap(), brief.as_bytes());
+            assert_eq!(
+                git::run_ok(&wt, &["rev-parse", "HEAD"]).unwrap().stdout,
+                head
+            );
+            std::fs::remove_file(lock).unwrap();
+            write_task_inputs(&task, Some("replacement"), &wt, false).unwrap();
+            assert_eq!(std::fs::read(wt.join(path)).unwrap(), brief.as_bytes());
+            assert_eq!(
+                git::run_ok(&wt, &["show", &format!("HEAD:{path}")])
+                    .unwrap()
+                    .stdout
+                    .as_bytes(),
+                brief.as_bytes()
+            );
+            assert_eq!(
+                git::run_ok(&wt, &["log", "-1", "--format=%s"])
+                    .unwrap()
+                    .stdout
+                    .trim(),
+                "chore(autome): retry inputs"
+            );
+        }
+
+        #[test]
+        fn a_committed_card_is_not_rewritten_or_committed_again() {
+            let mut w = World::new("card-retry-committed");
+            let task = w.add_task("committed", "committed");
+            let wt = w.with_worktree(&task);
+            let path = wt.join(task.doc_dir()).join("committed-card.md");
+            for brief in ["x".to_string(), "字".repeat(21845) + "x"] {
+                if path.exists() {
+                    std::fs::remove_file(&path).unwrap();
+                }
+                write_task_inputs(&task, Some(&brief), &wt, true).unwrap();
+                let head = git::run_ok(&wt, &["rev-parse", "HEAD"]).unwrap().stdout;
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                for first_time in [false, true] {
+                    write_task_inputs(&task, Some("replacement"), &wt, first_time).unwrap();
+                    assert_eq!(std::fs::read(&path).unwrap(), brief.as_bytes());
+                    assert_eq!(
+                        std::fs::metadata(&path).unwrap().modified().unwrap(),
+                        modified
+                    );
+                    assert_eq!(
+                        git::run_ok(&wt, &["rev-parse", "HEAD"]).unwrap().stdout,
+                        head
+                    );
+                }
+            }
+        }
+    }
+
+    mod task_card {
+        use super::*;
+        #[test]
+        fn fill_slots_never_starts_a_draft() {
+            let mut w = World::new("card-draft");
+            let task = w.add_task("draft", "draft");
+            w.set_state(&task.id, TaskState::Draft);
+            assert!(w.ctx.store.queued_tasks(&w.project_id).unwrap().is_empty());
+            assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            assert_eq!(w.state(&task.id), TaskState::Draft);
+            assert!(!w.repo.join(".worktree/draft").exists());
+        }
+        #[test]
+        fn a_card_without_attachments_is_committed_byte_for_byte_in_the_inputs_commit() {
+            let mut w = World::new("card-inputs");
+            let mut task = w.add_task("card", "card");
+            task.doc_root = Some("plans".into());
+            let wt = w.with_worktree(&task);
+            let brief = "# 卡片\n原样 {request} {unknown}\r\n";
+            write_task_inputs(&task, Some(brief), &wt, true).unwrap();
+            let path = "plans/card/card-card.md";
+            let output = git::run_ok(&wt, &["show", &format!("HEAD:{path}")]).unwrap();
+            assert_eq!(output.stdout.as_bytes(), brief.as_bytes());
+            let message = git::run_ok(&wt, &["log", "-1", "--format=%s"]).unwrap();
+            assert_eq!(message.stdout.trim(), "chore(autome): card inputs");
+            std::fs::remove_file(wt.join(path)).unwrap();
+            write_task_inputs(&task, Some(brief), &wt, false).unwrap();
+            assert_eq!(std::fs::read(wt.join(path)).unwrap(), brief.as_bytes());
+            // No card or attachments remains a no-op, even without a checkout.
+            write_task_inputs(&task, None, &w.root.join("absent"), true).unwrap();
+            // A file blocking the card directory reports a write failure.
+            task.doc_root = Some("blocked".into());
+            std::fs::write(wt.join("blocked"), "file").unwrap();
+            assert!(
+                write_task_inputs(&task, Some(brief), &wt, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("无法创建任务卡目录")
+            );
+            // The accepted upper bound is still written byte for byte; attachments share the commit.
+            task.doc_root = Some("boundary".into());
+            let attachment = w.root.join("attachment.txt");
+            std::fs::write(&attachment, "attachment").unwrap();
+            task.attachments = vec![attachment.to_string_lossy().into_owned()];
+            let max = "字".repeat(21845) + "x";
+            assert_eq!(max.len(), 65536);
+            write_task_inputs(&task, Some(&max), &wt, true).unwrap();
+            let output = git::run_ok(&wt, &["show", "HEAD:boundary/card/card-card.md"]).unwrap();
+            assert_eq!(output.stdout.as_bytes(), max.as_bytes());
+            assert_eq!(
+                git::run_ok(
+                    &wt,
+                    &["show", "HEAD:boundary/card/attachments/attachment.txt"]
+                )
+                .unwrap()
+                .stdout,
+                "attachment"
+            );
+            // Later sessions must not copy attachments again or overwrite a card.
+            std::fs::remove_file(&attachment).unwrap();
+            write_task_inputs(&task, Some("replacement"), &wt, false).unwrap();
+            assert_eq!(
+                std::fs::read(wt.join("boundary/card/card-card.md")).unwrap(),
+                max.as_bytes()
+            );
+        }
     }
 }

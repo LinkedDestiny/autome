@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 /// Flags that take a value. Everything else starting with `-` is a switch.
-const VALUED: [&str; 8] = [
+const VALUED: [&str; 10] = [
     "-p",
     "--project",
     "--session",
@@ -16,6 +16,8 @@ const VALUED: [&str; 8] = [
     "--attach",
     "--doc",
     "--tag",
+    "--brief",
+    "--kind",
 ];
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -150,5 +152,21 @@ mod tests {
         let a = parse(&["status", "--jsno"]);
         assert_eq!(a.unknown(&["--json"]), Some("--jsno".into()));
         assert_eq!(parse(&["status", "--json"]).unknown(&["--json"]), None);
+    }
+}
+
+#[cfg(test)]
+mod task_card {
+    use super::*;
+    #[test]
+    fn brief_and_kind_take_values_and_a_dash_is_a_value() {
+        let a = Args::parse(
+            &["task", "new", "--brief", "-", "--kind", "bug", "--draft"].map(String::from),
+        )
+        .unwrap();
+        assert_eq!(a.positional, ["task", "new"]);
+        assert_eq!(a.value("--brief"), Some("-"));
+        assert_eq!(a.value("--kind"), Some("bug"));
+        assert!(a.has("--draft"));
     }
 }

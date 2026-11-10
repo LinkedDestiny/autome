@@ -55,6 +55,7 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
         brief_path: BRIEF,
         slug: SLUG,
         doc_dir: DOC_DIR,
+        card_path: None,
         design_rounds: 15,
         task_metrics: None,
         budget: None,
@@ -242,4 +243,20 @@ fn a_version_missing_a_role_template_names_the_role_rather_than_launching_blank(
     let e = build_prompt(&spec(SessionKind::Role { role: Role::Audit }, &templates)).unwrap_err();
     assert!(e.detail.contains("prompts/audit.md"), "{}", e.detail);
     assert!(e.detail.contains("审计轮"), "{}", e.detail);
+}
+
+#[test]
+fn the_intake_prompt_with_a_task_card_matches_its_golden() {
+    let templates = automed::protocol::seed().clone();
+    let mut s = spec(SessionKind::Intake, &templates);
+    let path = format!("{DOC_DIR}/{SLUG}-card.md");
+    s.card_path = Some(&path);
+    let got = build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}")
+        .replace(BRIEF, "{brief_path}");
+    assert_eq!(got, golden("intake-card"));
+    assert!(got.ends_with(&golden("intake")));
 }

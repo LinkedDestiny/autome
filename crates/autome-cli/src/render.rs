@@ -40,6 +40,7 @@ pub fn milestone_label(state: &str) -> &str {
 pub fn state_line(state: &Value) -> String {
     let node = |key: &str| node_label(state[key].as_str().unwrap_or("?")).to_string();
     match state["state"].as_str().unwrap_or("?") {
+        "draft" => "待开始".into(),
         "queued" => match state["resume"].as_str() {
             Some(resume) => format!("排队（会从 {} 继续）", node_label(resume)),
             None => "排队".into(),
@@ -87,6 +88,7 @@ pub fn next_step(task: &Value) -> Option<String> {
         state["state"].as_str()?,
         state["node"].as_str().unwrap_or(""),
     ) {
+        ("draft", _) => Some(format!("autome task start {id}")),
         ("active", "await_design_approval") => Some(format!(
             "autome approve {id}    或    autome reject {id} \"意见\""
         )),
@@ -167,6 +169,7 @@ pub fn short(s: &str) -> &str {
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
+        "task.started" => format!("{subject} 开始"),
         "task.created" => format!("{subject} 新任务"),
         "task.updated" => format!("{subject} → {}", state_line(&p["state"])),
         "session.started" => {
@@ -384,5 +387,24 @@ mod tests {
         assert_eq!(next_step(&t).as_deref(), Some("autome merge T-1"));
         let running = json!({"id": "T-1", "state": {"state": "active", "node": "audit"}});
         assert_eq!(next_step(&running), None);
+    }
+}
+
+#[cfg(test)]
+mod task_card {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn draft_renders_as_waiting_to_start_with_the_start_command_next() {
+        let t = json!({"id":"T-1","state":{"state":"draft"}});
+        assert_eq!(state_line(&t["state"]), "待开始");
+        assert_eq!(next_step(&t).as_deref(), Some("autome task start T-1"));
+    }
+    #[test]
+    fn task_started_is_printed_by_run() {
+        assert_eq!(
+            event_line("task.started", "T-1", &json!({})).as_deref(),
+            Some("T-1 开始")
+        );
     }
 }

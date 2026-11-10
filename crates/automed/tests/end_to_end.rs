@@ -3640,3 +3640,133 @@ fn the_merge_panel_offers_the_merge_when_only_main_has_moved() {
     let changes = w.call("task.changes", json!({"task_id":id}));
     assert_eq!(ok(&changes)["available"], false);
 }
+
+#[test]
+fn task_card_a_drafted_bug_waits_then_starts_with_its_card_committed_before_the_first_session() {
+    needs_git!();
+    let mut w = World::new("card-bug");
+    let request = "card bug";
+    let slug = slug_for(request);
+    let brief = "# 卡片\n修复 {request}，保留 {unknown}\r\n";
+    let card = format!("docs/{slug}/{slug}-card.md");
+    let prelude = format!("git cat-file -e HEAD:{card} || exit 80");
+    w.doc_step_for_prelude(1, &slug, &doc("设计中", 0, 0, &[]), &prelude);
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let out = w.call("task.create", json!({"project_id":w.project_id,"request":request,"kind":"bug","draft":true,"brief":brief}));
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.settle();
+    assert!(w.sessions_run().is_empty());
+    let dashboard = w.call("dashboard.get", json!({}));
+    assert!(ok(&dashboard)["waiting"].as_array().unwrap().is_empty());
+    assert!(ok(&dashboard)["running"].as_array().unwrap().is_empty());
+    assert!(!w.repo.join(format!(".worktree/{slug}")).exists());
+    let started = w.call("task.start", json!({"task_id":id}));
+    assert_eq!(ok(&started)["started"], true);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let committed = automed::git::run_ok(&wt, &["show", &format!("HEAD:{card}")]).unwrap();
+    assert_eq!(committed.stdout.as_bytes(), brief.as_bytes());
+    let history = automed::git::run_ok(&wt, &["log", "--format=%s", "--", &card]).unwrap();
+    assert_eq!(history.stdout.trim(), format!("chore(autome): {id} inputs"));
+    let history = automed::git::run_ok(&wt, &["log", "--reverse", "--format=%s"])
+        .unwrap()
+        .stdout;
+    assert!(
+        history.find(&format!("{id} inputs")).unwrap()
+            < history.find(&format!("{id} 固定协议")).unwrap()
+    );
+    let prompt = w.prompt(1);
+    assert!(prompt.find(&card).unwrap() < prompt.find(request).unwrap());
+    let task = w.call("task.get", json!({"task_id":id}));
+    assert_eq!(ok(&task)["task"]["kind"], "bug");
+    let project = w.call("project.get", json!({"project_id":w.project_id}));
+    assert_eq!(ok(&project)["tasks"][0]["kind"], "bug");
+    let dashboard = w.call("dashboard.get", json!({}));
+    assert_eq!(ok(&dashboard)["waiting"][0]["task"]["kind"], "bug");
+}
+
+#[test]
+fn task_card_a_draft_is_cancelled_without_ever_having_a_worktree() {
+    needs_git!();
+    let mut w = World::new("card-cancel");
+    let out = w.call(
+        "task.create",
+        json!({"project_id":w.project_id,"request":"cancel card","brief":"# 卡片","draft":true}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let cancelled = w.call("task.cancel", json!({"task_id":id}));
+    ok(&cancelled);
+    w.settle();
+    assert_eq!(w.state(&id), "cancelled");
+    assert!(w.ctx.store.get_task(&id).unwrap().archived_at.is_some());
+    assert!(!w.repo.join(format!(".worktree/{}", task.slug)).exists());
+    assert!(
+        !automed::git::run_ok(&w.repo, &["branch", "--list", &task.branch()])
+            .unwrap()
+            .stdout
+            .contains(&task.branch())
+    );
+    assert!(w.sessions_run().is_empty());
+}
+
+#[test]
+fn task_card_a_started_draft_waits_behind_the_parallel_limit() {
+    needs_git!();
+    let mut w = World::new("card-queue");
+    w.configure("[retry]\nattempts = 0\n");
+    let configured = w.call(
+        "config.set_loop",
+        json!({"project_id":w.project_id,"parallel":1}),
+    );
+    ok(&configured);
+    let out = w.call(
+        "task.create",
+        json!({"project_id":w.project_id,"request":"older draft","draft":true}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    let draft = w.ctx.store.get_task(&id).unwrap();
+    // Insert queued fixtures with exactly the draft's timestamp, taking real queue sequence numbers.
+    for (id, slug) in [
+        ("queued-first", "queued-first"),
+        ("queued-second", "queued-second"),
+    ] {
+        let mut task = draft.clone();
+        task.id = id.into();
+        task.slug = slug.into();
+        task.state = autome_domain::task::TaskState::Queued;
+        w.ctx.store.create_task(&task, None).unwrap();
+    }
+    let release = w.root.join("release");
+    w.step_for(
+        "queued-first",
+        1,
+        &format!(
+            "while [ ! -f '{}' ]; do sleep 0.05; done\nexit 1",
+            release.display()
+        ),
+    );
+    w.step_for("queued-second", 1, "echo queued >> ../order\nexit 1");
+    w.step_for(&draft.slug, 1, "echo draft >> ../order\nexit 1");
+    automed::scheduler::tick(&mut w.ctx);
+    assert_eq!(w.ctx.store.all_running_sessions().unwrap().len(), 1);
+    let started = w.call("task.start", json!({"task_id":id}));
+    assert_eq!(ok(&started)["started"], false);
+    assert_eq!(ok(&started)["queue_position"], 2);
+    assert_eq!(
+        w.ctx.store.get_task("queued-second").unwrap().created_at,
+        draft.created_at
+    );
+    std::fs::write(release, "go").unwrap();
+    w.settle();
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(".worktree/order")).unwrap(),
+        "queued\ndraft\n"
+    );
+    for id in ["queued-first", "queued-second", &id] {
+        assert!(!w.ctx.store.list_sessions(id).unwrap().is_empty());
+    }
+}

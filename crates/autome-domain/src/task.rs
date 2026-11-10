@@ -172,9 +172,35 @@ pub enum FailureReason {
     CoreStep { node: Node, detail: String },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Feature,
+    Bug,
+}
+
+impl TaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Feature => "feature",
+            Self::Bug => "bug",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "feature" => Some(Self::Feature),
+            "bug" => Some(Self::Bug),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "TaskStateRepr", into = "TaskStateRepr")]
 pub enum TaskState {
+    Draft,
     /// Created, but the project's parallel slots are all taken.
     Queued,
     /// Resumed work waiting for a slot; externally still `state: queued`.
@@ -203,6 +229,7 @@ pub enum TaskState {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum TaskStateRepr {
+    Draft,
     Queued {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<Node>,
@@ -227,6 +254,7 @@ enum TaskStateRepr {
 impl From<TaskState> for TaskStateRepr {
     fn from(state: TaskState) -> Self {
         match state {
+            TaskState::Draft => Self::Draft,
             TaskState::Queued => Self::Queued { resume: None },
             TaskState::Requeued { resume } => Self::Queued {
                 resume: Some(resume),
@@ -244,6 +272,7 @@ impl From<TaskState> for TaskStateRepr {
 impl From<TaskStateRepr> for TaskState {
     fn from(state: TaskStateRepr) -> Self {
         match state {
+            TaskStateRepr::Draft => Self::Draft,
             TaskStateRepr::Queued { resume: None } => Self::Queued,
             TaskStateRepr::Queued {
                 resume: Some(resume),
@@ -323,6 +352,7 @@ impl PendingDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum Trigger {
+    Start,
     /// A parallel slot opened up and this task is at the head of the queue.
     SlotAvailable,
     /// A session ended and its design document parsed cleanly.
@@ -715,6 +745,14 @@ fn apply_inner(
     // Control triggers first: they apply from many states, and handling them
     // once here keeps the node table below about the Loop itself.
     match trigger {
+        Trigger::Start => {
+            return if matches!(state, TaskState::Draft) {
+                Ok(Transition::to(TaskState::Queued, Action::None))
+            } else {
+                Err(reject("只有待开始的任务可以开始"))
+            };
+        }
+
         Trigger::Cancel => {
             return if state.is_terminal() {
                 Err(reject("任务已终结"))
@@ -729,7 +767,7 @@ fn apply_inner(
                     Action::None,
                 )),
                 TaskState::Active { .. } => Err(reject("任务正在等待你，没有会话可暂停")),
-                TaskState::Queued => Err(reject("任务尚未开始")),
+                TaskState::Draft | TaskState::Queued => Err(reject("任务尚未开始")),
                 _ => Err(reject("任务不在运行中")),
             };
         }
@@ -3115,6 +3153,132 @@ mod tests {
         for s in states {
             let json = serde_json::to_string(&s).unwrap();
             assert_eq!(serde_json::from_str::<TaskState>(&json).unwrap(), s);
+        }
+    }
+    mod task_card {
+        use super::*;
+
+        #[test]
+        fn kind_wire_names_are_feature_and_bug_and_the_default_is_feature() {
+            assert_eq!(TaskKind::default(), TaskKind::Feature);
+            for kind in [TaskKind::Feature, TaskKind::Bug] {
+                assert_eq!(TaskKind::parse(kind.as_str()), Some(kind));
+                let wire = serde_json::to_value(kind).unwrap();
+                assert_eq!(wire, kind.as_str());
+                assert_eq!(serde_json::from_value::<TaskKind>(wire).unwrap(), kind);
+            }
+            for value in ["", "Feature", "BUG", "unknown", " feature", "bug "] {
+                assert_eq!(TaskKind::parse(value), None);
+                assert!(serde_json::from_value::<TaskKind>(serde_json::json!(value)).is_err());
+            }
+        }
+
+        #[test]
+        fn draft_has_its_own_wire_shape_and_is_not_queued() {
+            let wire = serde_json::json!({"state":"draft"});
+            assert_eq!(serde_json::to_value(TaskState::Draft).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<TaskState>(wire).unwrap(),
+                TaskState::Draft
+            );
+            assert_ne!(
+                serde_json::to_value(TaskState::Queued).unwrap(),
+                serde_json::json!({"state":"draft"})
+            );
+            assert_eq!(
+                serde_json::to_value(Trigger::Start).unwrap(),
+                serde_json::json!({"trigger":"start"})
+            );
+        }
+
+        #[test]
+        fn draft_holds_no_slot_does_not_await_the_user_and_is_not_terminal() {
+            assert!(!TaskState::Draft.occupies_slot());
+            assert!(!TaskState::Draft.awaits_user());
+            assert!(!TaskState::Draft.is_terminal());
+            assert_eq!(TaskState::Draft.node(), None);
+        }
+
+        #[test]
+        fn start_moves_a_draft_to_queued_without_an_action() {
+            let result = apply(&TaskState::Draft, &Trigger::Start, &ctx(&cfg())).unwrap();
+            assert_eq!(result.next, TaskState::Queued);
+            assert_eq!(result.action, Action::None);
+        }
+
+        #[test]
+        fn start_is_refused_for_every_state_that_is_not_a_draft() {
+            for state in [
+                TaskState::Queued,
+                TaskState::Requeued {
+                    resume: Node::Design,
+                },
+                active(Node::Intake),
+                TaskState::Paused {
+                    resume: Node::Design,
+                },
+                TaskState::Stopped { at: Node::Design },
+                TaskState::Failed {
+                    at: Node::Design,
+                    reason: FailureReason::Config { detail: "x".into() },
+                },
+                TaskState::Done,
+                TaskState::Cancelled,
+            ] {
+                assert_eq!(
+                    apply(&state, &Trigger::Start, &ctx(&cfg()))
+                        .unwrap_err()
+                        .reason,
+                    "只有待开始的任务可以开始"
+                );
+            }
+        }
+
+        #[test]
+        fn a_draft_can_be_cancelled_directly() {
+            let result = apply(&TaskState::Draft, &Trigger::Cancel, &ctx(&cfg())).unwrap();
+            assert_eq!(result.next, TaskState::Cancelled);
+            assert_eq!(result.action, Action::RunCancel);
+        }
+
+        #[test]
+        fn a_draft_refuses_every_other_trigger() {
+            for trigger in [
+                Trigger::SlotAvailable,
+                Trigger::Pause,
+                Trigger::Stop,
+                Trigger::Resume,
+                Trigger::Approve,
+                Trigger::Reject {
+                    feedback: "x".into(),
+                },
+                Trigger::Merge,
+                Trigger::ExtendBudget { extra_rounds: 1 },
+                Trigger::RerunFrom { node: Node::Intake },
+                Trigger::SessionEnded {
+                    outcome: SessionOutcome::Crashed { detail: "x".into() },
+                },
+                Trigger::CoreStepDone {
+                    node: Node::Cleanup,
+                    result: CoreStepResult::Ok,
+                },
+                Trigger::GateDone {
+                    node: Node::Gate,
+                    outcome: GateOutcome::Passed,
+                    status: None,
+                },
+            ] {
+                assert!(
+                    apply(&TaskState::Draft, &trigger, &ctx(&cfg())).is_err(),
+                    "{trigger:?}"
+                );
+            }
+            assert_eq!(
+                apply(&TaskState::Draft, &Trigger::Pause, &ctx(&cfg()))
+                    .unwrap_err()
+                    .reason,
+                "任务尚未开始"
+            );
         }
     }
 }

@@ -10,7 +10,7 @@ mod args;
 mod client;
 mod render;
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -26,7 +26,9 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   doctor                         检查 Git、Claude Code、Codex 与登录状态
   project add <路径> [--workspace] [--docs-repo 仓] [--skip-onboarding]
   project ls | rm <项目> | onboard <项目> [--finish]
-  task new \"一句话需求\" [-p 项目] [--attach 文件]... [--doc 路径]...
+  task new [需求] [--kind feature|bug] [--brief <文件|->] [--draft] [-p 项目] [--attach 文件]... [--doc 路径]...
+
+  task start <任务>              开始待开始任务
 
 推进
   run [--once | --until-idle] [--interval 秒]
@@ -38,6 +40,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
 卡点与控制
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
+  reply <任务> \"补充信息\"       Bug Loop 上线前等同 reject
   merge <任务>                   合并到默认分支
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
@@ -102,7 +105,7 @@ fn run(argv: &[String]) -> Result<()> {
     let verb = verb.unwrap_or_default();
     let allowed: &[&str] = match verb {
         "doctor" | "ls" | "alerts" | "rpc" | "approve" | "merge" | "pause" | "resume" | "stop"
-        | "cancel" | "reject" | "rerun" | "extend" | "decide" => &["--json"],
+        | "cancel" | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
         "status" => &["--json"],
         "project" => &[
             "--json",
@@ -111,7 +114,15 @@ fn run(argv: &[String]) -> Result<()> {
             "--skip-onboarding",
             "--finish",
         ],
-        "task" => &["--json", "--project", "--attach", "--doc"],
+        "task" => &[
+            "--json",
+            "--project",
+            "--attach",
+            "--doc",
+            "--kind",
+            "--brief",
+            "--draft",
+        ],
         "run" => &["--once", "--until-idle", "--interval", "--verbose"],
         "logs" => &["--session", "--follow"],
         other => return Err(CliError::Usage(format!("未知命令 `{other}`"))),
@@ -137,6 +148,10 @@ fn run(argv: &[String]) -> Result<()> {
         "cancel" => trigger(&mut c, &a, "task.cancel", json!({})),
         "reject" => {
             let feedback = a.need(2, "驳回意见")?.to_string();
+            trigger(&mut c, &a, "task.reject", json!({ "feedback": feedback }))
+        }
+        "reply" => {
+            let feedback = a.need(2, "补充信息")?;
             trigger(&mut c, &a, "task.reject", json!({ "feedback": feedback }))
         }
         "rerun" => {
@@ -365,8 +380,8 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
     match a.positional.get(1).map(String::as_str) {
         Some("new") => {
             let request = a.positional[2..].join(" ");
-            if request.trim().is_empty() {
-                return Err(CliError::Usage("缺少参数：一句话需求".into()));
+            if request.trim().is_empty() && !a.has("--brief") {
+                return Err(CliError::Usage("缺少参数：一句话需求或 --brief".into()));
             }
             let p = c.resolve_project(a.value("--project"))?;
             let attachments: Vec<String> = a
@@ -378,15 +393,38 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                         .map_err(|e| CliError::Failed(format!("附件 {f}：{e}")))
                 })
                 .collect::<Result<_>>()?;
-            let out = c.call(
-                "task.create",
-                json!({
-                    "project_id": p["id"],
-                    "request": request,
-                    "attachments": attachments,
-                    "doc_refs": a.values("--doc"),
-                }),
-            )?;
+            let mut params = json!({
+                "project_id": p["id"],
+                "request": request,
+                "attachments": attachments,
+                "doc_refs": a.values("--doc"),
+            });
+            if request.trim().is_empty() && a.has("--brief") {
+                params.as_object_mut().unwrap().remove("request");
+            }
+            if let Some(kind) = a.value("--kind") {
+                params["kind"] = json!(kind);
+            }
+            if let Some(path) = a.value("--brief") {
+                let bytes = if path == "-" {
+                    let mut bytes = Vec::new();
+                    std::io::stdin()
+                        .read_to_end(&mut bytes)
+                        .map_err(|e| CliError::Failed(format!("读取任务卡正文：{e}")))?;
+                    bytes
+                } else {
+                    std::fs::read(path)
+                        .map_err(|e| CliError::Failed(format!("读取任务卡正文 {path}：{e}")))?
+                };
+                params["brief"] = json!(
+                    String::from_utf8(bytes)
+                        .map_err(|_| CliError::Failed("任务卡正文不是 UTF-8 文本".into()))?
+                );
+            }
+            if a.has("--draft") {
+                params["draft"] = json!(true);
+            }
+            let out = c.call("task.create", params)?;
             if a.has("--json") {
                 print_json(&out);
             } else {
@@ -397,7 +435,28 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                     t["slug"].as_str().unwrap_or_default(),
                     render::state_line(&t["state"])
                 );
-                println!("Loop 由 `autome run` 或打开的桌面端推进。");
+                if t["state"]["state"] == "draft" {
+                    println!(
+                        "已存为待开始。用 `autome task start {}` 开始。",
+                        t["id"].as_str().unwrap_or_default()
+                    );
+                } else {
+                    println!("Loop 由 `autome run` 或打开的桌面端推进。");
+                }
+            }
+            Ok(())
+        }
+        Some("start") => {
+            let id = c.resolve_task(a.need(2, "任务")?)?;
+            let out = c.call("task.start", json!({ "task_id": id }))?;
+            if a.has("--json") {
+                print_json(&out);
+            } else {
+                let t = &out["task"];
+                println!("{}  {}", id, render::state_line(&t["state"]));
+                if let Some(next) = render::next_step(t) {
+                    println!("→ {next}");
+                }
             }
             Ok(())
         }
@@ -957,6 +1016,7 @@ mod idle_tests {
         c.ctx
             .store
             .insert_task(&TaskRecord {
+                kind: autome_domain::task::TaskKind::Feature,
                 id: id.into(),
                 project_id: "p".into(),
                 slug: id.into(),
@@ -1047,6 +1107,22 @@ mod idle_tests {
         ] {
             c.ctx.store.set_task_state("task", &state).unwrap();
             assert!(idle(&mut c), "{state:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod task_card {
+    #[test]
+    fn usage_lists_task_start_reply_and_the_new_flags() {
+        for text in [
+            "task start <任务>",
+            "reply <任务>",
+            "--kind",
+            "--brief",
+            "--draft",
+        ] {
+            assert!(super::USAGE.contains(text), "{text}");
         }
     }
 }
