@@ -1939,11 +1939,10 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "subjects": subjects,
             "merged": merged,
             "unchanged": summary.commits == 0,
-            "mergeable": blocking.is_empty() && on_top,
+            "mergeable": blocking.is_empty(),
+            "behind": !on_top,
             "blocked_by": if !blocking.is_empty() {
                 json!({ "kind": "dirty_worktree", "paths": blocking })
-            } else if !on_top {
-                json!({ "kind": "needs_rebase" })
             } else {
                 Value::Null
             },
@@ -1992,6 +1991,7 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "total_deleted": total("total_deleted"),
             "subjects": repos.iter().flat_map(|r| r["subjects"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
             "mergeable": mergeable,
+            "rebase_first": outstanding.iter().any(|r| r["behind"] == json!(true)),
             // What pressing merge will actually do. A Backlog item marked
             // 纳入 turns into new work at this stopping point (T-09), so the
             // task goes back to the implementation loop instead of merging —

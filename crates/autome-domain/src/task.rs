@@ -421,7 +421,12 @@ pub enum CoreStepResult {
         files: Vec<String>,
         detail: String,
     },
-    /// Merge preconditions unmet (dirty main worktree, stale branch, …).
+    /// Merging only: all refusals are due to stale task branches.
+    Behind {
+        repos: Vec<String>,
+        detail: String,
+    },
+    /// Merge preconditions unmet other than a stale branch.
     Blocked {
         detail: String,
     },
@@ -489,6 +494,8 @@ pub struct Transition {
     /// True when the pending decisions were consumed by this transition, so
     /// the store can mark them and not apply them twice.
     pub consumes_decisions: bool,
+    /// Authorization carried only through the requested rebase and merge gate.
+    pub merge_requested: bool,
 }
 
 impl Transition {
@@ -498,6 +505,7 @@ impl Transition {
             action,
             budget_n: None,
             consumes_decisions: false,
+            merge_requested: false,
         }
     }
 
@@ -649,6 +657,60 @@ pub fn apply(
     state: &TaskState,
     trigger: &Trigger,
     ctx: &Context<'_>,
+) -> Result<Transition, Rejected> {
+    apply_with_merge_request(state, trigger, ctx, false)
+}
+
+/// Applies a trigger with the authorization from a user-requested merge.
+pub fn apply_with_merge_request(
+    state: &TaskState,
+    trigger: &Trigger,
+    ctx: &Context<'_>,
+    merge_requested: bool,
+) -> Result<Transition, Rejected> {
+    let requested = merge_requested && in_merge_stretch(state);
+    let mut transition = apply_inner(state, trigger, ctx, requested)?;
+    transition.merge_requested = matches!(
+        trigger,
+        Trigger::CoreStepDone {
+            node: Node::Merging,
+            result: CoreStepResult::Behind { .. }
+        }
+    ) || (requested && in_merge_stretch(&transition.next));
+    Ok(transition)
+}
+
+fn in_merge_stretch(state: &TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Active {
+            node: Node::Rebase | Node::MergeGate
+        } | TaskState::Requeued {
+            resume: Node::Rebase | Node::MergeGate
+        } | TaskState::Paused {
+            resume: Node::Rebase | Node::MergeGate
+        }
+    )
+}
+
+fn press_merge(ctx: &Context<'_>) -> Transition {
+    if ctx.decisions.included > 0 {
+        start_impl(ctx, None)
+    } else {
+        Transition::active(
+            Node::Merging,
+            Action::RunCoreStep {
+                node: Node::Merging,
+            },
+        )
+    }
+}
+
+fn apply_inner(
+    state: &TaskState,
+    trigger: &Trigger,
+    ctx: &Context<'_>,
+    merge_requested: bool,
 ) -> Result<Transition, Rejected> {
     // Control triggers first: they apply from many states, and handling them
     // once here keeps the node table below about the Loop itself.
@@ -971,22 +1033,7 @@ pub fn apply(
                 node: Node::AwaitMerge,
             },
             Trigger::Merge,
-        ) => {
-            // An item marked 纳入 while the task sits *here* has no later
-            // implementation round to be picked up by, so this stopping point
-            // keeps absorbing them — it is the only remaining way such a
-            // decision can take effect. Everything decided during the loop was
-            // already absorbed by the round after it (`start_impl`).
-            if ctx.decisions.included > 0 {
-                return Ok(start_impl(ctx, None));
-            }
-            Ok(Transition::active(
-                Node::Merging,
-                Action::RunCoreStep {
-                    node: Node::Merging,
-                },
-            ))
-        }
+        ) => Ok(press_merge(ctx)),
 
         // ---- Core steps ---------------------------------------------------
         (TaskState::Active { node }, Trigger::CoreStepDone { node: done, result }) => {
@@ -1007,7 +1054,11 @@ pub fn apply(
                             },
                         ));
                     }
-                    Ok(Transition::active(Node::AwaitMerge, Action::None))
+                    Ok(if merge_requested {
+                        press_merge(ctx)
+                    } else {
+                        Transition::active(Node::AwaitMerge, Action::None)
+                    })
                 }
                 (Node::Rebase, CoreStepResult::Conflict { files, .. }) => Ok(Transition::active(
                     Node::Implement,
@@ -1018,6 +1069,13 @@ pub fn apply(
                         }),
                     },
                 )),
+                (Node::Merging, CoreStepResult::Behind { .. }) => Ok(Transition::to(
+                    TaskState::Requeued {
+                        resume: Node::Rebase,
+                    },
+                    Action::None,
+                )),
+                (_, CoreStepResult::Behind { .. }) => Err(reject("只有合并步骤可以报告分支落后")),
                 (Node::Merging, CoreStepResult::Ok) => {
                     if ctx.config.gate.is_some() {
                         return Ok(Transition::active(
@@ -1081,6 +1139,9 @@ pub fn apply(
             let node = *node;
             if node != *done || !node.is_gate() {
                 return Err(reject("门禁结果与当前节点不符"));
+            }
+            if node == Node::MergeGate && *outcome == GateOutcome::Passed && merge_requested {
+                return Ok(press_merge(ctx));
             }
             after_gate(node, outcome, status.as_deref(), ctx)
         }
@@ -1191,6 +1252,312 @@ mod tests {
     use crate::config::{GlobalConfig, ProjectConfig, RoleOverrides, resolve};
     use crate::status_block::{ConvergenceMode, Milestone, MilestoneState};
 
+    fn requested_step(node: Node, result: CoreStepResult, config: &ResolvedConfig) -> Transition {
+        apply_with_merge_request(
+            &active(node),
+            &Trigger::CoreStepDone { node, result },
+            &ctx(config),
+            true,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn merging_behind_the_default_branch_queues_a_rebase_carrying_the_request() {
+        for repos in [vec![], vec!["repo".into()], vec!["a".into(), "b".into()]] {
+            for requested in [false, true] {
+                let t = apply_with_merge_request(
+                    &active(Node::Merging),
+                    &Trigger::CoreStepDone {
+                        node: Node::Merging,
+                        result: CoreStepResult::Behind {
+                            repos: repos.clone(),
+                            detail: String::new(),
+                        },
+                    },
+                    &ctx(&cfg()),
+                    requested,
+                )
+                .unwrap();
+                assert_eq!(
+                    t.next,
+                    TaskState::Requeued {
+                        resume: Node::Rebase
+                    }
+                );
+                assert_eq!(t.action, Action::None);
+                assert!(t.merge_requested);
+            }
+        }
+    }
+
+    #[test]
+    fn a_requested_rebase_without_a_gate_goes_straight_to_merging() {
+        let t = requested_step(Node::Rebase, CoreStepResult::Ok, &cfg());
+        assert_eq!(t.next, active(Node::Merging));
+        assert_eq!(
+            t.action,
+            Action::RunCoreStep {
+                node: Node::Merging
+            }
+        );
+        assert!(!t.merge_requested);
+    }
+
+    #[test]
+    fn a_requested_rebase_with_a_gate_still_runs_the_merge_gate() {
+        let t = requested_step(Node::Rebase, CoreStepResult::Ok, &cfg_with_gate());
+        assert_eq!(t.next, active(Node::MergeGate));
+        assert_eq!(
+            t.action,
+            Action::RunCoreStep {
+                node: Node::MergeGate
+            }
+        );
+        assert!(t.merge_requested);
+    }
+
+    #[test]
+    fn a_passed_merge_gate_on_a_requested_merge_goes_straight_to_merging() {
+        let t = apply_with_merge_request(
+            &active(Node::MergeGate),
+            &gate_done(Node::MergeGate, GateOutcome::Passed, None),
+            &ctx(&cfg_with_gate()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Merging));
+        assert_eq!(
+            t.action,
+            Action::RunCoreStep {
+                node: Node::Merging
+            }
+        );
+        assert!(!t.merge_requested);
+    }
+
+    #[test]
+    fn without_a_request_rebase_and_merge_gate_still_stop_at_await_merge() {
+        for (node, trigger, c) in [
+            (
+                Node::Rebase,
+                Trigger::CoreStepDone {
+                    node: Node::Rebase,
+                    result: CoreStepResult::Ok,
+                },
+                cfg(),
+            ),
+            (
+                Node::MergeGate,
+                gate_done(Node::MergeGate, GateOutcome::Passed, None),
+                cfg_with_gate(),
+            ),
+        ] {
+            let t = apply_with_merge_request(&active(node), &trigger, &ctx(&c), false).unwrap();
+            assert_eq!(t.next, active(Node::AwaitMerge));
+            assert_eq!(t.action, Action::None);
+            assert!(!t.merge_requested);
+        }
+    }
+
+    #[test]
+    fn a_conflicting_requested_rebase_goes_back_to_implement_and_drops_the_request() {
+        let files = vec!["conflict".into()];
+        let t = requested_step(
+            Node::Rebase,
+            CoreStepResult::Conflict {
+                files: files.clone(),
+                detail: "conflict".into(),
+            },
+            &cfg(),
+        );
+        assert_eq!(t.next, active(Node::Implement));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: Some(Inject::RebaseConflict { files })
+            }
+        );
+        assert!(!t.merge_requested);
+        let failed = requested_step(
+            Node::Rebase,
+            CoreStepResult::Failed {
+                detail: "read failure".into(),
+            },
+            &cfg(),
+        );
+        assert!(matches!(failed.next, TaskState::Failed { .. }));
+        assert!(!failed.merge_requested);
+    }
+
+    #[test]
+    fn a_failed_merge_gate_on_a_requested_merge_goes_back_to_implement_and_drops_the_request() {
+        let t = apply_with_merge_request(
+            &active(Node::MergeGate),
+            &gate_done(Node::MergeGate, red(), None),
+            &ctx(&cfg_with_gate()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        assert!(matches!(
+            t.action,
+            Action::StartRole {
+                inject: Some(Inject::GateFailed { .. }),
+                ..
+            }
+        ));
+        assert!(!t.merge_requested);
+    }
+
+    #[test]
+    fn the_request_survives_the_queue_and_a_pause_but_not_a_stop() {
+        let c = cfg_with_gate();
+        for node in [Node::Rebase, Node::MergeGate] {
+            let mut state = TaskState::Requeued { resume: node };
+            for trigger in [
+                Trigger::SlotAvailable,
+                Trigger::Pause,
+                Trigger::Resume,
+                Trigger::SlotAvailable,
+            ] {
+                let t = apply_with_merge_request(&state, &trigger, &ctx(&c), true).unwrap();
+                assert!(t.merge_requested, "{state:?} {trigger:?}");
+                state = t.next;
+            }
+            assert_eq!(state, active(node));
+            for state in [state, TaskState::Paused { resume: node }] {
+                let stopped =
+                    apply_with_merge_request(&state, &Trigger::Stop, &ctx(&c), true).unwrap();
+                assert!(!stopped.merge_requested);
+                let resumed =
+                    apply_with_merge_request(&stopped.next, &Trigger::Resume, &ctx(&c), true)
+                        .unwrap();
+                assert!(!resumed.merge_requested);
+            }
+            for state in [
+                active(node),
+                TaskState::Requeued { resume: node },
+                TaskState::Paused { resume: node },
+            ] {
+                let t = apply_with_merge_request(&state, &Trigger::Cancel, &ctx(&c), true).unwrap();
+                assert_eq!(t.next, TaskState::Cancelled);
+                assert!(!t.merge_requested);
+            }
+        }
+    }
+
+    #[test]
+    fn a_rebase_entered_from_anywhere_but_the_merge_carries_no_request() {
+        let c = cfg();
+        for state in [
+            TaskState::Stopped { at: Node::Rebase },
+            TaskState::Stopped {
+                at: Node::Implement,
+            },
+        ] {
+            let t = apply_with_merge_request(
+                &state,
+                &Trigger::RerunFrom { node: Node::Rebase },
+                &ctx(&c),
+                true,
+            )
+            .unwrap();
+            assert_eq!(t.next, active(Node::Rebase));
+            assert!(!t.merge_requested);
+        }
+        let t = apply_with_merge_request(
+            &active(Node::Retro),
+            &ended(block(DocStatus::Implementing, &[MilestoneState::Done])),
+            &ctx(&c),
+            true,
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Rebase));
+        assert!(!t.merge_requested);
+        // Every accepted transition from outside the stretch must drop stale authorization.
+        for node in Node::ALL {
+            if matches!(node, Node::Rebase | Node::MergeGate) {
+                continue;
+            }
+            for trigger in [
+                Trigger::Merge,
+                Trigger::Resume,
+                Trigger::SlotAvailable,
+                Trigger::Cancel,
+                Trigger::CoreStepDone {
+                    node,
+                    result: CoreStepResult::Ok,
+                },
+            ] {
+                if let Ok(t) = apply_with_merge_request(&active(node), &trigger, &ctx(&c), true) {
+                    assert!(!t.merge_requested, "{node:?} {trigger:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn backlog_items_included_during_the_automatic_path_are_absorbed_before_merging() {
+        for (node, trigger, c) in [
+            (
+                Node::Rebase,
+                Trigger::CoreStepDone {
+                    node: Node::Rebase,
+                    result: CoreStepResult::Ok,
+                },
+                cfg(),
+            ),
+            (
+                Node::MergeGate,
+                gate_done(Node::MergeGate, GateOutcome::Passed, None),
+                cfg_with_gate(),
+            ),
+        ] {
+            let mut context = ctx(&c);
+            context.decisions.included = 1;
+            let t = apply_with_merge_request(&active(node), &trigger, &context, true).unwrap();
+            assert_eq!(t.next, active(Node::Implement));
+            assert!(t.consumes_decisions);
+            assert_eq!(t.budget_n, Some(25 + c.loop_defaults.budget_factor));
+            assert!(!t.merge_requested);
+        }
+    }
+
+    #[test]
+    fn behind_is_only_accepted_from_merging() {
+        for node in Node::ALL {
+            let result = apply_with_merge_request(
+                &active(node),
+                &Trigger::CoreStepDone {
+                    node,
+                    result: CoreStepResult::Behind {
+                        repos: vec![],
+                        detail: String::new(),
+                    },
+                },
+                &ctx(&cfg()),
+                true,
+            );
+            assert_eq!(result.is_ok(), node == Node::Merging, "{node:?}");
+        }
+        assert!(
+            apply_with_merge_request(
+                &active(Node::Rebase),
+                &Trigger::CoreStepDone {
+                    node: Node::Merging,
+                    result: CoreStepResult::Behind {
+                        repos: vec![],
+                        detail: String::new()
+                    }
+                },
+                &ctx(&cfg()),
+                true
+            )
+            .is_err()
+        );
+    }
     fn cfg() -> ResolvedConfig {
         resolve(&GlobalConfig::default(), &ProjectConfig::default())
     }

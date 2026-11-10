@@ -3215,3 +3215,428 @@ fn manual_retro_resumes_at_original_node_only_after_finishing() {
     assert_one_role(&w, &id, autome_domain::role::Role::Impl);
     ok(&w.call("task.stop", json!({"task_id":id})));
 }
+
+/// Uses the ordinary intake/design/implementation/audit/retro wrappers, with
+/// task-local scripts so two waiting tasks cannot consume each other's steps.
+fn wait_for_automatic_merge(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    w.retro_step(7, &slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&slug, 7, &retro);
+    let id = create_task(w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    id
+}
+
+#[test]
+fn two_tasks_waiting_to_merge_both_land_and_the_second_rebases_through_the_gate_by_itself() {
+    needs_git!();
+    let mut w = World::new("two-auto-merges");
+    w.configure("[gate]\ncommand = \"git diff --exit-code\"\ntimeout_minutes = 5\n");
+    let a = wait_for_automatic_merge(&mut w, "auto first");
+    let b = wait_for_automatic_merge(&mut w, "auto second");
+    assert_eq!(w.node(&a).as_deref(), Some("await_merge"));
+    assert_eq!(w.node(&b).as_deref(), Some("await_merge"));
+    ok(&w.call("task.merge", json!({"task_id": a})));
+    w.settle();
+    assert_eq!(w.state(&a), "done");
+    let a_commit = w.ctx.store.get_task(&a).unwrap().merge_commit.unwrap();
+    let before = w
+        .ctx
+        .store
+        .events_since(0, u32::MAX)
+        .unwrap()
+        .last()
+        .unwrap()
+        .0;
+    ok(&w.call("task.merge", json!({"task_id": b})));
+    w.settle();
+    assert_eq!(w.state(&b), "done");
+    let b_commit = w.ctx.store.get_task(&b).unwrap().merge_commit.unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, &a_commit, &b_commit).unwrap());
+    let rebased = w
+        .ctx
+        .store
+        .last_event(&b, "merge.rebased")
+        .unwrap()
+        .unwrap();
+    let head = rebased["repos"][0]["head"].as_str().unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, head, &b_commit).unwrap());
+    let events = w
+        .ctx
+        .store
+        .events_since_with_subject(before, u32::MAX)
+        .unwrap();
+    let rebase_seq = events
+        .iter()
+        .find(|(_, kind, subject, _)| subject == &b && kind == "merge.rebased")
+        .unwrap()
+        .0;
+    assert!(
+        events.iter().any(|(seq, kind, subject, payload)| {
+            *seq > rebase_seq
+                && subject == &b
+                && kind == "gate.result"
+                && payload["node"] == "merge_gate"
+                && payload["ok"] == true
+                && payload["sha"] == head
+        }),
+        "the rebased commit must actually pass the merge gate: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|(_, kind, subject, payload)| {
+            subject == &b && kind == "task.updated" && payload["state"]["node"] == "await_merge"
+        }),
+        "the user's single merge press must last through the gate"
+    );
+}
+
+#[test]
+fn main_moving_after_the_press_takes_the_same_automatic_path() {
+    needs_git!();
+    let mut w = World::new("main-after-press");
+    let id = wait_for_automatic_merge(&mut w, "moving main");
+    // task.merge calls apply_trigger then ticks before replying. Split those
+    // same production calls to move main in their deterministic race window.
+    automed::scheduler::apply_trigger(&mut w.ctx, &id, &autome_domain::task::Trigger::Merge)
+        .unwrap();
+    assert_eq!(w.node(&id).as_deref(), Some("merging"));
+    std::fs::write(w.repo.join("main-moved"), "concurrent change\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["main-moved"], "main after press").unwrap();
+    let main = automed::git::head_sha(&w.repo).unwrap();
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 1);
+    let merged = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, &main, &merged).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("main-moved")).unwrap(),
+        "concurrent change\n"
+    );
+}
+
+#[test]
+fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at_await_merge_again()
+{
+    needs_git!();
+    let mut w = World::new("auto-gate-failure");
+    let gate = w.root.join("combination-gate.sh");
+    std::fs::write(&gate, "[ ! -f from-a ] || [ ! -f from-b ]\n").unwrap();
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        gate.display()
+    ));
+    let mut ids = Vec::new();
+    for (request, file) in [("gate first", "from-a"), ("gate second", "from-b")] {
+        let slug = slug_for(request);
+        for (n, body) in [
+            (1, doc("设计中", 0, 0, &[])),
+            (2, doc("设计中", 1, 0, &[])),
+            (3, doc("设计中", 1, 0, &[])),
+            (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+            (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+            (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+        ] {
+            let prelude = if n == 5 {
+                format!(
+                    "echo feature > {file}\ngit add {file}\ngit -c user.name=fake -c user.email=f@f commit -qm feature\n"
+                )
+            } else {
+                String::new()
+            };
+            w.doc_step_for(&slug, n, &body, &prelude);
+        }
+        w.retro_step(7, &slug);
+        let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+        w.step_for(&slug, 7, &retro);
+        if file == "from-b" {
+            w.doc_step_for(&slug, 8, &doc("实现中", 2, 2, &[("M-01", "待审")]),
+                "test -f from-a && test -f from-b\ngit rm from-b\ngit -c user.name=fake -c user.email=f@f commit -qm repair\n");
+            w.doc_step_for(&slug, 9, &doc("实现中", 2, 2, &[("M-01", "已完成")]), "");
+            w.step_for(&slug, 10, &retro);
+        }
+        let id = create_task(&mut w, request);
+        w.settle();
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        ids.push(id);
+    }
+    let (a, b) = (&ids[0], &ids[1]);
+    ok(&w.call("task.merge", json!({"task_id":a})));
+    w.settle();
+    assert_eq!(w.state(a), "done");
+    let main = automed::git::head_sha(&w.repo).unwrap();
+    ok(&w.call("task.merge", json!({"task_id":b})));
+    w.settle();
+    assert_eq!(w.node(b).as_deref(), Some("await_merge"));
+    assert_eq!(automed::git::head_sha(&w.repo).unwrap(), main);
+    assert!(w.ctx.store.get_task(b).unwrap().merge_commit.is_none());
+    assert_eq!(
+        w.ctx.store.last_event(b, "merge.auto").unwrap().unwrap()["active"],
+        false
+    );
+    assert_eq!(w.ctx.store.count_events(b, "merge.rebased").unwrap(), 1);
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let rebase = events
+        .iter()
+        .find(|(_, k, s, _)| s == b && k == "merge.rebased")
+        .unwrap();
+    let failure = events
+        .iter()
+        .find(|(seq, k, s, p)| {
+            *seq > rebase.0
+                && s == b
+                && k == "gate.result"
+                && p["node"] == "merge_gate"
+                && p["ok"] == false
+        })
+        .unwrap();
+    assert_eq!(failure.3["sha"], rebase.3["repos"][0]["head"]);
+    let repair = events
+        .iter()
+        .find(|(seq, k, s, p)| {
+            *seq > failure.0 && s == b && k == "task.updated" && p["state"]["node"] == "implement"
+        })
+        .unwrap();
+    for node in ["gate", "merge_gate"] {
+        assert!(events.iter().any(|(seq, k, s, p)| *seq > repair.0
+            && s == b
+            && k == "gate.result"
+            && p["node"] == node
+            && p["ok"] == true));
+    }
+    let wt = w
+        .repo
+        .join(format!(".worktree/{}", slug_for("gate second")));
+    assert!(wt.join("from-a").exists());
+    assert!(!wt.join("from-b").exists());
+    assert_eq!(
+        std::fs::read_to_string(
+            w.repo
+                .join(".autome/fake")
+                .join(slug_for("gate second"))
+                .join("history")
+        )
+        .unwrap(),
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+    );
+}
+
+fn workspace_waiting_to_merge(w: &mut Workspace) -> (String, String) {
+    let request = "workspace automatic merge";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, ws_doc("设计中", 0, 0, &[], "backend")),
+        (2, ws_doc("设计中", 1, 0, &[], "backend")),
+        (3, ws_doc("设计中", 1, 0, &[], "backend")),
+        (4, ws_doc("实现中", 2, 0, &[("M-01", "开放")], "backend")),
+        (5, ws_doc("实现中", 2, 1, &[("M-01", "待审")], "backend")),
+        (6, ws_doc("实现中", 2, 1, &[("M-01", "已完成")], "backend")),
+        (7, ws_doc("已完成", 2, 1, &[("M-01", "已完成")], "backend")),
+    ] {
+        let prefix = if n == 1 {
+            format!(".worktree/{slug}")
+        } else {
+            String::new()
+        };
+        let extra = if n == 5 {
+            "printf 'feature\\n' > backend/feature.txt\n(cd backend && git add feature.txt && git -c user.name=fake -c user.email=f@f commit -qm feature)"
+        } else {
+            ""
+        };
+        w.doc_step(n, &slug, &prefix, &body, extra);
+    }
+    let created = call(
+        &mut w.ctx,
+        "task.create",
+        json!({"project_id": w.project_id, "request": request}),
+    );
+    let id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_design_approval"),
+        "{}",
+        w.why(&id)
+    );
+    ok(&call(&mut w.ctx, "task.approve", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        w.why(&id)
+    );
+    (id, slug)
+}
+
+#[test]
+fn a_workspace_with_one_member_behind_rebases_every_member_and_merges_them_all() {
+    needs_git!();
+    let mut w = Workspace::new("one-behind", &["docs", "backend"]);
+    let (id, slug) = workspace_waiting_to_merge(&mut w);
+    std::fs::write(w.member("backend").join("main-moved"), "new main\n").unwrap();
+    automed::git::commit_paths(&w.member("backend"), &["main-moved"], "advance main").unwrap();
+    let onto = automed::git::head_sha(&w.member("backend")).unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(
+        matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Done
+        ),
+        "{}",
+        w.why(&id)
+    );
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let (seq, _, _, rebased) = events
+        .iter()
+        .find(|(_, k, s, _)| s == &id && k == "merge.rebased")
+        .unwrap();
+    let repos = rebased["repos"].as_array().unwrap();
+    assert_eq!(repos.len(), 2);
+    for member in ["backend", "docs"] {
+        let repo = repos.iter().find(|r| r["repo"] == member).unwrap();
+        assert!(
+            automed::git::is_ancestor(&w.member(member), repo["head"].as_str().unwrap(), "main")
+                .unwrap()
+        );
+    }
+    let merges: Vec<_> = events
+        .iter()
+        .filter(|(_, k, s, _)| s == &id && k == "merge.repo")
+        .collect();
+    assert_eq!(merges.len(), 2);
+    assert!(
+        merges
+            .iter()
+            .all(|(s, _, _, p)| s > seq && p["commit"].is_string())
+    );
+    assert!(automed::git::is_ancestor(&w.member("backend"), &onto, "main").unwrap());
+    assert!(w.member("backend").join("feature.txt").exists());
+    assert!(
+        w.member("docs")
+            .join(format!("autome/{slug}/{slug}.md"))
+            .exists()
+    );
+    assert!(!events.iter().any(|(s, k, subject, p)| s > seq
+        && subject == &id
+        && k == "task.updated"
+        && p["state"]["node"] == "await_merge"));
+}
+
+#[test]
+fn a_workspace_merge_left_half_done_finishes_without_a_second_merge_commit() {
+    needs_git!();
+    let mut w = Workspace::new("half-merged", &["docs", "backend"]);
+    let (id, slug) = workspace_waiting_to_merge(&mut w);
+    let path = format!("autome/{slug}/{slug}.md");
+    let dirty = w.member("docs").join(&path);
+    std::fs::create_dir_all(dirty.parent().unwrap()).unwrap();
+    std::fs::write(&dirty, "user document\n").unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        w.why(&id)
+    );
+    assert!(w.member("backend").join("feature.txt").exists());
+    assert_eq!(std::fs::read_to_string(&dirty).unwrap(), "user document\n");
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 0);
+    let backend_merged = automed::git::head_sha(&w.member("backend")).unwrap();
+    std::fs::remove_file(&dirty).unwrap();
+    std::fs::write(w.member("docs").join("main-moved"), "new docs main\n").unwrap();
+    automed::git::commit_paths(&w.member("docs"), &["main-moved"], "advance docs main").unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(
+        matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Done
+        ),
+        "{}",
+        w.why(&id)
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 1);
+    assert_eq!(
+        automed::git::head_sha(&w.member("backend")).unwrap(),
+        backend_merged
+    );
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let message = format!("merge(autome): {} {}", id, task.title);
+    for member in ["backend", "docs"] {
+        let output = std::process::Command::new("git")
+            .current_dir(w.member(member))
+            .args(["log", "main", "--merges", "--format=%s"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .filter(|line| *line == message)
+                .count(),
+            1,
+            "{member}"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(&dirty)
+            .unwrap()
+            .contains("status: 已完成")
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.member("docs").join("main-moved")).unwrap(),
+        "new docs main\n"
+    );
+}
+
+#[test]
+fn the_merge_panel_offers_the_merge_when_only_main_has_moved() {
+    needs_git!();
+    let mut w = World::new("panel-main-moved");
+    let request = "panel automatic rebase";
+    let id = wait_for_automatic_merge(&mut w, request);
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["rebase_first"], false);
+    assert_eq!(ok(&changes)["repos"][0]["behind"], false);
+    std::fs::write(w.repo.join("main-moved"), "concurrent change\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["main-moved"], "main moved").unwrap();
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["mergeable"], true);
+    assert_eq!(ok(&changes)["blocked_by"], Value::Null);
+    assert_eq!(ok(&changes)["rebase_first"], true);
+    assert_eq!(ok(&changes)["repos"][0]["behind"], true);
+    let slug = slug_for(request);
+    let path = format!("docs/{slug}/{slug}.md");
+    std::fs::create_dir_all(w.repo.join("docs").join(&slug)).unwrap();
+    std::fs::write(w.repo.join(&path), "user's dirty document\n").unwrap();
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["mergeable"], false);
+    assert_eq!(ok(&changes)["blocked_by"]["kind"], "dirty_worktree");
+    assert_eq!(ok(&changes)["rebase_first"], true);
+    std::fs::remove_file(w.repo.join(&path)).unwrap();
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["available"], false);
+}
