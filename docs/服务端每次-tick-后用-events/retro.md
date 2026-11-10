@@ -12,3 +12,4 @@
 实现 #8 | M-01 | 开放（门禁修复受阻） | docs/服务端每次-tick-后用-events/evidence/M-01-r8-impl.md | 在线 DNS 失败、锁定版本无离线缓存
 
 实现 #9 | M-01 | 退回 + 依赖安装环境（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r9-impl.md | npm DNS 不通且锁定包无缓存
+实现 #10 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r10-impl.md | 锁定依赖 DNS/缓存不可用
