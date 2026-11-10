@@ -8,3 +8,4 @@
 审计 #2 | M-02 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-audit.md | 无
 
 实现 #3 | M-03 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-03-r3-impl.md | 7 个既有 server 用例因 listen EPERM 未取证
+审计 #3 | M-03 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-03-r3-audit.md | 无
