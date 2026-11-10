@@ -1,4 +1,4 @@
-# 实现审计（审计 #4）
+# 实现审计（审计 #5）
 
-M-04：通过。验收命令全绿（Web 152/152，desktop 104 其中 1 跳过为基线），六项负向对照均被现有用例拦住，真实监听复验 Host/Origin/upgrade 行为符合方案 §7。无新增 Backlog。
-证据：docs/apps-web-的服务端托管-automed-2/evidence/M-04-r4-audit.md
+M-05：**通过**，标 `已完成`。5 条负向对照全部拦得住；175 个 Web 用例（含 19 个监听用例）与 desktop 104 个均与预期一致；真实 home 未被触碰。未发现产品缺陷，无新增 Backlog。
+证据：`docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-audit.md`。

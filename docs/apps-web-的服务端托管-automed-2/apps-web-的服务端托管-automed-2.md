@@ -1,12 +1,12 @@
 # Web 内核网关：apps/web 托管 automed、读写白名单、3 秒 tick 与 Host/Origin 本机检查
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 5/25
-current-milestone: M-05
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05，在允许回环监听的环境复验全部 175 个 Web 用例及真实 home 不变
+next-action: 无
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -402,7 +402,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 | M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 已完成 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
 | M-04 | 已完成 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
-| M-05 | 待审 | 网关接入 startServer 与端到端 | 0 | |
+| M-05 | 已完成 | 网关接入 startServer 与端到端 | 0 | |
 
 ## 里程碑说明
 
@@ -512,7 +512,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-05 网关接入 startServer 与端到端
 
-最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-impl.md · 待审（监听验收受环境阻塞） · 实现 #5
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-audit.md · 通过 · 审计 #5
 
 - 结果：`gateway.ts` 与 `/api/read`、`/api/write` 接进 `startServer`。从 HTTP 请求到真实内核的整条链路可用，不需要任何凭据；
   `close()` 之后内核进程也退出。
