@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 4/20
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许本地监听及文件监听的环境重跑 M-03 双运行时探针与全量 32 用例，取得通过证据后标待审
+next-action: 实现 M-04：lint、类型检查与 ci-local / ci.yml 接入
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -216,7 +216,7 @@ ExperimentalWarning 是否在入口过滤。
 |---|---|---|---|---|
 | M-01 | 已完成 | RR8 工程与自定义服务器：dev 与 build+start 两条路径起服务 | 0 | |
 | M-02 | 已完成 | 进程入口的 Node 版本检查 | 0 | |
-| M-03 | 开放 | node:sqlite 双运行时验证脚本 | 0 | |
+| M-03 | 已完成 | node:sqlite 双运行时验证脚本 | 0 | |
 | M-04 | 开放 | lint、类型检查与 ci-local / ci.yml 接入 | 0 | |
 
 ## 里程碑说明
@@ -248,7 +248,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-03 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-03-r4-impl.md · 探针通过，全量环境阻塞，保持开放 · 实现 #4
+最新证据：docs/在-apps-web-建-react/evidence/M-03-r4-audit.md · 通过 · 审计 #3
 
 - 验收命令：`npm run probe:sqlite --prefix apps/web > .autome/output/m03-probe.txt 2>&1; echo "probe=$?"; npm test --prefix apps/web > .autome/output/m03.txt 2>&1; echo "exit=$?"; tail -8 .autome/output/m03-probe.txt; tail -15 .autome/output/m03.txt`
 - 预期：probe=0，输出两行 `ok: true`：系统 Node（本机 26.5.0）与 Electron 43.2.0（内置 Node 24.18.0），各带 SQLite 版本；exit=0，4 个文件、32 个用例通过（基线 24，新增 sqlite-probe 8 个）：系统 Node 跑 `sqlite-check.mjs` 得 `ok: true` 且日志模式为 `wal`；定位 4 个（用临时目录造的假布局）——`AUTOME_ELECTRON` 优先、worktree 有 `path.txt` 缺 `dist` 时跳过且不触发下载并落到主检出、worktree 完整时优先 worktree、都没有时返回空；版本不等于 `apps/desktop/package.json` 的 43.2.0 时判失败 1 个；运行时不存在、非零退出各 1 个。
