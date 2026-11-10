@@ -6,3 +6,5 @@
 审计 #1 | M-01 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-audit.md | 无
 实现 #2 | M-02 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-impl.md | W1 的 7 个监听用例受 EPERM/EMFILE 阻塞
 审计 #2 | M-02 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-audit.md | 无
+
+实现 #3 | M-03 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-03-r3-impl.md | 7 个既有 server 用例因 listen EPERM 未取证

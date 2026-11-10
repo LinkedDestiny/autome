@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/25
+implementation-round: 3/25
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03 内核守护：崩溃重启、手动重启与 3 秒 tick
+next-action: 独立复验 M-03（含沙箱阻塞的 7 个 server 用例），通过后推进 M-04
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -400,7 +400,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 |---|---|---|---|---|
 | M-01 | 已完成 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
 | M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
-| M-03 | 开放 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
+| M-03 | 待审 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
 | M-04 | 开放 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
 | M-05 | 开放 | 网关接入 startServer 与端到端 | 0 | |
 
@@ -456,10 +456,12 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-03 内核守护：崩溃重启、手动重启与 3 秒 tick
 
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-03-r3-impl.md · 本里程碑通过，7 个既有监听用例受环境阻塞待复验 · 实现 #3
+
 - 结果：`core/restart-policy.ts`、`core/supervisor.ts`、`ticker.ts` 按方案 §3、§4 工作。
 - 覆盖：R-01（core-restart）、R-03、R-05、约束 4/6。前置：M-01。
-- 新增测试（共 24 个）：
-  - `test/core-restart.test.ts` 5 个（原样迁移）。
+- 新增测试（共 25 个）：
+  - `test/core-restart.test.ts` 6 个（原样迁移 5 个，另加 4999/5000ms 与非有限寿命边界）。
   - `test/core-supervisor.test.ts` 10 个：对账 tick 返回之后才算 connected；真实内核在注入时钟下活过 5 秒后被 SIGKILL，
     1 秒后重启且计数清零；`test/fixtures/automed-fail-fast.sh`（往 stderr 写一行 ERROR 后以 1 退出）连续 3 次就转
     offline，`reason` 引用 stderr，之后不再 spawn；offline 之后手动重启成功；手动重启仍失败时抛出内核的原因；运行中手动
@@ -474,7 +476,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 ### M-03 验收契约
 
 - 验收命令：`cargo build -p automed && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web && npm test --prefix apps/desktop`
-- 预期：Web 共 137 个用例全过（113 + 24），skipped 0；desktop 仍是 104 个，0 失败。
+- 预期：Web 共 138 个用例全过（113 + 25），skipped 0；desktop 仍是 104 个，0 失败。
 - 负向对照：`MAX_QUICK_FAILURES` 改成 4，「连续 3 次转 offline」会因看到第 4 次 spawn 而失败；去掉在途标志，ticker「上一次未返回时不叠加」在 9 秒内会看到 3 次调用而不是 1 次；本地超时就清掉在途状态，「超时后仍不叠加」和 supervisor 的 `isTickBusy` 用例会失败；`skipped` 时记日志，「skipped 安静」和真实驱动锁用例都会失败；supervisor 不清理重启定时器，「延迟期间 stop」会看到新进程；`CALL_TIMEOUT_MS` 照搬 desktop 的 5000，`DRIVER_LOCK_WAIT` 交叉核对会失败。
 
 ### M-04 本机安全：Host、Origin 与 upgrade 守卫
@@ -503,7 +505,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 ### M-04 验收契约
 
 - 验收命令：`npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web && npm test --prefix apps/desktop`
-- 预期：Web 共 151 个用例全过（137 + 14），skipped 0；desktop 仍是 104 个，0 失败。
+- 预期：Web 共 152 个用例全过（138 + 14），skipped 0；desktop 仍是 104 个，0 失败。
 - 负向对照：Host 检查写成 `startsWith('localhost')`，拒绝表里 `localhost.evil.com:<port>` 那一行会失败；Origin 只在 `/api/*` 上检查，用例 6 里 POST `/` 会被放行而失败；保留一段 `?t=` 兑换（303 跳转）或往响应里写 `Set-Cookie`，用例 7、8 和源码守卫 14 会失败；守卫用 `prependListener` 而没有移除 Vite 的监听器，`listenerCount === 1` 会失败。
 
 ### M-05 网关接入 startServer 与端到端
@@ -535,7 +537,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 ### M-05 验收契约
 
 - 验收命令：`cargo build -p automed && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web && npm run build --prefix apps/web && npm test --prefix apps/desktop`
-- 预期：Web 共 172 个用例全过（151 + 21），skipped 0；build 成功；desktop 仍是 104 个，0 失败；测试前后真实 `~/.autome/state/automed.sqlite3` 的 mtime 不变，`~/.autome/web` 的存在与否也不变（证据里给出测试前后 `stat` 的对比）。
+- 预期：Web 共 173 个用例全过（152 + 21），skipped 0；build 成功；desktop 仍是 104 个，0 失败；测试前后真实 `~/.autome/state/automed.sqlite3` 的 mtime 不变，`~/.autome/web` 的存在与否也不变（证据里给出测试前后 `stat` 的对比）。
 - 负向对照：把 `core.restart` 当普通 op 转发，gateway.test 的「本地处理」会因内核收到命令而失败；把安全中间件挂在 `/api/*` 之后，「Origin 不对的写回 403」会拿到 200 且读回值已变；在写路径上重新要求任何凭据（Cookie、令牌、`Authorization`），「不带任何凭据的写读得到」会拿到 403；`close()` 不停 supervisor，「close 后 pid 不存在」会失败；W1 的 `launch()` 不传临时 `AUTOME_HOME`，sidecar #2 扩展版的扫描用例会失败。
 
 ## 人工验收清单
