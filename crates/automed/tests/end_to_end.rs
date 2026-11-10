@@ -3328,3 +3328,111 @@ fn main_moving_after_the_press_takes_the_same_automatic_path() {
         "concurrent change\n"
     );
 }
+
+#[test]
+fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at_await_merge_again()
+{
+    needs_git!();
+    let mut w = World::new("auto-gate-failure");
+    let gate = w.root.join("combination-gate.sh");
+    std::fs::write(&gate, "[ ! -f from-a ] || [ ! -f from-b ]\n").unwrap();
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        gate.display()
+    ));
+    let mut ids = Vec::new();
+    for (request, file) in [("gate first", "from-a"), ("gate second", "from-b")] {
+        let slug = slug_for(request);
+        for (n, body) in [
+            (1, doc("设计中", 0, 0, &[])),
+            (2, doc("设计中", 1, 0, &[])),
+            (3, doc("设计中", 1, 0, &[])),
+            (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+            (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+            (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+        ] {
+            let prelude = if n == 5 {
+                format!(
+                    "echo feature > {file}\ngit add {file}\ngit -c user.name=fake -c user.email=f@f commit -qm feature\n"
+                )
+            } else {
+                String::new()
+            };
+            w.doc_step_for(&slug, n, &body, &prelude);
+        }
+        w.retro_step(7, &slug);
+        let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+        w.step_for(&slug, 7, &retro);
+        if file == "from-b" {
+            w.doc_step_for(&slug, 8, &doc("实现中", 2, 2, &[("M-01", "待审")]),
+                "test -f from-a && test -f from-b\ngit rm from-b\ngit -c user.name=fake -c user.email=f@f commit -qm repair\n");
+            w.doc_step_for(&slug, 9, &doc("实现中", 2, 2, &[("M-01", "已完成")]), "");
+            w.step_for(&slug, 10, &retro);
+        }
+        let id = create_task(&mut w, request);
+        w.settle();
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        ids.push(id);
+    }
+    let (a, b) = (&ids[0], &ids[1]);
+    ok(&w.call("task.merge", json!({"task_id":a})));
+    w.settle();
+    assert_eq!(w.state(a), "done");
+    let main = automed::git::head_sha(&w.repo).unwrap();
+    ok(&w.call("task.merge", json!({"task_id":b})));
+    w.settle();
+    assert_eq!(w.node(b).as_deref(), Some("await_merge"));
+    assert_eq!(automed::git::head_sha(&w.repo).unwrap(), main);
+    assert!(w.ctx.store.get_task(b).unwrap().merge_commit.is_none());
+    assert_eq!(
+        w.ctx.store.last_event(b, "merge.auto").unwrap().unwrap()["active"],
+        false
+    );
+    assert_eq!(w.ctx.store.count_events(b, "merge.rebased").unwrap(), 1);
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let rebase = events
+        .iter()
+        .find(|(_, k, s, _)| s == b && k == "merge.rebased")
+        .unwrap();
+    let failure = events
+        .iter()
+        .find(|(seq, k, s, p)| {
+            *seq > rebase.0
+                && s == b
+                && k == "gate.result"
+                && p["node"] == "merge_gate"
+                && p["ok"] == false
+        })
+        .unwrap();
+    assert_eq!(failure.3["sha"], rebase.3["repos"][0]["head"]);
+    let repair = events
+        .iter()
+        .find(|(seq, k, s, p)| {
+            *seq > failure.0 && s == b && k == "task.updated" && p["state"]["node"] == "implement"
+        })
+        .unwrap();
+    for node in ["gate", "merge_gate"] {
+        assert!(events.iter().any(|(seq, k, s, p)| *seq > repair.0
+            && s == b
+            && k == "gate.result"
+            && p["node"] == node
+            && p["ok"] == true));
+    }
+    let wt = w
+        .repo
+        .join(format!(".worktree/{}", slug_for("gate second")));
+    assert!(wt.join("from-a").exists());
+    assert!(!wt.join("from-b").exists());
+    assert_eq!(
+        std::fs::read_to_string(
+            w.repo
+                .join(".autome/fake")
+                .join(slug_for("gate second"))
+                .join("history")
+        )
+        .unwrap(),
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+    );
+}

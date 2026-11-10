@@ -3795,6 +3795,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_conflicting_requested_rebase_goes_back_to_implement_and_clears_the_request() {
+        needs_git!();
+        let mut w = World::new("auto-conflict");
+        let (task, wt) = stale_merge(&mut w);
+        std::fs::write(wt.join("README.md"), "branch\n").unwrap();
+        git::commit_paths(&wt, &["README.md"], "branch edit").unwrap();
+        std::fs::write(w.repo.join("README.md"), "main\n").unwrap();
+        git::commit_paths(&w.repo, &["README.md"], "main edit").unwrap();
+        let main = git::head_sha(&w.repo).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        fill_slots(&mut w.ctx).unwrap();
+        assert!(merge_requested(&w.ctx, &task.id).unwrap());
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "merge.auto")
+                .unwrap()
+                .unwrap()["active"],
+            false
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.rebased").unwrap(),
+            0
+        );
+        let started = w
+            .ctx
+            .store
+            .last_event(&task.id, "session.started")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            started["inject"],
+            serde_json::to_value(Inject::RebaseConflict {
+                files: vec!["README.md".into()]
+            })
+            .unwrap()
+        );
+        assert_eq!(git::head_sha(&w.repo).unwrap(), main);
+        assert_eq!(
+            std::fs::read_to_string(wt.join("README.md")).unwrap(),
+            "branch\n"
+        );
+    }
+
     fn stale_merge(w: &mut World) -> (TaskRecord, PathBuf) {
         let task = w.add_task("T-1", "a");
         let wt = w.with_worktree(&task);
