@@ -73,7 +73,7 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
       - name: Build the core the sidecar tests drive
-        run: cargo build -p automed
+        run: cargo build -p automed -p autome-cli
       - name: Test
         run: npm test
       - name: Build

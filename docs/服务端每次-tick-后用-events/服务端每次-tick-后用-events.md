@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
+implementation-round: 1/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 开 M-01：在 apps/web 安装 ws/@types/ws，先写 eventbus-protocol.ts 与 eventbus.ts（游标初始化、单飞分页 pull）及 test/eventbus.test.ts 的 8 个用例
+next-action: 继续 M-01：安装 ws@^8.22.2 与 @types/ws@^8.18.2 并更新锁文件，解决缺包阻塞，运行全部验收与剩余负向对照后报待审
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -296,6 +296,8 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   `hello`（`core: "connected"`）；②外站 Origin 升级 `/ws` 回 403；③同一开发服务上 Vite HMR（`vite-hmr`）与 `/ws`
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
+
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r1-impl.md · 依赖安装阻塞，保持开放 · 实现 #1
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：

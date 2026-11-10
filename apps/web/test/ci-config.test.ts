@@ -25,7 +25,7 @@ test('Node 22、npm 缓存与锁文件安装', () => {
 
 test('CI 按顺序运行 Web 检查，测试前先构建内核', () => {
   expect(web.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
-    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed', 'npm test', 'npm run build',
+    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed -p autome-cli', 'npm test', 'npm run build',
   ]);
 });
 
