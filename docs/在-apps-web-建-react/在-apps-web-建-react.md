@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 2/20
+implementation-round: 3/20
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02：进程入口的 Node 版本检查（server/node-version.js 与 start.js 结构、node-version 单测）
+next-action: 在允许本地监听的环境重跑 M-02 全量验收，解决 EPERM/EMFILE 环境阻塞，取得 24 个用例通过证据后标待审
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -239,6 +239,8 @@ ExperimentalWarning 是否在入口过滤。
 - 负向对照：`listen(port)` 不传主机时 `address()` 为 `::`，绑定用例失败；同时去掉 `build/client/assets` 与 `build/client` 两个 `express.static` 时，prod 资源用例拿到 404 失败（只去掉其一，另一个仍会服务该资源，不构成对照）；在 `server/config.ts` 里写一个 `enum`（不可剥离语法）时，经 `node server/start.js` 起的 dev/prod 子进程用例全部失败。
 
 ### M-02 验收契约
+
+最新证据：docs/在-apps-web-建-react/evidence/M-02-r3-impl.md · 专项通过，全量环境阻塞，保留开放 · 实现 #3
 
 - 验收命令：`npm test --prefix apps/web > .autome/output/m02.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m02.txt`
 - 预期：exit=0；3 个文件、24 个用例通过（基线 12，新增 node-version 12 个）：`checkNodeVersion` 8 个——9.9.0 ✗、21.7.3 ✗、22.9.0 ✗、22.21.1 ✗、22.22.0 ✓、22.23.1 ✓、26.5.0 ✓、`abc` ✗；拒绝消息为中文且含当前版本与「22.22.0」1 个；以伪造 21.7.3、22.21.1 启动 `server/start.js` 的子进程各 1 个——退出码 1、stderr 为中文提示、stdout 无「已启动」；结构 1 个——`start.js` 的静态 import 只有 `./node-version.js`、`node-version.js` 无 import、`engines.node` 等于 `>=` + `MIN_NODE_VERSION` 且 `MIN_NODE_VERSION` 为 `22.22.0`、`dev` 与 `start` 脚本都经 `server/start.js`。

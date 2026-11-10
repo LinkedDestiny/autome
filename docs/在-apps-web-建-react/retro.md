@@ -9,3 +9,4 @@
 
 实现 #2 | M-01 | Desktop 修复通过，保持开放 | docs/在-apps-web-建-react/evidence/M-01-r2-impl.md | Rust PID 清理断言阻塞完整门禁
 审计 #1 | M-01 | 通过 | docs/在-apps-web-建-react/evidence/M-01-r2-audit.md | 无
+实现 #3 | M-02 | 保留开放：专项通过，全量受阻 | docs/在-apps-web-建-react/evidence/M-02-r3-impl.md | 监听 EPERM、文件监听 EMFILE
