@@ -1,12 +1,12 @@
 # Bug 修复 Loop：定位、复现检查、修复、门禁、复核（K2）
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: M-01 开工前先跑 cargo test --workspace 并把基线用例总数写进证据文件；然后在 autome-domain 新增 Node::BUG、bug_loop.rs、bug_doc.rs 与 [bug] fix_rounds 配置
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -59,7 +59,7 @@ A1–A7 各有里程碑覆盖（见「里程碑说明」）。
 - `apps/`（W5 阶段映射、W7「改为需求」按钮与修复轮显示）、`plugins/`、`scripts/`、`.github/`、`.autome/`、
   `docs/development/`、`docs/plans/`。
 - 新角色；按类型的看板列；需求 Loop 的任何行为变化；`autome ls` 类型标记等 K2 之后的 Backlog。
-- 工作区项目里的 Bug Loop：本任务让它以明确的配置失败停下（§7），支持放进 Backlog B-02。
+- 工作区项目沿用现有的成员仓库机制，Bug 文档带可选的 `repos:` 行（§2、§7），不新增工作区能力。
 - 修改需求 Loop 的协议正文、既有 prompt、`brief-map.toml`：一字不改（F1、C2）。
 - 账本迁移：所有新信息落在事件与已有 JSON 列里，`SCHEMA_VERSION` 保持 5（C4）。
 
@@ -98,8 +98,14 @@ A1–A7 各有里程碑覆盖（见「里程碑说明」）。
   `task::apply_with_merge_request(state, trigger, ctx, merge_requested)`。调度器只调这个入口。
 - `BugProgress { fix_round: u32, repro_misses: u32 }` 由调度器从账本事件算出后传入（§3、§4），不往 `Context` 加字段，
   所以既有测试里 5 处 `Context { … }` 字面量不用改。
-- 需求表的入口 `apply_with_merge_request` 第一行加一条防御：状态里的节点属于 `Node::BUG` 时直接 `Err`。需求任务
-  永远不会处于这些节点，行为不变；这条防御让 F3 的 `unreachable!()` 不可能被 Bug 节点触发。
+- 需求表的入口 `apply_with_merge_request` 加一条防御，**位置在通用控制触发器（`Start`、`Cancel`、`Pause`、`Stop`、
+  `Resume`，函数开头那段 `match trigger`）之后、`match (state, trigger)` 节点表之前**：状态里的节点属于
+  `Node::BUG`，并且不是 `(Requeued, SlotAvailable)` 时直接 `Err`。需求任务永远不会处于这些节点，行为不变。
+  - 通用控制段只依赖 `awaits_user`、`role()`、`is_enabled`，对 Bug 节点天然成立，所以 Bug 任务的取消（含两个等待节点）、
+    暂停、停止、恢复都由它处理，Bug 表不重写。`Resume` 的 `DiscardGateRuns` 只认需求的三个门禁节点，所以
+    `Stopped{repro_check / fix_gate} + Resume` 由 Bug 表先处理（上表倒数第二行）。
+  - `(Requeued, SlotAvailable)` 的通用分支只用 `role()` 与 `is_core_step`（Bug 节点的取值见上），出队行为与需求相同，
+    所以放行；其余一切节点表分支（含 F3 的 `unreachable!()`）Bug 节点都到不了。
 - **旧 Bug 任务保持需求 Loop（F9）**：`bug_loop::uses_bug_loop(kind, state, started)` 为真当且仅当 `kind = Bug`，并且
   `state` 是 `Draft`/`Queued`，或者账本里已有本任务的 `bug.loop_started` 事件（`started`）。K1 期间已经开跑的 Bug 任务
   没有这个事件，继续走需求表直到结束。
@@ -140,7 +146,7 @@ Bug 转换表（未列出的组合拒绝；`start_fix` 见 §3）：
 | `Failed{FixBudget{limit}}` | `ExtendBudget{extra > 0}` | `fix`，预算改为 `limit + extra` |
 | `Failed` / `Stopped` | `RerunFrom{locate / fix / fix_review / rebase}` | 对应节点；其它节点拒绝 |
 | `Stopped{repro_check / fix_gate}` | `Resume` | `Requeued` + `DiscardGateRuns` |
-| 其余控制触发器（取消、暂停、停止、恢复、`Requeued` 出队） | — | 委托需求表的通用处理 |
+| 取消、暂停、停止、恢复（上一行除外）、`Requeued + SlotAvailable` | — | 委托需求表：控制段在防御之前处理，出队分支被防御放行 |
 
 ### 2. Bug 文档与状态块（Q3）
 
@@ -154,15 +160,19 @@ fix-round: 0/3
 复现命令: cargo test -p automed some_test
 根因: 一句话
 复核: 待复核
+repos: 仓库A, 仓库B
 ```
+
+`repos` 是**可选**的第六个键，只有工作区项目的 Bug 文档才写（§7）；单仓库项目省略这一行。
 
 状态块之后是五个二级标题小节：「现象」「复现」「根因分析」由定位轮写，「修复说明」由修复轮写，「复核意见」由复核轮写。
 
 解析规则（`autome-domain/src/bug_doc.rs`，纯函数）：
 
 - 只看第一个 `## ` 标题之前的行；代码围栏（```）内的行忽略。
-- 键必须是 `status`、`fix-round`、`复现命令`、`根因`、`复核` 五个之一，在行首；分隔符半角 `:` 或全角 `：` 都接受
-  （参考文档两种都用了），其后的空白去掉。五个键各出现恰好一次。
+- 键必须是 `status`、`fix-round`、`复现命令`、`根因`、`复核` 五个必填键或可选键 `repos` 之一，在行首；分隔符半角
+  `:` 或全角 `：` 都接受（参考文档两种都用了），其后的空白去掉。五个必填键各出现恰好一次，`repos` 至多一次；
+  `repos` 的值是逗号分隔的仓库名（半角、全角逗号都接受，去空白、去空项），解析成 `BugDoc.repos: Vec<String>`，缺省为空。
 - `status` ∈ {`已定位`, `无法复现`, `不是 Bug`}；`复核` ∈ {`待复核`, `通过`, `打回`}；`fix-round` 形如 `k/N`（非负整数）。
 - `status: 已定位` 时 `复现命令` 与 `根因` 必须非空且不是 `无`；其它状态可写 `无`。`复现命令` 是单行。
 - 任何一条不满足 → `BugDocError`（指明键或行号）→ `Unparseable` → `Failed{Protocol}`（C5）。
@@ -176,6 +186,7 @@ fix-round: 0/3
 | `复现命令` | 已定位时必填 | 不改 | 不改 | 内核执行的是复现检查记录下的命令（§4），文档后来的改动不生效 |
 | `根因` | 已定位时必填 | 可修正 | 不改 | 定位之后必须非空 |
 | `复核` | `待复核` | **重置为 `待复核`** | `通过` / `打回` | 定位、修复之后必须是 `待复核`；复核之后必须是二者之一 |
+| `repos` | 工作区项目写（§7） | 可追加，不删 | 不改 | 工作区项目里 `已定位` 必须非空且都是成员名（§7） |
 
 「修复必须重置 `复核`」是为了防止陈旧结论：合并前门禁失败退回修复后，如果上一轮的 `通过` 留在文档里，复核轮
 即使什么也没写也会被当成通过。
@@ -224,7 +235,10 @@ fix-round: 0/3
   日志尾部回到修复。
 - **合并前门禁**：Bug 任务在 rebase 之后的提交上执行同一条组合命令，即使项目没配 `[gate]` 也跑。这样可以抓住
   rebase 把 Bug 带回来的情况。
-  - F7 的复用条件加一项「命令相同」。需求任务的门禁命令永远是 `[gate].command`，所以需求任务的复用行为不变。
+  - F7 的复用条件加一项「命令相同」（上一条 `gate.result` 事件本来就记录 `command`），**只对 `uses_bug_loop` 为真的
+    任务生效**。需求任务与走需求 Loop 的旧 Bug 任务（F9）继续用今天的条件（通过 + 同一 sha），不看命令：配置在两次
+    门禁之间改变命令时，它们的复用与 `gate.reused` 事件都与今天一致（C2）。条件的分支在调度器里按 `uses_bug_loop`
+    选择，不改需求路径的任何一行判断。
 - **验证 main**：不变。只在配了 `[gate]` 时跑 `[gate]`，失败只告警。
 - **Q6 落实**：`progress.repro_misses` 等于「最近一次 `task.replied` 事件之后（没有就从任务开始）」的
   `bug.repro_missed` 事件数。连续第二次未复现进入 `await_info`；两次的输出都在事件里，由命令行与网页展示。
@@ -273,8 +287,15 @@ fix-round: 0/3
 - 其它会去读设计文档的路径都必须容忍 Bug 任务没有设计文档。这些路径包括 `task.get`、`dashboard.get`、
   完成时的指标、取消时的归档；由 M-03 的完整 e2e 证明。
   - 手动复盘 `task.retro` 对 Bug 任务直接拒绝，错误文本「Bug 任务没有复盘」。
-- **工作区项目**：worktree 的仓库集合来自设计文档的 `repos:` 行，Bug 文档没有这一行。启动定位前发现项目是工作区，
-  就进入 `Failed{Config{"Bug Loop 暂不支持工作区项目"}}`，不建任何检出（Backlog B-02）。
+- **工作区项目**（Q9 的仓库选择，沿用 `working_repos` 的「已有检出 ∪ 文档 `repos:` 行」机制，不新增存储）：
+  - 仓库集合改读 Bug 文档的 `repos:` 行：任务有 `-bug.md` 就读它，否则读设计文档（走需求 Loop 的旧 Bug 任务）。
+  - 定位还没写过文档、也没有任何检出时，Bug 任务的初始集合是**全部成员仓库**，让定位轮能在任何一个成员里复现并提交
+    回归测试。
+  - 定位以 `已定位` 结束时，守卫要求 `repos` 非空且都是成员名（否则 `GuardFailed → Failed{Protocol}`）；通过后，内核
+    移除没被点名、工作区干净且相对基线没有提交的成员检出（沿用 `git worktree remove` 与分支清理的既有函数），此后集合
+    按 `repos` ∪ 已有检出只增不减，合并、rebase、清理与需求任务走同一条路径。文档仓库成员始终在集合里。
+  - 工作区里复现命令的工作目录是工作区目录（`layout.cwd`），命令自己 `cd <成员>`；`bug-protocol.md` 写明这一点。
+  - 单仓库项目不受影响：不读 `repos`、不移除检出。
 
 ### 8. 会话种类、守卫、冷却与 SAME-MODEL（A6）
 
@@ -319,7 +340,7 @@ fix-round: 0/3
 
 - 新文件：
   - `protocol/bug-protocol.md`：Bug Loop 概览、Bug 文档、Bug 文档状态块（kernel-contract `bug-status-block`）、
-    各轮写什么、复现命令的要求（单行；宿主在 worktree 根目录用 `sh -c` 执行；修复前必须失败、修复后必须通过；
+    各轮写什么、复现命令的要求（单行；宿主在 worktree 根目录用 `sh -c` 执行，工作区项目里是工作区目录，命令自己 `cd <成员>`，并在 `repos:` 点名成员；修复前必须失败、修复后必须通过；
     不依赖网络与时序）、修复的边界（最小改动，不改回归测试）、复核三查（根因是否站得住、回归测试是否有意义、
     改动范围是否最小）。
   - `protocol/prompts/locate.md`、`fix.md`、`fix-review.md`，每份都含「不要启动下一个会话」与 `{budget_line}`。
@@ -408,8 +429,9 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   - 内核执行的是复现检查记录下的命令，文档里改命令无效；
   - prompt 禁止修改回归测试，复核必须核对回归测试相对定位提交的 diff。
   - 机械守卫进 Backlog B-03。
-- **R7 Bug 节点进入需求表触发 `unreachable!()`。** 需求表入口有防御（§1），M-01 用例
-  `bug_loop_feature_table_rejects_bug_triggers_and_never_enters_bug_nodes` 覆盖。
+- **R7 Bug 节点进入需求表触发 `unreachable!()`。** 需求表在通用控制段之后有防御（§1），M-01 用例
+  `bug_loop_feature_table_rejects_bug_triggers_and_never_enters_bug_nodes` 覆盖；同一用例断言控制触发器与
+  `(Requeued, SlotAvailable)` 在 Bug 状态上放行，Bug 取消不会被防御挡住。
 - **R8 协议体积。** Bug 规范放进新文件，不进 `SIZED_FILES`（F1）。`protocol eval` 在 M-02 和 M-05 各跑一次。
 
 验证安排：
@@ -435,7 +457,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 - 覆盖：A1（领域转换）、A3/A4/A5 的转换部分、A6（角色映射）；C2、C5。前置：无。
 - 改动：
-  - `autome-domain`：`task.rs`（§1 的新变体、`Node::BUG`、标志位、需求表入口的防御）、`session.rs`（`BugStep`、
+  - `autome-domain`：`task.rs`（§1 的新变体、`Node::BUG`、标志位、需求表在通用控制段之后的防御）、`session.rs`（`BugStep`、
     `SessionKind::Bug`、`for_node`）、新文件 `bug_loop.rs` 与 `bug_doc.rs`、`config.rs`（`BugConfig`）。
   - `automed`：`config_io.rs`（`[bug]` 的读写）。
   - `automed`、`autome-cli` 里因新增枚举变体导致编译不过的穷尽 `match`，只补最小分支：拒绝或原样透传，行为留给
@@ -445,7 +467,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   2. `bug_loop_feature_node_list_is_unchanged`（`Node::ALL` 的 15 个取值与顺序，`BUG` 与之不相交）
   3. `bug_loop_feature_kind_matches_the_feature_table_exactly`（`Node::ALL` × {Active, Paused, Stopped, Requeued,
      Failed 各原因} × 全部触发器，`apply_for(Feature)` 与 `apply_with_merge_request` 逐项相等）
-  4. `bug_loop_feature_table_rejects_bug_triggers_and_never_enters_bug_nodes`
+  4. `bug_loop_feature_table_rejects_bug_triggers_and_never_enters_bug_nodes`（同时断言：Bug 状态上的
+     `Cancel`/`Pause`/`Stop`/`Resume` 不被防御挡住，`(Requeued, SlotAvailable)` 放行，其余触发器返回 `Err` 而非 panic）
   5. `bug_loop_legacy_bug_tasks_already_in_feature_nodes_keep_the_feature_table`
   6. `bug_loop_a_queued_bug_starts_at_locate`
   7. `bug_loop_impl_disabled_fails_with_config_at_start`
@@ -453,7 +476,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   9. `bug_loop_cannot_reproduce_and_not_a_bug_wait_without_a_slot`
   10. `bug_loop_reply_returns_to_locate_from_both_waiting_nodes`
   11. `bug_loop_reply_is_refused_when_empty_or_not_waiting`
-  12. `bug_loop_waiting_nodes_allow_cancel_but_not_pause_stop_or_extend`
+  12. `bug_loop_waiting_nodes_allow_cancel_but_not_pause_stop_or_extend`（`Cancel` 经需求表的通用控制段得到
+     `Cancelled + RunCancel`；`apply_for(Bug)` 与 `apply_with_merge_request` 在这些输入上结果相同）
   13. `bug_loop_reproduced_starts_fix_round_one_with_the_configured_budget`
   14. `bug_loop_exit_zero_returns_to_locate_with_the_tail`
   15. `bug_loop_timeout_and_unrunnable_commands_do_not_count_as_reproduced`
@@ -471,8 +495,9 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   26. `bug_loop_merge_tail_is_shared_with_the_feature_loop`
   27. `bug_loop_session_errors_fail_like_feature_sessions`
   28. `bug_loop_rerun_from_accepts_locate_fix_review_and_rebase_only`
-  29. `bug_loop_stopped_bug_gates_discard_runs_and_requeued_bug_nodes_reenter`
-- 新测试（`autome-domain` `bug_doc::tests`，7 个）：
+  29. `bug_loop_stopped_bug_gates_discard_runs_and_requeued_bug_nodes_reenter`（含 `Active{fix} + Pause`、
+      `Paused{fix} + Resume`、`Requeued{locate / repro_check / fix / fix_review} + SlotAvailable`）
+- 新测试（`autome-domain` `bug_doc::tests`，8 个）：
   - `reads_all_five_fields_with_either_colon`
   - `status_values_are_exactly_three`
   - `a_missing_or_duplicate_field_names_the_key`
@@ -480,6 +505,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   - `fix_round_must_be_k_over_n`
   - `review_values_are_exactly_three`
   - `lines_after_the_first_section_or_inside_a_fence_are_ignored`
+  - `repos_is_optional_at_most_once_and_read_as_a_name_list`
 - 新测试（`autome-domain` `config::tests`，2 个）：
   - `bug_fix_rounds_default_to_three`
   - `bug_fix_rounds_project_override_resolves`
@@ -491,8 +517,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 ### M-01 验收契约
 
 - 验收命令：`cargo test -p autome-domain bug_loop && cargo test -p autome-domain bug_doc && cargo test -p autome-domain bug_fix_rounds && cargo test -p automed --lib bug_fix_rounds && cargo test -p autome-domain && cargo build --workspace --all-targets`
-- 预期：前四条依次 29、7、2、3 passed、0 failed（基线均为 0 个用例），合计 41 个新用例；第五条全部通过，`task::tests` 的既有用例一个不少；第六条编译通过。
-- 负向对照：`apply_for(Feature)` 让 `Queued + SlotAvailable` 进 `locate` 时第 3 号用例失败；超时被算作复现时第 15 号用例失败；预算判断写成 `>` 而不是 `≥`（多跑一轮修复）时第 22 号用例失败；解析器只认半角冒号时 `reads_all_five_fields_with_either_colon` 失败；把 Bug 节点加进 `Node::ALL` 时第 2 号用例与既有的 `requeued_dispatches_all_thirteen_nodes` 失败。
+- 预期：前四条依次 29、8、2、3 passed、0 failed（基线均为 0 个用例），合计 42 个新用例；第五条全部通过，`task::tests` 的既有用例一个不少；第六条编译通过。
+- 负向对照：`apply_for(Feature)` 让 `Queued + SlotAvailable` 进 `locate` 时第 3 号用例失败；超时被算作复现时第 15 号用例失败；预算判断写成 `>` 而不是 `≥`（多跑一轮修复）时第 22 号用例失败；解析器只认半角冒号时 `reads_all_five_fields_with_either_colon` 失败；把 Bug 节点加进 `Node::ALL` 时第 2 号用例与既有的 `requeued_dispatches_all_thirteen_nodes` 失败；把防御放回函数第一行（控制段之前）时第 4、12、29 号用例失败（`not_a_bug` 上的取消得到 `Err`）。
 
 ### M-02 范围
 
@@ -541,7 +567,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   - `StartBugSession` 与 `bug.fix_round_started`；
   - 从事件计算 `BugProgress`；
   - `read_outcome` 读 Bug 文档，Bug 守卫；
-  - `run_gate` 支持 `repro_check` / `fix_gate` 与 Bug 任务的合并前门禁组合命令，复用条件加「命令相同」；
+  - `run_gate` 支持 `repro_check` / `fix_gate` 与 Bug 任务的合并前门禁组合命令；复用条件的「命令相同」只在 `uses_bug_loop` 为真时生效，需求与旧 Bug 任务的复用判断一字不改；
   - `ReproDone`；
   - `SessionKind::for_node` 替换 F5 的三处；
   - 定位的 `card_path`；
@@ -576,20 +602,21 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 - 新测试（`automed` `scheduler::tests`，3 个）：
   - `bug_loop_cooldown_keeps_fix_and_review_on_different_runtimes`
   - `bug_loop_reenter_maps_bug_nodes_to_bug_sessions`
-  - `bug_loop_merge_gate_does_not_reuse_a_pass_for_a_different_command`
+  - `bug_loop_merge_gate_does_not_reuse_a_pass_for_a_different_command`（Bug Loop 任务：同 sha、命令不同则重跑；
+    同一输入下需求任务仍复用并发出 `gate.reused`——钉住 C2）
 
 ### M-03 验收契约
 
 - 验收命令：`cargo test -p automed --test end_to_end bug_loop && cargo test -p automed --lib scheduler::tests::bug_loop && cargo test -p automed --test end_to_end task_card && cargo test -p autome-cli --test cli task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_card && cargo test -p automed --test end_to_end`
 - 预期：第一条 8 passed，第二条 3 passed（本里程碑合计 11 个新用例）；第三条全部通过（含按 §11 第 3 条修改的那个用例）；第四条 1 passed；第五条全部通过、用例数 = 基线 + 8；全部 0 failed。
-- 负向对照：复现检查把退出码 0 当成「复现」时 `bug_loop_a_repro_command_that_passes_on_the_locate_commit_returns_to_locate` 失败；修复门禁只跑 `[gate]` 不跑复现命令时 `bug_loop_a_fix_whose_repro_command_still_fails_returns_to_fix` 失败（无 `[gate]` 时会直接放行到复核）；崩溃重试经过 `StartBugSession` 时 `bug_loop_a_crashed_fix_session_is_retried_without_counting_a_round` 失败；选表只看 `kind` 时 `bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it` 失败。
+- 负向对照：对需求任务也加「命令相同」条件时 `bug_loop_merge_gate_does_not_reuse_a_pass_for_a_different_command` 的需求半段失败；复现检查把退出码 0 当成「复现」时 `bug_loop_a_repro_command_that_passes_on_the_locate_commit_returns_to_locate` 失败；修复门禁只跑 `[gate]` 不跑复现命令时 `bug_loop_a_fix_whose_repro_command_still_fails_returns_to_fix` 失败（无 `[gate]` 时会直接放行到复核）；崩溃重试经过 `StartBugSession` 时 `bug_loop_a_crashed_fix_session_is_retried_without_counting_a_round` 失败；选表只看 `kind` 时 `bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it` 失败。
 
 ### M-04 范围
 
 - 覆盖：A4、A5，A1 的「需求任务的 `reply` 等同 `reject`」；C3、C8、C9。前置：M-03。
 - 改动：
   - `automed/src/dispatch.rs`：`task.reply`；`task_json` 只对 Bug 任务加 `fix_round`；`task.retro` 拒绝 Bug 任务。
-  - `scheduler.rs`：`-replies.md` 的生成与提交；工作区项目的拒绝。
+  - `scheduler.rs`：`-replies.md` 的生成与提交；工作区项目的仓库集合（§7：初始全部成员、`repos` 守卫、移除未点名的检出）；`bug_doc` 的 `repos` 键已在 M-01，`bug-protocol.md` 的工作区说明已在 M-02。
   - `autome-cli`：`main.rs` 的 `reply` 映射与 `USAGE`；`render.rs` 的节点、下一步、事件与失败文本。
   - `cli.rs` 新用例；§11 第 5 条。
 - 新测试（`automed --test end_to_end`，6 个）：
@@ -607,7 +634,12 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
      - 两轮失败的修复后进入 `Failed{FixBudget{2}}`；
      - `task.extend_budget` 1 轮后进入第 3 轮修复并通过。
   5. `bug_loop_task_get_reports_the_fix_round_for_bugs_only`：Bug 任务有 `fix_round`；需求任务的键集合与基线相同。
-  6. `bug_loop_a_workspace_bug_task_fails_with_a_config_reason`：沿用既有的 `Workspace` 夹具。
+  6. `bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos`：沿用既有的
+     `Workspace` 夹具（两个成员加文档成员）。
+     - 定位会话开始时每个成员都有检出；替身在成员 a 里提交失败的回归测试，Bug 文档写 `repos: a`；
+     - 复现检查在工作区目录执行并判为复现；成员 b 的检出被移除，进入修复时集合是 a 与文档成员；
+     - 另一条分支：工作区 Bug 文档 `已定位` 却缺 `repos` → `Failed{Protocol}`，原因含 `repos`；
+     - 合并尾段不重复证明，沿用既有工作区合并用例。
 - 新测试（`automed` `dispatch::tests`，3 个）：
   - `bug_loop_reply_on_a_feature_task_is_exactly_reject`：在 `await_design_approval` 与其它状态下，结果、状态、事件都与
     `task.reject` 相同。
@@ -624,7 +656,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 - 验收命令：`cargo test -p automed --test end_to_end bug_loop && cargo test -p automed --lib dispatch::tests::bug_loop && cargo test -p autome-cli bug_loop && cargo test -p autome-cli`
 - 预期：第一条 14 passed（M-03 的 8 个 + 本里程碑 6 个）；第二条 3 passed；第三条 4 passed（集成 2 个 + 单元 2 个；本里程碑合计 13 个新用例）；第四条全部通过，含按 §11 第 5 条修改的 `task_card_reply_rejects_the_design_with_the_text_verbatim` 与既有的 `usage_lists_task_start_reply_and_the_new_flags`、`task_card_start_refuses_a_task_that_is_not_a_draft`；全部 0 failed。
-- 负向对照：`task.reply` 对需求任务走 `Trigger::Reply` 时 `bug_loop_reply_on_a_feature_task_is_exactly_reject` 失败；补充信息只放在 inject 里而不写文件时，用例 1 的「第二轮定位点名该文件」断言失败；`ExtendBudget` 在 Bug 任务上委托给需求表（会被拒绝）时用例 4 失败；对所有任务都输出 `fix_round` 时用例 5 失败。
+- 负向对照：工作区 Bug 不点名 `repos` 却放行时用例 6 的第二条分支失败；`task.reply` 对需求任务走 `Trigger::Reply` 时 `bug_loop_reply_on_a_feature_task_is_exactly_reject` 失败；补充信息只放在 inject 里而不写文件时，用例 1 的「第二轮定位点名该文件」断言失败；`ExtendBudget` 在 Bug 任务上委托给需求表（会被拒绝）时用例 4 失败；对所有任务都输出 `fix_round` 时用例 5 失败。
 
 ### M-05 范围
 
@@ -637,7 +669,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 ### M-05 验收契约
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && cargo run -p automed -- protocol eval protocol/ && git diff --exit-code 81a4394 -- protocol/loop-protocol.md protocol/session-protocol.md protocol/brief-map.toml protocol/README.md protocol/prompts/intake.md protocol/prompts/onboarding.md protocol/prompts/plan.md protocol/prompts/review.md protocol/prompts/adjudicate.md protocol/prompts/impl.md protocol/prompts/audit.md protocol/prompts/retro.md crates/automed/tests/golden/prompts/adjudicate.md crates/automed/tests/golden/prompts/audit.md crates/automed/tests/golden/prompts/impl.md crates/automed/tests/golden/prompts/intake.md crates/automed/tests/golden/prompts/intake-card.md crates/automed/tests/golden/prompts/onboarding.md crates/automed/tests/golden/prompts/plan.md crates/automed/tests/golden/prompts/review.md apps/ plugins/ scripts/ .github/`
-- 预期：全部退出码 0；`cargo test --workspace` 0 failed，用例总数 = M-01 证据里记录的基线总数 + 79（M-01 41、M-02 14、M-03 11、M-04 13）；`git diff --exit-code` 无输出。
+- 预期：全部退出码 0；`cargo test --workspace` 0 failed，用例总数 = M-01 证据里记录的基线总数 + 80（M-01 42、M-02 14、M-03 11、M-04 13）；`git diff --exit-code` 无输出。
 - 负向对照：改动任何一份需求 prompt、金样或需求协议正文（哪怕一个空格）时 `git diff --exit-code` 退出码 1；需求表的行为被改动时，M-01 的 `bug_loop_feature_kind_matches_the_feature_table_exactly` 与既有 `task::tests` 在 `cargo test --workspace` 中失败。
 
 ## 人工验收清单
@@ -650,11 +682,12 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 ## Backlog
 
 - B-01 W5 的阶段映射（定位 · 修复 · 复核 · 合并 · 完成）、W7 的「改为需求」按钮与「修复第 k / N 轮」显示，落在 `apps/`，不在本任务目录。
-- B-02 工作区项目的 Bug Loop：Bug 文档带 `repos:` 行，仓库集合从 Bug 文档读取。
+- B-02 工作区 Bug 的完整合并路径单独的 e2e（本任务只证明仓库选择与修剪，合并尾段沿用工作区既有用例）。
 - B-03 修复轮改动回归测试的机械守卫：比对定位提交里新增或修改的测试文件，修复轮不得再动它们。
 - B-04 追加轮次之后的第一轮修复，带上最近一次失败的门禁或复核结论（目前要自己去读日志与 Bug 文档）。
 - B-05 `autome ls` 显示任务类型与修复轮次。
 - B-06 复现检查单独的超时配置 `[bug] repro_timeout_minutes`。
 - B-07 给 Bug 会话生成简报（`brief-map.toml` 支持按 Bug 步骤取小节）。
+- B-08 手动 `RerunFrom{locate}` 是否开启新的复现周期：目前 `repro_misses` 只按最近一次 `task.replied` 清零，手动重跑定位不清零（第 1 轮评审 N1）。
 
 ## 争议项
