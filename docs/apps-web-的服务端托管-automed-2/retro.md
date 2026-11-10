@@ -15,3 +15,4 @@
 
 实现 #5 | M-05 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-impl.md | 19 个监听用例受 EPERM 阻塞，交审计复验
 审计 #5 | M-05 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-audit.md | 无
+复盘 #1 | M-01..M-05 | 教训 3 条（契约预期被实现轮改动、实现轮 listen EPERM、负向对照还原范围） | docs/apps-web-的服务端托管-automed-2/lessons.md | 无
