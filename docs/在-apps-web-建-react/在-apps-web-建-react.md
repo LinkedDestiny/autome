@@ -1,7 +1,7 @@
 # Web 面板骨架：apps/web 的 React Router v7 框架模式 + 自定义 Node 服务器
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -32,7 +32,8 @@ next-action: 按「方案 §2 依赖」建 apps/web 的 package.json 与 package
 - `react-router` 的 latest 已是 **8.5.1**；7.x 线最新 7.18.5。任务要求 v7，必须显式写 `@7`。
 - `@react-router/dev@7.18.5` 的 peer：`typescript ^5.1 || ^6`、`vite ^5 || … || ^8`。
   `typescript` latest 是 7.0.2，**不能用**；`typescript-eslint@8.72` 要求 `typescript <6.1.0`。
-- 引擎下限：vite 7/8 `>=22.12.0`，vitest 5 `^22.12.0`，eslint 10 `^22.13.0`。
+- 引擎下限（任务要求 Node ≥22，因此依赖必须在 22.0.0 上也声明可用）：vite 7/8 `>=22.12.0`、vitest 5 `^22.12.0`、eslint 10 `^22.13.0` **都高于 22.0**，不能用；
+  `vite@6.4.6`（`>=22.0.0`）、`vitest@3.2.7`（`>=22.0.0`）、`eslint@9.39.5`（`>=21.1.0`）、`tsx@4.23.15`（`>=18`）、`express@5`（`>=18`）、`react-router`/`@react-router/*@7.18.5`（`>=20`）满足。`@react-router/dev@7.18.5` 的 vite peer 含 `^6`，`typescript-eslint@8.72` 的 eslint peer 含 `^9`。
 
 ## 目标与非目标
 
@@ -72,27 +73,28 @@ apps/web/
 ### §2 依赖（package.json 用 `^`/`~` 限定大版本，lockfile 固定精确版本）
 
 - 运行时：`react-router@^7.18.5`、`@react-router/node@^7.18.5`、`@react-router/express@^7.18.5`、
-  `react@^19`、`react-dom@^19`、`express@^5`、`isbot@^5`（RR 默认 `entry.server` 需要）。
-- 开发：`@react-router/dev@^7.18.5`、`vite@^7`、`vitest@^5`、`typescript@~6.0.3`、
-  `eslint@^10`、`@eslint/js@^10`、`typescript-eslint@^8.72`、`globals`、`yaml`（M-04 的配置守卫）、
+  `react@^19`、`react-dom@^19`、`express@^5`、`isbot@^5`（RR 默认 `entry.server` 需要）、`tsx@^4`（运行时执行 `server/*.ts`，见 §3；Node 22.0 起即可用，不依赖原生类型剥离）。
+- 开发：`@react-router/dev@^7.18.5`、`vite@^6`、`vitest@^3`、`typescript@~6.0.3`、
+  `eslint@^9`、`@eslint/js@^9`、`typescript-eslint@^8.72`、`globals`、`yaml`（M-04 的配置守卫）、
   `@types/node@^22`、`@types/react`、`@types/react-dom`、`@types/express`。
-- **禁止**出现 `react-router@8`、`typescript@7`：`npm install react-router` 不带 `@7` 会装到 8.x。
-- `"type": "module"`，`"engines": { "node": ">=22.18.0" }`。
+- **禁止**出现 `react-router@8`、`typescript@7`、`vite@7+`、`vitest@4+`、`eslint@10+`（后三者会把可运行的 Node 下限抬过任务的 22）：`npm install react-router` 不带 `@7` 会装到 8.x。
+- `"type": "module"`，`"engines": { "node": ">=22.0.0" }`。
 
 ### §3 两条起服务路径（R-01）
 
 - `npm run dev` = `node server/start.js`；`npm start` = `NODE_ENV=production node server/start.js`；
   `npm run build` = `react-router build`（产物 `build/client`、`build/server`）。
-- 服务端 TypeScript 由 Node 原生类型剥离直接执行（Node ≥ 22.18 默认开启），不引入 tsx、
-  不单独编译服务端。因此 `server/*.ts` 只用可擦除语法（tsconfig `erasableSyntaxOnly`），
-  相对 import 写 `.ts` 扩展名（`allowImportingTsExtensions`）。
+- 服务端 TypeScript 由 `tsx` 在运行时执行：`start.js` 通过 `tsx/esm/api` 的 `tsImport('./main.ts', import.meta.url)`
+  加载 `main.ts`（`tsImport` 不可用时改用同模块的 `register()` 后再 `import()`，二选一由实现轮实测定）。
+  这样不依赖 Node 的原生类型剥离（22.18 才默认开启），Node 22.0 起即可运行；不单独编译服务端。
+  相对 import 写 `.ts` 扩展名（tsconfig `allowImportingTsExtensions`）。
 - 开发模式：`http.ts` 动态 `import('vite')`，`createServer({ server: { middlewareMode: true,
   hmr: { server: httpServer } } })`，请求经 `vite.middlewares` 后交给
   `createRequestHandler({ build: () => vite.ssrLoadModule('virtual:react-router/server-build') })`。
   HMR 挂在同一个 http.Server 上，**不另占 24678 端口**——并行 2 的两个 worktree 同时跑测试
   时，默认 HMR 端口会互相冲突。
 - 生产模式：`express.static('build/client/assets', immutable, 1 年)` +
-  `express.static('build/client', 1 小时)`，再交给 `createRequestHandler({ build: import(build/server/index.js) })`。
+  `express.static('build/client', 1 小时)`，再交给 `createRequestHandler({ build: await import(build/server/index.js) })`（先 `await`，不能把 Promise 直接当 build）。
   路径以 `import.meta.dirname` 为基准，不依赖 cwd。生产路径不得 import `vite`。
 - `GET /healthz` 在 RR 处理器之前由 express 直接返回 200 `{"ok":true}`。
 - 监听：主机固定 `127.0.0.1`（不可配置，任务约束 4）；端口取 `AUTOME_WEB_PORT`，未设为
@@ -103,20 +105,18 @@ apps/web/
 
 ### §4 Node 版本检查（R-02）
 
-- 下限 **22.18.0**，单一来源 `server/node-version.js` 的 `MIN_NODE_VERSION`，
-  `package.json` 的 `engines.node` 必须是 `>=` 同一个值（测试核对）。
-- 为什么不是 22.0.0：R-02 的用意是「版本不够就用中文说清楚，不要带着英文报错崩掉」。
-  22.0–22.17 上服务端根本起不来（类型剥离未默认开启，vite/vitest/eslint 也不支持），
-  若检查只拦 <22，这些版本照样会以英文错误崩溃，正是 R-02 要防的情形。下限 22.18.0
-  同时覆盖 `node:sqlite` 免 flag（22.13 起）。CI 的 `node-version: '22'` 解析为 22.x 最新版，
-  不受影响。
+- 下限 **22**（任务 R-02 与硬性约束 5），单一来源 `server/node-version.js` 的 `MIN_NODE_VERSION = '22.0.0'`，
+  `package.json` 的 `engines.node` 必须是 `>=` 同一个值（测试核对）。设计不得自行抬高该下限；
+  §2、§3 的依赖与执行方式都按「22.0.0 起可运行」选定（vite 6、vitest 3、eslint 9、tsx）。
 - `start.js` 只静态 import `./node-version.js`；`node-version.js` 无任何 import。版本不够时
-  向 stderr 写「Autome Web 需要 Node.js 22.18.0 或更高版本，当前是 <版本>。请升级 Node.js 后重试。」
-  并 `process.exit(1)`；够了才 `(await import('./main.ts')).runFromEnv()`。检查若放进 `main.ts`，静态 import 会在
-  检查前先求值，旧 Node 会先崩在依赖上。
+  向 stderr 写「Autome Web 需要 Node.js 22 或更高版本，当前是 <版本>。请升级 Node.js 后重试。」
+  并 `process.exit(1)`；够了才加载 `main.ts`（§3 的 tsx）并调用 `runFromEnv()`。检查若放进 `main.ts`，
+  静态 import 会在检查前先求值，旧 Node 会先崩在依赖上。
 - 版本取 `process.versions.node`，逐段按整数比较（不得按字符串比较）；不可解析的版本视为不够。
 - 测试用 `node --import test/fixtures/fake-node-<v>.mjs server/start.js` 改写 `process.versions.node`
   （设计期已验证此法在 Node 26 上可行），生产代码里不留测试开关。
+- 22.0–22.12 上的限制只落在 `node:sqlite`（见 §7 末段），与本检查无关。本机最低可实测的 22.x 是 Homebrew 22.23.1；
+  22.0.0 本身无法实测，M-02 证据里如实写明「22.0 下限靠依赖 engines 声明与版本检查单测支撑，未在 22.0 上运行」。
 
 ### §5 测试、lint 与类型检查（R-03）
 
@@ -157,11 +157,12 @@ apps/web/
 
 **结论：采用 `node:sqlite`，不引入 `better-sqlite3`。** M-03 把它做成可复现的脚本与测试；
 脚本结果若与此不符，实现轮就地改写本节结论并按任务要求退回 `better-sqlite3`。
-W4 须知：Node 22 线会打印 ExperimentalWarning，需决定是否在入口过滤。
+W4 须知：Node 22 线会打印 ExperimentalWarning，需决定是否在入口过滤；`node:sqlite` 在 Node 22.13 起才免 flag（22.5–22.12 需 `--experimental-sqlite`，22.0–22.4 没有），
+低于 22.13 时 W4 的 `web.sqlite3` 无法直接使用它。这与任务的 Node ≥22 下限有出入，属 W4 的决策（加 flag 启动、或经用户批准抬高下限），本任务不替它定，已入 Backlog。
 
 复现方式：
 
-- `npm run probe:sqlite`（= `node scripts/probe-sqlite.ts`）依次在两种运行时里跑
+- `npm run probe:sqlite`（= `tsx scripts/probe-sqlite.ts`，不依赖 Node 原生类型剥离）依次在两种运行时里跑
   `scripts/sqlite-check.mjs`：系统 Node（`process.execPath`），以及 Electron
   （`ELECTRON_RUN_AS_NODE=1 <二进制> sqlite-check.mjs`）。
 - `sqlite-check.mjs` 在临时目录建文件库，`PRAGMA journal_mode=WAL` 须返回 `wal`，
@@ -179,8 +180,9 @@ W4 须知：Node 22 线会打印 ExperimentalWarning，需决定是否在入口�
 
 - RR7 框架模式 + 自定义服务器 dev/prod 两条入口不同 → M-01 最先做，两条路径都由起真实
   子进程的用例验收。
-- 22.18 是否确为类型剥离默认开启的首个 22.x：本机无 22.0–22.17 可试。M-02 实现轮须在证据
-  文件里引 Node 22.18.0 发布说明核对；若不符，就地上调 `MIN_NODE_VERSION`。
+- 22.0 下限的真实可运行性：本机无 22.0–22.22 可试，只有 22.23.1 与 26.5.0。依赖已按 engines 声明选到 `>=22.0.0`
+  （§2），但传递依赖未逐个核查；M-01 实现轮用 Homebrew `node@22`（22.23.1）跑一遍完整验收作为 22 线证据，
+  遇到某依赖在 22.x 线实际不兼容时，换版本而不是抬高 `MIN_NODE_VERSION`（抬高须用户先改任务约束）。
 - 首次门禁要 `npm ci`：M-04 验收从删掉 `apps/web/node_modules` 开始跑整套 ci-local，并记录
   Web 各步耗时，须远低于 30 分钟门禁超时。
 - 依赖误升大版本（RR 8、TS 7）：§2 写明；M-01 实现轮在证据里列出 lockfile 中这两个包的版本。
@@ -209,13 +211,13 @@ W4 须知：Node 22 线会打印 ExperimentalWarning，需决定是否在入口�
 
 - 验收命令：`npm ci --prefix apps/web > .autome/output/m01.txt 2>&1 && npm test --prefix apps/web >> .autome/output/m01.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m01.txt`
 - 预期：exit=0；vitest 报 2 个文件、12 个用例全部通过（基线 0，新增 12）：config 5 个——未设端口→7420、`'0'`→0、`'8123'`→8123、`'abc'` 抛中文错误、`'70000'` 抛中文错误；server 7 个——dev `/healthz` 200 `{"ok":true}`、dev `/` 200 且含「Autome 面板」与 `<script type="module"`、prod `/healthz` 200、prod `/` 200 且其引用的第一个 `/assets/*.js` 返回 200、prod 未知路径 404、进程内 `startServer({ port: 0, mode: 'production' })` 的 `address()` 为 `127.0.0.1`/IPv4、端口被占时子进程非零退出且 stderr 含「已被占用」。
-- 负向对照：`listen(port)` 不传主机时 `address()` 为 `::`，绑定用例失败；漏掉 `express.static('build/client')` 时 prod 资源用例拿到 404 失败。
+- 负向对照：`listen(port)` 不传主机时 `address()` 为 `::`，绑定用例失败；同时去掉 `build/client/assets` 与 `build/client` 两个 `express.static` 时，prod 资源用例拿到 404 失败（只去掉其一，另一个仍会服务该资源，不构成对照）。
 
 ### M-02 验收契约
 
 - 验收命令：`npm test --prefix apps/web > .autome/output/m02.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m02.txt`
-- 预期：exit=0；3 个文件、23 个用例通过（基线 12，新增 node-version 11 个）：`checkNodeVersion` 7 个——21.7.3 ✗、22.9.0 ✗、22.17.1 ✗、22.18.0 ✓、22.23.1 ✓、26.5.0 ✓、`abc` ✗；拒绝消息为中文且含当前版本与「22.18.0」1 个；以伪造 21.7.3、22.17.1 启动 `server/start.js` 的子进程各 1 个——退出码 1、stderr 为中文提示、stdout 无「已启动」；结构 1 个——`start.js` 的静态 import 只有 `./node-version.js`、`node-version.js` 无 import、`engines.node` 等于 `>=` + `MIN_NODE_VERSION`、`dev` 与 `start` 脚本都经 `server/start.js`。
-- 负向对照：按字符串比较版本时 `'22.9.0' > '22.18.0'`，22.9.0 被放行，该用例失败；把检查挪进 `main.ts` 或让 `start.js` 静态 import `./main.ts`，结构用例失败。
+- 预期：exit=0；3 个文件、23 个用例通过（基线 12，新增 node-version 11 个）：`checkNodeVersion` 7 个——9.9.0 ✗、21.7.3 ✗、22.0.0 ✓、22.9.0 ✓、22.23.1 ✓、26.5.0 ✓、`abc` ✗；拒绝消息为中文且含当前版本与「22」1 个；以伪造 21.7.3、9.9.0 启动 `server/start.js` 的子进程各 1 个——退出码 1、stderr 为中文提示、stdout 无「已启动」；结构 1 个——`start.js` 的静态 import 只有 `./node-version.js`、`node-version.js` 无 import、`engines.node` 等于 `>=` + `MIN_NODE_VERSION` 且 `MIN_NODE_VERSION` 为 `22.0.0`、`dev` 与 `start` 脚本都经 `server/start.js`。
+- 负向对照：按字符串比较版本时 `'9.9.0' > '22.0.0'`，9.9.0 被放行，该用例失败；把 `MIN_NODE_VERSION` 改回 22.18.0 时 22.9.0 与结构用例失败；把检查挪进 `main.ts` 或让 `start.js` 静态 import `./main.ts`，结构用例失败。
 
 ### M-03 验收契约
 
@@ -235,5 +237,7 @@ W4 须知：Node 22 线会打印 ExperimentalWarning，需决定是否在入口�
 - H-02 `npm run build --prefix apps/web && npm start --prefix apps/web` 后浏览器打开同一地址，页面正常显示，开发者工具控制台无 hydration 报错。
 
 ## Backlog
+
+- B-D1-01 W4 须决定 `node:sqlite` 在 Node 22.0–22.12 上的处置（加 `--experimental-sqlite` 启动、改用 `better-sqlite3`，或经用户批准抬高 Node 下限）；本任务 §7 只验证系统 Node 与 Electron。来源：裁决 D1-P01 修订时发现。
 
 ## 争议项
