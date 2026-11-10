@@ -396,7 +396,7 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
                 state == "queued"
                     || matches!(
                         node,
-                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check"
+                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check" | "repro_check" | "fix_gate"
                     )
                     // A crashed round whose retry is already due.
                     || matches!(
@@ -3650,10 +3650,13 @@ fn task_card_a_drafted_bug_waits_then_starts_with_its_card_committed_before_the_
     let brief = "# 卡片\n修复 {request}，保留 {unknown}\r\n";
     let card = format!("docs/{slug}/{slug}-card.md");
     let prelude = format!("git cat-file -e HEAD:{card} || exit 80");
-    w.doc_step_for_prelude(1, &slug, &doc("设计中", 0, 0, &[]), &prelude);
-    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        &prelude,
+    );
     let out = w.call("task.create", json!({"project_id":w.project_id,"request":request,"kind":"bug","draft":true,"brief":brief}));
     let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
     w.settle();
@@ -3665,7 +3668,7 @@ fn task_card_a_drafted_bug_waits_then_starts_with_its_card_committed_before_the_
     let started = w.call("task.start", json!({"task_id":id}));
     assert_eq!(ok(&started)["started"], true);
     w.settle();
-    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
     let wt = w.repo.join(format!(".worktree/{slug}"));
     let committed = automed::git::run_ok(&wt, &["show", &format!("HEAD:{card}")]).unwrap();
     assert_eq!(committed.stdout.as_bytes(), brief.as_bytes());
@@ -3768,5 +3771,377 @@ fn task_card_a_started_draft_waits_behind_the_parallel_limit() {
     );
     for id in ["queued-first", "queued-second", &id] {
         assert!(!w.ctx.store.list_sessions(id).unwrap().is_empty());
+    }
+}
+
+// Derive the fake document from the same frozen contract models receive.
+fn bug_doc(review: &str) -> String {
+    let contract = include_str!("../../../protocol/bug-protocol.md");
+    let region = contract
+        .split("<!-- kernel-contract: bug-status-block -->")
+        .nth(1)
+        .unwrap();
+    let example = region
+        .split("```text\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    example
+        .lines()
+        .filter(|l| !l.starts_with("repos:"))
+        .map(|line| {
+            if line.starts_with("复现命令:") {
+                "复现命令: sh regression.sh".to_owned()
+            } else if line.starts_with("复核:") {
+                format!("复核: {review}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n\n## 现象\n产品标记错误。\n\n## 复现\nsh regression.sh\n\n## 根因分析\nproduct.txt 应为 fixed。\n\n## 修复说明\n修复只改变产品标记。\n\n## 复核意见\n检查回归测试与产品差异。\n"
+}
+
+fn bug_step(w: &World, n: u32, slug: &str, body: &str, prelude: &str) {
+    w.step(n, &format!("set -e\n{prelude}\nmkdir -p docs/{slug}\ncat > docs/{slug}/{slug}-bug.md <<'BUG_EOF'\n{body}\nBUG_EOF\ngit add -A\ngit -c user.name=fake -c user.email=f@f commit -qm 'bug round {n}' || true\n"));
+}
+
+const BUG_LOCATE: &str = "printf 'broken\\n' > product.txt\nprintf 'echo regression-output; test \"$(cat product.txt)\" = fixed\\n' > regression.sh";
+const BUG_FIX: &str = "printf 'fixed\\n' > product.txt";
+
+fn create_bug(w: &mut World, request: &str) -> String {
+    let out = w.call("task.create", json!({"project_id": w.project_id, "request": request, "kind": "bug", "brief": "# Bug card\nExpected fixed"}));
+    ok(&out)["task"]["id"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
+    needs_git!();
+    let mut w = World::new("bug-merge");
+    let slug = slug_for("bug merge");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "bug merge");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(sessions.len(), 3);
+    for (n, phrase) in [(1, "定位轮"), (2, "修复轮"), (3, "复核轮")] {
+        assert!(w.prompt(n).contains(phrase), "{}", w.prompt(n));
+    }
+    assert!(
+        sessions
+            .iter()
+            .all(|s| matches!(s.kind, autome_domain::session::SessionKind::Bug { .. }))
+    );
+    assert!(w.prompt(1).contains(&format!("{slug}-bug.md")));
+    assert!(w.prompt(1).contains("bug-protocol.md"));
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    assert!(!wt.join(task.design_doc()).exists());
+    assert!(!wt.join(task.doc_dir()).join("brief").exists());
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "task.updated" && e.2 == id)
+        .filter_map(|e| e.3["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "locate",
+            "repro_check",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    let logs = std::fs::read_dir(w.repo.join(format!(".autome/output/gates/{id}")))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(logs.iter().any(|p| p.starts_with("repro_check-")));
+    assert!(logs.iter().any(|p| p.starts_with("fix_gate-")));
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("product.txt")).unwrap(),
+        "fixed\n"
+    );
+    let merged = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    assert_eq!(
+        automed::git::run_ok(&w.repo, &["show", &format!("{merged}:product.txt")])
+            .unwrap()
+            .stdout,
+        "fixed\n"
+    );
+}
+
+#[test]
+fn bug_loop_a_repro_command_that_passes_on_the_locate_commit_returns_to_locate() {
+    needs_git!();
+    for command in [
+        "sh regression.sh",
+        "missing-autome-repro-command",
+        "exit 126",
+    ] {
+        let mut w = World::new("bug-repro-miss");
+        let slug = slug_for("repro miss");
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核").replace("sh regression.sh", command),
+            &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核").replace("已定位", "无法复现"),
+            "",
+        );
+        let id = create_bug(&mut w, "repro miss");
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+        let prompt = w.prompt(2);
+        assert!(
+            prompt.contains("复现检查没有失败") && prompt.contains(command),
+            "{prompt}"
+        );
+        assert!(prompt.contains(if command == "sh regression.sh" {
+            "regression-output"
+        } else {
+            "not_runnable"
+        }));
+        assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 0);
+        assert_eq!(
+            w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn bug_loop_a_fix_whose_repro_command_still_fails_returns_to_fix() {
+    needs_git!();
+    let mut w = World::new("bug-fix-fail");
+    let slug = slug_for("fix fail");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    // Changing the document cannot replace the frozen failing command.
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核").replace("sh regression.sh", "true"),
+        "",
+    );
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix fail");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(3).contains("regression-output"));
+    assert!(w.prompt(3).contains("2/3"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn bug_loop_the_project_gate_runs_after_the_repro_command_in_the_fix_gate() {
+    needs_git!();
+    let mut w = World::new("bug-project-gate");
+    w.configure(
+        "[gate]\ncommand = \"echo project-gate-output; test -f gate-ready\"\ntimeout_minutes = 1\n",
+    );
+    let slug = slug_for("project gate");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "project gate");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(3);
+    assert!(
+        prompt.find("regression-output").unwrap() < prompt.find("project-gate-output\n").unwrap()
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn bug_loop_review_rejection_returns_to_fix_and_counts_a_round() {
+    needs_git!();
+    let mut w = World::new("bug-reject");
+    let slug = slug_for("review reject");
+    for (n, review, prelude) in [
+        (1, "待复核", BUG_LOCATE),
+        (2, "待复核", BUG_FIX),
+        (3, "打回", ""),
+        (4, "待复核", ""),
+        (5, "通过", ""),
+    ] {
+        bug_step(&w, n, &slug, &bug_doc(review), prelude);
+    }
+    let id = create_bug(&mut w, "review reject");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        ok(&w.call("task.get", json!({"task_id":id})))["task"]["budget_n"],
+        3
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert!(w.prompt(4).contains("复核意见"));
+    assert!(w.prompt(5).contains("2/3"));
+}
+
+#[test]
+fn bug_loop_a_crashed_fix_session_is_retried_without_counting_a_round() {
+    needs_git!();
+    let mut w = World::new("bug-crash");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+    let slug = slug_for("fix crash");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    w.step(2, "exit 17\n");
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix crash");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        1
+    );
+    assert!(w.prompt(3).contains("1/3"));
+    assert_eq!(w.ctx.store.count_events(&id, "session.retry").unwrap(), 1);
+}
+
+#[test]
+fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
+    needs_git!();
+    let mut w = World::new("bug-legacy");
+    let slug = slug_for("legacy bug");
+    let out = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "legacy bug", "kind": "bug", "draft": true}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::AwaitDesignApproval,
+            },
+        )
+        .unwrap();
+    w.doc_step(1, &slug, &doc("实现中", 1, 1, &[("M-01", "待审")]));
+    w.doc_step(2, &slug, &doc("实现中", 1, 1, &[("M-01", "已完成")]));
+    w.retro_step(3, &slug);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    assert_eq!(w.node(&id).as_deref(), Some("implement"));
+    assert_eq!(
+        w.ctx.store.running_session(&id).unwrap().unwrap().kind,
+        autome_domain::session::SessionKind::Role {
+            role: autome_domain::role::Role::Impl
+        }
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while w.has_pending_work() {
+        let report = automed::scheduler::tick(&mut w.ctx);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "legacy loop did not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 3);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.loop_started").unwrap(),
+        0
+    );
+}
+
+#[test]
+fn bug_loop_a_malformed_bug_doc_is_a_protocol_failure() {
+    needs_git!();
+    for scenario in [
+        "missing-command",
+        "stale-review",
+        "missing-file",
+        "changed-status",
+        "pending-review",
+    ] {
+        let mut w = World::new("bug-protocol");
+        let slug = slug_for("bad bug doc");
+        if scenario == "missing-file" {
+            w.step(1, "exit 0\n");
+        } else {
+            let body = if scenario == "missing-command" {
+                bug_doc("待复核").replace("复现命令: sh regression.sh", "")
+            } else {
+                bug_doc("待复核")
+            };
+            bug_step(&w, 1, &slug, &body, BUG_LOCATE);
+            let fix = match scenario {
+                "changed-status" => bug_doc("待复核").replace("已定位", "无法复现"),
+                "stale-review" => bug_doc("通过"),
+                _ => bug_doc("待复核"),
+            };
+            bug_step(&w, 2, &slug, &fix, BUG_FIX);
+            bug_step(&w, 3, &slug, &bug_doc("待复核"), "");
+        }
+        let id = create_bug(&mut w, "bad bug doc");
+        w.settle();
+        let state = w.ctx.store.get_task(&id).unwrap().state;
+        let autome_domain::task::TaskState::Failed {
+            reason: autome_domain::task::FailureReason::Protocol { detail },
+            ..
+        } = state
+        else {
+            panic!("{scenario}: {state:?}");
+        };
+        assert!(
+            detail.contains(match scenario {
+                "missing-command" => "复现命令",
+                "missing-file" => "缺少文件",
+                "changed-status" => "status",
+                _ => "复核",
+            }),
+            "{detail}"
+        );
     }
 }

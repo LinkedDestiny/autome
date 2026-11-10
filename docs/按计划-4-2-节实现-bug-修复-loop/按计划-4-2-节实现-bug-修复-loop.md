@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/30
+implementation-round: 3/30
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03 调度器主路径与完整 e2e
+next-action: 独立复验 M-03 调度器与完整 e2e；通过后推进 M-04 task.reply、补充信息与预算展示
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -451,7 +451,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 |---|---|---|---|---|
 | M-01 | 已完成 | 领域层：Bug Loop 节点与转换表、Bug 文档解析、[bug] fix_rounds | 0 | domain-bug |
 | M-02 | 已完成 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
-| M-03 | 开放 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
+| M-03 | 待审 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 开放 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
 | M-05 | 开放 | 需求任务零变化与全量门禁 | 0 | regression |
 | M-06 | 开放 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
@@ -570,6 +570,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 - 负向对照：从 `prompts/fix.md` 删掉 `{budget_line}` 时 `protocol eval` 退出码非 0 且 `bug_loop_protocol_eval_requires_budget_line_in_every_bug_prompt` 失败；契约区示例写成 `复现命令 = …` 时 `bug_loop_protocol_contract_example_parses_with_the_kernel_parser` 失败；定位不加卡片前置段时 `bug_loop_locate_prompt_with_a_card_matches_its_golden` 失败；改动任何一份既有 prompt 时 `every_role_prompt_renders_exactly_what_the_constants_did` 失败。
 
 ### M-03 范围
+
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
 
 - 覆盖：A1（端到端节点序列）、A3、A6（运行时）、A7；C4、C5、C6。前置：M-02。
 - 改动：`automed/src/scheduler.rs`：

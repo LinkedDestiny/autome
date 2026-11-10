@@ -614,6 +614,20 @@ impl Store {
         Ok(n.max(0) as u32)
     }
 
+    pub fn count_events_after(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        after_kind: &str,
+    ) -> Result<u32> {
+        let n: u32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2
+             AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE subject_id = ?1 AND kind = ?3), 0)",
+            params![subject_id, kind, after_kind], |r| r.get(0),
+        )?;
+        Ok(n)
+    }
+
     pub fn latest_seq(&self) -> Result<u64> {
         let seq: i64 =
             self.conn

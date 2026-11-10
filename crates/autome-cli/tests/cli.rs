@@ -296,6 +296,20 @@ fn task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_car
     let s = Sandbox::new("card-stdin");
     let slug = "stdin-card";
     task_card_prepare(&s, slug);
+    let contract = include_str!("../../../protocol/bug-protocol.md");
+    let example = contract
+        .split("```text\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap()
+        .replace("已定位", "无法复现");
+    std::fs::write(
+        s.repo.join(".autome/fake/1.sh"),
+        format!("mkdir -p docs/{slug}\ncat > docs/{slug}/{slug}-bug.md <<'EOF'\n{example}\nEOF\n"),
+    )
+    .unwrap();
     let brief = "# stdin card\n\n中文 {request}\n";
     let mut child = Command::new(env!("CARGO_BIN_EXE_autome"))
         .args([
@@ -327,7 +341,7 @@ fn task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_car
     let started = s.json(&["task", "start", slug]);
     assert_eq!(started["task"]["id"], id);
     s.ok(&["run", "--until-idle", "--interval", "0.05"]);
-    assert_eq!(s.task_state(id)["node"], "await_design_approval");
+    assert_eq!(s.task_state(id)["node"], "await_info");
     let card = s
         .repo
         .join(format!(".worktree/{slug}/docs/{slug}/{slug}-card.md"));

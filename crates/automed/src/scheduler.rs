@@ -20,14 +20,17 @@
 
 use std::path::{Path, PathBuf};
 
+use autome_domain::bug_loop::{self, BugProgress, BugSessionOutcome};
 use autome_domain::config::{self, ResolvedConfig};
 use autome_domain::project::Project;
 use autome_domain::protocol::{ProtocolFiles, ProtocolRef};
 use autome_domain::role::{Role, Runtime};
+use autome_domain::session::BugStep;
 use autome_domain::session::{
     self, ExitMarker, Session, SessionKind, SessionLifecycle, SessionPaths,
 };
 use autome_domain::status_block::{self, StatusBlock};
+use autome_domain::task::TaskKind;
 use autome_domain::task::{
     self, Action, CoreStepResult, FailureReason, GateOutcome, Inject, Node, SessionOutcome,
     TaskState, Transition, Trigger,
@@ -285,6 +288,27 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // makes forgetting recoverable rather than silent.
     sweep_commit(&project, &task, s)?;
 
+    if matches!(s.kind, SessionKind::Bug { .. }) {
+        let outcome = read_bug_outcome(&project, &task, &lifecycle);
+        if matches!(outcome, BugSessionOutcome::Ok { .. }) {
+            ctx.store.settle_decisions(&s.id)?;
+            ctx.store.clear_cooldown(s.runtime)?;
+        } else {
+            ctx.store.release_decisions(&s.id)?;
+        }
+        if let TaskState::Paused { resume } | TaskState::Requeued { resume } = task.state
+            && SessionKind::for_node(resume) == Some(s.kind)
+        {
+            ctx.store.append_event(
+                "session.outcome_held",
+                &task.id,
+                json!({"session_id": s.id, "node": resume, "outcome": outcome}),
+            )?;
+            return Ok(true);
+        }
+        deliver_bug_outcome(ctx, s, &project, &task, outcome)?;
+        return Ok(true);
+    }
     let outcome = apply_guards(
         ctx,
         s,
@@ -832,6 +856,61 @@ fn session_idle_secs(log: &Path, started_at: &str) -> u64 {
 /// Turns a finished session into the outcome the transition table expects
 /// (design §7.3): a clean exit means "read the document", anything else is a
 /// crash, and a document that will not parse is a protocol failure.
+fn read_bug_outcome(
+    project: &Project,
+    task: &TaskRecord,
+    lifecycle: &SessionLifecycle,
+) -> BugSessionOutcome {
+    if !lifecycle.should_parse_document() {
+        return BugSessionOutcome::Crashed {
+            detail: format!("会话异常结束：{lifecycle:?}"),
+        };
+    }
+    let path = task.bug_doc();
+    match std::fs::read_to_string(task_docs_root(project, &task.slug).join(&path)) {
+        Ok(text) => match autome_domain::bug_doc::parse(&text) {
+            Ok(doc) => BugSessionOutcome::Ok { doc: Box::new(doc) },
+            Err(error) => BugSessionOutcome::Unparseable { error },
+        },
+        Err(_) => BugSessionOutcome::MissingArtifact { path },
+    }
+}
+
+fn deliver_bug_outcome(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    outcome: BugSessionOutcome,
+) -> Result<()> {
+    if let BugSessionOutcome::Crashed { detail } = &outcome
+        && schedule_retry(ctx, s, project, task, detail)?
+    {
+        return Ok(());
+    }
+    advance(ctx, &task.id, &Trigger::BugSessionEnded { outcome })?;
+    Ok(())
+}
+
+fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
+    Ok(bug_loop::uses_bug_loop(
+        task.kind,
+        &task.state,
+        ctx.store
+            .last_event(&task.id, "bug.loop_started")?
+            .is_some(),
+    ))
+}
+
+fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
+    Ok(BugProgress {
+        fix_round: ctx.store.count_events(&task.id, "bug.fix_round_started")?,
+        repro_misses: ctx
+            .store
+            .count_events_after(&task.id, "bug.repro_missed", "task.replied")?,
+    })
+}
+
 fn read_outcome(
     project: &Project,
     task: &TaskRecord,
@@ -963,10 +1042,86 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     };
 
     let before = merge_requested(ctx, task_id)?;
-    let transition = match task::apply_with_merge_request(&task.state, trigger, &context, before) {
+    let bug = uses_bug_loop(ctx, &task)?;
+    let progress = if bug {
+        bug_progress(ctx, &task)?
+    } else {
+        BugProgress::default()
+    };
+    let transition = match bug_loop::apply_for(
+        if bug {
+            TaskKind::Bug
+        } else {
+            TaskKind::Feature
+        },
+        &task.state,
+        trigger,
+        &context,
+        progress,
+        before,
+    ) {
         Ok(t) => t,
         Err(rejected) => return Err(err(rejected.reason)),
     };
+
+    if bug
+        && matches!(task.state, TaskState::Queued)
+        && transition.next.node() == Some(Node::Locate)
+    {
+        ctx.store
+            .append_event("bug.loop_started", task_id, json!({}))?;
+    }
+    if let Trigger::BugSessionEnded {
+        outcome: BugSessionOutcome::Ok { doc },
+    } = trigger
+        && !matches!(transition.next, TaskState::Failed { .. })
+    {
+        match task.state.node() {
+            Some(Node::Locate) => {
+                ctx.store.append_event("bug.located", task_id,
+                json!({"status": doc.status, "command": doc.repro_command, "root_cause": doc.root_cause}))?;
+            }
+            Some(Node::FixReview) => {
+                ctx.store.append_event(
+                    "bug.reviewed",
+                    task_id,
+                    json!({"round": progress.fix_round, "verdict": doc.review}),
+                )?;
+            }
+            _ => {}
+        }
+    }
+    if let Trigger::ReproDone {
+        head,
+        command,
+        exit_code,
+        timed_out,
+        tail,
+    } = trigger
+    {
+        let why = if *timed_out {
+            "timed_out"
+        } else if [126, 127].contains(exit_code) {
+            "not_runnable"
+        } else {
+            "exited_zero"
+        };
+        let reproduced = !timed_out && *exit_code != 0 && ![126, 127].contains(exit_code);
+        let payload = if reproduced {
+            json!({"sha": head, "command": command, "exit_code": exit_code})
+        } else {
+            json!({"sha": head, "command": command, "exit_code": exit_code, "why": why, "tail": tail})
+        };
+        ctx.store.append_event(
+            if reproduced {
+                "bug.reproduced"
+            } else {
+                "bug.repro_missed"
+            },
+            task_id,
+            payload,
+        )?;
+    }
 
     // Entering the implementation loop for the first time is when N is
     // computed, and it needs the milestone count the design just produced.
@@ -1310,9 +1465,24 @@ fn perform(
     transition: &Transition,
 ) -> Result<()> {
     match &transition.action {
-        Action::StartBugSession { .. } => Err(SchedulerError {
-            detail: "Bug session scheduling is not installed yet".into(),
-        }),
+        Action::StartBugSession { step, inject } => {
+            if *step == BugStep::Fix {
+                ctx.store.append_event(
+                    "bug.fix_round_started",
+                    &task.id,
+                    json!({"round": bug_progress(ctx, task)?.fix_round + 1,
+                        "limit": task.budget_n.unwrap_or(resolved.bug.fix_rounds)}),
+                )?;
+            }
+            start_session(
+                ctx,
+                task,
+                project,
+                resolved,
+                SessionKind::Bug { step: *step },
+                inject.as_ref(),
+            )
+        }
         Action::None => Ok(()),
         Action::StartIntake => {
             start_session(ctx, task, project, resolved, SessionKind::Intake, None)
@@ -1337,9 +1507,8 @@ fn perform(
             Ok(())
         }
         Action::Reenter { node } => {
-            let kind = match node.role() {
-                Some(role) => SessionKind::Role { role },
-                None => SessionKind::Intake,
+            let Some(kind) = SessionKind::for_node(*node) else {
+                return Ok(());
             };
             if let Some(s) = ctx.store.running_session(&task.id)?
                 && s.kind == kind
@@ -1363,6 +1532,17 @@ fn perform(
                     .session_event(&task.id, &s.id, "session.outcome_held_applied")?
                     .is_none()
             {
+                if matches!(kind, SessionKind::Bug { .. }) {
+                    let outcome = serde_json::from_value(held["outcome"].clone())
+                        .map_err(|e| err(e.to_string()))?;
+                    ctx.store.append_event(
+                        "session.outcome_held_applied",
+                        &task.id,
+                        json!({"session_id": s.id}),
+                    )?;
+                    let active = ctx.store.get_task(&task.id)?;
+                    return deliver_bug_outcome(ctx, s, project, &active, outcome);
+                }
                 let outcome = serde_json::from_value(held["outcome"].clone())
                     .map_err(|e| err(e.to_string()))?;
                 ctx.store.append_event(
@@ -1658,11 +1838,22 @@ fn launch_session(
     // implementation loop are told which round they are and what `N` is,
     // because neither is derivable inside the session (see launcher::BudgetLine).
     let round = ctx.store.next_round(&task.id, &kind)?;
-    let budget = match (kind.role(), task.budget_n) {
-        (Some(Role::Impl | Role::Audit), Some(limit)) => {
-            Some(launcher::BudgetLine { round, limit })
+    let budget = if let SessionKind::Bug { step } = kind {
+        Some(launcher::BudgetLine {
+            round: if step == BugStep::Locate {
+                0
+            } else {
+                bug_progress(ctx, task)?.fix_round
+            },
+            limit: task.budget_n.unwrap_or(resolved.bug.fix_rounds),
+        })
+    } else {
+        match (kind.role(), task.budget_n) {
+            (Some(Role::Impl | Role::Audit), Some(limit)) => {
+                Some(launcher::BudgetLine { round, limit })
+            }
+            _ => None,
         }
-        _ => None,
     };
     // The retro round writes against the task's measured numbers rather than
     // its recollection of the run, so it is the one round handed them.
@@ -1673,7 +1864,10 @@ fn launch_session(
     // Written before the prompt that points at it. A round told to read a
     // brief that is not there would go and read the design document instead,
     // which is the thing the brief exists to make optional.
-    let brief_path = match kind.role() {
+    let brief_path = match kind
+        .role()
+        .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
+    {
         Some(role) => write_brief(
             ctx,
             task,
@@ -1703,7 +1897,14 @@ fn launch_session(
         layout.cwd.clone()
     };
 
-    let card_path = (kind == SessionKind::Intake && card.is_some()).then(|| {
+    let card_path = (matches!(
+        kind,
+        SessionKind::Intake
+            | SessionKind::Bug {
+                step: BugStep::Locate
+            }
+    ) && card.is_some())
+    .then(|| {
         format!(
             "{}/{}-card.md",
             layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
@@ -2081,7 +2282,40 @@ fn run_gate(
 ) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
     let repo = PathBuf::from(&project.path);
-    let Some(gate) = resolved.gate.clone() else {
+    let bug = uses_bug_loop(ctx, task)?;
+    let bug_gate = bug && matches!(node, Node::ReproCheck | Node::FixGate | Node::MergeGate);
+    let selected_gate = if bug_gate {
+        let event = ctx
+            .store
+            .last_event(
+                &task.id,
+                if node == Node::ReproCheck {
+                    "bug.located"
+                } else {
+                    "bug.reproduced"
+                },
+            )?
+            .ok_or_else(|| err("缺少已记录的复现命令"))?;
+        let repro = event["command"]
+            .as_str()
+            .ok_or_else(|| err("缺少复现命令"))?;
+        Some(config::GateConfig {
+            command: match (&resolved.gate, node) {
+                (Some(gate), n) if n != Node::ReproCheck => {
+                    format!("( {repro} ) && ( {} )", gate.command)
+                }
+                _ => repro.to_owned(),
+            },
+            timeout_minutes: resolved
+                .gate
+                .as_ref()
+                .map(|g| g.timeout_minutes)
+                .unwrap_or(config::DEFAULT_GATE_TIMEOUT_MINUTES),
+        })
+    } else {
+        resolved.gate.clone()
+    };
+    let Some(gate) = selected_gate else {
         // The gate was removed from the configuration while the task sat
         // here. Nothing to run means nothing to stop for.
         return finish_gate(ctx, task, project, node, GateOutcome::Passed);
@@ -2121,6 +2355,7 @@ fn run_gate(
             && let Some(last) = ctx.store.last_event(&task.id, "gate.result")?
             && last.get("ok").and_then(Value::as_bool) == Some(true)
             && last.get("sha").and_then(Value::as_str) == Some(head.as_str())
+            && (!bug || last.get("command").and_then(Value::as_str) == Some(gate.command.as_str()))
         {
             ctx.store.append_event(
                 "gate.reused",
@@ -2184,6 +2419,20 @@ fn run_gate(
         }),
     )?;
 
+    if node == Node::ReproCheck {
+        advance(
+            ctx,
+            &task.id,
+            &Trigger::ReproDone {
+                head,
+                command: gate.command,
+                exit_code,
+                timed_out: exit_code == crate::gate::TIMED_OUT,
+                tail,
+            },
+        )?;
+        return Ok(());
+    }
     if node == Node::MainCheck {
         let _ = git::worktree_remove(&repo, &verify_dir(&head), true);
         if !ok {
@@ -2694,12 +2943,8 @@ fn redispatch_with(
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let resolved = resolve_config(ctx, &project)?;
-    let kind = match node {
-        Node::Intake => SessionKind::Intake,
-        n => match n.role() {
-            Some(role) => SessionKind::Role { role },
-            None => return Ok(()),
-        },
+    let Some(kind) = SessionKind::for_node(node) else {
+        return Ok(());
     };
     start_session(ctx, &task, &project, &resolved, kind, inject)
 }
@@ -3071,6 +3316,177 @@ mod tests {
                 return;
             }
         };
+    }
+
+    #[test]
+    fn bug_loop_cooldown_keeps_fix_and_review_on_different_runtimes() {
+        needs_git!();
+        let mut w = World::new("bug-cooldown");
+        let task = w.add_task("T-1", "a");
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let resolved = resolve_config(&w.ctx, &project).unwrap();
+        for step in [BugStep::Fix, BugStep::FixReview] {
+            w.set_state(&task.id, TaskState::Active { node: step.node() });
+            let runtime = resolved.role(step.role()).config.runtime;
+            w.ctx.store.cool_down(runtime, "test", None).unwrap();
+            assert!(matches!(
+                cooldown_route(
+                    &mut w.ctx,
+                    &task,
+                    &resolved,
+                    SessionKind::Bug { step },
+                    None
+                )
+                .unwrap(),
+                Route::Deferred
+            ));
+            assert_eq!(
+                w.ctx.store.pending_retry(&task.id).unwrap().unwrap().0,
+                step.node()
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "session.rerouted")
+                    .unwrap(),
+                0
+            );
+            w.ctx.store.clear_cooldown(runtime).unwrap();
+        }
+    }
+
+    #[test]
+    fn bug_loop_reenter_maps_bug_nodes_to_bug_sessions() {
+        needs_git!();
+        let mut w = World::new("bug-reenter");
+        let base = w.add_task("base", "unused");
+        let task = TaskRecord {
+            id: "bug".into(),
+            slug: "bug".into(),
+            kind: TaskKind::Bug,
+            ..base
+        };
+        w.ctx.store.insert_task(&task).unwrap();
+        w.ctx
+            .store
+            .append_event("bug.loop_started", &task.id, json!({}))
+            .unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let resolved = resolve_config(&w.ctx, &project).unwrap();
+        for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            w.set_state(&task.id, TaskState::Active { node: step.node() });
+            let transition = Transition {
+                next: TaskState::Active { node: step.node() },
+                action: Action::Reenter { node: step.node() },
+                budget_n: None,
+                consumes_decisions: false,
+                merge_requested: false,
+            };
+            perform(&mut w.ctx, &task, &project, &resolved, &transition).unwrap();
+            let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+            assert_eq!(session.kind, SessionKind::Bug { step });
+            w.ctx
+                .store
+                .finish_session(
+                    &session.id,
+                    &SessionLifecycle::Exited { exit_code: 0 },
+                    &now_iso(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "bug.fix_round_started")
+                .unwrap(),
+            0
+        );
+        // The counter resets at the latest reply, not at a retry or reentry.
+        w.ctx
+            .store
+            .append_event("bug.repro_missed", &task.id, json!({}))
+            .unwrap();
+        assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 1);
+        w.ctx
+            .store
+            .append_event("task.replied", &task.id, json!({}))
+            .unwrap();
+        assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 0);
+    }
+
+    #[test]
+    fn bug_loop_merge_gate_does_not_reuse_a_pass_for_a_different_command() {
+        needs_git!();
+        for (kind, started) in [
+            (TaskKind::Bug, true),
+            (TaskKind::Feature, false),
+            (TaskKind::Bug, false),
+        ] {
+            let mut w = World::new("bug-reuse");
+            let base = w.add_task("base", "unused");
+            let task = TaskRecord {
+                id: "T-1".into(),
+                slug: "a".into(),
+                kind,
+                state: TaskState::Active {
+                    node: Node::MergeGate,
+                },
+                ..base
+            };
+            w.ctx.store.insert_task(&task).unwrap();
+            w.with_worktree(&task);
+            let project = w.ctx.store.get_project(&task.project_id).unwrap();
+            let layout = TaskLayout::of(&project, &task.slug, &[]);
+            let head = gate_head(&layout).unwrap();
+            if started {
+                w.ctx
+                    .store
+                    .append_event("bug.loop_started", &task.id, json!({}))
+                    .unwrap();
+                w.ctx
+                    .store
+                    .append_event("bug.reproduced", &task.id, json!({"command": "true"}))
+                    .unwrap();
+            }
+            let path = config_io::project_config_path(&w.repo);
+            let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+            text.push_str("\n[gate]\ncommand = 'true'\ntimeout_minutes = 1\n");
+            std::fs::write(path, text).unwrap();
+            w.ctx
+                .store
+                .append_event(
+                    "gate.result",
+                    &task.id,
+                    json!({"ok": true, "sha": head, "command": "old command"}),
+                )
+                .unwrap();
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::MergeGate).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                u32::from(!started)
+            );
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                u32::from(started)
+            );
+            if started {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while w.state(&task.id).node() == Some(Node::MergeGate) {
+                    assert!(std::time::Instant::now() < deadline);
+                    run_gate(&mut w.ctx, &task, &project, &layout, Node::MergeGate).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                assert_eq!(w.state(&task.id).node(), Some(Node::AwaitMerge));
+                // Same SHA and same command may reuse a successful run.
+                crate::gate::discard_node(&w.repo, &task.id, Node::MergeGate.as_str()).unwrap();
+                w.set_state(&task.id, task.state.clone());
+                run_gate(&mut w.ctx, &task, &project, &layout, Node::MergeGate).unwrap();
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                    1
+                );
+            }
+        }
     }
 
     fn ended_ok(doc: &str) -> Trigger {
