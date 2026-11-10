@@ -82,4 +82,4 @@
 必须提前验证的风险（serde `from`/`into` 仍由 M-01 第一件事验证，退路不变）。无剩余项，设计定稿。
 新增的两处机制（`task.resume_input`、`session.manual_retro`）是纯事件追加，不改表结构、不改对外形状。
 
-提交由 Autome 兜底：若本轮提交被拒，工作区改动留待 Autome 提交。
+本轮改动已提交到当前分支。
