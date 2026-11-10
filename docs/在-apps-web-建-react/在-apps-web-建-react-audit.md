@@ -1,4 +1,6 @@
-# 审计 #4 · M-04 通过
+# 审计结论（审计 #5）
 
-负向对照两项均能让验收失败（lint 注入、四步合链），还原后全量 ci-local exit=0，Web test 38/38。证据：docs/在-apps-web-建-react/evidence/M-04-r5-audit.md。
-无实现缺陷、无验证缺口。构造的检查（两项负向对照）为一次性，已丢弃。人工项 H-01、H-02 仍待用户合并前确认。
+结论：通过。无待审里程碑，M-01..M-04 保持 `已完成`，无实现缺陷、无验证缺口。
+复验：lint 负向对照有效，Web 测试 38/38，typecheck 通过，宿主门禁 ci-local 退出 0。
+证据：docs/在-apps-web-建-react/evidence/M-04-r7-audit.md
+人工项 H-01、H-02 待用户合并前确认。
