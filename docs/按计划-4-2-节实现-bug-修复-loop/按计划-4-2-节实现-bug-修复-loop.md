@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/30
+implementation-round: 4/30
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-03 调度器与完整 e2e；通过后推进 M-04 task.reply、补充信息与预算展示
+next-action: Autome 重跑提交后门禁并独立复验 M-03；通过后推进 M-04 task.reply、补充信息与预算展示
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -390,7 +390,8 @@ repos: 仓库A, 仓库B
    - 卡片字节断言不变；
    - `task_card_prepare` 本身不改，其他测试还在用它。
 5. `cli.rs` `task_card_reply_rejects_the_design_with_the_text_verbatim`：循环 `["feature", "bug"]` → `["feature"]`；
-   被拿掉的 `bug` 一半由新测试 `bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim` 取代。（M-04）
+   移除旧 Bug 分支须与 M-03 启用新 Bug 路径配套，避免全量门禁仍要求新 Bug 走需求 Loop。
+   新 Bug reply 由 M-04 新测试 `bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim` 验证；M-04 前该项尚未覆盖。
 
 6. `protocol::eval::tests::with_behavioral_entry` 追加的假想版本 v2 改为 v3，
    `a_changed_run_covers_the_new_cases_and_the_three_baselines` 查询同步改为 v3；真实种子已有 v2，避免同名版本遮蔽夹具条目，断言不变。（M-02）
@@ -571,7 +572,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-03 范围
 
-最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r4-impl.md · 原失败用例已修复，全量门禁待宿主复验，保持待审 · 实现 #4
 
 - 覆盖：A1（端到端节点序列）、A3、A6（运行时）、A7；C4、C5、C6。前置：M-02。
 - 改动：`automed/src/scheduler.rs`：
