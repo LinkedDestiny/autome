@@ -19,3 +19,4 @@
 审计 #4 | M-04 | 通过 | docs/在-apps-web-建-react/evidence/M-04-r5-audit.md | 无
 复盘 #1 | 无 | 写 5 条教训（L-01..L-05） | docs/在-apps-web-建-react/lessons.md | 无
 实现 #6 | M-04 | 锁释放回归通过，原状态保留 | docs/在-apps-web-建-react/evidence/M-04-r6-impl.md | Web 测试受沙箱 EPERM/EMFILE 阻塞，宿主门禁待复验
+实现 #7 | M-04 | 修复两项时序测试，保持原状态 | docs/在-apps-web-建-react/evidence/M-04-r7-impl.md | Web 监听受沙箱 EPERM/EMFILE 阻塞，宿主待复验
