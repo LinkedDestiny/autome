@@ -370,6 +370,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
     let mut p = String::new();
 
     match spec.kind {
+        SessionKind::Bug { .. } => return Err(err("Bug prompts are not installed yet")),
         SessionKind::Intake => return intake_prompt(spec),
         SessionKind::Onboarding => return onboarding_prompt(spec),
         SessionKind::Role { role } => {
@@ -387,6 +388,9 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
     }
 
     match spec.inject {
+        Some(Inject::ReproNotFailing { .. } | Inject::FixRejected) => {
+            return Err(err("Bug prompt injections are not installed yet"));
+        }
         Some(Inject::DesignFeedback { feedback }) => {
             p.push_str(&format!(
                 "\n用户驳回了上一版设计，意见如下（原文，不要改写）：\n\n{feedback}\n\n\

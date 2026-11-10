@@ -1261,6 +1261,9 @@ fn render_gate_line(result: &Value) -> Option<String> {
 
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
+        Trigger::BugSessionEnded { .. } => "bug_session_ended",
+        Trigger::ReproDone { .. } => "repro_done",
+        Trigger::Reply { .. } => "reply",
         Trigger::Start => "start",
         Trigger::SlotAvailable => "slot_available",
         Trigger::SessionEnded { .. } => "session_ended",
@@ -1307,6 +1310,9 @@ fn perform(
     transition: &Transition,
 ) -> Result<()> {
     match &transition.action {
+        Action::StartBugSession { .. } => Err(SchedulerError {
+            detail: "Bug session scheduling is not installed yet".into(),
+        }),
         Action::None => Ok(()),
         Action::StartIntake => {
             start_session(ctx, task, project, resolved, SessionKind::Intake, None)
@@ -1519,6 +1525,7 @@ fn cooldown_route(
         return Ok(Route::Launch);
     };
     let node = match kind {
+        SessionKind::Bug { step } => Some(step.node()),
         SessionKind::Intake => Some(Node::Intake),
         SessionKind::Role { role } => Node::ALL.into_iter().find(|n| n.role() == Some(role)),
         SessionKind::Onboarding => None,

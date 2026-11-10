@@ -127,6 +127,9 @@ impl TaskRecord {
         autome_domain::project::Project::archive_dir(self.doc_root(), &self.slug)
     }
     /// `<doc_root>/<slug>/<slug>.md` — the design document the scheduler parses.
+    pub fn bug_doc(&self) -> String {
+        format!("{}/{}-bug.md", self.doc_dir(), self.slug)
+    }
     pub fn design_doc(&self) -> String {
         format!("{}/{}.md", self.doc_dir(), self.slug)
     }

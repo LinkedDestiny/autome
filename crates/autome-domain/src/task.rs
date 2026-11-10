@@ -55,9 +55,27 @@ pub enum Node {
     /// project rather than undoing anything.
     MainCheck,
     Cleanup,
+    Locate,
+    ReproCheck,
+    Fix,
+    FixGate,
+    FixReview,
+    AwaitInfo,
+    NotABug,
 }
 
 impl Node {
+    pub const BUG: [Node; 7] = [
+        Node::Locate,
+        Node::ReproCheck,
+        Node::Fix,
+        Node::FixGate,
+        Node::FixReview,
+        Node::AwaitInfo,
+        Node::NotABug,
+    ];
+
+    /// All feature Loop nodes, in their original order.
     pub const ALL: [Node; 15] = [
         Node::Intake,
         Node::Design,
@@ -84,8 +102,8 @@ impl Node {
             Node::Design => Some(Role::Plan),
             Node::Review => Some(Role::Review),
             Node::Adjudicate => Some(Role::Adjudicate),
-            Node::Implement => Some(Role::Impl),
-            Node::Audit => Some(Role::Audit),
+            Node::Implement | Node::Locate | Node::Fix => Some(Role::Impl),
+            Node::Audit | Node::FixReview => Some(Role::Audit),
             Node::Retro => Some(Role::Retro),
             // Intake runs a session too, but as a fixed system step on a
             // dedicated prompt, not as one of the five configurable roles.
@@ -97,12 +115,18 @@ impl Node {
     /// (design §8). The two human stopping points deliberately do not: a task
     /// waiting on the user must never block another task from running.
     pub const fn occupies_slot(self) -> bool {
-        !matches!(self, Node::AwaitDesignApproval | Node::AwaitMerge)
+        !matches!(
+            self,
+            Node::AwaitDesignApproval | Node::AwaitMerge | Node::AwaitInfo | Node::NotABug
+        )
     }
 
     /// Whether this node is waiting on the user rather than on a machine.
     pub const fn awaits_user(self) -> bool {
-        matches!(self, Node::AwaitDesignApproval | Node::AwaitMerge)
+        matches!(
+            self,
+            Node::AwaitDesignApproval | Node::AwaitMerge | Node::AwaitInfo | Node::NotABug
+        )
     }
 
     /// Whether the core drives this node itself, with no session at all.
@@ -115,6 +139,8 @@ impl Node {
                 | Node::Gate
                 | Node::MergeGate
                 | Node::MainCheck
+                | Node::ReproCheck
+                | Node::FixGate
         )
     }
 
@@ -122,7 +148,10 @@ impl Node {
     /// steps they take minutes, so the core starts them in the background and
     /// collects the result on a later tick.
     pub const fn is_gate(self) -> bool {
-        matches!(self, Node::Gate | Node::MergeGate | Node::MainCheck)
+        matches!(
+            self,
+            Node::Gate | Node::MergeGate | Node::MainCheck | Node::ReproCheck | Node::FixGate
+        )
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -142,11 +171,21 @@ impl Node {
             Node::Merging => "merging",
             Node::MainCheck => "main_check",
             Node::Cleanup => "cleanup",
+            Node::Locate => "locate",
+            Node::ReproCheck => "repro_check",
+            Node::Fix => "fix",
+            Node::FixGate => "fix_gate",
+            Node::FixReview => "fix_review",
+            Node::AwaitInfo => "await_info",
+            Node::NotABug => "not_a_bug",
         }
     }
 
     pub fn parse(s: &str) -> Option<Node> {
-        Node::ALL.into_iter().find(|n| n.as_str() == s)
+        Node::ALL
+            .into_iter()
+            .chain(Node::BUG)
+            .find(|n| n.as_str() == s)
     }
 }
 
@@ -155,21 +194,39 @@ impl Node {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FailureReason {
     /// The design loop used up `design_rounds`.
-    DesignBudget { limit: u32 },
+    DesignBudget {
+        limit: u32,
+    },
     /// The implementation loop used up N.
-    ImplBudget { limit: u32 },
+    ImplBudget {
+        limit: u32,
+    },
+    FixBudget {
+        limit: u32,
+    },
     /// The design document said the task cannot be done.
     Infeasible,
     /// The design document could not be read, or said so itself.
-    Protocol { detail: String },
+    Protocol {
+        detail: String,
+    },
     /// The session process died, or left no usable output.
-    SessionCrashed { detail: String },
+    SessionCrashed {
+        detail: String,
+    },
     /// A rebase conflict survived the implement/audit repair path.
-    RebaseConflict { detail: String },
+    RebaseConflict {
+        detail: String,
+    },
     /// A configuration problem blocked the launch (SAME-MODEL, skills, …).
-    Config { detail: String },
+    Config {
+        detail: String,
+    },
     /// A core step (merge, cleanup) failed.
-    CoreStep { node: Node, detail: String },
+    CoreStep {
+        node: Node,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +409,19 @@ impl PendingDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum Trigger {
+    BugSessionEnded {
+        outcome: crate::bug_loop::BugSessionOutcome,
+    },
+    ReproDone {
+        head: String,
+        command: String,
+        exit_code: i32,
+        timed_out: bool,
+        tail: String,
+    },
+    Reply {
+        info: String,
+    },
     Start,
     /// A parallel slot opened up and this task is at the head of the queue.
     SlotAvailable,
@@ -478,6 +548,10 @@ pub struct Context<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
+    StartBugSession {
+        step: crate::session::BugStep,
+        inject: Option<Inject>,
+    },
     /// Nothing to do; the new state is just a record.
     None,
     /// Launch the intake session (fixed system prompt, Claude Code).
@@ -500,12 +574,24 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "inject", rename_all = "snake_case")]
 pub enum Inject {
+    ReproNotFailing {
+        head: String,
+        command: String,
+        exit_code: i32,
+        why: String,
+        tail: String,
+    },
+    FixRejected,
     /// The user rejected the design; re-run with their words.
-    DesignFeedback { feedback: String },
+    DesignFeedback {
+        feedback: String,
+    },
     /// The user's Backlog/dispute decisions are being consumed.
     Decisions,
     /// Rebase left conflicts for the implement role to resolve.
-    RebaseConflict { files: Vec<String> },
+    RebaseConflict {
+        files: Vec<String>,
+    },
     /// The project's gate failed on the commit this round has to fix.
     GateFailed {
         head: String,
@@ -529,7 +615,7 @@ pub struct Transition {
 }
 
 impl Transition {
-    fn to(next: TaskState, action: Action) -> Self {
+    pub(crate) fn to(next: TaskState, action: Action) -> Self {
         Self {
             next,
             action,
@@ -539,15 +625,15 @@ impl Transition {
         }
     }
 
-    fn active(node: Node, action: Action) -> Self {
+    pub(crate) fn active(node: Node, action: Action) -> Self {
         Self::to(TaskState::Active { node }, action)
     }
 
-    fn fail(at: Node, reason: FailureReason) -> Self {
+    pub(crate) fn fail(at: Node, reason: FailureReason) -> Self {
         Self::to(TaskState::Failed { at, reason }, Action::None)
     }
 
-    fn with_budget(mut self, n: u32) -> Self {
+    pub(crate) fn with_budget(mut self, n: u32) -> Self {
         self.budget_n = Some(n);
         self
     }
@@ -806,6 +892,15 @@ fn apply_inner(
             };
         }
         _ => {}
+    }
+
+    if state.node().is_some_and(|node| Node::BUG.contains(&node))
+        && !matches!(
+            (state, trigger),
+            (TaskState::Requeued { .. }, Trigger::SlotAvailable)
+        )
+    {
+        return Err(reject("Bug 节点不使用需求转换表"));
     }
 
     match (state, trigger) {
