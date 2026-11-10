@@ -18,3 +18,4 @@
 实现 #5 | M-04 | 环境阻塞，保留开放 | docs/在-apps-web-建-react/evidence/M-04-r5-impl.md | 本地监听 EPERM，文件监听 EMFILE
 审计 #4 | M-04 | 通过 | docs/在-apps-web-建-react/evidence/M-04-r5-audit.md | 无
 复盘 #1 | 无 | 写 5 条教训（L-01..L-05） | docs/在-apps-web-建-react/lessons.md | 无
+实现 #6 | M-04 | 锁释放回归通过，原状态保留 | docs/在-apps-web-建-react/evidence/M-04-r6-impl.md | Web 测试受沙箱 EPERM/EMFILE 阻塞，宿主门禁待复验

@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 5/20
+implementation-round: 6/20
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 由 Autome 在本轮提交上重跑 sh scripts/ci-local.sh，确认门禁并完成 H-01、H-02 人工验收
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -58,7 +58,7 @@ next-action: 无
 非目标（任务 §3 明确不做）：automed 托管、RPC 网关、白名单、tick、Host/Origin/令牌（W2）；
 事件总线与 WebSocket（W3）；`web.sqlite3` 表结构与通知器（W4）；设计 token、导航、业务
 页面（W5 起）；启动器与 `autome web`（W10）；Electron 薄壳（W11）；Playwright（W12）。
-不碰 `crates/`、`apps/desktop/`、`protocol/`、`plugins/`、仓库根 `.gitignore`；用户专项门禁修复指令仅允许调整 Desktop app-protocol 的 Electron 加载时机。
+不碰 `crates/`、`apps/desktop/`、`protocol/`、`plugins/`、仓库根 `.gitignore`；用户专项门禁修复指令的例外为 Desktop app-protocol 的 Electron 加载时机，以及 End to end 失败对应的 `crates/automed/src/driver_lock.rs` 锁释放与回归测试。
 
 ## 方案
 
@@ -256,7 +256,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-04 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-04-r5-audit.md · 通过 · 审计 #4
+最新证据：docs/在-apps-web-建-react/evidence/M-04-r6-impl.md · 门禁修复，宿主待复验 · 实现 #6
 
 - 验收命令：`rm -rf apps/web/node_modules && sh scripts/ci-local.sh > .autome/output/m04.txt 2>&1; echo "exit=$?"; tail -25 .autome/output/m04.txt`
 - 预期：exit=0；汇总里 Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract（新 worktree 里还有 Desktop install）与 Web install、Web lint、Web typecheck、Web test、Web build 全部 `ok`；Web test 步骤报 5 个文件、38 个用例通过（基线 32，新增 ci-config 6 个：ci.yml 有 `web` job 且 `timeout-minutes`、`macos-14`；`setup-node` 为 `'22'` 且 Install 为 `npm ci`；lint/typecheck/test/build 四步齐全；ci.yml 每个 job 都有 `timeout-minutes`；ci-local 仅在缺 `node_modules` 时 `run 'Web install'` 且用 `npm ci`；ci-local 四行 `run 'Web …'` 在 package 分支之外）；证据记录 Web 各步耗时。
