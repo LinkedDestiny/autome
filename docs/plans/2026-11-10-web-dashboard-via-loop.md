@@ -340,13 +340,14 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
 
 **W5 外壳与项目导航**
 - 一句话需求：面板外壳：迁移 animal-island 设计 token，左侧项目列表（带进行中与等你处理计数）、首页总览、⌘K 跳转与中文标签表
-- 目录：`apps/web/app/root.tsx`、`apps/web/app/components/`、`apps/web/app/styles/`、`apps/web/app/lib/labels.ts`、`apps/web/app/routes/_index*`
+- 目录：`apps/web/app/root.tsx`、`apps/web/app/components/`、`apps/web/app/styles/`、`apps/web/app/lib/labels.ts`、`apps/web/app/routes/_index*`，以及 `apps/web/server/http.ts`（只加 `getLoadContext`，见验收 6）
 - 验收：
   1. 左侧是项目列表，每个项目显示进行中和等你处理的数量，实时更新；
   2. 首页总览：所有项目里「等你处理」和「进行中」的任务卡，点击进入任务；
   3. ⌘K 能跳到任意项目、任务，以及「新建任务卡」；
   4. `labels.ts` 包含需求、Bug 两张阶段表（§4.3），有测试与内核节点列表交叉核对；
   5. 内核离线时显示横幅，写操作按钮置灰。
+  6. `server/http.ts` 的 `createRequestHandler` 加上 `getLoadContext`，把 W2 的 `gateway` 交给各页面的 loader 与 action（W2 的 Backlog B-03）。
 
 **W6 项目页与任务卡**
 - 一句话需求：项目页：按待开始/进行中/等你处理/已完成四列显示任务卡，可按需求/Bug 筛选，支持在网页上用模板创建任务卡（含附件上传）
@@ -400,6 +401,8 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
   3. `autome web service install|uninstall` 管理 `~/Library/LaunchAgents/` 下的条目；
   4. 发布包包含 `autome`、`automed`、构建好的 `apps/web`；没有 Node ≥ 22.22 时只装命令行，并提示怎样装 Node；
   5. 在空的 PREFIX 和空的 AUTOME_HOME 下，从 tar 包安装到打开面板全程走通。
+  6. 内核子进程拿到用户登录 shell 的 PATH（从 `apps/desktop/src/login-path.js` 迁移），launchd 自启动时也能找到 `claude`、`codex`（W2 的 Backlog B-02）。
+  7. 会话 Cookie 只存在内存里，服务重启后旧 Cookie 失效。`autome web` 打开时总是读 `~/.autome/web/token` 拼出一次性地址，所以重启后再执行一次就能进；面板收到 403 时提示「请重新运行 autome web」（W2 的 Backlog B-04）。
 
 **W11 Electron 薄壳**
 - 一句话需求：把 apps/desktop 改成薄壳：用 Electron 自带的 Node 运行 apps/web 服务、窗口加载面板、提供原生目录选择与通知，删除旧渲染进程与 IPC 白名单
