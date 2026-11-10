@@ -20,3 +20,4 @@
 实现 #15 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r15-impl.md | registry DNS 失败且锁定包未缓存
 实现 #16 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r16-impl.md | registry DNS 失败且锁定包未缓存
 实现 #17 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r17-impl.md | registry DNS 失败，依赖无法安装
+实现 #18 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r18-impl.md | registry DNS 失败，锁定依赖无法安装
