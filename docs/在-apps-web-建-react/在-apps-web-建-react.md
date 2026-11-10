@@ -215,7 +215,7 @@ ExperimentalWarning 是否在入口过滤。
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | RR8 工程与自定义服务器：dev 与 build+start 两条路径起服务 | 0 | |
-| M-02 | 开放 | 进程入口的 Node 版本检查 | 0 | |
+| M-02 | 已完成 | 进程入口的 Node 版本检查 | 0 | |
 | M-03 | 开放 | node:sqlite 双运行时验证脚本 | 0 | |
 | M-04 | 开放 | lint、类型检查与 ci-local / ci.yml 接入 | 0 | |
 
@@ -240,7 +240,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-02 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-02-r3-impl.md · 专项通过，全量环境阻塞，保留开放 · 实现 #3
+最新证据：docs/在-apps-web-建-react/evidence/M-02-r3-audit.md · 通过 · 审计 #2
 
 - 验收命令：`npm test --prefix apps/web > .autome/output/m02.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m02.txt`
 - 预期：exit=0；3 个文件、24 个用例通过（基线 12，新增 node-version 12 个）：`checkNodeVersion` 8 个——9.9.0 ✗、21.7.3 ✗、22.9.0 ✗、22.21.1 ✗、22.22.0 ✓、22.23.1 ✓、26.5.0 ✓、`abc` ✗；拒绝消息为中文且含当前版本与「22.22.0」1 个；以伪造 21.7.3、22.21.1 启动 `server/start.js` 的子进程各 1 个——退出码 1、stderr 为中文提示、stdout 无「已启动」；结构 1 个——`start.js` 的静态 import 只有 `./node-version.js`、`node-version.js` 无 import、`engines.node` 等于 `>=` + `MIN_NODE_VERSION` 且 `MIN_NODE_VERSION` 为 `22.22.0`、`dev` 与 `start` 脚本都经 `server/start.js`。
