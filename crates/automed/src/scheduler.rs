@@ -926,6 +926,13 @@ pub fn apply_trigger(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<
     Ok(())
 }
 
+fn merge_requested(ctx: &Ctx, task_id: &str) -> Result<bool> {
+    Ok(ctx
+        .store
+        .last_event(task_id, "merge.auto")?
+        .is_some_and(|event| event["active"] == true))
+}
+
 /// The single implementation of "apply a transition and act on it".
 ///
 /// Order matters and is deliberate: persist the new state *before* performing
@@ -955,7 +962,8 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         decisions,
     };
 
-    let transition = match task::apply(&task.state, trigger, &context) {
+    let before = merge_requested(ctx, task_id)?;
+    let transition = match task::apply_with_merge_request(&task.state, trigger, &context, before) {
         Ok(t) => t,
         Err(rejected) => return Err(err(rejected.reason)),
     };
@@ -976,7 +984,25 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             json!({"node": node, "inject": inject}),
         )?;
     }
+    if before && !transition.merge_requested {
+        ctx.store
+            .append_event("merge.auto", task_id, json!({"active": false}))?;
+    }
     ctx.store.set_task_state(task_id, &transition.next)?;
+    if !before
+        && transition.merge_requested
+        && let Trigger::CoreStepDone {
+            result: CoreStepResult::Behind { repos, detail },
+            ..
+        } = trigger
+    {
+        ctx.store.append_event(
+            "merge.auto",
+            task_id,
+            json!({"active": true, "repos": repos, "detail": detail}),
+        )?;
+    }
+
     // The task moved: whatever crashes the last round had are behind it, and
     // the next round starts with its full allowance of retries.
     ctx.store.clear_retry(task_id)?;
@@ -1996,7 +2022,15 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
         }
     };
 
+    if node == Node::Rebase && result == CoreStepResult::Ok && merge_requested(ctx, &task.id)? {
+        let repos = layout.repos.iter().map(|slot| {
+            Ok(json!({"repo": slot.name, "onto": slot.base, "head": git::head_sha(&slot.worktree)?}))
+        }).collect::<Result<Vec<_>>>()?;
+        ctx.store
+            .append_event("merge.rebased", &task.id, json!({"repos": repos}))?;
+    }
     advance(ctx, &task.id, &Trigger::CoreStepDone { node, result })?;
+
     Ok(())
 }
 
@@ -2253,7 +2287,42 @@ fn merge_all(ctx: &mut Ctx, task: &TaskRecord, layout: &TaskLayout) -> Result<Co
         layout.repos.iter().filter(|r| !r.is_docs).collect();
     order.push(layout.docs());
 
+    // Only pure staleness starts the automatic path. Mixed refusals retain
+    // the existing partial-merge behavior and require another user press.
+    let mut behind = Vec::new();
+    let mut reasons = Vec::new();
+    let mut other_block = false;
+    for slot in &order {
+        if git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false) {
+            continue;
+        }
+        match git::check_merge(&slot.repo_root, &slot.base, &slot.branch) {
+            Ok(git::MergeCheck::Ready) => {}
+            Ok(git::MergeCheck::Blocked { kind, detail }) => {
+                if kind == git::BlockKind::Behind {
+                    behind.push(slot.name.clone());
+                    reasons.push(format!("{}{detail}", where_(slot)));
+                } else {
+                    other_block = true;
+                }
+            }
+            Err(e) => {
+                return Ok(CoreStepResult::Failed {
+                    detail: format!("{}{e}", where_(slot)),
+                });
+            }
+        }
+    }
+    if !behind.is_empty() && !other_block {
+        return Ok(CoreStepResult::Behind {
+            repos: behind,
+            detail: reasons.join("；"),
+        });
+    }
+    behind.clear();
+    other_block = false;
     let mut merged: Vec<String> = Vec::new();
+
     let mut blocked: Vec<String> = Vec::new();
     let mut last_commit: Option<String> = None;
 
@@ -2263,8 +2332,8 @@ fn merge_all(ctx: &mut Ctx, task: &TaskRecord, layout: &TaskLayout) -> Result<Co
             // nothing here. Either way there is nothing to merge.
             continue;
         }
-        match git::merge_task_branch(&slot.repo_root, &slot.base, &slot.branch, &message) {
-            Ok(git::MergeOutcome::Merged { commit }) => {
+        match git::try_merge(&slot.repo_root, &slot.base, &slot.branch, &message) {
+            Ok(git::MergeAttempt::Merged { commit }) => {
                 ctx.store.append_event(
                     "merge.repo",
                     &task.id,
@@ -2273,7 +2342,13 @@ fn merge_all(ctx: &mut Ctx, task: &TaskRecord, layout: &TaskLayout) -> Result<Co
                 last_commit = Some(commit);
                 merged.push(slot.name.clone());
             }
-            Ok(git::MergeOutcome::Blocked { detail }) => {
+            Ok(git::MergeAttempt::Blocked { kind, detail }) => {
+                if kind == git::BlockKind::Behind {
+                    behind.push(slot.name.clone());
+                } else {
+                    other_block = true;
+                }
+
                 ctx.store.append_event(
                     "merge.repo",
                     &task.id,
@@ -2295,8 +2370,14 @@ fn merge_all(ctx: &mut Ctx, task: &TaskRecord, layout: &TaskLayout) -> Result<Co
         } else {
             format!("已合并 {}；", merged.join("、"))
         };
-        return Ok(CoreStepResult::Blocked {
-            detail: format!("{done}{}", blocked.join("；")),
+        let detail = format!("{done}{}", blocked.join("；"));
+        return Ok(if other_block {
+            CoreStepResult::Blocked { detail }
+        } else {
+            CoreStepResult::Behind {
+                repos: behind,
+                detail,
+            }
         });
     }
     // The commit recorded on the task is the last one, which is the document
@@ -3711,6 +3792,248 @@ mod tests {
             std::fs::read_to_string(w.repo.join("feature.txt")).unwrap(),
             "in progress\n",
             "the user's file is untouched"
+        );
+    }
+
+    fn stale_merge(w: &mut World) -> (TaskRecord, PathBuf) {
+        let task = w.add_task("T-1", "a");
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+        git::commit_paths(&wt, &["feature.txt"], "feature").unwrap();
+        std::fs::write(w.repo.join("main.txt"), "main moved\n").unwrap();
+        git::commit_paths(&w.repo, &["main.txt"], "main moves").unwrap();
+        w.set_state(
+            &task.id,
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+        );
+        apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+        (w.ctx.store.get_task(&task.id).unwrap(), wt)
+    }
+
+    #[test]
+    fn a_merge_behind_main_is_requeued_for_a_rebase_and_main_is_untouched() {
+        needs_git!();
+        let mut w = World::new("auto-queue");
+        let (task, wt) = stale_merge(&mut w);
+        let main = git::head_sha(&w.repo).unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Requeued {
+                resume: Node::Rebase
+            }
+        );
+        let event = w
+            .ctx
+            .store
+            .last_event(&task.id, "merge.auto")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["active"], true);
+        assert_eq!(event["repos"], json!([""]));
+        assert!(event["detail"].as_str().unwrap().contains("rebase"));
+        assert_eq!(git::head_sha(&w.repo).unwrap(), main);
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        assert_eq!(w.ctx.store.count_events(&task.id, "merge.repo").unwrap(), 0);
+        // Invalid Git input is an operational failure, never an automatic
+        // authorization. Exercise both a missing ref and an unreadable repo.
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        for missing_repo in [false, true] {
+            let mut layout = TaskLayout::single(&project, &task.slug);
+            if missing_repo {
+                layout.repos[0].repo_root = w.root.join("missing-repository");
+            } else {
+                layout.repos[0].branch = String::new();
+            }
+            assert!(matches!(
+                merge_all(&mut w.ctx, &task, &layout).unwrap(),
+                CoreStepResult::Failed { .. }
+            ));
+            assert_eq!(git::head_sha(&w.repo).unwrap(), main);
+        }
+        assert_eq!(w.ctx.store.count_events(&task.id, "merge.auto").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_requested_rebase_records_merge_rebased_and_merges_without_stopping() {
+        needs_git!();
+        let mut w = World::new("auto-rebase");
+        let (task, wt) = stale_merge(&mut w);
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
+        let event = w
+            .ctx
+            .store
+            .last_event(&task.id, "merge.rebased")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event["repos"],
+            json!([{"repo":"", "onto":"main", "head":git::head_sha(&wt).unwrap()}])
+        );
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Merging
+            }
+        );
+        assert!(!merge_requested(&w.ctx, &task.id).unwrap());
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Cleanup
+            }
+        );
+        assert!(w.repo.join("feature.txt").exists());
+    }
+
+    #[test]
+    fn a_rebase_nobody_asked_to_merge_records_no_merge_rebased() {
+        needs_git!();
+        let mut w = World::new("ordinary-rebase");
+        let task = w.add_task("T-1", "a");
+        w.with_worktree(&task);
+        assert!(!merge_requested(&w.ctx, &task.id).unwrap());
+        w.set_state(&task.id, TaskState::Active { node: Node::Rebase });
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.rebased").unwrap(),
+            0
+        );
+        assert_eq!(w.ctx.store.count_events(&task.id, "merge.auto").unwrap(), 0);
+    }
+
+    #[test]
+    fn dirt_and_a_stale_branch_together_return_to_await_merge_without_rebasing() {
+        needs_git!();
+        let mut w = World::new("auto-dirty");
+        let (task, wt) = stale_merge(&mut w);
+        std::fs::write(w.repo.join("feature.txt"), "user's work\n").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        let main = git::head_sha(&w.repo).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
+        );
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        assert_eq!(git::head_sha(&w.repo).unwrap(), main);
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join("feature.txt")).unwrap(),
+            "user's work\n"
+        );
+        assert_eq!(w.ctx.store.count_events(&task.id, "merge.auto").unwrap(), 0);
+    }
+
+    #[test]
+    fn with_every_slot_taken_the_requested_rebase_waits_in_the_queue_and_keeps_the_request() {
+        needs_git!();
+        let mut w = World::new("auto-slot");
+        w.ctx
+            .store
+            .update_project_parallel(&w.project_id, 1)
+            .unwrap();
+        let (task, wt) = stale_merge(&mut w);
+        w.add_task("T-2", "busy");
+        w.set_state(
+            "T-2",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        let head = git::head_sha(&wt).unwrap();
+        // Tick phase 2 returns the transient merging slot before phase 3
+        // admits any sessions or gates (the unchanged press itself uses it).
+        run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Requeued {
+                resume: Node::Rebase
+            }
+        );
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        assert!(merge_requested(&w.ctx, &task.id).unwrap());
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+        w.set_state(
+            "T-2",
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+        );
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+        assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Rebase });
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        assert!(merge_requested(&w.ctx, &task.id).unwrap());
+    }
+
+    #[test]
+    fn a_dirty_repo_and_a_behind_repo_together_return_blocked_not_behind() {
+        needs_git!();
+        let mut w = World::new("mixed-blocks");
+        let (task, wt) = stale_merge(&mut w);
+        let mut dirty = World::new("dirty-member");
+        let dirty_task = dirty.add_task("T-1", "a");
+        let dirty_wt = dirty.with_worktree(&dirty_task);
+        std::fs::write(dirty_wt.join("feature.txt"), "feature\n").unwrap();
+        git::commit_paths(&dirty_wt, &["feature.txt"], "feature").unwrap();
+        std::fs::write(dirty.repo.join("feature.txt"), "user's work\n").unwrap();
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let mut layout = TaskLayout::single(&project, "a");
+        layout.repos[0].name = "docs".into();
+        layout.repos.push(crate::layout::RepoSlot {
+            name: "backend".into(),
+            repo_root: dirty.repo.clone(),
+            worktree: dirty_wt.clone(),
+            branch: dirty_task.branch(),
+            base: "main".into(),
+            is_docs: false,
+        });
+        let head = git::head_sha(&wt).unwrap();
+        let dirty_head = git::head_sha(&dirty_wt).unwrap();
+        let result = merge_all(&mut w.ctx, &task, &layout).unwrap();
+        assert!(
+            matches!(&result, CoreStepResult::Blocked { detail } if detail.contains("backend") && detail.contains("docs"))
+        );
+        advance(
+            &mut w.ctx,
+            &task.id,
+            &Trigger::CoreStepDone {
+                node: Node::Merging,
+                result,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
+        );
+        assert_eq!(w.ctx.store.count_events(&task.id, "merge.auto").unwrap(), 0);
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        assert_eq!(git::head_sha(&dirty_wt).unwrap(), dirty_head);
+        assert_eq!(
+            std::fs::read_to_string(dirty.repo.join("feature.txt")).unwrap(),
+            "user's work\n"
         );
     }
 

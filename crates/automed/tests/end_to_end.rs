@@ -3215,3 +3215,116 @@ fn manual_retro_resumes_at_original_node_only_after_finishing() {
     assert_one_role(&w, &id, autome_domain::role::Role::Impl);
     ok(&w.call("task.stop", json!({"task_id":id})));
 }
+
+/// Uses the ordinary intake/design/implementation/audit/retro wrappers, with
+/// task-local scripts so two waiting tasks cannot consume each other's steps.
+fn wait_for_automatic_merge(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    w.retro_step(7, &slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&slug, 7, &retro);
+    let id = create_task(w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    id
+}
+
+#[test]
+fn two_tasks_waiting_to_merge_both_land_and_the_second_rebases_through_the_gate_by_itself() {
+    needs_git!();
+    let mut w = World::new("two-auto-merges");
+    w.configure("[gate]\ncommand = \"git diff --exit-code\"\ntimeout_minutes = 5\n");
+    let a = wait_for_automatic_merge(&mut w, "auto first");
+    let b = wait_for_automatic_merge(&mut w, "auto second");
+    assert_eq!(w.node(&a).as_deref(), Some("await_merge"));
+    assert_eq!(w.node(&b).as_deref(), Some("await_merge"));
+    ok(&w.call("task.merge", json!({"task_id": a})));
+    w.settle();
+    assert_eq!(w.state(&a), "done");
+    let a_commit = w.ctx.store.get_task(&a).unwrap().merge_commit.unwrap();
+    let before = w
+        .ctx
+        .store
+        .events_since(0, u32::MAX)
+        .unwrap()
+        .last()
+        .unwrap()
+        .0;
+    ok(&w.call("task.merge", json!({"task_id": b})));
+    w.settle();
+    assert_eq!(w.state(&b), "done");
+    let b_commit = w.ctx.store.get_task(&b).unwrap().merge_commit.unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, &a_commit, &b_commit).unwrap());
+    let rebased = w
+        .ctx
+        .store
+        .last_event(&b, "merge.rebased")
+        .unwrap()
+        .unwrap();
+    let head = rebased["repos"][0]["head"].as_str().unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, head, &b_commit).unwrap());
+    let events = w
+        .ctx
+        .store
+        .events_since_with_subject(before, u32::MAX)
+        .unwrap();
+    let rebase_seq = events
+        .iter()
+        .find(|(_, kind, subject, _)| subject == &b && kind == "merge.rebased")
+        .unwrap()
+        .0;
+    assert!(
+        events.iter().any(|(seq, kind, subject, payload)| {
+            *seq > rebase_seq
+                && subject == &b
+                && kind == "gate.result"
+                && payload["node"] == "merge_gate"
+                && payload["ok"] == true
+                && payload["sha"] == head
+        }),
+        "the rebased commit must actually pass the merge gate: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|(_, kind, subject, payload)| {
+            subject == &b && kind == "task.updated" && payload["state"]["node"] == "await_merge"
+        }),
+        "the user's single merge press must last through the gate"
+    );
+}
+
+#[test]
+fn main_moving_after_the_press_takes_the_same_automatic_path() {
+    needs_git!();
+    let mut w = World::new("main-after-press");
+    let id = wait_for_automatic_merge(&mut w, "moving main");
+    // task.merge calls apply_trigger then ticks before replying. Split those
+    // same production calls to move main in their deterministic race window.
+    automed::scheduler::apply_trigger(&mut w.ctx, &id, &autome_domain::task::Trigger::Merge)
+        .unwrap();
+    assert_eq!(w.node(&id).as_deref(), Some("merging"));
+    std::fs::write(w.repo.join("main-moved"), "concurrent change\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["main-moved"], "main after press").unwrap();
+    let main = automed::git::head_sha(&w.repo).unwrap();
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 1);
+    let merged = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    assert!(automed::git::is_ancestor(&w.repo, &main, &merged).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("main-moved")).unwrap(),
+        "concurrent change\n"
+    );
+}
