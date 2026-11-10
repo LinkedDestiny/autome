@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 16/20
+implementation-round: 17/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在可访问 npm registry 或具备锁定包缓存的环境安装 ws 与 @types/ws，再原样运行 sh scripts/ci-local.sh；当前缺依赖阻塞未解除，通过后继续 M-01 验收
+next-action: 先在可访问 npm registry 或已有锁定包缓存的环境安装 ws 与 @types/ws，再原样运行 sh scripts/ci-local.sh；本轮 DNS 阻塞未解除，保持 M-01 开放
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r16-impl.md · 门禁失败复现，锁定依赖仍无法安装，保持开放 · 实现 #16
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r17-impl.md · 门禁失败复现，依赖安装仍被 DNS 阻塞，保持开放 · 实现 #17
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：
