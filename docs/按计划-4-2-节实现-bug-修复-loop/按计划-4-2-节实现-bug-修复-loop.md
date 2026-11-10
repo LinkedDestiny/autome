@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/30
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02 的 Bug 协议 v2、三份 prompt、eval 静态门与渲染
+next-action: 独立审计 M-02；通过后推进 M-03 调度器主路径与完整 e2e
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -372,7 +372,7 @@ repos: 仓库A, 仓库B
 
 ### 11. 既有测试改动清单（C2）
 
-只有下面 5 条。它们之外，任何既有测试的断言、输入、流程都不改；本方案不改 `Context`、`PromptSpec`、
+允许改动的既有测试如下。它们之外，任何既有测试的断言、输入、流程都不改；本方案不改 `Context`、`PromptSpec`、
 `TaskRecord` 的字段，`ResolvedConfig`/`ProjectConfig` 的测试字面量已经用 `..`，所以没有「补字段」类的改动。
 实现中若发现确需更多改动，先在证据文件里写明理由，再按本节格式补进来。
 
@@ -391,6 +391,10 @@ repos: 仓库A, 仓库B
    - `task_card_prepare` 本身不改，其他测试还在用它。
 5. `cli.rs` `task_card_reply_rejects_the_design_with_the_text_verbatim`：循环 `["feature", "bug"]` → `["feature"]`；
    被拿掉的 `bug` 一半由新测试 `bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim` 取代。（M-04）
+
+6. `protocol::eval::tests::with_behavioral_entry` 追加的假想版本 v2 改为 v3，
+   `a_changed_run_covers_the_new_cases_and_the_three_baselines` 查询同步改为 v3；真实种子已有 v2，避免同名版本遮蔽夹具条目，断言不变。（M-02）
+7. `protocol::eval_run::tests::case` 为新增的可选字段填写 `prompt: None`，旧用例仍使用 role 模板。（M-02）
 
 第 3–5 条的理由：这三处断言钉的是 K1 的**过渡**行为（任务文件 §2：「K1 里 Bug 类型的任务仍跑需求 Loop」），
 而本任务的目标与 A1 正是替换这一行为。它们测的是 `kind = bug`，不在 C2「需求任务零行为变化」的范围内。保留它们，
@@ -428,7 +432,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 - **R6 修复轮削弱回归测试让复现命令通过。** 由两道防线挡：
   - 内核执行的是复现检查记录下的命令，文档里改命令无效；
   - prompt 禁止修改回归测试，复核必须核对回归测试相对定位提交的 diff。
-  - 机械守卫进 Backlog B-03。
+  - 机械守卫纳入 M-06（用户裁定 B-03），修复轮改动定位提交中的回归测试文件时拒绝进入门禁。
 - **R7 Bug 节点进入需求表触发 `unreachable!()`。** 需求表在通用控制段之后有防御（§1），M-01 用例
   `bug_loop_feature_table_rejects_bug_triggers_and_never_enters_bug_nodes` 覆盖；同一用例断言控制触发器与
   `(Requeued, SlotAvailable)` 在 Bug 状态上放行，Bug 取消不会被防御挡住。
@@ -446,10 +450,11 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 领域层：Bug Loop 节点与转换表、Bug 文档解析、[bug] fix_rounds | 0 | domain-bug |
-| M-02 | 开放 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
+| M-02 | 待审 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
 | M-03 | 开放 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 开放 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
 | M-05 | 开放 | 需求任务零变化与全量门禁 | 0 | regression |
+| M-06 | 开放 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
 
 ## 里程碑说明
 
@@ -524,6 +529,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-02 范围
 
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-02-r2-impl.md · 待审 · 实现 #2
+
 - 覆盖：A2；C7、C9。前置：M-01。
 - 改动：
   - `protocol/`：新文件 `bug-protocol.md` 与 `prompts/{locate,fix,fix-review}.md`；`CHANGELOG.md` 加 `## protocol/v2`；
@@ -554,11 +561,12 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
   - `bug_loop_protocol_eval_requires_budget_line_in_every_bug_prompt`
   - `bug_loop_protocol_eval_requires_the_no_relay_phrase_in_bug_prompts`
   - `bug_loop_protocol_case_prompt_key_must_name_an_existing_template`
+  - `bug_loop_protocol_eval_runs_the_selected_bug_template`（替身 runner 证明实际选中 Bug 模板并填充文档路径，不调用模型）
 
 ### M-02 验收契约
 
 - 验收命令：`cargo run -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && cargo test -p automed --lib launcher::tests::bug_loop && cargo test -p automed --lib bug_loop_protocol && cargo test -p automed --lib protocol:: && cargo test -p automed --test end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task`
-- 预期：`protocol eval` 退出码 0 且报告版本 `protocol/v2`；`prompt_rendering` 全部通过，其中 `bug_loop` 用例 5 个、既有用例数与基线相同；第三条 3 passed，第四条 6 passed（本里程碑合计 14 个新用例）；`protocol::` 下全部通过（含改成 v2 的版本断言）；e2e 那一个用例 1 passed；全部 0 failed。
+- 预期：`protocol eval` 退出码 0 且报告版本 `protocol/v2`；`prompt_rendering` 全部通过，其中 `bug_loop` 用例 5 个、既有用例数与基线相同；第三条 3 passed，第四条 7 passed（本里程碑合计 15 个新用例）；`protocol::` 下全部通过（含改成 v2 的版本断言）；e2e 那一个用例 1 passed；全部 0 failed。
 - 负向对照：从 `prompts/fix.md` 删掉 `{budget_line}` 时 `protocol eval` 退出码非 0 且 `bug_loop_protocol_eval_requires_budget_line_in_every_bug_prompt` 失败；契约区示例写成 `复现命令 = …` 时 `bug_loop_protocol_contract_example_parses_with_the_kernel_parser` 失败；定位不加卡片前置段时 `bug_loop_locate_prompt_with_a_card_matches_its_golden` 失败；改动任何一份既有 prompt 时 `every_role_prompt_renders_exactly_what_the_constants_did` 失败。
 
 ### M-03 范围
@@ -664,17 +672,33 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 - 覆盖：A1「需求任务的转换不变」的总体证明；C2、C3、C7、C11、C12。前置：M-04。
 - 改动：不新增功能。只修复全量门禁暴露的问题，并在证据文件里逐条核对 §11（`git diff 81a4394 -U0` 在四个集成测试
-  文件与各 `tests` 模块里的删除行，只能落在 §11 列出的 5 个用例里）。
+  文件与各 `tests` 模块里的删除行，只能落在 §11 列出的允许改动项里）。
 - `.autome/` 不在下面的 diff 范围里：它可能被 Autome 自己的初始化刷新。会话不改它这一点由 C1 与 AGENTS.md 约束，
   审计轮另用 `git log 81a4394.. --format=%s -- .autome/` 核对，只能出现 Autome 署名的提交。
 
 ### M-05 验收契约
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && cargo run -p automed -- protocol eval protocol/ && git diff --exit-code 81a4394 -- protocol/loop-protocol.md protocol/session-protocol.md protocol/brief-map.toml protocol/README.md protocol/prompts/intake.md protocol/prompts/onboarding.md protocol/prompts/plan.md protocol/prompts/review.md protocol/prompts/adjudicate.md protocol/prompts/impl.md protocol/prompts/audit.md protocol/prompts/retro.md crates/automed/tests/golden/prompts/adjudicate.md crates/automed/tests/golden/prompts/audit.md crates/automed/tests/golden/prompts/impl.md crates/automed/tests/golden/prompts/intake.md crates/automed/tests/golden/prompts/intake-card.md crates/automed/tests/golden/prompts/onboarding.md crates/automed/tests/golden/prompts/plan.md crates/automed/tests/golden/prompts/review.md apps/ plugins/ scripts/ .github/`
-- 预期：全部退出码 0；`cargo test --workspace` 0 failed，用例总数 = M-01 证据里记录的基线总数 + 80（M-01 42、M-02 14、M-03 11、M-04 13）；`git diff --exit-code` 无输出。
+- 预期：全部退出码 0；`cargo test --workspace` 0 failed，用例总数 = M-01 证据里记录的基线总数 + 81（M-01 42、M-02 15、M-03 11、M-04 13；M-06 另加 4 个）；`git diff --exit-code` 无输出。
 - 负向对照：改动任何一份需求 prompt、金样或需求协议正文（哪怕一个空格）时 `git diff --exit-code` 退出码 1；需求表的行为被改动时，M-01 的 `bug_loop_feature_kind_matches_the_feature_table_exactly` 与既有 `task::tests` 在 `cargo test --workspace` 中失败。
 
+### M-06 范围
+
+- 用户裁定 B-03 纳入；前置 M-03、M-04、M-05。按编号顺序在独立实现轮推进。
+- 定位成功时，按仓库记录定位提交相对本次定位会话起点新增或修改的测试文件及定位后的 blob/mode，持久化到已有事件，不迁移账本。
+- 保护集包含测试目录（`test/`、`tests/`、`__tests__/`）、常见 test/spec 文件名、复现命令直接引用的仓库内测试脚本；内联测试变更所在源码文件按整个文件保护。实现轮必须用项目真实夹具核定识别范围并在证据列明；不得把空保护集当作已保护。
+- 每次修复完成、进入 fix_gate 前，按定位快照核对保护集；内容、模式改变、删除、重命名均拒绝，走 Bug GuardFailed/Protocol 路径并指出文件。跨重试、暂停、追加轮次仍使用相同快照；重新定位建立新的快照。需求与旧 Bug 不启用此守卫。
+- 工作区按成员仓库分别取定位提交与保护集；新增或修改的非测试产品文件允许修复。保护的是完整测试文件，内联测试所在产品源码需要同时改动时本版会拒绝，应在定位轮把回归测试放入独立测试文件，不能静默放宽。
+- 新 e2e 四项：`bug_regression_guard_rejects_modified_or_deleted_tests`（含重命名与弱化断言）、`bug_regression_guard_allows_product_only_fixes`、`bug_regression_guard_survives_retry_and_extend`、`bug_regression_guard_checks_each_workspace_member`；每项同时断言节点、失败原因与保护文件字节，正反向对照齐备。
+
+### M-06 验收契约
+
+- 命令：`cargo test -p automed --test end_to_end bug_regression_guard && cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check`。
+- 预期：专项 4 passed；全量在 M-05 基线上 +4，全部 0 failed。需求既有测试不修改。
+- 负向对照：禁用守卫后，修改/删除/重命名测试的拒绝用例必须红；把保护集错误扩大到所有产品文件时，product-only 正向用例必须红。
+
 ## 人工验收清单
+
 
 - 安装本任务构建的 `autome` 前，确认驱动本仓库的 Loop 当时没有运行中的会话；安装后，`autome status` 能列出全部既有任务，账本仍是 schema v5。
 - 用一个真实的小 Bug 和真实模型跑一次 Bug Loop 到「等你合并」，检查三件事：定位轮写的 `-bug.md` 与回归测试是否像样；复现检查确实失败；修复没有动回归测试。
@@ -685,7 +709,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 - B-01 W5 的阶段映射（定位 · 修复 · 复核 · 合并 · 完成）、W7 的「改为需求」按钮与「修复第 k / N 轮」显示，落在 `apps/`，不在本任务目录。
 - B-02 工作区 Bug 的完整合并路径单独的 e2e（本任务只证明仓库选择与修剪，合并尾段沿用工作区既有用例）。
-- B-03 修复轮改动回归测试的机械守卫：比对定位提交里新增或修改的测试文件，修复轮不得再动它们。
+- B-03 已纳入 M-06：修复轮不得改动定位提交里新增或修改的回归测试文件。
 - B-04 追加轮次之后的第一轮修复，带上最近一次失败的门禁或复核结论（目前要自己去读日志与 Bug 文档）。
 - B-05 `autome ls` 显示任务类型与修复轮次。
 - B-06 复现检查单独的超时配置 `[bug] repro_timeout_minutes`。

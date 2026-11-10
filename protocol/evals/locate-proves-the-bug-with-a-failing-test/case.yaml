@@ -1,0 +1,10 @@
+name: locate-proves-the-bug-with-a-failing-test
+role: impl
+prompt: locate
+description: 提交实际失败的回归测试并写出根因，不修改产品代码
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md

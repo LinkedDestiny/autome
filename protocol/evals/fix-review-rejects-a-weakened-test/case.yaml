@@ -1,0 +1,10 @@
+name: fix-review-rejects-a-weakened-test
+role: audit
+prompt: fix-review
+description: 指出修复提交弱化测试并写复核打回，不修改产品代码
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md

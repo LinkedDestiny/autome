@@ -25,6 +25,7 @@ use autome_domain::role::Role;
 pub struct Case {
     pub name: String,
     pub role: Role,
+    pub prompt: Option<String>,
     pub description: String,
     /// How many times to run it. The verdict is the majority.
     pub runs: u32,
@@ -34,6 +35,12 @@ pub struct Case {
     pub scaffold: String,
     /// Grader files, relative to the case directory.
     pub graders: Vec<String>,
+}
+
+impl Case {
+    pub fn prompt_name(&self) -> &str {
+        self.prompt.as_deref().unwrap_or(self.role.as_str())
+    }
 }
 
 pub const DEFAULT_RUNS: u32 = 3;
@@ -79,6 +86,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
     let known = [
         "name",
         "role",
+        "prompt",
         "description",
         "runs",
         "max_turns",
@@ -116,6 +124,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
     Ok(Case {
         name,
         role,
+        prompt: get("prompt").map(str::to_string),
         description: get("description").unwrap_or("").to_string(),
         runs: num("runs", DEFAULT_RUNS as u64)? as u32,
         max_turns: num("max_turns", DEFAULT_MAX_TURNS as u64)? as u32,

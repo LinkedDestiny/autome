@@ -232,10 +232,10 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
         over_budget: Vec::new(),
     };
 
-    let Some(template) = plan.files.prompt(case.role.as_str()) else {
+    let Some(template) = plan.files.prompt(case.prompt_name()) else {
         result.errors.push(format!(
             "本版本里没有 prompts/{}.md，用例跑不了",
-            case.role.as_str()
+            case.prompt_name()
         ));
         return result;
     };
@@ -294,6 +294,7 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
 /// `{brief_path}` in front of the model.
 fn render_prompt(template: &str, slug: &str) -> String {
     template
+        .replace("{doc_dir}", &format!("docs/{slug}"))
         .replace("{slug}", slug)
         .replace("{budget_line}", "")
         .replace(
@@ -493,6 +494,7 @@ mod tests {
     /// suite runs in parallel.
     fn case(name: &str, runs: u32, max_turns: u32) -> Case {
         Case {
+            prompt: None,
             name: name.into(),
             role: Role::Impl,
             description: String::new(),
@@ -677,5 +679,27 @@ mod tests {
         let files = vec![("a.md".to_string(), "同".to_string())];
         let p = grader_prompt("x", &files, &files, "");
         assert!(p.contains("一个文件都没改"), "{p}");
+    }
+    #[test]
+    fn bug_loop_protocol_eval_runs_the_selected_bug_template() {
+        for (name, label) in [
+            ("locate", "定位轮"),
+            ("fix", "修复轮"),
+            ("fix-review", "独立复核轮"),
+        ] {
+            let files = crate::protocol::seed().clone();
+            let dir = case_dir(&format!("bug-{name}"));
+            let fake = Fake::new(vec![Ok(stream(1))], vec![Ok("VERDICT: 1".into())]);
+            let mut c = case(&format!("bug-{name}"), 1, 15);
+            c.prompt = Some(name.into());
+            let r = run_case(&plan(&files, &dir), &c, &fake);
+            assert!(r.passed(), "{r:?}");
+            let seen = fake.seen.borrow();
+            assert!(seen[0].contains(label));
+            assert!(seen[0].contains("docs/demo/demo-bug.md"));
+            assert!(!seen[0].contains("{doc_dir}"));
+            assert!(!seen[0].contains("{budget_line}"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

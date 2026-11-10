@@ -16,6 +16,12 @@ use autome_domain::protocol::{LOOP_PROTOCOL, ProtocolFiles, SESSION_PROTOCOL};
 
 /// The six role templates. `intake` and `onboarding` are system steps with
 /// their own shape and are not covered by the "every role" rules.
+pub const BUG_PROMPTS: [&str; 3] = [
+    "prompts/locate.md",
+    "prompts/fix.md",
+    "prompts/fix-review.md",
+];
+
 pub const ROLE_PROMPTS: [&str; 6] = [
     "prompts/plan.md",
     "prompts/review.md",
@@ -369,7 +375,13 @@ fn expand(entries: &'static [(&'static str, &'static str, &'static str)]) -> Vec
 }
 
 pub fn required() -> Vec<Requirement> {
-    expand(REQUIRED)
+    let mut requirements = expand(REQUIRED);
+    requirements.extend(BUG_PROMPTS.iter().map(|file| Requirement {
+        file: file.to_string(),
+        phrase: "不要启动下一个会话",
+        why: "Bug 会话也由内核调度后续节点",
+    }));
+    requirements
 }
 
 pub fn forbidden() -> Vec<Requirement> {

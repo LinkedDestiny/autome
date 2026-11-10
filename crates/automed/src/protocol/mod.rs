@@ -33,7 +33,23 @@ const TAG_PREFIX: &str = "protocol/v";
 /// Listed explicitly rather than walked at build time: a file that silently
 /// stops being embedded is exactly the kind of thing that only shows up on a
 /// user's machine.
-const SEED: [(&str, &str); 13] = [
+const SEED: [(&str, &str); 17] = [
+    (
+        "bug-protocol.md",
+        include_str!("../../../../protocol/bug-protocol.md"),
+    ),
+    (
+        "prompts/locate.md",
+        include_str!("../../../../protocol/prompts/locate.md"),
+    ),
+    (
+        "prompts/fix.md",
+        include_str!("../../../../protocol/prompts/fix.md"),
+    ),
+    (
+        "prompts/fix-review.md",
+        include_str!("../../../../protocol/prompts/fix-review.md"),
+    ),
     (
         "loop-protocol.md",
         include_str!("../../../../protocol/loop-protocol.md"),
@@ -382,7 +398,7 @@ mod tests {
     #[test]
     fn the_version_in_force_is_the_newest_changelog_heading_over_the_seed() {
         let (r, files) = current();
-        assert_eq!(r.tag, "protocol/v1");
+        assert_eq!(r.tag, "protocol/v2");
         assert_eq!(r.hash, seed().hash());
         assert_eq!(files.hash(), seed().hash());
     }
@@ -409,5 +425,47 @@ mod tests {
         assert!(dir.join("docs/demo/protocol/loop-protocol.md").exists());
         assert!(dir.join("docs/demo/protocol/session-protocol.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn bug_loop_protocol_seed_carries_the_bug_protocol_and_three_prompts() {
+        for file in [
+            "bug-protocol.md",
+            "prompts/locate.md",
+            "prompts/fix.md",
+            "prompts/fix-review.md",
+        ] {
+            assert!(seed().contains(file), "{file}");
+        }
+    }
+    #[test]
+    fn bug_loop_protocol_contract_example_parses_with_the_kernel_parser() {
+        let text = seed().get("bug-protocol.md").unwrap();
+        let example = text
+            .split_once("```text\n")
+            .unwrap()
+            .1
+            .split_once("```")
+            .unwrap()
+            .0;
+        let doc = autome_domain::bug_doc::parse(example).unwrap();
+        assert_eq!(doc.repro_command, "sh regression.sh");
+        assert_eq!(doc.fix_round, 0);
+    }
+    #[test]
+    fn bug_loop_protocol_bug_status_block_is_a_kernel_contract_region() {
+        assert!(
+            expected_contract()
+                .iter()
+                .any(|r| r.file == "bug-protocol.md" && r.name == "bug-status-block")
+        );
+        let mut files = seed().clone();
+        files.insert(
+            "bug-protocol.md",
+            files
+                .get("bug-protocol.md")
+                .unwrap()
+                .replace("status: 已定位", "status: 无法复现"),
+        );
+        assert!(!autome_domain::protocol::verify_contract(expected_contract(), &files).is_empty());
     }
 }
