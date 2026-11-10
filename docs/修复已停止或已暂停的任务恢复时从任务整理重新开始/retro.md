@@ -3,3 +3,4 @@
 裁决 #1 | M-01..M-03 | 设计定稿 | 修复已停止或已暂停的任务恢复时从任务整理重新开始-adjudication.md | 无
 实现 #1 | M-01 | 待审 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r1-impl.md | 无
 实现 #2 | M-01 | 待审 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r2-impl.md | Electron 43.2.0 缺失，下载 DNS 失败
+实现 #3 | M-01 | 待审 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r3-impl.md | Electron 43.2.0 缺失且 DNS 失败；门禁曾出现 PID 清理时序失败
