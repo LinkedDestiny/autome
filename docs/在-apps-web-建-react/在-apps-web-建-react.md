@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 2/20
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 先确认宿主门禁的 Rust PID 清理断言阻塞；解除后在允许回环监听的环境复跑 M-01 验收与负向对照
+next-action: 推进 M-02：进程入口的 Node 版本检查（server/node-version.js 与 start.js 结构、node-version 单测）
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -214,7 +214,7 @@ ExperimentalWarning 是否在入口过滤。
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | RR8 工程与自定义服务器：dev 与 build+start 两条路径起服务 | 0 | |
+| M-01 | 已完成 | RR8 工程与自定义服务器：dev 与 build+start 两条路径起服务 | 0 | |
 | M-02 | 开放 | 进程入口的 Node 版本检查 | 0 | |
 | M-03 | 开放 | node:sqlite 双运行时验证脚本 | 0 | |
 | M-04 | 开放 | lint、类型检查与 ci-local / ci.yml 接入 | 0 | |
@@ -232,7 +232,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-01 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-01-r2-impl.md · Desktop 修复通过，完整门禁仍阻塞，保持开放 · 实现 #2
+最新证据：docs/在-apps-web-建-react/evidence/M-01-r2-audit.md · 通过 · 审计 #1
 
 - 验收命令：`npm ci --prefix apps/web > .autome/output/m01.txt 2>&1 && npm test --prefix apps/web >> .autome/output/m01.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m01.txt`
 - 预期：exit=0；vitest 报 2 个文件、12 个用例全部通过（基线 0，新增 12）：config 5 个——未设端口→7420、`'0'`→0、`'8123'`→8123、`'abc'` 抛中文错误、`'70000'` 抛中文错误；server 7 个——dev `/healthz` 200 `{"ok":true}`、dev `/` 200 且含「Autome 面板」与 `<script type="module"`、prod `/healthz` 200、prod `/` 200 且其引用的第一个 `/assets/*.js` 返回 200、prod 未知路径 404、进程内 `startServer({ port: 0, mode: 'production' })` 的 `address()` 为 `127.0.0.1`/IPv4、端口被占时子进程非零退出且 stderr 含「已被占用」。

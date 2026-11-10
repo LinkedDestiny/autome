@@ -8,3 +8,4 @@
 实现 #1 | M-01 | 开放，验收阻塞 | docs/在-apps-web-建-react/evidence/M-01-r1-impl.md | 回环监听 EPERM、文件监听 EMFILE
 
 实现 #2 | M-01 | Desktop 修复通过，保持开放 | docs/在-apps-web-建-react/evidence/M-01-r2-impl.md | Rust PID 清理断言阻塞完整门禁
+审计 #1 | M-01 | 通过 | docs/在-apps-web-建-react/evidence/M-01-r2-audit.md | 无
