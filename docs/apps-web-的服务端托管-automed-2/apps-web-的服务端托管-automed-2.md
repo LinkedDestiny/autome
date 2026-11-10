@@ -1,7 +1,7 @@
 # Web 内核网关：apps/web 托管 automed、读写白名单、3 秒 tick 与 Host/Origin 本机检查
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -164,8 +164,10 @@ Host 与 Origin 检查（R-07）；二是把附件的 Backlog B-01 纳入（R-06
   的 `callCore` 相同（`request_id: web-req-N`、`command_id: web-cmd-N`、`expected_revision: null`、
   `protocol_version: 1`）。内核回 `outcome.status === 'error'` 时抛错，并带上 `code` 和内核原话。
 - **`call` 的本地等待上限 `CALL_TIMEOUT_MS = 15000`，必须大于内核写命令等锁的上限 `DRIVER_LOCK_WAIT`（10 秒）。**
-  这样命令行正占着驱动锁时，浏览器拿到的是内核那句「另一个 Autome…正占着状态库，稍后再试」（409），而不是一个
-  本地超时，而内核又在超时之后把写操作做完。测试解析 `dispatch.rs` 里 `DRIVER_LOCK_WAIT` 的秒数，断言
+  这样命令行正占着驱动锁时，浏览器拿到的是内核那句「另一个 Autome…正占着状态库，稍后再试」（409），而不是一个本地超时、
+  内核又在超时之后把写操作做完。这个保证只覆盖单条命令自己的等锁时间，不含 stdio 管道上前序请求的排队时间：多条写命令
+  近同时排队时仍可能本地超时，此时按 504「操作可能仍在执行」处理；不引入队列、取消或重试。
+  测试解析 `dispatch.rs` 里 `DRIVER_LOCK_WAIT` 的秒数，断言
   `CALL_TIMEOUT_MS` 比它大。万一真的本地超时，抛出带 `timeout` 标记的错误，网关回 504（§8）。
 
 ### 4. tick（R-05、约束 4）
@@ -278,6 +280,9 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
   - 不生成、不落盘、不校验任何访问令牌；不设置、不读取任何 Cookie；没有 `?t=` 兑换、会话集合、登录会话；
     `<home>/web/` 下不写任何鉴权相关的文件（W2 根本不创建这个目录）。
   - 任何响应都不带 `Set-Cookie`，也不带任何 `Access-Control-Allow-*` 头。`OPTIONS` 属于「其它方法」，跨站预检拿到的是 403。
+  - Vite 开发服务器默认会对 localhost、127.0.0.1 等本机来源（不限端口）回 CORS 头（本地 Vite 源码 `node.js` 里的默认 `cors` 设置）。
+    实现时在 `http.ts` 的 Vite 配置里明确设 `server.cors: false`；核对 `Access-Control-Allow-Origin` 时，请求要带另一个
+    localhost 端口的 Origin，不能只看不带 Origin 的响应（`gateway-http.test.ts` 第 5 条照此写）。
   - Host 与 Origin 都合格、不带 Cookie、`Authorization` 或查询参数的请求，就能到达网关。
   - 带了 Cookie 或 `?t=` 的请求，检查结果与不带时完全相同：Cookie 不被读取，`?t=` 不触发跳转。
 - **R-07 的反面怎么锁住**：
@@ -288,7 +293,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
      但不得放过这六类。
   3. `gateway-http.test.ts`：真实服务与真实内核下，不带任何凭据的 `config.set_loop` 写操作返回 200，读回来是新值；
      遍历 `GET /healthz`、`GET /`、`POST /api/read`、`POST /api/write` 以及一个 403 响应，全部没有 `Set-Cookie` 和
-     `Access-Control-Allow-Origin`；测试结束时临时 home 下的 `web/` 目录不存在。
+     `Access-Control-Allow-Origin`（GET 另带一份 Origin 为另一 localhost 端口的请求）；测试结束时临时 home 下的 `web/` 目录不存在。
 - **upgrade 守卫**：`createHttpServer` 挂完 Vite 之后，取出 server 上已有的全部 `upgrade` 监听器（开发模式下就是 Vite
   HMR 那一个），移除它们，换成唯一的一个守卫监听器。守卫只检查 Host 与 Origin，不通过时往 socket 写
   `HTTP/1.1 403 Forbidden` 加中文原因，然后销毁 socket。通过时交给取出来的那些监听器，以及用
@@ -377,7 +382,8 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 3. **Vite 的 upgrade 监听器绕过守卫**：已确认 Vite 8.3.7 在 `createServer` 期间同步挂上监听器（见背景）。
    用 `listenerCount === 1` 和开发模式下的两条 403 用例锁住。如果以后 Vite 改成延迟挂，这条断言会先失败。
 4. **写命令等驱动锁**：内核写命令最多等锁 10 秒，desktop 的 5 秒本地超时会把一次实际成功的写报成失败。Web 用
-   15 秒的 `CALL_TIMEOUT_MS`，并用解析 `dispatch.rs` 的测试锁住「大于 `DRIVER_LOCK_WAIT`」。这期间 stdio 管道上的
+   15 秒的 `CALL_TIMEOUT_MS`，并用解析 `dispatch.rs` 的测试锁住「大于 `DRIVER_LOCK_WAIT`」。这只覆盖单条命令的等锁上限：
+   前序请求排队时仍可能本地超时，那种情形回 504「操作可能仍在执行」，不保证一定得到 409。这期间 stdio 管道上的
    tick 会排在写命令后面，ticker 按「不叠加」规则不会多发。
 5. **不做令牌之后的暴露面**：本机任何进程都能调网关。这是计划 §5.5 的明确决定（本机进程本来就能直接用 `autome`
    命令行），不是遗漏；跨站网页由 Host 与 Origin 挡住，各有测试。
@@ -512,7 +518,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
     2. 不带任何凭据的 `config.set_loop` 写了之后读得到（R-07）；
     3. 缺 Origin、Origin 不对的写各回 403，读回的值没变；
     4. Host 不对时 GET 也回 403（用 `http.request` 自定义 Host 头）；
-    5. `GET /healthz`、`GET /`、`/api/read`、`/api/write` 和一个 403 响应都没有 `Set-Cookie` 和 `Access-Control-Allow-Origin`，
+    5. `GET /healthz`、`GET /`、`/api/read`、`/api/write` 和一个 403 响应都没有 `Set-Cookie` 和 `Access-Control-Allow-Origin`（GET 另带一份 Origin 为另一 localhost 端口的请求），
        测试结束时临时 home 下没有 `web/` 目录；
     6. 不合格的 upgrade 回 403；
     7. 合格但没有处理器的 upgrade 回 404；
@@ -537,6 +543,6 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 ## Backlog
 
 - B-02 `apps/desktop/src/login-path.js`（登录 shell 的 PATH）没有迁移。W10 用 launchd 自启动时，内核看到的 PATH 会缺 `claude`/`codex`，届时需要处理。
-- B-03 W5 起的 loader 要拿到 `gateway`：`startServer` 已经返回它，但还需要在 `http.ts` 的 `createRequestHandler` 上加 `getLoadContext`。W5 的目录不含 `server/`，计划需要给它补上这一处。
+- B-03 W5 起的 loader 要拿到 `gateway`：`startServer` 已经返回它，但还需要在 `http.ts` 的 `createRequestHandler` 上加 `getLoadContext`。上游计划已允许 W5 修改 `server/http.ts`，验收里也已要求 `getLoadContext`，由 W5 实现。
 
 ## 争议项
