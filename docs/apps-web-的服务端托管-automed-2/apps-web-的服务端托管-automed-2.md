@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 2/25
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-02，复验受沙箱阻塞的 7 个监听用例；通过后推进 M-03 内核守护与 tick
+next-action: 推进 M-03 内核守护：崩溃重启、手动重启与 3 秒 tick
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -399,7 +399,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
-| M-02 | 待审 | 读写白名单迁移与路径拒绝 | 0 | |
+| M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 开放 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
 | M-04 | 开放 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
 | M-05 | 开放 | 网关接入 startServer 与端到端 | 0 | |
@@ -435,7 +435,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-02 读写白名单迁移与路径拒绝
 
-最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-impl.md · 专项通过，7 个监听用例待复验 · 实现 #2
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 结果：`server/gates/{read-gate,write-gate}.ts` 两份独立门禁，与 `READ_METHODS`、`role.rs`、`environment.rs`
   交叉核对。附件只收上传编号，`doc_refs` 非空一律拒绝；浏览器不能指定任意文件路径（`project.onboarding.save`

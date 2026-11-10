@@ -5,3 +5,4 @@
 实现 #1 | M-01 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-impl.md | W1 的 7 个监听用例受 listen EPERM 阻塞
 审计 #1 | M-01 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-audit.md | 无
 实现 #2 | M-02 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-impl.md | W1 的 7 个监听用例受 EPERM/EMFILE 阻塞
+审计 #2 | M-02 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-02-r2-audit.md | 无
