@@ -3436,3 +3436,175 @@ fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at
         "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
     );
 }
+
+fn workspace_waiting_to_merge(w: &mut Workspace) -> (String, String) {
+    let request = "workspace automatic merge";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, ws_doc("设计中", 0, 0, &[], "backend")),
+        (2, ws_doc("设计中", 1, 0, &[], "backend")),
+        (3, ws_doc("设计中", 1, 0, &[], "backend")),
+        (4, ws_doc("实现中", 2, 0, &[("M-01", "开放")], "backend")),
+        (5, ws_doc("实现中", 2, 1, &[("M-01", "待审")], "backend")),
+        (6, ws_doc("实现中", 2, 1, &[("M-01", "已完成")], "backend")),
+        (7, ws_doc("已完成", 2, 1, &[("M-01", "已完成")], "backend")),
+    ] {
+        let prefix = if n == 1 {
+            format!(".worktree/{slug}")
+        } else {
+            String::new()
+        };
+        let extra = if n == 5 {
+            "printf 'feature\\n' > backend/feature.txt\n(cd backend && git add feature.txt && git -c user.name=fake -c user.email=f@f commit -qm feature)"
+        } else {
+            ""
+        };
+        w.doc_step(n, &slug, &prefix, &body, extra);
+    }
+    let created = call(
+        &mut w.ctx,
+        "task.create",
+        json!({"project_id": w.project_id, "request": request}),
+    );
+    let id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_design_approval"),
+        "{}",
+        w.why(&id)
+    );
+    ok(&call(&mut w.ctx, "task.approve", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        w.why(&id)
+    );
+    (id, slug)
+}
+
+#[test]
+fn a_workspace_with_one_member_behind_rebases_every_member_and_merges_them_all() {
+    needs_git!();
+    let mut w = Workspace::new("one-behind", &["docs", "backend"]);
+    let (id, slug) = workspace_waiting_to_merge(&mut w);
+    std::fs::write(w.member("backend").join("main-moved"), "new main\n").unwrap();
+    automed::git::commit_paths(&w.member("backend"), &["main-moved"], "advance main").unwrap();
+    let onto = automed::git::head_sha(&w.member("backend")).unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(
+        matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Done
+        ),
+        "{}",
+        w.why(&id)
+    );
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let (seq, _, _, rebased) = events
+        .iter()
+        .find(|(_, k, s, _)| s == &id && k == "merge.rebased")
+        .unwrap();
+    let repos = rebased["repos"].as_array().unwrap();
+    assert_eq!(repos.len(), 2);
+    for member in ["backend", "docs"] {
+        let repo = repos.iter().find(|r| r["repo"] == member).unwrap();
+        assert!(
+            automed::git::is_ancestor(&w.member(member), repo["head"].as_str().unwrap(), "main")
+                .unwrap()
+        );
+    }
+    let merges: Vec<_> = events
+        .iter()
+        .filter(|(_, k, s, _)| s == &id && k == "merge.repo")
+        .collect();
+    assert_eq!(merges.len(), 2);
+    assert!(
+        merges
+            .iter()
+            .all(|(s, _, _, p)| s > seq && p["commit"].is_string())
+    );
+    assert!(automed::git::is_ancestor(&w.member("backend"), &onto, "main").unwrap());
+    assert!(w.member("backend").join("feature.txt").exists());
+    assert!(
+        w.member("docs")
+            .join(format!("autome/{slug}/{slug}.md"))
+            .exists()
+    );
+    assert!(!events.iter().any(|(s, k, subject, p)| s > seq
+        && subject == &id
+        && k == "task.updated"
+        && p["state"]["node"] == "await_merge"));
+}
+
+#[test]
+fn a_workspace_merge_left_half_done_finishes_without_a_second_merge_commit() {
+    needs_git!();
+    let mut w = Workspace::new("half-merged", &["docs", "backend"]);
+    let (id, slug) = workspace_waiting_to_merge(&mut w);
+    let path = format!("autome/{slug}/{slug}.md");
+    let dirty = w.member("docs").join(&path);
+    std::fs::create_dir_all(dirty.parent().unwrap()).unwrap();
+    std::fs::write(&dirty, "user document\n").unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        w.why(&id)
+    );
+    assert!(w.member("backend").join("feature.txt").exists());
+    assert_eq!(std::fs::read_to_string(&dirty).unwrap(), "user document\n");
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 0);
+    let backend_merged = automed::git::head_sha(&w.member("backend")).unwrap();
+    std::fs::remove_file(&dirty).unwrap();
+    std::fs::write(w.member("docs").join("main-moved"), "new docs main\n").unwrap();
+    automed::git::commit_paths(&w.member("docs"), &["main-moved"], "advance docs main").unwrap();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(
+        matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Done
+        ),
+        "{}",
+        w.why(&id)
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "merge.rebased").unwrap(), 1);
+    assert_eq!(
+        automed::git::head_sha(&w.member("backend")).unwrap(),
+        backend_merged
+    );
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let message = format!("merge(autome): {} {}", id, task.title);
+    for member in ["backend", "docs"] {
+        let output = std::process::Command::new("git")
+            .current_dir(w.member(member))
+            .args(["log", "main", "--merges", "--format=%s"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .filter(|line| *line == message)
+                .count(),
+            1,
+            "{member}"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(&dirty)
+            .unwrap()
+            .contains("status: 已完成")
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.member("docs").join("main-moved")).unwrap(),
+        "new docs main\n"
+    );
+}
