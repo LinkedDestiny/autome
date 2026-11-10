@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { request } from 'node:http';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -7,10 +11,13 @@ import { afterAll, beforeAll, expect, test } from 'vitest';
 import { startServer } from '../server/main.ts';
 
 const cwd = fileURLToPath(new URL('..', import.meta.url));
+const homes: string[] = [];
+function tempHome() { const home = mkdtempSync(join(tmpdir(), 'web-server-')); homes.push(home); return home; }
+const binaryPath = process.env.AUTOMED_BIN || resolve(cwd, '../../target/debug/automed');
 const children = new Set<ChildProcess>();
 function launch(args: string[], env: NodeJS.ProcessEnv = {}) {
   const child = spawn('npm', args, {
-    cwd, detached: true, env: { ...process.env, NODE_ENV: 'development', AUTOME_WEB_PORT: '0', ...env },
+    cwd, detached: true, env: { ...process.env, NODE_ENV: 'development', AUTOME_WEB_PORT: '0', AUTOME_HOME: tempHome(), AUTOMED_BIN: binaryPath, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -55,7 +62,7 @@ beforeAll(async () => {
   dev = await ready(['run', 'dev']);
   prod = await ready(['start']);
 });
-afterAll(async () => { await Promise.all([...children].map(stop)); });
+afterAll(async () => { await Promise.all([...children].map(stop)); for (const home of homes) rmSync(home, { recursive: true, force: true }); });
 
 test('dev /healthz 返回 200 与 ok', async () => {
   const response = await fetch(`${dev.url}/healthz`);
@@ -90,7 +97,7 @@ test('prod 未知路径返回 404', async () => {
   expect((await fetch(`${prod.url}/not-found`)).status).toBe(404);
 });
 test('只监听 IPv4 回环地址', async () => {
-  const running = await startServer({ port: 0, mode: 'production' });
+  const running = await startServer({ port: 0, mode: 'production', home: tempHome(), binaryPath });
   try { expect(running.server.address()).toMatchObject({ address: '127.0.0.1', family: 'IPv4' }); }
   finally { await running.close(); }
 });
@@ -106,4 +113,18 @@ test('端口被占时非零退出并提示中文', async () => {
     expect(failed.stderr()).toContain('已被占用');
     expect(failed.output()).not.toContain('已启动');
   } finally { await new Promise<void>(resolve => occupied.close(() => resolve())); }
+});
+
+function devRequest(headers: Record<string, string>) {
+  return new Promise<number>((resolve, reject) => {
+    const req = request(dev.url, { headers }, res => { res.resume(); resolve(res.statusCode!); });
+    req.setTimeout(5000, () => req.destroy(new Error('请求超时')));
+    req.on('error', reject); req.end();
+  });
+}
+test('开发 HMR 外站 Origin 回 403', async () => {
+  expect(await devRequest({ Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'vite-hmr', Origin: 'http://evil.example' })).toBe(403);
+});
+test('开发首页错误 Host 回 403', async () => {
+  expect(await devRequest({ Host: 'evil.example:' + new URL(dev.url).port })).toBe(403);
 });

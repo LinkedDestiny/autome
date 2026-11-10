@@ -23,9 +23,9 @@ test('Node 22、npm 缓存与锁文件安装', () => {
   expect(web.steps.find((step: Step) => step.name === 'Install').run).toBe('npm ci');
 });
 
-test('CI 按顺序运行四个 Web 检查', () => {
+test('CI 按顺序运行 Web 检查，测试前先构建内核', () => {
   expect(web.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
-    'npm ci', 'npm run lint', 'npm run typecheck', 'npm test', 'npm run build',
+    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed', 'npm test', 'npm run build',
   ]);
 });
 
@@ -48,4 +48,10 @@ test('本地四行独立 run 位于 contract 后、package 分支外', () => {
   expect(section.match(/^run 'Web .*$/gm)).toEqual(
     ['lint', 'typecheck', 'test', 'build'].map(name => `run 'Web ${name}' npm run ${name} --prefix apps/web`),
   );
+});
+
+test('本地门禁在 Web test 之前已构建内核', () => {
+  const build = local.indexOf('cargo test --workspace --all-targets');
+  expect(build).toBeGreaterThanOrEqual(0);
+  expect(build).toBeLessThan(local.indexOf("run 'Web test'"));
 });
