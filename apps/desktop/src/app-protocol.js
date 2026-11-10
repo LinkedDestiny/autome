@@ -5,11 +5,11 @@
 // the path-traversal guard.
 const path = require('node:path');
 const fs = require('node:fs');
-const { protocol } = require('electron');
 
 const RENDERER_DIR = path.join(__dirname, '..', 'renderer');
 
 function registerSchemeAsPrivileged() {
+  const { protocol } = require('electron');
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'autome',
@@ -30,6 +30,7 @@ function registerSchemeAsPrivileged() {
 // own bundled content, since this handler is reachable from anything the
 // window ever navigates to.
 function registerAppProtocol() {
+  const { protocol } = require('electron');
   protocol.handle('autome', (request) => {
     const url = new URL(request.url);
     if (url.host !== 'app') {
