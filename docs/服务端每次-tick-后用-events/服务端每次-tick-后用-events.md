@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 19/20
+implementation-round: 20/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许监听本地端口的宿主环境重跑 sh scripts/ci-local.sh；锁定依赖已就绪，当前沙箱 listen EPERM 阻断 Web 集成测试，M-01 保持开放
+next-action: 由 Autome 在本轮提交上重跑 sh scripts/ci-local.sh，验证升级路径测试修复并获取另一项宿主失败的完整日志；本地监听 EPERM 阻断真实服务验收，预算已达 20/20，M-01 保持开放
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r19-impl.md · 缺依赖错误未复现，Web 集成测试被监听权限阻断，保持开放 · 实现 #19
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r20-impl.md · 修正已注册路径的旧 404 前提，真实服务验收被监听权限阻断，保持开放 · 实现 #20
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：

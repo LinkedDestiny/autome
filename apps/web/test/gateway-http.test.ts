@@ -71,7 +71,11 @@ test('不合格 upgrade 回 403', async () => {
 });
 test('合格但无处理器 upgrade 回 404', async () => {
   const s = await setup();
-  expect(await raw(s.url + '/ws', { Connection: 'Upgrade', Upgrade: 'websocket', Origin: s.url })).toBe(404);
+  expect(await raw(s.url + '/unregistered-ws', { Connection: 'Upgrade', Upgrade: 'websocket', Origin: s.url })).toBe(404);
+});
+test('/ws 已注册，缺少握手字段回 400', async () => {
+  const s = await setup();
+  expect(await raw(s.url + '/ws', { Connection: 'Upgrade', Upgrade: 'websocket', Origin: s.url })).toBe(400);
 });
 test('close 后内核 pid 不存在', async () => {
   const s = await setup(); await s.post('read', { method: 'config.get' });
