@@ -244,6 +244,33 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             short(&s("sha"))
         ),
         "gate.skipped" => format!("{subject} {}跳过：{}", node_label(&s("node")), s("reason")),
+        "merge.auto" if p["active"].as_bool() == Some(true) => {
+            let repos = p["repos"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("、");
+            format!("{subject} 按合并时默认分支已前进（{repos}），自动 rebase 后再合并")
+        }
+        "merge.rebased" => {
+            let repos = p["repos"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|repo| {
+                    format!(
+                        "{} → {} @ {}",
+                        repo["repo"].as_str().unwrap_or(""),
+                        repo["onto"].as_str().unwrap_or(""),
+                        short(repo["head"].as_str().unwrap_or(""))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("；");
+            format!("{subject} 已自动 rebase：{repos}")
+        }
         "project.alert" => format!("报警（{subject}）：{}  → autome alerts", s("kind")),
         "guard.warning" => format!("{subject} 守卫提醒：{}", s("code")),
         "task.protocol_failure" => format!("{subject} 协议失败：{}", s("detail")),
@@ -256,6 +283,37 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_automatic_rebase_is_printed_by_autome_run() {
+        let line = event_line(
+            "merge.auto",
+            "T-9",
+            &json!({"active":true,"repos":["backend","docs"]}),
+        )
+        .unwrap();
+        assert!(line.contains("默认分支已前进"));
+        assert!(line.contains("backend、docs"));
+        assert_eq!(
+            event_line("merge.auto", "T-9", &json!({"active":false})),
+            None
+        );
+        for repos in [
+            json!([]),
+            json!([{"repo":"backend","onto":"main","head":"0123456789abcdef"}]),
+            json!([{"repo":"backend","onto":"main","head":"0123456789abcdef"},{"repo":"docs","onto":"master","head":"abc"}]),
+        ] {
+            let line = event_line("merge.rebased", "T-9", &json!({"repos":repos})).unwrap();
+            assert!(line.contains("自动 rebase"));
+            if !repos.as_array().unwrap().is_empty() {
+                assert!(line.contains("backend → main @ 0123456789"));
+                assert!(!line.contains("0123456789abcdef"));
+            }
+            if repos.as_array().unwrap().len() == 2 {
+                assert!(line.contains("；docs → master @ abc"));
+            }
+        }
+    }
 
     #[test]
     fn requeued_states_show_the_original_node() {

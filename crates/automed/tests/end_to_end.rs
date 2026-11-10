@@ -3608,3 +3608,35 @@ fn a_workspace_merge_left_half_done_finishes_without_a_second_merge_commit() {
         "new docs main\n"
     );
 }
+
+#[test]
+fn the_merge_panel_offers_the_merge_when_only_main_has_moved() {
+    needs_git!();
+    let mut w = World::new("panel-main-moved");
+    let request = "panel automatic rebase";
+    let id = wait_for_automatic_merge(&mut w, request);
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["rebase_first"], false);
+    assert_eq!(ok(&changes)["repos"][0]["behind"], false);
+    std::fs::write(w.repo.join("main-moved"), "concurrent change\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["main-moved"], "main moved").unwrap();
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["mergeable"], true);
+    assert_eq!(ok(&changes)["blocked_by"], Value::Null);
+    assert_eq!(ok(&changes)["rebase_first"], true);
+    assert_eq!(ok(&changes)["repos"][0]["behind"], true);
+    let slug = slug_for(request);
+    let path = format!("docs/{slug}/{slug}.md");
+    std::fs::create_dir_all(w.repo.join("docs").join(&slug)).unwrap();
+    std::fs::write(w.repo.join(&path), "user's dirty document\n").unwrap();
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["mergeable"], false);
+    assert_eq!(ok(&changes)["blocked_by"]["kind"], "dirty_worktree");
+    assert_eq!(ok(&changes)["rebase_first"], true);
+    std::fs::remove_file(w.repo.join(&path)).unwrap();
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let changes = w.call("task.changes", json!({"task_id":id}));
+    assert_eq!(ok(&changes)["available"], false);
+}
