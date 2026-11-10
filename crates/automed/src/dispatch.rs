@@ -1736,6 +1736,12 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
 
 /// Applies a trigger and returns the refreshed panel.
 fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResult {
+    if matches!(trigger, Trigger::Resume)
+        && let Some(s) = ctx.store.running_session(task_id)?
+        && scheduler::is_manual_retro(ctx, &s)?
+    {
+        return Err(rejected("手动复盘轮还在跑，结束后再恢复"));
+    }
     scheduler::apply_trigger(ctx, task_id, &trigger)?;
     // A trigger often unblocks a slot or leaves a core step to run.
     scheduler::tick(ctx);

@@ -214,6 +214,13 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
     report
 }
 
+pub fn is_manual_retro(ctx: &Ctx, s: &Session) -> Result<bool> {
+    Ok(ctx
+        .store
+        .session_event(&s.task_id, &s.id, "session.manual_retro")?
+        .is_some())
+}
+
 /// Checks one running session against the filesystem and, if it has finished,
 /// records the outcome and advances its task. Returns whether it finished.
 fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
@@ -255,7 +262,16 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // here rather than adding a state to the machine is deliberate: "read the
     // run and write down what it taught us" changes nothing about where the
     // task is, and a state that exists only to come back from is a state.
-    if s.kind.role() == Some(Role::Retro) && !matches!(task.state, TaskState::Active { .. }) {
+    if is_manual_retro(ctx, s)?
+        || (s.kind.role() == Some(Role::Retro)
+            && matches!(
+                task.state,
+                TaskState::Done
+                    | TaskState::Cancelled
+                    | TaskState::Failed { .. }
+                    | TaskState::Stopped { .. }
+            ))
+    {
         sweep_commit(&project, &task, s)?;
         check_lessons(ctx, &task, &project)?;
         return Ok(true);
@@ -284,13 +300,37 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     } else {
         ctx.store.release_decisions(&s.id)?;
     }
-    if let SessionOutcome::Crashed { detail } = &outcome
-        && schedule_retry(ctx, s, &project, &task, detail)?
+    if let TaskState::Paused { resume } | TaskState::Requeued { resume } = task.state
+        && ((resume == Node::Intake && s.kind == SessionKind::Intake)
+            || resume
+                .role()
+                .is_some_and(|role| s.kind.role() == Some(role)))
     {
+        ctx.store.append_event(
+            "session.outcome_held",
+            &task.id,
+            json!({ "session_id": s.id, "node": resume, "outcome": outcome }),
+        )?;
         return Ok(true);
     }
-    advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
+    deliver_outcome(ctx, s, &project, &task, outcome)?;
     Ok(true)
+}
+
+fn deliver_outcome(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    outcome: SessionOutcome,
+) -> Result<()> {
+    if let SessionOutcome::Crashed { detail } = &outcome
+        && schedule_retry(ctx, s, project, task, detail)?
+    {
+        return Ok(());
+    }
+    advance(ctx, &task.id, &Trigger::SessionEnded { outcome })?;
+    Ok(())
 }
 
 /// Decides whether a crashed round runs again instead of failing the task.
@@ -1268,18 +1308,38 @@ fn perform(
                 Some(role) => SessionKind::Role { role },
                 None => SessionKind::Intake,
             };
-            if ctx
-                .store
-                .running_session(&task.id)?
-                .is_some_and(|s| s.kind == kind)
+            if let Some(s) = ctx.store.running_session(&task.id)?
+                && s.kind == kind
+                && !is_manual_retro(ctx, &s)?
             {
                 return Ok(());
             }
-            let latest = ctx
-                .store
-                .list_sessions(&task.id)?
-                .into_iter()
-                .find(|s| s.kind == kind);
+            let mut latest = None;
+            for s in ctx.store.list_sessions(&task.id)? {
+                if s.kind == kind && !is_manual_retro(ctx, &s)? {
+                    latest = Some(s);
+                    break;
+                }
+            }
+            if let Some(s) = &latest
+                && let Some(held) =
+                    ctx.store
+                        .session_event(&task.id, &s.id, "session.outcome_held")?
+                && ctx
+                    .store
+                    .session_event(&task.id, &s.id, "session.outcome_held_applied")?
+                    .is_none()
+            {
+                let outcome = serde_json::from_value(held["outcome"].clone())
+                    .map_err(|e| err(e.to_string()))?;
+                ctx.store.append_event(
+                    "session.outcome_held_applied",
+                    &task.id,
+                    json!({"session_id": s.id}),
+                )?;
+                let active = ctx.store.get_task(&task.id)?;
+                return deliver_outcome(ctx, s, project, &active, outcome);
+            }
             let saved =
                 ctx.store
                     .resume_input(&task.id, *node, latest.as_ref().map(|s| s.id.as_str()))?;
@@ -2570,7 +2630,12 @@ pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
         &resolved,
         SessionKind::Role { role: Role::Retro },
         None,
-    )
+    )?;
+    if let Some(s) = ctx.store.running_session(task_id)? {
+        ctx.store
+            .append_event("session.manual_retro", task_id, json!({"session_id": s.id}))?;
+    }
+    Ok(())
 }
 
 /// Starts the Onboarding session (design §10, requirement C-02 step 3).
@@ -3713,6 +3778,159 @@ mod tests {
         );
         w.ctx.store.settle_decisions(&session.id).unwrap();
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
+    }
+
+    fn deferred_session(w: &mut World, node: Node) -> Session {
+        let task = w.add_task("T-1", "a");
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
+        );
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        w.set_state("T-1", TaskState::Active { node });
+        redispatch_with(&mut w.ctx, "T-1", node, None).unwrap();
+        let s = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        advance(&mut w.ctx, "T-1", &Trigger::Pause).unwrap();
+        let path = w.repo.join(SessionPaths::exit("T-1", &s.id));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            ExitMarker {
+                exit_code: 1,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        s
+    }
+
+    #[test]
+    fn deferred_reap_finishes_session_without_advancing() {
+        needs_git!();
+        for queued in [false, true] {
+            let mut w = World::new("held-reap");
+            let s = deferred_session(&mut w, Node::Implement);
+            if queued {
+                advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+            }
+            let before = w.state("T-1");
+            assert!(reap_session(&mut w.ctx, &s).unwrap());
+            assert!(w.ctx.store.running_session("T-1").unwrap().is_none());
+            assert_eq!(w.state("T-1"), before);
+            assert!(w.ctx.store.pending_retry("T-1").unwrap().is_none());
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.outcome_held")
+                    .unwrap(),
+                1
+            );
+            if !queued {
+                assert!(tick(&mut w.ctx).errors.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_crash_is_delivered_only_once_across_retry_pause() {
+        needs_git!();
+        let mut w = World::new("held-once");
+        let s = deferred_session(&mut w, Node::Implement);
+        reap_session(&mut w.ctx, &s).unwrap();
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        fill_slots(&mut w.ctx).unwrap();
+        assert!(w.ctx.store.pending_retry("T-1").unwrap().is_some());
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.outcome_held_applied")
+                .unwrap(),
+            1
+        );
+        advance(&mut w.ctx, "T-1", &Trigger::Pause).unwrap();
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        fill_slots(&mut w.ctx).unwrap();
+        let new = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_ne!(new.id, s.id);
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.outcome_held_applied")
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn deferred_loop_retro_survives_a_manual_retro_with_the_same_kind() {
+        needs_git!();
+        let mut w = World::new("held-retro");
+        let s = deferred_session(&mut w, Node::Retro);
+        let dir = w.repo.join(SessionPaths::dir("T-1"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            w.repo.join(SessionPaths::exit("T-1", &s.id)),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        reap_session(&mut w.ctx, &s).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.outcome_held")
+                .unwrap(),
+            1
+        );
+        start_retro(&mut w.ctx, "T-1").unwrap();
+        let manual = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert!(is_manual_retro(&w.ctx, &manual).unwrap());
+        assert_eq!(manual.kind, s.kind);
+        let response = crate::dispatch::handle_command(
+            &mut w.ctx,
+            &crate::ipc::Command {
+                request_id: "resume".into(),
+                command_id: "resume".into(),
+                expected_revision: None,
+                protocol_version: crate::ipc::PROTOCOL_VERSION,
+                method: "task.resume".into(),
+                params: json!({"task_id": "T-1"}),
+            },
+        );
+        assert!(matches!(response.reply.outcome,
+            crate::ipc::ReplyOutcome::Error { message, .. } if message.contains("手动复盘轮还在跑")));
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Paused {
+                resume: Node::Retro
+            }
+        );
+        assert_eq!(
+            w.ctx.store.running_session("T-1").unwrap().unwrap().id,
+            manual.id
+        );
+        reap_session(&mut w.ctx, &manual).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.outcome_held")
+                .unwrap(),
+            1
+        );
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        fill_slots(&mut w.ctx).unwrap();
+        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Rebase });
+        let applied = w
+            .ctx
+            .store
+            .last_event("T-1", "session.outcome_held_applied")
+            .unwrap()
+            .unwrap();
+        assert_eq!(applied["session_id"], s.id);
     }
 
     #[test]

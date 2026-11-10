@@ -544,12 +544,21 @@ impl Store {
     }
 
     pub fn session_started_event(&self, task_id: &str, session_id: &str) -> Result<Option<Value>> {
+        self.session_event(task_id, session_id, "session.started")
+    }
+
+    pub fn session_event(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        kind: &str,
+    ) -> Result<Option<Value>> {
         let raw: Option<String> = self
             .conn
             .query_row(
-                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = 'session.started'
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = ?3
              AND json_extract(payload, '$.session_id') = ?2 ORDER BY seq DESC LIMIT 1",
-                params![task_id, session_id],
+                params![task_id, session_id, kind],
                 |r| r.get(0),
             )
             .optional()?;

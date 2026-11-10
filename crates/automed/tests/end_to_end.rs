@@ -2978,3 +2978,240 @@ fn stopped_task_resumes_at_original_node_after_waiting_for_slot() {
     assert_resume_role(&w, &id, "implement", &old);
     ok(&w.call("task.stop", json!({"task_id":id})));
 }
+
+fn pause_prelude(w: &World, step: u32) -> String {
+    format!(
+        "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done\n",
+        w.root.join(format!("ready-{step}")).display(),
+        w.root.join(format!("release-{step}")).display(),
+        w.root.display()
+    )
+}
+
+fn assert_one_role(w: &World, id: &str, role: autome_domain::role::Role) {
+    let sessions = w.ctx.store.list_sessions(id).unwrap();
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|s| s.kind.role() == Some(role))
+            .count(),
+        1
+    );
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|s| s.kind == autome_domain::session::SessionKind::Intake)
+            .count(),
+        1
+    );
+}
+
+fn paused_implementation_case(mode: &str) {
+    let mut w = World::new(mode);
+    let request = "paused implementation";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        &pause_prelude(&w, 5),
+    );
+    resume_block(&w, 6);
+    resume_block(&w, 7);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-5").exists());
+    let original = w.ctx.store.running_session(&id).unwrap().unwrap().id;
+    ok(&w.call("task.pause", json!({"task_id":id})));
+    let blocker = if mode == "pause-slot" {
+        w.ctx
+            .store
+            .update_project_parallel(&w.project_id, 1)
+            .unwrap();
+        let b = create_task(&mut w, "pause blocker");
+        resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+        Some(b)
+    } else {
+        None
+    };
+    if mode == "pause-running" || blocker.is_some() {
+        ok(&w.call("task.resume", json!({"task_id":id})));
+        assert_eq!(
+            w.ctx.store.running_session(&id).unwrap().unwrap().id,
+            original
+        );
+        if blocker.is_some() {
+            assert_eq!(w.state(&id), "queued");
+            assert_eq!(
+                ok(&w.call("task.get", json!({"task_id":id})))["queue_position"],
+                1
+            );
+        }
+    }
+    std::fs::write(w.root.join("release-5"), "go").unwrap();
+    resume_wait(&mut w, |w| {
+        w.ctx
+            .store
+            .list_sessions(&id)
+            .unwrap()
+            .iter()
+            .any(|s| s.id == original && s.ended_at.is_some())
+    });
+    if mode != "pause-running" {
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "session.outcome_held")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            w.state(&id),
+            if blocker.is_some() {
+                "queued"
+            } else {
+                "paused"
+            }
+        );
+        if mode == "pause-stop" {
+            ok(&w.call("task.stop", json!({"task_id":id})));
+        }
+        if let Some(b) = blocker {
+            ok(&w.call("task.stop", json!({"task_id":b})));
+        } else {
+            ok(&w.call("task.resume", json!({"task_id":id})));
+        }
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "session.outcome_held_applied")
+                .unwrap(),
+            1
+        );
+    }
+    resume_wait(&mut w, |w| w.node(&id).as_deref() == Some("audit"));
+    assert_one_role(&w, &id, autome_domain::role::Role::Impl);
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn paused_implementation_resumes_at_successor_without_rerun() {
+    needs_git!();
+    paused_implementation_case("pause-held");
+}
+#[test]
+fn paused_running_session_resumes_at_same_session() {
+    needs_git!();
+    paused_implementation_case("pause-running");
+}
+#[test]
+fn paused_then_stopped_resumes_at_held_outcome() {
+    needs_git!();
+    paused_implementation_case("pause-stop");
+}
+#[test]
+fn paused_queued_session_resumes_at_original_outcome() {
+    needs_git!();
+    paused_implementation_case("pause-slot");
+}
+
+#[test]
+fn paused_audit_resumes_at_successor_without_rerun() {
+    needs_git!();
+    let mut w = World::new("pause-audit");
+    let request = "paused audit";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成")]),
+        &pause_prelude(&w, 6),
+    );
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    ok(&w.call("task.pause", json!({"task_id":id})));
+    std::fs::write(w.root.join("release-6"), "go").unwrap();
+    w.settle();
+    assert_eq!(w.state(&id), "paused");
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_one_role(&w, &id, autome_domain::role::Role::Audit);
+}
+
+#[test]
+fn paused_gate_resumes_at_gate_without_restarting_job() {
+    needs_git!();
+    let mut w = World::new("pause-gate");
+    let script = w.root.join("gate.sh");
+    std::fs::write(&script, pause_prelude(&w, 99)).unwrap();
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        script.display()
+    ));
+    let request = "paused gate";
+    w.doc_step(
+        5,
+        &slug_for(request),
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+    );
+    resume_block(&w, 6);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-99").exists());
+    ok(&w.call("task.pause", json!({"task_id":id})));
+    std::fs::write(w.root.join("release-99"), "go").unwrap();
+    let head =
+        automed::git::head_sha(&w.repo.join(format!(".worktree/{}", slug_for(request)))).unwrap();
+    let job = automed::gate::Job::at(&w.repo, &id, "gate", &head[..12]);
+    resume_wait(&mut w, |_| job.exit.exists());
+    assert_eq!(w.state(&id), "paused");
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 1);
+    assert_one_role(&w, &id, autome_domain::role::Role::Impl);
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn manual_retro_resumes_at_original_node_only_after_finishing() {
+    needs_git!();
+    let mut w = World::new("pause-manual");
+    let request = "paused manual";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        &pause_prelude(&w, 5),
+    );
+    w.retro_step(6, &slug);
+    let script = std::fs::read_to_string(w.repo.join(".autome/fake/6.sh")).unwrap();
+    w.step(6, &(pause_prelude(&w, 6) + &script));
+    resume_block(&w, 7);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-5").exists());
+    ok(&w.call("task.pause", json!({"task_id":id})));
+    std::fs::write(w.root.join("release-5"), "go").unwrap();
+    w.settle();
+    ok(&w.call("task.retro", json!({"task_id":id})));
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    let response = w.call("task.resume", json!({"task_id":id}));
+    assert!(error_message(&response).contains("手动复盘轮还在跑"));
+    assert_eq!(w.state(&id), "paused");
+    std::fs::write(w.root.join("release-6"), "go").unwrap();
+    w.settle();
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.outcome_held")
+            .unwrap(),
+        1
+    );
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    resume_wait(&mut w, |w| w.root.join("ready-7").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    assert_one_role(&w, &id, autome_domain::role::Role::Impl);
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
