@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 0/0
+implementation-round: 1/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 按「方案 §2 依赖」建 apps/web 的 package.json 与 package-lock.json，再写 server/http.ts 的 dev/prod 两条路径与 test/server.test.ts
+next-action: 在允许回环监听的环境复跑 M-01 的 12 用例与监听地址、静态资源负向对照，取得通过证据后标待审
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -14,7 +14,7 @@ next-action: 按「方案 §2 依赖」建 apps/web 的 package.json 与 package
 
 ## 背景与现状
 
-- `apps/web` 不存在；仓库根没有 `package.json`，不是 npm workspace。`apps/web` 是独立包，
+- `apps/web` 已有 RR8 工程与 dev/prod 服务入口，真实 HTTP 验收待取证；仓库根没有 `package.json`，不是 npm workspace。`apps/web` 是独立包，
   自带 `package-lock.json`。
 - `scripts/ci-local.sh` 按 job 分节（rust / desktop / contract / package），每行
   `run '<名称>' …`，每步都跑、最后汇总；Desktop 节「`node_modules` 不存在才装」。
@@ -231,6 +231,8 @@ ExperimentalWarning 是否在入口过滤。
   typecheck，§6 的 ci-local 与 ci.yml；新增 `test/ci-config.test.ts`（6）。
 
 ### M-01 验收契约
+
+最新证据：docs/在-apps-web-建-react/evidence/M-01-r1-impl.md · 环境阻塞，保持开放 · 实现 #1
 
 - 验收命令：`npm ci --prefix apps/web > .autome/output/m01.txt 2>&1 && npm test --prefix apps/web >> .autome/output/m01.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m01.txt`
 - 预期：exit=0；vitest 报 2 个文件、12 个用例全部通过（基线 0，新增 12）：config 5 个——未设端口→7420、`'0'`→0、`'8123'`→8123、`'abc'` 抛中文错误、`'70000'` 抛中文错误；server 7 个——dev `/healthz` 200 `{"ok":true}`、dev `/` 200 且含「Autome 面板」与 `<script type="module"`、prod `/healthz` 200、prod `/` 200 且其引用的第一个 `/assets/*.js` 返回 200、prod 未知路径 404、进程内 `startServer({ port: 0, mode: 'production' })` 的 `address()` 为 `127.0.0.1`/IPv4、端口被占时子进程非零退出且 stderr 含「已被占用」。
