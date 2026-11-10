@@ -1,12 +1,12 @@
 # Web 事件总线（W3）：tick 后 events.since 拉取、/ws 推送与 useLiveEvents 按事件重验路由
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 开 M-01：在 apps/web 安装 ws/@types/ws，先写 eventbus-protocol.ts 与 eventbus.ts（游标初始化、单飞分页 pull）及 test/eventbus.test.ts 的 8 个用例
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -129,7 +129,12 @@ WebSocket 客户端也用 `ws`（它能设置 `origin` 选项，过 W2 的 Origi
 - `pull()`：单飞。正在拉时再被调用只置一个「再拉一次」标记，本次结束后补拉一次；任何时刻最多一个 `events.since`
   请求在途。每次循环 `events.since({after_seq: cursor, limit: 1000})`，按序广播这一页、推进游标，直到本页为空或
   最后一条 `seq >= latest_seq`。失败时写中文日志（`[事件] 拉取失败：…`），游标不动，下次从原处续拉。
-- 若 `latest_seq < cursor`（账本被换掉），游标重置为 `latest_seq`，对所有连接发 `reload`。
+- 若 `latest_seq < cursor`（账本被换掉）：游标重置为 `latest_seq`；对每个连接，取消尚未完成的续传（丢弃排队区、
+  `state = live`）、`sentSeq = latest_seq`，然后发 `{type:"reload"}`。此后该连接上只会出现 `seq > latest_seq` 的事件，
+  即使这个数字小于换账本之前的 `sentSeq`——`sentSeq` 与 `cursor` 一起切到新序列，不留旧值。
+- **`reload` 的统一语义（服务端承诺 + 客户端动作）**：服务端发出 `reload` 的同时保证该连接上之后的 `event` 都大于
+  它此刻的 `sentSeq` 基线（上面一条与情形表里的两种 `reload` 都按此设置）；客户端收到 `reload` 即**放弃检查点**
+  （`lastSeq` 置空，见 §4）并整体重验，下一条 `event` 重建检查点。信封仍是任务给定的 `{type:"reload"}`，不加字段。
 - 触发：`onTick` 里 `void bus.pull()`（不 await，ticker 的 `pending` 照常复位，慢拉取不拖住下一次 tick）；
   内核状态变成 `connected` 时立即 `pull()` 一次。`scheduler.tick` 的回复里也有 `latest_seq`，本任务不依赖它。
 
@@ -150,8 +155,8 @@ WebSocket 客户端也用 `ws`（它能设置 `origin` 选项，过 W2 的 Origi
 |---|---|
 | `after == sentSeq` | 什么都不发 |
 | `after > sentSeq` 且 `after <= latest_seq` | 客户端在别处已收过，`sentSeq = after`，不发 |
-| `after > latest_seq`（换了账本） | 发 `reload`，`sentSeq = latest_seq` |
-| hello 之后已经给它发过事件（`sentSeq > hello.seq`），又收到 `after < sentSeq` | 发 `reload`（补发会破坏递增；客户端整体重验即可） |
+| `after > latest_seq`（换了账本；含服务重启后账本也被换掉的重连） | 发 `reload`，`sentSeq = latest_seq`、`state = live`；客户端据 `reload` 清掉旧检查点，所以之后 `seq = latest_seq + 1…` 的事件（可能远小于旧 `lastSeq`）会被接收 |
+| hello 之后已经给它发过事件（`sentSeq > hello.seq`），又收到 `after < sentSeq` | 发 `reload`（补发会破坏递增；客户端整体重验即可；`sentSeq` 不变，之后的 live 事件照常 `seq > sentSeq`） |
 | `latest_seq - after > 1000` | 只发 `reload`，`sentSeq = latest_seq` |
 | `latest_seq - after <= 1000` | `state = resuming`，从内核分页读 `(after, latest_seq]` 逐条发出（`seq > after`），`sentSeq` 推到最后一条；然后把排队区里 `seq > sentSeq` 的事件按序发出，回到 `live` |
 | 处理时内核不可用（`call` 抛错） | 保持 `resuming`、记住 `after`，下一次成功 `pull()` 之后重做 |
@@ -187,10 +192,14 @@ WebSocket 客户端也用 `ws`（它能设置 `origin` 选项，过 W2 的 Origi
 
 **`createLiveClient`**：连 `ws(s)://<当前 host>/ws`（浏览器自动带本页 Origin，过 W2 守卫）。
 
-- 收 `hello`：若已有 `lastSeq` 则发 `{type:"resume", after:lastSeq}`，否则 `lastSeq = hello.seq`；退避计数归零；
-  状态 `open`。
-- 收 `event`：`seq <= lastSeq` 丢弃；否则 `lastSeq = seq` 并交给 `onEvents`（同一轮宏任务内的事件合并成一批）。
-- 收 `reload` → `onReload`；收 `core` → `onCore`（W5 的离线横幅从 `useLiveEvents()` 的返回值取）。
+- 收 `hello`：若 `lastSeq` 非空，发 `{type:"resume", after:lastSeq}`；若 `lastSeq` 为空且这不是首次连接（已经连上过，
+  检查点被 `reload` 清掉后断线），则 `lastSeq = hello.seq` 并 `onReload`（断线期间的事件无从补起，整体重验）；首次连接
+  `lastSeq = hello.seq`；退避计数归零；状态 `open`。
+- 收 `event`：`lastSeq` 非空且 `seq <= lastSeq` 丢弃；否则（`lastSeq` 为空时接受任意 `seq`）`lastSeq = seq` 并交给
+  `onEvents`（同一轮宏任务内的事件合并成一批）。同一连接上服务端保证严格递增，所以去重只需要防「重连后重复」。
+- 收 `reload` → **`lastSeq = null`（放弃检查点）**，再 `onReload`；收 `core` → `onCore`（W5 的离线横幅从
+  `useLiveEvents()` 的返回值取）。账本被换掉（在线发现，或重连时 `resume.after > latest_seq`）两条路径都落在这条规则上：
+  服务端把 `sentSeq` 切到新序列并发 `reload`，客户端清检查点，之后新序列里较小的 `seq` 正常接收并触发重验。
 - 断开：状态 `reconnecting`，按 `reconnectDelay(n) = min(500·2ⁿ, 10000)` 毫秒（500、1000、2000、4000、8000、
   10000…）重连；`stop()` 后不再重连。首次连接中的状态是 `connecting`，不显示提示。
 
@@ -200,8 +209,8 @@ WebSocket 客户端也用 `ws`（它能设置 `origin` 选项，过 W2 的 Origi
 - `revalidateForEvents(events, revalidate)`：把事件并入待处理批、调用 `revalidate()`，等它 settle 且期间没有更新的
   一次调用时清空。重验进行中又来一批时，新的 `revalidate()` 会中断上一次，此时待处理批是两批的并集，前一批选中的
   路由不会丢。`revalidateAll(revalidate)` 用于 `reload`。
-- `liveShouldRevalidate(matcher)` 生成路由的 `shouldRevalidate`：有待处理批、且是纯重验（`currentUrl === nextUrl`、
-  没有 `formMethod`）时，返回「批里是否有事件满足 `matcher(event, currentParams)`」（`reload` 时恒真）；其它情况
+- `liveShouldRevalidate(matcher)` 生成路由的 `shouldRevalidate`：有待处理批、且是纯重验（`currentUrl.href ===
+  nextUrl.href`——**按值比较**；没有 `formMethod`）时，返回「批里是否有事件满足 `matcher(event, currentParams)`」（`reload` 时恒真）；其它情况
   （导航、表单提交、没有待处理批）原样返回 `defaultShouldRevalidate`，不改变路由的正常行为。
 - 匹配器：`byKind(...prefixes)`（如 `byKind('project.', 'rule.')`）、`bySubjectParam(prefixes, param)`（如
   `bySubjectParam(['task.', 'session.', 'gate.', 'merge.'], 'taskId')`：kind 匹配且 `subject === params.taskId`）。
@@ -209,6 +218,10 @@ WebSocket 客户端也用 `ws`（它能设置 `origin` 选项，过 W2 的 Origi
   `shouldRevalidate = liveShouldRevalidate(...)`，否则它会被每个事件重验。M-03 加一个守卫用例扫描 `app/root.tsx`
   与 `app/routes/**`，不满足就报出文件名。建议映射：任务详情 `bySubjectParam(任务类前缀, 'taskId')`；项目页
   `byKind('project.', 'task.')`；首页总览 `byKind('task.created', 'task.updated', 'project.')`。
+- 为什么不能写 `currentUrl === nextUrl`：React Router 8.5.1 的 `getMatchesToLoad`（`router.js:2065-2066`）对两者分别
+  调 `history.createURL(...)`，得到两个不同的 `URL` 对象，同地址时对象比较也是 false，会掉进 `defaultShouldRevalidate`
+  分支而绕过匹配器（评审实测：对象比较时无关的项目 loader 也跑；改成 href 比较后项目 0 次、任务 1 次）。
+  同一地址的链接点击也会被判为纯重验，但只有存在待处理批（刚由事件触发）时才走匹配器，窗口极短，接受。
 - 现有路由（`root`、`home`）都没有 loader，所以重验行为在测试里用 `createMemoryRouter` 搭桩路由、套用同一个
   `liveShouldRevalidate` 验证。
 
@@ -291,10 +304,10 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   ②浏览器消息解析：合法 `resume`、非法 JSON、缺 `type`、`after` 不是非负整数、未知 `type` 的处理；
   ③内核五种状态的映射表与中文原因。
 - `test/eventbus.test.ts` 增加 10 个：⑨`after == sentSeq` 不发任何消息；⑩小缺口从内核补发且与补发期间到来的
-  live 事件不重不漏、严格递增；⑪缺口恰好 1000 补发、1001 只回 `reload`；⑫`after > latest_seq` 回 `reload`；
+  live 事件不重不漏、严格递增；⑪缺口恰好 1000 补发、1001 只回 `reload`；⑫`after > latest_seq` 回 `reload`，且之后 `seq = latest_seq + 1`（小于旧 `sentSeq`）的新事件仍送到该连接；
   ⑬hello 后已发过事件再收到更早的 `resume` 回 `reload`；⑭内核不可用时 `resume` 延后到下一次成功拉取后处理；
   ⑮离线一次、恢复一次各推一条 `core`，`(status, reason)` 不变时不重复推；⑯恢复后立即补拉，离线期间新增的事件
-  不丢不重；⑰`latest_seq < cursor` 时全体 `reload`、游标重置；⑱`onClientMessage` 收到对应 `type`、未注册 `type`
+  不丢不重；⑰`latest_seq < cursor` 时全体 `reload`、游标与每个连接的 `sentSeq` 一起重置（含取消正在续传的连接），之后账本新增的 `seq`（小于换账本前的 `sentSeq`）被每个连接收到恰好一次；⑱`onClientMessage` 收到对应 `type`、未注册 `type`
   与非法 JSON 被忽略且连接不断，`broadcast` 的非事件消息不影响 `seq` 过滤。
 - `test/eventbus-live.test.ts` 增加 2 个（放在 SIGTERM 用例之前）：⑥客户端记下 `seq` 后断开，命令行改状态，
   重连发 `resume` 收到漏掉的事件且只一次；⑦按 pid 文件杀掉 `automed`，所有连接收到 `core offline`（中文原因）
@@ -303,12 +316,12 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 **M-03**（R-04；前置 M-02）。`app/lib/live-client.ts`、`live-routes.ts`、`live.tsx`；`root.tsx` 挂钩子与提示。
 新测试（都不需要 DOM，也不监听端口）：
 
-- `test/live-client.test.ts`（7，假 WebSocket 构造器 + vitest 假定时器）：①首次 `hello` 记 `lastSeq`、不发
+- `test/live-client.test.ts`（8，假 WebSocket 构造器 + vitest 假定时器）：①首次 `hello` 记 `lastSeq`、不发
   `resume`；②重连后发 `resume{after:lastSeq}`；③`reconnectDelay` 序列 500…10000 封顶、收到 `hello` 归零；
   ④`seq <= lastSeq` 的事件被丢弃；⑤`reload`/`core` 分别回调；⑥状态 `connecting → open → reconnecting → open`，
-  只有 `reconnecting` 时 `<LiveBanner/>` 需要显示；⑦`stop()` 后不再重连。
+  只有 `reconnecting` 时 `<LiveBanner/>` 需要显示；⑦`stop()` 后不再重连；⑧`reload` 清检查点：之后 `seq` 小于旧 `lastSeq` 的事件被接受并回调 `onEvents`（覆盖在线换账本与 `resume` 之后收到 `reload` 两条路径）；`reload` 后、尚无新事件时断线重连，`hello` 按 `reload` 处理（`onReload`）并以 `hello.seq` 重建检查点。
 - `test/live-routes.test.ts`（6，`createMemoryRouter` 桩路由 + 计数 loader）：①`task.updated`/`T-1` 只重验
-  `taskId=T-1` 的任务路由，不重验项目路由与 `T-2`；②`project.*` 只重验项目类路由；③重验进行中又来一批，前后两批
+  `taskId=T-1` 的任务路由，不重验项目路由与 `T-2`（地址不变的 `router.revalidate()`，所以必须靠 href 值比较识别纯重验）；②`project.*` 只重验项目类路由；③重验进行中又来一批，前后两批
   选中的路由最终都拿到新数据；④导航（参数变化）与表单提交仍按默认行为重验；⑤`revalidateAll` 重验所有声明了
   live 的路由；⑥守卫：对 `test/fixtures/live-routes-bad/` 报出「导出 loader 却没有 liveShouldRevalidate」的文件名，
   对真实的 `app/root.tsx` 与 `app/routes/**` 通过。
@@ -317,6 +330,13 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 
 **M-04**（R-06；前置：无，排在最后只是为了不打断主链路）。只把第 117、398 行字符串里的 0x00 换成源码 `\u0000`，
 文件其余字节不变。
+
+**R-06 验收判据与 Git 行为的冲突（裁决 D1-P03）。** 任务 R-06 写「`git diff --numstat <基线> -- …` 显示行数而不是
+`-`」。实测（Git 2.53.0）：基线 blob 本身含 2 个 NUL，Git 只要比较的任一侧含 NUL 就整体按二进制处理，所以**无论新版本
+怎么改**，相对基线 `30e5d51` 的 `--numstat` 都是 `-	-`（加 `--text` 也是）；它只能在「以修改后的提交为新基线」之后的
+后续 diff 里显示行数。这不是实现能解决的问题，也不允许用 `.gitattributes` 或改基线去凑数。因此本里程碑的判据改为：
+NUL 为 0（Git 不再把新文件当二进制）、`git diff --no-index --numstat /dev/null <文件>` 显示行数、`--text` 补丁恰好两处
+替换、运行时字符串不变、35 个用例不变；相对基线的 numstat 如实记录为 `-	-`，不算失败。
 
 ### M-01 验收契约
 
@@ -328,19 +348,19 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 
 - 验收命令：分别运行、分别记录退出码：`npm run lint --prefix apps/web`；`npm run typecheck --prefix apps/web`；`npm test --prefix apps/web`；`npm run build --prefix apps/web`；`npm test --prefix apps/desktop`；`git diff 30e5d51 --stat -- crates apps/desktop protocol plugins`。
 - 预期：Web 19 个测试文件、203 个用例全过、0 跳过（M-01 的 188 + `eventbus-protocol.test.ts` 3 + `eventbus.test.ts` 新增 10 + `eventbus-live.test.ts` 新增 2）；lint、typecheck、build 退出码 0；desktop 104 / 103 过 / 1 跳过；diff 输出为空。
-- 负向对照：补发期间不把 live 事件排队而是直接发出时 `eventbus.test.ts` ⑩ 看到 `seq` 倒退而失败；缺口判断写成 `>= 1000` 时 ⑪ 的「恰好 1000 补发」失败；把 `restarting` 映射成 `connected` 时 `eventbus-protocol.test.ts` ③ 与 `eventbus-live.test.ts` ⑦ 失败；恢复时把游标重置为 `latest_seq` 而不是续读时 ⑯ 丢事件而失败。
+- 负向对照：补发期间不把 live 事件排队而是直接发出时 `eventbus.test.ts` ⑩ 看到 `seq` 倒退而失败；缺口判断写成 `>= 1000` 时 ⑪ 的「恰好 1000 补发」失败；把 `restarting` 映射成 `connected` 时 `eventbus-protocol.test.ts` ③ 与 `eventbus-live.test.ts` ⑦ 失败；恢复时把游标重置为 `latest_seq` 而不是续读时 ⑯ 丢事件而失败；账本回退时只重置 `cursor`、不重置连接的 `sentSeq` 时 ⑫、⑰ 的「回退后小 `seq` 的新事件被收到」失败。
 
 ### M-03 验收契约
 
 - 验收命令：分别运行、分别记录退出码：`npm run lint --prefix apps/web`；`npm run typecheck --prefix apps/web`；`npm test --prefix apps/web`；`npm run build --prefix apps/web`；`npm test --prefix apps/desktop`；`git diff 30e5d51 --stat -- crates apps/desktop protocol plugins`。
-- 预期：Web 22 个测试文件、218 个用例全过、0 跳过（M-02 的 203 + `live-client.test.ts` 7 + `live-routes.test.ts` 6 + `live-banner.test.ts` 2）；lint、typecheck、build 退出码 0（build 证明 `root.tsx` 的改动与浏览器包里没有服务端代码）；`server.test.ts` 的开发/生产首页 SSR 用例仍通过；desktop 104 / 103 过 / 1 跳过；diff 输出为空。
-- 负向对照：`revalidateForEvents` 不设待处理批、直接 `revalidate()` 时 `live-routes.test.ts` ① 里无关路由的 loader 计数增加而失败；`revalidate()` 一调用就清空待处理批时 ③ 前一批路由拿不到新数据而失败；退避不封顶时 `live-client.test.ts` ③ 失败。
+- 预期：Web 22 个测试文件、219 个用例全过、0 跳过（M-02 的 203 + `live-client.test.ts` 8 + `live-routes.test.ts` 6 + `live-banner.test.ts` 2）；lint、typecheck、build 退出码 0（build 证明 `root.tsx` 的改动与浏览器包里没有服务端代码）；`server.test.ts` 的开发/生产首页 SSR 用例仍通过；desktop 104 / 103 过 / 1 跳过；diff 输出为空。
+- 负向对照：`revalidateForEvents` 不设待处理批、直接 `revalidate()` 时 `live-routes.test.ts` ① 里无关路由的 loader 计数增加而失败；`revalidate()` 一调用就清空待处理批时 ③ 前一批路由拿不到新数据而失败；退避不封顶时 `live-client.test.ts` ③ 失败；`liveShouldRevalidate` 里把纯重验判断写成 `currentUrl === nextUrl`（对象比较）时 `live-routes.test.ts` ① 里无关路由的 loader 计数增加而失败；收到 `reload` 不清 `lastSeq` 时 `live-client.test.ts` ⑧ 失败。
 
 ### M-04 验收契约
 
-- 验收命令：分别运行、分别记录退出码：`python3 -I -c "print(open('apps/web/test/write-gate.test.ts','rb').read().count(b'\x00'))"`；`git diff --numstat 30e5d51 -- apps/web/test/write-gate.test.ts`；`cd apps/web && npx vitest run test/write-gate.test.ts`；`cd apps/web && npx vitest run test/write-gate.test.ts -t "a null byte is refused anywhere in a string|looksLikeAPath catches the shapes"`；`npm test --prefix apps/web`；`npm test --prefix apps/desktop`。
-- 预期：NUL 计数输出 `0`；numstat 输出 `2	2	apps/web/test/write-gate.test.ts`（数字而不是 `-	-`）；`write-gate.test.ts` 35 个用例全过；`-t` 过滤后 2 个通过、33 个跳过（过滤造成的跳过，不计入全量）；Web 全量仍是 22 个文件、218 个用例、0 跳过；desktop 104 / 103 过 / 1 跳过。
-- 负向对照：只改第 117 行时 NUL 计数输出 `1`、numstat 仍是 `-	-`；写成 `'\\u0000'`（字面反斜杠）时字符串里没有 NUL，「a null byte is refused anywhere in a string」的 `result.ok` 为 true 而失败。
+- 验收命令：分别运行、分别记录退出码：`python3 -I -c "print(open('apps/web/test/write-gate.test.ts','rb').read().count(b'\x00'))"`；`git diff --numstat 30e5d51 -- apps/web/test/write-gate.test.ts`；`git diff --text -U0 30e5d51 -- apps/web/test/write-gate.test.ts | grep -cE '^[-+][^-+]'`；`git diff --no-index --numstat /dev/null apps/web/test/write-gate.test.ts`；`cd apps/web && npx vitest run test/write-gate.test.ts`；`cd apps/web && npx vitest run test/write-gate.test.ts -t "a null byte is refused anywhere in a string|looksLikeAPath catches the shapes"`；`npm test --prefix apps/web`；`npm test --prefix apps/desktop`。
+- 预期：NUL 计数输出 `0`；相对基线的 numstat 输出 `-	-	apps/web/test/write-gate.test.ts`（**预期如此**，基线一侧含 NUL，Git 仍按二进制，见上面「R-06 验收判据与 Git 行为的冲突」，只记录不算失败）；`--text` 补丁里被改动的行数输出 `4`（两条删除、两条添加，且第 117 行为 `params: { task_id: 'T-1\u0000rest' }`、第 398 行列表末项为 `'a\u0000b'`）；`--no-index --numstat /dev/null` 输出以行数开头（如 `562	0	…`）而不是 `-	-`；`write-gate.test.ts` 35 个用例全过；`-t` 过滤后 2 个通过、33 个跳过（过滤造成的跳过，不计入全量）；Web 全量仍是 22 个文件、219 个用例、0 跳过；desktop 104 / 103 过 / 1 跳过。
+- 负向对照：只改第 117 行时 NUL 计数输出 `1`、`--no-index --numstat /dev/null` 仍是 `-	-`、`--text` 补丁行数为 `2`；写成 `'\\u0000'`（字面反斜杠）时字符串里没有 NUL，「a null byte is refused anywhere in a string」的 `result.ok` 为 true 而失败。
 
 ## 人工验收清单
 
