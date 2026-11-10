@@ -1,0 +1,14 @@
+# autome-v2 用自己的 Loop 开发自己（docs/plans/2026-11-10-web-dashboard-via-loop.md）。
+# 只写覆盖项；未写的字段跟随 ~/.autome/config.toml。
+
+[loop]
+parallel = 2
+
+# 每个实现轮之后、合并前、合并后，宿主在任务 worktree 里跑一遍本地 CI。
+[gate]
+command = "sh scripts/ci-local.sh"
+timeout_minutes = 30
+
+[retry]
+attempts = 2
+backoff_seconds = 60
