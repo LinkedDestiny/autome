@@ -38,7 +38,10 @@ const EDGES = [
   ['adjudicate', 'design_approval'],
   ['design_approval', 'plan', { rej: 1, via: 'top', d: 26, label: '驳回 + 意见' }],
   ['design_approval', 'impl', { gy: 40, t: 0.2, label: '批准' }],
-  ['impl', 'audit'],
+  ['impl', 'audit', { ungated: 1 }],
+  ['impl', 'gate', { gated: 1 }],
+  ['gate', 'audit', { gated: 1 }],
+  ['gate', 'impl', { gated: 1, rej: 1, via: 'top', d: 22, label: '门禁失败' }],
   ['audit', 'impl', { rej: 1, via: 'bottom', d: 26, label: 'reopen' }],
   ['audit', 'retro'],
   ['retro', 'rebase'],
@@ -52,6 +55,10 @@ const EDGES = [
 const FIXED_NODES = {
   intake: ['任务整理', '固定 · 调研仓库，生成任务文件', 'Claude Code'],
   rebase: ['rebase', '固定 · 到最新默认分支', '冲突 → 实现修'],
+  // Only drawn when the project configures `[gate]`. One box for three runs:
+  // after implementation, on the rebased head before the merge stop, and on
+  // main after the merge — the last only raises an alert.
+  gate: ['门禁', '固定 · 宿主跑项目的检查命令', '合并前、合并后再跑'],
   merge: ['合并', '固定 · merge 到默认分支', '主工作树须干净'],
   cleanup: ['清理', '固定 · 删 worktree 与分支', 'docs 留在默认分支'],
 };
@@ -214,9 +221,11 @@ function graph(data, draft, localViolations, paint, ctx) {
     humanNode('design_approval'),
   ]);
 
-  const laneTwo = h('div.lane.lane--8', { dataset: { lane: '2' } }, [
+  const gated = Boolean((data.resolved || {}).gate);
+  const laneTwo = h(`div.lane.lane--${gated ? 9 : 8}`, { dataset: { lane: '2' } }, [
     h('span.lane__lbl', { text: `实现循环 · 预算 ${((data.resolved || {}).loop_defaults || {}).budget_factor ?? '—'} × 里程碑` }),
     roleNode('impl', draft, badRoles, data, paint, ctx),
+    ...(gated ? [fixedNode('gate', data.resolved.gate.command)] : []),
     roleNode('audit', draft, badRoles, data, paint, ctx),
     roleNode('retro', draft, badRoles, data, paint, ctx),
     fixedNode('rebase'),
@@ -251,12 +260,12 @@ function markerDefs() {
   return defs;
 }
 
-function fixedNode(key) {
+function fixedNode(key, detail) {
   const [title, role, chip] = FIXED_NODES[key];
   const node = h('div.lnode.lnode--rust', { dataset: { node: key } }, [
     icon('lock'),
     h('div.lnode__id', { text: title }),
-    h('div.lnode__role', { text: role }),
+    h('div.lnode__role', { text: detail ? `固定 · ${detail}` : role }),
     h('div.lnode__cfg', [h('span.chip', { text: chip })]),
   ]);
   return node;
@@ -367,7 +376,9 @@ function drawEdges(host) {
     };
   };
 
+  const gated = Boolean(graphEl.querySelector('[data-node="gate"]'));
   for (const [from, to, options = {}] of EDGES) {
+    if ((options.gated && !gated) || (options.ungated && gated)) continue;
     const a = box(from);
     const b = box(to);
     if (!a || !b) continue;

@@ -19,13 +19,31 @@ export const NODE_LABELS = {
   adjudicate: '裁决',
   await_design_approval: '设计批准',
   implement: '实现',
+  gate: '门禁',
   audit: '审计',
   retro: '复盘',
   rebase: 'rebase',
+  merge_gate: '合并前门禁',
   await_merge: '待合并',
   merging: '合并',
+  main_check: '验证 main',
   cleanup: '清理',
 };
+
+/**
+ * The host's checks (`[gate]` in the project's config) are nodes of their
+ * own, but not stones: a project without a gate never visits them, and a line
+ * whose length depends on configuration would make "7 / 14" mean different
+ * things on two cards side by side. A task at a gate sits on the stone of the
+ * step whose result it is checking.
+ */
+const GATE_STONE = { gate: 'implement', merge_gate: 'rebase', main_check: 'merging' };
+
+/** Where on `FLOW` a node sits, or -1 for a node the line does not show. */
+export function flowIndex(node) {
+  const key = GATE_STONE[node] || node;
+  return FLOW.findIndex((s) => s.key === key);
+}
 
 /**
  * The stones of requirement T-03's node flow. `received` and `done` are not

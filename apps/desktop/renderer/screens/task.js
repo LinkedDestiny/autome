@@ -120,6 +120,7 @@ function hero(data, ctx) {
     meta.appendChild(tag(`排队 #${data.queue_position}`, 'soft-yellow'));
   }
   roundTags(status, task, data).forEach((t) => meta.appendChild(t));
+  hostTags(data).forEach((t) => meta.appendChild(t));
   meta.appendChild(heroIdent(task, data));
   card.appendChild(meta);
 
@@ -337,7 +338,7 @@ function flowRoute(node, state) {
   const terminal = state.state === 'done';
   const currentIndex = terminal
     ? labels.FLOW.length - 1
-    : labels.FLOW.findIndex((s) => s.key === node);
+    : labels.flowIndex(node);
 
   labels.FLOW.forEach((step, index) => {
     const done = currentIndex >= 0 && index < currentIndex;
@@ -346,7 +347,10 @@ function flowRoute(node, state) {
     const dot = h('div.stone__dot');
     if (done || (now && terminal)) dot.appendChild(icon('check'));
     stone.appendChild(dot);
-    stone.appendChild(h('div.stone__lbl', { text: step.label }));
+    // At a gate, the stone it sits on says so: "实现" alone would read as if
+    // a session were still writing code.
+    const label = now && node !== step.key ? labels.nodeLabel(node) : step.label;
+    stone.appendChild(h('div.stone__lbl', { text: label }));
     route.appendChild(stone);
   });
   return route;
@@ -379,6 +383,36 @@ function roundTags(status, task, data) {
   const disputes = ((data && data.decisions) || []).filter((d) => d.kind === 'dispute').length;
   if (backlog || disputes) {
     tags.push(tag(`Backlog ${backlog} · 争议项 ${disputes}`, 'soft-brown'));
+  }
+  return tags;
+}
+
+/** What the host itself has to say: its last gate run on this task, and a
+ *  crashed or rate-limited round waiting to be started again. Both are facts
+ *  the core recorded (`gate.result`, `session_retries`), not inferences. */
+function hostTags(data) {
+  const tags = [];
+  const gate = data && data.gate;
+  if (gate) {
+    const sha = String(gate.sha || '').slice(0, 7);
+    const t = tag(
+      `${labels.nodeLabel(gate.node)}${gate.ok ? '通过' : '未通过'} · ${sha}`,
+      gate.ok ? 'soft-green' : 'soft-red'
+    );
+    t.title = `${gate.command || ''}\n日志：${gate.log || ''}`;
+    tags.push(t);
+  }
+  const retry = data && data.retry;
+  if (retry) {
+    const at = labels.clock(retry.not_before);
+    tags.push(
+      tag(
+        retry.attempts
+          ? `会话崩溃 · ${at} 重试（第 ${retry.attempts} 次）`
+          : `等 CLI 限流冷却 · ${at} 再试`,
+        'soft-orange'
+      )
+    );
   }
   return tags;
 }

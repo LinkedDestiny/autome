@@ -26,6 +26,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'project.onboarding.skip',
   'project.onboarding.run',
   'project.onboarding.save',
+  'project.alert.dismiss',
   'task.create',
   'task.approve',
   'task.reject',

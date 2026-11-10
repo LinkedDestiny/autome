@@ -12,7 +12,7 @@
 import {
   h, icon, text, reveal, tag, spinnerTag, progress, sectionHead, empty, activateOnKey,
 } from '../lib/dom.js';
-import { read } from '../lib/api.js';
+import { read, attempt, registerWrite } from '../lib/api.js';
 import * as labels from '../lib/labels.js';
 import { openMergeModal } from './task.js';
 
@@ -38,11 +38,19 @@ export function render(host, data, ctx) {
 
   const waiting = (data && data.waiting) || [];
   const running = (data && data.running) || [];
+  // Project-level alerts want a person as much as a task at a stopping point
+  // does, so they sit first in the same region rather than in a third one.
+  const alerts = (data && data.alerts) || [];
+  const cooldowns = (data && data.cooldowns) || [];
+  const attention = alerts.length + waiting.length;
 
-  screen.appendChild(sectionHead('等待我', waiting.length ? `${waiting.length} 件 · 点卡片直达` : '没有需要你的事'));
-  if (waiting.length) {
+  screen.appendChild(sectionHead('等待我', attention ? `${attention} 件 · 点卡片直达` : '没有需要你的事'));
+  if (attention) {
     const grid = h('div.cardgrid.cardgrid--4');
-    waiting.forEach((entry, index) => grid.appendChild(reveal(waitingCard(entry, ctx), index + 1)));
+    alerts.forEach((alert, index) => grid.appendChild(reveal(alertCard(alert, ctx), index + 1)));
+    waiting.forEach((entry, index) =>
+      grid.appendChild(reveal(waitingCard(entry, ctx), alerts.length + index + 1))
+    );
     screen.appendChild(grid);
   } else {
     screen.appendChild(empty('所有任务都在自己跑。下一次需要你，是设计定稿或者待合并。'));
@@ -54,7 +62,7 @@ export function render(host, data, ctx) {
   if (running.length) {
     const grid = h('div.cardgrid.cardgrid--4');
     running.forEach((entry, index) =>
-      grid.appendChild(reveal(runningCard(entry, ctx), waiting.length + index + 1))
+      grid.appendChild(reveal(runningCard(entry, ctx, cooldowns), attention + index + 1))
     );
     screen.appendChild(grid);
   } else {
@@ -93,6 +101,46 @@ function environmentBanner(environment, ctx) {
   );
   return bar;
 }
+
+/**
+ * An alert raised by the core: today only `main_gate_failed`, the host's gate
+ * failing on main right after a merge. The task is already done — the merge
+ * happened — so there is nothing to approve; the card says what broke and
+ * offers to put it away once the user has looked.
+ */
+function alertCard(alert, ctx) {
+  const lines = String(alert.detail || '').split('\n');
+  const card = h('div.card.card--pattern.card--pattern-red.attn');
+  const title = h('div.attn__t', { text: ALERT_TITLES[alert.kind] || alert.kind });
+  if (alert.task_id) title.appendChild(tag(alert.task_id, 'outlined'));
+  card.appendChild(h('div.attn__ico', [icon('warn')]));
+  const actions = h('div.attn__a');
+  if (alert.task_id) {
+    actions.appendChild(
+      h('button.btn.btn--sm', {
+        type: 'button',
+        onClick: () => ctx.navigate('task', { taskId: alert.task_id }),
+      }, [text('看任务')])
+    );
+  }
+  actions.appendChild(
+    registerWrite(
+      h('button.btn.btn--sm.btn--primary', {
+        type: 'button',
+        onClick: () =>
+          attempt({
+            label: '已关闭报警',
+            run: (write) => write.dismissAlert(alert.id),
+            onDone: () => ctx.refresh(),
+          }),
+      }, [text('知道了')])
+    )
+  );
+  card.appendChild(h('div', [title, h('div.attn__d', { text: lines[0] || '' }), actions]));
+  return card;
+}
+
+const ALERT_TITLES = { main_gate_failed: 'main 门禁失败' };
 
 function waitingCard(entry, ctx) {
   const task = entry.task || {};
@@ -178,12 +226,12 @@ function pendingNote(pending) {
   return parts.join(' · ');
 }
 
-function runningCard(entry, ctx) {
+function runningCard(entry, ctx, cooldowns) {
   const task = entry.task || {};
   const session = entry.session;
   const status = labels.taskStatus(task);
   const node = labels.stateNode(task.state);
-  const flowIndex = labels.FLOW.findIndex((s) => s.key === node);
+  const flowIndex = labels.flowIndex(node);
 
   const card = h('div.card.taskcard.card--link', {
     tabindex: '0',
@@ -203,7 +251,7 @@ function runningCard(entry, ctx) {
     ])
   );
   card.appendChild(h('div.taskcard__t', { text: task.title || task.request || task.slug || task.id }));
-  card.appendChild(h('div.quiet', { text: sessionLine(session, task) }));
+  card.appendChild(h('div.quiet', { text: waitLine(entry, cooldowns) || sessionLine(session, task) }));
   card.appendChild(
     progress(
       flowIndex >= 0 ? (flowIndex + 1) / labels.FLOW.length : 0,
@@ -215,12 +263,32 @@ function runningCard(entry, ctx) {
 }
 
 /**
+ * A task with no session because it is waiting out a crash backoff or a
+ * CLI's rate-limit cooldown. Without this line the card would read
+ * "系统步骤运行中", which is what it said before retries existed — and is
+ * not what is happening.
+ */
+function waitLine(entry, cooldowns) {
+  if (entry.session || !entry.retry) return null;
+  const at = labels.clock(entry.retry.not_before);
+  const cooling = (cooldowns || []).find((c) => c.until === entry.retry.not_before);
+  if (cooling) return `${labels.runtimeLabel(cooling.runtime)} 限流冷却到 ${at}`;
+  // Rate limits are not counted, so a wait with no crash behind it is one.
+  if (!entry.retry.attempts) return `等 CLI 限流冷却 · ${at} 再试`;
+  return `会话崩溃 · ${at} 重试（第 ${entry.retry.attempts} 次）`;
+}
+
+/**
  * What the running session is, in one line. When there is no session the line
  * says so rather than implying one: a task can occupy a slot while a core step
  * (rebase, cleanup) runs, and those have no CLI behind them.
  */
 function sessionLine(session, task) {
   if (!session) {
+    const node = labels.stateNode(task.state);
+    if (node === 'gate' || node === 'merge_gate' || node === 'main_check') {
+      return `${labels.nodeLabel(node)}运行中 · 宿主在跑项目的检查命令`;
+    }
     const elapsed = labels.duration(task.created_at);
     return elapsed ? `系统步骤运行中 · 已存在 ${elapsed}` : '系统步骤运行中';
   }

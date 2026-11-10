@@ -457,7 +457,7 @@ function rulesCard(data, ctx) {
 function taskCard(task, ctx) {
   const status = labels.taskStatus(task);
   const node = labels.stateNode(task.state);
-  const flowIndex = labels.FLOW.findIndex((s) => s.key === node);
+  const flowIndex = labels.flowIndex(node);
 
   const card = h('div.card.taskcard.card--link', {
     tabindex: '0',

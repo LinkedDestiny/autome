@@ -119,6 +119,9 @@ contextBridge.exposeInMainWorld('autome', {
     // button. Failed tasks never reach the retro node on their own.
     retroTask: (taskId) => write('task.retro')({ task_id: taskId }),
 
+    // A project-level alert the user has seen (the dashboard's 知道了).
+    dismissAlert: (alertId) => write('project.alert.dismiss')({ alert_id: alertId }),
+
     // `rules.proposals` recomputes and stores the pending proposals, so it is
     // a write even though it reads like a query.
     ruleProposals: (projectId) => write('rules.proposals')({ project_id: projectId }),
