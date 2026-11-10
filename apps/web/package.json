@@ -34,6 +34,8 @@
     "start": "NODE_ENV=production node server/start.js",
     "build": "react-router build",
     "test": "vitest run",
-    "probe:sqlite": "node scripts/probe-sqlite.ts"
+    "probe:sqlite": "node scripts/probe-sqlite.ts",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "react-router typegen && tsc --noEmit"
   }
 }

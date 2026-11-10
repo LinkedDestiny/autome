@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 4/20
+implementation-round: 5/20
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-04：lint、类型检查与 ci-local / ci.yml 接入
+next-action: 在允许本地监听的环境复验 M-04 全量 ci-local，取得 38/38 与 exit 0 后标待审
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -255,6 +255,8 @@ ExperimentalWarning 是否在入口过滤。
 - 负向对照：定位改用 `require('electron')` 时，「缺 dist」用例触发下载、抛错失败；`sqlite-check.mjs` 只测 `:memory:` 时 WAL 断言失败（内存库返回 `memory`）；不核对 Electron 版本时版本用例失败。
 
 ### M-04 验收契约
+
+最新证据：docs/在-apps-web-建-react/evidence/M-04-r5-impl.md · 环境阻塞，保留开放 · 实现 #5
 
 - 验收命令：`rm -rf apps/web/node_modules && sh scripts/ci-local.sh > .autome/output/m04.txt 2>&1; echo "exit=$?"; tail -25 .autome/output/m04.txt`
 - 预期：exit=0；汇总里 Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract（新 worktree 里还有 Desktop install）与 Web install、Web lint、Web typecheck、Web test、Web build 全部 `ok`；Web test 步骤报 5 个文件、38 个用例通过（基线 32，新增 ci-config 6 个：ci.yml 有 `web` job 且 `timeout-minutes`、`macos-14`；`setup-node` 为 `'22'` 且 Install 为 `npm ci`；lint/typecheck/test/build 四步齐全；ci.yml 每个 job 都有 `timeout-minutes`；ci-local 仅在缺 `node_modules` 时 `run 'Web install'` 且用 `npm ci`；ci-local 四行 `run 'Web …'` 在 package 分支之外）；证据记录 Web 各步耗时。

@@ -14,3 +14,5 @@
 
 实现 #4 | M-03 | 保持开放 | docs/在-apps-web-建-react/evidence/M-03-r4-impl.md | 双运行时通过；全量因沙箱 EPERM/EMFILE 阻塞
 审计 #3 | M-03 | 通过 | docs/在-apps-web-建-react/evidence/M-03-r4-audit.md | 无
+
+实现 #5 | M-04 | 环境阻塞，保留开放 | docs/在-apps-web-建-react/evidence/M-04-r5-impl.md | 本地监听 EPERM，文件监听 EMFILE

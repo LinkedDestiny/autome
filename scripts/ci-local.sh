@@ -104,6 +104,15 @@ run 'Contract' sh -c '
   grep -q "pub const READ_METHODS" crates/automed/src/dispatch.rs
 '
 
+# --- job: web --------------------------------------------------------------
+if [ ! -d apps/web/node_modules ]; then
+  run 'Web install' sh -c 'cd apps/web && npm ci'
+fi
+run 'Web lint' npm run lint --prefix apps/web
+run 'Web typecheck' npm run typecheck --prefix apps/web
+run 'Web test' npm run test --prefix apps/web
+run 'Web build' npm run build --prefix apps/web
+
 # --- job: package ----------------------------------------------------------
 # Opt-in. A release build plus electron-builder is minutes, which is the wrong
 # price for something that runs on every commit — but it breaks quietly and is
