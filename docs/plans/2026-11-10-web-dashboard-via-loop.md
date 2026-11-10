@@ -191,7 +191,6 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
 │   └── web.sqlite3              # 面板库
 └── web/
     ├── server.json              # 实际端口、pid、启动时间
-    ├── token                    # 本机访问令牌，0600
     ├── uploads/<uuid>/…         # 网页上传的附件暂存，交给 task.create 后由内核复制进任务目录
     └── logs/server.log
 ```
@@ -226,7 +225,8 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
 服务能启动会读写仓库的 Agent，所以按「任何网页都可能来访问它」来防：
 
 - 只绑 `127.0.0.1`；Host 头必须是 `127.0.0.1:<port>` 或 `localhost:<port>`，防 DNS rebinding。
-- 写请求和 WebSocket 升级都要检查 Origin，再加上令牌：`autome web` 打开的 URL 带一次性的 `?t=`，服务端换成 HttpOnly、SameSite=Strict 的 cookie。
+- 写请求和 WebSocket 升级都要检查 Origin，必须是本服务自己的 `http://127.0.0.1:<port>` 或 `http://localhost:<port>`。
+- 鉴权就到这一层为止：面板只是内核状态的展示和控制面，不做令牌、Cookie 和登录会话。跨站网页读不到响应（没有 CORS 头），也写不进来（Origin 不对）；本机进程本来就能直接用 `autome` 命令行。
 - 读写白名单从 `apps/desktop/src/{ipc-gate,write-gate}.js` 迁移，连同测试。读白名单以 `dispatch.rs` 的 `READ_METHODS` 为准，测试解析源码交叉核对。
 - 浏览器不能给出任意路径。添加项目先经服务端 `project.probe`；附件只能是上传后服务端生成的路径；日志路径只能来自内核。
 
@@ -368,7 +368,7 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
   1. 顶部是阶段条（§4.3），当前阶段高亮，需求显示里程碑进度，Bug 显示修复轮次；
   2. 执行时间线：每一轮一条，写明阶段、CLI、起止时间、用时、花费和结果摘要（如「M-02 待审 → 已完成」「复现命令失败（符合预期）」「门禁未通过」），点开就是这一轮的日志（W8）；
   3. 文档标签页：任务卡正文、设计文档或 Bug 文档（Markdown 渲染，里程碑表高亮当前项）；
-  4. 合并前展示 `task.changes`；
+  4. 合并前展示 `task.changes`；只落后于默认分支时（`behind` / `rebase_first`），提示「按合并后会先自动 rebase、跑合并前门禁再合并」；按下合并后不说「任务完成」，自动路径要过门禁才算完成（K0b 的 Backlog B-01）；
   5. 可用的操作随状态变化；内核拒绝时原样显示内核给出的那句话；输入长度上限与 write-gate 一致；
   6. 待你决定的 Backlog 与争议项在这里表态。
 
@@ -396,13 +396,12 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
 - 一句话需求：autome-web 启动器与发布包：start/stop/status/open、可选 launchd 自启动，面板进入 CLI 的 tar 包与 install-cli.sh，Rust CLI 新增 autome web 子命令转发
 - 目录：`apps/web/bin/`、`scripts/{install-cli,package-cli}.sh`、`crates/autome-cli/src/`（只新增 `web` 子命令）
 - 验收：
-  1. `autome web` 默认端口被占用时自动换一个，写进 `server.json`，再用带令牌的 URL 打开浏览器；
+  1. `autome web` 默认端口被占用时自动换一个，写进 `server.json`，再打开浏览器；
   2. 重复执行时不起第二个服务，而是打开已有的那个；
   3. `autome web service install|uninstall` 管理 `~/Library/LaunchAgents/` 下的条目；
   4. 发布包包含 `autome`、`automed`、构建好的 `apps/web`；没有 Node ≥ 22.22 时只装命令行，并提示怎样装 Node；
   5. 在空的 PREFIX 和空的 AUTOME_HOME 下，从 tar 包安装到打开面板全程走通。
   6. 内核子进程拿到用户登录 shell 的 PATH（从 `apps/desktop/src/login-path.js` 迁移），launchd 自启动时也能找到 `claude`、`codex`（W2 的 Backlog B-02）。
-  7. 会话 Cookie 只存在内存里，服务重启后旧 Cookie 失效。`autome web` 打开时总是读 `~/.autome/web/token` 拼出一次性地址，所以重启后再执行一次就能进；面板收到 403 时提示「请重新运行 autome web」（W2 的 Backlog B-04）。
 
 **W11 Electron 薄壳**
 - 一句话需求：把 apps/desktop 改成薄壳：用 Electron 自带的 Node 运行 apps/web 服务、窗口加载面板、提供原生目录选择与通知，删除旧渲染进程与 IPC 白名单
