@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/25
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-04 并复验受沙箱阻塞的监听用例；通过后实现 M-05 网关接入与端到端
+next-action: 实现 M-05 网关接入 startServer 与端到端
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -401,7 +401,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 | M-01 | 已完成 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
 | M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 已完成 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
-| M-04 | 待审 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
+| M-04 | 已完成 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
 | M-05 | 开放 | 网关接入 startServer 与端到端 | 0 | |
 
 ## 里程碑说明
@@ -481,7 +481,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-04 本机安全：Host、Origin 与 upgrade 守卫
 
-最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-04-r4-impl.md · 模块通过，监听环境阻塞待复验 · 实现 #4
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-04-r4-audit.md · 通过 · 审计 #4
 
 - 结果：`server/security.ts` 按方案 §7 实现，`createHttpServer` 装上 Host/Origin 中间件和 upgrade 守卫。全部用纯函数或
   假的 req/res/socket 测，不监听端口。没有任何令牌或 Cookie 代码。

@@ -1,6 +1,4 @@
-# 审计 #3 · M-03
+# 实现审计（审计 #4）
 
-结论：**通过**，M-03 标为 `已完成`。无实现缺陷、无验证缺口。证据：`evidence/M-03-r3-audit.md`。
-
-- 验收命令自行全跑：lint、typecheck 无错误；Web 13 文件 138 用例全过（契约：113 + 25），无跳过，含此前受沙箱阻塞的 7 个监听用例；desktop 104 用例 103 通过 1 跳过（缺 electron，与基线相同）。
-- 契约负向对照六项加自造一项（`isTickBusy` 恒 false）全部变红并已还原，工作区无源码改动。
+M-04：通过。验收命令全绿（Web 152/152，desktop 104 其中 1 跳过为基线），六项负向对照均被现有用例拦住，真实监听复验 Host/Origin/upgrade 行为符合方案 §7。无新增 Backlog。
+证据：docs/apps-web-的服务端托管-automed-2/evidence/M-04-r4-audit.md
