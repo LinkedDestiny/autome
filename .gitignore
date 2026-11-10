@@ -12,3 +12,7 @@ apps/desktop/dist/
 
 # Claude Code scratch worktrees
 .claude/worktrees/
+
+# Autome
+.worktree/
+.autome/output/
