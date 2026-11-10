@@ -72,6 +72,8 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
+      - name: Build the core the sidecar tests drive
+        run: cargo build -p automed
       - name: Test
         run: npm test
       - name: Build
