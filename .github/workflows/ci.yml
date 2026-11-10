@@ -53,6 +53,30 @@ jobs:
       - name: Adapter flags exist
         run: cargo test --test real_cli every_adapter_flag -- --nocapture
 
+  web:
+    timeout-minutes: 15
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
   desktop:
     # A hung step must fail in minutes, not sit at the runner's own limit.
     # The desktop job once held a runner for 45 minutes on a test that takes

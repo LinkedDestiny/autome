@@ -1,0 +1,41 @@
+{
+  "name": "@autome/web",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "dependencies": {
+    "react-router": "^8.5.1",
+    "@react-router/node": "^8.5.1",
+    "@react-router/express": "^8.5.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "express": "^5",
+    "isbot": "^5"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^8.5.1",
+    "vite": "^8",
+    "vitest": "^5",
+    "typescript": "~6.0.3",
+    "eslint": "^10",
+    "@eslint/js": "^10",
+    "typescript-eslint": "^8.72",
+    "globals": "^17",
+    "yaml": "^2",
+    "@types/node": "^22.20.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/express": "^5"
+  },
+  "scripts": {
+    "dev": "node server/start.js",
+    "start": "NODE_ENV=production node server/start.js",
+    "build": "react-router build",
+    "test": "vitest run",
+    "probe:sqlite": "node scripts/probe-sqlite.ts",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "react-router typegen && tsc --noEmit"
+  }
+}

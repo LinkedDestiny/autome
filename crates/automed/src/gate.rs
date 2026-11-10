@@ -411,6 +411,12 @@ mod tests {
         .unwrap();
         assert_eq!(wait_done(&job, 5), Poll::Done { exit_code: 0 });
         assert!(tail(&job.log, 10).contains("checked abc"));
+        // The exit marker is published before the wrapper removes its pid.
+        // Done confirms the command result, not that the wrapper has exited.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while job.pid.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
             !job.pid.exists(),
             "the wrapper removes its pid on the way out"
