@@ -1044,8 +1044,9 @@ fn record_failed_action(
     transition: &Transition,
     error: &SchedulerError,
 ) {
-    let TaskState::Active { node } = transition.next else {
-        return;
+    let node = match transition.next {
+        TaskState::Active { node } | TaskState::Requeued { resume: node } => node,
+        _ => return,
     };
     let failed = TaskState::Failed {
         reason: FailureReason::Config {
@@ -1246,6 +1247,41 @@ fn perform(
             // rebase does not block the IPC reply the user is waiting on.
             let _ = node;
             Ok(())
+        }
+        Action::DiscardGateRuns { node } => {
+            crate::gate::discard_node(Path::new(&project.path), &task.id, node.as_str())
+                .map_err(|e| err(e.to_string()))?;
+            Ok(())
+        }
+        Action::Reenter { node } => {
+            let kind = match node.role() {
+                Some(role) => SessionKind::Role { role },
+                None => SessionKind::Intake,
+            };
+            if ctx
+                .store
+                .running_session(&task.id)?
+                .is_some_and(|s| s.kind == kind)
+            {
+                return Ok(());
+            }
+            let latest = ctx
+                .store
+                .list_sessions(&task.id)?
+                .into_iter()
+                .find(|s| s.kind == kind);
+            let inject = match latest {
+                Some(session) => ctx
+                    .store
+                    .session_started_event(&task.id, &session.id)?
+                    .and_then(|v| v.get("inject").cloned())
+                    .map(serde_json::from_value::<Option<Inject>>)
+                    .transpose()
+                    .map_err(|e| err(e.to_string()))?
+                    .flatten(),
+                None => None,
+            };
+            redispatch_with(ctx, &task.id, *node, inject.as_ref())
         }
         Action::RunCancel => cancel_task(ctx, task, project),
     }
@@ -2491,7 +2527,10 @@ fn redispatch_with(
 /// session to have it explained back is not always worth it.
 pub fn start_retro(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     let task = ctx.store.get_task(task_id)?;
-    if matches!(task.state, TaskState::Active { .. } | TaskState::Queued) {
+    if matches!(
+        task.state,
+        TaskState::Active { .. } | TaskState::Queued | TaskState::Requeued { .. }
+    ) {
         return Err(err("任务还在跑，复盘轮会在它停下时自己跑一次"));
     }
     if ctx.store.running_session(task_id)?.is_some() {
@@ -3664,6 +3703,187 @@ mod tests {
     // ---- control ---------------------------------------------------------
 
     #[test]
+    fn requeued_waits_for_slot_then_reenters_and_rejects_stop_without_killing() {
+        needs_git!();
+        let mut w = World::new("resume-slot");
+        w.ctx.store.update_project_parallel("p1", 1).unwrap();
+        let task = w.add_task("T-1", "a");
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+        );
+        w.set_state(
+            "T-1",
+            TaskState::Stopped {
+                at: Node::Implement,
+            },
+        );
+        w.add_task("T-2", "b");
+        w.set_state("T-2", TaskState::Active { node: Node::Audit });
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Requeued {
+                resume: Node::Implement
+            }
+        );
+        assert!(w.ctx.store.list_sessions("T-1").unwrap().is_empty());
+        let command = |method: &str| crate::ipc::Command {
+            request_id: method.into(),
+            command_id: method.into(),
+            expected_revision: None,
+            protocol_version: crate::ipc::PROTOCOL_VERSION,
+            method: method.into(),
+            params: json!({"task_id":"T-1"}),
+        };
+        let reply = crate::dispatch::handle_command(&mut w.ctx, &command("task.get"));
+        match reply.reply.outcome {
+            crate::ipc::ReplyOutcome::Ok { payload, .. } => {
+                assert_eq!(payload["queue_position"], 1)
+            }
+            other => panic!("{other:?}"),
+        }
+        w.set_state("T-2", TaskState::Stopped { at: Node::Audit });
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec!["T-1"]);
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        let session = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_eq!(session.kind, SessionKind::Role { role: Role::Impl });
+        advance(&mut w.ctx, "T-1", &Trigger::Pause).unwrap();
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        let reply = crate::dispatch::handle_command(&mut w.ctx, &command("task.stop"));
+        assert!(matches!(
+            reply.reply.outcome,
+            crate::ipc::ReplyOutcome::Error { .. }
+        ));
+        assert_eq!(
+            w.ctx.store.running_session("T-1").unwrap().unwrap().id,
+            session.id
+        );
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Requeued {
+                resume: Node::Implement
+            }
+        );
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec!["T-1"]);
+        assert_eq!(w.ctx.store.list_sessions("T-1").unwrap().len(), 1); // The original session's input wins over a later, unrelated event.
+        let inject = Inject::GateFailed {
+            head: "old-head".into(),
+            command: "check".into(),
+            tail: "resume-feedback".into(),
+        };
+        w.ctx
+            .store
+            .append_event(
+                "session.started",
+                "T-1",
+                json!({"session_id":session.id,"inject":inject}),
+            )
+            .unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "session.started",
+                "T-1",
+                json!({"session_id":"another-kind","inject":null}),
+            )
+            .unwrap();
+        w.ctx
+            .store
+            .finish_session(
+                &session.id,
+                &autome_domain::session::SessionLifecycle::Killed,
+                &now_iso(),
+            )
+            .unwrap();
+        w.set_state(
+            "T-1",
+            TaskState::Stopped {
+                at: Node::Implement,
+            },
+        );
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        fill_slots(&mut w.ctx).unwrap();
+        let restarted = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_ne!(restarted.id, session.id);
+        assert_eq!(
+            carried_inject(&w.ctx, "T-1", &restarted.id).unwrap(),
+            Some(inject)
+        );
+    }
+
+    #[test]
+    fn requeued_stopped_gate_discards_only_its_own_jobs() {
+        needs_git!();
+        let mut w = World::new("resume-gate");
+        w.add_task("T-1", "a");
+        let job = crate::gate::Job::at(&w.repo, "T-1", "gate", "abc");
+        let other = crate::gate::Job::at(&w.repo, "T-1", "merge_gate", "abc");
+        std::fs::create_dir_all(job.started.parent().unwrap()).unwrap();
+        for j in [&job, &other] {
+            std::fs::write(&j.started, "1").unwrap();
+            std::fs::write(&j.exit, "exit_code=143").unwrap();
+            std::fs::write(&j.log, "old output").unwrap();
+            std::fs::write(j.exit.with_extension("exit.tmp"), "partial").unwrap();
+            std::fs::write(j.exit.with_extension("exit.code"), "143").unwrap();
+        }
+        w.set_state("T-1", TaskState::Paused { resume: Node::Gate });
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        assert!(job.started.exists());
+        w.set_state("T-1", TaskState::Stopped { at: Node::Gate });
+        advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+        for path in [
+            &job.started,
+            &job.exit,
+            &job.log,
+            &job.exit.with_extension("exit.tmp"),
+            &job.exit.with_extension("exit.code"),
+        ] {
+            assert!(!path.exists(), "{}", path.display());
+        }
+        assert!(other.started.exists());
+        assert!(other.exit.exists());
+        assert!(other.log.exists());
+        assert_eq!(w.state("T-1"), TaskState::Requeued { resume: Node::Gate });
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec!["T-1"]);
+        assert_eq!(w.state("T-1"), TaskState::Active { node: Node::Gate });
+        assert!(w.ctx.store.list_sessions("T-1").unwrap().is_empty());
+        // A non-directory job path is a real I/O failure, not a successful discard.
+        let dir = crate::gate::dir_for(&w.repo, "T-1");
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, "not a directory").unwrap();
+        w.set_state("T-1", TaskState::Stopped { at: Node::Gate });
+        assert!(advance(&mut w.ctx, "T-1", &Trigger::Resume).is_err());
+        assert!(matches!(w.state("T-1"), TaskState::Failed { .. }));
+    }
+
+    #[test]
+    fn requeued_rejects_manual_retro() {
+        needs_git!();
+        let mut w = World::new("resume-retro");
+        w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Requeued {
+                resume: Node::Retro,
+            },
+        );
+        assert!(
+            start_retro(&mut w.ctx, "T-1")
+                .unwrap_err()
+                .to_string()
+                .contains("任务还在跑")
+        );
+        assert!(w.ctx.store.list_sessions("T-1").unwrap().is_empty());
+    }
+
+    #[test]
     fn pause_and_resume_move_through_queued_rather_than_jumping_the_limit() {
         needs_git!();
         let mut w = World::new("pause");
@@ -3682,7 +3902,12 @@ mod tests {
             }
         );
         advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
-        assert_eq!(w.state("T-1"), TaskState::Queued);
+        assert_eq!(
+            w.state("T-1"),
+            TaskState::Requeued {
+                resume: Node::Implement
+            }
+        );
     }
 
     #[test]

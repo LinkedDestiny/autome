@@ -173,10 +173,14 @@ pub enum FailureReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(from = "TaskStateRepr", into = "TaskStateRepr")]
 pub enum TaskState {
     /// Created, but the project's parallel slots are all taken.
     Queued,
+    /// Resumed work waiting for a slot; externally still `state: queued`.
+    Requeued {
+        resume: Node,
+    },
     Active {
         node: Node,
     },
@@ -196,11 +200,69 @@ pub enum TaskState {
     Cancelled,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum TaskStateRepr {
+    Queued {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<Node>,
+    },
+    Active {
+        node: Node,
+    },
+    Paused {
+        resume: Node,
+    },
+    Stopped {
+        at: Node,
+    },
+    Failed {
+        at: Node,
+        reason: FailureReason,
+    },
+    Done,
+    Cancelled,
+}
+
+impl From<TaskState> for TaskStateRepr {
+    fn from(state: TaskState) -> Self {
+        match state {
+            TaskState::Queued => Self::Queued { resume: None },
+            TaskState::Requeued { resume } => Self::Queued {
+                resume: Some(resume),
+            },
+            TaskState::Active { node } => Self::Active { node },
+            TaskState::Paused { resume } => Self::Paused { resume },
+            TaskState::Stopped { at } => Self::Stopped { at },
+            TaskState::Failed { at, reason } => Self::Failed { at, reason },
+            TaskState::Done => Self::Done,
+            TaskState::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<TaskStateRepr> for TaskState {
+    fn from(state: TaskStateRepr) -> Self {
+        match state {
+            TaskStateRepr::Queued { resume: None } => Self::Queued,
+            TaskStateRepr::Queued {
+                resume: Some(resume),
+            } => Self::Requeued { resume },
+            TaskStateRepr::Active { node } => Self::Active { node },
+            TaskStateRepr::Paused { resume } => Self::Paused { resume },
+            TaskStateRepr::Stopped { at } => Self::Stopped { at },
+            TaskStateRepr::Failed { at, reason } => Self::Failed { at, reason },
+            TaskStateRepr::Done => Self::Done,
+            TaskStateRepr::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 impl TaskState {
     pub fn node(&self) -> Option<Node> {
         match self {
             TaskState::Active { node } => Some(*node),
-            TaskState::Paused { resume } => Some(*resume),
+            TaskState::Paused { resume } | TaskState::Requeued { resume } => Some(*resume),
             TaskState::Stopped { at } | TaskState::Failed { at, .. } => Some(*at),
             _ => None,
         }
@@ -391,6 +453,10 @@ pub enum Action {
     StartRole { role: Role, inject: Option<Inject> },
     /// Run a core step the core performs itself.
     RunCoreStep { node: Node },
+    /// Continue or relaunch the original session without starting a new budget round.
+    Reenter { node: Node },
+    /// Kill and remove stale jobs before a stopped gate is resumed.
+    DiscardGateRuns { node: Node },
     /// Delete the worktree and branch, archive the docs.
     RunCancel,
 }
@@ -620,10 +686,21 @@ pub fn apply(
         }
         Trigger::Resume => {
             return match state {
-                // Resuming re-enters the queue: the slot may have been taken
-                // while the task was paused (design §8).
-                TaskState::Paused { .. } | TaskState::Stopped { .. } => {
-                    Ok(Transition::to(TaskState::Queued, Action::None))
+                TaskState::Paused { resume: node } | TaskState::Stopped { at: node } => {
+                    if node.role().is_some_and(|role| !ctx.config.is_enabled(role)) {
+                        return Err(reject("该角色当前已关闭，无法从这里恢复"));
+                    }
+                    let action = if matches!(state, TaskState::Stopped { .. })
+                        && matches!(node, Node::Gate | Node::MergeGate | Node::MainCheck)
+                    {
+                        Action::DiscardGateRuns { node: *node }
+                    } else {
+                        Action::None
+                    };
+                    Ok(Transition::to(
+                        TaskState::Requeued { resume: *node },
+                        action,
+                    ))
                 }
                 _ => Err(reject("任务不处于暂停或已停止")),
             };
@@ -635,6 +712,23 @@ pub fn apply(
         // ---- Queued ------------------------------------------------------
         (TaskState::Queued, Trigger::SlotAvailable) => {
             Ok(Transition::active(Node::Intake, Action::StartIntake))
+        }
+
+        (TaskState::Requeued { resume: node }, Trigger::SlotAvailable) => {
+            if node.role().is_some_and(|role| !ctx.config.is_enabled(role)) {
+                return Ok(Transition::fail(
+                    *node,
+                    FailureReason::Config {
+                        detail: "该角色当前已关闭，无法从这里恢复".into(),
+                    },
+                ));
+            }
+            let action = if node.is_core_step() {
+                Action::RunCoreStep { node: *node }
+            } else {
+                Action::Reenter { node: *node }
+            };
+            Ok(Transition::active(*node, action))
         }
 
         // ---- Failure panel ----------------------------------------------
@@ -2231,7 +2325,213 @@ mod tests {
             &ctx(&c),
         )
         .unwrap();
-        assert_eq!(t.next, TaskState::Queued);
+        assert_eq!(
+            t.next,
+            TaskState::Requeued {
+                resume: Node::Implement
+            }
+        );
+    }
+
+    #[test]
+    fn requeued_paused_preserves_the_original_node() {
+        let c = cfg();
+        for node in Node::ALL.into_iter().filter(|n| !n.awaits_user()) {
+            let queued = apply(
+                &TaskState::Paused { resume: node },
+                &Trigger::Resume,
+                &ctx(&c),
+            )
+            .unwrap();
+            let resumed = apply(&queued.next, &Trigger::SlotAvailable, &ctx(&c)).unwrap();
+            assert_eq!(resumed.next, active(node));
+            assert_eq!(queued.action, Action::None);
+        }
+    }
+
+    #[test]
+    fn requeued_stopped_preserves_the_original_node() {
+        let c = cfg();
+        for node in Node::ALL.into_iter().filter(|n| {
+            !n.awaits_user() && !matches!(n, Node::Gate | Node::MergeGate | Node::MainCheck)
+        }) {
+            let t = apply(&TaskState::Stopped { at: node }, &Trigger::Resume, &ctx(&c)).unwrap();
+            assert_eq!(t.next, TaskState::Requeued { resume: node });
+            assert_eq!(t.action, Action::None);
+        }
+    }
+
+    #[test]
+    fn requeued_gate_discard_is_only_for_stopped_tasks() {
+        let c = cfg();
+        for node in [Node::Gate, Node::MergeGate, Node::MainCheck] {
+            for stopped in [false, true] {
+                let state = if stopped {
+                    TaskState::Stopped { at: node }
+                } else {
+                    TaskState::Paused { resume: node }
+                };
+                let t = apply(&state, &Trigger::Resume, &ctx(&c)).unwrap();
+                assert_eq!(t.next, TaskState::Requeued { resume: node });
+                assert_eq!(
+                    t.action,
+                    if stopped {
+                        Action::DiscardGateRuns { node }
+                    } else {
+                        Action::None
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn requeued_dispatches_all_thirteen_nodes() {
+        let c = cfg();
+        let mut count = 0;
+        for node in Node::ALL.into_iter().filter(|n| !n.awaits_user()) {
+            let t = apply(
+                &TaskState::Requeued { resume: node },
+                &Trigger::SlotAvailable,
+                &ctx(&c),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(node));
+            assert_eq!(
+                t.action,
+                match node {
+                    Node::Rebase
+                    | Node::Merging
+                    | Node::Cleanup
+                    | Node::Gate
+                    | Node::MergeGate
+                    | Node::MainCheck => Action::RunCoreStep { node },
+                    _ => Action::Reenter { node },
+                }
+            );
+            assert_eq!(t.budget_n, None);
+            assert!(!t.consumes_decisions);
+            count += 1;
+        }
+        assert_eq!(count, 13);
+        let fresh = apply(&TaskState::Queued, &Trigger::SlotAvailable, &ctx(&c)).unwrap();
+        assert_eq!(fresh.next, active(Node::Intake));
+        assert_eq!(fresh.action, Action::StartIntake);
+    }
+
+    #[test]
+    fn requeued_disabled_role_fails_at_dequeue() {
+        for node in Node::ALL {
+            if let Some(role) = node.role() {
+                let c = cfg_without(role);
+                let t = apply(
+                    &TaskState::Requeued { resume: node },
+                    &Trigger::SlotAvailable,
+                    &ctx(&c),
+                )
+                .unwrap();
+                assert!(
+                    matches!(t.next, TaskState::Failed { at, reason: FailureReason::Config { .. } } if at == node)
+                );
+                assert_eq!(t.action, Action::None);
+            }
+        }
+    }
+
+    #[test]
+    fn requeued_disabled_role_rejects_resume() {
+        for node in Node::ALL {
+            if let Some(role) = node.role() {
+                let c = cfg_without(role);
+                for state in [
+                    TaskState::Paused { resume: node },
+                    TaskState::Stopped { at: node },
+                ] {
+                    assert!(apply(&state, &Trigger::Resume, &ctx(&c)).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn requeued_controls_only_allow_cancel() {
+        let c = cfg();
+        for node in Node::ALL.into_iter().filter(|n| !n.awaits_user()) {
+            let state = TaskState::Requeued { resume: node };
+            for trigger in [
+                Trigger::Pause,
+                Trigger::Stop,
+                Trigger::Resume,
+                Trigger::RerunFrom { node },
+                Trigger::ExtendBudget { extra_rounds: 1 },
+            ] {
+                assert!(apply(&state, &trigger, &ctx(&c)).is_err());
+            }
+            let t = apply(&state, &Trigger::Cancel, &ctx(&c)).unwrap();
+            assert_eq!(t.next, TaskState::Cancelled);
+            assert_eq!(t.action, Action::RunCancel);
+        }
+    }
+
+    #[test]
+    fn requeued_has_node_without_holding_a_slot() {
+        for node in Node::ALL.into_iter().filter(|n| !n.awaits_user()) {
+            let state = TaskState::Requeued { resume: node };
+            assert_eq!(state.node(), Some(node));
+            assert!(!state.occupies_slot());
+            assert!(!state.awaits_user());
+            assert!(!state.is_terminal());
+        }
+    }
+
+    #[test]
+    fn requeued_json_preserves_old_shapes() {
+        use serde_json::{from_value, json, to_value};
+        let pairs = [
+            (TaskState::Queued, json!({"state":"queued"})),
+            (
+                TaskState::Requeued {
+                    resume: Node::Audit,
+                },
+                json!({"state":"queued","resume":"audit"}),
+            ),
+            (
+                active(Node::Implement),
+                json!({"state":"active","node":"implement"}),
+            ),
+            (
+                TaskState::Paused { resume: Node::Gate },
+                json!({"state":"paused","resume":"gate"}),
+            ),
+            (
+                TaskState::Stopped { at: Node::Review },
+                json!({"state":"stopped","at":"review"}),
+            ),
+            (
+                TaskState::Failed {
+                    at: Node::Design,
+                    reason: FailureReason::Config { detail: "x".into() },
+                },
+                json!({"state":"failed","at":"design","reason":{"kind":"config","detail":"x"}}),
+            ),
+            (TaskState::Done, json!({"state":"done"})),
+            (TaskState::Cancelled, json!({"state":"cancelled"})),
+        ];
+        for (state, value) in pairs {
+            assert_eq!(to_value(&state).unwrap(), value);
+            assert_eq!(from_value::<TaskState>(value).unwrap(), state);
+        }
+        assert_eq!(
+            from_value::<TaskState>(json!({"state":"queued","resume":null})).unwrap(),
+            TaskState::Queued
+        );
+        for value in [
+            json!({"state":"queued","resume":""}),
+            json!({"state":"queued","resume":"unknown"}),
+            json!({"state":"queued","resume":0}),
+        ] {
+            assert!(from_value::<TaskState>(value).is_err());
+        }
     }
 
     #[test]

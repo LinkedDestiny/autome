@@ -1434,7 +1434,7 @@ fn queue_position(
     ctx: &Ctx,
     task: &crate::store::TaskRecord,
 ) -> std::result::Result<Option<usize>, DispatchError> {
-    if !matches!(task.state, TaskState::Queued) {
+    if !matches!(task.state, TaskState::Queued | TaskState::Requeued { .. }) {
         return Ok(None);
     }
     Ok(ctx
@@ -1761,6 +1761,12 @@ fn task_cancel(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 /// reverse order would leave a process writing to a log for a task the store
 /// has already moved on from (requirement T-08).
 fn task_stop(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    if matches!(
+        ctx.store.get_task(task_id)?.state,
+        TaskState::Requeued { .. }
+    ) {
+        return task_trigger(ctx, task_id, Trigger::Stop);
+    }
     stop_running_session(ctx, task_id)?;
     task_trigger(ctx, task_id, Trigger::Stop)
 }

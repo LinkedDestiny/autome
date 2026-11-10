@@ -201,6 +201,68 @@ pub fn stop_all(repo: &Path, task_id: &str) {
     }
 }
 
+/// Remove only this node's jobs, after stopping any surviving wrapper.
+pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<()> {
+    let dir = dir_for(repo, task_id);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let prefix = format!("{node}-");
+    let mut stems = std::collections::BTreeSet::new();
+    for entry in entries {
+        let name = entry?.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        for suffix in [
+            ".started",
+            ".pid",
+            ".exit",
+            ".log",
+            ".exit.tmp",
+            ".exit.code",
+        ] {
+            if let Some(stem) = name.strip_suffix(suffix) {
+                stems.insert(stem.to_string());
+                break;
+            }
+        }
+    }
+    for stem in &stems {
+        let pid_path = dir.join(format!("{stem}.pid"));
+        let started = dir.join(format!("{stem}.started"));
+        let exit = dir.join(format!("{stem}.exit"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while started.exists()
+            && !pid_path.exists()
+            && !exit.exists()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if let Some(pid) = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            && crate::launcher::pid_alive(pid)
+        {
+            kill_group(pid);
+        }
+    }
+    for stem in stems {
+        for suffix in ["started", "pid", "exit", "log", "exit.tmp", "exit.code"] {
+            match std::fs::remove_file(dir.join(format!("{stem}.{suffix}"))) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The last `lines` lines of a log, for the prompt and the panel. Bounded in
 /// bytes too: one line of minified output must not become the whole prompt.
 pub fn tail(log: &Path, lines: usize) -> String {
@@ -282,6 +344,58 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
+    }
+
+    #[test]
+    fn requeued_discard_waits_for_the_wrapper_pid_before_removing_files() {
+        use std::os::unix::process::CommandExt;
+        let repo = sandbox("discard-delayed-pid");
+        let job = Job::at(&repo, "T-1", "gate", "abc");
+        std::fs::create_dir_all(job.started.parent().unwrap()).unwrap();
+        std::fs::write(&job.started, now_secs().to_string()).unwrap();
+        // Hold the wrapper before its first pid write, reproducing the spawn window.
+        let release = repo.join("release");
+        let ready = repo.join("ready");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c").arg("touch \"$READY\"; while [ ! -f \"$RELEASE\" ]; do sleep 0.01; done; echo $$ > \"$PID\"; while :; do echo stale >> \"$LOG\"; sleep 0.01; done")
+            .env("READY", &ready).env("RELEASE", &release).env("PID", &job.pid).env("LOG", &job.log)
+            .stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.exists());
+        assert!(!job.pid.exists());
+        let release_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::write(release, "go").unwrap();
+        });
+        discard_node(&repo, "T-1", "gate").unwrap();
+        release_thread.join().unwrap();
+        let exited = child.try_wait().unwrap().is_some();
+        if !exited {
+            kill_group(child.id() as i32);
+        }
+        child.wait().unwrap();
+        assert!(
+            exited,
+            "old wrapper must be dead before paths can be reused"
+        );
+        assert!(!job.started.exists());
+        assert!(!job.pid.exists());
+        assert!(!job.log.exists());
+        start(&job, &repo, "echo fresh", &[]).unwrap();
+        assert_eq!(wait_done(&job, 5), Poll::Done { exit_code: 0 });
+        assert_eq!(std::fs::read_to_string(&job.log).unwrap().trim(), "fresh");
+        discard_node(&repo, "T-1", "gate").unwrap();
+        discard_node(&repo, "missing", "gate").unwrap(); // A vanished wrapper has no pid or exit: the bounded wait must expire.
+        std::fs::write(&job.started, "1").unwrap();
+        let began = std::time::Instant::now();
+        discard_node(&repo, "T-1", "gate").unwrap();
+        assert!(began.elapsed() >= std::time::Duration::from_secs(3));
+        assert!(!job.started.exists());
+
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]
