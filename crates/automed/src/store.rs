@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use autome_domain::project::{AddDisposition, Member, Onboarding, Project, ProjectKind};
 use autome_domain::role::Runtime;
 use autome_domain::session::{Session, SessionKind, SessionLifecycle};
-use autome_domain::task::{Disposition, Inject, Node, PendingDecisions, TaskState};
+use autome_domain::task::{Disposition, Inject, Node, PendingDecisions, TaskKind, TaskState};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -67,13 +67,14 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
 /// `Eq` is deliberately absent: `TaskMetrics` carries a cost in dollars.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskRecord {
+    pub kind: TaskKind,
     pub id: String,
     pub project_id: String,
     pub slug: String,
@@ -452,6 +453,20 @@ impl Store {
                 "#,
             )?;
         }
+        if version < 5 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature';
+                 ALTER TABLE tasks ADD COLUMN queued_seq INTEGER;
+                 CREATE TABLE task_briefs (
+                     task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+                     body TEXT NOT NULL,
+                     created_at TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 5;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -803,9 +818,9 @@ impl Store {
             .execute(
                 "INSERT INTO tasks (id, project_id, slug, title, request, attachments, doc_refs,
                                     state, budget_n, created_at, completed_at, merge_commit,
-                                    archived_at, protocol_ref, rules_hash, metrics, doc_root)
+                                    archived_at, protocol_ref, rules_hash, metrics, doc_root, kind)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                         ?17)",
+                         ?17, ?18)",
                 params![
                     task.id,
                     task.project_id,
@@ -827,6 +842,7 @@ impl Store {
                         .map(serde_json::to_string)
                         .transpose()?,
                     task.doc_root,
+                    task.kind.as_str(),
                 ],
             )
             .map_err(|e| match &e {
@@ -852,6 +868,41 @@ impl Store {
                 }
                 other => StoreError::Sql(other.to_string()),
             })?;
+        Ok(())
+    }
+
+    pub fn create_task(&self, task: &TaskRecord, brief: Option<&str>) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_task(task)?;
+        if matches!(task.state, TaskState::Queued) {
+            self.mark_queued(&task.id)?;
+        }
+        if let Some(body) = brief {
+            tx.execute(
+                "INSERT INTO task_briefs (task_id, body, created_at) VALUES (?1, ?2, ?3)",
+                params![task.id, body, task.created_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn task_brief(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT body FROM task_briefs WHERE task_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn mark_queued(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET queued_seq = (SELECT COALESCE(MAX(queued_seq), 0) + 1 FROM tasks) WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -1199,8 +1250,14 @@ impl Store {
 
     /// The queued tasks of a project, in submission order.
     pub fn queued_tasks(&self, project_id: &str) -> Result<Vec<TaskRecord>> {
-        Ok(self
-            .list_tasks(project_id)?
+        let mut stmt = self.conn.prepare(&format!(
+            "{TASK_SELECT_BASE} WHERE project_id = ?1 ORDER BY queued_seq IS NOT NULL, queued_seq, created_at"
+        ))?;
+        let tasks = stmt
+            .query_map(params![project_id], row_to_task)?
+            .map(|row| Ok(row??))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(tasks
             .into_iter()
             .filter(|t| matches!(t.state, TaskState::Queued | TaskState::Requeued { .. }))
             .collect())
@@ -1743,11 +1800,11 @@ const PROJECT_SELECT_BASE: &str =
 
 const TASK_SELECT_BASE: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
             state, budget_n, created_at, completed_at, merge_commit, archived_at,
-            protocol_ref, rules_hash, metrics, doc_root FROM tasks";
+            protocol_ref, rules_hash, metrics, doc_root, kind FROM tasks";
 
 const TASK_SELECT: &str = "SELECT id, project_id, slug, title, request, attachments, doc_refs,
             state, budget_n, created_at, completed_at, merge_commit, archived_at,
-            protocol_ref, rules_hash, metrics, doc_root
+            protocol_ref, rules_hash, metrics, doc_root, kind
      FROM tasks WHERE id = ?1";
 
 const SESSION_SELECT_BASE: &str = "SELECT id, task_id, kind, runtime, model, effort, skills, round,
@@ -1815,9 +1872,11 @@ fn row_to_task(r: &rusqlite::Row<'_>) -> RowResult<TaskRecord> {
     // NULL is every task created before the document root was configurable,
     // and `TaskRecord::doc_root` reads it as the `docs/` those tasks used.
     let doc_root: Option<String> = r.get(16)?;
+    let kind: String = r.get(17)?;
     Ok(
         (|| -> std::result::Result<TaskRecord, serde_json::Error> {
             Ok(TaskRecord {
+                kind: serde_json::from_value(Value::String(kind))?,
                 id: base.0,
                 project_id: base.1,
                 slug: base.2,
@@ -1957,6 +2016,7 @@ pub fn task_counts(tasks: &[TaskRecord]) -> BTreeMap<&'static str, usize> {
     let mut counts = BTreeMap::new();
     for t in tasks {
         let key = match &t.state {
+            TaskState::Draft => "draft",
             TaskState::Queued | TaskState::Requeued { .. } => "queued",
             TaskState::Active { node } if node.awaits_user() => "awaiting_user",
             TaskState::Active { .. } => "running",
@@ -2010,6 +2070,7 @@ mod tests {
 
     fn task(id: &str, project_id: &str, slug: &str) -> TaskRecord {
         TaskRecord {
+            kind: TaskKind::Feature,
             id: id.into(),
             project_id: project_id.into(),
             slug: slug.into(),
@@ -2218,7 +2279,7 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap(),
             serde_json::json!({"state":"queued","resume":"implement"})
         );
-        assert_eq!(SCHEMA_VERSION, 4);
+        assert_eq!(SCHEMA_VERSION, 5);
     }
 
     #[test]
@@ -2832,5 +2893,180 @@ mod tests {
         assert_eq!(v, SCHEMA_VERSION);
         drop(s);
         remove_db(&path);
+    }
+    mod task_card {
+        use super::*;
+
+        #[test]
+        fn a_v4_ledger_migrates_to_v5_and_every_old_task_reads_as_a_feature() {
+            let s = store();
+            s.insert_project(&project("p1", "/repo")).unwrap();
+            let states = [
+                TaskState::Queued,
+                TaskState::Requeued {
+                    resume: Node::Design,
+                },
+                TaskState::Active { node: Node::Intake },
+                TaskState::Paused {
+                    resume: Node::Review,
+                },
+                TaskState::Stopped {
+                    at: Node::Implement,
+                },
+                TaskState::Failed {
+                    at: Node::Design,
+                    reason: FailureReason::Config {
+                        detail: "old failure".into(),
+                    },
+                },
+                TaskState::Done,
+                TaskState::Cancelled,
+            ];
+            for (i, state) in states.iter().enumerate() {
+                let id = format!("T-{i}");
+                let mut t = task(&id, "p1", &id);
+                t.state = state.clone();
+                s.insert_task(&t).unwrap();
+            }
+            s.conn.execute_batch("ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE tasks DROP COLUMN queued_seq; DROP TABLE task_briefs; PRAGMA user_version = 4;").unwrap();
+            s.migrate().unwrap();
+            let version: i64 = s
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, 5);
+            for (i, state) in states.iter().enumerate() {
+                let id = format!("T-{i}");
+                let t = s.get_task(&id).unwrap();
+                assert_eq!(&t.state, state);
+                assert_eq!(t.kind, TaskKind::Feature);
+                assert_eq!(s.task_brief(&id).unwrap(), None);
+                let seq: Option<i64> = s
+                    .conn
+                    .query_row("SELECT queued_seq FROM tasks WHERE id = ?1", [&id], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(seq, None);
+            }
+        }
+
+        #[test]
+        fn kind_round_trips_through_the_ledger() {
+            let s = store();
+            s.insert_project(&project("p1", "/repo")).unwrap();
+            for kind in [TaskKind::Feature, TaskKind::Bug] {
+                let mut t = task(kind.as_str(), "p1", kind.as_str());
+                t.kind = kind;
+                s.insert_task(&t).unwrap();
+                assert_eq!(s.get_task(&t.id).unwrap(), t);
+            }
+            let tasks = s.list_tasks("p1").unwrap();
+            assert!(tasks.iter().any(|t| t.kind == TaskKind::Bug));
+            assert!(
+                s.list_unfinished()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t.kind == TaskKind::Bug)
+            );
+        }
+
+        #[test]
+        fn a_brief_is_stored_with_its_task_and_read_back_byte_for_byte() {
+            let s = store();
+            s.insert_project(&project("p1", "/repo")).unwrap();
+            let body = " # 中文 🐛\r\n{request}\n  ";
+            s.create_task(&task("T-1", "p1", "one"), Some(body))
+                .unwrap();
+            assert_eq!(
+                s.task_brief("T-1").unwrap().unwrap().as_bytes(),
+                body.as_bytes()
+            );
+            s.create_task(&task("T-2", "p1", "two"), None).unwrap();
+            assert_eq!(s.task_brief("T-2").unwrap(), None);
+            // A body write failure must roll back the task and its queue sequence too.
+            s.conn.execute_batch("CREATE TRIGGER reject_brief BEFORE INSERT ON task_briefs BEGIN SELECT RAISE(ABORT, 'write failure'); END;").unwrap();
+            assert!(
+                s.create_task(&task("T-3", "p1", "three"), Some(body))
+                    .is_err()
+            );
+            assert!(s.get_task("T-3").is_err());
+            assert_eq!(s.list_tasks("p1").unwrap().len(), 2);
+        }
+
+        #[test]
+        fn a_started_draft_queues_behind_tasks_that_were_already_queued() {
+            let s = store();
+            s.insert_project(&project("p1", "/repo")).unwrap();
+            assert!(s.queued_tasks("p1").unwrap().is_empty());
+            for (id, created) in [
+                ("old-later", "2026-11-10T02:00:00Z"),
+                ("old-first", "2026-11-10T01:00:00Z"),
+            ] {
+                let mut t = task(id, "p1", id);
+                t.created_at = created.into();
+                s.insert_task(&t).unwrap();
+            }
+            for (id, created) in [
+                ("draft-first", "2026-11-09T00:00:00Z"),
+                ("draft-second", "2026-11-10T03:00:00Z"),
+            ] {
+                let mut t = task(id, "p1", id);
+                t.state = TaskState::Draft;
+                t.created_at = created.into();
+                s.create_task(&t, None).unwrap();
+            }
+            assert_eq!(s.queued_tasks("p1").unwrap().len(), 2);
+            assert_eq!(s.slots_in_use("p1").unwrap(), 0);
+            let mut t = task("new", "p1", "new");
+            t.created_at = "2026-11-10T03:00:00Z".into();
+            s.create_task(&t, None).unwrap();
+            for id in ["draft-second", "draft-first"] {
+                s.set_task_state(id, &TaskState::Queued).unwrap();
+                s.mark_queued(id).unwrap();
+            }
+            let ids = || {
+                s.queued_tasks("p1")
+                    .unwrap()
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                ids(),
+                [
+                    "old-first",
+                    "old-later",
+                    "new",
+                    "draft-second",
+                    "draft-first"
+                ]
+            );
+            s.set_task_state(
+                "new",
+                &TaskState::Requeued {
+                    resume: Node::Design,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                ids(),
+                [
+                    "old-first",
+                    "old-later",
+                    "new",
+                    "draft-second",
+                    "draft-first"
+                ]
+            );
+        }
+
+        #[test]
+        fn task_counts_has_a_draft_bucket() {
+            assert!(task_counts(&[]).is_empty());
+            let mut t = task("T-1", "p1", "one");
+            t.state = TaskState::Draft;
+            assert_eq!(task_counts(&[t]), BTreeMap::from([("draft", 1)]));
+        }
     }
 }

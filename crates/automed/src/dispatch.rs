@@ -385,6 +385,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
 
         // ---- tasks -------------------------------------------------------
         "task.create" => task_create(ctx, p),
+        "task.start" => task_start(ctx, str_param(p, "task_id")?),
         "task.get" => task_get(ctx, str_param(p, "task_id")?),
         "task.approve" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Approve),
         "task.reject" => task_trigger(
@@ -537,6 +538,7 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
 fn task_json(t: &crate::store::TaskRecord) -> Value {
     json!({
         "id": t.id,
+        "kind": t.kind,
         "slug": t.slug,
         "title": t.title,
         "request": t.request,
@@ -1309,9 +1311,66 @@ fn role_label(role: Role) -> &'static str {
 /// would only add friction.
 fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let project_id = str_param(params, "project_id")?;
-    let request = str_param(params, "request")?.trim().to_string();
+    let kind = match params.get("kind") {
+        None | Some(Value::Null) => autome_domain::task::TaskKind::Feature,
+        Some(value) => value
+            .as_str()
+            .and_then(autome_domain::task::TaskKind::parse)
+            .ok_or_else(|| bad_params(format!("未知的任务类型 {value}：只能是 feature 或 bug")))?,
+    };
+    let brief = params
+        .get("brief")
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| bad_params("任务卡正文必须是字符串"))
+        })
+        .transpose()?;
+    if let Some(body) = brief {
+        if body.trim().is_empty() {
+            return Err(bad_params("任务卡正文不能为空"));
+        }
+        if body.len() > 65536 {
+            return Err(bad_params(format!(
+                "任务卡正文超过 64KB（{} 字节，上限 65536 字节）",
+                body.len()
+            )));
+        }
+    }
+    let draft = params
+        .get("draft")
+        .map(|v| v.as_bool().ok_or_else(|| bad_params("draft 必须是布尔值")))
+        .transpose()?
+        .unwrap_or(false);
+    let request = if let Some(body) = brief {
+        match params.get("request") {
+            Some(value) => value
+                .as_str()
+                .ok_or_else(|| bad_params("request 必须是字符串"))?
+                .trim()
+                .to_string(),
+            None => body
+                .lines()
+                .find_map(|line| line.strip_prefix("# "))
+                .or_else(|| {
+                    body.lines()
+                        .find(|line| !line.trim().is_empty())
+                        .map(|line| {
+                            line.trim_start_matches(|c: char| c == '#' || c.is_whitespace())
+                        })
+                })
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+        }
+    } else {
+        str_param(params, "request")?.trim().to_string()
+    };
     if request.is_empty() {
-        return Err(bad_params("需求不能为空"));
+        return Err(bad_params(if brief.is_some() {
+            "任务卡正文缺少标题：第一行写 `# 标题`"
+        } else {
+            "需求不能为空"
+        }));
     }
     let project = ctx.store.get_project(project_id)?;
     if !project.is_active() {
@@ -1344,7 +1403,14 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         })
         .unwrap_or_default();
 
-    create(ctx, project_id, &request, attachments, doc_refs)
+    create(
+        ctx,
+        project_id,
+        &request,
+        attachments,
+        doc_refs,
+        (kind, brief, draft),
+    )
 }
 
 fn create(
@@ -1353,7 +1419,9 @@ fn create(
     request: &str,
     attachments: Vec<String>,
     doc_refs: Vec<String>,
+    card: (autome_domain::task::TaskKind, Option<&str>, bool),
 ) -> DispatchResult {
+    let (kind, brief, draft) = card;
     let project = ctx.store.get_project(project_id)?;
     let doc_root = resolve_doc_root(
         &project,
@@ -1373,6 +1441,7 @@ fn create(
     let id = ctx.store.next_task_id(project_id)?;
 
     let task = crate::store::TaskRecord {
+        kind,
         id: id.clone(),
         project_id: project_id.to_string(),
         slug,
@@ -1382,7 +1451,11 @@ fn create(
         request: request.to_string(),
         attachments,
         doc_refs,
-        state: TaskState::Queued,
+        state: if draft {
+            TaskState::Draft
+        } else {
+            TaskState::Queued
+        },
         budget_n: None,
         created_at: now_iso(),
         completed_at: None,
@@ -1399,14 +1472,18 @@ fn create(
         // halfway through must not split them across two directories.
         doc_root: Some(doc_root),
     };
-    ctx.store.insert_task(&task)?;
+    ctx.store.create_task(&task, brief)?;
     let seq = ctx
         .store
         .append_event("task.created", &id, json!({ "project_id": project_id }))?;
 
     // Start it immediately if the project has a free slot.
-    let report = scheduler::tick(ctx);
-    let started = report.tasks_started.contains(&id);
+    let report = if draft {
+        Default::default()
+    } else {
+        scheduler::tick(ctx)
+    };
+    let started = !draft && report.tasks_started.contains(&id);
 
     let task = ctx.store.get_task(&id)?;
     Ok((
@@ -1416,6 +1493,27 @@ fn create(
             "queue_position": queue_position(ctx, &task)?,
         }),
         vec![event(seq, "task.created", &id, json!({}))],
+    ))
+}
+
+fn task_start(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    scheduler::apply_trigger(ctx, task_id, &Trigger::Start)?;
+    ctx.store.mark_queued(task_id)?;
+    let task = ctx.store.get_task(task_id)?;
+    let seq = ctx.store.append_event(
+        "task.started",
+        task_id,
+        json!({"project_id": task.project_id}),
+    )?;
+    let report = scheduler::tick(ctx);
+    let task = ctx.store.get_task(task_id)?;
+    Ok((
+        json!({
+            "task": task_json(&task),
+            "started": report.tasks_started.iter().any(|id| id == task_id),
+            "queue_position": queue_position(ctx, &task)?,
+        }),
+        vec![event(seq, "task.started", task_id, json!({}))],
     ))
 }
 
@@ -1481,6 +1579,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
         json!({
             "task": task_json(&task),
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
+            "brief": ctx.store.task_brief(task_id)?,
             "queue_position": queue_position(ctx, &task)?,
             "status_block": status.map(status_json),
             "status_error": doc.error().is_some(),
@@ -3110,6 +3209,7 @@ mod tests {
         // is not here is one the user cannot open from the panel.
         let sb = Sandbox::new("docs-evidence");
         let task = crate::store::TaskRecord {
+            kind: autome_domain::task::TaskKind::Feature,
             id: "T-1".into(),
             project_id: "p".into(),
             slug: "cart".into(),
@@ -3157,6 +3257,7 @@ mod tests {
     fn a_task_without_an_evidence_directory_still_lists_its_documents() {
         let sb = Sandbox::new("docs-no-evidence");
         let task = crate::store::TaskRecord {
+            kind: autome_domain::task::TaskKind::Feature,
             id: "T-1".into(),
             project_id: "p".into(),
             slug: "cart".into(),
@@ -3285,6 +3386,7 @@ mod tests {
         sb.ctx()
             .store
             .insert_task(&crate::store::TaskRecord {
+                kind: autome_domain::task::TaskKind::Feature,
                 id: "T-1".into(),
                 project_id: id.clone(),
                 slug: "s".into(),
@@ -3818,6 +3920,401 @@ mod tests {
             let s = describe_violation(&v);
             assert!(!s.is_empty());
             assert!(!s.is_ascii(), "{s} should be Chinese");
+        }
+    }
+
+    mod task_card_read {
+        use super::*;
+
+        fn call(sb: &mut Sandbox, method: &str, params: Value) -> Value {
+            ok_payload(&handle_command(sb.ctx(), &cmd(method, params))).clone()
+        }
+
+        #[test]
+        fn brief_is_returned_byte_for_byte() {
+            let mut sb = Sandbox::new("card-read-verbatim");
+            let project = sb.add_project("repo");
+            for brief in [
+                " \n# 中文\r\n{request} {unknown}\n\t".to_string(),
+                "字".repeat(21845) + "a",
+                "x".into(),
+            ] {
+                let created = call(
+                    &mut sb,
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": "read", "draft": true, "brief": brief
+                    }),
+                );
+                let get = call(
+                    &mut sb,
+                    "task.get",
+                    json!({"task_id": created["task"]["id"]}),
+                );
+                assert_eq!(get["brief"].as_str().unwrap().as_bytes(), brief.as_bytes());
+                assert!(get["task"].get("brief").is_none());
+            }
+        }
+
+        #[test]
+        fn missing_brief_is_explicit_null() {
+            let mut sb = Sandbox::new("card-read-null");
+            let project = sb.add_project("repo");
+            let created = call(
+                &mut sb,
+                "task.create",
+                json!({
+                    "project_id": project, "request": "no card", "draft": true
+                }),
+            );
+            let get = call(
+                &mut sb,
+                "task.get",
+                json!({"task_id": created["task"]["id"]}),
+            );
+            assert_eq!(get.get("brief"), Some(&Value::Null));
+        }
+
+        #[test]
+        fn archived_brief_remains_readable_and_lists_omit_it() {
+            let mut sb = Sandbox::new("card-read-archive");
+            let project = sb.add_project("repo");
+            let brief = "\n# 保留正文\n{request}\n";
+            let created = call(
+                &mut sb,
+                "task.create",
+                json!({
+                    "project_id": project, "request": "archive card", "draft": true, "brief": brief
+                }),
+            );
+            let id = created["task"]["id"].as_str().unwrap();
+            // Exercise a populated dashboard, since drafts and archived tasks are omitted.
+            sb.ctx
+                .store
+                .set_task_state(
+                    id,
+                    &TaskState::Active {
+                        node: autome_domain::task::Node::Intake,
+                    },
+                )
+                .unwrap();
+            let dashboard = call(&mut sb, "dashboard.get", json!({}));
+            assert_eq!(dashboard["running"][0]["task"]["id"], id);
+            assert!(dashboard["running"][0].get("brief").is_none());
+            assert!(dashboard["running"][0]["task"].get("brief").is_none());
+            let listing = call(&mut sb, "project.get", json!({"project_id": project}));
+            assert_eq!(listing["tasks"][0]["id"], id);
+            assert!(listing["tasks"][0].get("brief").is_none());
+            sb.ctx.store.set_task_state(id, &TaskState::Draft).unwrap();
+            call(&mut sb, "task.cancel", json!({"task_id": id}));
+            let task = sb.ctx.store.get_task(id).unwrap();
+            assert_eq!(task.state, TaskState::Cancelled);
+            assert!(task.is_archived());
+            let get = call(&mut sb, "task.get", json!({"task_id": id}));
+            assert_eq!(get["brief"], brief);
+            assert!(get["task"].get("brief").is_none());
+        }
+    }
+
+    mod task_card {
+        use super::*;
+        fn world() -> (Sandbox, String) {
+            let mut sb = Sandbox::new("task-card");
+            let id = sb.add_project("repo");
+            (sb, id)
+        }
+        fn call(sb: &mut Sandbox, method: &str, params: Value) -> Value {
+            ok_payload(&handle_command(sb.ctx(), &cmd(method, params))).clone()
+        }
+        fn new(sb: &mut Sandbox, project: &str, mut params: Value) -> Value {
+            params["project_id"] = json!(project);
+            call(sb, "task.create", params)
+        }
+        fn refuse(sb: &mut Sandbox, project: &str, mut params: Value, message: &str) {
+            let before = sb.ctx.store.list_tasks(project).unwrap().len();
+            params["project_id"] = json!(project);
+            let out = handle_command(sb.ctx(), &cmd("task.create", params));
+            assert!(err_message(&out).contains(message), "{}", err_message(&out));
+            assert_eq!(sb.ctx.store.list_tasks(project).unwrap().len(), before);
+        }
+        fn occupy(sb: &mut Sandbox, project: &str) {
+            let task = new(sb, project, json!({"request":"occupant", "draft":true}));
+            let id = task["task"]["id"].as_str().unwrap();
+            sb.ctx
+                .store
+                .set_task_state(
+                    id,
+                    &TaskState::Active {
+                        node: autome_domain::task::Node::Intake,
+                    },
+                )
+                .unwrap();
+            sb.ctx.store.update_project_parallel(project, 1).unwrap();
+        }
+        #[test]
+        fn create_without_the_new_params_is_unchanged() {
+            let (mut sb, project) = world();
+            occupy(&mut sb, &project);
+            let out = new(&mut sb, &project, json!({"request":"old request"}));
+            assert_eq!(out["task"]["kind"], "feature");
+            assert_eq!(out["task"]["state"]["state"], "queued");
+            assert_eq!(out["started"], false);
+            assert_eq!(out["queue_position"], 1);
+            assert_eq!(out.as_object().unwrap().len(), 3);
+            assert!(
+                sb.ctx
+                    .store
+                    .task_brief(out["task"]["id"].as_str().unwrap())
+                    .unwrap()
+                    .is_none()
+            );
+            let events = sb.ctx.store.events_since(0, 100).unwrap();
+            for (_, kind, payload) in events {
+                if kind == "task.created" {
+                    assert_eq!(payload, json!({"project_id":project}));
+                }
+            }
+        }
+        #[test]
+        fn create_accepts_kind_bug_and_task_get_and_project_get_carry_it() {
+            let (mut sb, project) = world();
+            let out = new(
+                &mut sb,
+                &project,
+                json!({"request":"bug", "kind":"bug", "draft":true}),
+            );
+            let get = call(&mut sb, "task.get", json!({"task_id":out["task"]["id"]}));
+            assert_eq!(get["task"]["kind"], "bug");
+            let get = call(&mut sb, "project.get", json!({"project_id":project}));
+            assert_eq!(get["tasks"][0]["kind"], "bug");
+            let out = new(
+                &mut sb,
+                &project,
+                json!({"request":"null kind", "kind":null,"draft":true}),
+            );
+            assert_eq!(out["task"]["kind"], "feature");
+        }
+        #[test]
+        fn create_rejects_an_unknown_kind_in_chinese() {
+            let (mut sb, project) = world();
+            for kind in [json!("BUG"), json!(""), json!(7), json!({})] {
+                refuse(
+                    &mut sb,
+                    &project,
+                    json!({"request":"x","kind":kind}),
+                    "只能是 feature 或 bug",
+                );
+            }
+            for draft in [json!(null), json!("true"), json!(1)] {
+                refuse(
+                    &mut sb,
+                    &project,
+                    json!({"request":"x","draft":draft}),
+                    "布尔",
+                );
+            }
+            for brief in [json!(null), json!(1)] {
+                refuse(
+                    &mut sb,
+                    &project,
+                    json!({"request":"x","brief":brief}),
+                    "字符串",
+                );
+            }
+        }
+        #[test]
+        fn a_brief_of_exactly_64_kib_is_accepted_and_one_byte_more_is_refused() {
+            let (mut sb, project) = world();
+            let body = format!("{}a", "中".repeat(21845));
+            assert_eq!(body.len(), 65536);
+            let out = new(
+                &mut sb,
+                &project,
+                json!({"request":"x","brief":body,"draft":true}),
+            );
+            assert_eq!(
+                sb.ctx
+                    .store
+                    .task_brief(out["task"]["id"].as_str().unwrap())
+                    .unwrap(),
+                Some(body.clone())
+            );
+            refuse(
+                &mut sb,
+                &project,
+                json!({"brief":format!("{body}b")}),
+                "64KB",
+            );
+        }
+        #[test]
+        fn an_empty_brief_is_refused() {
+            let (mut sb, project) = world();
+            for body in ["", " \n\t", "\u{3000}"] {
+                refuse(&mut sb, &project, json!({"brief":body}), "正文不能为空");
+            }
+        }
+        #[test]
+        fn a_brief_without_a_request_takes_its_request_from_the_first_heading() {
+            let (mut sb, project) = world();
+            for (body, title) in [
+                ("intro\n# 标题\n# second", "标题"),
+                ("## 次级标题\n正文", "次级标题"),
+                ("x", "x"),
+            ] {
+                let out = new(&mut sb, &project, json!({"brief":body,"draft":true}));
+                assert_eq!(out["task"]["request"], title);
+                assert_eq!(out["task"]["title"], title);
+            }
+            refuse(&mut sb, &project, json!({"brief":"###   "}), "缺少标题");
+            refuse(&mut sb, &project, json!({"brief":"#   \nbody"}), "缺少标题");
+            refuse(
+                &mut sb,
+                &project,
+                json!({"brief":"# title","request":1}),
+                "字符串",
+            );
+            refuse(&mut sb, &project, json!({"request":"  "}), "需求不能为空");
+        }
+        #[test]
+        fn with_both_the_request_names_the_task_and_the_brief_is_kept_verbatim() {
+            let (mut sb, project) = world();
+            let body = " # different\r\n{request} 中文 \n";
+            let out = new(
+                &mut sb,
+                &project,
+                json!({"request":"named","brief":body,"draft":true}),
+            );
+            assert_eq!(out["task"]["title"], "named");
+            assert_eq!(out["task"]["slug"], "named");
+            assert_eq!(
+                sb.ctx
+                    .store
+                    .task_brief(out["task"]["id"].as_str().unwrap())
+                    .unwrap()
+                    .as_deref(),
+                Some(body)
+            );
+        }
+        #[test]
+        fn a_draft_is_created_without_starting_or_a_queue_position_and_is_not_on_the_dashboard() {
+            let (mut sb, project) = world();
+            let out = new(&mut sb, &project, json!({"request":"draft","draft":true}));
+            assert_eq!(out["task"]["state"]["state"], "draft");
+            assert_eq!(out["started"], false);
+            assert!(out["queue_position"].is_null());
+            assert_eq!(sb.ctx.store.slots_in_use(&project).unwrap(), 0);
+            let dashboard = call(&mut sb, "dashboard.get", json!({}));
+            assert_eq!(dashboard["waiting"], json!([]));
+            assert_eq!(dashboard["running"], json!([]));
+            assert!(!sb.path("repo/.worktree/draft").exists());
+        }
+        #[test]
+        fn task_start_queues_a_draft_behind_the_parallel_limit_and_records_task_started() {
+            let (mut sb, project) = world();
+            occupy(&mut sb, &project);
+            let draft = new(&mut sb, &project, json!({"request":"draft","draft":true}));
+            new(&mut sb, &project, json!({"request":"earlier"}));
+            let out = call(
+                &mut sb,
+                "task.start",
+                json!({"task_id":draft["task"]["id"]}),
+            );
+            assert_eq!(out["queue_position"], 2);
+            assert_eq!(out["started"], false);
+            assert_eq!(out["task"]["state"]["state"], "queued");
+            let events = sb.ctx.store.events_since(0, 100).unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|(_, kind, payload)| kind == "task.started"
+                        && *payload == json!({"project_id":project}))
+            );
+            let (mut free, project) = world();
+            for args in [
+                vec!["add", "."],
+                vec![
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "initial",
+                ],
+                vec!["branch", "-M", "main"],
+            ] {
+                // Bare git, so drop what a git hook would have exported:
+                // an inherited GIT_DIR / GIT_INDEX_FILE points at the repo
+                // running the suite, not at this temporary one.
+                let output = std::process::Command::new("git")
+                    .current_dir(free.path("repo"))
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_INDEX_FILE")
+                    .env_remove("GIT_WORK_TREE")
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            let draft = new(
+                &mut free,
+                &project,
+                json!({"request":"start now","draft":true}),
+            );
+            let out = call(
+                &mut free,
+                "task.start",
+                json!({"task_id":draft["task"]["id"]}),
+            );
+            assert_eq!(out["started"], true, "{out}");
+            assert!(out["queue_position"].is_null());
+            assert_eq!(out["task"]["state"]["state"], "active");
+        }
+        #[test]
+        fn task_start_refuses_a_task_that_is_not_a_draft() {
+            let (mut sb, project) = world();
+            occupy(&mut sb, &project);
+            let out = new(&mut sb, &project, json!({"request":"queued"}));
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.start", json!({"task_id":out["task"]["id"]})),
+            );
+            assert!(err_message(&out).contains("只有待开始"));
+        }
+        #[test]
+        fn a_draft_is_cancelled_and_archived_without_a_worktree() {
+            let (mut sb, project) = world();
+            let out = new(
+                &mut sb,
+                &project,
+                json!({"request":"cancel","brief":"# keep","draft":true}),
+            );
+            let id = out["task"]["id"].as_str().unwrap();
+            call(&mut sb, "task.cancel", json!({"task_id":id}));
+            let task = sb.ctx.store.get_task(id).unwrap();
+            assert_eq!(task.state, TaskState::Cancelled);
+            assert!(task.is_archived());
+            assert!(!sb.path("repo/.worktree/cancel").exists());
+            assert_eq!(
+                sb.ctx.store.task_brief(id).unwrap().as_deref(),
+                Some("# keep")
+            );
+        }
+        #[test]
+        fn a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method() {
+            let (mut sb, project) = world();
+            let out = new(&mut sb, &project, json!({"request":"retro","draft":true}));
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.retro", json!({"task_id":out["task"]["id"]})),
+            );
+            assert!(err_message(&out).contains("任务还没开始"));
+            assert!(!READ_METHODS.contains(&"task.start"));
         }
     }
 }

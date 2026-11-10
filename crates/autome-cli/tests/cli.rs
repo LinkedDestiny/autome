@@ -267,3 +267,155 @@ fn help_and_version_need_no_ledger() {
         .unwrap();
     assert!(String::from_utf8_lossy(&help.stdout).contains("run [--once | --until-idle]"));
 }
+
+fn task_card_prepare(s: &Sandbox, slug: &str) {
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    for n in 1..=4 {
+        s.step(
+            n,
+            slug,
+            &doc(
+                if n == 4 { "实现中" } else { "设计中" },
+                n,
+                0,
+                &[("M-01", "开放")],
+            ),
+        );
+    }
+}
+
+#[test]
+fn task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_card() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let s = Sandbox::new("card-stdin");
+    let slug = "stdin-card";
+    task_card_prepare(&s, slug);
+    let brief = "# stdin card\n\n中文 {request}\n";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args([
+            "task", "new", "--brief", "-", "--kind", "bug", "--draft", "--json",
+        ])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .env("AUTOMED_CLAUDE_BINARY", &s.fake_cli)
+        .env("AUTOMED_CODEX_BINARY", &s.fake_cli)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(brief.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    let created: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(created["task"]["kind"], "bug");
+    assert_eq!(created["task"]["state"]["state"], "draft");
+    let id = created["task"]["id"].as_str().unwrap();
+    assert!(s.ok(&["status", id]).contains("待开始"));
+    let started = s.json(&["task", "start", slug]);
+    assert_eq!(started["task"]["id"], id);
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(id)["node"], "await_design_approval");
+    let card = s
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/{slug}-card.md"));
+    assert_eq!(std::fs::read(card).unwrap(), brief.as_bytes());
+}
+
+#[test]
+fn task_card_a_brief_from_a_file_names_the_task_and_an_oversized_one_is_refused() {
+    let s = Sandbox::new("card-file");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let file = s.root.join("card.md");
+    let path = file.to_str().unwrap();
+    std::fs::write(&file, "# 文件标题\n正文").unwrap();
+    let created = s.json(&["task", "new", "--brief", path, "--draft"]);
+    assert_eq!(created["task"]["request"], "文件标题");
+    assert_eq!(created["task"]["kind"], "feature");
+    std::fs::write(&file, "a".repeat(65536)).unwrap();
+    s.ok(&["task", "new", "边界", "--brief", path, "--draft"]);
+    let before = s.json(&["ls"]).as_array().unwrap().len();
+    for (bytes, message) in [
+        (vec![b'a'; 65537], "64KB"),
+        (vec![0xff], "任务卡正文不是 UTF-8 文本"),
+        (b" \n".to_vec(), "任务卡正文不能为空"),
+    ] {
+        std::fs::write(&file, bytes).unwrap();
+        let out = s.autome(&["task", "new", "--brief", path, "--draft"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(message));
+        assert_eq!(s.json(&["ls"]).as_array().unwrap().len(), before);
+    }
+    std::fs::remove_file(&file).unwrap();
+    let out = s.autome(&["task", "new", "--brief", path, "--draft"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("读取任务卡正文"));
+    assert_eq!(out.status.code(), Some(1));
+    let missing = s.autome(&["task", "new"]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("一句话需求或 --brief"));
+    let human = s.ok(&["task", "new", "human card", "--draft"]);
+    assert!(human.contains("已存为待开始。用 `autome task start"));
+}
+
+#[test]
+fn task_card_reply_rejects_the_design_with_the_text_verbatim() {
+    for kind in ["feature", "bug"] {
+        let s = Sandbox::new(&format!("card-reply-{kind}"));
+        let slug = "reply-card";
+        task_card_prepare(&s, slug);
+        let created = s.json(&["task", "new", "reply card", "--kind", kind]);
+        let id = created["task"]["id"].as_str().unwrap();
+        s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+        assert_eq!(s.task_state(id)["node"], "await_design_approval");
+        let missing = s.autome(&["reply", id]);
+        assert_eq!(missing.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("缺少参数：补充信息"));
+        for n in 5..=7 {
+            s.step(n, slug, &doc("实现中", 3, 0, &[("M-01", "开放")]));
+        }
+        let feedback = "请保留  双空格\n以及中文原文。";
+        s.ok(&["reply", id, feedback]);
+        s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+        let prompt = std::fs::read_to_string(s.repo.join(".autome/fake/5.prompt")).unwrap();
+        assert!(prompt.contains(feedback), "{prompt}");
+        assert_eq!(s.task_state(id)["node"], "await_design_approval");
+    }
+}
+
+#[test]
+fn task_card_start_refuses_a_task_that_is_not_a_draft() {
+    let s = Sandbox::new("card-start-refuse");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "cancelled card", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let reply = s.autome(&["reply", id, "不应启动"]);
+    assert_eq!(reply.status.code(), Some(1));
+    assert_eq!(s.task_state(id)["state"], "draft");
+    s.ok(&["cancel", id]);
+    let out = s.autome(&["task", "start", id]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("待开始"));
+    assert_eq!(s.task_state(id)["state"], "cancelled");
+}
