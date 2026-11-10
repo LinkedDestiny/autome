@@ -13,3 +13,4 @@
 
 实现 #9 | M-01 | 退回 + 依赖安装环境（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r9-impl.md | npm DNS 不通且锁定包无缓存
 实现 #10 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r10-impl.md | 锁定依赖 DNS/缓存不可用
+实现 #11 | M-01 | 依赖修复受阻，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r11-impl.md | npm DNS 失败且锁定包无缓存
