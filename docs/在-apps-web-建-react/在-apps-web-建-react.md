@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 1/20
+implementation-round: 2/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许回环监听的环境复跑 M-01 的 12 用例与监听地址、静态资源负向对照，取得通过证据后标待审
+next-action: 先确认宿主门禁的 Rust PID 清理断言阻塞；解除后在允许回环监听的环境复跑 M-01 验收与负向对照
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -58,7 +58,7 @@ next-action: 在允许回环监听的环境复跑 M-01 的 12 用例与监听地
 非目标（任务 §3 明确不做）：automed 托管、RPC 网关、白名单、tick、Host/Origin/令牌（W2）；
 事件总线与 WebSocket（W3）；`web.sqlite3` 表结构与通知器（W4）；设计 token、导航、业务
 页面（W5 起）；启动器与 `autome web`（W10）；Electron 薄壳（W11）；Playwright（W12）。
-不碰 `crates/`、`apps/desktop/`、`protocol/`、`plugins/`、仓库根 `.gitignore`。
+不碰 `crates/`、`apps/desktop/`、`protocol/`、`plugins/`、仓库根 `.gitignore`；用户专项门禁修复指令仅允许调整 Desktop app-protocol 的 Electron 加载时机。
 
 ## 方案
 
@@ -232,7 +232,7 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-01 验收契约
 
-最新证据：docs/在-apps-web-建-react/evidence/M-01-r1-impl.md · 环境阻塞，保持开放 · 实现 #1
+最新证据：docs/在-apps-web-建-react/evidence/M-01-r2-impl.md · Desktop 修复通过，完整门禁仍阻塞，保持开放 · 实现 #2
 
 - 验收命令：`npm ci --prefix apps/web > .autome/output/m01.txt 2>&1 && npm test --prefix apps/web >> .autome/output/m01.txt 2>&1; echo "exit=$?"; tail -15 .autome/output/m01.txt`
 - 预期：exit=0；vitest 报 2 个文件、12 个用例全部通过（基线 0，新增 12）：config 5 个——未设端口→7420、`'0'`→0、`'8123'`→8123、`'abc'` 抛中文错误、`'70000'` 抛中文错误；server 7 个——dev `/healthz` 200 `{"ok":true}`、dev `/` 200 且含「Autome 面板」与 `<script type="module"`、prod `/healthz` 200、prod `/` 200 且其引用的第一个 `/assets/*.js` 返回 200、prod 未知路径 404、进程内 `startServer({ port: 0, mode: 'production' })` 的 `address()` 为 `127.0.0.1`/IPv4、端口被占时子进程非零退出且 stderr 含「已被占用」。
