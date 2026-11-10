@@ -10,3 +10,4 @@
 审计 #4 | M-04 | 通过 | docs/用户按合并时如果默认分支已经前进-任务自动/evidence/M-04-r4-audit.md | 无
 实现 #5 | M-05 | 待审 | docs/用户按合并时如果默认分支已经前进-任务自动/evidence/M-05-r5-impl.md | 无
 审计 #5 | M-05 | 通过 | docs/用户按合并时如果默认分支已经前进-任务自动/evidence/M-05-r5-audit.md | 无
+实现 #6 | M-06 | 待审 | docs/用户按合并时如果默认分支已经前进-任务自动/evidence/M-06-r6-impl.md | 无
