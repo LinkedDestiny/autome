@@ -21,7 +21,7 @@
 | D1 | **Node 网关 + Rust 内核** | Node 服务托管 `automed` 子进程（framed JSON-RPC over stdio，沿用 `apps/desktop/src/sidecar.js` 的做法），对浏览器提供 HTTP + WebSocket。调度、状态机、门禁、Git 留在 Rust。**内核只在 K1、K2 两个任务里改**（任务类型、任务卡、Bug Loop，见 §4）；Web 任务不碰 `crates/`。 |
 | D2 | **面板自己的状态用 SQLite + 文件，放在 `~/.autome/`** | 内核账本不动（`~/.autome/state/automed.sqlite3`）。面板只存内核没有的：通知、已读、视图偏好、上传附件的暂存。 |
 | D3 | **Electron 留作薄壳** | 只负责启动本地服务、开窗口加载面板、提供原生目录选择与通知。`apps/desktop/renderer/` 与两套 IPC 白名单在 W11 删除。 |
-| D4 | **前端用 React Router v7 框架模式** | Remix v2 的正式后继，loader、action、SSR 写法相同。 |
+| D4 | **前端用 React Router 8 框架模式，Node ≥ 22.22** | React Router 是 Remix v2 的正式后继，loader、action、SSR 写法相同。最初定的是 v7；2026-11-10 W1 设计时改为 8（当前大版本，v8 要求 Node ≥ 22.22）。这个下限同时让 `node:sqlite` 免 flag，并让服务端 TypeScript 直接走 Node 原生类型剥离，不需要 tsx。 |
 | D5 | **一个包、一个进程** | `apps/web` 同时包含 RR7 应用与自定义 Node 服务器（HTTP、WebSocket、sidecar、tick、通知）。 |
 | D6 | **面板不做角色** | 删除路由图、角色页。角色的 CLI、模型配置仍然有效，只是改在 `~/.autome/config.toml` 和项目的 `.autome/config.toml` 里写；Bug Loop 复用已有的「实现」与「审计」两份角色配置，不新增角色。 |
 
@@ -142,7 +142,7 @@
 浏览器 / Electron 薄壳窗口
    │  HTTP（RR7 loader/action）  +  WebSocket /ws
    ▼
-autome-web（Node ≥ 22，127.0.0.1:7420）
+autome-web（Node ≥ 22.22，127.0.0.1:7420）
    ├─ gateway   托管 automed：帧编解码、超时、崩溃重启、读写白名单
    ├─ ticker    每 3 秒 scheduler.tick（与 `autome run` 通过驱动锁轮流）
    ├─ eventbus  每次 tick 后 events.since(cursor)，把新事件广播到 /ws
@@ -290,11 +290,11 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
 ### Web 面板
 
 **W1 骨架**
-- 一句话需求：在 apps/web 建 React Router v7 框架模式 + 自定义 Node 服务器的 TypeScript 工程，接入测试与 CI
+- 一句话需求：在 apps/web 建 React Router 8 框架模式 + 自定义 Node 服务器的 TypeScript 工程，接入测试与 CI
 - 目录：`apps/web/`、`scripts/ci-local.sh`、`.github/workflows/ci.yml`
 - 验收：
   1. `npm run dev` 和 `npm run build && npm start` 都能起，`GET /healthz` 返回 200；
-  2. 启动时检查 Node ≥ 22，版本不够就用中文提示后退出；
+  2. 启动时检查 Node ≥ 22.22，版本不够就用中文提示后退出；
   3. 用 vitest 跑测试；ci-local 和 CI 各加一个 Web 步骤（lint、类型检查、测试、构建）；
   4. 按 §5.3 验证 `node:sqlite`。
 
@@ -386,7 +386,7 @@ sidecar 只会收到本进程发出的命令所产生的事件。命令行、Age
   1. `autome web` 默认端口被占用时自动换一个，写进 `server.json`，再用带令牌的 URL 打开浏览器；
   2. 重复执行时不起第二个服务，而是打开已有的那个；
   3. `autome web service install|uninstall` 管理 `~/Library/LaunchAgents/` 下的条目；
-  4. 发布包包含 `autome`、`automed`、构建好的 `apps/web`；没有 Node ≥ 22 时只装命令行，并提示怎样装 Node；
+  4. 发布包包含 `autome`、`automed`、构建好的 `apps/web`；没有 Node ≥ 22.22 时只装命令行，并提示怎样装 Node；
   5. 在空的 PREFIX 和空的 AUTOME_HOME 下，从 tar 包安装到打开面板全程走通。
 
 **W11 Electron 薄壳**
