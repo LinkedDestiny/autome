@@ -765,7 +765,7 @@ fn idle(c: &mut Client) -> bool {
     !store.list_unfinished().unwrap_or_default().iter().any(|t| {
         use autome_domain::task::TaskState;
         match &t.state {
-            TaskState::Queued => true,
+            TaskState::Queued | TaskState::Requeued { .. } => true,
             TaskState::Active { node } if node.is_core_step() => true,
             TaskState::Active { .. } => matches!(
                 store.pending_retry(&t.id),
@@ -918,4 +918,135 @@ fn rpc(c: &mut Client, a: &Args) -> Result<()> {
     };
     print_json(&c.call(&method, params)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+    use autome_domain::project::{AddDisposition, Onboarding, Project, ProjectKind};
+    use autome_domain::task::{Node, TaskState};
+    use automed::dispatch::Ctx;
+    use automed::store::{Store, TaskRecord, now_iso};
+
+    fn client() -> Client {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert_project(&Project {
+                id: "p".into(),
+                path: "/unused".into(),
+                display_name: "p".into(),
+                default_branch: "main".into(),
+                parallel_limit: 1,
+                onboarding: Onboarding::Skipped,
+                disposition: AddDisposition::AdoptedExisting,
+                added_at: now_iso(),
+                removed_at: None,
+                kind: ProjectKind::Repo,
+                members: vec![],
+                docs_repo: None,
+            })
+            .unwrap();
+        Client {
+            ctx: Ctx::new(store, "/unused", "/unused"),
+            home: "/unused".into(),
+            db: ":memory:".into(),
+        }
+    }
+
+    fn insert(c: &Client, id: &str, state: TaskState) {
+        c.ctx
+            .store
+            .insert_task(&TaskRecord {
+                id: id.into(),
+                project_id: "p".into(),
+                slug: id.into(),
+                title: id.into(),
+                request: "test".into(),
+                attachments: vec![],
+                doc_refs: vec![],
+                state,
+                budget_n: None,
+                created_at: now_iso(),
+                completed_at: None,
+                merge_commit: None,
+                archived_at: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: None,
+                doc_root: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn requeued_keeps_until_idle_running_while_slot_holder_cools_down() {
+        let mut c = client();
+        insert(
+            &c,
+            "holder",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        c.ctx
+            .store
+            .schedule_retry(
+                "holder",
+                Node::Implement,
+                "9999-12-31T23:59:59Z",
+                None,
+                "cooldown",
+                false,
+            )
+            .unwrap();
+        assert_eq!(c.ctx.store.slots_in_use("p").unwrap(), 1);
+        assert!(
+            idle(&mut c),
+            "future retry alone retains existing idle behavior"
+        );
+        insert(
+            &c,
+            "resumed",
+            TaskState::Requeued {
+                resume: Node::Audit,
+            },
+        );
+        assert!(!idle(&mut c), "resume queue must keep the driver alive");
+        c.ctx
+            .store
+            .set_task_state("resumed", &TaskState::Cancelled)
+            .unwrap();
+        assert!(
+            idle(&mut c),
+            "cancelling the queued task removes pending work"
+        );
+    }
+
+    #[test]
+    fn idle_empty_and_single_task_boundaries() {
+        let mut c = client();
+        assert!(idle(&mut c));
+        insert(&c, "task", TaskState::Queued);
+        assert!(!idle(&mut c));
+        for state in [
+            TaskState::Requeued {
+                resume: Node::Implement,
+            },
+            TaskState::Requeued { resume: Node::Gate },
+            TaskState::Active { node: Node::Gate },
+        ] {
+            c.ctx.store.set_task_state("task", &state).unwrap();
+            assert!(!idle(&mut c), "{state:?}");
+        }
+        for state in [
+            TaskState::Paused {
+                resume: Node::Implement,
+            },
+            TaskState::Stopped { at: Node::Audit },
+            TaskState::Cancelled,
+        ] {
+            c.ctx.store.set_task_state("task", &state).unwrap();
+            assert!(idle(&mut c), "{state:?}");
+        }
+    }
 }

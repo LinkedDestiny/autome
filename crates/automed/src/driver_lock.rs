@@ -19,10 +19,23 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// A held lock. Dropping it closes the file, which releases the `flock`.
+/// A held lock. Dropping it explicitly releases the `flock`.
 #[derive(Debug)]
 pub struct DriverLock {
     _file: File,
+}
+
+impl Drop for DriverLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // A child between fork and exec can still hold this open file
+            // description. Closing our descriptor alone would leave it locked.
+            // SAFETY: the descriptor is owned by self and is still open.
+            unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
 }
 
 /// Where the lock for a ledger lives: beside it, so two installations with two
@@ -110,6 +123,19 @@ mod tests {
         assert!(try_acquire(&db).unwrap().is_none());
         drop(first);
         assert!(try_acquire(&db).unwrap().is_some());
+    }
+
+    #[test]
+    fn dropping_the_holder_releases_the_lock_even_with_an_inherited_descriptor() {
+        let db = tmp_db("inherited");
+        let first = try_acquire(&db).unwrap().unwrap();
+        // dup shares the open file description just like a child between
+        // fork and exec, without introducing a timing race into the test.
+        let inherited = first._file.try_clone().unwrap();
+        assert!(try_acquire(&db).unwrap().is_none());
+        drop(first);
+        assert!(try_acquire(&db).unwrap().is_some());
+        drop(inherited);
     }
 
     #[test]

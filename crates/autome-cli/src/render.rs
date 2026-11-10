@@ -40,7 +40,10 @@ pub fn milestone_label(state: &str) -> &str {
 pub fn state_line(state: &Value) -> String {
     let node = |key: &str| node_label(state[key].as_str().unwrap_or("?")).to_string();
     match state["state"].as_str().unwrap_or("?") {
-        "queued" => "排队".into(),
+        "queued" => match state["resume"].as_str() {
+            Some(resume) => format!("排队（会从 {} 继续）", node_label(resume)),
+            None => "排队".into(),
+        },
         "active" => {
             let n = state["node"].as_str().unwrap_or("?");
             if n.starts_with("await_") {
@@ -253,6 +256,43 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn requeued_states_show_the_original_node() {
+        for (node, label) in [
+            ("intake", "任务整理"),
+            ("design", "设计"),
+            ("review", "评审"),
+            ("adjudicate", "裁决"),
+            ("implement", "实现"),
+            ("gate", "门禁"),
+            ("audit", "审计"),
+            ("retro", "复盘"),
+            ("rebase", "rebase"),
+            ("merge_gate", "合并前门禁"),
+            ("merging", "合并中"),
+            ("main_check", "验证 main"),
+            ("cleanup", "清理"),
+        ] {
+            let state = json!({"state": "queued", "resume": node});
+            let expected = format!("排队（会从 {label} 继续）");
+            assert_eq!(state_line(&state), expected, "{node}");
+            assert_eq!(
+                event_line("task.updated", "T-1", &json!({"state": state})),
+                Some(format!("T-1 → {expected}")),
+                "{node}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_queued_states_keep_the_plain_label() {
+        assert_eq!(state_line(&json!({"state": "queued"})), "排队");
+        assert_eq!(
+            state_line(&json!({"state": "queued", "resume": null})),
+            "排队"
+        );
+    }
 
     #[test]
     fn iso_round_trips_through_the_cores_formatter() {

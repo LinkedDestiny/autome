@@ -543,6 +543,50 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    pub fn session_started_event(&self, task_id: &str, session_id: &str) -> Result<Option<Value>> {
+        self.session_event(task_id, session_id, "session.started")
+    }
+
+    pub fn session_event(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        kind: &str,
+    ) -> Result<Option<Value>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = ?3
+             AND json_extract(payload, '$.session_id') = ?2 ORDER BY seq DESC LIMIT 1",
+                params![task_id, session_id, kind],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
+    /// Input saved before suspending a retry, unless a newer session consumed it.
+    pub fn resume_input(
+        &self,
+        task_id: &str,
+        node: Node,
+        session_id: Option<&str>,
+    ) -> Result<Option<Value>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = 'task.resume_input'
+             AND json_extract(payload, '$.node') = ?2
+             AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE subject_id = ?1
+                 AND kind = 'session.started' AND json_extract(payload, '$.session_id') = ?3), 0)
+             ORDER BY seq DESC LIMIT 1",
+                params![task_id, node.as_str(), session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
     pub fn count_events(&self, subject_id: &str, kind: &str) -> Result<u32> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2",
@@ -1158,7 +1202,7 @@ impl Store {
         Ok(self
             .list_tasks(project_id)?
             .into_iter()
-            .filter(|t| matches!(t.state, TaskState::Queued))
+            .filter(|t| matches!(t.state, TaskState::Queued | TaskState::Requeued { .. }))
             .collect())
     }
 
@@ -1913,7 +1957,7 @@ pub fn task_counts(tasks: &[TaskRecord]) -> BTreeMap<&'static str, usize> {
     let mut counts = BTreeMap::new();
     for t in tasks {
         let key = match &t.state {
-            TaskState::Queued => "queued",
+            TaskState::Queued | TaskState::Requeued { .. } => "queued",
             TaskState::Active { node } if node.awaits_user() => "awaiting_user",
             TaskState::Active { .. } => "running",
             TaskState::Paused { .. } => "paused",
@@ -2136,6 +2180,79 @@ mod tests {
         // And so does a task in another project: the id is the primary key,
         // and `sessions` and `decisions` both point at it.
         assert_eq!(s.next_task_id("p2").unwrap(), "T-3");
+    }
+
+    #[test]
+    fn requeued_old_ledger_rows_and_new_rows_roundtrip() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_task(&task("T-1", "p1", "a")).unwrap();
+        for (raw, expected) in [
+            (r#"{"state":"queued"}"#, TaskState::Queued),
+            (
+                r#"{"state":"paused","resume":"audit"}"#,
+                TaskState::Paused {
+                    resume: Node::Audit,
+                },
+            ),
+            (
+                r#"{"state":"stopped","at":"gate"}"#,
+                TaskState::Stopped { at: Node::Gate },
+            ),
+        ] {
+            s.conn
+                .execute("UPDATE tasks SET state = ?1 WHERE id = 'T-1'", params![raw])
+                .unwrap();
+            assert_eq!(s.get_task("T-1").unwrap().state, expected);
+        }
+        let state = TaskState::Requeued {
+            resume: Node::Implement,
+        };
+        s.set_task_state("T-1", &state).unwrap();
+        assert_eq!(s.get_task("T-1").unwrap().state, state);
+        let raw: String = s
+            .conn
+            .query_row("SELECT state FROM tasks WHERE id = 'T-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap(),
+            serde_json::json!({"state":"queued","resume":"implement"})
+        );
+        assert_eq!(SCHEMA_VERSION, 4);
+    }
+
+    #[test]
+    fn requeued_counts_and_queue_order_do_not_consume_slots() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        for (i, state) in [
+            TaskState::Requeued {
+                resume: Node::Audit,
+            },
+            TaskState::Queued,
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut t = task(&format!("T-{i}"), "p1", &format!("s{i}"));
+            t.state = state;
+            t.created_at = format!("2026-11-10T00:00:0{i}Z");
+            s.insert_task(&t).unwrap();
+        }
+        assert_eq!(
+            s.queued_tasks("p1")
+                .unwrap()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["T-0", "T-1"]
+        );
+        assert_eq!(task_counts(&s.list_tasks("p1").unwrap())["queued"], 2);
+        assert_eq!(s.slots_in_use("p1").unwrap(), 1);
+        assert!(s.queued_tasks("missing").unwrap().is_empty());
     }
 
     #[test]
