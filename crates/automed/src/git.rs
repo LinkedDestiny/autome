@@ -709,12 +709,41 @@ pub enum MergeOutcome {
 /// Preconditions are checked here rather than trusted from the caller, because
 /// the user may have dirtied their tree between the panel rendering and the
 /// button press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    DirtyConflict,
+    NotOnDefault,
+    Behind,
+    MergeFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeCheck {
+    Ready,
+    Blocked { kind: BlockKind, detail: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeAttempt {
+    Merged { commit: String },
+    Blocked { kind: BlockKind, detail: String },
+}
+
 pub fn merge_task_branch(
     repo: &Path,
     default_branch: &str,
     task_branch: &str,
     message: &str,
 ) -> Result<MergeOutcome> {
+    Ok(
+        match try_merge(repo, default_branch, task_branch, message)? {
+            MergeAttempt::Merged { commit } => MergeOutcome::Merged { commit },
+            MergeAttempt::Blocked { detail, .. } => MergeOutcome::Blocked { detail },
+        },
+    )
+}
+
+pub fn check_merge(repo: &Path, default_branch: &str, task_branch: &str) -> Result<MergeCheck> {
     let conflicting = conflicting_dirty_paths(repo, default_branch, task_branch)?;
     if !conflicting.is_empty() {
         let shown: Vec<&str> = conflicting.iter().take(5).map(String::as_str).collect();
@@ -723,7 +752,8 @@ pub fn merge_task_branch(
         } else {
             String::new()
         };
-        return Ok(MergeOutcome::Blocked {
+        return Ok(MergeCheck::Blocked {
+            kind: BlockKind::DirtyConflict,
             detail: format!(
                 "主工作树里这些文件有未提交改动，而本次合并要改动它们：{}{suffix}",
                 shown.join("、")
@@ -735,17 +765,31 @@ pub fn merge_task_branch(
         .line()
         .to_string();
     if current != default_branch {
-        return Ok(MergeOutcome::Blocked {
+        return Ok(MergeCheck::Blocked {
+            kind: BlockKind::NotOnDefault,
             detail: format!("主工作树当前在 {current}，不是默认分支 {default_branch}"),
         });
     }
 
     if !is_ancestor(repo, default_branch, task_branch)? {
-        return Ok(MergeOutcome::Blocked {
+        return Ok(MergeCheck::Blocked {
+            kind: BlockKind::Behind,
             detail: format!("{task_branch} 不在最新的 {default_branch} 之上，需要先 rebase"),
         });
     }
 
+    Ok(MergeCheck::Ready)
+}
+
+pub fn try_merge(
+    repo: &Path,
+    default_branch: &str,
+    task_branch: &str,
+    message: &str,
+) -> Result<MergeAttempt> {
+    if let MergeCheck::Blocked { kind, detail } = check_merge(repo, default_branch, task_branch)? {
+        return Ok(MergeAttempt::Blocked { kind, detail });
+    }
     let out = run_with_extra_env(
         repo,
         &[
@@ -769,13 +813,14 @@ pub fn merge_task_branch(
     if !out.ok() {
         // Undo any partial merge state so the user's tree is exactly as it was.
         let _ = run(repo, &["merge", "--abort"]);
-        return Ok(MergeOutcome::Blocked {
+        return Ok(MergeAttempt::Blocked {
+            kind: BlockKind::MergeFailed,
             detail: first_meaningful_line(&out.stderr)
                 .or_else(|| first_meaningful_line(&out.stdout))
                 .unwrap_or_else(|| "合并失败".into()),
         });
     }
-    Ok(MergeOutcome::Merged {
+    Ok(MergeAttempt::Merged {
         commit: head_sha(repo)?,
     })
 }
@@ -1226,6 +1271,127 @@ mod tests {
                 .contains("autome/f"),
             "still on the task branch after the abort"
         );
+    }
+
+    fn merge_case(tag: &str) -> TempDir {
+        let repo = repo_with_commit(tag);
+        worktree_add(repo.path(), ".worktree/f", "autome/f", "main").unwrap();
+        let wt = repo.path().join(".worktree/f");
+        write(&wt, "feature.txt", "feature\n");
+        commit_paths(&wt, &["feature.txt"], "feature").unwrap();
+        repo
+    }
+
+    fn advance_merge_case(repo: &Path) {
+        write(repo, "other.txt", "main advanced\n");
+        commit_paths(repo, &["other.txt"], "advance main").unwrap();
+    }
+
+    #[test]
+    fn merge_check_tells_a_branch_behind_the_default_branch_apart_from_other_blocks() {
+        needs_git!();
+        let repo = merge_case("check-kinds");
+        assert_eq!(
+            check_merge(repo.path(), "main", "autome/f").unwrap(),
+            MergeCheck::Ready
+        );
+        let main = head_sha(repo.path()).unwrap();
+        advance_merge_case(repo.path());
+        assert_eq!(
+            check_merge(repo.path(), "main", "autome/f").unwrap(),
+            MergeCheck::Blocked {
+                kind: BlockKind::Behind,
+                detail: "autome/f 不在最新的 main 之上，需要先 rebase".into()
+            }
+        );
+        run_ok(repo.path(), &["checkout", "-b", "side"]).unwrap();
+        assert_eq!(
+            check_merge(repo.path(), "main", "autome/f").unwrap(),
+            MergeCheck::Blocked {
+                kind: BlockKind::NotOnDefault,
+                detail: "主工作树当前在 side，不是默认分支 main".into()
+            }
+        );
+        assert_ne!(head_sha(repo.path()).unwrap(), main);
+        run_ok(repo.path(), &["checkout", "main"]).unwrap();
+        assert!(check_merge(repo.path(), "main", "missing").is_err());
+        assert!(check_merge(repo.path(), "main", "").is_err());
+    }
+
+    #[test]
+    fn merge_check_reports_conflicting_dirt_before_a_stale_branch() {
+        needs_git!();
+        let repo = merge_case("dirty-behind");
+        advance_merge_case(repo.path());
+        write(repo.path(), "feature.txt", "user data\n");
+        let before = head_sha(repo.path()).unwrap();
+        assert_eq!(
+            check_merge(repo.path(), "main", "autome/f").unwrap(),
+            MergeCheck::Blocked {
+                kind: BlockKind::DirtyConflict,
+                detail: "主工作树里这些文件有未提交改动，而本次合并要改动它们：feature.txt".into()
+            }
+        );
+        assert_eq!(head_sha(repo.path()).unwrap(), before);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("feature.txt")).unwrap(),
+            "user data\n"
+        );
+    }
+
+    #[test]
+    fn try_merge_returns_the_kind_of_the_refusal_it_actually_made() {
+        needs_git!();
+        for kind in [
+            BlockKind::DirtyConflict,
+            BlockKind::NotOnDefault,
+            BlockKind::Behind,
+            BlockKind::MergeFailed,
+        ] {
+            let repo = merge_case("try-kinds");
+            let expected = match kind {
+                BlockKind::DirtyConflict => {
+                    write(repo.path(), "feature.txt", "user data\n");
+                    "主工作树里这些文件有未提交改动，而本次合并要改动它们：feature.txt"
+                }
+                BlockKind::NotOnDefault => {
+                    run_ok(repo.path(), &["checkout", "-b", "side"]).unwrap();
+                    "主工作树当前在 side，不是默认分支 main"
+                }
+                BlockKind::Behind => {
+                    advance_merge_case(repo.path());
+                    "autome/f 不在最新的 main 之上，需要先 rebase"
+                }
+                BlockKind::MergeFailed => {
+                    write(repo.path(), ".git/index.lock", "held by test\n");
+                    assert_eq!(
+                        check_merge(repo.path(), "main", "autome/f").unwrap(),
+                        MergeCheck::Ready
+                    );
+                    "index.lock"
+                }
+            };
+            let before = head_sha(repo.path()).unwrap();
+            let MergeAttempt::Blocked {
+                kind: actual,
+                detail,
+            } = try_merge(repo.path(), "main", "autome/f", "merge test").unwrap()
+            else {
+                panic!("expected refusal");
+            };
+            assert_eq!(actual, kind);
+            if kind == BlockKind::MergeFailed {
+                assert!(detail.contains(expected), "{detail}");
+            } else {
+                assert_eq!(detail, expected);
+            }
+            assert_eq!(
+                merge_task_branch(repo.path(), "main", "autome/f", "merge test").unwrap(),
+                MergeOutcome::Blocked { detail }
+            );
+            assert_eq!(head_sha(repo.path()).unwrap(), before);
+            assert!(!repo.path().join(".git/MERGE_HEAD").exists());
+        }
     }
 
     #[test]
