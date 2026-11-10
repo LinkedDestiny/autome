@@ -11,3 +11,5 @@
 审计 #1 | M-01 | 通过 | docs/在-apps-web-建-react/evidence/M-01-r2-audit.md | 无
 实现 #3 | M-02 | 保留开放：专项通过，全量受阻 | docs/在-apps-web-建-react/evidence/M-02-r3-impl.md | 监听 EPERM、文件监听 EMFILE
 审计 #2 | M-02 | 通过 | docs/在-apps-web-建-react/evidence/M-02-r3-audit.md | 无
+
+实现 #4 | M-03 | 保持开放 | docs/在-apps-web-建-react/evidence/M-03-r4-impl.md | 双运行时通过；全量因沙箱 EPERM/EMFILE 阻塞

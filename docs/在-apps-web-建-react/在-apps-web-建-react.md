@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 3/20
-current-milestone: M-02
+implementation-round: 4/20
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许本地监听的环境重跑 M-02 全量验收，解决 EPERM/EMFILE 环境阻塞，取得 24 个用例通过证据后标待审
+next-action: 在允许本地监听及文件监听的环境重跑 M-03 双运行时探针与全量 32 用例，取得通过证据后标待审
 
 任务文件：`docs/在-apps-web-建-react/在-apps-web-建-react-task.md`。
 本任务的规则见 `docs/在-apps-web-建-react/protocol/loop-protocol.md` 与
@@ -172,7 +172,7 @@ apps/web/
 
 设计期预验证（同一段检查：建表、预处理语句写入、读回）：
 
-- 系统 Node 26.5.0：可用，SQLite 3.53.3，无警告。
+- 系统 Node 26.5.0：可用，SQLite 3.53.4，无警告。
 - Homebrew Node 22.23.1：可用，SQLite 3.53.2，打印 `ExperimentalWarning: SQLite is an experimental feature`。
 - Electron 43.2.0（`ELECTRON_RUN_AS_NODE=1`，内置 Node 24.18.0，取主检出的二进制）：可用，SQLite 3.53.1。
 
@@ -225,7 +225,7 @@ ExperimentalWarning 是否在入口过滤。
   `npm run dev` 与 `npm run build && npm start` 都能起，`/healthz` 200，首页 SSR 出中文占位页。
   新增 `test/config.test.ts`（5）与 `test/server.test.ts`（7）。
 - M-02 覆盖 R-02；前置 M-01。结果：§4 的入口结构；新增 `test/node-version.test.ts`（12）。
-- M-03 覆盖 R-04；前置 M-01。结果：§7 的脚本与 `test/sqlite-probe.test.ts`（6）；本文 §7 结论
+- M-03 覆盖 R-04；前置 M-01。结果：§7 的脚本与 `test/sqlite-probe.test.ts`（8）；本文 §7 结论
   与脚本输出一致。
 - M-04 覆盖 R-03；前置 M-01..M-03（ci 要覆盖全部用例，lint 要覆盖全部代码）。结果：§5 的 lint、
   typecheck，§6 的 ci-local 与 ci.yml；新增 `test/ci-config.test.ts`（6）。
@@ -248,14 +248,16 @@ ExperimentalWarning 是否在入口过滤。
 
 ### M-03 验收契约
 
+最新证据：docs/在-apps-web-建-react/evidence/M-03-r4-impl.md · 探针通过，全量环境阻塞，保持开放 · 实现 #4
+
 - 验收命令：`npm run probe:sqlite --prefix apps/web > .autome/output/m03-probe.txt 2>&1; echo "probe=$?"; npm test --prefix apps/web > .autome/output/m03.txt 2>&1; echo "exit=$?"; tail -8 .autome/output/m03-probe.txt; tail -15 .autome/output/m03.txt`
-- 预期：probe=0，输出两行 `ok: true`：系统 Node（本机 26.5.0）与 Electron 43.2.0（内置 Node 24.18.0），各带 SQLite 版本；exit=0，4 个文件、30 个用例通过（基线 24，新增 sqlite-probe 6 个）：系统 Node 跑 `sqlite-check.mjs` 得 `ok: true` 且日志模式为 `wal`；定位 4 个（用临时目录造的假布局）——`AUTOME_ELECTRON` 优先、worktree 有 `path.txt` 缺 `dist` 时跳过且不触发下载并落到主检出、worktree 完整时优先 worktree、都没有时返回空；版本不等于 `apps/desktop/package.json` 的 43.2.0 时判失败 1 个。
+- 预期：probe=0，输出两行 `ok: true`：系统 Node（本机 26.5.0）与 Electron 43.2.0（内置 Node 24.18.0），各带 SQLite 版本；exit=0，4 个文件、32 个用例通过（基线 24，新增 sqlite-probe 8 个）：系统 Node 跑 `sqlite-check.mjs` 得 `ok: true` 且日志模式为 `wal`；定位 4 个（用临时目录造的假布局）——`AUTOME_ELECTRON` 优先、worktree 有 `path.txt` 缺 `dist` 时跳过且不触发下载并落到主检出、worktree 完整时优先 worktree、都没有时返回空；版本不等于 `apps/desktop/package.json` 的 43.2.0 时判失败 1 个；运行时不存在、非零退出各 1 个。
 - 负向对照：定位改用 `require('electron')` 时，「缺 dist」用例触发下载、抛错失败；`sqlite-check.mjs` 只测 `:memory:` 时 WAL 断言失败（内存库返回 `memory`）；不核对 Electron 版本时版本用例失败。
 
 ### M-04 验收契约
 
 - 验收命令：`rm -rf apps/web/node_modules && sh scripts/ci-local.sh > .autome/output/m04.txt 2>&1; echo "exit=$?"; tail -25 .autome/output/m04.txt`
-- 预期：exit=0；汇总里 Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract（新 worktree 里还有 Desktop install）与 Web install、Web lint、Web typecheck、Web test、Web build 全部 `ok`；Web test 步骤报 5 个文件、36 个用例通过（基线 30，新增 ci-config 6 个：ci.yml 有 `web` job 且 `timeout-minutes`、`macos-14`；`setup-node` 为 `'22'` 且 Install 为 `npm ci`；lint/typecheck/test/build 四步齐全；ci.yml 每个 job 都有 `timeout-minutes`；ci-local 仅在缺 `node_modules` 时 `run 'Web install'` 且用 `npm ci`；ci-local 四行 `run 'Web …'` 在 package 分支之外）；证据记录 Web 各步耗时。
+- 预期：exit=0；汇总里 Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract（新 worktree 里还有 Desktop install）与 Web install、Web lint、Web typecheck、Web test、Web build 全部 `ok`；Web test 步骤报 5 个文件、38 个用例通过（基线 32，新增 ci-config 6 个：ci.yml 有 `web` job 且 `timeout-minutes`、`macos-14`；`setup-node` 为 `'22'` 且 Install 为 `npm ci`；lint/typecheck/test/build 四步齐全；ci.yml 每个 job 都有 `timeout-minutes`；ci-local 仅在缺 `node_modules` 时 `run 'Web install'` 且用 `npm ci`；ci-local 四行 `run 'Web …'` 在 package 分支之外）；证据记录 Web 各步耗时。
 - 负向对照：在 `app/routes/home.tsx` 加一个未使用的变量，ci-local 中 Web lint `FAILED`、其余 Web 三步仍各自跑完、总退出码 1；把四步合成一条 `&&` 链时 ci-config 的「四行 run」用例失败。
 
 ## 人工验收清单

@@ -33,6 +33,7 @@
     "dev": "node server/start.js",
     "start": "NODE_ENV=production node server/start.js",
     "build": "react-router build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "probe:sqlite": "node scripts/probe-sqlite.ts"
   }
 }
