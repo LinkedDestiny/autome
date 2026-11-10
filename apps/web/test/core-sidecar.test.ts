@@ -83,9 +83,9 @@ test('no test starts a real core against the developer own ~/.autome', () => {
   const offenders: string[] = [];
   for (const file of fs.readdirSync(import.meta.dirname).filter(f => f.endsWith('.ts'))) {
     const source = fs.readFileSync(path.join(import.meta.dirname, file), 'utf8');
-    for (const match of source.matchAll(/new (?:AutomedSidecar|CoreSupervisor)\(\{/g)) {
-      const block = source.slice(match.index, source.indexOf('}).start()', match.index) + 10);
-      if (!/AUTOME_HOME|home:|binaryPath: path.join\(os.tmpdir\(\), `no-such-automed/.test(block)) offenders.push(file);
+    for (const match of source.matchAll(/(?:new (?:AutomedSidecar|CoreSupervisor)\(|startServer\(|spawn\('npm',)\s*\{?/g)) {
+      const block = source.slice(Math.max(0, match.index - 350), match.index + 450);
+      if (!/AUTOME_HOME|home[,:]|binaryPath: path.join\(os.tmpdir\(\), `no-such-automed/.test(block)) offenders.push(file);
     }
   }
   assert.deepEqual(offenders, []);

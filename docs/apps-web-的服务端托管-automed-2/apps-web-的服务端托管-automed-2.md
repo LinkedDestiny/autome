@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/25
+implementation-round: 5/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-05 网关接入 startServer 与端到端
+next-action: 独立审计 M-05，在允许回环监听的环境复验全部 175 个 Web 用例及真实 home 不变
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -402,7 +402,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 | M-02 | 已完成 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 已完成 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
 | M-04 | 已完成 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
-| M-05 | 开放 | 网关接入 startServer 与端到端 | 0 | |
+| M-05 | 待审 | 网关接入 startServer 与端到端 | 0 | |
 
 ## 里程碑说明
 
@@ -512,15 +512,17 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-05 网关接入 startServer 与端到端
 
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-05-r5-impl.md · 待审（监听验收受环境阻塞） · 实现 #5
+
 - 结果：`gateway.ts` 与 `/api/read`、`/api/write` 接进 `startServer`。从 HTTP 请求到真实内核的整条链路可用，不需要任何凭据；
   `close()` 之后内核进程也退出。
 - 覆盖：R-03（`core.restart` 经网关）、R-04 五条在 HTTP 层再验一遍、R-05（ticker 随服务启停）、R-07、约束 2/5/6。
   前置：M-01–M-04。
 - 改动：`test/server.test.ts` 按方案 §8 改；sidecar #2 的扫描加入 `startServer(` 与 spawn `npm run dev`/`npm start`。
-- 新增测试（共 21 个）：
-  - `test/gateway.test.ts` 9 个，用假 supervisor，不监听端口：读转发；读被拒时内核收不到；写转发；`core.restart` 本地处理、
+- 新增测试（共 23 个）：
+  - `test/gateway.test.ts` 11 个，不监听端口，前 9 个用假 supervisor：读转发；读被拒时内核收不到；写转发；`core.restart` 本地处理、
     不转发；6 个本地 op 回 501 且内核收不到；附件编号解析与越界路径拒绝；离线回 503；内核报错带原话和 `code` 回 409；
-    本地等待超时回 504。
+    本地等待超时回 504；真实内核网关写读/停止/重启；home 环境输入边界。
   - `test/gateway-http.test.ts` 10 个，监听端口、真实内核、临时 home：
     1. 不带任何凭据、Host 与 Origin 合格时 `config.get` 回 200；
     2. 不带任何凭据的 `config.set_loop` 写了之后读得到（R-07）；
@@ -539,7 +541,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 ### M-05 验收契约
 
 - 验收命令：`cargo build -p automed && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web && npm run build --prefix apps/web && npm test --prefix apps/desktop`
-- 预期：Web 共 173 个用例全过（152 + 21），skipped 0；build 成功；desktop 仍是 104 个，0 失败；测试前后真实 `~/.autome/state/automed.sqlite3` 的 mtime 不变，`~/.autome/web` 的存在与否也不变（证据里给出测试前后 `stat` 的对比）。
+- 预期：Web 共 175 个用例全过（152 + 23），skipped 0；build 成功；desktop 仍是 104 个，0 失败；测试前后真实 `~/.autome/state/automed.sqlite3` 的 mtime 不变，`~/.autome/web` 的存在与否也不变（证据里给出测试前后 `stat` 的对比）。
 - 负向对照：把 `core.restart` 当普通 op 转发，gateway.test 的「本地处理」会因内核收到命令而失败；把安全中间件挂在 `/api/*` 之后，「Origin 不对的写回 403」会拿到 200 且读回值已变；在写路径上重新要求任何凭据（Cookie、令牌、`Authorization`），「不带任何凭据的写读得到」会拿到 403；`close()` 不停 supervisor，「close 后 pid 不存在」会失败；W1 的 `launch()` 不传临时 `AUTOME_HOME`，sidecar #2 扩展版的扫描用例会失败。
 
 ## 人工验收清单

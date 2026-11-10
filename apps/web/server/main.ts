@@ -1,9 +1,16 @@
+import { CoreSupervisor } from './core/supervisor.ts';
+import { resolveAutomedBinary } from './core/binary.ts';
+import { resolveAutomeHome } from './home.ts';
+import { createGateway } from './gateway.ts';
+import { createTicker } from './ticker.ts';
 import { HOST, resolvePort } from './config.ts';
 import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
-export async function startServer({ port, mode }: { port: number; mode: Mode }) {
-  const { server, closeMiddleware } = await createHttpServer({ mode });
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), binaryPath = resolveAutomedBinary().path }: { port: number; mode: Mode; home?: string; binaryPath?: string }) {
+  const core = new CoreSupervisor({ home, binaryPath, log: console.error });
+  const gateway = createGateway({ core, home });
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -16,9 +23,13 @@ export async function startServer({ port, mode }: { port: number; mode: Mode }) 
     await closeMiddleware();
     throw error;
   }
+  void core.start().catch(error => console.error(String(error)));
+  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error });
   return {
-    server,
+    server, gateway, registerUpgrade,
     async close() {
+      ticker.stop();
+      await core.stop();
       await closeMiddleware();
       await new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());
