@@ -1,9 +1,8 @@
-# M-02 r2 独立复验
+# M-03 r3 独立复验
 
-- 验收命令：automed lib 554 通过、end_to_end 52 通过；`cargo test --workspace` 0 失败（domain 299、cli 4、prompt 10、real_cli 7、bin 12）。
-- 负向对照（均临时改源码、跑测试、还原；`git status` 干净）：
-  - 阶段一禁用且阶段二落后一律 Blocked（现状）→ S1、S2、S5、E1 失败；
-  - 阶段一把任何被拒都当落后 → S4、S7 及现有脏工作树用例失败；
-  - 阶段一不记录非落后拒绝 → S7 失败；阶段二不记录非落后拒绝 → S4、S7 及现有脏工作树用例失败；
-  - `Behind` 直接进 `Active{Rebase}` 不经 `Requeued` → S1、S2、S5 失败。
-- 结论：对照全被拦住，验收有判别力；无产品缺陷。E2 在 Behind 变异下未单跑，由 S1/S2/E1 覆盖同路径。
+结论：通过，M-03 已完成。
+
+- 验收命令：lib 555、end_to_end 53、domain 299，0 失败。
+- 负向对照：授权位不清除 → S6 失败；MergeGate 失败带授权改走 AwaitMerge → E3 与 domain 用例失败。均已还原。
+- 说明：对照 1 下 E3 仍通过（陈旧授权位被下一转换丢弃，行为无误），拦截者是 S6；非产品缺陷。
+- 详情：docs/用户按合并时如果默认分支已经前进-任务自动/evidence/M-03-r3-audit.md
