@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-01；通过后推进 M-02 的 Bug 协议 v2、三份 prompt、eval 静态门与渲染
+next-action: 推进 M-02 的 Bug 协议 v2、三份 prompt、eval 静态门与渲染
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -445,7 +445,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | 领域层：Bug Loop 节点与转换表、Bug 文档解析、[bug] fix_rounds | 0 | domain-bug |
+| M-01 | 已完成 | 领域层：Bug Loop 节点与转换表、Bug 文档解析、[bug] fix_rounds | 0 | domain-bug |
 | M-02 | 开放 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
 | M-03 | 开放 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 开放 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
