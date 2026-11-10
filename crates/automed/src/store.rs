@@ -556,6 +556,28 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    /// Input saved before suspending a retry, unless a newer session consumed it.
+    pub fn resume_input(
+        &self,
+        task_id: &str,
+        node: Node,
+        session_id: Option<&str>,
+    ) -> Result<Option<Value>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = 'task.resume_input'
+             AND json_extract(payload, '$.node') = ?2
+             AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE subject_id = ?1
+                 AND kind = 'session.started' AND json_extract(payload, '$.session_id') = ?3), 0)
+             ORDER BY seq DESC LIMIT 1",
+                params![task_id, node.as_str(), session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
     pub fn count_events(&self, subject_id: &str, kind: &str) -> Result<u32> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2",

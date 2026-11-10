@@ -2760,3 +2760,221 @@ fn stopping_a_task_kills_the_cli_the_wrapper_started() {
     );
     assert_eq!(w.state(&task_id), "stopped");
 }
+
+// Stop/resume tests use observable file barriers, never timing a stop by sleep.
+fn resume_wait(w: &mut World, mut ready: impl FnMut(&World) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    while !ready(w) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "resume barrier timed out"
+        );
+        let report = automed::scheduler::tick(&mut w.ctx);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn resume_block(w: &World, step: u32) {
+    w.step(
+        step,
+        &format!(
+            "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done\n",
+            w.root.join(format!("ready-{step}")).display(),
+            w.root.join(format!("release-{step}")).display(),
+            w.root.display()
+        ),
+    );
+}
+
+fn resume_setup(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let id = create_task(w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    id
+}
+
+fn assert_resume_role(w: &World, id: &str, node: &str, previous: &str) {
+    assert_eq!(w.node(id).as_deref(), Some(node));
+    let session = w.ctx.store.running_session(id).unwrap().unwrap();
+    assert_ne!(session.id, previous);
+    assert_eq!(
+        session.kind.role().unwrap().as_str(),
+        if node == "implement" { "impl" } else { node }
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .list_sessions(id)
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == autome_domain::session::SessionKind::Intake)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn stopped_implementation_resumes_at_implementation() {
+    needs_git!();
+    let mut w = World::new("resume-impl");
+    resume_block(&w, 5);
+    resume_block(&w, 6);
+    let id = resume_setup(&mut w, "resume impl");
+    resume_wait(&mut w, |w| w.root.join("ready-5").exists());
+    let old = w.ctx.store.running_session(&id).unwrap().unwrap().id;
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    assert_eq!(w.state(&id), "stopped");
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    assert_resume_role(&w, &id, "implement", &old);
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn stopped_audit_resumes_at_audit() {
+    needs_git!();
+    let mut w = World::new("resume-audit");
+    let request = "resume audit";
+    w.doc_step(
+        5,
+        &slug_for(request),
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+    );
+    resume_block(&w, 6);
+    resume_block(&w, 7);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    let old = w.ctx.store.running_session(&id).unwrap().unwrap().id;
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    assert_resume_role(&w, &id, "audit", &old);
+    resume_wait(&mut w, |w| w.root.join("ready-7").exists());
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn stopped_gate_resumes_at_gate_and_discards_killed_result() {
+    needs_git!();
+    let mut w = World::new("resume-gate");
+    let script = w.root.join("gate.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done\nexit 0\n",
+            w.root.join("gate-ready").display(),
+            w.root.join("gate-release").display(),
+            w.root.display()
+        ),
+    )
+    .unwrap();
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        script.display()
+    ));
+    let request = "resume gate";
+    w.doc_step(
+        5,
+        &slug_for(request),
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+    );
+    resume_block(&w, 6);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("gate-ready").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("gate"));
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 1);
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    let head =
+        automed::git::head_sha(&w.repo.join(format!(".worktree/{}", slug_for(request)))).unwrap();
+    let job = automed::gate::Job::at(&w.repo, &id, "gate", &head[..12]);
+    assert!(job.started.exists());
+    std::fs::write(
+        &job.exit,
+        "exit_code=143\nended_at=2026-11-10T00:00:00Z\nmarker_end\n",
+    )
+    .unwrap();
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    assert_eq!(w.node(&id).as_deref(), Some("gate"));
+    assert!(!job.exit.exists());
+    std::fs::write(w.root.join("gate-release"), "go").unwrap();
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 2);
+    assert_eq!(
+        w.ctx
+            .store
+            .list_sessions(&id)
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == autome_domain::session::SessionKind::Intake)
+            .count(),
+        1
+    );
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn stopped_gate_feedback_resumes_at_implementation_with_original_prompt() {
+    needs_git!();
+    let mut w = World::new("resume-feedback");
+    w.configure(
+        "[gate]\ncommand = \"echo unique-resume-gate-feedback; exit 1\"\ntimeout_minutes = 5\n",
+    );
+    let request = "resume feedback";
+    w.doc_step(
+        5,
+        &slug_for(request),
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+    );
+    resume_block(&w, 6);
+    resume_block(&w, 7);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    let old = w.ctx.store.running_session(&id).unwrap().unwrap().id;
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    assert_resume_role(&w, &id, "implement", &old);
+    resume_wait(&mut w, |w| w.root.join("ready-7").exists());
+    let prompt = std::fs::read_to_string(w.repo.join(".autome/fake/7.prompt")).unwrap();
+    assert!(prompt.contains("unique-resume-gate-feedback"), "{prompt}");
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}
+
+#[test]
+fn stopped_task_resumes_at_original_node_after_waiting_for_slot() {
+    needs_git!();
+    let mut w = World::new("resume-slot");
+    w.ctx
+        .store
+        .update_project_parallel(&w.project_id, 1)
+        .unwrap();
+    resume_block(&w, 5);
+    resume_block(&w, 6);
+    resume_block(&w, 7);
+    let id = resume_setup(&mut w, "resume slot");
+    resume_wait(&mut w, |w| w.root.join("ready-5").exists());
+    let old = w.ctx.store.running_session(&id).unwrap().unwrap().id;
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    let blocker = create_task(&mut w, "slot blocker");
+    resume_wait(&mut w, |w| w.root.join("ready-6").exists());
+    let count = w.ctx.store.list_sessions(&id).unwrap().len();
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    let state = serde_json::to_value(w.ctx.store.get_task(&id).unwrap().state).unwrap();
+    assert_eq!(state, json!({"state":"queued", "resume":"implement"}));
+    assert_eq!(
+        ok(&w.call("task.get", json!({"task_id":id})))["queue_position"],
+        1
+    );
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), count);
+    ok(&w.call("task.stop", json!({"task_id":blocker})));
+    resume_wait(&mut w, |w| w.root.join("ready-7").exists());
+    assert_resume_role(&w, &id, "implement", &old);
+    ok(&w.call("task.stop", json!({"task_id":id})));
+}

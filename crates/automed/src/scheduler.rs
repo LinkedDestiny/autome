@@ -926,6 +926,16 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         read_status(&project, &task)
     });
 
+    if matches!(trigger, Trigger::Pause | Trigger::Stop)
+        && let Some((node, _, inject)) = ctx.store.pending_retry(task_id)?
+        && task.state.node() == Some(node)
+    {
+        ctx.store.append_event(
+            "task.resume_input",
+            task_id,
+            json!({"node": node, "inject": inject}),
+        )?;
+    }
     ctx.store.set_task_state(task_id, &transition.next)?;
     // The task moved: whatever crashes the last round had are behind it, and
     // the next round starts with its full allowance of retries.
@@ -1270,17 +1280,22 @@ fn perform(
                 .list_sessions(&task.id)?
                 .into_iter()
                 .find(|s| s.kind == kind);
-            let inject = match latest {
-                Some(session) => ctx
-                    .store
-                    .session_started_event(&task.id, &session.id)?
-                    .and_then(|v| v.get("inject").cloned())
-                    .map(serde_json::from_value::<Option<Inject>>)
-                    .transpose()
-                    .map_err(|e| err(e.to_string()))?
-                    .flatten(),
-                None => None,
+            let saved =
+                ctx.store
+                    .resume_input(&task.id, *node, latest.as_ref().map(|s| s.id.as_str()))?;
+            let input = match saved {
+                Some(value) => Some(value),
+                None => match latest {
+                    Some(session) => ctx.store.session_started_event(&task.id, &session.id)?,
+                    None => None,
+                },
             };
+            let inject = input
+                .and_then(|v| v.get("inject").cloned())
+                .map(serde_json::from_value::<Option<Inject>>)
+                .transpose()
+                .map_err(|e| err(e.to_string()))?
+                .flatten();
             redispatch_with(ctx, &task.id, *node, inject.as_ref())
         }
         Action::RunCancel => cancel_task(ctx, task, project),
@@ -3698,6 +3713,99 @@ mod tests {
         );
         w.ctx.store.settle_decisions(&session.id).unwrap();
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
+    }
+
+    #[test]
+    fn requeued_preserves_pending_input_and_expires_it_after_a_new_session() {
+        needs_git!();
+        for trigger in [Trigger::Pause, Trigger::Stop] {
+            let mut w = World::new("resume-input");
+            let task = w.add_task("T-1", "a");
+            w.write_design(
+                &task,
+                &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+            );
+            let inject = Inject::GateFailed {
+                head: "head".into(),
+                command: "check".into(),
+                tail: "fresh gate feedback".into(),
+            };
+            w.set_state(
+                "T-1",
+                TaskState::Active {
+                    node: Node::Implement,
+                },
+            );
+            redispatch_with(&mut w.ctx, "T-1", Node::Implement, None).unwrap();
+            let old = w.ctx.store.running_session("T-1").unwrap().unwrap();
+            w.ctx
+                .store
+                .finish_session(
+                    &old.id,
+                    &autome_domain::session::SessionLifecycle::Killed,
+                    &now_iso(),
+                )
+                .unwrap();
+            w.ctx
+                .store
+                .schedule_retry(
+                    "T-1",
+                    Node::Implement,
+                    "2100-01-01T00:00:00Z",
+                    Some(&inject),
+                    "cooldown",
+                    false,
+                )
+                .unwrap();
+            advance(&mut w.ctx, "T-1", &trigger).unwrap();
+            assert!(w.ctx.store.pending_retry("T-1").unwrap().is_none());
+            advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+            fill_slots(&mut w.ctx).unwrap();
+            let session = w.ctx.store.running_session("T-1").unwrap().unwrap();
+            assert_eq!(
+                carried_inject(&w.ctx, "T-1", &session.id).unwrap(),
+                Some(inject)
+            );
+            assert!(
+                w.ctx
+                    .store
+                    .resume_input("T-1", Node::Implement, Some(&session.id))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                w.ctx
+                    .store
+                    .resume_input("T-1", Node::Audit, None)
+                    .unwrap()
+                    .is_none()
+            );
+            w.ctx
+                .store
+                .finish_session(
+                    &session.id,
+                    &autome_domain::session::SessionLifecycle::Killed,
+                    &now_iso(),
+                )
+                .unwrap();
+            // A pending input of None is itself authoritative, not a fallback to old input.
+            w.ctx
+                .store
+                .schedule_retry(
+                    "T-1",
+                    Node::Implement,
+                    "2100-01-01T00:00:00Z",
+                    None,
+                    "cooldown",
+                    false,
+                )
+                .unwrap();
+            advance(&mut w.ctx, "T-1", &trigger).unwrap();
+            advance(&mut w.ctx, "T-1", &Trigger::Resume).unwrap();
+            fill_slots(&mut w.ctx).unwrap();
+            let session = w.ctx.store.running_session("T-1").unwrap().unwrap();
+            assert_eq!(carried_inject(&w.ctx, "T-1", &session.id).unwrap(), None);
+        }
     }
 
     // ---- control ---------------------------------------------------------

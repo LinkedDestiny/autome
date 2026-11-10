@@ -7,3 +7,4 @@
 实现 #4 | M-01 | 待审 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r4-impl.md | Electron 43.2.0 下载域名无法解析
 实现 #5 | M-01 | 待审 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r5-impl.md | 无；真实 DOM 仍因 Electron 缺失跳过
 审计 #1 | M-01 | 通过 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-01-r5-audit.md | 无
+实现 #6 | M-02 | 待审；B-01/B-03 纳入 M-04/M-05 | docs/修复已停止或已暂停的任务恢复时从任务整理重新开始/evidence/M-02-r6-impl.md | 无
