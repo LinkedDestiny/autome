@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计复验 M-01（含受沙箱阻塞的 7 个监听用例）；通过后下一实现轮推进 M-02 读写白名单迁移与路径拒绝
+next-action: 实现 M-02 读写白名单迁移与路径拒绝（server/gates/{read-gate,write-gate}.ts 与 READ_METHODS 交叉核对）
 
 任务文件：`docs/apps-web-的服务端托管-automed-2/apps-web-的服务端托管-automed-2-task.md`。
 本任务的规则见 `docs/apps-web-的服务端托管-automed-2/protocol/loop-protocol.md` 与
@@ -398,7 +398,7 @@ t=3s 发出的 tick A 处理了 5 秒以上，t=9s 又发出 tick B，管道里�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
+| M-01 | 已完成 | 帧、sidecar、automed 四级查找与 CI 构建内核 | 0 | |
 | M-02 | 开放 | 读写白名单迁移与路径拒绝 | 0 | |
 | M-03 | 开放 | 内核守护：崩溃重启、手动重启与 3 秒 tick | 0 | |
 | M-04 | 开放 | 本机安全：Host、Origin 与 upgrade 守卫 | 0 | |
@@ -411,7 +411,7 @@ M-05（五条在 HTTP 层再验一遍）；R-05 → M-03、M-05；R-06 → M-01�
 
 ### M-01 帧、sidecar、automed 四级查找与 CI 构建内核
 
-最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-impl.md · 待审，7 个 W1 监听用例受沙箱阻塞 · 实现 #1
+最新证据：docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-audit.md · 通过 · 审计 #1
 
 - 结果：`server/core/{framing,sidecar,binary}.ts` 能在 vitest 里驱动真实 automed 完成往返；CI 的 web job 在测试前构建
   automed，真实内核用例不再有任何跳过路径。这是不确定性最大的一步（ESM + 原生类型剥离 + 真实子进程）。

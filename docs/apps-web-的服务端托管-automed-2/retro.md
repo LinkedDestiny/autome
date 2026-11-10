@@ -3,3 +3,4 @@
 裁决 #1 | M-01..M-05 | 评审无阻塞问题；3 项非阻塞建议已作为局部修正采纳（Vite CORS、等锁表述、B-03 描述）；设计定稿，status 改为实现中 | apps-web-的服务端托管-automed-2-adjudication.md | 无
 
 实现 #1 | M-01 | 待审 | docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-impl.md | W1 的 7 个监听用例受 listen EPERM 阻塞
+审计 #1 | M-01 | 通过 | docs/apps-web-的服务端托管-automed-2/evidence/M-01-r1-audit.md | 无
