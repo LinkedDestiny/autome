@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/30
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: Autome 重跑提交后门禁并独立复验 M-03；通过后推进 M-04 task.reply、补充信息与预算展示
+next-action: 推进 M-04：task.reply、补充信息、不是 Bug、修复预算与命令行显示
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -452,7 +452,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 |---|---|---|---|---|
 | M-01 | 已完成 | 领域层：Bug Loop 节点与转换表、Bug 文档解析、[bug] fix_rounds | 0 | domain-bug |
 | M-02 | 已完成 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
-| M-03 | 待审 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
+| M-03 | 已完成 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 开放 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
 | M-05 | 开放 | 需求任务零变化与全量门禁 | 0 | regression |
 | M-06 | 开放 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
@@ -572,7 +572,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-03 范围
 
-最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r4-impl.md · 原失败用例已修复，全量门禁待宿主复验，保持待审 · 实现 #4
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r3-audit.md · 审计通过 · 审计 #3
 
 - 覆盖：A1（端到端节点序列）、A3、A6（运行时）、A7；C4、C5、C6。前置：M-02。
 - 改动：`automed/src/scheduler.rs`：
