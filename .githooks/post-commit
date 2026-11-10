@@ -63,6 +63,15 @@ safe_subject=$(printf '%s' "$subject" | tr -d '"\\')
 # real git and real processes against wall-clock deadlines. Yielding the CPU
 # to whatever you do next keeps the background run from failing the
 # foreground one.
+# Git hands hooks the committing repo's environment. In a linked worktree that
+# includes an absolute GIT_DIR and GIT_INDEX_FILE, so any test that runs bare
+# `git` in its own temporary repo would commit into this branch instead (it
+# happened: a test's `git add . && git commit -m initial` deleted every file
+# on a task branch, once per commit). The suite gets a clean slate.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_EDITOR \
+  GIT_CONFIG_PARAMETERS GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+  GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE
+
 if command -v nice > /dev/null 2>&1; then
   yield='nice -n 10'
 else
