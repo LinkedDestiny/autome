@@ -126,6 +126,8 @@ export function failureReason(reason) {
       return `设计轮次耗尽 · 上限 ${reason.limit}`;
     case 'impl_budget':
       return `实现预算耗尽 · 上限 ${reason.limit}`;
+    case 'gate_same_failure':
+      return `门禁连续 ${reason.count} 次因同一原因失败：${reason.summary} · 日志 ${reason.log}`;
     case 'infeasible':
       return '设计判定这件事做不了';
     case 'protocol':

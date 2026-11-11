@@ -9,3 +9,4 @@
 审计 #3 | M-03 | 通过 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-audit.md | 无
 实现 #5 | M-04 | 待审 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-04-r5-impl.md | 无
 审计 #4 | M-04 | 通过 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-04-r5-audit.md | 无
+实现 #6 | M-05 | 待审 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r6-impl.md | 无；H-01 留待人工验收

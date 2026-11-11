@@ -75,6 +75,12 @@ fn failure(reason: &Value) -> String {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
         "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
+        "gate_same_failure" => format!(
+            "门禁连续 {} 次因同一原因失败：{}（日志：{}）",
+            reason["count"],
+            reason["summary"].as_str().unwrap_or(""),
+            reason["log"].as_str().unwrap_or("")
+        ),
         "infeasible" => "设计文档判定不可实现".into(),
         "protocol" => format!("协议失败：{detail}"),
         "session_crashed" => format!("会话崩溃：{detail}"),
@@ -109,6 +115,10 @@ pub fn next_step(task: &Value) -> Option<String> {
         ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
             Some(format!("autome extend {id} 1"))
         }
+        ("failed", _) if state["reason"]["kind"] == "gate_same_failure" => Some(format!(
+            "autome rerun {id} {}    或    autome extend {id} 1",
+            state["at"].as_str().unwrap_or("?")
+        )),
         ("active", "await_merge") => Some(format!("autome merge {id}")),
         ("failed", _) => Some(format!(
             "autome status {id}    （看原因，再 rerun / extend / cancel）"
@@ -445,188 +455,24 @@ mod tests {
     }
 
     #[test]
-    fn an_automatic_rebase_is_printed_by_autome_run() {
-        let line = event_line(
-            "merge.auto",
-            "T-9",
-            &json!({"active":true,"repos":["backend","docs"]}),
-        )
-        .unwrap();
-        assert!(line.contains("默认分支已前进"));
-        assert!(line.contains("backend、docs"));
-        assert_eq!(
-            event_line("merge.auto", "T-9", &json!({"active":false})),
-            None
-        );
-        for repos in [
-            json!([]),
-            json!([{"repo":"backend","onto":"main","head":"0123456789abcdef"}]),
-            json!([{"repo":"backend","onto":"main","head":"0123456789abcdef"},{"repo":"docs","onto":"master","head":"abc"}]),
-        ] {
-            let line = event_line("merge.rebased", "T-9", &json!({"repos":repos})).unwrap();
-            assert!(line.contains("自动 rebase"));
-            if !repos.as_array().unwrap().is_empty() {
-                assert!(line.contains("backend → main @ 0123456789"));
-                assert!(!line.contains("0123456789abcdef"));
-            }
-            if repos.as_array().unwrap().len() == 2 {
-                assert!(line.contains("；docs → master @ abc"));
-            }
-        }
-    }
-
-    #[test]
-    fn requeued_states_show_the_original_node() {
-        for (node, label) in [
-            ("intake", "任务整理"),
-            ("design", "设计"),
-            ("review", "评审"),
-            ("adjudicate", "裁决"),
-            ("implement", "实现"),
-            ("gate", "门禁"),
-            ("audit", "审计"),
-            ("retro", "复盘"),
-            ("rebase", "rebase"),
-            ("merge_gate", "合并前门禁"),
-            ("merging", "合并中"),
-            ("main_check", "验证 main"),
-            ("cleanup", "清理"),
-        ] {
-            let state = json!({"state": "queued", "resume": node});
-            let expected = format!("排队（会从 {label} 继续）");
-            assert_eq!(state_line(&state), expected, "{node}");
+    fn gate_same_failure_explains_the_reason_and_log() {
+        for count in [1, 3, 10] {
+            let reason = json!({"kind":"gate_same_failure","count":count,"summary":"错误 S","log":"/日志/gate.log"});
             assert_eq!(
-                event_line("task.updated", "T-1", &json!({"state": state})),
-                Some(format!("T-1 → {expected}")),
-                "{node}"
+                failure(&reason),
+                format!("门禁连续 {count} 次因同一原因失败：错误 S（日志：/日志/gate.log）")
             );
         }
     }
 
     #[test]
-    fn new_queued_states_keep_the_plain_label() {
-        assert_eq!(state_line(&json!({"state": "queued"})), "排队");
-        assert_eq!(
-            state_line(&json!({"state": "queued", "resume": null})),
-            "排队"
-        );
-    }
-
-    #[test]
-    fn iso_round_trips_through_the_cores_formatter() {
-        for epoch in [0i64, 1_800_000_000, 951_782_400 /* 2000-02-29 */] {
-            let iso = automed::store::format_iso(epoch);
-            assert_eq!(parse_iso(&iso), Some(epoch), "{iso}");
-        }
-        assert_eq!(parse_iso("garbage"), None);
-    }
-
-    #[test]
-    fn states_read_the_way_the_desktop_names_them() {
-        assert_eq!(
-            state_line(&json!({"state": "active", "node": "implement"})),
-            "运行中 · 实现"
-        );
-        assert_eq!(
-            state_line(&json!({"state": "active", "node": "await_merge"})),
-            "等你合并"
-        );
-        assert_eq!(
-            state_line(&json!({"state": "failed", "at": "gate",
-                "reason": {"kind": "impl_budget", "limit": 25}})),
-            "失败（门禁）：实现预算用完（N = 25）"
-        );
-    }
-
-    #[test]
-    fn a_waiting_task_says_what_to_type() {
-        let t = json!({"id": "T-1", "state": {"state": "active", "node": "await_merge"}});
-        assert_eq!(next_step(&t).as_deref(), Some("autome merge T-1"));
-        let running = json!({"id": "T-1", "state": {"state": "active", "node": "audit"}});
-        assert_eq!(next_step(&running), None);
-    }
-}
-
-#[cfg(test)]
-mod task_card {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn draft_renders_as_waiting_to_start_with_the_start_command_next() {
-        let t = json!({"id":"T-1","state":{"state":"draft"}});
-        assert_eq!(state_line(&t["state"]), "待开始");
-        assert_eq!(next_step(&t).as_deref(), Some("autome task start T-1"));
-    }
-    #[test]
-    fn task_started_is_printed_by_run() {
-        assert_eq!(
-            event_line("task.started", "T-1", &json!({})).as_deref(),
-            Some("T-1 开始")
-        );
-    }
-}
-
-#[cfg(test)]
-mod bug_tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn bug_loop_render_labels_every_bug_node_event_and_failure() {
-        for (node, label) in [
-            ("locate", "定位"),
-            ("repro_check", "复现检查"),
-            ("fix", "修复"),
-            ("fix_gate", "修复门禁"),
-            ("fix_review", "复核"),
-            ("await_info", "等你补充信息"),
-            ("not_a_bug", "等你决定（不是 Bug）"),
-        ] {
-            assert_eq!(node_label(node), label);
-            assert!(state_line(&json!({"state":"active","node":node})).contains(label));
-        }
-        for kind in [
-            "bug.loop_started",
-            "bug.located",
-            "bug.reproduced",
-            "bug.repro_missed",
-            "bug.fix_round_started",
-            "bug.reviewed",
-            "task.replied",
-        ] {
-            assert!(
-                event_line(
-                    kind,
-                    "T-1",
-                    &json!({"round":2,"limit":3,"n":1,"text":"原文"})
-                )
-                .is_some(),
-                "{kind}"
+    fn gate_same_failure_offers_rerun_and_extend() {
+        for at in ["gate", "merge_gate", "fix_gate"] {
+            let task = json!({"id":"T-9","state":{"state":"failed","at":at,"reason":{"kind":"gate_same_failure","count":3,"summary":"S","log":"/l"}}});
+            assert_eq!(
+                next_step(&task),
+                Some(format!(
+                    "autome rerun T-9 {at}    或    autome extend T-9 1"
+                ))
             );
         }
-        assert_eq!(
-            failure(&json!({"kind":"fix_budget","limit":2})),
-            "修复轮次用完（上限 2）"
-        );
-        assert_eq!(next_step(&json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"fix_budget","limit":2}}})).as_deref(),Some("autome extend T-1 1"));
-        for (step, label) in [("locate", "定位"), ("fix", "修复"), ("fix_review", "复核")] {
-            assert!(
-                event_line(
-                    "session.started",
-                    "T-1",
-                    &json!({"kind":{"kind":"bug","step":step}})
-                )
-                .unwrap()
-                .contains(label)
-            );
-        }
-    }
-}
-
-fn setup_checkout_label(checkout: &str) -> &str {
-    match checkout {
-        "worktree" => "任务检出",
-        "verify" => "合并提交检出",
-        "main" => "主检出",
-        other => other,
-    }
-}

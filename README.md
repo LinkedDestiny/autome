@@ -114,6 +114,7 @@ the project's `.autome/config.toml`:
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
 timeout_minutes = 30       # the default; a gate that runs longer has failed
+same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
 
 [retry]
 attempts = 2               # the default; 0 restores "a crash fails the task"
@@ -128,7 +129,11 @@ timeout_minutes = 30       # optional; preparation timeout
 - **The gate.** With `[gate]` set, Autome runs the command itself after every
   implementation round, on the commit that round produced, and only an exit
   code of 0 lets the round reach audit. A failure goes straight back to
-  implementation with the command and the log's tail in the prompt. It runs
+  implementation with the command and the log's tail in the prompt. After
+  `same_failure_limit` consecutive failures with the same fingerprint at the
+  same `gate`, `merge_gate` or Bug Loop `fix_gate` node, it stops the task with
+  the reason and latest log path. Fix the environment, then use `autome rerun
+  <id> <node>` or `autome extend <id> 1` to retry; the streak starts over. It runs
   again on the rebased head before the merge stopping point (skipped when the
   head already passed), and once more on `main` after the merge — that last
   run cannot undo the merge, so a failure there raises an alert on the
