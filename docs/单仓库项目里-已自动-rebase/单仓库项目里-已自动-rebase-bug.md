@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli rebased_event_
 根因: 单仓库 RepoSlot.name 按约定为空，merge.rebased 渲染无条件使用“仓库 → 分支”模板，导致箭头前空位。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -52,4 +52,10 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。
+独立复核（第 1/3 轮）：通过。
+- 复现命令 `cargo test --offline -p autome-cli rebased_event_` 实跑 2 passed、0 failed；clippy（-D warnings）与 `cargo fmt --check` 通过。
+- 差异 f1f4105..04dfb03 仅 `render.rs` 新增 9 行，回归测试零改动，未删除、跳过或弱化。
+- 根因成立：单仓库 `RepoSlot.name` 合法为空，`merge.rebased` 分支无条件套用“仓库 → 分支”模板。
+- 回归测试有意义：单仓库用例修复前失败；工作区用例锁定具名成员与分隔符，不以数量判断单仓库。
+- 修复仅在 repos 恰一项且 repo 为空时改句式，其它输入保持原格式，范围最小。
+- 注意：Web test 因 EMFILE/listen EPERM 的失败属环境限制，与本改动无关（未触及 web），仍需宿主在允许监听的环境复验。
