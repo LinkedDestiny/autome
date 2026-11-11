@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed regression_evidence_destination -- --nocapture
 根因: 简报只展示角色会话序号和已有证据，未明确本轮证据写入路径；审计会话序号与门禁使用的实现轮号分叉后，按简报序号命名的证据被拒绝。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -50,4 +50,10 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。
+复核: 通过（第 1/3 轮）。
+
+- 复现命令复验：3 个 `regression_evidence_destination_*` 用例全部通过。automed 全部测试（含 17 个既有简报测试）无失败。
+- 差异范围：39c2c00..HEAD 对产品代码仅 `brief.rs` +12 行，回归测试未改动、未删除、未跳过、未弱化。
+- 根因成立：门禁 `evidence_file` 用 `status.impl_round` 匹配文件名，简报却只给角色会话序号。修复在本里程碑段落给出完整路径：实现用 `input.round`，审计用 `status.impl_round`，保留 `doc_dir`，其它角色不受影响。
+- 范围最小，三个用例分别覆盖审计、实现、目录前缀。
+- 环境说明：修复轮记录的 Web 测试失败来自本机 `listen EPERM`/`EMFILE`，与本改动无关，需宿主在可监听端口的环境复跑门禁。
