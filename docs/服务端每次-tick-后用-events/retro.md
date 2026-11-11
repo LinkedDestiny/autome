@@ -23,3 +23,5 @@
 实现 #18 | M-01 | 门禁失败复现，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r18-impl.md | registry DNS 失败，锁定依赖无法安装
 实现 #19 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r19-impl.md | 沙箱监听 EPERM；依赖错误已不复现
 实现 #20 | M-01 | 退回 + eventbus-e2e（保持开放） | docs/服务端每次-tick-后用-events/evidence/M-01-r20-impl.md | 已修正旧 404 前提；监听 EPERM 阻断集成复验，另一宿主失败待完整日志
+
+实现 #21 | M-01 | 退回 + eventbus-e2e | docs/服务端每次-tick-后用-events/evidence/M-01-r21-impl.md | 本地监听 EPERM，保持开放
