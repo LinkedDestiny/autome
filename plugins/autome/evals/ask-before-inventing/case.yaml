@@ -1,0 +1,12 @@
+name: ask-before-inventing
+description: 需求缺少验收标准时先追问，不编造整卡
+tags: [autome-task, clarification]
+runs: 3
+max_turns: 8
+timeout_seconds: 120
+prompt: |
+  我们讨论的是一个新需求：采购同事每天手动从列表找待付款订单，很费时间。
+  要在订单列表增加“仅看待付款”的筛选开关，切换后只显示待付款订单。
+  本次不改支付流程，没有参考资料。建成 autome 任务。
+graders:
+  - graders/asks-for-acceptance.md

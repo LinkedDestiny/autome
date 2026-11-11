@@ -11,3 +11,5 @@
 
 实现 #4 | M-04 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-04-r4-impl.md | 全仓 Web 测试受沙箱监听限制，与上一轮一致
 审计 #4 | M-04 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-04-r4-audit.md | 无
+
+实现 #5 | M-05 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-05-r5-impl.md | Web 监听 EPERM；真实 eval 留 H-05

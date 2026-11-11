@@ -84,10 +84,12 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 . "$plugin/tests/card-panel.sh"
 . "$plugin/tests/skill.sh"
 . "$plugin/tests/readme.sh"
+. "$plugin/tests/evals.sh"
 [ "$#" -gt 0 ] || set -- all
-[ "$*" != all ] || set -- structure card panel skill readme
+[ "$*" != all ] || set -- structure card panel skill readme evals
 for group do
   case "$group" in
+    evals) for test in E1 E2 E3 E4 E5; do check "$test"; done ;;
     structure) for test in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10; do check "$test"; done ;;
     readme) for test in R1 R2 R3 R4 R5; do check "$test"; done ;;
     skill) for test in T1 T2 T3 T4 T5 T6 T7 T8 T9 T10; do check "$test"; done ;;

@@ -1,0 +1,10 @@
+name: kind-ambiguous
+description: 新需求与已有错误信号并存时先询问类型
+tags: [autome-task, clarification]
+runs: 3
+max_turns: 8
+timeout_seconds: 120
+prompt: |
+  把导出改成支持 CSV，现在导出的 Excel 打开乱码。建成 autome 任务。
+graders:
+  - graders/asks-for-kind.md

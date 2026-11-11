@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/40
+implementation-round: 5/40
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-05 eval 用例
+next-action: 审计 M-05 eval 用例；通过后实现 M-06 V7 示例键值一致性回归
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -243,7 +243,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-02 | 已完成 | 任务卡校验与面板链接脚本 | 0 | |
 | M-03 | 已完成 | autome-task 技能与短别名 | 0 | |
 | M-04 | 已完成 | README 程序化创建说明与插件市场 README | 0 | |
-| M-05 | 开放 | eval 用例 | 0 | |
+| M-05 | 待审 | eval 用例 | 0 | |
 | M-06 | 开放 | B-1：V7 示例键值一致性回归 | 0 | |
 | M-07 | 开放 | B-2：人工验收逐项隔离前置 | 0 | |
 | M-08 | 开放 | B-3：环境采集时序统一 | 0 | |
@@ -291,6 +291,8 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 - 负向对照：README 示例把 `id` 写成 `task_id` 时 V7 失败；把待开始状态写成 `"state": "pending"` 时 V7 失败；漏写 Codex 安装行时 R5 失败。
 
 ### M-05 验收契约
+
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-05-r5-impl.md · 待审 · 实现 #5
 
 - 验收命令：`sh plugins/autome/tests/run.sh evals`
 - 预期：evals 组 5 个用例通过（E1 三个场景目录各有含 `name`、`description`、`prompt`、`graders`、`runs`、`max_turns`、`timeout_seconds` 的 case.yaml 与至少一个 grader；E2 每个 grader 有「## 阳性对照」小节；E3 `ask-before-inventing` 的 grader 以「验收标准」判分；E4 没有 case.yaml 含 `scaffold_script`；E5 `evals/README.md` 含带 `--max-cost-usd` 的运行命令、「不进门禁」与「不要加 `--allow-tools Bash`」）。共 5 个；`run.sh all` 合计 59 个。
