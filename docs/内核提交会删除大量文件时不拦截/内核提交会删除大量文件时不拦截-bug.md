@@ -1,11 +1,11 @@
 # 内核提交会删除大量文件时不拦截，兜底提交收了什么也看不到
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --lib commit_safety -- --nocapture
 根因: commit_paths 在暂存后直接提交整个索引，未检查相对 HEAD 的删除数；sweep_one 吞掉提交错误且成功时只记录 SHA，没有新增文件任务事件。
 复核: 待复核
-repos: crates/automed
+repos: crates/automed, crates/autome-cli
 
 ## 现象
 
@@ -45,7 +45,21 @@ repos: crates/automed
 
 ## 修复说明
 
-本轮为定位轮，未修复产品代码。修复轮预算为 0/3。
+本轮为修复第 1/3 轮，保留原复现命令和定位轮全部回归测试。
+
+- `commit_paths` 在暂存后检查整个索引相对 HEAD 的删除路径，使用 NUL 分隔且关闭重命名折叠；超过 50 个时拒绝提交，错误包含总数与前 5 个路径。恰好 50 个仍允许提交。
+- 兜底提交错误向上传递，并在会话收尾将任务标记为 Failed、持久化失败事件；简报提交也不再吞掉错误。inputs、协议和补充信息入口沿用现有错误传播。
+- 兜底范围仍为全部未忽略改动。成功后从实际提交读取新增路径，写入 `task.swept` 事件，包含 SHA、仓库、总数及最多 20 个路径；CLI 打印一行，路径中的换行由 JSON 转义。
+- 仅追加两个测试，覆盖 21 个新文件的提交与事件截断，以及 CLI 单行展示；未修改、删除或跳过定位轮测试。
+
+验证结果：
+
+- 修复前原命令：3 failed、1 passed，符合定位结果，日志 `.autome/output/fix-before.log`。
+- 修复后原命令：5 passed、0 failed、0 ignored（原有 4 项加新增截断测试），日志 `.autome/output/fix-after.log`。
+- 最终代码的格式检查、Clippy（`-D warnings`）与 CLI 新增单行展示测试通过，日志 `.autome/output/fix-final-checks.log`；`git diff --check` 通过。逐字比对确认定位轮 4 个测试和共用夹具均未修改。
+- 配置门禁 `sh scripts/ci-local.sh` 已完整执行（706 秒），总体未通过。Format、Clippy、工作区测试、独立 End to end（81 项）、Adapter flags、Desktop、Contract、Web install/lint/typecheck/build 均通过；Web test 为 4 个文件失败、29 个文件通过，11 failed、271 passed、19 skipped。
+- Web 失败日志包含 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`；当前沙箱禁止监听且不允许提权，未修改或跳过相关测试。需要宿主在允许本机监听和文件监听的环境重跑配置门禁。完整日志 `.autome/output/fix-ci.log`，错误摘要 `.autome/output/fix-ci-errors.log`。
+- 未实跑真实模型会话驱动的 `autome run`，未逐一动态注入 inputs / 补充信息入口的删除故障；不将单元测试等同于这些完整入口验收。
 
 ## 复核意见
 

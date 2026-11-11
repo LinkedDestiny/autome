@@ -203,6 +203,12 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         "bug.reviewed" => format!("{subject} 复核第 {} 轮：{}", p["round"], s("verdict")),
         "task.replied" => format!("{subject} 补充信息 #{}：{}", p["n"], s("text")),
         "task.started" => format!("{subject} 开始"),
+        "task.swept" => format!(
+            "{subject} 兜底提交 {}：新增跟踪 {} 个文件（最多列 20 个）：{}",
+            s("sha"),
+            p["added_count"],
+            p["added_paths"]
+        ),
         "task.created" => format!("{subject} 新任务"),
         "task.updated" => format!("{subject} → {}", state_line(&p["state"])),
         "session.started" => {
@@ -331,6 +337,21 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sweep_event_prints_count_and_escaped_paths_on_one_line() {
+        let line = super::event_line(
+            "task.swept",
+            "T-1",
+            &serde_json::json!({
+                "sha": "abc123", "added_count": 21, "added_paths": ["source.rs", "line\nbreak.txt"]
+            }),
+        )
+        .unwrap();
+        assert!(line.contains("21 个文件"));
+        assert!(line.contains("source.rs"));
+        assert_eq!(line.lines().count(), 1);
+    }
+
     use super::*;
     use serde_json::json;
 

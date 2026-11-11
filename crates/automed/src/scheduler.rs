@@ -275,7 +275,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
                     | TaskState::Stopped { .. }
             ))
     {
-        sweep_commit(&project, &task, s)?;
+        sweep_commit(ctx, &project, &task, s)?;
         check_lessons(ctx, &task, &project)?;
         return Ok(true);
     }
@@ -286,7 +286,21 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // branch was identical to its base and the merge would have brought
     // nothing across. The prompt asks each round to commit; this is what
     // makes forgetting recoverable rather than silent.
-    sweep_commit(&project, &task, s)?;
+    if let Err(e) = sweep_commit(ctx, &project, &task, s) {
+        let failed = TaskState::Failed {
+            at: task.state.node().unwrap_or(Node::Intake),
+            reason: FailureReason::Config {
+                detail: e.to_string(),
+            },
+        };
+        ctx.store.set_task_state(&task.id, &failed)?;
+        ctx.store.append_event(
+            "task.updated",
+            &task.id,
+            json!({ "state": failed, "trigger": "sweep_failed" }),
+        )?;
+        return Ok(true);
+    }
 
     if matches!(s.kind, SessionKind::Bug { .. }) {
         let outcome = read_bug_outcome(&project, &task, &lifecycle);
@@ -845,10 +859,15 @@ fn epoch_secs(ts: &str) -> Option<i64> {
 /// Scoped to the worktree, so it can only ever pick up the task's own work.
 /// Labelled as a sweep, so a reader can tell it apart from a commit the agent
 /// made deliberately.
-fn sweep_commit(project: &Project, task: &TaskRecord, session: &Session) -> Result<()> {
+fn sweep_commit(
+    ctx: &mut Ctx,
+    project: &Project,
+    task: &TaskRecord,
+    session: &Session,
+) -> Result<()> {
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
     for slot in &layout.repos {
-        sweep_one(&slot.worktree, task, session)?;
+        sweep_one(ctx, &slot.worktree, task, session)?;
     }
     Ok(())
 }
@@ -856,7 +875,7 @@ fn sweep_commit(project: &Project, task: &TaskRecord, session: &Session) -> Resu
 /// Sweeps one checkout. A workspace task has several, and a round that edited
 /// two repositories and committed in neither would otherwise lose the half
 /// the sweep did not look at.
-fn sweep_one(worktree: &Path, task: &TaskRecord, session: &Session) -> Result<()> {
+fn sweep_one(ctx: &mut Ctx, worktree: &Path, task: &TaskRecord, session: &Session) -> Result<()> {
     let worktree = worktree.to_path_buf();
     if !worktree.exists() {
         return Ok(());
@@ -875,9 +894,18 @@ fn sweep_one(worktree: &Path, task: &TaskRecord, session: &Session) -> Result<()
     match git::commit_paths(&worktree, &["."], &message) {
         Ok(Some(sha)) => {
             tracing::info!(task = %task.id, %sha, "swept up uncommitted session work");
+            let added = git::added_paths(&worktree, &sha)?;
+            ctx.store.append_event(
+                "task.swept",
+                &task.id,
+                json!({
+                    "sha": sha, "repo": worktree, "added_count": added.len(),
+                    "added_paths": added.iter().take(20).collect::<Vec<_>>()
+                }),
+            )?;
         }
         Ok(None) => {}
-        Err(e) => tracing::warn!(task = %task.id, error = %e, "sweep commit failed"),
+        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
@@ -2611,11 +2639,11 @@ fn write_brief(
         tracing::warn!(task = %task.id, path = %rel, "could not write the brief");
         return Ok(shown);
     }
-    let _ = git::commit_paths(
+    git::commit_paths(
         worktree,
         &[&rel],
         &format!("chore(autome): {} {} 简报", task.id, role.as_str()),
-    );
+    )?;
     Ok(shown)
 }
 
@@ -4664,6 +4692,26 @@ mod tests {
             }),
             "兜底已经收进 feature.txt，但任务事件没有新增文件记录: {events:?}"
         );
+    }
+
+    #[test]
+    fn commit_safety_sweep_limits_event_paths_without_dropping_files() {
+        let (mut w, wt, _) = commit_safety_finished_session(0);
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        let session = w.ctx.store.list_sessions("T-1").unwrap().remove(0);
+        for i in 0..21 {
+            std::fs::write(wt.join(format!("new-{i:02}.txt")), "source").unwrap();
+        }
+        sweep_one(&mut w.ctx, &wt, &task, &session).unwrap();
+        let event = w
+            .ctx
+            .store
+            .last_event("T-1", "task.swept")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["added_count"], 21);
+        assert_eq!(event["added_paths"].as_array().unwrap().len(), 20);
+        assert!(git::run(&wt, &["show", "HEAD:new-20.txt"]).unwrap().ok());
     }
 
     #[test]
