@@ -2686,6 +2686,165 @@ fn main_failing_its_gate_after_a_merge_raises_an_alert_the_user_can_dismiss() {
     assert!(w.ctx.store.open_alerts().unwrap().is_empty());
 }
 
+// Real gate jobs with changing noise, controlled outside the worktree.
+fn run_same_failure_task(w: &mut World, alternating: bool) -> String {
+    let script = w.root.join("same-failure.sh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"set -eu
+root='{}'
+n=$(cat "$root/gate-count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$root/gate-count"
+if [ -f gate-ok ] || [ -f "$root/environment-fixed" ]; then exit 0; fi
+package=ws
+if [ '{}' = true ] && [ $((n % 2)) = 0 ]; then package=zod; fi
+echo "Error: Cannot find package '$package' imported from /tmp/work/run-$n/app.js at 127.0.0.1:$((40000 + n)) after $n.5s at 12:00:$n"
+echo "Duration $n.5s"
+echo '  FAILED  Web test'
+exit 1
+"#,
+            w.root.display(), alternating
+        ),
+    )
+    .unwrap();
+    w.configure(&format!("[gate]\ncommand = \"sh {}\"\n", script.display()));
+    let request = "same failure feature";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let rounds = if alternating { 5 } else { 3 };
+    for round in 1..=rounds {
+        w.doc_step_for_prelude(
+            4 + round,
+            &slug,
+            &doc("实现中", 2, round, &[("M-01", "待审")]),
+            if alternating && round == 5 {
+                "echo ok > gate-ok\ngit add gate-ok"
+            } else {
+                ""
+            },
+        );
+    }
+    w.doc_step(
+        5 + rounds,
+        &slug,
+        &doc("实现中", 2, rounds, &[("M-01", "已完成")]),
+    );
+    w.retro_step(6 + rounds, &slug);
+    let id = create_task(w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    id
+}
+
+fn same_failure_implementations(w: &World, id: &str) -> usize {
+    w.ctx
+        .store
+        .list_sessions(id)
+        .unwrap()
+        .iter()
+        .filter(|s| s.kind.role().is_some_and(|r| r.as_str() == "impl"))
+        .count()
+}
+
+fn same_failure_results(w: &World, id: &str) -> Vec<Value> {
+    w.ctx
+        .store
+        .events_since_with_subject(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|(_, kind, subject, payload)| {
+            kind == "gate.result" && subject == id && payload["node"] == "gate"
+        })
+        .map(|(_, _, _, payload)| payload)
+        .collect()
+}
+
+fn assert_same_failure_stopped(w: &mut World, id: &str) -> Value {
+    let state = serde_json::to_value(w.ctx.store.get_task(id).unwrap().state).unwrap();
+    assert_eq!(state["state"], "failed", "{state}");
+    assert_eq!(state["reason"]["kind"], "gate_same_failure");
+    assert_eq!(state["reason"]["count"], 3);
+    assert!(
+        state["reason"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Cannot find package 'ws'")
+    );
+    let results = same_failure_results(w, id);
+    assert_eq!(results.len(), 3);
+    for (i, result) in results.iter().enumerate() {
+        assert_eq!(result["same_failures"], i + 1);
+        assert_eq!(result["tripped"], i == 2);
+        assert_eq!(result["fingerprint"], results[0]["fingerprint"]);
+    }
+    let last = results.last().unwrap().clone();
+    assert_eq!(state["reason"]["log"], last["log"]);
+    assert!(std::path::Path::new(last["log"].as_str().unwrap()).is_file());
+    assert_eq!(same_failure_implementations(w, id), 3);
+    let sessions = w.ctx.store.list_sessions(id).unwrap().len();
+    w.settle();
+    assert_eq!(w.ctx.store.list_sessions(id).unwrap().len(), sessions);
+    assert_eq!(same_failure_results(w, id).len(), 3);
+    last
+}
+
+#[test]
+fn same_failure_three_times_stops_without_another_implementation() {
+    needs_git!();
+    let mut w = World::new("same-failure-stop");
+    let id = run_same_failure_task(&mut w, false);
+    assert_same_failure_stopped(&mut w, &id);
+}
+
+#[test]
+fn same_failure_alternating_errors_keep_returning_to_implementation() {
+    needs_git!();
+    let mut w = World::new("same-failure-alternating");
+    let id = run_same_failure_task(&mut w, true);
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(same_failure_implementations(&w, &id), 5);
+    let results = same_failure_results(&w, &id);
+    assert_eq!(results.len(), 5);
+    for (i, result) in results[..4].iter().enumerate() {
+        assert_eq!(result["same_failures"], 1);
+        assert_eq!(result["tripped"], false);
+        assert!(result["fingerprint"].is_string());
+        if i > 0 {
+            assert_ne!(result["fingerprint"], results[i - 1]["fingerprint"]);
+        }
+        assert!(
+            w.prompt(6 + i as u32)
+                .contains(result["tail"].as_str().unwrap())
+        );
+    }
+    assert_eq!(results[4]["ok"], true);
+    assert!(results[4].get("fingerprint").is_none());
+}
+
+#[test]
+fn same_failure_rerun_gate_after_environment_repair_uses_the_same_head() {
+    needs_git!();
+    let mut w = World::new("same-failure-rerun");
+    let id = run_same_failure_task(&mut w, false);
+    let failed = assert_same_failure_stopped(&mut w, &id);
+    std::fs::write(w.root.join("environment-fixed"), "fixed").unwrap();
+    ok(&w.call("task.rerun_from", json!({"task_id": id, "node": "gate"})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(same_failure_implementations(&w, &id), 3);
+    let results = same_failure_results(&w, &id);
+    assert_eq!(results.len(), 4);
+    assert_eq!(results[3]["sha"], failed["sha"]);
+    assert_eq!(results[3]["ok"], true);
+    assert!(results[3].get("fingerprint").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Rate limits
 // ---------------------------------------------------------------------------
