@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed dispatch::tests::project_add_init_commit_preserves_untracked_user_docs -- --exact
 根因: init_commit 将整个 docs 目录交给 git::commit_paths，git add 递归暂存用户原有的未跟踪文档并纳入初始化提交。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -60,4 +60,11 @@ personal.txt
 
 ## 复核意见
 
-待独立复核。
+通过（第 1/3 轮复核，未改动回归测试与产品代码）。
+
+- 复现命令独立重跑：修复提交上 `1 passed; 0 failed`；`cargo test --offline -p automed` 全量 602 + 77 + 16 + 7 个测试均通过。
+- 差异（be7a2fc..c4a9a8c）：产品代码仅 `dispatch.rs` 的 `init_commit` 一处，9 行；回归测试文件未触碰，未删除、跳过或弱化。
+- 根因成立：旧路径列表含整个 `docs` 目录，`git add --` 递归暂存用户未跟踪文档；修复后只暂存 `.autome`、`.gitignore` 及 `ONBOARDING_FILES`（`docs/agent-project-profile.md`、`AGENTS.md`），与根因一一对应。
+- 回归测试有意义：真实 dispatch 路径，先断言草稿未跟踪且暂存区为空，再断言初始化提交含脚手架与 onboarding 产物、用户文件仍未跟踪；修复前以业务断言失败。
+- 范围最小，保留合法 onboarding 产物提交。
+- 修复说明中的 Web test 失败为 `listen EPERM`/`EMFILE` 沙箱环境问题，与本次 Rust 改动无关；宿主门禁需在允许监听的环境重跑，本轮未能复验该项。
