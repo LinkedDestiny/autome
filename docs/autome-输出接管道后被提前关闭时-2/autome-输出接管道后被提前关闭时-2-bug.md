@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cargo test --offline -p autome-cli --test cli broken_pipe -- --nocapture
 根因: status 的 task_detail 使用 println! 写 stdout，读端关闭后产生 BrokenPipe，打印宏直接 panic，绕过 CLI 的 Result 错误处理。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -46,7 +46,12 @@ repos: autome-v2
 
 ## 复核意见
 
-第 2/3 轮：待独立复核。以下为上一轮复核记录，不代表本轮通过。
+复核第 2/3 轮：通过。
+- 复现命令独立重跑：2 passed、0 failed；`cargo clippy -p autome-cli --all-targets -D warnings` 通过。
+- 本轮相对定位提交 9e751f8 的非文档差异仍只有 `crates/autome-cli/src/main.rs` +23 行，第 2 轮未改产品代码或测试；回归测试未删、未跳过、未弱化。
+- 根因与范围结论同第 1 轮：仅 BrokenPipe 静默退出 0，其它写错误仍 panic，SIGPIPE 处置不变。
+- 修复轮报告 Rust 全部测试通过；门禁唯一失败为 Web test 的 listen EPERM / EMFILE，属沙箱环境限制，与本改动无关。宿主应在可监听环境复验 Web test。
+- 以下为上一轮复核记录。
 
 复核第 1/3 轮：通过。
 - 复现命令独立重跑：2 passed、0 failed；`cargo clippy -p autome-cli --all-targets -D warnings` 通过。
