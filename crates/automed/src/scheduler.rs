@@ -361,12 +361,13 @@ fn deliver_outcome(
 ///
 /// A rate or usage limit is the provider saying "later": the CLI is put in a
 /// cooldown and the round waits for it, without counting against anything.
+/// A missing model stops the task as a configuration failure.
 /// Any other crash is retried `[retry] attempts` times, each wait twice the
 /// last, before the task fails the way it always did. The round is run again
 /// carrying whatever it was carrying — a gate failure, a rebase conflict, the
 /// user's decisions (which the crash has just handed back).
 ///
-/// Returns whether a retry was scheduled.
+/// Returns whether the crash was handled (retried or failed as configuration).
 fn schedule_retry(
     ctx: &mut Ctx,
     s: &Session,
@@ -386,6 +387,34 @@ fn schedule_retry(
         s.id
     )))
     .unwrap_or_default();
+    if let Some(message) = crate::usage::model_not_found(s.runtime, &stream) {
+        let role = s.kind.role();
+        let location = match role {
+            Some(role) => format!(
+                "请修改 ~/.autome/config.toml 的 roles.{}.model",
+                role.as_str()
+            ),
+            None => "该会话使用内置系统模型，请检查 CLI 的模型可用性".into(),
+        };
+        let role = role.map(|role| role.as_str()).unwrap_or("system");
+        let failed = TaskState::Failed {
+            at: node,
+            reason: FailureReason::Config {
+                detail: format!(
+                    "角色 {role} 的 {} 模型 {} 不存在：{message}；{location}",
+                    s.runtime.as_str(),
+                    s.model
+                ),
+            },
+        };
+        ctx.store.set_task_state(&task.id, &failed)?;
+        ctx.store.append_event(
+            "task.updated",
+            &task.id,
+            json!({ "state": failed, "trigger": "model_not_found" }),
+        )?;
+        return Ok(true);
+    }
     let transient = crate::usage::classify_failure(s.runtime, &stream, crate::store::epoch_now());
     let policy = resolve_config(ctx, project)
         .map(|r| r.retry)

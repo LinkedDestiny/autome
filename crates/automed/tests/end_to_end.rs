@@ -597,6 +597,61 @@ fn request_of(w: &World, task_id: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn model_not_found_fails_as_config_without_retry() {
+    use autome_domain::task::{FailureReason, TaskState};
+
+    // Do not skip when Git is unavailable: that is a broken reproduction.
+    let mut w = World::new("model-not-found");
+    w.configure(
+        "[roles.plan]\nruntime = \"codex\"\nmodel = \"missing-model-regression\"\n\
+         [retry]\nattempts = 2\nbackoff_seconds = 0\n",
+    );
+    // Synthetic fixture based on the task card, not a captured provider run.
+    // Queue all three attempts so the old behavior fails on the contract,
+    // rather than on an absent fake-CLI step or a backoff timeout.
+    let request = "missing model regression";
+    w.doc_step(1, &slug_for(request), &doc("设计中", 0, 0, &[]));
+    for n in 2..=4 {
+        w.step(
+            n,
+            r#"cat <<'MODEL_ERROR'
+{"type":"turn.failed","error":{"message":"model_not_found: The model `missing-model-regression` does not exist"}}
+MODEL_ERROR
+exit 1
+"#,
+        );
+    }
+    let id = create_task(&mut w, request);
+    w.settle();
+    let state = w.ctx.store.get_task(&id).unwrap().state;
+    let retries = w.ctx.store.count_events(&id, "session.retry").unwrap();
+    assert_eq!(
+        retries, 0,
+        "model error must not retry; final state: {state:?}"
+    );
+    assert_eq!(w.sessions_run(), vec!["1", "2"]);
+    let TaskState::Failed {
+        reason: FailureReason::Config { detail },
+        ..
+    } = state
+    else {
+        panic!("expected Failed(Config), got {state:?}");
+    };
+    for expected in [
+        "plan",
+        "codex",
+        "missing-model-regression",
+        "~/.autome/config.toml",
+        "roles.plan.model",
+    ] {
+        assert!(
+            detail.contains(expected),
+            "missing {expected:?} in {detail:?}"
+        );
+    }
+}
+
+#[test]
 fn a_task_runs_from_one_line_to_a_merge_commit() {
     needs_git!();
     let mut w = World::new("happy");
