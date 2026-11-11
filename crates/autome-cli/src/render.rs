@@ -296,6 +296,15 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             format!("{subject} 按合并时默认分支已前进（{repos}），自动 rebase 后再合并")
         }
         "merge.rebased" => {
+            if let Some([repo]) = p["repos"].as_array().map(Vec::as_slice)
+                && repo["repo"].as_str() == Some("")
+            {
+                return Some(format!(
+                    "{subject} 已自动 rebase 到 {} @ {}",
+                    repo["onto"].as_str().unwrap_or(""),
+                    short(repo["head"].as_str().unwrap_or(""))
+                ));
+            }
             let repos = p["repos"]
                 .as_array()
                 .into_iter()
@@ -324,6 +333,39 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rebased_event_single_repo_has_no_empty_repository_label() {
+        let line = event_line(
+            "merge.rebased",
+            "T-14",
+            &json!({"repos":[{"repo":"","onto":"main","head":"5c8631f6a5abcdef01"}]}),
+        )
+        .unwrap();
+        assert_eq!(line, "T-14 已自动 rebase 到 main @ 5c8631f6a5");
+    }
+
+    #[test]
+    fn rebased_event_workspace_preserves_repository_labels() {
+        for (repos, expected) in [
+            (
+                json!([{"repo":"backend","onto":"main","head":"0123456789abcdef"}]),
+                "T-14 已自动 rebase：backend → main @ 0123456789",
+            ),
+            (
+                json!([
+                    {"repo":"backend","onto":"main","head":"0123456789abcdef"},
+                    {"repo":"docs","onto":"master","head":"abcdef0123456789"}
+                ]),
+                "T-14 已自动 rebase：backend → main @ 0123456789；docs → master @ abcdef0123",
+            ),
+        ] {
+            assert_eq!(
+                event_line("merge.rebased", "T-14", &json!({"repos":repos})).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn an_automatic_rebase_is_printed_by_autome_run() {
