@@ -10,3 +10,4 @@
 审计 #4 | M-04 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-04-r5-audit.md | 无
 实现 #6 | M-02 | rebase 冲突兼容修复，保留已关闭状态 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r6-impl.md | 无
 审计 #5 | M-02 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r6-audit.md | 无
+实现 #7 | M-02 | 冲突兼容复验通过，保留已关闭状态 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r7-impl.md | 无
