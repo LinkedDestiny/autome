@@ -903,6 +903,16 @@ fn deliver_bug_outcome(
     {
         return Ok(());
     }
+    let outcome = if let BugSessionOutcome::Ok { doc } = &outcome {
+        match guard_bug_regression(ctx, s, project, task, doc) {
+            Ok(()) => outcome,
+            Err(e) => BugSessionOutcome::GuardFailed {
+                detail: e.to_string(),
+            },
+        }
+    } else {
+        outcome
+    };
     if s.kind
         == (SessionKind::Bug {
             step: BugStep::Locate,
@@ -925,6 +935,153 @@ fn deliver_bug_outcome(
     }
     advance(ctx, &task.id, &Trigger::BugSessionEnded { outcome })?;
 
+    Ok(())
+}
+
+/// Whole-file protection: inline tests intentionally protect their source file too.
+fn regression_file(path: &str, contents: &str, previous: &str, command: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let named = path
+        .split('/')
+        .any(|p| matches!(p, "test" | "tests" | "__tests__"))
+        || name.starts_with("test_")
+        || name.starts_with("spec_")
+        || matches!(name.split('.').next(), Some("test" | "tests" | "spec"))
+        || [".test.", ".spec.", "_test.", "_spec."]
+            .iter()
+            .any(|p| name.contains(p));
+    // Rust's inline test module protects the whole source file only when that
+    // test section changed; a product edit above an unchanged module is allowed.
+    let test_section = |text: &str| {
+        [
+            "#[test]",
+            "#[cfg(test)]",
+            "#[tokio::test]",
+            "describe(",
+            "\nit(",
+        ]
+        .iter()
+        .filter_map(|marker| text.find(marker))
+        .min()
+    };
+    let inline = match (test_section(contents), test_section(previous)) {
+        (Some(now), Some(before)) => contents[now..] != previous[before..],
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => false,
+    };
+    let script = (contents.starts_with("#!")
+        || [".sh", ".bash", ".py", ".rb", ".js", ".ts", ".mjs", ".cjs"]
+            .iter()
+            .any(|ext| name.ends_with(ext)))
+        && command.match_indices(path).any(|(start, _)| {
+            let before = command[..start].chars().next_back();
+            let after = command[start + path.len()..].chars().next();
+            let boundary = |c: char| c.is_whitespace() || "\"';&|()".contains(c);
+            before.is_none_or(|c| boundary(c) || c == '/') && after.is_none_or(boundary)
+        });
+    named || inline || script
+}
+
+fn guard_bug_regression(
+    ctx: &Ctx,
+    session: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    doc: &autome_domain::bug_doc::BugDoc,
+) -> Result<()> {
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+    if session.kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && doc.status == autome_domain::bug_doc::BugStatus::Located
+    {
+        let started = ctx.store.session_started_event(&task.id, &session.id)?;
+        let Some(heads) = started.as_ref().and_then(|v| v["locate_heads"].as_array()) else {
+            return Ok(()); // Sessions begun by older binaries have no starting snapshot.
+        };
+        let mut files = Vec::new();
+        for entry in heads {
+            let repo = entry["repo"]
+                .as_str()
+                .ok_or_else(|| err("missing locate repo"))?;
+            let slot = layout
+                .repos
+                .iter()
+                .find(|s| s.name == repo)
+                .ok_or_else(|| err(format!("missing locate repository {repo}")))?;
+            let base = entry["head"]
+                .as_str()
+                .ok_or_else(|| err("missing locate head"))?;
+            let head = git::head_sha(&slot.worktree)?;
+            let changed = git::run_ok(
+                &slot.worktree,
+                &[
+                    "diff",
+                    "--name-status",
+                    "--diff-filter=AM",
+                    "--no-renames",
+                    "-z",
+                    base,
+                    &head,
+                    "--",
+                ],
+            )?;
+            let entries: Vec<_> = changed
+                .stdout
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .collect();
+            for entry in entries.chunks_exact(2) {
+                let path = entry[1];
+                let previous = if entry[0] == "M" {
+                    git::run_ok(&slot.worktree, &["show", &format!("{base}:{path}")])?.stdout
+                } else {
+                    String::new()
+                };
+
+                let contents = git::run_ok(&slot.worktree, &["show", &format!("{head}:{path}")])?;
+                if regression_file(path, &contents.stdout, &previous, &doc.repro_command) {
+                    let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", &head, "--", path])?;
+                    files.push(
+                        json!({"repo": repo, "path": path, "tree": tree.stdout, "head": head}),
+                    );
+                }
+            }
+        }
+        ctx.store.append_event(
+            "bug.regression_snapshot",
+            &task.id,
+            json!({"session_id": session.id, "files": files}),
+        )?;
+    } else if session.kind == (SessionKind::Bug { step: BugStep::Fix })
+        && let Some(snapshot) = ctx.store.last_event(&task.id, "bug.regression_snapshot")?
+    {
+        let files = snapshot["files"]
+            .as_array()
+            .ok_or_else(|| err("invalid regression snapshot"))?;
+        if files.is_empty() {
+            return Err(err("回归测试保护集为空：定位轮必须新增或修改测试文件"));
+        }
+        for file in files {
+            let repo = file["repo"]
+                .as_str()
+                .ok_or_else(|| err("missing protected repo"))?;
+            let path = file["path"]
+                .as_str()
+                .ok_or_else(|| err("missing protected path"))?;
+            let slot = layout
+                .repos
+                .iter()
+                .find(|s| s.name == repo)
+                .ok_or_else(|| err(format!("回归测试仓库丢失：{repo}/{path}")))?;
+            let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", "HEAD", "--", path])?;
+            let clean = git::run(&slot.worktree, &["diff", "--quiet", "HEAD", "--", path])?;
+            if Some(tree.stdout.as_str()) != file["tree"].as_str() || !clean.ok() {
+                return Err(err(format!("回归测试被修改、删除或重命名：{repo}/{path}")));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2014,6 +2171,21 @@ fn launch_session(
         doc_refs: &task.doc_refs,
     })?;
 
+    // Capture before the process can edit a checkout, not after launch returns.
+    let locate_heads = if kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        }) {
+        Some(
+            layout
+                .repos
+                .iter()
+                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id,
         task_id: &task.id,
@@ -2045,19 +2217,20 @@ fn launch_session(
         // Filled in when the session is reaped and its stream is read.
         metrics: Default::default(),
     })?;
-    ctx.store.append_event(
-        "session.started",
-        &task.id,
-        json!({
-            "session_id": session_id,
-            "kind": kind,
-            "round": round,
-            "terminal": launched.terminal.as_str(),
-            "runtime": role_config.runtime.as_str(),
-            // What the round was carrying, so a crash can be retried with it.
-            "inject": inject,
-        }),
-    )?;
+    let mut started = json!({
+        "session_id": session_id,
+        "kind": kind,
+        "round": round,
+        "terminal": launched.terminal.as_str(),
+        "runtime": role_config.runtime.as_str(),
+        // What the round was carrying, so a crash can be retried with it.
+        "inject": inject,
+    });
+    if let Some(heads) = locate_heads {
+        started["locate_heads"] = json!(heads);
+    }
+    ctx.store
+        .append_event("session.started", &task.id, started)?;
     Ok(())
 }
 

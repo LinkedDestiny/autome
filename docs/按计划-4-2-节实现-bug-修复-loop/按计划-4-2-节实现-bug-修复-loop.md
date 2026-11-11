@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 6/30
+implementation-round: 7/30
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-06：保护定位提交中的回归测试文件
+next-action: 等待独立审计复验 M-06；若退回，先修复 regression-guard 缺陷
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -457,7 +457,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 | M-03 | 已完成 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 已完成 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
 | M-05 | 已完成 | 需求任务零变化与全量门禁 | 0 | regression |
-| M-06 | 开放 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
+| M-06 | 待审 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
 
 ## 里程碑说明
 
@@ -692,6 +692,8 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 - 负向对照：改动任何一份需求 prompt、金样或需求协议正文（哪怕一个空格）时 `git diff --exit-code` 退出码 1；需求表的行为被改动时，M-01 的 `bug_loop_feature_kind_matches_the_feature_table_exactly` 与既有 `task::tests` 在 `cargo test --workspace` 中失败。
 
 ### M-06 范围
+
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-06-r7-impl.md · 验收通过，待审 · 实现 #7
 
 - 用户裁定 B-03 纳入；前置 M-03、M-04、M-05。按编号顺序在独立实现轮推进。
 - 定位成功时，按仓库记录定位提交相对本次定位会话起点新增或修改的测试文件及定位后的 blob/mode，持久化到已有事件，不迁移账本。

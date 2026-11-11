@@ -4492,3 +4492,435 @@ fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_th
         }
     }
 }
+
+fn assert_regression_rejected(w: &World, id: &str, path: &str) {
+    let task = w.ctx.store.get_task(id).unwrap();
+    assert!(
+        matches!(task.state,
+        autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Fix,
+            reason: autome_domain::task::FailureReason::Protocol { ref detail }, ..
+        } if detail.contains(path)),
+        "{:?}",
+        task.state
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.regression_snapshot")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn bug_regression_guard_rejects_modified_or_deleted_tests() {
+    needs_git!();
+    for change in [
+        "echo true > regression.sh",
+        "rm regression.sh",
+        "mv regression.sh renamed.sh",
+        "chmod +x regression.sh",
+    ] {
+        let mut w = World::new("regression-reject");
+        let slug = slug_for("guard reject");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\n{change}"),
+        );
+        let id = create_bug(&mut w, "guard reject");
+        w.settle();
+        assert_regression_rejected(&w, &id, "regression.sh");
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        let head = snapshot["files"][0]["head"].as_str().unwrap();
+        let wt = w.repo.join(format!(".worktree/{slug}"));
+        let original = automed::git::run_ok(&wt, &["show", &format!("{head}:regression.sh")])
+            .unwrap()
+            .stdout;
+        assert_eq!(
+            original,
+            "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+        );
+        if change.starts_with("rm") || change.starts_with("mv") {
+            assert!(!wt.join("regression.sh").exists());
+        } else if change.starts_with("echo") {
+            assert_eq!(
+                std::fs::read_to_string(wt.join("regression.sh")).unwrap(),
+                "true\n"
+            );
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(wt.join("regression.sh")).unwrap(),
+                original
+            );
+        }
+    } // Empty input is never accepted as a protected fix.
+    let mut w = World::new("regression-empty");
+    let slug = slug_for("guard empty");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "exit 1");
+    bug_step(&w, 1, &slug, &doc, "echo broken > product.txt");
+    bug_step(&w, 2, &slug, &doc, BUG_FIX);
+    let id = create_bug(&mut w, "guard empty");
+    w.settle();
+    assert_regression_rejected(&w, &id, "保护集为空");
+
+    // Existing tests modified in locate, inline tests, names and directories.
+    for path in [
+        "tests/已有 测试.txt",
+        "__tests__/case.js",
+        "test/case.txt",
+        "sample.spec.js",
+        "src/lib.rs",
+    ] {
+        let mut w = World::new("regression-paths");
+        let slug = slug_for("guard paths");
+        let full = w.repo.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "old test\n").unwrap();
+        automed::git::commit_paths(&w.repo, &[path], "existing test").unwrap();
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\necho '#[test]' > '{path}'"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\necho weakened > '{path}'"),
+        );
+        let id = create_bug(&mut w, "guard paths");
+        w.settle();
+        assert_regression_rejected(&w, &id, path);
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/{path}"))).unwrap(),
+            "weakened\n"
+        );
+    }
+    let mut w = World::new("regression-script-spaces");
+    let slug = slug_for("script spaces");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "sh 'check bug.sh'");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &doc,
+        &format!("{BUG_LOCATE}\nmv regression.sh 'check bug.sh'"),
+    );
+    bug_step(&w, 2, &slug, &doc, "echo true > 'check bug.sh'");
+    let id = create_bug(&mut w, "script spaces");
+    w.settle();
+    assert_regression_rejected(&w, &id, "check bug.sh");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/check bug.sh"))).unwrap(),
+        "true\n"
+    );
+}
+
+#[test]
+fn bug_regression_guard_allows_product_only_fixes() {
+    needs_git!();
+    let mut w = World::new("regression-product");
+    let slug = slug_for("guard product");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nmkdir -p tests __tests__ test src\necho check > tests/a.txt\necho check > __tests__/a.js\necho check > test/a.txt\necho check > sample.spec.js\necho '#[test]' > src/lib.rs"
+        ),
+    );
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "guard product");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["files"].as_array().unwrap().len(), 6);
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    for file in snapshot["files"].as_array().unwrap() {
+        let path = file["path"].as_str().unwrap();
+        let head = file["head"].as_str().unwrap();
+        assert_eq!(
+            std::fs::read(wt.join(path)).unwrap(),
+            automed::git::run_ok(&wt, &["show", &format!("{head}:{path}")])
+                .unwrap()
+                .stdout
+                .as_bytes()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(wt.join("product.txt")).unwrap(),
+        "fixed\n"
+    ); // A new locate takes a new baseline rather than retaining the first blob.
+    let mut w = World::new("regression-relocate");
+    let slug = slug_for("guard relocate");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\necho '# second locate' >> regression.sh"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "guard relocate");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.regression_snapshot")
+            .unwrap(),
+        2
+    );
+    assert!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+            .unwrap()
+            .ends_with("# second locate\n")
+    );
+    let mut w = World::new("regression-inline-product");
+    let slug = slug_for("inline product");
+    std::fs::write(
+        w.repo.join("lib.rs"),
+        "old product\n#[cfg(test)]\nmod tests {}\n",
+    )
+    .unwrap();
+    automed::git::commit_paths(&w.repo, &["lib.rs"], "existing inline tests").unwrap();
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nprintf 'broken product\\n#[cfg(test)]\\nmod tests {{}}\\n' > lib.rs"
+        ),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_FIX}\nprintf 'fixed product\\n#[cfg(test)]\\nmod tests {{}}\\n' > lib.rs"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "inline product");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["files"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/lib.rs"))).unwrap(),
+        "fixed product\n#[cfg(test)]\nmod tests {}\n"
+    );
+}
+
+#[test]
+fn bug_regression_guard_survives_retry_and_extend() {
+    needs_git!();
+    for mutate in [false, true] {
+        let mut w = World::new("regression-retry");
+        w.configure("[bug]\nfix_rounds = 1\n[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+        let slug = slug_for("guard retry");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        w.step(2, "exit 17\n");
+        bug_step(&w, 3, &slug, &bug_doc("待复核"), "");
+        bug_step(
+            &w,
+            4,
+            &slug,
+            &bug_doc("待复核"),
+            if mutate {
+                "echo true > regression.sh"
+            } else {
+                BUG_FIX
+            },
+        );
+        bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "guard retry");
+        w.settle();
+        assert!(matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Failed {
+                reason: autome_domain::task::FailureReason::FixBudget { .. },
+                ..
+            }
+        ));
+        let before = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap();
+        ok(&w.call(
+            "task.extend_budget",
+            json!({"task_id": id, "extra_rounds": 1}),
+        ));
+        w.settle();
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&id, "bug.regression_snapshot")
+                .unwrap(),
+            before
+        );
+        assert_eq!(w.ctx.store.count_events(&id, "session.retry").unwrap(), 1);
+        if mutate {
+            assert_regression_rejected(&w, &id, "regression.sh");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        let bytes = std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+            .unwrap();
+        assert_eq!(
+            bytes,
+            if mutate {
+                "true\n"
+            } else {
+                "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+            }
+        );
+    }
+    for mutate in [false, true] {
+        let mut w = World::new("regression-pause");
+        let slug = slug_for("guard pause");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        let wait = format!(
+            "{}\n{}",
+            pause_prelude(&w, 2),
+            if mutate {
+                "echo true > regression.sh"
+            } else {
+                BUG_FIX
+            }
+        );
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), &wait);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "guard pause");
+        resume_wait(&mut w, |w| w.root.join("ready-2").exists());
+        ok(&w.call("task.pause", json!({"task_id": id})));
+        std::fs::write(w.root.join("release-2"), "go").unwrap();
+        resume_wait(&mut w, |w| {
+            w.ctx.store.running_session(&id).unwrap().is_none()
+        });
+        ok(&w.call("task.resume", json!({"task_id": id})));
+        w.settle();
+        if mutate {
+            assert_regression_rejected(&w, &id, "regression.sh");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+                .unwrap(),
+            if mutate {
+                "true\n"
+            } else {
+                "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+            }
+        );
+    }
+}
+
+#[test]
+fn bug_regression_guard_checks_each_workspace_member() {
+    needs_git!();
+    for changed in ["a", "b", "none"] {
+        let mut w = Workspace::new("regression-workspace", &["a", "b", "docs"]);
+        let slug = slug_for("guard workspace");
+        let doc = bug_doc("待复核").replace(
+            "复现命令: sh regression.sh",
+            "复现命令: cd a && sh regression.sh\nrepos: a,b",
+        );
+        w.step(1, &format!("set -e\n(cd a; {BUG_LOCATE})\n(cd b; {BUG_LOCATE})\nmkdir -p docs/autome/{slug}\ncat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{doc}\nEOF"));
+        let mutation = if changed == "none" {
+            String::new()
+        } else {
+            format!("echo true > {changed}/regression.sh")
+        };
+        w.step(
+            2,
+            &format!("(cd a; {BUG_FIX})\n(cd b; {BUG_FIX})\n{mutation}"),
+        );
+        w.step(
+            3,
+            &format!(
+                "cat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{}\nEOF",
+                doc.replace("复核: 待复核", "复核: 通过")
+            ),
+        );
+        let out = call(
+            &mut w.ctx,
+            "task.create",
+            json!({"project_id": w.project_id, "request":"guard workspace", "kind":"bug"}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let task = w.ctx.store.get_task(&id).unwrap();
+            if task.state.node().is_some_and(|n| n.awaits_user())
+                || matches!(task.state, autome_domain::task::TaskState::Failed { .. })
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let task = w.ctx.store.get_task(&id).unwrap();
+        if changed == "none" {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        } else {
+            assert!(
+                matches!(task.state, autome_domain::task::TaskState::Failed { at: autome_domain::task::Node::Fix, reason: autome_domain::task::FailureReason::Protocol { ref detail }, .. } if detail.contains(&format!("{changed}/regression.sh"))),
+                "{:?}",
+                task.state
+            );
+        }
+        for member in ["a", "b"] {
+            let bytes = std::fs::read_to_string(
+                w.ws()
+                    .join(format!(".worktree/{slug}/{member}/regression.sh")),
+            )
+            .unwrap();
+            assert_eq!(
+                bytes,
+                if changed == member {
+                    "true\n"
+                } else {
+                    "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+                }
+            );
+        }
+    }
+}
