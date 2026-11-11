@@ -26,3 +26,4 @@
 实现 #10 | M-02 | 真实账本超时修复，状态不变 | docs/实现-web-sqlite3-与通知器/evidence/M-02-r10-impl.md | 完整门禁待宿主复验，范围外 Rust 超时及本地监听限制
 审计 #8 | 无待审 | 通过（全部已完成，web 301 用例全过） | docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-audit.md | 无
 审计 #9 | 无待审 | 通过（全部里程碑已完成；宿主门禁在 fbbca2a 通过，无新增改动可复验） | docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-audit.md | 无
+实现 #11 | M-07 | 门禁复验未通过，状态不变 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r11-impl.md | crates 禁改及监听 EPERM

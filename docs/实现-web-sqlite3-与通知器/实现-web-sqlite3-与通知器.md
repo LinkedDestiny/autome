@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 10/35
+implementation-round: 11/35
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: Autome 在本轮提交上重跑 sh scripts/ci-local.sh，确认真实账本测试超时修复及完整门禁；失败时保留用例全名和断言
+next-action: Autome 在本轮提交上重跑 sh scripts/ci-local.sh；失败时保留 End to end 用例与断言，内核 wrapper 回收失败见 B-06
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -420,7 +420,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-07 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r9-impl.md · 门禁原失败未复现，本地 Web 测试受环境阻塞；保留审计通过状态 · 实现 #9
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r11-impl.md · End to end 80 例通过，完整门禁受内核失败及环境阻塞；保留审计状态 · 实现 #11
 
 - 用户 2026-11-11 将 B-04 纳入为独立里程碑；补步已是 M-02 的强制契约，本里程碑对其作独立回归验收，不重复实现。
 - 命令：`npm test --prefix apps/web -- test/notifier.test.ts`；然后全量四件。
@@ -437,6 +437,8 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - H-07 开着面板的标签页在开发者工具 Network 的 WS 过滤下只看到一条 `/ws` 连接。
 
 ## Backlog
+
+- B-06 范围外门禁失败：`gate::tests::requeued_discard_waits_for_the_wrapper_pid_before_removing_files`（`crates/automed/src/gate.rs:380`），断言 `old wrapper must be dead before paths can be reused`。`discard_node` 调用的 `kill_group` 在 SIGKILL 后立即返回，测试随即 `try_wait` 存在退出时序窗口；全量失败、原样单跑通过，尚未插桩确认具体分支。任务 §4.1 禁改 crates/，交内核维护者处理并保留原断言复验。
 
 - B-05 范围外门禁失败：`bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos`（`crates/automed/tests/end_to_end.rs:4531`）与 `bug_regression_guard_checks_each_workspace_member`（同文件 `:5069`）的 `assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));` 失败，状态为 `Active { node: MergeGate }`。这两个用例给整段工作区 Bug 流程 30 秒，实际在到达等待用户/失败态之前耗尽；未证明产品行为错误。本任务禁止修改 `crates/`，由内核测试维护者复验超时预算与门禁耗时。
 - B-01 已纳入独立里程碑 M-06（实现随 M-04，用户 2026-11-11 意见 2）：`createLiveClient` 的消息回调，见 §6、M-04。
