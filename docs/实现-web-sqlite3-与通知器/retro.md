@@ -4,3 +4,4 @@
 设计 #2 | M-01..M-05 | 按用户驳回意见修订：系统通知改 tag 合并、live-client 加 onMessage、规则加 not_a_bug、纳入 B-04 | .autome/output/w4-not-a-bug/（真实内核 not_a_bug 事件，不入库） | 无，status 回到设计中待评审
 
 实现 #1 | M-01 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-impl.md | Web 监听回归受沙箱 EPERM/EMFILE 阻断
+审计 #1 | M-01 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-audit.md | 无

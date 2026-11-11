@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 1/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 待独立审计；通过后下一实现轮推进 M-02 规则表与通知器
+next-action: 实现 M-02 规则表与通知器（notifier-rules.ts、notifier.ts 及其测试）
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -297,7 +297,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | 面板库 web.sqlite3：结构、迁移、去重、游标与已读读写，过滤 SQLite 告警 | 0 | store |
+| M-01 | 已完成 | 面板库 web.sqlite3：结构、迁移、去重、游标与已读读写，过滤 SQLite 告警 | 0 | store |
 | M-02 | 开放 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
 | M-03 | 开放 | 接线与推送：通知器挂到 tick 之后，铃铛接口，notification 与 notification-read 广播 | 0 | api |
 | M-04 | 开放 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
@@ -318,7 +318,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-01 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-impl.md · 功能验收通过，全量监听测试环境阻断，待审 · 实现 #1
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-audit.md · 通过 · 审计 #1
 
 - 验收命令：`npm test --prefix apps/web -- test/store.test.ts test/store-warnings.test.ts`；然后全量四件。
 - 预期：两文件共 17 个用例全过（`store.test.ts` 14 个：首次建库四表列名与 §5.3 一致且 WAL、版本 1；重开不重建不丢数据；注入第 2 级只跑缺的那级；
