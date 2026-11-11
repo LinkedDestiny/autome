@@ -1,12 +1,12 @@
 # Bug 修复 Loop：定位、复现检查、修复、门禁、复核（K2）
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 7/30
-current-milestone: M-06
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 全部里程碑已完成，进入收尾
+next-action: 无
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
