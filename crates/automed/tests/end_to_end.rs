@@ -4918,6 +4918,62 @@ fn bug_regression_guard_leaves_the_bug_doc_and_prose_alone() {
 }
 
 #[test]
+fn bug_regression_guard_ignores_the_bug_doc_in_a_snapshot_from_an_older_build() {
+    needs_git!();
+    // An older build put the Bug doc itself into the snapshot. A task located
+    // under that build must still be able to write its 修复说明 afterwards.
+    let mut w = World::new("regression-old-snapshot");
+    let slug = slug_for("guard old snapshot");
+    let located = bug_doc("待复核");
+    let fixed = format!("{located}\n## 修复说明\n补上了\n");
+    bug_step(&w, 1, &slug, &located, BUG_LOCATE);
+    bug_step(&w, 2, &slug, &fixed, BUG_FIX);
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &fixed.replace("复核: 待复核", "复核: 通过"),
+        "",
+    );
+    let id = create_bug(&mut w, "guard old snapshot");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut snapshot = loop {
+        automed::scheduler::tick(&mut w.ctx);
+        if let Some(s) = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+        {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            w.ctx.store.get_task(&id).unwrap().state
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    snapshot["files"].as_array_mut().unwrap().push(json!({
+        "repo": "",
+        "path": format!("docs/{slug}/{slug}-bug.md"),
+        "protect": "file",
+        "tree": "stale",
+    }));
+    w.ctx
+        .store
+        .append_event("bug.regression_snapshot", &id, snapshot)
+        .unwrap();
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{:?}",
+        w.ctx.store.get_task(&id).unwrap().state
+    );
+}
+
+#[test]
 fn bug_regression_guard_survives_retry_and_extend() {
     needs_git!();
     for mutate in [false, true] {

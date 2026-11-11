@@ -1256,6 +1256,7 @@ fn guard_bug_regression(
         if files.is_empty() {
             return Err(err("回归测试保护集为空：定位轮必须新增或修改测试文件"));
         }
+        let docs = format!("{}/", task.doc_dir());
         for file in files {
             let repo = file["repo"]
                 .as_str()
@@ -1263,6 +1264,11 @@ fn guard_bug_regression(
             let path = file["path"]
                 .as_str()
                 .ok_or_else(|| err("missing protected path"))?;
+            // Snapshots from the build before the docs were left out of them
+            // still list the Bug doc, which the fix round must edit.
+            if path.starts_with(&docs) {
+                continue;
+            }
             let slot = layout
                 .repos
                 .iter()
