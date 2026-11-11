@@ -6,3 +6,4 @@
 审计 #2 | M-02 | 通过 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-02-r2-audit.md | 无
 实现 #3 | M-03 | 待审 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r3-impl.md | 无
 实现 #4 | M-03 | 待审 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-impl.md | 原端到端失败未复现；Web 监听被沙箱拒绝
+审计 #3 | M-03 | 通过 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-audit.md | 无

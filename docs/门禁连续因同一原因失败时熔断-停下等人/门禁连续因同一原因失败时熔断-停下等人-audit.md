@@ -1,7 +1,9 @@
-# 实现审计（审计 #2）
+# 审计 · M-03（审计 #3）
 
-## M-02 · 通过
+结论：**通过**。M-03 标为已完成，reopen 0。
 
-- 三条负向对照（先查预算、重跑缺 DiscardGateRuns、extend 忽略追加数）注入后均有对应用例变红，还原后全绿。
-- 验收命令：same_failure 13/13；domain 库 374 全过；workspace 全量通过。
-- 无实现缺陷、无验证缺口。证据：`docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-02-r2-audit.md`
+- 4 个负向对照（范围 0..=10、不分节点、无重放判断、忽略 gate.reused）全部被验收用例拦下，已还原。
+- `automed --lib` 618 通过，`cargo test --workspace` 全绿。
+- 没有发现实现缺陷，无新增 Backlog。
+
+证据：docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-audit.md
