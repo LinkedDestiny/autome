@@ -3512,6 +3512,62 @@ pub fn next_role(state: &TaskState) -> Option<Role> {
 mod tests {
 
     #[test]
+    fn audit_design_diff_allows_protocol_updates_but_rejects_body_edits() {
+        let mut w = World::new("audit-design-diff");
+        let task = w.add_task("audit-diff", "audit-diff");
+        let before_doc = design_doc(
+            "实现中",
+            &[("M-01", MilestoneState::Pending)],
+            "\n## 验收契约\n\n正文必须保留。\n最新证据：impl.md · 待审\n",
+        )
+        .replace("current-milestone: 无", "current-milestone: M-01")
+        .replace("next-action: 无", "next-action: 审计 M-01");
+        w.write_design(&task, &before_doc);
+        let wt = w.with_worktree(&task);
+        git::commit_paths(&wt, &[&task.design_doc()], "before audit").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        w.ctx
+            .store
+            .append_event("task.head", &task.id, json!({ "sha": head }))
+            .unwrap();
+        let snapshot = guards::Snapshot::default();
+        let milestone = before_doc.replace("| M-01 | 待审 |", "| M-01 | 已完成 |");
+        let evidence = before_doc.replace("最新证据：impl.md · 待审", "最新证据：audit.md · 通过");
+        let status = before_doc
+            .replace("status: 实现中", "status: 已完成")
+            .replace("current-milestone: M-01", "current-milestone: 无")
+            .replace("next-action: 审计 M-01", "next-action: 无");
+        let combined = status
+            .replace("| M-01 | 待审 |", "| M-01 | 已完成 |")
+            .replace("最新证据：impl.md · 待审", "最新证据：audit.md · 通过");
+        let body = combined.replace("正文必须保留。", "正文被审计改写。");
+        let cases = [
+            ("unchanged", before_doc, false),
+            ("milestone", milestone, false),
+            ("evidence", evidence, false),
+            ("status", status, false),
+            ("combined", combined, false),
+            ("body", body, true),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (name, doc, changed) in cases {
+            w.write_design(&task, &doc);
+            git::run_ok(&wt, &["add", "--", &task.design_doc()]).unwrap();
+            git::run_ok(&wt, &["commit", "--allow-empty", "-m", name]).unwrap();
+            actual.push((
+                name,
+                design_changed_outside_milestones(&wt, &task, Some(&snapshot), &w.ctx),
+            ));
+            expected.push((name, Some(changed)));
+        }
+        assert_eq!(
+            actual, expected,
+            "protocol bookkeeping must not count as an audit design edit"
+        );
+    }
+
+    #[test]
     fn the_first_tick_recovers_and_later_ticks_do_not() {
         // `recover()` had no production caller: the desktop called
         // `scheduler.tick` at startup and nothing else, so a stale scaffold
