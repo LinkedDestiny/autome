@@ -1,3 +1,4 @@
+import { NotificationBell } from './components/bell.tsx';
 import { LiveBanner, useLiveEvents } from './lib/live.tsx';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -5,5 +6,5 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 export default function App() {
   const { connection } = useLiveEvents();
-  return <><LiveBanner connection={connection} /><Outlet /></>;
+  return <><LiveBanner connection={connection} /><NotificationBell /><Outlet /></>;
 }

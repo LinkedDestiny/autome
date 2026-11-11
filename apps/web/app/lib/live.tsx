@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRevalidator } from 'react-router';
 import type { CoreMessage } from '../../server/eventbus-protocol.ts';
-import { createLiveClient, type ConnectionState } from './live-client.ts';
+import { createLiveClient, publishLiveMessage, type ConnectionState } from './live-client.ts';
 import { revalidateAll, revalidateForEvents } from './live-routes.ts';
 
 export function useLiveEvents() {
@@ -14,7 +14,7 @@ export function useLiveEvents() {
     const url = new URL('/ws', window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const client = createLiveClient({
-      url: url.href,
+      url: url.href, onMessage: publishLiveMessage,
       createSocket: address => new window.WebSocket(address),
       onConnection: setConnection,
       onCore: setCore,

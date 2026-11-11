@@ -1,3 +1,4 @@
+import type { createNotificationApi } from './notifier-api.ts';
 import type { createGateway } from './gateway.ts';
 import express from 'express';
 import { securityMiddleware, installUpgradeGuard } from './security.ts';
@@ -10,7 +11,7 @@ import type { ServerBuild } from 'react-router';
 export type Mode = 'development' | 'production';
 const root = resolve(import.meta.dirname, '..');
 
-export async function createHttpServer({ mode, gateway }: { mode: Mode; gateway?: ReturnType<typeof createGateway> }) {
+export async function createHttpServer({ mode, gateway, notifications }: { mode: Mode; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
   const app = express();
   const server = createServer(app);
   const port = () => {
@@ -20,19 +21,29 @@ export async function createHttpServer({ mode, gateway }: { mode: Mode; gateway?
   app.use(securityMiddleware(port));
   let closeMiddleware = async () => {};
   app.get('/healthz', (_req, res) => { res.json({ ok: true }); });
-  if (gateway) {
+  if (gateway || notifications) {
     app.use('/api', express.json({ limit: '1mb' }));
     const jsonError: express.ErrorRequestHandler = (_error, _req, res, _next) => {
       void _next;
       res.status(400).json({ ok: false, error: '请求 JSON 无效或超过大小上限' });
     };
     app.use('/api', jsonError);
-    for (const channel of ['read', 'write'] as const) {
+    if (gateway) for (const channel of ['read', 'write'] as const) {
       app.post('/api/' + channel, async (req, res) => {
         const result = await gateway[channel](req.body);
         res.status(result.status).json(result.body);
       });
     }
+  }
+  if (notifications) {
+    app.get('/api/notifications', (req, res) => {
+      const result = notifications.list(req.query.limit);
+      res.status(result.status).json(result.body);
+    });
+    app.post('/api/notifications/read', (req, res) => {
+      const result = notifications.read(req.body);
+      res.status(result.status).json(result.body);
+    });
   }
   if (mode === 'development') {
     const { createServer: createViteServer } = await import('vite');

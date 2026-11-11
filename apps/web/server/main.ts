@@ -1,3 +1,6 @@
+import { openWebStore } from './store.ts';
+import { createNotifier } from './notifier.ts';
+import { attachNotifier, createNotificationApi } from './notifier-api.ts';
 import { createEventBus } from './eventbus.ts';
 import { createWsUpgrade } from './eventbus-ws.ts';
 import { CoreSupervisor } from './core/supervisor.ts';
@@ -10,10 +13,14 @@ import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
 export async function startServer({ port, mode, home = resolveAutomeHome(process.env), binaryPath = resolveAutomedBinary().path }: { port: number; mode: Mode; home?: string; binaryPath?: string }) {
+  const store = openWebStore(home);
   const bus = createEventBus({ call: (method, params) => core.call(method, params), log: console.error });
-  const core = new CoreSupervisor({ home, binaryPath, log: console.error, onStatus: status => bus.setCoreStatus(status) });
+  const core = new CoreSupervisor({ home, binaryPath, log: console.error, onStatus: status => attached.onStatus(status) });
+  const notifier = createNotifier({ store, call: (method, params) => core.call(method, params), publish: message => bus.broadcast(message), log: console.error });
+  const attached = attachNotifier({ bus, notifier });
+  const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home });
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway });
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -24,17 +31,20 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
     });
   } catch (error) {
     await closeMiddleware();
+    store.close();
     throw error;
   }
   registerUpgrade('/ws', createWsUpgrade(bus));
   void core.start().catch(error => console.error(String(error)));
-  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: () => { void bus.pull(); } });
+  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: attached.onTick });
   return {
     server, gateway, registerUpgrade, bus,
     async close() {
       ticker.stop();
+      notifier.close();
       bus.close();
       await core.stop();
+      store.close();
       await closeMiddleware();
       await new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());
