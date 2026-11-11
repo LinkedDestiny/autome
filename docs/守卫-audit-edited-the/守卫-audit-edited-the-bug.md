@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib scheduler::tests::audit_design_diff_allows_protocol_updates_but_rejects_body_edits -- --exact
 根因: scheduler.rs 的设计文档差异过滤只放行里程碑行和最新证据行，遗漏协议状态块字段，导致正常状态更新被标记为审计改设计。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -52,4 +52,8 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。
+复核: 通过（第 1/3 轮）。
+- 复现命令独立复跑通过；scheduler 库测试 607 全过，clippy -D warnings 无告警；修复轮宿主日志中失败的 `stopping_a_task_kills_the_cli_the_wrapper_started` 单独复跑通过，属无关的时序抖动。
+- 定位提交 e4c44a6 到 54e2f51 的差异中，回归测试未被修改、删除、跳过或弱化，仅新增一条反例测试；生产改动只在 `design_changed_outside_milestones`，未触碰 guards。
+- 根因成立：旧过滤只放行里程碑行与证据行，状态块字段被判为正文改动。修复按头部（首个二级标题前、围栏外）限定放行八个状态字段，正文同名字段与围栏示例仍报警，新增测试覆盖这两类并确认中文冒号更新可通过，守卫未被关闭。
+- 范围最小；Web test 在沙箱下 listen EPERM 失败属环境限制，与本改动无关，由宿主门禁确认。
