@@ -626,7 +626,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-04 范围
 
-最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-04-r5-impl.md · 验收通过，待审 · 实现 #5
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-04-r5-audit.md · 通过 · 审计 #4
 
 - 覆盖：A4、A5，A1 的「需求任务的 `reply` 等同 `reject`」；C3、C8、C9。前置：M-03。
 - 改动：
