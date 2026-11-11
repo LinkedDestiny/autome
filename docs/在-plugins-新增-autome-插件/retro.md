@@ -13,3 +13,4 @@
 审计 #4 | M-04 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-04-r4-audit.md | 无
 
 实现 #5 | M-05 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-05-r5-impl.md | Web 监听 EPERM；真实 eval 留 H-05
+审计 #5 | M-05 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-05-r5-audit.md | 无

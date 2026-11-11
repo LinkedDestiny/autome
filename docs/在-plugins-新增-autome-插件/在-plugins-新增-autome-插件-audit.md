@@ -1,5 +1,8 @@
-# 审计 #4 · M-04
+# 审计 #5：M-05 eval 用例
 
-结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-04-r4-audit.md
+结论：**通过**，M-05 标为已完成，reopen 0。
 
-新造检查：七条 README 负向对照（task_id、pending、缺 Codex 行、kind 值、started 值、缺键、default_branch 值）均使对应用例变红，还原后全绿；丢弃，不入库。提交由 Autome 兜底（如被拒）。
+- 验收命令 5/5，全量 59/59。
+- 七项负向对照均被 E1–E5 拦住，见 `evidence/M-05-r5-audit.md`。
+- 通过时新造的检查可丢弃：语义对照 SKILL.md 第 1 步，一致。
+- 真实 eval 运行留 H-05。
