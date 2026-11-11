@@ -1,6 +1,3 @@
-# 审计 #9
+# 审计 #10
 
-结论：通过（无待审里程碑）。M-01..M-04 保持「已完成」，reopen 0。
-
-- 自上次审计后无代码变更；全量 `cargo test --workspace --all-targets` 通过（domain 355、automed lib 617、e2e 96），0 失败。
-- 新造检查：无。证据：evidence/M-04-r10-audit.md。
+无 `待审` 里程碑（M-01..M-04 均已完成）。全量 `cargo test --workspace --all-targets` 1124 通过 / 0 失败。没有新增缺陷或验证缺口。证据：evidence/M-04-r11-audit.md
