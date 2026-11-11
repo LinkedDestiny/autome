@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 6/35
-current-milestone: M-05
+current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05 系统通知；通过后推进 M-06 消息回调独立验收
+next-action: 推进 M-06 消息回调独立验收：跑 live-client 与 bell-client 用例及两项负向对照
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -301,7 +301,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | M-02 | 已完成 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
 | M-03 | 已完成 | 接线与推送：通知器挂到 tick 之后，铃铛接口，notification 与 notification-read 广播 | 0 | api |
 | M-04 | 已完成 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
-| M-05 | 待审 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
+| M-05 | 已完成 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
 | M-06 | 开放 | B-01：createLiveClient 消息回调独立验收（实现随 M-04 接线） | 0 | live-client |
 | M-07 | 开放 | B-04：同一事件补齐失败后重试生成通知的独立回归验收（实现随 M-02） | 0 | notifier |
 
@@ -395,7 +395,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-05 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-impl.md · 待审 · 实现 #6
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-audit.md · 通过 · 审计 #5
 
 - 验收命令：`npm test --prefix apps/web -- test/bell-system.test.ts test/bell-view.test.ts`；然后全量四件；再 `npm run build --prefix apps/web`。
 - 预期：`bell-system.test.ts` 8 个用例（假 `SystemNotifier`、假 `document.hidden`、假 `Notification` 构造函数，不需要真实浏览器）：
