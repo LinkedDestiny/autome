@@ -19,3 +19,4 @@
 实现 #7 | M-07 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-07-r7-impl.md | 全仓 Web 测试受沙箱 listen EPERM 阻塞
 审计 #7 | M-07 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-07-r7-audit.md | 无
 实现 #8 | M-08 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-08-r8-impl.md | 全仓门禁结果见证据；H-07 人工对话未执行
+审计 #8 | M-08 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-08-r8-audit.md | 无

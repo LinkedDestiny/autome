@@ -1,12 +1,12 @@
 # autome 插件：在对话里整理任务卡并用命令行创建（Claude Code / Codex / Cursor）
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 8/40
-current-milestone: M-08
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-08 环境采集时序、回归检查与 H-07 说明
+next-action: 无
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -248,7 +248,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-05 | 已完成 | eval 用例 | 0 | |
 | M-06 | 已完成 | B-1：V7 示例键值一致性回归 | 0 | |
 | M-07 | 已完成 | B-2：人工验收逐项隔离前置 | 0 | |
-| M-08 | 待审 | B-3：环境采集时序统一 | 0 | |
+| M-08 | 已完成 | B-3：环境采集时序统一 | 0 | |
 
 ## 里程碑说明
 
@@ -314,7 +314,7 @@ B-2 / D1-N02 已纳入；前置 M-05。H-01、H-02、H-04 每条人工记录各�
 
 ### M-08 验收契约
 
-最新证据：docs/在-plugins-新增-autome-插件/evidence/M-08-r8-impl.md · 待审 · 实现 #8
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-08-r8-audit.md · 通过 · 审计 #8
 
 B-3 / D1-N03 已纳入；前置 M-03。统一 SKILL.md 的环境采集规则：第 1 步不跑命令，Bug 环境信息缺失时可留待第 2 步确认命令行存在后采集 Git 与 `autome version`，经用户同意后才写入；其余信息缺失仍先追问。验收：`sh plugins/autome/tests/run.sh skill`，新增检查确保环境采集命令仅位于第 2 步、且说明用户确认，补充该路径的人工对话检查说明。
 
