@@ -1902,6 +1902,8 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
         && let Ok(project) = ctx.store.get_project(&task.project_id)
     {
         crate::gate::stop_all(std::path::Path::new(&project.path), task_id);
+        crate::gate::discard_node(std::path::Path::new(&project.path), task_id, "setup")
+            .map_err(|e| internal(e.to_string()))?;
     }
     if let Some(session) = ctx.store.running_session(task_id)? {
         if let Some(pid) = session.pid {

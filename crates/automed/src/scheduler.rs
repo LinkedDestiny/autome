@@ -2156,6 +2156,52 @@ fn start_session(
         Route::Deferred => return Ok(()),
     };
 
+    ensure_checkouts(ctx, task, project, resolved, kind)?;
+    if let Some(setup) = &resolved.setup
+        && !project.is_workspace()
+        && let TaskState::Active { node } = ctx.store.get_task(&task.id)?.state
+    {
+        let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+        let checkout = crate::setup::Checkout {
+            kind: autome_domain::setup::Checkout::Worktree,
+            dir: &layout.cwd,
+            record: crate::setup::worktree_record(Path::new(&project.path), &task.id),
+        };
+        match crate::setup::ensure(ctx, task, project, setup, checkout, node)
+            .map_err(|e| err(e.to_string()))?
+        {
+            crate::setup::Ready::Ready => {}
+            crate::setup::Ready::Pending => {
+                ctx.store.schedule_retry(
+                    &task.id,
+                    node,
+                    &now_iso(),
+                    inject,
+                    "等待准备命令",
+                    false,
+                )?;
+                return Ok(());
+            }
+            crate::setup::Ready::Failed {
+                command,
+                exit_code,
+                log,
+                ..
+            } => {
+                advance(
+                    ctx,
+                    &task.id,
+                    &Trigger::SetupFailed {
+                        command,
+                        exit_code,
+                        log,
+                    },
+                )?;
+                return Ok(());
+            }
+        }
+    }
+
     // The session's id is fixed before anything else: a round carrying the
     // user's decisions marks them as its own before its prompt is written, so
     // the prompt, the brief and the ledger name one list.
@@ -2281,26 +2327,14 @@ fn cooldown_route(
     Ok(Route::Deferred)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn launch_session(
+fn ensure_checkouts(
     ctx: &mut Ctx,
     task: &TaskRecord,
     project: &Project,
     resolved: &ResolvedConfig,
     kind: SessionKind,
-    inject: Option<&Inject>,
-    session_id: &str,
-    decisions: &[crate::store::DecisionRecord],
 ) -> Result<()> {
-    let repo = PathBuf::from(&project.path);
-
-    // Which repositories this task works in. For a workspace it is whatever
-    // the intake round wrote into the design document's `repos:` line, read
-    // back from the document rather than kept in a table of its own — task
-    // progress lives in the repository, and a second copy in SQLite is a
-    // second answer to the same question.
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
-
     // Checkouts are created lazily, on the first session that needs one: a
     // queued task should not hold one. A workspace grows its set as the
     // document names more repositories, so this runs for every session and
@@ -2319,6 +2353,12 @@ fn launch_session(
         if let Some(parent) = slot.worktree.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| err(format!("无法创建 {}：{e}", parent.display())))?;
+        }
+        if resolved.setup.is_some() && !project.is_workspace() {
+            let _ = std::fs::remove_file(crate::setup::worktree_record(
+                Path::new(&project.path),
+                &task.id,
+            ));
         }
         git::worktree_prune(&slot.repo_root)?;
         git::worktree_add(
@@ -2357,6 +2397,29 @@ fn launch_session(
             }
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_session(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    resolved: &ResolvedConfig,
+    kind: SessionKind,
+    inject: Option<&Inject>,
+    session_id: &str,
+    decisions: &[crate::store::DecisionRecord],
+) -> Result<()> {
+    let repo = PathBuf::from(&project.path);
+
+    // Which repositories this task works in. For a workspace it is whatever
+    // the intake round wrote into the design document's `repos:` line, read
+    // back from the document rather than kept in a table of its own — task
+    // progress lives in the repository, and a second copy in SQLite is a
+    // second answer to the same question.
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+
     let worktree = layout.docs_root.clone();
 
     // Which rules this task is held to, decided once and then frozen. A task
@@ -2434,6 +2497,7 @@ fn launch_session(
         layout.cwd.clone()
     };
 
+    let card = ctx.store.task_brief(&task.id)?;
     let card_path = (matches!(
         kind,
         SessionKind::Intake
