@@ -1,7 +1,7 @@
 # autome status 最近五个会话定位
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/autome-cli && cargo test --offline --test cli status_shows_latest_five_sessions_in_chronological_order -- --exact
 根因: 内核按 started_at 降序返回会话，CLI 使用 sessions.iter().rev().take(5)，先反转全部记录再截取，选中了最早五个。
 复核: 待复核
@@ -38,7 +38,12 @@ repos: .
 
 ## 修复说明
 
-定位轮仅添加回归测试及本报告，未修改产品代码。修复尚未执行，未运行全量门禁。
+修复第 1/3 轮：仅将 `crates/autome-cli/src/main.rs` 的 `sessions.iter().rev().take(5)` 改为 `sessions.iter().take(5).rev()`，先取最新五个，再按时间升序展示。存储和 JSON 历史排序契约不变；定位轮回归测试未修改、删除、跳过或弱化。
+
+- 原复现命令修复前退出 101，实际为 history-1～5，期望为 history-3～7；修复后同一命令退出 0，1 个测试通过。
+- 已运行配置门禁 `sh scripts/ci-local.sh`，退出 1，用时 165 秒。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过。
+- Web test 未通过：3 个测试文件失败、19 个通过；11 个测试失败、198 个通过、16 个跳过。日志包含 `listen EPERM: operation not permitted 127.0.0.1`、文件监听器 `EMFILE: too many open files, watch` 以及服务启动等待超时。当前环境阻止本地服务正常启动，不能宣称完整门禁通过；需由宿主在允许监听端口的环境重跑原门禁。本轮未更改门禁或测试来绕过限制。
+- 原始日志：`.autome/output/fix-1-before.log`、`.autome/output/fix-1-after.log`、`.autome/output/fix-1-gate.log`，不纳入提交。未运行可选 `--package` 打包步骤。
 
 ## 复核意见
 

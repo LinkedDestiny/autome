@@ -693,7 +693,7 @@ fn task_detail(got: &Value) {
     let sessions = got["sessions"].as_array().cloned().unwrap_or_default();
     if !sessions.is_empty() {
         println!("  会话（最近 5 个）");
-        for s in sessions.iter().rev().take(5) {
+        for s in sessions.iter().take(5).rev() {
             let cost = s["metrics"]["cost_usd"]
                 .as_f64()
                 .map(|c| format!("  ${c:.2}"))
