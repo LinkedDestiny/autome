@@ -33,3 +33,4 @@
 
 实现 #24 | M-03 | 待审 | docs/服务端每次-tick-后用-events/evidence/M-03-r24-impl.md | 27 个真实监听用例受 EPERM/EMFILE 阻断
 审计 #3 | M-03 | 通过 | docs/服务端每次-tick-后用-events/evidence/M-03-r24-audit.md | 无
+实现 #25 | M-04 | 待审 | docs/服务端每次-tick-后用-events/evidence/M-04-r25-impl.md | 27 个监听用例受 EPERM/EMFILE 阻断
