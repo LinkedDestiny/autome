@@ -14,6 +14,16 @@
         "agent-orchestration",
         "automation"
       ]
+    },
+    {
+      "name": "autome",
+      "source": "./autome",
+      "description": "把对话里讨论好的需求或 Bug 整理成 Autome 任务卡，确认后用 autome 命令行创建。",
+      "keywords": [
+        "autome",
+        "task-card",
+        "automation"
+      ]
     }
   ]
 }

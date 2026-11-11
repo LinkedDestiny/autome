@@ -8,6 +8,11 @@
       "name": "loop",
       "source": "./loop",
       "description": "自动收敛的「设计 → 评审/裁决 → 实现/审计」双循环工程：loop-init 初始化项目，loop-task 生成任务，loop-run 启动循环"
+    },
+    {
+      "name": "autome",
+      "source": "./autome",
+      "description": "把对话里讨论好的需求或 Bug 整理成 Autome 任务卡，确认后用 autome 命令行创建。"
     }
   ]
 }

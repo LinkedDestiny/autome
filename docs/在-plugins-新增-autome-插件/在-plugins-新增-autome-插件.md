@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/25
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-01：建 plugins/autome 骨架、三份 manifest 与三份市场登记，跑通 tests/run.sh structure 与 tests/hosts.sh
+next-action: 独立审计 M-01 的结构与宿主加载证据；通过后下一实现轮推进 M-02 校验与面板脚本
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -239,7 +239,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
+| M-01 | 待审 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
 | M-02 | 开放 | 任务卡校验与面板链接脚本 | 0 | |
 | M-03 | 开放 | autome-task 技能与短别名 | 0 | |
 | M-04 | 开放 | README 程序化创建说明与插件市场 README | 0 | |
@@ -256,6 +256,8 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 ## 验收契约
 
 ### M-01 验收契约
+
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-01-r1-impl.md · 专项通过，待审（全量 CI 有环境限制） · 实现 #1
 
 - 验收命令：`sh plugins/autome/tests/run.sh structure && sh plugins/autome/tests/hosts.sh`
 - 预期：structure 组 10 个用例通过（S1 三份 manifest 存在且 name 为 autome；S2 version 一致；S3 description 一致；S4 claude 的 commands 与 codex/cursor 的 skills 路径；S5 codex 的 interface 四个字段；S6 三份市场文件各有指向 `./autome` 的条目，Codex 带 policy；S7 三份市场文件的 loop 条目仍在；S8 SKILL.md 头有 `name: autome-task` 与非空 description、没有 `disable-model-invocation`；S9 task.md 引用 `${CLAUDE_PLUGIN_ROOT}/skills/autome-task/SKILL.md` 且不含 `autome task new`；S10 相对 `git merge-base HEAD main`，`plugins/loop/` 无改动）；hosts 5 个用例通过（H1 `claude plugin validate plugins` 退出 0；H2 `claude plugin validate plugins/autome --strict` 退出 0；H3 `plugin details autome` 含 `Skills (2)`、`autome-task`、`task`；H4 隔离 `CODEX_HOME` 下 `plugin add autome@autome` 退出 0 且 `plugin list` 有 `autome@autome  installed, enabled  0.1.0`；H5 缓存目录里有 `skills/autome-task/SKILL.md`）。共 15 个。

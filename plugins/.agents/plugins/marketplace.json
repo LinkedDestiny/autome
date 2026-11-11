@@ -15,6 +15,18 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "autome",
+      "source": {
+        "source": "local",
+        "path": "./autome"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }
