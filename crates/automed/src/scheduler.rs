@@ -953,6 +953,64 @@ fn test_section_start(text: &str) -> Option<usize> {
     .min()
 }
 
+/// The lines the locate round added inside the test section, as runs of
+/// consecutive lines. Parsed from `git diff -U0`; lines above `section_line`
+/// (1-based) are product code and are left out.
+fn added_test_blocks(diff: &str, section_line: usize) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    let mut line_no = 0usize;
+    let mut in_hunk = false;
+    let flush = |current: &mut Vec<&str>, blocks: &mut Vec<String>| {
+        if !current.is_empty() {
+            blocks.push(current.join("\n"));
+            current.clear();
+        }
+    };
+    for line in diff.lines() {
+        if let Some(header) = line.strip_prefix("@@") {
+            flush(&mut current, &mut blocks);
+            in_hunk = true;
+            line_no = header
+                .split_once(" +")
+                .map(|(_, rest)| rest)
+                .and_then(|rest| rest.split([',', ' ']).next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+        } else if !in_hunk || line.starts_with('\\') {
+            continue;
+        } else if let Some(added) = line.strip_prefix('+') {
+            if line_no >= section_line {
+                current.push(added);
+            } else {
+                flush(&mut current, &mut blocks);
+            }
+            line_no += 1;
+        } else if line.starts_with('-') {
+            flush(&mut current, &mut blocks);
+        } else {
+            flush(&mut current, &mut blocks);
+            line_no += 1;
+        }
+    }
+    flush(&mut current, &mut blocks);
+    blocks
+}
+
+/// Every block still present, verbatim and in the original order.
+fn blocks_kept_in_order(text: &str, blocks: &[String]) -> bool {
+    let mut from = 0;
+    blocks
+        .iter()
+        .all(|block| match text[from..].find(block.as_str()) {
+            Some(at) => {
+                from += at + block.len();
+                true
+            }
+            None => false,
+        })
+}
+
 fn section_digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(text.as_bytes()))
@@ -1088,7 +1146,21 @@ fn guard_bug_regression(
                     });
                     if protection == Protection::Section {
                         let start = test_section_start(&contents.stdout).unwrap_or(0);
-                        file["section"] = json!(section_digest(&contents.stdout[start..]));
+                        let section_line = contents.stdout[..start].matches('\n').count() + 1;
+                        let diff = git::run_ok(
+                            &slot.worktree,
+                            &[
+                                "diff",
+                                "-U0",
+                                "--no-color",
+                                "--no-ext-diff",
+                                base,
+                                &head,
+                                "--",
+                                path,
+                            ],
+                        )?;
+                        file["blocks"] = json!(added_test_blocks(&diff.stdout, section_line));
                     }
                     files.push(file);
                 }
@@ -1121,9 +1193,18 @@ fn guard_bug_regression(
                 .find(|s| s.name == repo)
                 .ok_or_else(|| err(format!("回归测试仓库丢失：{repo}/{path}")))?;
             let clean = git::run(&slot.worktree, &["diff", "--quiet", "HEAD", "--", path])?;
-            let kept = if let Some(section) = file["section"].as_str() {
-                // Only the test section is fixed; the product code above it is
-                // what the fix round is there to change.
+            let kept = if let Some(blocks) = file["blocks"].as_array() {
+                // The lines the locate round wrote into the test section must
+                // all survive unchanged. The product code above is what the fix
+                // round is there to change, and new tests beside them are fine.
+                let blocks: Vec<String> = blocks
+                    .iter()
+                    .filter_map(|b| b.as_str().map(str::to_string))
+                    .collect();
+                let current = git::run(&slot.worktree, &["show", &format!("HEAD:{path}")])?;
+                current.ok() && blocks_kept_in_order(&current.stdout, &blocks)
+            } else if let Some(section) = file["section"].as_str() {
+                // Snapshots from the build that froze the whole test section.
                 let current = git::run(&slot.worktree, &["show", &format!("HEAD:{path}")])?;
                 current.ok()
                     && test_section_start(&current.stdout)
@@ -5829,5 +5910,44 @@ mod tests {
                 max.as_bytes()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod regression_blocks {
+    use super::{added_test_blocks, blocks_kept_in_order};
+
+    const DIFF: &str = "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old product\n+broken product\n@@ -3 +3,3 @@\n-mod tests {}\n+mod tests {\n+    #[test] fn regression() { assert!(fixed()); }\n+}\n";
+
+    #[test]
+    fn only_lines_added_inside_the_test_section_are_protected() {
+        // The section starts on line 2 (`#[cfg(test)]`); line 1 is product code.
+        assert_eq!(
+            added_test_blocks(DIFF, 2),
+            vec!["mod tests {\n    #[test] fn regression() { assert!(fixed()); }\n}".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_new_file_keeps_only_its_test_section() {
+        let diff = "--- /dev/null\n+++ b/lib.rs\n@@ -0,0 +1,3 @@\n+fn product() {}\n+#[test]\n+fn t() {}\n";
+        assert_eq!(
+            added_test_blocks(diff, 2),
+            vec!["#[test]\nfn t() {}".to_string()]
+        );
+    }
+
+    #[test]
+    fn added_tests_pass_and_edited_or_reordered_ones_do_not() {
+        let blocks = vec![
+            "#[test] fn a() { x(); }".to_string(),
+            "#[test] fn b() {}".to_string(),
+        ];
+        let kept = "fixed\n#[test] fn a() { x(); }\n#[test] fn new() {}\n#[test] fn b() {}\n";
+        assert!(blocks_kept_in_order(kept, &blocks));
+        let weakened = "fixed\n#[test] fn a() {}\n#[test] fn b() {}\n";
+        assert!(!blocks_kept_in_order(weakened, &blocks));
+        let swapped = "#[test] fn b() {}\n#[test] fn a() { x(); }\n";
+        assert!(!blocks_kept_in_order(swapped, &blocks));
     }
 }

@@ -4757,6 +4757,11 @@ fn bug_regression_guard_protects_only_the_test_section_of_an_inline_test_file() 
             true,
         ),
         ("fixed product\\n#[cfg(test)]\\nmod tests {}\\n", false),
+        // A new test beside the protected one is not a weakening.
+        (
+            "fixed product\\n#[cfg(test)]\\nmod tests { #[test] fn regression() {} }\\n#[test]\\nfn also_covers_the_edge() {}\\n",
+            true,
+        ),
     ] {
         let mut w = World::new("regression-section");
         let slug = slug_for("inline section");
