@@ -1,7 +1,7 @@
 # autome 插件：在对话里整理任务卡并用命令行创建（Claude Code / Codex / Cursor）
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -17,7 +17,7 @@ Autome 的任务卡有三个来源（网页、对话、其他 Agent 的命令行
 设计轮在基线上核对过的事实（隔离 `AUTOME_HOME` 实测，原始输出在 `.autome/output/plan1/`，不入库）：
 
 - **命令行在进程内直接打开账本。** `autome` 不连守护进程，`Client::open()` 读 `AUTOME_HOME`（默认 `~/.autome`）下的账本，但 **`AUTOMED_DB_PATH` 优先于 `AUTOME_HOME`**（`crates/automed/src/entry.rs:14-21`）。所以隔离验证必须同时设 `AUTOME_HOME` 并 `unset AUTOMED_DB_PATH`。
-- **`task new --brief - --json` 的输出**是 `{"queue_position", "started", "task": {...}}`；`task` 含 `id`（如 `T-1`）、`kind`、`slug`、`title`、`request`、`state`（待开始为 `{"state":"draft"}`，直接开始为 `{"node":"locate","state":"active"}`）、`branch`（`autome/<slug>`）、`doc_dir`、`created_at` 等。带 `--draft` 时 `started: false`；不带时 `started: true`。不带 `--json` 时打印 `T-3  普通  待开始` 和一行 `已存为待开始。用 \`autome task start T-3\` 开始。`
+- **`task new --brief - --json` 的输出**是 `{"queue_position", "started", "task": {...}}`；`task` 含 `id`（如 `T-1`）、`kind`、`slug`、`title`、`request`、`state`（待开始为 `{"state":"draft"}`，直接开始为 `{"node":"locate","state":"active"}`）、`branch`（`autome/<slug>`）、`doc_dir`、`created_at` 等。带 `--draft` 时 `started: false`；不带时进入调度（`crates/automed/src/dispatch.rs:1497-1504`），项目有空闲槽位并实际启动后才是 `started: true`，槽位占满时 `state` 为 `queued`、`started: false`、`queue_position` 为 1 起的位置（已有测试 `create_without_the_new_params_is_unchanged` 断言了这一点；`queue_position` 只在排队态非空，`dispatch.rs:1548-1554`）。不带 `--json` 时打印 `T-3  普通  待开始` 和一行 `已存为待开始。用 \`autome task start T-3\` 开始。`
 - **标题与 slug 都取自正文第一行 `# <标题>`**（`# 测试标题` → `title`、`request`、`slug` 都是「测试标题」）。
 - **`project ls --json`** 是 `{"projects":[{"counts","project":{"id","display_name","path","removed_at","kind","members",…},"slots_in_use"}]}`；`path` 是物理路径（临时目录记为 `/private/var/...`）。
 - **`-p` 只认 id、`display_name` 或与项目根完全相同的路径**；传子目录路径会报「没有叫 … 的项目」。不写 `-p` 时取「包含当前目录的最深一个未移除项目」（`client.rs::resolve_project`）。
@@ -104,7 +104,7 @@ SKILL.md 用下列二级标题，`tests/run.sh skill` 按标题检查：`## 1. �
 
 **第 4 步 展示并等待确认（A1、C2、C6）。**
 
-1. 先跑 `check-card.sh <类型>`，把正文用与创建命令相同的 heredoc 交给它（见下节）。不合格就按它的提示修正正文——缺内容回第 1 步追问，超长则告诉用户超了多少字节、请用户决定删减什么——**合格之前不展示确认卡**。
+1. 先把正文写入临时文件（见第 5 步「正文传输」），再跑 `sh <脚本> <类型> < <临时文件>`。不合格就按它的提示修正正文并重写该文件——缺内容回第 1 步追问，超长则告诉用户超了多少字节、请用户决定删减什么——**合格之前不展示确认卡**。
 2. 合格后，一条消息里依次展示：
 
    ```text
@@ -124,19 +124,27 @@ SKILL.md 用下列二级标题，`tests/run.sh skill` 按标题检查：`## 1. �
 
 ```text
 <!-- create-command -->
-autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json <<'AUTOME_CARD_EOF'
-{{BODY}}
-AUTOME_CARD_EOF
+autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{CARD_FILE}}'
 <!-- /create-command -->
 ```
 
-`{{KIND}}` 为 `feature` 或 `bug`，`{{PROJECT_ID}}` 为第 3 步的 id，`{{BODY}}` 为确认过的正文原文；立即开始时删去 ` --draft`，其它一字不改。heredoc 定界符带引号，正文里的 `$`、反引号不会被展开；定界符 `AUTOME_CARD_EOF` 单独成行出现在正文里会截断正文，`check-card.sh` 拒绝这种正文。第 4 步给 `check-card.sh` 的也是这同一个 heredoc（`sh <脚本> {{KIND}} <<'AUTOME_CARD_EOF' … AUTOME_CARD_EOF`），所以校验的字节数与交给命令行的完全一致（heredoc 末尾那个换行两边都有）。
+`{{KIND}}` 为 `feature` 或 `bug`，`{{PROJECT_ID}}` 为第 3 步的 id，`{{CARD_FILE}}` 为下面的临时文件路径；立即开始时删去 ` --draft`，其它一字不改。
 
-**第 6 步 回显（A3、Q5）。** 退出码 0 时从标准输出的 JSON 里取 `task.id`、`task.title`、`task.kind`、`task.state.state`、`started`、`queue_position`，输出：
+**正文传输（D1-P01）。** 正文**不得**出现在任何 shell 命令行或 heredoc 里——shell 会先解析命令文本，正文里一行恰好等于定界符的内容会提前结束 heredoc，其后的行被当作命令执行，在确认之前就越过 C2 闸门。所以：
 
-- `已创建 <id>「<title>」· 需求|Bug · 待开始|已开始`；
-- 待开始：`开始它：autome task start <id>`（只告诉用户，不执行）；已开始：「Loop 由 `autome run` 或打开的桌面端推进」，`queue_position` 非空时加「排队第 N 位」；
-- 运行 `sh <本 skill 目录>/scripts/panel-url.sh <id>`，有输出就加一行 `面板：<URL>`，没有输出就不提面板。
+1. 第 4 步第 1 条之前，在系统临时目录（`${TMPDIR:-/tmp}`）下取一个不存在的文件名 `autome-card-<8 位随机字符>.md`，用宿主的文件写入能力（不是 shell）把正文原文写进去，**一字不差地等于**第 4 步展示的那份。
+2. 校验与创建都用输入重定向读这同一个文件：`sh <脚本> {{KIND}} < '<临时文件>'` 与上面的创建命令。正文只被当作数据读取、从不经 shell 解析，两处字节数一致由「同一个文件」保证。路径用单引号包住。
+3. 用户要求修改正文时重写该文件，再回到第 4 步第 1 条。创建成功或最终放弃后 `rm -f` 该文件；创建失败而要重试时，经第 4 步重新确认后复用或重写。
+4. 宿主不能写文件时，退路是停下并把确认过的正文和命令交给用户自己执行，**不得**退回 heredoc 或把正文拼进命令行。
+
+**第 6 步 回显（A3、Q5、D1-P02）。** 退出码 0 时从标准输出的 JSON 里取 `task.id`、`task.title`、`task.kind`、`task.state.state`、`started`、`queue_position`，按下面顺序判定状态（先匹配先用）并输出 `已创建 <id>「<title>」· 需求|Bug · <状态>`：
+
+1. `queue_position` 非空 → **排队中**：加「排队第 N 位，空出槽位后由调度器自动开始」；**不附** `autome task start`（排队的任务不是待开始，该命令会报错）。
+2. 否则 `task.state.state` 为 `draft` → **待开始**：加 `开始它：autome task start <id>`（只告诉用户，不执行）。
+3. 否则 `started` 为 `true` → **已开始**：加「Loop 由 `autome run` 或打开的桌面端推进」。
+4. 以上都不满足：原样转达 `task.state` 与 `started`，不猜测状态，也不附任何命令。
+
+之后运行 `sh <本 skill 目录>/scripts/panel-url.sh <id>`，有输出就加一行 `面板：<URL>`，没有输出就不提面板。
 
 **失败时（Q7）。** 退出码非 0：把标准错误原文（`autome：…` 那一行）放在引用块里转达，并附退出码。然后：
 
@@ -152,14 +160,13 @@ AUTOME_CARD_EOF
 
 ### 任务卡校验脚本 `check-card.sh`（C6、A1）
 
-`sh check-card.sh <feature|bug>`，正文从标准输入读。类型参数不合法退出 2。合格时退出 0，输出一行 `OK <字节数> 字节 · 标题：<标题>`；不合格退出 1，每个问题输出一行 `不合格：<原因>`。检查项：
+`sh check-card.sh <feature|bug>`，正文从标准输入读（技能用 `< 临时文件` 重定向喂入，见第 5 步「正文传输」）。正文里出现 `AUTOME_CARD_EOF` 之类的任何文字都只是普通内容，没有保留字。类型参数不合法退出 2。合格时退出 0，输出一行 `OK <字节数> 字节 · 标题：<标题>`；不合格退出 1，每个问题输出一行 `不合格：<原因>`。检查项（共五项）：
 
 1. 第一行以 `# ` 开头且标题非空；
 2. 二级标题（不在 ``` 代码块内的、以 `## ` 开头的行）恰好是该类型模板的小节，名字逐字相同、顺序相同、没有多余；
 3. 必填小节去掉空白后非空，且不是「无」「待补充」「TBD」「TODO」；可选小节非空（没有内容写「无」）；
 4. 需求的「验收标准」至少一个列表项（`- ` 或 `1. ` 开头）；Bug 的「复现步骤」至少一个编号项（`1. ` 开头）；
-5. 字节数（`wc -c`）≤ 65536——与内核上限相同，由 `verify-cli.sh` 的 V5、V6 对真实命令行确认边界一致；
-6. 没有一行恰好是 `AUTOME_CARD_EOF`。
+5. 字节数（`wc -c`）≤ 65536——与内核上限相同，由 `verify-cli.sh` 的 V5、V6 对真实命令行确认边界一致。
 
 用 `/bin/sh` + `awk`/`sed`/`wc`，不用数组、`[[`、`local`，中文紧跟变量写 `${var}`（C10）。
 
@@ -178,7 +185,7 @@ AUTOME_CARD_EOF
 `plugins/autome/README.md` 固定小节：`## 技能`、`## 安装`、`## 在对话里用`、`## Agent 程序化创建`、`## 验证`。「Agent 程序化创建」写：
 
 - 命令：`autome task new --brief - --kind feature|bug [--draft] [-p <项目>] --json`（正文从标准输入，第一行 `# <标题>`，≤ 65536 字节），`autome task start <id>`，`autome project ls --json`；`-p` 接受 id、名称或项目根路径，不写取当前目录所在项目。
-- 输出：一个 `task new --json` 示例与一个 `project ls --json` 示例，各放在 `<!-- task-new-json -->`、`<!-- project-ls-json -->` 标记之间，内容取自隔离账本的真实输出（只把 id、路径、时间换成示例值，不增删键）；字段说明（`task.id` 是后续命令用的 id，`task.state.state` 为 `draft` 即待开始，`started`、`queue_position`、`branch`、`doc_dir`）；不带 `--json` 的两行输出。
+- 输出：一个 `task new --json` 示例与一个 `project ls --json` 示例，各放在 `<!-- task-new-json -->`、`<!-- project-ls-json -->` 标记之间，内容取自隔离账本的真实输出（只把 id、路径、时间换成示例值，不增删键）；字段说明（`task.id` 是后续命令用的 id，`task.state.state` 为 `draft` 即待开始，`started` 仅在实际启动后为 `true`，槽位占满时 `state` 为 `queued`、`started` 为 `false`、`queue_position` 给出排队位置，另有 `branch`、`doc_dir`）；不带 `--json` 的两行输出。
 - 错误：标准错误一行 `autome：<原因>`，执行失败退出 1、用法错 2，并列出上文实测的四条典型原文。
 - 状态目录 `$AUTOME_HOME`，以及「`AUTOMED_DB_PATH` 优先」这一点（程序化调用方做隔离时要知道）。
 
@@ -257,14 +264,14 @@ AUTOME_CARD_EOF
 ### M-02 验收契约
 
 - 验收命令：`sh plugins/autome/tests/run.sh card panel`
-- 预期：card 组 14 个用例通过（K1 合格需求退出 0 并输出字节数；K2 合格 Bug；K3 第一行不是 `# ` 退出 1；K4 缺「不做什么」；K5 小节顺序颠倒；K6 多余二级标题；K7 需求「验收标准」写「无」；K8 Bug「复现步骤」没有编号项；K9 恰好 65536 字节退出 0；K10 65537 字节退出 1 且原因含 65537；K11 含 `AUTOME_CARD_EOF` 行退出 1；K12 类型参数 `chore` 退出 2；K13 代码块里的 `## ` 不算标题；K14 可选小节「线索」写「无」退出 0）；panel 组 7 个用例通过（P1 无 server.json 且默认端口不通 → 空输出、退出 0；P2 默认端口健康、任务页 404 → `http://127.0.0.1:7420/`；P3 隔离 `AUTOME_HOME` 的 server.json 端口 7555 健康、任务页 200 → `http://127.0.0.1:7555/tasks/T-9`；P4 server.json 端口不通、默认端口健康 → 默认端口首页；P5 healthz 返回 200 但体里没有 `"ok":true` → 空；P6 `PATH` 上没有 curl → 空、退出 0；P7 真实 curl、`AUTOME_PANEL_DEFAULT_PORT=1` 且无 server.json → 空）。共 21 个。
+- 预期：card 组 14 个用例通过（K1 合格需求退出 0 并输出字节数；K2 合格 Bug；K3 第一行不是 `# ` 退出 1；K4 缺「不做什么」；K5 小节顺序颠倒；K6 多余二级标题；K7 需求「验收标准」写「无」；K8 Bug「复现步骤」没有编号项；K9 恰好 65536 字节退出 0；K10 65537 字节退出 1 且原因含 65537；K11 正文含独占一行的 `AUTOME_CARD_EOF` 与其后一行 shell 命令文字，仍退出 0、字节数等于 `wc -c` 且命令文字未被执行（探针文件不存在）；K12 类型参数 `chore` 退出 2；K13 代码块里的 `## ` 不算标题；K14 可选小节「线索」写「无」退出 0）；panel 组 7 个用例通过（P1 无 server.json 且默认端口不通 → 空输出、退出 0；P2 默认端口健康、任务页 404 → `http://127.0.0.1:7420/`；P3 隔离 `AUTOME_HOME` 的 server.json 端口 7555 健康、任务页 200 → `http://127.0.0.1:7555/tasks/T-9`；P4 server.json 端口不通、默认端口健康 → 默认端口首页；P5 healthz 返回 200 但体里没有 `"ok":true` → 空；P6 `PATH` 上没有 curl → 空、退出 0；P7 真实 curl、`AUTOME_PANEL_DEFAULT_PORT=1` 且无 server.json → 空）。共 21 个。
 - 负向对照：字节上限写成 `-lt 65536` 时 K9 失败；只看 healthz 状态码不看响应体时 P5 失败；不跳过代码块内的 `## ` 时 K13 失败。
 
 ### M-03 验收契约
 
 - 验收命令：`sh plugins/autome/tests/run.sh skill && sh plugins/autome/tests/verify-cli.sh skill`
-- 预期：skill 组 10 个用例通过（T1 八个固定小节按序存在；T2 第 4 步含闸门句「没有明确确认，不执行第 5 步」并列出「差不多」「再看看」为不算确认；T3 `create-command` 标记内恰有一条 `autome task new`，含 `--brief -`、`--kind {{KIND}}`、`--draft`、`-p {{PROJECT_ID}}`、`--json`、`<<'AUTOME_CARD_EOF'`；T4 第 4 步列出「直接开始」等五种说法，第 6 步写明创建后不调用 `autome task start`；T5 `autome rpc`、`task.create`、`sqlite3` 只出现在「禁止」节；T6 `autome task start` 不出现在第 1–5 步；T7 第 2 步含两条安装命令原文；T8 第 3 步含 `autome project ls --json`、`pwd -P`、`removed_at`、`-p`；T9 引用 `check-card.sh`、`panel-url.sh` 且文件存在；T10 description 含「建成 autome 任务」）；verify-cli skill 组 6 个用例通过（V1 隔离账本的 `project ls --json` 含临时仓库且 `removed_at` 为 null；V2 从 `/tmp` 执行代入后的模板（feature、合格正文）→ 退出 0，输出含 `"id": "T-1"`、`"kind": "feature"`、`"state": "draft"`、`"started": false` 与正文标题；V3 按技能规则删去 ` --draft` 后用 Bug 正文执行 → `"started": true`；V4 `-p prj-不存在` → 退出 1、标准错误以 `autome：没有叫` 开头；V5 65537 字节正文被 `check-card.sh` 拒绝且命令行也退出 1、报「超过 64KB」；V6 65536 字节正文两者都接受）。共 16 个。
-- 负向对照：模板漏写 `--draft` 时 T3 与 V2 失败；模板改成依赖当前目录（去掉 `-p {{PROJECT_ID}}`）时 V2 失败（从 `/tmp` 执行找不到项目）；SKILL.md 的闸门句被删时 T2 失败。
+- 预期：skill 组 10 个用例通过（T1 八个固定小节按序存在；T2 第 4 步含闸门句「没有明确确认，不执行第 5 步」并列出「差不多」「再看看」为不算确认；T3 `create-command` 标记内恰有一条 `autome task new`，含 `--brief -`、`--kind {{KIND}}`、`--draft`、`-p {{PROJECT_ID}}`、`--json`、`< '{{CARD_FILE}}'`，且整个 SKILL.md 不含 `<<`；T4 第 4 步列出「直接开始」等五种说法，第 6 步写明创建后不调用 `autome task start`，并按排队、待开始、已开始、其它四种情形分条回显，排队条不含 `autome task start`；T5 `autome rpc`、`task.create`、`sqlite3` 只出现在「禁止」节；T6 `autome task start` 不出现在第 1–5 步；T7 第 2 步含两条安装命令原文；T8 第 3 步含 `autome project ls --json`、`pwd -P`、`removed_at`、`-p`；T9 引用 `check-card.sh`、`panel-url.sh` 且文件存在；T10 description 含「建成 autome 任务」）；verify-cli skill 组 6 个用例通过（V1 隔离账本的 `project ls --json` 含临时仓库且 `removed_at` 为 null；V2 从 `/tmp` 执行代入后的模板（feature、合格正文，正文写入临时文件并含一行 `AUTOME_CARD_EOF` 加 `touch` 探针命令，创建后探针文件不存在、`task.request` 含该行原文）→ 退出 0，输出含 `"id": "T-1"`、`"kind": "feature"`、`"state": "draft"`、`"started": false` 与正文标题；V3 按技能规则删去 ` --draft` 后用 Bug 正文在空闲项目执行 → `"started": true`（槽位占满时的排队回显由 T4 与已有 Rust 测试覆盖，不推广这条结果）；V4 `-p prj-不存在` → 退出 1、标准错误以 `autome：没有叫` 开头；V5 65537 字节正文被 `check-card.sh` 拒绝且命令行也退出 1、报「超过 64KB」；V6 65536 字节正文两者都接受）。共 16 个。
+- 负向对照：模板漏写 `--draft` 时 T3 与 V2 失败；模板改成依赖当前目录（去掉 `-p {{PROJECT_ID}}`）时 V2 失败（从 `/tmp` 执行找不到项目）；模板改回 heredoc 时 T3 与 V2（探针文件被创建）失败；第 6 步删去排队条时 T4 失败；SKILL.md 的闸门句被删时 T2 失败。
 
 ### M-04 验收契约
 
@@ -280,7 +287,7 @@ AUTOME_CARD_EOF
 
 ## 人工验收清单
 
-- H-01 Claude Code：`AUTOME_HOME=$(mktemp -d)` 下注册一个临时仓库，在它的子目录里 `AUTOME_HOME=… claude --plugin-dir plugins/autome`，讨论一个需求后说「建成 autome 任务」——技能触发，展示类型、项目、「存为待开始」、字节数与完整正文后停下等待；回「差不多」不创建；回「确认」后创建并回显 `T-1` 与 `autome task start T-1`
+- H-01 Claude Code：`AUTOME_HOME=$(mktemp -d)` 下注册一个临时仓库，在它的子目录里 `AUTOME_HOME=… claude --plugin-dir plugins/autome`，讨论一个需求后说「建成 autome 任务」——技能触发，展示类型、项目、「存为待开始」、字节数与完整正文后停下等待；回「差不多」不创建；回「确认」后创建并回显 `T-1` 与 `autome task start T-1`；人工验证入口共同前置：隔离 `AUTOME_HOME` 并 `unset AUTOMED_DB_PATH`（H-01、H-02、H-04 同）
 - H-02 Codex：同 H-01 的隔离账本，`codex` 装上 `autome@autome` 后走一遍，记下沙箱是否拦截写 `$AUTOME_HOME` 以及技能怎样转达
 - H-03 在 `PATH` 里没有 `autome` 的 shell 里触发技能，只得到两条安装命令，没有任何其他创建尝试
 - H-04 `apps/web` 面板运行时创建一张卡，回显里的面板链接能在浏览器里打开
@@ -288,5 +295,10 @@ AUTOME_CARD_EOF
 - H-06 有 Cursor 时按 `plugins/README.md` 安装，确认技能出现在技能列表里并能触发
 
 ## Backlog
+
+- D1-N01：M-04 V7 实现时同时校验键与值（拒绝 `"state": "pending"`），与负向对照一致。
+- D1-N02：H-01、H-02、H-04 的人工记录里各写一句隔离前置（隔离 `AUTOME_HOME`、`unset AUTOMED_DB_PATH`）。
+- D1-N03：第 1 步「不跑命令」与 Bug「环境」建议读取 Git/`autome version` 的例外，实现时在 SKILL.md 里统一写明（环境采集放到第 2 步命令行检查之后）。
+- D1-N04：`server.json` 字段名待 W10 定，W10、W7 合并后核对 `panel-url.sh` 一次。
 
 ## 争议项
