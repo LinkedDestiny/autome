@@ -7,3 +7,4 @@
 实现 #4 | M-03 | 待审 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-03-r4-impl.md | 无
 审计 #3 | M-03 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-03-r4-audit.md | 无
 实现 #5 | M-04 | 开放（验收受阻） | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-04-r5-impl.md | Web listen EPERM；Desktop 缺 Electron
+审计 #4 | M-04 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-04-r5-audit.md | 无
