@@ -1,0 +1,11 @@
+name: bug-missing-repro
+description: Bug 缺少复现步骤与期望行为时一次追问
+tags: [autome-task, clarification]
+runs: 3
+max_turns: 8
+timeout_seconds: 120
+prompt: |
+  订单页面出现白屏，控制台报错原文是 TypeError: Cannot read properties of undefined。
+  把这个 Bug 提到 autome。
+graders:
+  - graders/asks-for-repro.md

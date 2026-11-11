@@ -1,0 +1,21 @@
+{
+  "name": "autome",
+  "version": "0.1.0",
+  "description": "把对话里讨论好的需求或 Bug 整理成 Autome 任务卡，确认后用 autome 命令行创建。",
+  "author": {
+    "name": "dannie"
+  },
+  "license": "MIT",
+  "keywords": [
+    "autome",
+    "task-card",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Autome",
+    "shortDescription": "对话整理任务卡，确认后创建",
+    "developerName": "dannie",
+    "category": "Productivity"
+  }
+}
