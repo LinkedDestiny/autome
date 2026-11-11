@@ -17,3 +17,5 @@
 
 实现 #6 | M-05 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-impl.md | 全量30例受监听权限阻断；真实通知保留人工验收
 审计 #5 | M-05 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-audit.md | 无
+
+实现 #7 | M-06 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-06-r7-impl.md | 全量监听 EPERM / watcher EMFILE，交审计复验

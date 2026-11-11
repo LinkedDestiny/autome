@@ -129,3 +129,27 @@ it('单 socket 消息出口贯通控制器；重连 hello 补拉；两个标签�
     expect(fetch).toHaveBeenCalledTimes(count + 1); expect(c.sockets).toHaveLength(2);
   } finally { c.stop(); off(); controller.stop(); other.stop(); }
 });
+it('字符串 type 的空串与未知类型原样交付；内置同步处理先于出口且无订阅者可发布', () => {
+  vi.useFakeTimers();
+  const onMessage = vi.fn<LiveMessageListener>();
+  const c = live(onMessage);
+  try {
+    onMessage.mockImplementation(type => {
+      if (type === 'hello') {
+        expect(c.onCore).toHaveBeenCalledTimes(1);
+        expect(c.onConnection).toHaveBeenLastCalledWith('open');
+      }
+      if (type === 'reload') expect(c.onReload).toHaveBeenCalledTimes(1);
+    });
+    c.sockets[0].message({ type: 'hello', seq: 0, core: 'connected' });
+    c.sockets[0].message({ type: 'reload' });
+    for (const type of ['', 'future-message']) {
+      const message = { type, payload: { value: 1 } };
+      c.sockets[0].message(message);
+      expect(onMessage).toHaveBeenLastCalledWith(type, message);
+    }
+    c.sockets[0].raw('');
+    expect(onMessage).toHaveBeenCalledTimes(4);
+    expect(() => publishLiveMessage('', { type: '' })).not.toThrow();
+  } finally { c.stop(); }
+});
