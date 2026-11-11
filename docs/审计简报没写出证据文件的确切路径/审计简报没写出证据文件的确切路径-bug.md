@@ -1,10 +1,10 @@
 # 审计简报缺少本轮证据文件的确切路径
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cargo test --offline -p automed regression_evidence_destination -- --nocapture
 根因: 简报只展示角色会话序号和已有证据，未明确本轮证据写入路径；审计会话序号与门禁使用的实现轮号分叉后，按简报序号命名的证据被拒绝。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -39,6 +39,12 @@ fix-round: 2/3
 后续最小修复应让实现简报和审计简报明确给出本轮完整目的路径，并区分实现会话的当前轮号与审计对应的实现轮号，保留会话可达的 `doc_dir`。本轮未执行完整调度、真实 Agent 会话或全仓库门禁。
 
 ## 修复说明
+
+第 3/3 修复轮：保留第 1 轮的最小产品修复，未追加产品代码改动，定位轮回归测试和项目门禁均未修改。宿主在 `710ec946c4d7850ca5fbf5599df6ffaf94365389` 上报告的 End to end 失败本轮未复现；所提供日志只有汇总，没有具体失败用例，不能据此确定新的代码根因。
+
+执行同一组合命令 `( cargo test --offline -p automed regression_evidence_destination -- --nocapture ) && ( sh scripts/ci-local.sh )`：三个回归用例通过，项目门禁耗时 483 秒、退出码 1。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均返回成功；只有 Web test 失败，19 个文件通过、3 个失败，198 个用例通过、11 个失败、16 个跳过。失败日志明确为 `listen EPERM: operation not permitted 127.0.0.1`。Desktop 日志仍有下载 `fetch failed` 引起的跳过，不能视为真实 Electron 验收通过。当前会话禁止提权，未绕过监听限制或弱化测试，完整门禁仍需 Autome 宿主复跑确认。
+
+门禁原始输出：`.autome/output/fix-3-gate.log`。原复现命令另行复验退出码 0，三个用例通过，完整输出：`.autome/output/fix-3-regression.log`。路径均相对当前 worktree 根目录，运行产物不提交。本轮仅更新本 bug 文档，重置为待复核，不启动后续会话。
 
 第 2/3 修复轮：保留上一轮产品修复，不追加产品代码改动。宿主在 `a84378f0d8d8fe0799174731d21ebb44f184d422` 上报告的 Rust Test 失败在本轮未复现；提供的日志末尾没有具体失败用例，不能据此认定新的代码根因。定位轮回归测试完全未改动。
 
