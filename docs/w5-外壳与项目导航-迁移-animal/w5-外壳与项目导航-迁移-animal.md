@@ -1,12 +1,12 @@
 # 面板外壳与项目导航（W5）：animal-island token、项目栏计数、首页总览、⌘K、中文标签表与 getLoadContext
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: M-01：新建 apps/web/app/load-context.ts，在 server/http.ts 两处 createRequestHandler 加 getLoadContext，root.tsx 加根 loader 与 shouldRevalidate，跑「M-01 验收契约」
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -211,7 +211,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
   映射规则：门禁节点归到它检查的那一步（`gate` → 实现，`fix_gate` → 修复），这与 desktop `GATE_STONE` 的思路一致，只是粒度更粗。`retro` 在实现循环结束后、rebase 之前回顾整轮工作，归入「审计」。`main_check` 和 `cleanup` 发生在合并之后，但此时任务仍是 `active`，归入「合并」，直到 `state: done` 才算「完成」。`repro_check` 在修复之前运行（`bug_loop.rs` 中 `start_fix(Node::ReproCheck, …)`），`await_info`、`not_a_bug` 都是定位得出的结论，三者都归入「定位」。
 - `stageOf(kind, state)` 返回 `{ label, index, total }`。节点取自 `active.node`、`paused.resume`、`stopped.at`、`failed.at` 或 `queued.resume`。`draft`/`queued` 没有节点时返回 `null`（未开始）。`done` 返回「完成」。遇到未知节点时，`label` 回退为原始节点字符串，`index` 为 -1。
-- 本任务**不显示**「已完成 3 / 5」和「修复第 2 / 3 轮」。上限值不在 `task_json` 里，留给 W6/W7 的完整卡片（Backlog B-03）。
+- 本任务**不显示**「已完成 3 / 5」和「修复第 2 / 3 轮」。理由是 R-02 允许 W5 的卡片取简版信息量，完整卡片归 W6/W7（Backlog B-03）。这不是数据拿不到：`task_json` 已有 `budget_n`，Bug 任务另有 `fix_round`，`project.get` 也返回解析后的 `config`；需求里程碑进度的数据来源则尚未核实，由 W6/W7 设计时确认。
 - 页面代码只按内核给的值查这张表，不自己推断进度（硬性约束 4）。M-03 的守卫测试会扫描 `app/routes`、`app/components` 下的 `.tsx`，检查里面没有散写的状态名、列名、阶段名中文。
 
 ### 跳转目标（R-02、R-03 的链接格式）
@@ -234,6 +234,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
   3. 还没收到 `core` 消息，但根 loader 报了 `kernel.ok === false`：显示「内核离线：<loader 的 error>，写操作暂不可用」。这一条覆盖 SSR 首屏，以及没有 WebSocket 的情况。
   4. 其他情况不显示。
 - 纯函数 `writeGate({ connection, core }) → { allowed, reason }`：只有 `connection === 'open' && core?.status === 'connected'` 时才允许写。其他情况分别给出中文理由：「正在连接服务」「连接中断，正在重连」「内核离线：<reason>」。还没收到 `hello`（`core` 未知）时**不允许写**，宁可多置灰一会儿，也不放过一次必然失败的写。
+- **恢复后的根数据重验。** 连接状态只是展示，不会让根数据自己刷新；内核离线时打开的页面，根 loader 已经返回 `kernel.ok === false`、空项目和空任务，内核恢复后如果账本里没有新事件，项目栏、首页和 ⌘K 就会一直停在离线结果上。所以 `live.tsx` 新增纯函数 `needsKernelReload({ core, kernelOk }) → boolean`：`core?.status === 'connected' && kernelOk === false` 时为真。同文件的 hook `useKernelRecovery({ core, kernelOk })` 在这个值由假变真时调用一次 `revalidateAll(() => revalidator.revalidate())`；`revalidateAll` 会让根 `shouldRevalidate` 无条件通过。这条路径同时覆盖两种时序：先离线、之后收到 `core(connected)`；以及 SSR 时内核离线、WebSocket 首个 `hello` 就带 `core=connected`。如果重验后 loader 仍然返回 `ok === false`，两个输入没有变化，hook 不会再次触发，不会形成重试循环；内核下一次离线再恢复时会重新触发。`App` 用根 loader 的 `kernel.ok` 和 `useLiveEvents()` 的 `core` 调用这个 hook。`live-client.ts`、`live-routes.ts`、服务端协议都不动。
 - `WriteGateProvider` 与 `useWriteGate()`（React context）：`App` 用 `writeGate(useLiveEvents())` 的结果包住整个外壳。W6、W7 的按钮直接调用 `useWriteGate()`。
 - `LiveBanner` 的签名改成 `LiveBanner({ connection, core, kernelError })`，不再用内联样式，改用 `.live-banner` 类和 token。重连时用 `role="status"`，内核离线时用 `role="alert"`。
 
@@ -280,7 +281,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
   - `isPaletteShortcut(event, platform)`：mac（`navigator.platform` 或 `userAgentData.platform` 匹配 `/Mac|iPhone|iPad/`）上要求 `metaKey && !ctrlKey`，其他平台要求 `ctrlKey && !metaKey`。另外要求 `key.toLowerCase() === 'k'`，不带 Shift/Alt，并且不在 `isComposing`（输入法组合）中。
   - `attachPaletteShortcut(target: EventTarget, platform, onToggle) → detach`：命中快捷键时调用 `preventDefault()` 再 `onToggle()`。它只依赖 `EventTarget`，所以能在 Node 里测。
   - `buildCandidates(shell, gate)` 生成三类候选：每个项目一条（链接 `projectHref`）；**每个任务一条，包括已完成和已取消的**；每个项目一条「在「<项目名>」新建任务卡」（链接 `newTaskHref`，`!gate.allowed` 时为禁用项）。任务候选的副标题是「项目名 · 状态名」。
-  - `filterCandidates(list, query)`：查询去掉首尾空白后转小写，在 ID、标题、项目名、slug 和「新建任务卡」字样里做子串匹配。空查询时显示所有项目、等你处理和进行中的任务、新建项。结果最多 50 条，超出时提示「还有 n 条，继续输入可缩小范围」。
+  - `filterCandidates(list, query)`：查询去掉首尾空白后转小写，在 ID、标题、项目名和「新建任务卡」字样里做子串匹配（候选只来自根 loader 的白名单字段，所以**不按 slug 搜索**；R-03 也没有要求）。空查询时显示所有项目、等你处理和进行中的任务、新建项。结果最多 50 条，超出时提示「还有 n 条，继续输入可缩小范围」。
   - 排序：先是任务（等你处理 → 进行中 → 待开始 → 已完成 → 已取消，同组内 ID 倒序），然后是项目，最后是新建项。
   - `paletteReducer(state, action)`：处理 `open(query?)`、`close`、`input`、`down`、`up`、`enter`。`down`/`up` 循环移动并跳过禁用项；`input` 后高亮回到第一个可用项；`enter` 在可用项上产生 `{ navigate: href }`，并关闭面板；`close` 由 Esc 触发。
 - 视图在 `app/components/command-palette.tsx`：`role="dialog"`、`aria-modal="true"`、`aria-label="跳转"`。输入框带 `role="combobox"`、`aria-expanded`、`aria-controls`，以及指向高亮项的 `aria-activedescendant`。结果放在 `role="listbox"` 里，每条是 `role="option"`，禁用项加 `aria-disabled="true"`。回车用 `useNavigate()` 跳转。打开时把焦点放到输入框，关闭时还给打开前的元素。点遮罩会关闭面板。
@@ -325,7 +326,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
-## 里程碑说明
+## 验收说明
 
 里程碑共 5 个，不超过上限 6 个（硬性约束 7）。依赖关系是：M-01 → M-02 → M-04 → M-05；M-03 独立于 M-01 和 M-02，但必须在 M-04 之前完成。为了让编号与执行顺序一致，按编号依次推进。
 
@@ -353,7 +354,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-02 token、字体、外壳布局、铃铛入顶栏、离线横幅与写判定
 
 - 覆盖：R-07、R-08、R-05（横幅与写判定）。前置：M-01。
-- 结果：新增 `app/styles/` 下的 `tokens.css`、`app.css`、字体和许可文件。新增 `app/components/shell.tsx`，包括外壳网格、项目栏框架（暂时只有项目名）、顶栏（暂时只有一个禁用的「新建任务卡」按钮和铃铛）、横幅行。`root.tsx` 加上 `links`、`ErrorBoundary`、`WriteGateProvider`。`live.tsx` 加入 `liveBanner`、`writeGate`、`WriteGateProvider`、`useWriteGate`，`LiveBanner` 改成新签名。`bell.tsx` 改用类名。按表修改 `bell-view` 的两条和 `live-banner` 的两条。
+- 结果：新增 `app/styles/` 下的 `tokens.css`、`app.css`、字体和许可文件。新增 `app/components/shell.tsx`，包括外壳网格、项目栏框架（暂时只有项目名）、顶栏（暂时只有一个禁用的「新建任务卡」按钮和铃铛）、横幅行。`root.tsx` 加上 `links`、`ErrorBoundary`、`WriteGateProvider`。`live.tsx` 加入 `liveBanner`、`writeGate`、`WriteGateProvider`、`useWriteGate`、`needsKernelReload`、`useKernelRecovery`，`LiveBanner` 改成新签名。`bell.tsx` 改用类名。按表修改 `bell-view` 的两条和 `live-banner` 的两条。
 - 新测试 `test/styles.test.ts`，共 10 条：
   1. `tokens.css` 的 `:root` 声明与 desktop `style.css` Layer 1 的 `:root` 逐条相同（解析成名值对后比较）。
   2. 字体文件的 sha256 与 desktop 源文件一致；`OFL.txt` 内容一致；`@font-face` 的 `url()` 指向一个存在的相对路径；`app/styles/*.css` 里没有 `http:`、`https:`、`//` 开头的外部 URL。
@@ -365,12 +366,13 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
   8. `app/` 下的源码不含 Unicode `Extended_Pictographic` 字符，也就是不拿 emoji 当图标。
   9. `app/` 下的 `.tsx` 文件里没有 `style={`，即没有内联样式。
   10. 一屏布局：`.shell` 有 `height: 100dvh` 和 `overflow: hidden`；四个内部滚动区都有 `overflow-y: auto` 和 `min-height: 0`；`body` 有 `margin: 0`；`html`/`body` 上没有 `overflow: auto/scroll`。
-- 新测试 `test/live-status.test.ts`，共 5 条：
+- 新测试 `test/live-status.test.ts`，共 6 条：
   1. 横幅优先级：重连 > 内核离线（带 reason）> loader 报告的内核错误 > 不显示；每种情况只出现一条。
   2. 横幅的角色和类名：重连时是 `role="status"`，内核离线时是 `role="alert"`，两者都带 `class="live-banner"`，正文出自上面约定的中文文案。
   3. `writeGate`：`open` + `connected` 时允许写；`connecting`、`reconnecting`、内核 `offline` 时不允许，并各自给出约定的中文理由。
   4. `connection` 为 `open` 但还没收到 `core` 时不允许写。
   5. 在 `WriteGateProvider` 下用 SSR 渲染一个调用 `useWriteGate()` 的按钮：不允许写时按钮带 `disabled`，`title` 是对应理由。
+  6. 恢复后的根数据重验：`needsKernelReload` 在 `core` 为 `connected` 且 `kernelOk === false` 时为真，`core` 未知、`offline` 或 `kernelOk === true` 时为假；用 `createMemoryRouter` 装一个计数 loader（首次返回 `ok:false`、之后返回 `ok:true`）和真实的 `useKernelRecovery`，在**没有任何账本事件**的情况下，把 `core` 从 `offline` 改为 `connected`，loader 恰好被重新调用一次、数据变成 `ok:true`；`core` 一上来就是 `connected` 且 `ok:false`（首个 `hello` 的时序）时同样重验一次；重验后仍是 `ok:false` 不会再次重验。
 - 新测试 `test/shell.test.ts`，共 4 条：
   1. 用 `createRoutesStub` 给根路由 `hydrationData` 后渲染：有 `nav aria-label="项目"` 的项目栏；顶栏里有铃铛按钮 `aria-label="通知，0 条未读"`；`main` 里是子路由的内容。
   2. 根模块的 `links()` 包含一个指向 `app.css` 的样式表。
@@ -380,8 +382,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-02 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/styles.test.ts test/live-status.test.ts test/shell.test.ts test/bell-view.test.ts test/live-banner.test.ts`（之后分段跑 lint、typecheck、Web 全量测试、build、desktop 测试，各自报退出码）
-- 预期：点名的 5 个文件共 29 个用例通过（10 + 5 + 4 + 8 + 2）；Web 全量 315 个用例（296 + 19），`skipped` 为 0；desktop 104 个用例，数量不变；build 后的 `apps/web/build/client/assets/` 里有一个名字含 `Nunito` 的 `.ttf` 文件，用 `ls apps/web/build/client/assets | grep -c 'Nunito.*\.ttf'` 检查，输出 ≥ 1。
-- 负向对照：在 `bell.tsx` 按钮上恢复 `style={{ background: '#fff' }}`，第 4、9 条变红；把 `.shell` 的 `overflow: hidden` 改成 `overflow: auto`，或者删掉 `.project-list` 的 `min-height: 0`，第 10 条变红；`writeGate` 在 `core` 为 `undefined` 时返回 `allowed: true`，`live-status` 第 4 条和 `shell` 第 4 条变红；删掉 `tokens.css` 中的 `--tile-peach` 声明，第 1 条变红。
+- 预期：点名的 5 个文件共 30 个用例通过（10 + 6 + 4 + 8 + 2）；Web 全量 316 个用例（296 + 20），`skipped` 为 0；desktop 104 个用例，数量不变；build 后的 `apps/web/build/client/assets/` 里有一个名字含 `Nunito` 的 `.ttf` 文件，用 `ls apps/web/build/client/assets | grep -c 'Nunito.*\.ttf'` 检查，输出 ≥ 1。
+- 负向对照：在 `bell.tsx` 按钮上恢复 `style={{ background: '#fff' }}`，第 4、9 条变红；把 `.shell` 的 `overflow: hidden` 改成 `overflow: auto`，或者删掉 `.project-list` 的 `min-height: 0`，第 10 条变红；`writeGate` 在 `core` 为 `undefined` 时返回 `allowed: true`，`live-status` 第 4 条和 `shell` 第 4 条变红；`needsKernelReload` 恒返回 `false`（或 `App` 不调用 `useKernelRecovery`），`live-status` 第 6 条变红；删掉 `tokens.css` 中的 `--tile-peach` 声明，第 1 条变红。
 
 ### M-03 labels.ts 与唯一归列函数
 
@@ -406,7 +408,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-03 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/labels.test.ts test/task-columns.test.ts`（之后分段跑 lint、typecheck、Web 全量测试、build，各自报退出码）
-- 预期：2 个文件共 13 个用例通过（7 + 6）；Web 全量 328 个用例（315 + 13），`skipped` 为 0。
+- 预期：2 个文件共 13 个用例通过（7 + 6）；Web 全量 329 个用例（316 + 13），`skipped` 为 0。
 - 负向对照：从需求「实现」段删掉 `gate`，`labels` 第 2 条变红；把 `retro` 同时写进「审计」和「合并」，第 2 条变红（违反「恰好一次」）；`columnOf` 把 `stopped` 归入进行中，`task-columns` 第 1、5 条变红；`AWAITING_NODES` 漏掉 `not_a_bug`，第 1、2 条变红。
 
 ### M-04 项目栏计数与首页总览，实时更新
@@ -435,7 +437,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-04 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/shell-data.test.ts test/overview.test.ts test/shell-live.test.ts test/server.test.ts test/live-routes.test.ts`（前置命令 `cargo build -p automed -p autome-cli`；之后分段跑 lint、typecheck、Web 全量测试、build、desktop 测试，各自报退出码）
-- 预期：点名的 5 个文件共 30 个用例通过（shell-data 6、overview 5、shell-live 3、server 9、live-routes 7）；Web 全量 342 个用例（328 + 14），`skipped` 为 0。实现轮如果被 `listen EPERM` 拦住，单独列出被拦的用例名单（`shell-live` 第 3 条和 `server.test` 中需要监听的用例），以及不依赖监听的那部分结果，交给审计轮复验。
+- 预期：点名的 5 个文件共 30 个用例通过（shell-data 6、overview 5、shell-live 3、server 9、live-routes 7）；Web 全量 343 个用例（329 + 14），`skipped` 为 0。实现轮如果被 `listen EPERM` 拦住，单独列出被拦的用例名单（`shell-live` 第 3 条和 `server.test` 中需要监听的用例），以及不依赖监听的那部分结果，交给审计轮复验。
 - 负向对照：项目栏的「等你处理」改成直接读 `counts.awaiting_user`、不经 `columnOf`，`shell-live` 第 1、2 条和 `shell-data` 第 2 条变红；根 `shouldRevalidate` 去掉 `'task.'`，`shell-live` 第 2 条（匹配器未命中）和 `load-context` 第 9 条变红；`taskHref` 不做编码，`overview` 第 5 条变红。
 
 ### M-05 ⌘K 跳转面板与新建任务卡入口
@@ -454,7 +456,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-05 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/palette.test.ts test/shell.test.ts`（之后分段跑 lint、typecheck、Web 全量测试、build、desktop 测试，各自报退出码；最后在仓库根执行 `git status --porcelain`）
-- 预期：2 个文件共 11 个用例通过（7 + 4）；Web 全量 349 个用例（342 + 7），`skipped` 为 0；desktop 104 个用例，数量不变；`git status --porcelain` 的输出为空。
+- 预期：2 个文件共 11 个用例通过（7 + 4）；Web 全量 350 个用例（343 + 7），`skipped` 为 0；desktop 104 个用例，数量不变；`git status --porcelain` 的输出为空。
 - 负向对照：`isPaletteShortcut` 在 mac 上也接受 `ctrlKey`，第 1 条变红；`down` 不跳过禁用项，第 5、6 条变红；`filterCandidates` 只匹配标题，第 4 条变红（按 ID `T-12` 搜不到）；新建候选不读写判定，第 6 条变红。
 
 ## 人工验收清单
@@ -463,7 +465,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 - H-02 视觉符合 animal-island 风格：字体是 Nunito（DevTools 网络面板里没有对外的字体请求）；配色是暖米色底加青色主色；圆角是圆润的；只有「新建任务卡」主按钮带 3D 实色阴影；页面上没有 emoji 图标。
 - H-03 真实键盘：macOS 上按 ⌘K 能打开面板（Windows/Linux 上是 Ctrl+K）。能输入过滤，能用方向键移动，按回车会跳转，按 Esc 关闭后焦点回到原来的位置。用 Tab 能走到所有入口，焦点环是黄色的。
 - H-04 页面开着时，在另一个终端执行 `autome stop <任务 id>`（或推进任意任务）。不刷新页面，左侧计数和首页卡片在几秒内变化。
-- H-05 结束 `automed` 进程：出现「内核离线：…，写操作暂不可用」横幅，「新建任务卡」按钮和 ⌘K 里的新建项都变成灰色。内核恢复后横幅消失，按钮恢复可用。停掉面板服务时，只显示「连接中断，正在重连」，两条横幅不会同时出现。
+- H-05 结束 `automed` 进程：出现「内核离线：…，写操作暂不可用」横幅，「新建任务卡」按钮和 ⌘K 里的新建项都变成灰色。内核恢复后横幅消失，按钮恢复可用。另外在内核停掉的状态下刷新页面，首页、项目栏显示离线；再启动内核，不刷新、不做任何任务操作，项目栏和首页卡片也应在几秒内回到正常。停掉面板服务时，只显示「连接中断，正在重连」，两条横幅不会同时出现。
 - H-06 铃铛在顶栏右侧。展开的通知列表不被外壳遮挡，可以在内部滚动。已读、全部已读、系统通知的行为和 W4 一样。
 - H-07 点首页上的任务卡和 ⌘K 里的项目、任务、新建项：在 W6、W7 合并之前，都会到「这个页面还没开放」，再点「回到总览」能回到首页。
 
@@ -471,7 +473,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 - B-01 内核侧加一个只读方法，一次返回所有项目的任务及状态，替代根 loader 的 `project.get` ×N（每次都要扫配置和 skills）。这要改 `crates/`，不属于 Web 任务。
 - B-02 暗色调色板（desktop `[data-theme="dark"]`）和跟随系统主题，与主题切换界面一起做。
-- B-03 卡片上的「已完成 3 / 5」里程碑进度和「修复第 n / 上限 轮」。上限值不在 `task_json` 里，归 W6/W7 的完整任务卡。
+- B-03 卡片上的「已完成 3 / 5」里程碑进度和「修复第 n / 上限 轮」，归 W6/W7 的完整任务卡。Bug 修复轮的数据已有：`task_json.budget_n`、`fix_round`，上限的解析见 `bug_loop.rs` 与 `project.get` 的 `config.bug.fix_rounds`；需求里程碑进度的数据来源要在 W6/W7 设计时先核实。
 - B-04 ⌘K 支持拼音首字母和模糊匹配，并记住最近访问过的条目。
 - B-05 外壳一屏无滚动的浏览器自动验收（Playwright，1512×944），归 W12。
 
