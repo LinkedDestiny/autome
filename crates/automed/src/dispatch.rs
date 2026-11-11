@@ -4269,7 +4269,11 @@ mod tests {
                     },
                 )
                 .unwrap();
-            sb.ctx.store.update_project_parallel(project, 1).unwrap();
+            call(
+                sb,
+                "config.set_loop",
+                json!({"project_id": project, "parallel": 1}),
+            );
         }
         #[test]
         fn create_without_the_new_params_is_unchanged() {

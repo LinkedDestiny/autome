@@ -1,7 +1,7 @@
 # 项目配置 parallel 未作用于调度器
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib dispatch::tests::project_file_parallel_override_queues_the_second_task -- --exact
 根因: 项目注册时将全局 parallel 缓存为账本 parallel_limit，直接编辑项目配置不会同步该缓存，而 fill_slots 使用缓存而非合并后的项目配置。
 复核: 待复核
@@ -40,8 +40,19 @@ repos: autome-v2
 
 ## 修复说明
 
-定位轮未修复，交由后续修复轮处理。
+第 1/3 轮：`fill_slots` 改为通过现有 `resolve_config` 读取最新全局配置与项目覆盖，以合并后的 `loop_defaults.parallel` 计算启动名额，不再使用注册时的账本缓存。保留原有最小值和槽位占用判断。
+
+旧调度器及端到端测试中直接写账本的并行数准备步骤改为保存项目配置或调用 `config.set_loop`，全部行为断言保留。定位轮新增的 `project_file_parallel_override_queues_the_second_task` 已与本轮起点逐字比较，未修改、删除、跳过或弱化。
+
+原复现命令修复前失败（0 passed / 1 failed，退出码 101），修复后通过（1 passed / 0 failed / 0 ignored，退出码 0）。日志分别为 `.autome/output/fix-1-before.log`、`.autome/output/fix-1-after.log`。
+
+配置的项目门禁 `sh scripts/ci-local.sh` 已对最终代码执行，退出码 1：Format、Clippy、Rust workspace 测试（含 607 项 automed 库测试及 80 项端到端测试）、独立 End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 全部通过；仅 Web test 未通过。日志为 `.autome/output/fix-1-gate-final.log`。
+
+Web 测试结果为 3 个文件失败、19 个文件通过；11 项失败、198 项通过、16 项因初始化失败跳过。环境报错包括监听 `127.0.0.1` 被拒绝（`listen EPERM`）、文件监听 `EMFILE` 及服务启动等待超时。本轮没有跳过或修改这些测试，完整门禁不能声明通过；需宿主在允许本地监听的环境重跑配置门禁。首轮门禁日志 `.autome/output/fix-1-gate.log` 中的两项端到端准备步骤问题已修正，最终门禁中均通过。
+
+`git diff --check` 通过。未进行真实 tmux/Agent 会话验收；后续独立复核与调度交由 Autome。
 
 ## 复核意见
+
 
 待独立复核。
