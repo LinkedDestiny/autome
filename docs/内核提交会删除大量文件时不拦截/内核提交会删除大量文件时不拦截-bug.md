@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --lib commit_safety -- --nocapture
 根因: commit_paths 在暂存后直接提交整个索引，未检查相对 HEAD 的删除数；sweep_one 吞掉提交错误且成功时只记录 SHA，没有新增文件任务事件。
-复核: 待复核
+复核: 通过
 repos: crates/automed, crates/autome-cli
 
 ## 现象
@@ -63,4 +63,10 @@ repos: crates/automed, crates/autome-cli
 
 ## 复核意见
 
-待后续独立复核。
+复核第 1/3 轮：通过。
+
+- 复现命令独立重跑：5 passed、0 failed、0 ignored。
+- 定位提交 d70760b 到修复提交 092684d 的差异中，测试代码无删除行、无 `#[ignore]`；定位轮 4 个测试保留，仅追加 1 个截断测试，未弱化。
+- 根因成立：`commit_paths` 在暂存后统计整个索引相对 HEAD 的删除（`--cached --no-renames -z --diff-filter=D`），超过 50 个拒绝，恰好 50 个放行，与合法对照用例一致；窄路径提交也受同一检查覆盖。`sweep_one` 错误改为向上传递并使任务 Failed；成功时用 `diff-tree --diff-filter=A` 读取新增路径写入 `task.swept` 事件，CLI 单行展示。
+- 范围：仅 git.rs、scheduler.rs、render.rs 与 bug 文档，改动最小。
+- 保留意见（不阻塞）：拒绝提交后被暂存的删除仍留在索引中；`ci-local.sh` 的 Web test 失败（11 项）为沙箱 `listen EPERM`/`EMFILE` 所致，与本修复无关，需宿主在可监听环境确认门禁。
