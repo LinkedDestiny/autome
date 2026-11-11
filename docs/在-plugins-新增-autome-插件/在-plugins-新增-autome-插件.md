@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 6/40
+implementation-round: 7/40
 current-milestone: M-07
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-07 人工验收逐项隔离前置
+next-action: 审计 M-07 人工验收逐项隔离前置；通过后实现 M-08 环境采集时序统一
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -245,7 +245,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-04 | 已完成 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 已完成 | eval 用例 | 0 | |
 | M-06 | 已完成 | B-1：V7 示例键值一致性回归 | 0 | |
-| M-07 | 开放 | B-2：人工验收逐项隔离前置 | 0 | |
+| M-07 | 待审 | B-2：人工验收逐项隔离前置 | 0 | |
 | M-08 | 开放 | B-3：环境采集时序统一 | 0 | |
 
 ## 里程碑说明
@@ -306,6 +306,8 @@ B-1 / D1-N01 已纳入；前置 M-04。V7 同时比较示例键与值，仅规�
 
 ### M-07 验收契约
 
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-07-r7-impl.md · 待审 · 实现 #7
+
 B-2 / D1-N02 已纳入；前置 M-05。H-01、H-02、H-04 每条人工记录各自写明隔离 `AUTOME_HOME`、`unset AUTOMED_DB_PATH`，不只依赖共同说明。验收：逐条提取三条记录，各自匹配两个前置；不要求本轮执行人工宿主验收。
 
 ### M-08 验收契约
@@ -315,10 +317,10 @@ B-3 / D1-N03 已纳入；前置 M-03。统一 SKILL.md 的环境采集规则：�
 ## 人工验收清单
 
 
-- H-01 Claude Code：`AUTOME_HOME=$(mktemp -d)` 下注册一个临时仓库，在它的子目录里 `AUTOME_HOME=… claude --plugin-dir plugins/autome`，讨论一个需求后说「建成 autome 任务」——技能触发，展示类型、项目、「存为待开始」、字节数与完整正文后停下等待；回「差不多」不创建；回「确认」后创建并回显 `T-1` 与 `autome task start T-1`；人工验证入口共同前置：隔离 `AUTOME_HOME` 并 `unset AUTOMED_DB_PATH`（H-01、H-02、H-04 同）
-- H-02 Codex：同 H-01 的隔离账本，`codex` 装上 `autome@autome` 后走一遍，记下沙箱是否拦截写 `$AUTOME_HOME` 以及技能怎样转达
+- H-01 Claude Code：先在启动宿主的 shell 执行 `export AUTOME_HOME=$(mktemp -d)`、`unset AUTOMED_DB_PATH`，在该隔离账本下注册一个临时仓库；在它的子目录里启动 `claude --plugin-dir <当前检出>/plugins/autome` 并继承上述环境，讨论一个需求后说「建成 autome 任务」——技能触发，展示类型、项目、「存为待开始」、字节数与完整正文后停下等待；回「差不多」不创建；回「确认」后创建并回显 `T-1` 与 `autome task start T-1`
+- H-02 Codex：先在启动宿主的 shell 执行 `export AUTOME_HOME=$(mktemp -d)`、`unset AUTOMED_DB_PATH`，在该隔离账本下注册一个临时仓库；`codex` 装上 `autome@autome` 后，从临时仓库子目录启动并继承上述环境，按 H-01 的对话步骤走一遍，记下沙箱是否拦截写 `$AUTOME_HOME` 以及技能怎样转达
 - H-03 在 `PATH` 里没有 `autome` 的 shell 里触发技能，只得到两条安装命令，没有任何其他创建尝试
-- H-04 `apps/web` 面板运行时创建一张卡，回显里的面板链接能在浏览器里打开
+- H-04 先在 shell 执行 `export AUTOME_HOME=$(mktemp -d)`、`unset AUTOMED_DB_PATH`，在该隔离账本下注册一个临时仓库；从此 shell 启动 `apps/web` 面板及创建任务的宿主，让两者继承同一隔离环境，面板运行时在临时项目创建一张卡，回显里的面板链接能在浏览器里打开
 - H-05 本机跑一次 `claude plugin eval ./plugins/autome --ablation with-without --max-cost-usd 2.00 --runs 3 --threshold 0.7 --json`，三个场景都 ≥ 0.7
 - H-06 有 Cursor 时按 `plugins/README.md` 安装，确认技能出现在技能列表里并能触发
 
