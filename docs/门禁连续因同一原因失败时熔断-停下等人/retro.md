@@ -18,3 +18,4 @@
 审计 #7 | M-05 | 通过（无待审项；宿主门禁全绿） | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r9-audit.md | 无；H-01 留待人工验收
 实现 #10 | M-05 | rebase 冲突已解决，CLI 34/34 | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r10-impl.md | 无
 审计 #8 | 无（全部已完成） | 通过（无待审项；全量 1141 绿） | docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r10-audit.md | 无；H-01 留待人工验收
+实现 #11 | M-05 | 修复门禁测试竞态，Rust通过 | evidence/M-05-r11-impl.md | Web监听EPERM，待Autome宿主复验
