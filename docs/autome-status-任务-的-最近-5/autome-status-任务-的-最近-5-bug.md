@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/autome-cli && cargo test --offline --test cli status_shows_latest_five_sessions_in_chronological_order -- --exact
 根因: 内核按 started_at 降序返回会话，CLI 使用 sessions.iter().rev().take(5)，先反转全部记录再截取，选中了最早五个。
-复核: 待复核
+复核: 通过
 repos: .
 
 ## 现象
@@ -47,4 +47,9 @@ repos: .
 
 ## 复核意见
 
-等待后续独立复核，本轮未启动下一会话。
+复核: 通过（第 1/3 轮）。
+- 复验：原复现命令退出 0（1 passed）；`cargo test --offline` 于 autome-cli 全部通过（19 + 11）。
+- 差异（05e6f3b..1818534）：产品代码仅 `crates/autome-cli/src/main.rs` 一行，`.rev().take(5)` 改为 `.take(5).rev()`，范围最小；测试文件未改动，无删除、跳过或弱化。
+- 根因成立：内核按 started_at 降序返回，先 rev 再 take 必得最早五个；先 take 最新五个再 rev 恰好满足「最近 5 个、升序展示」。
+- 回归测试有意义：乱序插入七个会话，JSON 前置断言验证数据链路，文本断言严格比对 ID 数组 3～7 及顺序，修复前失败、修复后通过。
+- 保留项：修复轮报告的 Web test 失败源于沙箱禁止监听端口（EPERM/EMFILE），与本 Rust 单行改动无关；合并前门禁由宿主在正常环境确认。
