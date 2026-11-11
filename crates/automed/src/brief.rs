@@ -600,6 +600,93 @@ session-protocol = []
     }
 
     #[test]
+    fn regression_evidence_destination_audit_uses_implementation_round() {
+        let map = parse_map(MAP).unwrap();
+        let mut s = status(
+            Some("M-03"),
+            vec![milestone("M-03", MilestoneState::Pending, 0)],
+        );
+        // Implementation #3 failed its gate; #4 passed, so this is audit #3.
+        s.impl_round = 4;
+        let evidence = vec!["M-03-r4-impl.md".to_string()];
+        let input = inputs(Role::Audit, &s, &map, &evidence);
+        assert_eq!(
+            path(input.doc_dir, input.role, input.round),
+            "docs/checkout/brief/audit-3.md"
+        );
+
+        // Exercise the actual admission guard: changing only the evidence
+        // filename from the audit ordinal to the implementation round fixes it.
+        let mut round = crate::guards::Round {
+            role: Role::Audit,
+            status: &s,
+            before: None,
+            retro_lines: 0,
+            retro_added: vec![],
+            design_bytes: 0,
+            evidence_files: vec!["M-03-r3-audit.md".into()],
+            design_changed_outside_milestones: None,
+            repairing: false,
+        };
+        assert!(
+            crate::guards::check(&round)
+                .iter()
+                .any(|f| f.code == "evidence_missing")
+        );
+        round.evidence_files = vec!["M-03-r4-audit.md".into()];
+        assert!(
+            !crate::guards::check(&round)
+                .iter()
+                .any(|f| f.code == "evidence_missing")
+        );
+
+        let brief = build(&input);
+        let wanted = "docs/checkout/evidence/M-03-r4-audit.md";
+        assert!(
+            brief.contains(wanted),
+            "missing current evidence destination: {wanted}\n{brief}"
+        );
+        assert!(!brief.contains("docs/checkout/evidence/M-03-r3-audit.md"));
+    }
+
+    #[test]
+    fn regression_evidence_destination_impl_uses_current_session_round() {
+        let map = parse_map(MAP).unwrap();
+        // The design document is read before implementation #4 updates it.
+        let s = status(
+            Some("M-03"),
+            vec![milestone("M-03", MilestoneState::Open, 0)],
+        );
+        let mut input = inputs(Role::Impl, &s, &map, &[]);
+        input.round = 4;
+        let brief = build(&input);
+        let wanted = "docs/checkout/evidence/M-03-r4-impl.md";
+        assert!(
+            brief.contains(wanted),
+            "missing current evidence destination: {wanted}\n{brief}"
+        );
+        assert!(!brief.contains("docs/checkout/evidence/M-03-r3-impl.md"));
+    }
+
+    #[test]
+    fn regression_evidence_destination_preserves_session_doc_directory() {
+        let map = parse_map(MAP).unwrap();
+        let mut s = status(
+            Some("M-03"),
+            vec![milestone("M-03", MilestoneState::Pending, 0)],
+        );
+        s.impl_round = 4;
+        let mut input = inputs(Role::Audit, &s, &map, &[]);
+        input.doc_dir = "docs-repo/custom-docs/checkout";
+        let brief = build(&input);
+        let wanted = "docs-repo/custom-docs/checkout/evidence/M-03-r4-audit.md";
+        assert!(
+            brief.contains(wanted),
+            "missing current evidence destination: {wanted}\n{brief}"
+        );
+    }
+
+    #[test]
     fn a_first_implementation_round_is_told_there_is_no_audit_yet() {
         let map = parse_map(MAP).unwrap();
         let s = status(
