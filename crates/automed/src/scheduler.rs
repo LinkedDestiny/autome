@@ -209,7 +209,7 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
     }
 
     // 3. Fill free slots from each project's queue.
-    match fill_slots(ctx) {
+    match fill_slots_reporting_errors(ctx, &mut report.errors) {
         Ok(started) => report.tasks_started.extend(started),
         Err(e) => report.errors.push(e.to_string()),
     }
@@ -1442,10 +1442,17 @@ fn task_docs_root(project: &Project, slug: &str) -> PathBuf {
 }
 
 /// Starts queued tasks while their project has a free slot (design §8).
-fn fill_slots(ctx: &mut Ctx) -> Result<Vec<String>> {
+fn fill_slots_reporting_errors(ctx: &mut Ctx, errors: &mut Vec<String>) -> Result<Vec<String>> {
     let mut started = Vec::new();
     for project in ctx.store.list_projects()? {
-        let limit = resolve_config(ctx, &project)?.loop_defaults.parallel.max(1);
+        let config = match resolve_config(ctx, &project) {
+            Ok(config) => config,
+            Err(e) => {
+                errors.push(format!("{}: {e}", project.display_name));
+                continue;
+            }
+        };
+        let limit = config.loop_defaults.parallel.max(1);
         let mut in_use = ctx.store.slots_in_use(&project.id)?;
         for task in ctx.store.queued_tasks(&project.id)? {
             if in_use >= limit {
@@ -1466,6 +1473,11 @@ fn fill_slots(ctx: &mut Ctx) -> Result<Vec<String>> {
         }
     }
     Ok(started)
+}
+
+#[cfg(test)]
+fn fill_slots(ctx: &mut Ctx) -> Result<Vec<String>> {
+    fill_slots_reporting_errors(ctx, &mut Vec::new())
 }
 
 // ---------------------------------------------------------------------------

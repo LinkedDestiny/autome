@@ -1,7 +1,7 @@
 # 单项目配置解析失败阻断其它项目补位
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture
 根因: fill_slots 在逐项目循环中用 resolve_config(ctx, &project)? 读取上限，单项目配置错误提前返回整个函数，tick 仅记录错误而不继续处理后续项目。
 复核: 待复核
@@ -41,8 +41,19 @@ repos: crates/automed
 
 ## 修复说明
 
-定位轮未修复产品代码。后续修复应将配置失败隔离在项目级，保留错误和已启动结果，并继续遍历其它项目；并行上限仍应来自当前解析后的配置。
+第 1/3 轮将补位逻辑中的配置解析错误隔离在项目级：解析失败时向 `report.errors` 写入项目显示名及错误，跳过该项目并继续遍历。配置失败不会再丢失此前已启动任务的列表；健康项目仍使用当前解析配置中的并行上限。保留测试使用的 `fill_slots` 入口，委托同一实现；定位轮回归测试逐字比对无变化。
+
+验证结果：
+
+- 修复前执行原复现命令，退出码 101，健康任务实际为 `Queued` 而非 `Active { node: Intake }`。
+- 修复后执行同一命令，退出码 0，1 个测试通过、0 失败；同时覆盖正常配置对照、坏项目保持排队、健康项目补位、配置上限和项目名错误报告。
+- `git diff --check` 通过。
+- 配置门禁 `sh scripts/ci-local.sh` 已执行完成，退出码 1，用时 950 秒。Clippy、工作区 Test（含 automed 615 个单元测试）、独立 End to end（81 个用例）、Adapter flags、Desktop、Contract、Web lint/typecheck/build 以及依赖安装步骤通过。
+- Format 未通过：rustfmt 要求调整定位轮回归测试内的换行，差异全部位于该测试。遵守本轮不得修改定位轮回归测试的约束，保持原文，未运行格式化写入或跳过门禁。
+- Web test 未通过：4 个测试文件失败，11 个用例失败、271 个通过、19 个跳过；日志为 `listen EPERM: operation not permitted 127.0.0.1`，并伴随 `EMFILE: too many open files, watch`。当前受限环境无法完成本地 HTTP/WebSocket 验收，未改动或弱化相关测试；需由具备本地监听权限的宿主复跑。因此本轮不能声称项目门禁全部通过。
+
+日志保存在 `.autome/output/fix-round-1-before.log`、`.autome/output/fix-round-1-after.log` 和 `.autome/output/fix-round-1-gate.log`，不进入提交。
 
 ## 复核意见
 
-待宿主复现检查及后续独立复核。本轮回归测试按要求保持失败。
+待独立复核。本轮原复现命令已通过；项目门禁结果见修复说明。
