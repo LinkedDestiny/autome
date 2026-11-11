@@ -1,8 +1,5 @@
-# 审计 #5：M-05 eval 用例
+# 审计 #6 · M-06
 
-结论：**通过**，M-05 标为已完成，reopen 0。
+结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-06-r6-audit.md
 
-- 验收命令 5/5，全量 59/59。
-- 七项负向对照均被 E1–E5 拦住，见 `evidence/M-05-r5-audit.md`。
-- 通过时新造的检查可丢弃：语义对照 SKILL.md 第 1 步，一致。
-- 真实 eval 运行留 H-05。
+新造检查：对 README 的 task-new-json 示例做七种键/值篡改（id、state、started、kind、branch、queue_position、archived），V7 全部失败；结果均符合预期，已还原。
