@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 3/35
+implementation-round: 4/35
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-03，补跑可监听环境的 live 与安全负向对照；通过后实现 M-04 顶栏铃铛
+next-action: 由 Autome 重跑提交后门禁并审计 M-03，复验 live 与安全负向对照；通过后实现 M-04 顶栏铃铛
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -357,7 +357,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-03 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-03-r3-impl.md · 待审（监听验收受阻） · 实现 #3
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-03-r4-impl.md · 待审（夹具回归通过，监听验收受阻） · 实现 #4
 
 - 验收命令：`npm test --prefix apps/web -- test/notifier-api.test.ts`；`npm test --prefix apps/web -- test/notifier-live.test.ts`
   （需要监听，被 `listen EPERM` 阻断时照实记录交审计）；然后全量四件。
@@ -367,7 +367,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   `notifier-live.test.ts` 3 个用例（`startServer`、临时 home、真实内核、假 CLI 造出 `session_crashed` 失败）：`<home>/state/web.sqlite3` 已建，
   两条 `/ws` 连接都收到恰为 5 个键的 `notification`（`kind: "failed"`、标题「T-1 停在失败上：会话异常退出（会话退出码 3）」）；连接 A 带
   Origin POST 单条已读后连接 B 收到 `notification-read`、`GET` 未读数为 0，不带 Origin 的 POST 返回 403 且库不变；停服后在服务外再造一条失败，
-  重启后列表恰 2 条、第一条未重复。Web 全量 29 个文件、277 个用例，0 跳过；desktop 同基线。
+  重启后列表恰 2 条、第一条未重复。`notifier-live-fixture.test.ts` 另有 1 项真实 CLI 回归：与 live 共用禁用重试的夹具，首次退出 3 后没有 `session.retry`，且只有一条终态 `failed`；临时项目显式设置 `[retry] attempts = 0`、`backoff_seconds = 0`。Web 全量 30 个文件、278 个用例，0 跳过；desktop 同基线。
 - 负向对照：`onTick` 里 `bus.pull()` 与 `notifier.pull()` 并发启动时，`attachNotifier` 顺序用例失败；已读后不广播时，单条已读用例与 live 第 2 个
   用例失败；POST 路由注册在 `securityMiddleware` 之前时，live 第 2 个用例的 403 断言失败。
 
@@ -386,7 +386,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   无任务无项目的不出链接；空列表与加载失败文案；容器 `position:fixed`、面板 `max-height` 与 `overflow-y:auto`；用 `createRoutesStub` 渲染 root 的 `App`，HTML 里同时有
   铃铛按钮与子路由内容，且源码守卫保证只有一条连接：`root.tsx` 仍调用 `useLiveEvents()`，`app/components/bell*` 的源码里不出现 `createLiveClient(` 与 `WebSocket`；守卫用例：读 `app/routes.ts` 文本，
   `tasks` / `projects` 路由出现与否与 `TARGETS` 的 `available` 一致。已有的 `live-client.test.ts` 不改、照常全过。
-  Web 全量 31 个文件、290 个用例，0 跳过；desktop 同基线；build 通过。
+  Web 全量 32 个文件、291 个用例，0 跳过；desktop 同基线；build 通过。
 - 负向对照：收到 `notification` 时在客户端自增未读数而不重新拉取时，用例 (1) 与 (6) 失败；`onMessage` 只在 `switch` 的 `default` 分支调用（内置类型不交出）时，
   用例 (4) 与 (6) 的重连后再拉取失败；`publishLiveMessage` 不捕获订阅者异常时，用例 (5) 失败；铃铛自己 `createLiveClient` 建第二条连接时，`bell-view` 的源码守卫失败；
   徽标阈值写成 `> 100` 时 100→「99+」断言失败；`TARGETS` 的 `available` 改成 `true`（而 `routes.ts` 没有对应路由）时，守卫用例与默认表的无链接断言失败。
@@ -402,7 +402,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   `href` 为 `null` 时只 `focus` 不跳转；(8) `browserSystemNotifier` 传给 `Notification` 的是 `(title, { body, tag: id })`，`NotificationBell` 使用传入的 `systemNotifier` 而不碰全局 `Notification`，
   且 `bell-system.ts` 源码里不出现 `navigator.locks` 与 `localStorage`（简化后的源码守卫）。
   `bell-view.test.ts` 在 M-04 的 7 个之上加 1 个：权限 `default` 显示「开启系统通知」按钮、`denied` 显示拒绝提示、`granted` / `unsupported` 不显示。两文件共 16 个。
-  Web 全量 32 个文件、299 个用例，0 跳过；desktop 同基线；build 通过。
+  Web 全量 33 个文件、300 个用例，0 跳过；desktop 同基线；build 通过。
 - 负向对照：不判断级别时，用例 (2) 失败；判断 `visibilityState === 'visible'` 写反（可见时弹）时，用例 (1) 与 (3) 失败；`tag` 用固定字符串或不传时，用例 (5) 与 (8) 失败；
   挂载时就调 `request()` 时，用例 (4) 失败；列表找不到条目或刷新失败就放弃时，用例 (6) 失败（`bell-client` 用例 (1) 的「拉取失败仍交」断言同样失败）。
 

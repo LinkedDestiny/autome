@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import { startServer } from '../server/main.ts';
 import { openWebStore } from '../server/store.ts';
+import { configureFailureRepo } from './fixtures/notifier-failure.ts';
 const root = mkdtempSync(join(tmpdir(), 'ntf-live-')), home = join(root, 'home'), repo = join(root, 'repo');
 const wt = resolve(import.meta.dirname, '../../..'), fake = join(root, 'fake-cli');
 const wrapper = join(root, 'automed-wrapper');
@@ -22,6 +23,7 @@ async function connect() { const ws = new WebSocket(url.replace('http:', 'ws:') 
 async function fail(title: string) { await cli('task', 'new', title, '-p', repo); await cli('run', '--until-idle', '--interval', '0.2'); }
 beforeAll(async () => {
   mkdirSync(repo); mkdirSync(home); writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\nexit 3\n', { mode: 0o755 });
+  configureFailureRepo(repo);
   writeFileSync(wrapper, '#!/bin/sh\nexport HOME="' + home + '"\nexport AUTOMED_CLAUDE_BINARY="' + fake + '" AUTOMED_CODEX_BINARY="' + fake + '"\nexec "' + join(wt, 'target/debug/automed') + '" "$@"\n', { mode: 0o755 });
   await command('git', ['init','-q','-b','main']); await command('git', ['-c','user.name=test','-c','user.email=t@t','commit','--allow-empty','-qm','init']);
   await cli('project','add',repo,'--skip-onboarding'); await start();
