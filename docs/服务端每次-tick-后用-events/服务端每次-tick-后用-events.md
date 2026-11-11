@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 22/30
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 由 Autome 在本轮提交重跑 sh scripts/ci-local.sh，确认跨进程 cancel 的嵌套状态断言通过；随后复验 M-01 验收与负向对照，保持开放
+next-action: 开始 M-02：断线续传、reload、core 消息与恢复补拉、W4/W8 挂点
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -275,7 +275,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 最小端到端：分页拉取的事件总线、/ws 升级、main 接线、命令行跨进程集成测试 | 0 | eventbus-e2e |
+| M-01 | 已完成 | 最小端到端：分页拉取的事件总线、/ws 升级、main 接线、命令行跨进程集成测试 | 0 | eventbus-e2e |
 | M-02 | 开放 | 断线续传、reload、core 消息与恢复补拉、W4/W8 挂点 | 0 | eventbus-resume |
 | M-03 | 开放 | 浏览器端 live 客户端、按事件重验路由、重连提示与 root 接线 | 0 | live-routes |
 | M-04 | 开放 | write-gate.test.ts 的原始 NUL 改为 \u0000 转义 | 0 | nul-escape |
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r22-impl.md · 修复 cancel 事件嵌套状态断言，完整门禁受监听 EPERM 阻断，保持开放 · 实现 #22
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r22-audit.md · 通过（验证缺口已补） · 审计 #1
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：
@@ -343,8 +343,8 @@ NUL 为 0（Git 不再把新文件当二进制）、`git diff --no-index --numst
 ### M-01 验收契约
 
 - 验收命令：分别运行、分别记录退出码：`npm run lint --prefix apps/web`；`npm run typecheck --prefix apps/web`；`npm test --prefix apps/web`；`npm run build --prefix apps/web`；`npm test --prefix apps/desktop`；`git diff 30e5d51 --stat -- crates apps/desktop protocol plugins`。
-- 预期：Web 18 个测试文件、188 个用例全过、0 跳过（基线 175 + `eventbus.test.ts` 8 + `eventbus-live.test.ts` 5；`ci-config.test.ts` 改一项断言、数目不变）；lint、typecheck、build 退出码 0；desktop 104 个用例、103 过、1 跳过（与基线相同）；最后一条 diff 输出为空。
-- 负向对照：`pull()` 只拉一页不看 `latest_seq` 时 `eventbus.test.ts` ② 失败（只收到 1000 条）；`main.ts` 不传 `onTick` 时 `eventbus-live.test.ts` ④ 在 3500 ms 内收不到事件而失败；`/ws` 改用自己的 `server.on('upgrade')` 绕过守卫时 `eventbus-live.test.ts` ② 不再回 403、`security.test.ts`「开发服务只保留一个 upgrade 守卫」的监听器数变成 2 而失败。
+- 预期：Web 18 个测试文件、189 个用例全过、0 跳过（基线 175 + `eventbus.test.ts` 8 + `eventbus-live.test.ts` 5 + `gateway-http.test.ts` 新增「/ws 已注册，缺少握手字段回 400」1；`ci-config.test.ts` 改一项断言、数目不变）；lint、typecheck、build 退出码 0；desktop 104 个用例、103 过、1 跳过（与基线相同）；最后一条 diff 输出为空。
+- 负向对照：`pull()` 只拉一页不看 `latest_seq` 时 `eventbus.test.ts` ② 失败（只收到 1000 条）；`main.ts` 不传 `onTick` 时 `eventbus-live.test.ts` ④ 在 3500 ms 内收不到事件而失败；`/ws` 改用 `main.ts` 里自己的 `server.on('upgrade')` 绕过 `registerUpgrade` 时，`gateway-http.test.ts`「/ws 已注册，缺少握手字段回 400」里对 `startServer` 返回的 `server.listenerCount('upgrade')` 的断言（应为 1）失败（审计 #1 实测：原先写的 `eventbus-live` ② 与 `security.test` 都拦不住这种改法）。
 
 ### M-02 验收契约
 

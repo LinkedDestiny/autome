@@ -26,3 +26,4 @@
 
 实现 #21 | M-01 | 退回 + eventbus-e2e | docs/服务端每次-tick-后用-events/evidence/M-01-r21-impl.md | 本地监听 EPERM，保持开放
 实现 #22 | M-01 | 修复取消事件嵌套状态断言，保持开放 | docs/服务端每次-tick-后用-events/evidence/M-01-r22-impl.md | 完整门禁受监听 EPERM 阻断，待宿主复跑
+审计 #1 | M-01 | 通过 | docs/服务端每次-tick-后用-events/evidence/M-01-r22-audit.md | 无

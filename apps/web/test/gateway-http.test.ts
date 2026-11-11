@@ -75,6 +75,7 @@ test('合格但无处理器 upgrade 回 404', async () => {
 });
 test('/ws 已注册，缺少握手字段回 400', async () => {
   const s = await setup();
+  expect(s.server.listenerCount('upgrade')).toBe(1);
   expect(await raw(s.url + '/ws', { Connection: 'Upgrade', Upgrade: 'websocket', Origin: s.url })).toBe(400);
 });
 test('close 后内核 pid 不存在', async () => {
