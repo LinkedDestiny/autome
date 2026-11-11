@@ -83,11 +83,13 @@ tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 . "$plugin/tests/card-panel.sh"
 . "$plugin/tests/skill.sh"
+. "$plugin/tests/readme.sh"
 [ "$#" -gt 0 ] || set -- all
-[ "$*" != all ] || set -- structure card panel skill
+[ "$*" != all ] || set -- structure card panel skill readme
 for group do
   case "$group" in
     structure) for test in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10; do check "$test"; done ;;
+    readme) for test in R1 R2 R3 R4 R5; do check "$test"; done ;;
     skill) for test in T1 T2 T3 T4 T5 T6 T7 T8 T9 T10; do check "$test"; done ;;
     card) for test in K1 K2 K3 K4 K5 K6 K7 K8 K9 K10 K11 K12 K13 K14 K15 K16 K17 K18 K19; do check "$test"; done ;;
     panel) for test in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10; do check "$test"; done ;;

@@ -1,6 +1,7 @@
 #!/bin/sh
 set -u
-[ "${1:-skill}" = skill ] || exit 2
+group=${1:-skill}
+case "$group" in skill|readme) ;; *) exit 2 ;; esac
 plugin=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
@@ -9,11 +10,12 @@ export AUTOME_HOME
 unset AUTOMED_DB_PATH
 [ "$AUTOME_HOME" != "$HOME/.autome" ] || exit 1
 mkdir -p "$tmp/repo"
-git -C "$tmp/repo" init -q || exit 1
+git -C "$tmp/repo" -c init.defaultBranch=master init -q || exit 1
 autome version
 # No runner or session is launched: task new only records scheduling state.
 autome project add "$tmp/repo" --skip-onboarding > "$tmp/add" 2>&1 || { cat "$tmp/add"; exit 1; }
 . "$plugin/tests/card-panel.sh"
+. "$plugin/tests/readme.sh"
 project_id=$(autome project ls --json | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | head -1)
 [ -n "$project_id" ] || exit 1
 template=$(sed -n '/^<!-- create-command -->$/,/^<!-- \/create-command -->$/p' "$plugin/skills/autome-task/SKILL.md" | sed '1d;$d')
@@ -47,6 +49,22 @@ V5() {
   [ "$code" = 1 ] && grep -q '超过 64KB' "$tmp/error"
 }
 V6() { sized_card 65536; sh "$scripts/check-card.sh" feature < "$tmp/card" > "$tmp/check" && create feature "$project_id" draft; }
-for test in V1 V2 V3 V4 V5 V6; do check "$test"; done
+V7() {
+  autome project ls --json > "$tmp/projects" || return 1
+  feature > "$tmp/card"
+  autome task new --brief - --kind feature --draft -p "$project_id" --json < "$tmp/card" > "$tmp/result" || return 1
+  compare_example task-new-json "$tmp/result"
+}
+V8() { compare_example project-ls-json "$tmp/projects"; }
+V9() {
+  autome task new --brief - --kind feature --draft -p "$project_id" < "$tmp/card" > "$tmp/plain" || return 1
+  example task-new-text > "$tmp/expected"
+  diff -u "$tmp/expected" "$tmp/plain"
+}
+case "$group" in
+  skill) tests='V1 V2 V3 V4 V5 V6' ;;
+  readme) tests='V7 V8 V9' ;;
+esac
+for test in $tests; do check "$test"; done
 printf '%s/%s 通过\n' "$passed" "$total"
 [ "$passed" = "$total" ]
