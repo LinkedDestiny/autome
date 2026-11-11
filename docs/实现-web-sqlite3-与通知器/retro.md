@@ -13,3 +13,4 @@
 审计 #3 | M-03 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-03-r4-audit.md | 无
 
 实现 #5 | M-04 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-04-r5-impl.md | 30 个既有监听用例受 EPERM 等限制，视觉验收未取证
+审计 #4 | M-04 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-04-r5-audit.md | 无
