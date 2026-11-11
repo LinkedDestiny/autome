@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/40
+implementation-round: 6/40
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-06 V7 示例键值一致性回归
+next-action: 审计 M-06 V7 示例键值一致性回归；通过后实现 M-07 人工验收逐项隔离前置
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -244,7 +244,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-03 | 已完成 | autome-task 技能与短别名 | 0 | |
 | M-04 | 已完成 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 已完成 | eval 用例 | 0 | |
-| M-06 | 开放 | B-1：V7 示例键值一致性回归 | 0 | |
+| M-06 | 待审 | B-1：V7 示例键值一致性回归 | 0 | |
 | M-07 | 开放 | B-2：人工验收逐项隔离前置 | 0 | |
 | M-08 | 开放 | B-3：环境采集时序统一 | 0 | |
 
@@ -299,6 +299,8 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 - 负向对照：删掉任一 grader 的阳性对照时 E2 失败；`evals/README.md` 的运行命令漏掉 `--max-cost-usd` 时 E5 失败。
 
 ### M-06 验收契约
+
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-06-r6-impl.md · 待审 · 实现 #6
 
 B-1 / D1-N01 已纳入；前置 M-04。V7 同时比较示例键与值，仅规范化设计允许替换的 id、路径、时间；增加将 `"state": "draft"` 改成 `"state": "pending"` 的负向回归，必须被拒绝。验收：`sh plugins/autome/tests/verify-cli.sh readme`，真实示例通过、pending 变体失败。M-04 实现 V7 时遵守此值契约，本里程碑交付独立负向回归。
 

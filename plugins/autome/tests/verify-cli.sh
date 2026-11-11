@@ -61,9 +61,20 @@ V9() {
   example task-new-text > "$tmp/expected"
   diff -u "$tmp/expected" "$tmp/plain"
 }
+V10() (
+  # Use V7's real draft response; never mutate the checked-in README.
+  compare_example task-new-json "$tmp/result" || exit 1
+  sed 's/"state": "draft"/"state": "pending"/' "$readme" > "$tmp/pending-readme.md"
+  readme="$tmp/pending-readme.md"
+  example task-new-json | grep -q '"state": "pending"' || exit 1
+  compare_example task-new-json "$tmp/result" > "$tmp/pending-diff" 2>&1
+  code=$?
+  [ "$code" = 1 ] && grep -q '"state": "pending"' "$tmp/pending-diff" &&
+    grep -q '"state": "draft"' "$tmp/pending-diff"
+)
 case "$group" in
   skill) tests='V1 V2 V3 V4 V5 V6' ;;
-  readme) tests='V7 V8 V9' ;;
+  readme) tests='V7 V8 V9 V10' ;;
 esac
 for test in $tests; do check "$test"; done
 printf '%s/%s 通过\n' "$passed" "$total"
