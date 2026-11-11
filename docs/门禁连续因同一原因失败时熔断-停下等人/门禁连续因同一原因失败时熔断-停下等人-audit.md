@@ -1,6 +1,9 @@
-# 实现审计（审计 #6）
+# 实现审计（审计 #7）
 
-结论：通过。里程碑 M-01~M-05 均 `已完成`，reopen 为 0，convergence-mode normal。
+结论：通过。里程碑 M-01~M-05 均 `已完成`，reopen 为 0，convergence-mode normal。本轮无待审里程碑，表无需变更。
 
-- 全量门禁脚本复验：唯一失败为 Bug Loop 工作区测试的 30s 轮询超时（负载抖动，单独重跑 27.4s 通过），非产品缺陷，记入 Backlog。
-- 证据：evidence/M-05-r7-audit.md
+- 实现 #9 仅把两条工作区 Bug Loop 测试的轮询期限由 30s 改为 90s（测试内部常量，产品不变）。
+- 宿主门禁在 62d15bfeb6 上全绿（退出码 0，653s），含 Web test。
+- 人工验收：H-01 仍待用户在合并前确认。
+- 本轮未构造新检查。
+- 证据：evidence/M-05-r9-audit.md
