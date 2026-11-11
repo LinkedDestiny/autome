@@ -37,6 +37,13 @@ case "${GIT_REFLOG_ACTION:-}" in
   rebase* | cherry-pick* | revert* | am*) exit 0 ;;
 esac
 
+# Autome task worktrees live under `.worktree/`. Their gate already runs
+# ci-local on the host after every round, so a second run here only doubles
+# the load — and it outlives the worktree when the task is cancelled.
+case "$root" in
+  */.worktree/*) exit 0 ;;
+esac
+
 state="$git_dir/ci-local"
 log="$state/last.log"
 mkdir -p "$state"
