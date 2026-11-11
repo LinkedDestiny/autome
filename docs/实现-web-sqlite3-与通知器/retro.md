@@ -19,3 +19,4 @@
 审计 #5 | M-05 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-audit.md | 无
 
 实现 #7 | M-06 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-06-r7-impl.md | 全量监听 EPERM / watcher EMFILE，交审计复验
+审计 #6 | M-06 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-06-r7-audit.md | 无
