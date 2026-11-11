@@ -961,12 +961,9 @@ fn onboarding_save(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 /// (design §6, requirement C-03).
 fn init_commit(project: &Project) -> std::result::Result<Option<String>, DispatchError> {
     let repo = std::path::Path::new(&project.path);
-    let mut paths: Vec<String> = vec![
-        ".autome".into(),
-        ".gitignore".into(),
-        "AGENTS.md".into(),
-        "docs".into(),
-    ];
+    let mut paths: Vec<String> = vec![".autome".into(), ".gitignore".into()];
+    // Stage only the wizard's artefacts, never the user's entire docs tree.
+    paths.extend(ONBOARDING_FILES.iter().map(|path| (*path).to_string()));
     paths.retain(|p| repo.join(p).exists());
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     Ok(git::commit_paths(
@@ -3223,6 +3220,66 @@ mod tests {
         let onboarding = ok_payload(&out).pointer("/project/onboarding").unwrap();
         assert_eq!(onboarding.get("onboarding").unwrap(), &json!("in_progress"));
         assert_eq!(onboarding.get("step").unwrap(), &json!(3));
+    }
+
+    #[test]
+    fn project_add_init_commit_preserves_untracked_user_docs() {
+        assert!(git_available(), "this regression requires Git");
+        let mut sb = Sandbox::new("init-user-docs");
+        let repo = sb.path("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git::init(&repo, "main").unwrap();
+        std::fs::write(repo.join("README.md"), "existing project\n").unwrap();
+        git::commit_paths(&repo, &["README.md"], "initial").unwrap();
+        let user_files = ["docs/draft.md", "docs/research/notes.md", "personal.txt"];
+        std::fs::create_dir_all(repo.join("docs/research")).unwrap();
+        for path in user_files {
+            std::fs::write(repo.join(path), "private draft\n").unwrap();
+        }
+        let git_output = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert!(git_output(&["diff", "--cached", "--name-only"]).is_empty());
+        let before = git_output(&["ls-files", "--others", "--exclude-standard"]);
+        for path in user_files {
+            assert!(before.lines().any(|line| line == path));
+        }
+
+        // Exercise the same dispatch sequence as project add --skip-onboarding.
+        let id = sb.add_project("repo");
+        assert!(git_output(&["diff", "--cached", "--name-only"]).is_empty());
+        let outcome = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.skip", json!({ "project_id": id })),
+        );
+        assert!(ok_payload(&outcome)["init_commit"].is_string());
+        assert_eq!(
+            git_output(&["log", "-1", "--format=%s"]).trim(),
+            "chore(autome): initialise project"
+        );
+        let committed = git_output(&["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]);
+        for path in ["AGENTS.md", ".gitignore"] {
+            assert!(committed.lines().any(|line| line == path), "{committed}");
+        }
+        assert!(committed.lines().any(|line| line.starts_with(".autome/")));
+        let untracked = git_output(&["ls-files", "--others", "--exclude-standard"]);
+        for path in user_files {
+            assert_eq!(
+                std::fs::read_to_string(repo.join(path)).unwrap(),
+                "private draft\n"
+            );
+            assert!(
+                !committed.lines().any(|line| line == path)
+                    && untracked.lines().any(|line| line == path),
+                "user file {path} must remain untracked; init commit files:\n{committed}\nuntracked:\n{untracked}"
+            );
+        }
     }
 
     #[test]
