@@ -4,3 +4,4 @@
 实现 #1 | M-01 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-01-r1-impl.md | 全量 CI：监听 EPERM，Electron 缺失
 审计 #1 | M-01 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-01-r1-audit.md | 无
 实现 #2 | M-02 | 待审；B-1～B-3 纳入 M-06～M-08，B-4 裁定忽略不做 | docs/在-plugins-新增-autome-插件/evidence/M-02-r2-impl.md | 全量环境限制见证据
+审计 #2 | M-02 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-02-r2-audit.md | 无

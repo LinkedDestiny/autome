@@ -6,7 +6,7 @@ implementation-round: 2/40
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-02；下一实现轮推进 M-03 技能与短别名
+next-action: 实现 M-03 技能与短别名
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -240,7 +240,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
-| M-02 | 待审 | 任务卡校验与面板链接脚本 | 0 | |
+| M-02 | 已完成 | 任务卡校验与面板链接脚本 | 0 | |
 | M-03 | 开放 | autome-task 技能与短别名 | 0 | |
 | M-04 | 开放 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 开放 | eval 用例 | 0 | |
@@ -268,7 +268,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 ### M-02 验收契约
 
-最新证据：docs/在-plugins-新增-autome-插件/evidence/M-02-r2-impl.md · 专项通过，待审 · 实现 #2
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`sh plugins/autome/tests/run.sh card panel`
 - 预期：card 组 14 个用例通过（K1 合格需求退出 0 并输出字节数；K2 合格 Bug；K3 第一行不是 `# ` 退出 1；K4 缺「不做什么」；K5 小节顺序颠倒；K6 多余二级标题；K7 需求「验收标准」写「无」；K8 Bug「复现步骤」没有编号项；K9 恰好 65536 字节退出 0；K10 65537 字节退出 1 且原因含 65537；K11 正文含独占一行的 `AUTOME_CARD_EOF` 与其后一行 shell 命令文字，仍退出 0、字节数等于 `wc -c` 且命令文字未被执行（探针文件不存在）；K12 类型参数 `chore` 退出 2；K13 代码块里的 `## ` 不算标题；K14 可选小节「线索」写「无」退出 0）；panel 组 7 个用例通过（P1 无 server.json 且默认端口不通 → 空输出、退出 0；P2 默认端口健康、任务页 404 → `http://127.0.0.1:7420/`；P3 隔离 `AUTOME_HOME` 的 server.json 端口 7555 健康、任务页 200 → `http://127.0.0.1:7555/tasks/T-9`；P4 server.json 端口不通、默认端口健康 → 默认端口首页；P5 healthz 返回 200 但体里没有 `"ok":true` → 空；P6 `PATH` 上没有 curl → 空、退出 0；P7 真实 curl、`AUTOME_PANEL_DEFAULT_PORT=1` 且无 server.json → 空）。共 21 个契约用例；另补 K15 空输入、K16 空白标题、K17 四种必填占位、K18 空白可选小节、K19 编号验收项、P8 超时、P9 HTTP 错误、P10 无法解析端口，M-02 合计 29 个。
