@@ -113,7 +113,20 @@ pub fn check(round: &Round<'_>) -> Vec<Finding> {
             out.extend(retro_one_line(round));
         }
         Role::Audit => {
-            out.extend(evidence_file(round, "audit"));
+            // Conflict repair can leave an already completed table unchanged.
+            // Use the starting snapshot so closing the last pending milestone
+            // in this audit still requires current evidence.
+            let unchanged_completed_table = round.before.is_some_and(|before| {
+                !before.milestones.is_empty()
+                    && before
+                        .milestones
+                        .iter()
+                        .all(|(_, state)| *state == MilestoneState::Done)
+                    && crate::task_metrics::snapshot(round.status) == before.milestones
+            });
+            if !unchanged_completed_table {
+                out.extend(evidence_file(round, "audit"));
+            }
             out.extend(audit_moved_the_table(round));
             out.extend(retro_one_line(round));
             out.extend(audit_stayed_in_its_column(round));
@@ -543,6 +556,119 @@ mod tests {
         let before = snapshot(&done, 12, 20_000);
         let r = round(Role::Audit, &s, &before, &["M-02-r9-audit.md"]);
         assert_eq!(check(&r), vec![]);
+    }
+
+    #[test]
+    fn rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence() {
+        use autome_domain::config::{GateConfig, GlobalConfig, ProjectConfig, resolve};
+        use autome_domain::task::{
+            Context, CoreStepResult, GateOutcome, Node, PendingDecisions, SessionOutcome,
+            TaskState, Trigger, apply,
+        };
+
+        let config = resolve(
+            &GlobalConfig::default(),
+            &ProjectConfig {
+                gate: Some(GateConfig {
+                    command: "true".into(),
+                    timeout_minutes: 5,
+                }),
+                ..Default::default()
+            },
+        );
+        let ctx = Context {
+            config: &config,
+            budget_n: Some(35),
+            decisions: PendingDecisions::default(),
+        };
+        let done = [
+            ("M-01", MilestoneState::Done),
+            ("M-02", MilestoneState::Done),
+        ];
+        let s = status(8, &done);
+        let before = snapshot(&done, 12, 20_000);
+        let repaired = apply(
+            &TaskState::Active { node: Node::Rebase },
+            &Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Conflict {
+                    files: vec!["src/example.rs".into()],
+                    detail: "rebase conflict".into(),
+                },
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            repaired.next,
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+
+        // The repair writes implementation evidence but leaves the closed table alone.
+        let evidence = ["M-02-r7-audit.md", "M-02-r8-impl.md"];
+        let impl_round = round(Role::Impl, &s, &before, &evidence);
+        assert_eq!(check(&impl_round), vec![]);
+        let gated = apply(
+            &repaired.next,
+            &Trigger::SessionEnded {
+                outcome: SessionOutcome::Ok {
+                    status: Box::new(s.clone()),
+                },
+            },
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(gated.next, TaskState::Active { node: Node::Gate });
+        let mut next = apply(
+            &gated.next,
+            &Trigger::GateDone {
+                node: Node::Gate,
+                outcome: GateOutcome::Passed,
+                status: Some(Box::new(s.clone())),
+            },
+            &ctx,
+        )
+        .unwrap()
+        .next;
+
+        // Either skip this empty audit or admit it without inventing milestone evidence.
+        if next == (TaskState::Active { node: Node::Audit }) {
+            let mut audit = round(Role::Audit, &s, &before, &evidence);
+            audit.retro_added = vec!["审计 #8 | 无 | 无事可审 | 无 | 无".into()];
+            let findings = check(&audit);
+            let outcome = match findings.iter().find(|f| f.level == Level::Error) {
+                Some(f) => SessionOutcome::GuardFailed {
+                    detail: f.detail.clone(),
+                },
+                None => SessionOutcome::Ok {
+                    status: Box::new(s.clone()),
+                },
+            };
+            next = apply(&next, &Trigger::SessionEnded { outcome }, &ctx)
+                .unwrap()
+                .next;
+        }
+        assert!(
+            matches!(
+                next,
+                TaskState::Active {
+                    node: Node::Retro | Node::Rebase
+                }
+            ),
+            "a completed task must continue after conflict repair, got {next:?}"
+        );
+    }
+
+    #[test]
+    fn an_audit_that_closes_a_pending_milestone_still_requires_current_evidence() {
+        let s = status(8, &[("M-01", MilestoneState::Done)]);
+        let before = snapshot(&[("M-01", MilestoneState::Pending)], 12, 20_000);
+        let r = round(Role::Audit, &s, &before, &["M-01-r7-audit.md"]);
+        let findings = check(&r);
+        assert_eq!(codes(&findings), vec!["evidence_missing"]);
+        assert_eq!(findings[0].level, Level::Error);
     }
 
     #[test]
