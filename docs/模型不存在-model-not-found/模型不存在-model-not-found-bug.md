@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end model_not_found_fails_as_config_without_retry -- --exact --nocapture
 根因: 非零退出被转换为 Crashed；classify_failure 仅识别限流，model_not_found 落入普通崩溃重试，耗尽后转为 SessionCrashed，未保留模型错误上下文。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -52,4 +52,10 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+复核: 通过(第 1/3 轮复核)。
+
+- 复现命令独立重跑通过(1 passed);cargo test --offline 全量通过(lib 602、end_to_end 78 等),clippy -D warnings 通过。
+- 回归测试:64dd1a0..c222ba7 的差异未触碰 `tests/end_to_end.rs`,未删除、跳过或弱化;该测试断言零重试、终态 Failed{Config}、详情含角色/CLI/模型/配置键,有意义。修复轮另增分类单测,覆盖错误事件命中、普通输出不误判、限流分类不变。
+- 根因:与代码一致,classify_failure 只识别限流,model_not_found 落入普通崩溃重试。修复复用同一 error_texts 提取,只在 error 事件中匹配,不会被代理正文引用误触发。
+- 范围:仅 scheduler.rs(schedule_retry 前置分流)与 usage.rs(提取函数拆分),不计重试、不触发冷却,改动最小。
+- 保留意见:Web 测试在沙箱因 listen EPERM 失败属环境限制,与本改动无关;宿主应在允许监听的环境重跑门禁。
