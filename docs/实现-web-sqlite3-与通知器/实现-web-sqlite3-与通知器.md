@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 1/25
+implementation-round: 2/35
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-02 规则表与通知器（notifier-rules.ts、notifier.ts 及其测试）
+next-action: 独立复验 M-02（含受限的 Web 监听回归）；通过后实现 M-03 接线与推送
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -298,10 +298,12 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 面板库 web.sqlite3：结构、迁移、去重、游标与已读读写，过滤 SQLite 告警 | 0 | store |
-| M-02 | 开放 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
+| M-02 | 待审 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
 | M-03 | 开放 | 接线与推送：通知器挂到 tick 之后，铃铛接口，notification 与 notification-read 广播 | 0 | api |
 | M-04 | 开放 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
 | M-05 | 开放 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
+| M-06 | 开放 | B-01：createLiveClient 消息回调独立验收（实现随 M-04 接线） | 0 | live-client |
+| M-07 | 开放 | B-04：同一事件补齐失败后重试生成通知的独立回归验收（实现随 M-02） | 0 | notifier |
 
 ## 验收说明
 
@@ -331,6 +333,8 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   该用例失败；`commit` 拆成两个事务时，「注入游标写失败」用例失败。
 
 ### M-02 验收契约
+
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-impl.md · 验收通过，Web 全量监听受限，待审 · 实现 #2
 
 - 验收命令：`npm test --prefix apps/web -- test/notifier-rules.test.ts test/notifier.test.ts test/notifier-real.test.ts`；然后全量四件。
 - 预期：三文件共 25 个用例全过。`notifier-rules.test.ts` 12 个：7 条规则各 1 个（输入为「实测事件原文」seq 21、45、124、116、102、53 的原行，
@@ -400,6 +404,18 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - 负向对照：不判断级别时，用例 (2) 失败；判断 `visibilityState === 'visible'` 写反（可见时弹）时，用例 (1) 与 (3) 失败；`tag` 用固定字符串或不传时，用例 (5) 与 (8) 失败；
   挂载时就调 `request()` 时，用例 (4) 失败；列表找不到条目或刷新失败就放弃时，用例 (6) 失败（`bell-client` 用例 (1) 的「拉取失败仍交」断言同样失败）。
 
+### M-06 验收契约
+
+- 用户 2026-11-11 将 B-01 纳入为独立里程碑；实现随其调用方 M-04 一起交付，本里程碑独立核对 §6 的消息回调契约，不重复实现。
+- 命令：`npm test --prefix apps/web -- test/live-client.test.ts test/bell-client.test.ts`；然后全量四件。
+- 验收：M-04 用例 (4)(5)(6) 全过，原有 live-client 用例不改、无跳过；执行 M-04 的回调只放 default 分支与订阅异常两项负向对照。
+
+### M-07 验收契约
+
+- 用户 2026-11-11 将 B-04 纳入为独立里程碑；补步已是 M-02 的强制契约，本里程碑对其作独立回归验收，不重复实现。
+- 命令：`npm test --prefix apps/web -- test/notifier.test.ts`；然后全量四件。
+- 验收：无 code 的离线和超时均停在事件前；恢复后重试同一事件只生成一条、推一次；提前更新最近状态的负向对照必须失败。
+
 ## 人工验收清单
 
 - H-01 开两个标签页打开面板，在 A 的铃铛里点一条「已读」，B 的未读数不刷新页面即减少；在 A 点「全部已读」，B 的徽标消失。
@@ -412,9 +428,9 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ## Backlog
 
-- B-01 已纳入本任务（用户 2026-11-11 意见 2）：`createLiveClient` 的消息回调，见 §6、M-04。
-- B-03 评审 N-01：「进入」的记忆不持久（§3），seq 不同但状态相同的两条事件若恰好跨重启，会比不中断多一条通知。当前设计接受这个最坏结果（不漏发）；若 W6 之后觉得吵，再把最近状态存进 `event_cursor` 的另一个名字下。
-- B-04 已纳入本任务（用户 2026-11-11）：重试同一事件仍生成通知的补步写进「M-02 验收契约」的 `notifier.test.ts` 用例。
-- B-02 W6 的「等你处理」角标从 `store.unreadByTask(<levelOf 为 need_you 的 kind>)` 取数，由 W5 的 `getLoadContext` 把库对象交给 loader。
+- B-01 已纳入独立里程碑 M-06（实现随 M-04，用户 2026-11-11 意见 2）：`createLiveClient` 的消息回调，见 §6、M-04。
+- B-03 用户 2026-11-11 裁定忽略、不做；评审 N-01：「进入」的记忆不持久（§3），seq 不同但状态相同的两条事件若恰好跨重启，会比不中断多一条通知。当前设计接受这个最坏结果（不漏发）；若 W6 之后觉得吵，再把最近状态存进 `event_cursor` 的另一个名字下。
+- B-04 已纳入独立里程碑 M-07（实现随 M-02，用户 2026-11-11）：重试同一事件仍生成通知的补步写进「M-02 验收契约」的 `notifier.test.ts` 用例。
+- B-02 用户 2026-11-11 裁定忽略、不做：W6 的「等你处理」角标从 `store.unreadByTask(<levelOf 为 need_you 的 kind>)` 取数，由 W5 的 `getLoadContext` 把库对象交给 loader。
 
 ## 争议项

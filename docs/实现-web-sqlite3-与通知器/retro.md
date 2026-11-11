@@ -5,3 +5,4 @@
 
 实现 #1 | M-01 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-impl.md | Web 监听回归受沙箱 EPERM/EMFILE 阻断
 审计 #1 | M-01 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审；B-01/B-04纳入M-06/M-07；B-02/B-03忽略不做 | docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-impl.md | Web监听EPERM/EMFILE，交审计复验
