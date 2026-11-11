@@ -4680,7 +4680,9 @@ fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_th
             json!({"project_id":w.project_id,"request":"workspace bug","kind":"bug"}),
         );
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // Match Workspace::settle: detect a hang, not a slow but healthy
+        // locate → fix → review → merge-gate run under parallel CI load.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             let report = automed::scheduler::tick(&mut w.ctx);
             assert!(report.errors.is_empty(), "{report:?}");
@@ -5341,7 +5343,8 @@ fn bug_regression_guard_checks_each_workspace_member() {
             json!({"project_id": w.project_id, "request":"guard workspace", "kind":"bug"}),
         );
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // This traverses the same workspace loop as Workspace::settle.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         loop {
             let report = automed::scheduler::tick(&mut w.ctx);
             assert!(report.errors.is_empty(), "{report:?}");
