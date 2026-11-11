@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli --test cli broken_pipe -- --nocapture
 根因: status 的 task_detail 使用 println! 写 stdout，读端关闭后产生 BrokenPipe，打印宏直接 panic，绕过 CLI 的 Result 错误处理。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -40,4 +40,9 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+复核第 1/3 轮：通过。
+- 复现命令独立重跑：2 passed、0 failed；`cargo clippy -p autome-cli --all-targets -D warnings` 通过。
+- 差异 9e751f8..184cceb 只改 `crates/autome-cli/src/main.rs`（+23 行）和 bug 文档，回归测试未删、未跳过、未弱化。
+- 根因成立：`println!` 在 BrokenPipe 时 panic。修复用局部 print!/println! 宏，仅 BrokenPipe 时静默退出 0，其它写错误仍 panic；未改 SIGPIPE 处置，信号保护测试继续通过。
+- 范围最小。其余 stdout 写入（行 814、890、893）已是 `let _` 或显式处理，没有遗漏的 panic 路径。
+- 提醒：修复轮报告的全量门禁 Web 测试失败原因是沙箱的 listen EPERM 和 EMFILE，与本改动无关。宿主应在可监听环境确认。
