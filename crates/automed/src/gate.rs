@@ -146,13 +146,16 @@ pub fn poll(job: &Job, timeout_minutes: u32) -> Poll {
 }
 
 pub fn poll_as(job: &Job, timeout_minutes: u32, what: &str) -> Poll {
-    if let Some(marker) = std::fs::read_to_string(&job.exit)
-        .ok()
-        .and_then(|t| ExitMarker::parse(&t))
-    {
-        return Poll::Done {
-            exit_code: marker.exit_code,
-        };
+    let completed = || {
+        std::fs::read_to_string(&job.exit)
+            .ok()
+            .and_then(|t| ExitMarker::parse(&t))
+            .map(|marker| Poll::Done {
+                exit_code: marker.exit_code,
+            })
+    };
+    if let Some(done) = completed() {
+        return done;
     }
     let pid = std::fs::read_to_string(&job.pid)
         .ok()
@@ -180,7 +183,9 @@ pub fn poll_as(job: &Job, timeout_minutes: u32, what: &str) -> Poll {
         // The pid file is written by the wrapper's first line; a job started
         // a moment ago may not have one yet.
         None if elapsed < 10 => Poll::Running,
-        _ => Poll::Vanished,
+        // The wrapper may publish its result and exit between the first
+        // marker read and the liveness check. Collect it instead of rerunning.
+        _ => completed().unwrap_or(Poll::Vanished),
     }
 }
 
@@ -402,6 +407,34 @@ mod tests {
             assert!(tail(&job.log, 5).contains(&format!("{what}运行超过")));
             assert!(!crate::launcher::pid_alive(pid));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_exit_published_between_marker_read_and_liveness_check_is_collected() {
+        use std::io::Write;
+        let repo = sandbox("setup-exit-race");
+        let job = Job::at(&repo, "T-1", "setup", "worktree");
+        std::fs::create_dir_all(job.pid.parent().unwrap()).unwrap();
+        std::fs::write(&job.started, now_secs().to_string()).unwrap();
+        assert!(
+            Command::new("mkfifo")
+                .arg(&job.pid)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let pid = job.pid.clone();
+        let exit = job.exit.clone();
+        let writer = std::thread::spawn(move || {
+            // Opening the FIFO waits until poll has already read the absent exit marker.
+            let mut file = std::fs::OpenOptions::new().write(true).open(pid).unwrap();
+            write_marker(&exit, 0);
+            writeln!(file, "{}", i32::MAX).unwrap();
+        });
+        let result = poll_as(&job, 1, "准备命令");
+        writer.join().unwrap();
+        assert_eq!(result, Poll::Done { exit_code: 0 });
     }
 
     #[test]

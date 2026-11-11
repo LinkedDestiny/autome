@@ -2957,6 +2957,10 @@ fn run_gate(
             if !repo.join(&rel).exists() {
                 git::worktree_prune(&repo)?;
                 git::worktree_add_detached(&repo, &rel, &commit)?;
+                if resolved.setup.is_some() {
+                    let _ =
+                        std::fs::remove_file(crate::setup::verify_record(&repo, &task.id, &commit));
+                }
             }
             (repo.join(&rel), commit)
         }
@@ -2980,6 +2984,79 @@ fn run_gate(
                 json!({ "node": node.as_str(), "sha": head }),
             )?;
             return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+        }
+        if let Some(setup) = &resolved.setup
+            && !project.is_workspace()
+        {
+            let verify = node == Node::MainCheck;
+            let record = if verify {
+                crate::setup::verify_record(&repo, &task.id, &head)
+            } else {
+                crate::setup::worktree_record(&repo, &task.id)
+            };
+            match crate::setup::ensure(
+                ctx,
+                task,
+                project,
+                setup,
+                crate::setup::Checkout {
+                    kind: if verify {
+                        autome_domain::setup::Checkout::Verify
+                    } else {
+                        autome_domain::setup::Checkout::Worktree
+                    },
+                    dir: &cwd,
+                    record: record.clone(),
+                },
+                node,
+            )
+            .map_err(|e| err(e.to_string()))?
+            {
+                crate::setup::Ready::Pending => return Ok(()),
+                crate::setup::Ready::Ready => {}
+                crate::setup::Ready::Failed {
+                    command,
+                    exit_code,
+                    log,
+                    tail,
+                } => {
+                    if !verify {
+                        advance(
+                            ctx,
+                            &task.id,
+                            &Trigger::SetupFailed {
+                                command,
+                                exit_code,
+                                log,
+                            },
+                        )?;
+                        return Ok(());
+                    }
+                    let detail = format!(
+                        "任务 {} 合并后，在合并提交检出里准备命令 `{command}` 失败（退出码 {exit_code}）。日志：{log}\n\n{tail}",
+                        task.id
+                    );
+                    let id = ctx.store.raise_alert(
+                        &project.id,
+                        "setup_failed",
+                        Some(&task.id),
+                        &detail,
+                    )?;
+                    ctx.store.append_event(
+                        "project.alert",
+                        &project.id,
+                        json!({ "alert_id": id, "kind": "setup_failed", "task_id": task.id }),
+                    )?;
+                    let _ = git::worktree_remove(&repo, &verify_dir(&head), true);
+                    let _ = std::fs::remove_file(record);
+                    ctx.store.append_event(
+                        "gate.skipped",
+                        &task.id,
+                        json!({ "node": node.as_str(), "reason": "准备命令失败" }),
+                    )?;
+                    return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+                }
+            }
         }
         crate::gate::start(
             &job,
@@ -3052,6 +3129,9 @@ fn run_gate(
     }
     if node == Node::MainCheck {
         let _ = git::worktree_remove(&repo, &verify_dir(&head), true);
+        if resolved.setup.is_some() {
+            let _ = std::fs::remove_file(crate::setup::verify_record(&repo, &task.id, &head));
+        }
         if !ok {
             let detail = format!(
                 "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`（退出码 {exit_code}）。\
@@ -4133,6 +4213,120 @@ mod tests {
             .append_event("task.replied", &task.id, json!({}))
             .unwrap();
         assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 0);
+    }
+
+    #[test]
+    fn setup_gate_nodes_wait_then_start_or_fail_and_merge_reuse_skips_preparation() {
+        needs_git!();
+        for node in [Node::Gate, Node::MergeGate, Node::ReproCheck, Node::FixGate] {
+            for mode in ["success", "failure", "timeout"] {
+                let mut w = World::new("setup-gate-matrix");
+                let base = w.add_task("base", "unused");
+                let task = TaskRecord {
+                    id: "T-1".into(),
+                    slug: "a".into(),
+                    kind: if matches!(node, Node::ReproCheck | Node::FixGate) {
+                        TaskKind::Bug
+                    } else {
+                        TaskKind::Feature
+                    },
+                    state: TaskState::Active { node },
+                    ..base
+                };
+                w.ctx.store.insert_task(&task).unwrap();
+                let wt = w.with_worktree(&task);
+                // Missing and unreadable-as-a-file inputs use absent; empty is a valid file.
+                std::fs::create_dir(wt.join("directory")).unwrap();
+                std::fs::write(wt.join("empty"), "").unwrap();
+                if task.kind == TaskKind::Bug {
+                    w.ctx
+                        .store
+                        .append_event("bug.loop_started", &task.id, json!({}))
+                        .unwrap();
+                    w.ctx
+                        .store
+                        .append_event(
+                            if node == Node::ReproCheck {
+                                "bug.located"
+                            } else {
+                                "bug.reproduced"
+                            },
+                            &task.id,
+                            json!({"command": "true"}),
+                        )
+                        .unwrap();
+                }
+                let command = match mode {
+                    "success" => "true",
+                    "failure" => "exit 9",
+                    _ => "sleep 30",
+                };
+                let path = config_io::project_config_path(&w.repo);
+                let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+                text.push_str(&format!("\n[gate]\ncommand = 'true'\n[setup]\ncommand = '{command}'\nwatch = ['missing', 'directory', 'empty']\ntimeout_minutes = 1\n"));
+                std::fs::write(path, text).unwrap();
+                let project = w.ctx.store.get_project(&task.project_id).unwrap();
+                let layout = TaskLayout::of(&project, &task.slug, &[]);
+                run_gate(&mut w.ctx, &task, &project, &layout, node).unwrap();
+                assert_eq!(w.state(&task.id), task.state);
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                    0
+                );
+                let job = crate::gate::Job::at(&w.repo, &task.id, "setup", "worktree");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    assert!(std::time::Instant::now() < deadline, "{node:?} {mode}");
+                    if mode == "timeout" && job.pid.exists() {
+                        std::fs::write(&job.started, "1").unwrap();
+                    }
+                    run_gate(&mut w.ctx, &task, &project, &layout, node).unwrap();
+                    if w.ctx.store.count_events(&task.id, "setup.result").unwrap() > 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let record = crate::setup::worktree_record(&w.repo, &task.id);
+                if mode == "success" {
+                    assert!(record.exists());
+                    assert_eq!(
+                        w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                        1
+                    );
+                    crate::gate::discard_node(&w.repo, &task.id, node.as_str()).unwrap();
+                    if node == Node::MergeGate {
+                        // A reusable gate must bypass even a missing preparation record.
+                        std::fs::remove_file(record).unwrap();
+                        w.ctx
+                            .store
+                            .append_event(
+                                "gate.result",
+                                &task.id,
+                                json!({"ok": true, "sha": gate_head(&layout).unwrap()}),
+                            )
+                            .unwrap();
+                        run_gate(&mut w.ctx, &task, &project, &layout, node).unwrap();
+                        assert_eq!(
+                            w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                            1
+                        );
+                        assert_eq!(
+                            w.ctx.store.count_events(&task.id, "setup.started").unwrap(),
+                            1
+                        );
+                    }
+                } else {
+                    assert!(!record.exists());
+                    assert_eq!(
+                        w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                        0
+                    );
+                    assert!(
+                        matches!(w.state(&task.id), TaskState::Failed { at, reason: FailureReason::Setup { exit_code, .. } } if at == node && exit_code == if mode == "timeout" { 124 } else { 9 })
+                    );
+                }
+            }
+        }
     }
 
     #[test]

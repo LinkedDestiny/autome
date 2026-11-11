@@ -5601,3 +5601,196 @@ fn setup_pause_cancel_vanished_and_input_boundaries_follow_the_same_job_lifecycl
         automed::setup::Ready::Ready
     ));
 }
+
+fn setup_gate_task(w: &mut World, request: &str, body: &str, fail_setup: bool) -> (String, String) {
+    let command = setup_fixture(w, request, body);
+    let gate = write_gate_script(w);
+    w.configure(&format!("[gate]\ncommand = \"sh {}\"\n", gate.display()));
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        if fail_setup {
+            "echo bad > deps.lock\ngit add deps.lock"
+        } else {
+            ""
+        },
+    );
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        "echo v2 > deps.lock\necho ok > gate-ok\ngit add deps.lock gate-ok",
+    );
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+    let id = create_task(w, request);
+    w.settle();
+    w.call("task.approve", json!({"task_id": id}));
+    w.settle();
+    (id, command)
+}
+
+#[test]
+fn setup_reruns_before_the_gate_only_when_a_watched_file_changed() {
+    needs_git!();
+    let mut w = World::new("setup-gate-change");
+    let (id, _) = setup_gate_task(&mut w, "setup gate change", "", false);
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = setup_events(&w, &id, "setup.result");
+    let gates = setup_events(&w, &id, "gate.started");
+    assert_eq!(
+        setup_runs(&w).len(),
+        2,
+        "runs={:?}; results={results:?}; starts={:?}",
+        setup_runs(&w),
+        setup_events(&w, &id, "setup.started")
+    );
+    assert_eq!(results.len(), 2);
+    assert_eq!(gates.len(), 3);
+    assert_eq!(gates[2].1["node"], "merge_gate");
+    assert!(results[0].0 < gates[0].0 && gates[0].0 < results[1].0 && results[1].0 < gates[1].0);
+    assert_eq!(results[1].1["node"], "gate");
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 2);
+}
+
+#[test]
+fn setup_failure_before_a_gate_fails_the_task_and_starts_no_gate() {
+    needs_git!();
+    let mut w = World::new("setup-gate-fail");
+    let (id, command) = setup_gate_task(
+        &mut w,
+        "setup gate fail",
+        "if grep -q bad deps.lock; then exit 9; fi",
+        true,
+    );
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let state = serde_json::to_value(task.state).unwrap();
+    assert_eq!(state["state"], "failed", "{state}");
+    assert_eq!(state["at"], "gate");
+    assert_eq!(state["reason"]["kind"], "setup");
+    assert_eq!(state["reason"]["exit_code"], 9);
+    assert_eq!(state["reason"]["command"], command);
+    assert!(
+        state["reason"]["log"]
+            .as_str()
+            .unwrap()
+            .ends_with("setup-worktree.log")
+    );
+    assert!(setup_events(&w, &id, "gate.started").is_empty());
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 5);
+}
+
+fn assert_setup_verify_removed(w: &World, id: &str) {
+    let commit = w.ctx.store.get_task(id).unwrap().merge_commit.unwrap();
+    assert!(
+        !w.repo
+            .join(format!(".worktree/_verify-{}", &commit[..12]))
+            .exists()
+    );
+    assert!(!automed::setup::verify_record(&w.repo, id, &commit).exists());
+}
+
+#[test]
+fn setup_runs_in_the_merge_commit_checkout_before_the_main_check() {
+    needs_git!();
+    let mut w = World::new("setup-verify");
+    let (id, _) = setup_gate_task(&mut w, "setup verify", "", false);
+    // The gate genuinely requires preparation in the fresh checkout.
+    std::fs::write(w.root.join("gate.sh"), "test -f deps/stamp\n").unwrap();
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let results = setup_events(&w, &id, "setup.result");
+    let verify = results
+        .iter()
+        .find(|(_, e)| e["checkout"] == "verify")
+        .unwrap();
+    let gates = setup_events(&w, &id, "gate.started");
+    let main = gates
+        .iter()
+        .find(|(_, e)| e["node"] == "main_check")
+        .unwrap();
+    assert!(verify.0 < main.0);
+    assert_eq!(verify.1["ok"], true);
+    assert_eq!(
+        setup_runs(&w)
+            .iter()
+            .filter(|line| line.contains("_verify-"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        setup_events(&w, &id, "gate.result").last().unwrap().1["ok"],
+        true
+    );
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+    assert_setup_verify_removed(&w, &id);
+}
+
+#[test]
+fn setup_failure_in_the_merge_commit_checkout_raises_an_alert_and_skips_the_main_check() {
+    needs_git!();
+    let mut w = World::new("setup-verify-fail");
+    let (id, command) = setup_gate_task(
+        &mut w,
+        "setup verify fail",
+        "case \"$PWD\" in *_verify-*) exit 5 ;; esac",
+        false,
+    );
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "setup_failed");
+    for text in [&command, "退出码 5", "setup-verify.log"] {
+        assert!(alerts[0].detail.contains(text), "{}", alerts[0].detail);
+    }
+    let skipped = setup_events(&w, &id, "gate.skipped");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].1["node"], "main_check");
+    assert!(
+        setup_events(&w, &id, "gate.started")
+            .iter()
+            .all(|(_, e)| e["node"] != "main_check")
+    );
+    assert_setup_verify_removed(&w, &id);
+}
+
+#[test]
+fn setup_reruns_before_the_repro_check_when_the_locate_round_changed_a_watched_file() {
+    needs_git!();
+    let mut w = World::new("setup-repro");
+    let request = "setup repro";
+    setup_fixture(&w, request, "");
+    let slug = slug_for(request);
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\necho located > deps.lock"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_FIX}\necho fixed > deps.lock"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = setup_events(&w, &id, "setup.result");
+    assert_eq!(results.len(), 3);
+    let gates = setup_events(&w, &id, "gate.started");
+    for (index, node) in [(1, "repro_check"), (2, "fix_gate")] {
+        assert_eq!(results[index].1["node"], node);
+        assert_eq!(results[index].1["ok"], true);
+        assert!(results[index].0 < gates.iter().find(|(_, e)| e["node"] == node).unwrap().0);
+    }
+    assert!(gates.iter().any(|(_, e)| e["node"] == "merge_gate"));
+}

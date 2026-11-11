@@ -29,6 +29,12 @@ pub fn worktree_record(repo: &Path, task: &str) -> PathBuf {
         .join("worktree.fp")
 }
 
+pub fn verify_record(repo: &Path, task: &str, commit: &str) -> PathBuf {
+    repo.join(".autome/output/setup")
+        .join(task)
+        .join(format!("verify-{}.fp", &commit[..commit.len().min(12)]))
+}
+
 fn write_record(path: &Path, value: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(path.parent().unwrap())?;
     let tmp = path.with_extension("tmp");

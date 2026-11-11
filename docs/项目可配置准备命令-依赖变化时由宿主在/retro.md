@@ -4,3 +4,4 @@
 审计 #1 | M-01 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-01-r2-audit.md | 无
 实现 #3 | M-02 | 待审 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r3-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r3-audit.md | 无
+实现 #4 | M-03 | 待审 | docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-03-r4-impl.md | 无
