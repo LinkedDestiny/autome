@@ -5971,6 +5971,73 @@ mod tests {
     // ---- slots -----------------------------------------------------------
 
     #[test]
+    fn tick_isolates_invalid_project_config_and_still_fills_other_projects() {
+        assert!(git_available(), "this regression requires git");
+        // The valid case proves both projects can launch with this fixture.
+        for broken_config in [false, true] {
+            let mut w = World::new("config-isolation-first");
+            let healthy = World::new("config-isolation-second");
+            w.set_parallel(1);
+            healthy.set_parallel(1);
+            let mut broken = w.ctx.store.get_project("p1").unwrap();
+            broken.display_name = "Broken Configuration Project".into();
+            broken.added_at = "2001-01-01T00:00:00Z".into();
+            w.ctx.store.replace_project(&broken).unwrap();
+            let mut project = healthy.ctx.store.get_project(&healthy.project_id).unwrap();
+            project.id = "p2".into();
+            project.display_name = "healthy-project".into();
+            // list_projects sorts by added_at DESC; no clock or insertion-order race.
+            project.added_at = "2000-01-01T00:00:00Z".into();
+            w.ctx.store.insert_project(&project).unwrap();
+            assert_eq!(
+                w.ctx.store.list_projects().unwrap().iter()
+                    .map(|p| p.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["p1", "p2"]
+            );
+            w.add_task("T-broken", "broken");
+            w.project_id = project.id.clone();
+            w.add_task("T-healthy-1", "healthy-one");
+            w.add_task("T-healthy-2", "healthy-two");
+            assert_eq!(w.ctx.store.slots_in_use("p1").unwrap(), 0);
+            assert_eq!(w.ctx.store.slots_in_use("p2").unwrap(), 0);
+            if broken_config {
+                std::fs::write(
+                    w.repo.join(".autome/config.toml"),
+                    "[loop\nparallel = 1\n",
+                )
+                .unwrap();
+            }
+
+            let report = tick(&mut w.ctx);
+            assert!(!report.skipped);
+            assert_eq!(
+                w.state("T-healthy-1"),
+                TaskState::Active { node: Node::Intake },
+                "healthy project must start despite broken_config={broken_config}: {report:?}"
+            );
+            assert!(w.ctx.store.running_session("T-healthy-1").unwrap().is_some());
+            assert!(report.tasks_started.contains(&"T-healthy-1".to_string()));
+            // Config says one slot while the database says three (T-29 semantics).
+            assert_eq!(w.state("T-healthy-2"), TaskState::Queued);
+            assert!(w.ctx.store.running_session("T-healthy-2").unwrap().is_none());
+            if broken_config {
+                assert_eq!(w.state("T-broken"), TaskState::Queued);
+                assert!(w.ctx.store.running_session("T-broken").unwrap().is_none());
+                assert_eq!(report.tasks_started, vec!["T-healthy-1".to_string()]);
+                assert!(
+                    report.errors.iter().any(|e| e.contains(&broken.display_name)),
+                    "configuration error must name the affected project: {report:?}"
+                );
+            } else {
+                assert!(report.errors.is_empty(), "{report:?}");
+                assert!(report.tasks_started.contains(&"T-broken".to_string()));
+                assert!(w.ctx.store.running_session("T-broken").unwrap().is_some());
+            }
+        }
+    }
+
+    #[test]
     fn fill_slots_respects_the_projects_parallel_limit() {
         needs_git!();
         let mut w = World::new("slots");
