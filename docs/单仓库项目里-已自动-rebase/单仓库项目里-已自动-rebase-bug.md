@@ -1,7 +1,7 @@
 # 单仓库自动 rebase 输出空仓库名
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli rebased_event_
 根因: 单仓库 RepoSlot.name 按约定为空，merge.rebased 渲染无条件使用“仓库 → 分支”模板，导致箭头前空位。
 复核: 待复核
@@ -42,7 +42,13 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮未修改产品逻辑，仅新增回归测试。待后续修复轮处理空仓库名的输出，保留工作区成员格式。
+在 `merge.rebased` 渲染分支中，当 repos 恰有一项且 repo 为空字符串时，输出“已自动 rebase 到 分支 @ 短 SHA”。其它输入继续使用原格式，保留具名工作区成员、分隔符和 10 位短 SHA。产品代码仅新增 9 行，定位轮回归测试未修改。
+
+原复现命令 `cargo test --offline -p autome-cli rebased_event_` 修复前退出码 101（1 passed、1 failed），最终代码退出码 0（2 passed、0 failed）。日志分别为 `.autome/output/fix-round-1-before.log` 和 `.autome/output/fix-round-1-after.log`。
+
+配置的项目门禁 `sh scripts/ci-local.sh` 已实跑。首次运行发现新增嵌套条件触发 Clippy，合并条件后针对最终代码重跑完整门禁：Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 通过；Web test 因文件监听限制 `EMFILE` 及本地监听权限 `listen EPERM 127.0.0.1` 失败，门禁最终退出码 1，耗时 221 秒。完整日志为 `.autome/output/fix-round-1-gate-final.log`。未修改、删除、跳过或弱化任何测试；门禁仍需宿主在允许本地监听的环境复验。
+
+`git diff --check` 通过。未运行真实 tmux/合并流程或可选 package 门禁。等待 Autome 调度后续节点，本轮不启动下一会话。
 
 ## 复核意见
 

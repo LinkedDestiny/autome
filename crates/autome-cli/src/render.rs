@@ -296,6 +296,15 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             format!("{subject} 按合并时默认分支已前进（{repos}），自动 rebase 后再合并")
         }
         "merge.rebased" => {
+            if let Some([repo]) = p["repos"].as_array().map(Vec::as_slice)
+                && repo["repo"].as_str() == Some("")
+            {
+                return Some(format!(
+                    "{subject} 已自动 rebase 到 {} @ {}",
+                    repo["onto"].as_str().unwrap_or(""),
+                    short(repo["head"].as_str().unwrap_or(""))
+                ));
+            }
             let repos = p["repos"]
                 .as_array()
                 .into_iter()
