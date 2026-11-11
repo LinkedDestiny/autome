@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/40
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-04；通过后下一实现轮推进 M-05 eval 用例
+next-action: 实现 M-05 eval 用例
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -242,7 +242,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-01 | 已完成 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
 | M-02 | 已完成 | 任务卡校验与面板链接脚本 | 0 | |
 | M-03 | 已完成 | autome-task 技能与短别名 | 0 | |
-| M-04 | 待审 | README 程序化创建说明与插件市场 README | 0 | |
+| M-04 | 已完成 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 开放 | eval 用例 | 0 | |
 | M-06 | 开放 | B-1：V7 示例键值一致性回归 | 0 | |
 | M-07 | 开放 | B-2：人工验收逐项隔离前置 | 0 | |
@@ -284,7 +284,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 ### M-04 验收契约
 
-最新证据：docs/在-plugins-新增-autome-插件/evidence/M-04-r4-impl.md · 专项通过，待审 · 实现 #4
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-04-r4-audit.md · 审计 #4 通过
 
 - 验收命令：`sh plugins/autome/tests/run.sh readme && sh plugins/autome/tests/verify-cli.sh readme`
 - 预期：readme 组 5 个用例通过（R1 插件 README 五个固定小节；R2「Agent 程序化创建」含 `task new --brief - --kind`、`--json`、`autome task start <id>`、`autome project ls --json`；R3 `task-new-json` 标记块含 `id`、`kind`、`slug`、`title`、`state`、`branch`、`doc_dir`、`started`、`queue_position`；R4 写明 `autome：` 前缀与退出码 1、2；R5 `plugins/README.md` 含 `autome@autome` 的 Claude Code 与 Codex 安装命令、`plugins/autome` 的 Cursor 复制命令与 `validate plugins/autome`，且 `loop@autome` 原有行仍在）；verify-cli readme 组 3 个用例通过（V7 `task-new-json` 块里的每个键都出现在真实 `task new --json` 输出里；V8 `project-ls-json` 块同理对 `project ls --json`；V9 README 写的不带 `--json` 的两行格式与真实输出相符）。共 8 个。

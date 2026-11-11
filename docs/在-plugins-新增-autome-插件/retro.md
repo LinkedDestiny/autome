@@ -10,3 +10,4 @@
 审计 #3 | M-03 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-03-r3-audit.md | 无
 
 实现 #4 | M-04 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-04-r4-impl.md | 全仓 Web 测试受沙箱监听限制，与上一轮一致
+审计 #4 | M-04 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-04-r4-audit.md | 无
