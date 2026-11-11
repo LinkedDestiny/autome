@@ -2,7 +2,7 @@
 # 只写覆盖项；未写的字段跟随 ~/.autome/config.toml。
 
 [loop]
-parallel = 2
+parallel = 3
 
 # 每个实现轮之后、合并前、合并后，宿主在任务 worktree 里跑一遍本地 CI。
 [gate]
