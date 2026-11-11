@@ -4145,3 +4145,350 @@ fn bug_loop_a_malformed_bug_doc_is_a_protocol_failure() {
         );
     }
 }
+
+#[test]
+fn bug_loop_cannot_reproduce_waits_for_info_and_a_reply_returns_to_locate_with_it() {
+    needs_git!();
+    let mut w = World::new("bug-info");
+    let slug = slug_for("need info");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    // Repro misses return to Locate too: every later Locate still sees the file.
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+    );
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    let id = create_bug(&mut w, "need info");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    let dashboard = w.call("dashboard.get", json!({}));
+    assert!(ok(&dashboard)["waiting"].to_string().contains(&id));
+    for text in ["", " \n\t"] {
+        let out = w.call("task.reply", json!({"task_id":id,"info":text}));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    }
+    assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 0);
+    for method in ["task.pause", "task.stop", "task.extend_budget"] {
+        assert!(matches!(
+            w.call(method, json!({"task_id":id,"extra_rounds":1}))
+                .reply
+                .outcome,
+            ReplyOutcome::Error { .. }
+        ));
+    }
+    let text = "  请保留  双空格\n中文 {budget_line} `不是指令`\n";
+    let out = w.call("task.reply", json!({"task_id":id,"info":text}));
+    ok(&out);
+    let relative = format!("docs/{slug}/{slug}-replies.md");
+    let wt = w.repo.join(".worktree").join(&slug);
+    let replies = w.ctx.store.task_replies(&id).unwrap();
+    let expected = format!("## 第 1 条（{}）\n\n{text}\n\n", replies[0].0);
+    assert_eq!(
+        std::fs::read(wt.join(&relative)).unwrap(),
+        expected.as_bytes()
+    );
+    let committed = std::process::Command::new("git")
+        .args(["show", &format!("HEAD:{relative}")])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(committed.status.success());
+    assert_eq!(committed.stdout, expected.as_bytes());
+    w.settle();
+    for n in [2, 3] {
+        assert!(w.prompt(n).contains(&format!("{slug}-replies.md")));
+    }
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        1
+    );
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    let mut blocked = World::new("reply-write-failure");
+    let slug = slug_for("blocked reply");
+    bug_step(
+        &blocked,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    let id = create_bug(&mut blocked, "blocked reply");
+    blocked.settle();
+    let file = blocked
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/{slug}-replies.md"));
+    std::fs::create_dir(&file).unwrap();
+    let out = blocked.call("task.reply", json!({"task_id":id,"info":"落盘失败也保留"}));
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    assert_eq!(
+        blocked.ctx.store.task_replies(&id).unwrap()[0].1["text"],
+        "落盘失败也保留"
+    );
+    assert!(matches!(
+        blocked.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Failed { .. }
+    ));
+}
+
+#[test]
+fn bug_loop_not_a_bug_waits_for_a_decision_and_can_be_cancelled_or_rebuilt_as_a_feature() {
+    needs_git!();
+    let mut w = World::new("not-bug");
+    let slug = slug_for("not bug");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "不是 Bug"),
+        "",
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "不是 Bug"),
+        "",
+    );
+    let id = create_bug(&mut w, "not bug");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("not_a_bug"));
+    for method in ["task.pause", "task.stop", "task.extend_budget"] {
+        let out = w.call(method, json!({"task_id":id,"extra_rounds":1}));
+        assert!(
+            matches!(out.reply.outcome, ReplyOutcome::Error { .. }),
+            "{method}"
+        );
+    }
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"确实是 Bug"})));
+    w.settle();
+    assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 1);
+    assert_eq!(w.node(&id).as_deref(), Some("not_a_bug"));
+    let brief = w.ctx.store.task_brief(&id).unwrap().unwrap();
+    let out = w.call("task.create",json!({"project_id":w.project_id,"request":"new feature","kind":"feature","brief":brief,"draft":true}));
+    let new_id = ok(&out)["task"]["id"].as_str().unwrap();
+    assert_eq!(w.ctx.store.task_brief(new_id).unwrap(), Some(brief));
+    ok(&w.call("task.cancel", json!({"task_id":id})));
+    assert_eq!(w.state(&id), "cancelled");
+    assert!(w.ctx.store.get_task(&id).unwrap().is_archived());
+}
+
+#[test]
+fn bug_loop_two_repro_misses_in_a_row_wait_for_info() {
+    needs_git!();
+    let mut w = World::new("two-misses");
+    let slug = slug_for("two misses");
+    for n in 1..=4 {
+        bug_step(
+            &w,
+            n,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+        );
+    }
+    let id = create_bug(&mut w, "two misses");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        2
+    );
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"再试一次"})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        4
+    );
+}
+
+#[test]
+fn bug_loop_fix_rounds_run_out_and_extend_adds_more() {
+    needs_git!();
+    let mut w = World::new("fix-budget");
+    w.configure("[bug]\nfix_rounds = 2\n");
+    let slug = slug_for("fix budget");
+    for n in 1..=3 {
+        bug_step(
+            &w,
+            n,
+            &slug,
+            &bug_doc("待复核"),
+            if n == 1 { BUG_LOCATE } else { "" },
+        );
+    }
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix budget");
+    w.settle();
+    let failed = w.ctx.store.get_task(&id).unwrap();
+    assert!(matches!(
+        failed.state,
+        autome_domain::task::TaskState::Failed {
+            reason: autome_domain::task::FailureReason::FixBudget { limit: 2 },
+            ..
+        }
+    ));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert!(matches!(
+        w.call("task.extend_budget", json!({"task_id":id,"extra_rounds":0}))
+            .reply
+            .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+    assert!(matches!(
+        w.call(
+            "task.extend_budget",
+            json!({"task_id":id,"extra_rounds":u32::MAX})
+        )
+        .reply
+        .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+    assert_eq!(w.ctx.store.get_task(&id).unwrap().budget_n, Some(2));
+    ok(&w.call("task.extend_budget", json!({"task_id":id,"extra_rounds":1})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let out = w.call("task.get", json!({"task_id":id}));
+    assert_eq!(ok(&out)["task"]["fix_round"], 3);
+    assert_eq!(ok(&out)["task"]["budget_n"], 3);
+}
+
+#[test]
+fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
+    needs_git!();
+    let mut w = World::new("fix-json");
+    let mut keys = Vec::new();
+    for kind in ["feature", "bug"] {
+        let out = w.call(
+            "task.create",
+            json!({"project_id":w.project_id,"request":kind,"kind":kind,"draft":true}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let out = w.call("task.get", json!({"task_id":id}));
+        let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        if kind == "bug" {
+            assert_eq!(task.remove("fix_round"), Some(json!(0)));
+        } else {
+            assert!(!task.contains_key("fix_round"));
+        }
+        keys.push(task.keys().cloned().collect::<Vec<_>>());
+        let out = w.call("task.reply", json!({"task_id":id,"info":"wrong state"}));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+        assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 0);
+    }
+    assert_eq!(keys[0], keys[1]);
+    let mut baseline = [
+        "id",
+        "kind",
+        "slug",
+        "title",
+        "request",
+        "state",
+        "budget_n",
+        "branch",
+        "created_at",
+        "completed_at",
+        "merge_commit",
+        "archived",
+        "protocol_ref",
+        "metrics",
+        "doc_dir",
+    ];
+    baseline.sort();
+    assert_eq!(keys[0], baseline);
+}
+
+#[test]
+fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos() {
+    needs_git!();
+    for (repos, keep_b) in [
+        ("repos: a", false),
+        ("repos: a", true),
+        ("", false),
+        ("repos: stranger", false),
+    ] {
+        let mut w = Workspace::new("bug-select", &["a", "b", "docs"]);
+        let slug = slug_for("workspace bug");
+        let doc = bug_doc("待复核").replace(
+            "复现命令: sh regression.sh",
+            &format!("复现命令: cd a && sh regression.sh\n{repos}"),
+        );
+        let extra = if keep_b {
+            "(cd b; echo preserve > keep.txt; git add keep.txt; git -c user.name=fake -c user.email=f@f commit -qm keep)"
+        } else {
+            ""
+        };
+        let check_b = if keep_b {
+            "test -f b/keep.txt"
+        } else {
+            "test ! -e b"
+        };
+        w.step(1,&format!("set -e\n{extra}\ntest -d a/.git || test -f a/.git\ntest -f b/.git\n(cd a; {BUG_LOCATE}; git add -A; git -c user.name=fake -c user.email=f@f commit -qm repro)\nmkdir -p docs/autome/{slug}\ncat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{doc}\nEOF\n"));
+        w.step(
+            2,
+            &format!(
+                "set -e\n{check_b}\ntest -f a/.git\necho kept > docs/kept.txt\n(cd a; {BUG_FIX})\n"
+            ),
+        );
+        let reviewed = doc.replace("复核: 待复核", "复核: 通过");
+        w.step(
+            3,
+            &format!("cat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{reviewed}\nEOF\n"),
+        );
+        let out = call(
+            &mut w.ctx,
+            "task.create",
+            json!({"project_id":w.project_id,"request":"workspace bug","kind":"bug"}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let state = w.ctx.store.get_task(&id).unwrap().state;
+            if state.node().is_some_and(|node| node.awaits_user())
+                || matches!(state, autome_domain::task::TaskState::Failed { .. })
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if repos == "repos: a" {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 1);
+            let cwd = w.ws().join(".worktree").join(&slug);
+            assert_eq!(cwd.join("b").exists(), keep_b);
+            assert!(cwd.join("docs/kept.txt").exists());
+        } else {
+            let task = w.ctx.store.get_task(&id).unwrap();
+            assert!(
+                matches!(task.state, autome_domain::task::TaskState::Failed { reason: autome_domain::task::FailureReason::Protocol { ref detail }, .. } if detail.contains("repos")),
+                "{:?}",
+                task.state
+            );
+        }
+    }
+}

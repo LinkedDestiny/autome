@@ -869,7 +869,22 @@ fn read_bug_outcome(
     let path = task.bug_doc();
     match std::fs::read_to_string(task_docs_root(project, &task.slug).join(&path)) {
         Ok(text) => match autome_domain::bug_doc::parse(&text) {
-            Ok(doc) => BugSessionOutcome::Ok { doc: Box::new(doc) },
+            Ok(doc) => {
+                if project.is_workspace()
+                    && doc.status == autome_domain::bug_doc::BugStatus::Located
+                    && (doc.repos.is_empty()
+                        || doc
+                            .repos
+                            .iter()
+                            .any(|name| !project.members.iter().any(|m| &m.name == name)))
+                {
+                    return BugSessionOutcome::GuardFailed {
+                        detail: "已定位的工作区 Bug 的 repos 必须非空且都是成员名".into(),
+                    };
+                }
+                BugSessionOutcome::Ok { doc: Box::new(doc) }
+            }
+
             Err(error) => BugSessionOutcome::Unparseable { error },
         },
         Err(_) => BugSessionOutcome::MissingArtifact { path },
@@ -888,11 +903,32 @@ fn deliver_bug_outcome(
     {
         return Ok(());
     }
+    if s.kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && project.is_workspace()
+        && let BugSessionOutcome::Ok { doc } = &outcome
+        && doc.status == autome_domain::bug_doc::BugStatus::Located
+    {
+        let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+        for slot in layout.repos {
+            if !slot.is_docs
+                && !doc.repos.contains(&slot.name)
+                && git::is_clean(&slot.worktree)?
+                && git::commit_subjects(&slot.repo_root, &slot.base, &slot.branch)?.is_empty()
+            {
+                git::worktree_remove(&slot.repo_root, &slot.worktree.to_string_lossy(), false)?;
+                git::branch_delete(&slot.repo_root, &slot.branch, false)?;
+            }
+        }
+    }
     advance(ctx, &task.id, &Trigger::BugSessionEnded { outcome })?;
+
     Ok(())
 }
 
-fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
+pub(crate) fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
     Ok(bug_loop::uses_bug_loop(
         task.kind,
         &task.state,
@@ -1064,6 +1100,11 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         Err(rejected) => return Err(err(rejected.reason)),
     };
 
+    if let Trigger::Reply { info } = trigger {
+        let n = ctx.store.count_events(task_id, "task.replied")? + 1;
+        ctx.store
+            .append_event("task.replied", task_id, json!({"n": n, "text": info}))?;
+    }
     if bug
         && matches!(task.state, TaskState::Queued)
         && transition.next.node() == Some(Node::Locate)
@@ -1612,10 +1653,27 @@ pub fn working_repos(project: &Project, task: &TaskRecord) -> Vec<String> {
         }
         names.sort();
     }
-    for declared in read_status(project, task)
-        .map(|s| s.repos)
-        .unwrap_or_default()
+    let bug_path = task_docs_root(project, &task.slug).join(task.bug_doc());
+    let declared = if task.kind == TaskKind::Bug && bug_path.exists() {
+        std::fs::read_to_string(bug_path)
+            .ok()
+            .and_then(|text| autome_domain::bug_doc::parse(&text).ok())
+            .map(|doc| doc.repos)
+            .unwrap_or_default()
+    } else {
+        read_status(project, task)
+            .map(|s| s.repos)
+            .unwrap_or_default()
+    };
+    if task.kind == TaskKind::Bug
+        && names.is_empty()
+        && !task_docs_root(project, &task.slug)
+            .join(task.design_doc())
+            .exists()
     {
+        names.extend(project.members.iter().map(|m| m.name.clone()));
+    }
+    for declared in declared {
         if !names.contains(&declared) {
             names.push(declared);
         }
@@ -1820,6 +1878,33 @@ fn launch_session(
     }
     let card = ctx.store.task_brief(&task.id)?;
     write_task_inputs(task, card.as_deref(), &layout.docs_root, first_time)?;
+    if kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+    {
+        let replies = ctx.store.task_replies(&task.id)?;
+        if !replies.is_empty() {
+            let mut text = String::new();
+            for (time, reply) in replies {
+                text.push_str(&format!(
+                    "## 第 {} 条（{time}）\n\n{}\n\n",
+                    reply["n"],
+                    reply["text"].as_str().unwrap_or("")
+                ));
+            }
+            let relative = format!("{}/{}-replies.md", task.doc_dir(), task.slug);
+            let path = layout.docs_root.join(&relative);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(&text) {
+                std::fs::write(&path, text).map_err(|e| err(format!("无法写入补充信息：{e}")))?;
+                git::commit_paths(
+                    &layout.docs_root,
+                    &[&relative],
+                    &format!("chore(autome): {} 补充信息", task.id),
+                )?;
+            }
+        }
+    }
     let worktree = layout.docs_root.clone();
 
     // Which rules this task is held to, decided once and then frozen. A task

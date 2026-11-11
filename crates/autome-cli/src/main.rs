@@ -40,7 +40,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
 卡点与控制
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
-  reply <任务> \"补充信息\"       Bug Loop 上线前等同 reject
+  reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
   merge <任务>                   合并到默认分支
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
@@ -152,7 +152,7 @@ fn run(argv: &[String]) -> Result<()> {
         }
         "reply" => {
             let feedback = a.need(2, "补充信息")?;
-            trigger(&mut c, &a, "task.reject", json!({ "feedback": feedback }))
+            trigger(&mut c, &a, "task.reply", json!({ "info": feedback }))
         }
         "rerun" => {
             let node = a
@@ -1124,5 +1124,14 @@ mod task_card {
         ] {
             assert!(super::USAGE.contains(text), "{text}");
         }
+    }
+}
+
+#[cfg(test)]
+mod bug_usage_tests {
+    #[test]
+    fn bug_loop_usage_no_longer_says_reply_equals_reject() {
+        assert!(!super::USAGE.contains("Bug Loop 上线前"));
+        assert!(super::USAGE.contains("Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject"));
     }
 }

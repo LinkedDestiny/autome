@@ -635,6 +635,21 @@ impl Store {
         Ok(seq as u64)
     }
 
+    /// All supplementary information for this task, in arrival order.
+    pub fn task_replies(&self, task_id: &str) -> Result<Vec<(String, Value)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT at, payload FROM events WHERE subject_id = ?1 AND kind = 'task.replied' ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (time, payload) = row?;
+            Ok((time, serde_json::from_str(&payload)?))
+        })
+        .collect()
+    }
+
     /// Events after `after_seq`, oldest first. The Renderer's resync path.
     /// `events_since`, with the subject each event is about — the task, the
     /// project or the alert. The command line's `run` names the task on every

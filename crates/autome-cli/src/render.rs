@@ -8,6 +8,13 @@ use serde_json::Value;
 
 pub fn node_label(node: &str) -> &str {
     match node {
+        "locate" => "定位",
+        "repro_check" => "复现检查",
+        "fix" => "修复",
+        "fix_gate" => "修复门禁",
+        "fix_review" => "复核",
+        "await_info" => "等你补充信息",
+        "not_a_bug" => "等你决定（不是 Bug）",
         "intake" => "任务整理",
         "design" => "设计",
         "review" => "评审",
@@ -47,7 +54,7 @@ pub fn state_line(state: &Value) -> String {
         },
         "active" => {
             let n = state["node"].as_str().unwrap_or("?");
-            if n.starts_with("await_") {
+            if n.starts_with("await_") || n == "not_a_bug" {
                 node_label(n).into()
             } else {
                 format!("运行中 · {}", node_label(n))
@@ -66,6 +73,7 @@ fn failure(reason: &Value) -> String {
     let detail = reason["detail"].as_str().unwrap_or("");
     match reason["kind"].as_str().unwrap_or("") {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
+        "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
         "infeasible" => "设计文档判定不可实现".into(),
         "protocol" => format!("协议失败：{detail}"),
@@ -92,6 +100,15 @@ pub fn next_step(task: &Value) -> Option<String> {
         ("active", "await_design_approval") => Some(format!(
             "autome approve {id}    或    autome reject {id} \"意见\""
         )),
+        ("active", "await_info") => Some(format!(
+            "autome reply {id} \"补充信息\"    或    autome cancel {id}"
+        )),
+        ("active", "not_a_bug") => Some(format!(
+            "autome cancel {id}    或    autome task new --kind feature --brief <卡片>；确认是 Bug：autome reply {id} \"理由\""
+        )),
+        ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
+            Some(format!("autome extend {id} 1"))
+        }
         ("active", "await_merge") => Some(format!("autome merge {id}")),
         ("failed", _) => Some(format!(
             "autome status {id}    （看原因，再 rerun / extend / cancel）"
@@ -169,6 +186,22 @@ pub fn short(s: &str) -> &str {
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
+        "bug.loop_started" => format!("{subject} 开始 Bug Loop"),
+        "bug.located" => format!("{subject} 定位：{}；{}", s("status"), s("root_cause")),
+        "bug.reproduced" => format!(
+            "{subject} 已复现：{}（退出码 {}）",
+            s("command"),
+            p["exit_code"]
+        ),
+        "bug.repro_missed" => format!(
+            "{subject} 未复现：{}；{}\n{}",
+            s("command"),
+            s("why"),
+            s("tail")
+        ),
+        "bug.fix_round_started" => format!("{subject} 修复第 {} / {} 轮", p["round"], p["limit"]),
+        "bug.reviewed" => format!("{subject} 复核第 {} 轮：{}", p["round"], s("verdict")),
+        "task.replied" => format!("{subject} 补充信息 #{}：{}", p["n"], s("text")),
         "task.started" => format!("{subject} 开始"),
         "task.created" => format!("{subject} 新任务"),
         "task.updated" => format!("{subject} → {}", state_line(&p["state"])),
@@ -185,7 +218,12 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
                     "retro" => "复盘",
                     other => other,
                 })
-                .unwrap_or("任务整理");
+                .unwrap_or_else(|| {
+                    p["kind"]["step"]
+                        .as_str()
+                        .map(node_label)
+                        .unwrap_or("任务整理")
+                });
             format!(
                 "{subject} 开始{label}会话 #{}（{}）",
                 p["round"],
@@ -406,5 +444,61 @@ mod task_card {
             event_line("task.started", "T-1", &json!({})).as_deref(),
             Some("T-1 开始")
         );
+    }
+}
+
+#[cfg(test)]
+mod bug_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn bug_loop_render_labels_every_bug_node_event_and_failure() {
+        for (node, label) in [
+            ("locate", "定位"),
+            ("repro_check", "复现检查"),
+            ("fix", "修复"),
+            ("fix_gate", "修复门禁"),
+            ("fix_review", "复核"),
+            ("await_info", "等你补充信息"),
+            ("not_a_bug", "等你决定（不是 Bug）"),
+        ] {
+            assert_eq!(node_label(node), label);
+            assert!(state_line(&json!({"state":"active","node":node})).contains(label));
+        }
+        for kind in [
+            "bug.loop_started",
+            "bug.located",
+            "bug.reproduced",
+            "bug.repro_missed",
+            "bug.fix_round_started",
+            "bug.reviewed",
+            "task.replied",
+        ] {
+            assert!(
+                event_line(
+                    kind,
+                    "T-1",
+                    &json!({"round":2,"limit":3,"n":1,"text":"原文"})
+                )
+                .is_some(),
+                "{kind}"
+            );
+        }
+        assert_eq!(
+            failure(&json!({"kind":"fix_budget","limit":2})),
+            "修复轮次用完（上限 2）"
+        );
+        assert_eq!(next_step(&json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"fix_budget","limit":2}}})).as_deref(),Some("autome extend T-1 1"));
+        for (step, label) in [("locate", "定位"), ("fix", "修复"), ("fix_review", "复核")] {
+            assert!(
+                event_line(
+                    "session.started",
+                    "T-1",
+                    &json!({"kind":{"kind":"bug","step":step}})
+                )
+                .unwrap()
+                .contains(label)
+            );
+        }
     }
 }
