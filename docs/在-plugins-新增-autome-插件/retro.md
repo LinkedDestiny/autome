@@ -17,3 +17,4 @@
 实现 #6 | M-06 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-06-r6-impl.md | 无（全仓门禁环境限制见证据）
 审计 #6 | M-06 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-06-r6-audit.md | 无
 实现 #7 | M-07 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-07-r7-impl.md | 全仓 Web 测试受沙箱 listen EPERM 阻塞
+审计 #7 | M-07 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-07-r7-audit.md | 无

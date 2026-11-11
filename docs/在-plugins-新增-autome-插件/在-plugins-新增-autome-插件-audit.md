@@ -1,5 +1,5 @@
-# 审计 #6 · M-06
+# 审计 #7 · M-07
 
-结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-06-r6-audit.md
+结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-07-r7-audit.md
 
-新造检查：对 README 的 task-new-json 示例做七种键/值篡改（id、state、started、kind、branch、queue_position、archived），V7 全部失败；结果均符合预期，已还原。
+新造检查：逐条提取 H-01/H-02/H-04 匹配两个前置，并对副本做三种篡改（删 export、删 unset、export 改值），均被检出；run.sh all 59/59。已还原（未改原文件）。
