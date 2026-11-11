@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 8/35
+implementation-round: 9/35
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: Autome 在本轮提交上重跑 sh scripts/ci-local.sh；若 End to end 再失败，保留失败用例全名和断言以定位
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -420,7 +420,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-07 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-audit.md · 通过 · 审计 #7
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r9-impl.md · 门禁原失败未复现，本地 Web 测试受环境阻塞；保留审计通过状态 · 实现 #9
 
 - 用户 2026-11-11 将 B-04 纳入为独立里程碑；补步已是 M-02 的强制契约，本里程碑对其作独立回归验收，不重复实现。
 - 命令：`npm test --prefix apps/web -- test/notifier.test.ts`；然后全量四件。
@@ -444,3 +444,5 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - B-02 用户 2026-11-11 裁定忽略、不做：W6 的「等你处理」角标从 `store.unreadByTask(<levelOf 为 need_you 的 kind>)` 取数，由 W5 的 `getLoadContext` 把库对象交给 loader。
 
 ## 争议项
+
+- D-01 本地门禁重复遇到 `listen EPERM: operation not permitted 127.0.0.1` / `File watcher error: EMFILE: too many open files, watch`，无法取得整条门禁通过证据。由 Autome 在宿主工作目录 `/Users/dannie/project/autome-v2/.worktree/实现-web-sqlite3-与通知器` 执行 `sh scripts/ci-local.sh`；若再次出现宿主的 End to end 失败，保留该步骤的失败用例全名、断言和上下文。当前提供的宿主尾部日志只有汇总，不能据此定位根因。

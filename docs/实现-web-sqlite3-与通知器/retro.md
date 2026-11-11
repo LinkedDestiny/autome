@@ -22,3 +22,4 @@
 审计 #6 | M-06 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-06-r7-audit.md | 无
 实现 #8 | M-07 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-impl.md | 全量遇 listen EPERM / watcher EMFILE
 审计 #7 | M-07 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-audit.md | 无
+实现 #9 | M-07 | 门禁原失败未复现，状态不变 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r9-impl.md | Web listen EPERM / watcher EMFILE；待宿主复跑
