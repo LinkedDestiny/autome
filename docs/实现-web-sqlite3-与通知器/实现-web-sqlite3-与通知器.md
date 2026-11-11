@@ -1,7 +1,7 @@
 # Web 通知（W4）：web.sqlite3 面板库、事件→通知规则与实时推送、顶栏铃铛已读与后台系统通知
 
-status: 设计中
-design-round: 1/15
+status: 实现中
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -190,7 +190,7 @@ CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
    W5/W6 的「等你处理」列展示。之后的每次启动都从持久游标续拉，停服期间的事件全部补齐。
 3. **拉取**：`events.since {"after_seq": cursor, "limit": pageSize}`，按 `seq` 升序逐条处理，直到 `cursor >= latest_seq` 或本页为空。
 4. **账本更换**：`latest_seq < cursor` 时调 `store.resetLedger('notifier', latest_seq)`，日志一行
-   「[通知] 账本已更换（最新序号 X 小于游标 Y），从 X 继续」，本轮结束。新账本在游标之前的事件不补（无法判断哪些已通知过）。
+   「[通知] 账本已更换（最新序号 X 小于游标 Y），从 X 继续」，本轮结束。重置时同时清空进程内的「每任务最近状态」记忆与补齐缓存：新账本会复用 T-1 之类的任务编号，旧账本留下的状态会抑制新账本的首次进入、旧缓存会把旧项目信息补给新任务（评审 N2-01，实现注意事项；`notifier.test.ts` 的换账本用例顺带断言）。新账本在游标之前的事件不补（无法判断哪些已通知过）。
 5. **逐条处理**：不命中规则的事件只推进内存里的「待写游标」；命中时先补齐信息——
    - 补齐抛错且没有 `code`（内核未连接、超时）：本轮停下，把「待写游标」写到这条事件之前，日志一行「[通知] 补齐 T-3 的信息失败，稍后重试：…」，
      下次 `pull` 从这条重来。游标只在事件确定处理完之后推进（任务约束 2）。
@@ -242,7 +242,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 `notification`、`notification-read`（都触发重新拉取），其余（`event`、`core`、`reload`）忽略。
 
 **不维护副本**：铃铛的未读数和列表一律来自 `GET /api/notifications`，收到消息只触发重新拉取，不在客户端自增自减。拉取单飞：在途时再来消息
-只记一次「再拉」。`notification` 触发的拉取完成后，控制器把「这条消息 + 刷新后的列表」交给 `onNotification`（§7 的系统通知从列表里取该条的 `body` 与 `project_id`）；拉取失败则不交。单条已读 / 全部已读发 POST 后重新拉取；其它标签页靠 `notification-read` 广播重新拉取，于是一个标签页点已读，所有标签页
+只记一次「再拉」。`notification` 触发的拉取结束后，不论成败，控制器都把「这条消息 + 刷新后的列表」交给 `onNotification`（§7 的系统通知从列表里取该条的 `body` 与 `project_id`）；拉取失败时列表为 `null`，铃铛照常显示「通知加载失败：…」，系统通知走 §7 的降级。理由：消息是服务端已提交游标后唯一一次推送，不会重放，不能让补齐正文的 GET 失败连带吞掉提醒（评审 D2-P01）。单条已读 / 全部已读发 POST 后重新拉取；其它标签页靠 `notification-read` 广播重新拉取，于是一个标签页点已读，所有标签页
 的计数都会变。
 
 ### 7. 铃铛界面与系统通知（R-06、R-07）
@@ -262,11 +262,11 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - **系统通知接口**：`SystemNotifier = { permission(): 'default'|'granted'|'denied'|'unsupported'; request(): Promise<…>; show({id,title,body,href: string | null}): void }`。
   `browserSystemNotifier(window)` 用 `new Notification(title, { body, tag: id })`，点击时 `window.focus()`，`href` 非空才跳转（`resolveTarget` 为 `null` 时只回到面板，不进 404）。
   `NotificationBell` 接受可选的 `systemNotifier`，缺省用浏览器实现；W11 传入调 preload `notify()` 的实现即可替换。
-- **何时弹**：收到 `notification` 消息并拿到刷新后的列表（§6）后，`shouldShow({ message, permission, hidden })` 只看三件事，全部满足就 `show`：
+- **何时弹**：收到 `notification` 消息、刷新结束后（§6，成败不论），`shouldShow({ message, permission, hidden })` 只看三件事，全部满足就 `show`：
   `levelOf(message.kind) === 'need_you'`（「知会」级只进铃铛，R-07）；`permission() === 'granted'`；本标签页 `document.hidden === true`。
   不看别的标签页，不做跨标签页认领，不用 Web Locks、`localStorage`，也没有新鲜期或保留期。
-  - `show` 的参数：`id`、`title` 取消息自带的；`body` 取列表里同 id 条目的 `body`（找不到或为空时不带正文）；`href` 为
-    `resolveTarget(列表条目 ?? { task_id: message.task_id, project_id: null })`。
+  - `show` 的参数：`id`、`title` 取消息自带的；`body` 取列表里同 id 条目的 `body`（列表为 `null`、找不到或为空时不带正文）；`href` 为
+    `resolveTarget(列表条目 ?? { task_id: message.task_id, project_id: null })`；刷新失败（列表为 `null`）与找不到条目走同一降级，只靠消息自带的 `id`、`title`、`task_id`。
   - **多个后台标签页**：每个后台标签页都会 `show` 同一条，但 `tag` 都是通知 id，由系统按 `tag` 把它们合并成一条（同 tag 的新通知替换旧的，
     `renotify` 保持缺省 `false`，替换时不再次提醒）。不同通知 id 不同，互不合并。
   - 已知取舍（用户 2026-11-11 选定）：一个标签页在前台、另一个在后台时，后台那个仍会弹；标签页被冻结后迟到处理时，可能在已读之后才弹。两者都只多一条横幅，不漏发。
@@ -367,7 +367,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 - 验收命令：`npm test --prefix apps/web -- test/bell-client.test.ts test/bell-view.test.ts`；然后全量四件；再 `npm run build --prefix apps/web`。
 - 预期：`bell-client.test.ts` 6 个用例（假 socket、假 fetch，不监听端口）：(1) `start()` 拉取一次，`hello`、`notification`、`notification-read` 各触发重新拉取，
-  `notification` 的拉取完成后把「消息 + 刷新后的列表」交给 `onNotification`（拉取失败不交），`event` / `core` / `reload` 不触发拉取；(2) 拉取单飞（在途时来两条消息只补拉一次）；
+  `notification` 的拉取结束后把「消息 + 刷新后的列表」交给 `onNotification`（拉取失败时仍交，列表为 `null`，铃铛显示加载失败文案），`event` / `core` / `reload` 不触发拉取；(2) 拉取单飞（在途时来两条消息只补拉一次）；
   (3) `markRead` / `markAll` 的 POST 体与失败时的中文错误且计数不变；(4) `createLiveClient` 的 `onMessage`：`hello` / `event` / `core` / `reload` 照旧走内置回调
   （`event` 仍交给 `onEvents`、`reload` 仍触发 `onReload`）且之后也交给 `onMessage`，`notification` / `notification-read` 只交给 `onMessage`、不触发任何内置回调，
   非 JSON、没有字符串 `type` 的、旧 socket 上的迟到消息、`stop()` 之后的消息都不交；不传 `onMessage` 时行为与现有一致；(5) 订阅表：两个订阅者都收到，
@@ -390,19 +390,19 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   (1)「需要你」+ `document.hidden` 为 `true` + 已授权 → 拿到列表后立即 `show` 一次，参数为消息的 `id` / `title`、列表条目的 `body`、`resolveTarget` 得出的 `href`；
   (2) 知会级（`done`）不弹；(3) `document.hidden` 为 `false` 时不弹（即使「需要你」且已授权）；(4) `default` / `denied` / `unsupported` 不弹也不请求权限，`request` 只在调用 `request()` 时发生；
   (5) 两个后台标签页（两个控制器）处理同一条：各 `show` 一次、传给 `Notification` 的 `tag` 都等于该通知 id，另一条通知的 `tag` 是它自己的 id；
-  (6) 列表里找不到该 id 时仍弹，用消息自带的 `title`、不带正文，`href` 由消息的 `task_id` 经 `resolveTarget` 得出；(7) 点击系统通知 `focus`，`href` 为 `/tasks/T-3` 时跳转，
+  (6) 列表里找不到该 id、或刷新失败（列表为 `null`）时仍弹，用消息自带的 `title`、不带正文，`href` 由消息的 `task_id` 经 `resolveTarget` 得出；(7) 点击系统通知 `focus`，`href` 为 `/tasks/T-3` 时跳转，
   `href` 为 `null` 时只 `focus` 不跳转；(8) `browserSystemNotifier` 传给 `Notification` 的是 `(title, { body, tag: id })`，`NotificationBell` 使用传入的 `systemNotifier` 而不碰全局 `Notification`，
   且 `bell-system.ts` 源码里不出现 `navigator.locks` 与 `localStorage`（简化后的源码守卫）。
   `bell-view.test.ts` 在 M-04 的 7 个之上加 1 个：权限 `default` 显示「开启系统通知」按钮、`denied` 显示拒绝提示、`granted` / `unsupported` 不显示。两文件共 16 个。
   Web 全量 32 个文件、299 个用例，0 跳过；desktop 同基线；build 通过。
 - 负向对照：不判断级别时，用例 (2) 失败；判断 `visibilityState === 'visible'` 写反（可见时弹）时，用例 (1) 与 (3) 失败；`tag` 用固定字符串或不传时，用例 (5) 与 (8) 失败；
-  挂载时就调 `request()` 时，用例 (4) 失败；列表找不到条目就放弃时，用例 (6) 失败。
+  挂载时就调 `request()` 时，用例 (4) 失败；列表找不到条目或刷新失败就放弃时，用例 (6) 失败（`bell-client` 用例 (1) 的「拉取失败仍交」断言同样失败）。
 
 ## 人工验收清单
 
 - H-01 开两个标签页打开面板，在 A 的铃铛里点一条「已读」，B 的未读数不刷新页面即减少；在 A 点「全部已读」，B 的徽标消失。
 - H-02 点铃铛里的「开启系统通知」，浏览器弹出授权框；允许后切到别的标签页，用 `autome` 让一个任务进入等你批准，系统弹出「T-x 设计已定稿，等你批准」横幅；点横幅回到面板标签页，W7 路由上线前停留在当前页（不进 404），上线后跳到 `/tasks/T-x`。铃铛里该条标题是纯文本并显示「详情页尚未开放」。
-- H-03 两个面板标签页都放在后台时造出一条「需要你」通知，系统通知中心里这条只留一条（同 tag 合并）；再造一条不同的通知，出现第二条；面板标签页在前台时它自己不弹。这是 `tag` 合并在真实浏览器里的唯一验证，失败即退回 M-05。
+- H-03 两个面板标签页都放在后台时造出一条「需要你」通知，系统通知中心里这条只留一条（同 tag 合并）；再造一条不同的通知，出现第二条；面板标签页在前台时它自己不弹。这是 `tag` 合并在真实浏览器里的唯一验证；结果由用户合并前确认，不触发里程碑退回。
 - H-04 在授权框里选「拒绝」，铃铛面板显示「系统通知已被浏览器拒绝，铃铛照常提醒」，铃铛计数与列表照常工作。
 - H-05 1512×944 窗口下页面本身无纵向滚动条；铃铛列表条目多于一屏时只在面板内部滚动。
 - H-06 用 Node 22（`/opt/homebrew/opt/node@22/bin/node apps/web/server/start.js`）启动面板，终端里不出现 `SQLite is an experimental feature` 告警。
