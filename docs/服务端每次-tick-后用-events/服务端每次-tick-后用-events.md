@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 21/30
+implementation-round: 22/30
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许监听本地端口的执行环境复验 M-01 验收命令与负向对照，依据完整失败日志修复；本轮监听 EPERM，M-01 保持开放
+next-action: 由 Autome 在本轮提交重跑 sh scripts/ci-local.sh，确认跨进程 cancel 的嵌套状态断言通过；随后复验 M-01 验收与负向对照，保持开放
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -45,7 +45,7 @@ next-action: 在允许监听本地端口的执行环境复验 M-01 验收命令�
   否则查 PATH（`launcher.rs:888-899`）。在 `PATH=/usr/bin:/bin`（没有 claude/codex）下：
   `project add <仓库> --skip-onboarding` → `task new "…" -p <仓库>` 得到 `task.created`、`task.updated`(active)、
   `task.updated`(failed，原因 PATH 中找不到 claude)，没有任何进程被拉起；之后 `scheduler.tick` 是空操作；
-  `autome cancel T-1` 追加 `task.updated`（`{state:"cancelled", trigger:"cancel"}`，subject `T-1`）与 `task.metrics`。
+  `autome cancel T-1` 追加 `task.updated`（`{state:{state:"cancelled"}, trigger:"cancel"}`，subject `T-1`）与 `task.metrics`。
   注意：在 zsh 里、cwd 含非 ASCII 字符时命令行会因 `_` 环境变量 panic（`launcher.rs:839`）；从 Node 用构造好的
   env 启动子进程没有 `_`，不受影响。
 - `cargo test --workspace --all-targets` 会构建 `target/debug/autome`（`crates/autome-cli/tests/cli.rs` 用
@@ -255,7 +255,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
    顺序：`project add <仓库> --skip-onboarding` → `task new` → 任务停在 `failed`；起服务、连 `/ws`；
    `autome cancel T-1`，从命令行退出开始计时。
 2. **「一个 tick 周期」的判据。** 3000 ms 间隔加这一次 tick 与拉取本身的执行时间，断言 ≤ 3500 ms 收到
-   `task.updated`/`T-1`/`payload.state === "cancelled"`，再等 3500 ms 确认这个 `seq` 只出现一次、全程 `seq` 严格递增。
+   `task.updated`/`T-1`/`payload.state.state === "cancelled"`，再等 3500 ms 确认这个 `seq` 只出现一次、全程 `seq` 严格递增。
    实际延迟写进证据。
 3. **R-03 杀内核。** `test/fixtures/automed-pidfile.sh`：把 `$$` 写进 `$AUTOME_HOME/automed.pid` 再
    `exec "$W3_REAL_AUTOMED"`（真实路径由测试放进子服务 env，sidecar 继承）。测试 `kill` 这个 pid，
@@ -297,7 +297,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   都能连上；④R-02：`autome cancel T-1` 后 ≤ 3500 ms 收到对应 `event`，再等一个周期不重复；⑤（最后执行）向服务
   子进程发 SIGTERM，`/ws` 客户端收到关闭，子进程 5 秒内退出。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r21-impl.md · 静态与 Desktop 检查通过，真实服务验收受监听 EPERM 阻断，保持开放 · 实现 #21
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-01-r22-impl.md · 修复 cancel 事件嵌套状态断言，完整门禁受监听 EPERM 阻断，保持开放 · 实现 #22
 
 **M-02**（R-01 的 resume/reload/core 与挂点、R-03；前置 M-01）。按 §3 情形表实现续传；`core` 推送与去重；
 恢复后立即补拉；账本回退；`broadcast`/`onClientMessage`/`onDisconnect`。新测试：

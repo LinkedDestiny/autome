@@ -75,7 +75,7 @@ test('同一开发服务 HMR 与 /ws 共存', async () => {
 test('命令行跨进程 cancel 在一个 tick 周期内送达且不重复', async () => {
   const c = connect(); await waitFor(() => c.messages.find(m => m.type === 'hello'));
   command(['cancel', 'T-1']); const start = performance.now();
-  const received = await waitFor(() => c.messages.find(m => m.type === 'event' && m.kind === 'task.updated' && m.subject === 'T-1' && (m.payload as { state?: string }).state === 'cancelled'), 3500);
+  const received = await waitFor(() => c.messages.find(m => m.type === 'event' && m.kind === 'task.updated' && m.subject === 'T-1' && (m.payload as { state?: { state?: string } }).state?.state === 'cancelled'), 3500);
   const elapsed = performance.now() - start; expect(elapsed).toBeLessThanOrEqual(3500); console.log(`跨进程事件延迟：${elapsed.toFixed(0)} ms`);
   await new Promise(r => setTimeout(r, 3500));
   const events = c.messages.filter(m => m.type === 'event'); expect(events.filter(e => e.seq === (received as { seq: number }).seq)).toHaveLength(1);
