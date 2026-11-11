@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 6/30
-current-milestone: M-05
+current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05 的全量门禁与需求零变化证据；通过后推进 M-06 回归测试保护
+next-action: 推进 M-06：保护定位提交中的回归测试文件
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -456,7 +456,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 | M-02 | 已完成 | 协议 v2：bug-protocol.md、三份 prompt、eval 静态门与渲染 | 0 | protocol-bug |
 | M-03 | 已完成 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 已完成 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
-| M-05 | 待审 | 需求任务零变化与全量门禁 | 0 | regression |
+| M-05 | 已完成 | 需求任务零变化与全量门禁 | 0 | regression |
 | M-06 | 开放 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
 
 ## 里程碑说明
@@ -677,7 +677,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-05 范围
 
-最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-05-r6-impl.md · 验收通过，待审 · 实现 #6
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-05-r6-audit.md · 通过 · 审计 #5
 
 - 覆盖：A1「需求任务的转换不变」的总体证明；C2、C3、C7、C11、C12。前置：M-04。
 - 改动：不新增功能。只修复全量门禁暴露的问题，并在证据文件里逐条核对 §11（`git diff 81a4394 -U0` 在四个集成测试
