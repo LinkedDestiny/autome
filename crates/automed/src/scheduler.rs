@@ -938,8 +938,51 @@ fn deliver_bug_outcome(
     Ok(())
 }
 
-/// Whole-file protection: inline tests intentionally protect their source file too.
-fn regression_file(path: &str, contents: &str, previous: &str, command: &str) -> bool {
+/// Where a source file's inline tests begin: the first test marker. Everything
+/// from there to the end is the test section.
+fn test_section_start(text: &str) -> Option<usize> {
+    [
+        "#[test]",
+        "#[cfg(test)]",
+        "#[tokio::test]",
+        "describe(",
+        "\nit(",
+    ]
+    .iter()
+    .filter_map(|marker| text.find(marker))
+    .min()
+}
+
+fn section_digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// How a file the locate round touched is protected from the fix round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protection {
+    /// A test file or the repro script: the fix may not change it at all.
+    File,
+    /// Product source with inline tests (Rust's `mod tests`): the fix may edit
+    /// the product code above the tests, but not the test section itself.
+    Section,
+}
+
+impl Protection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Protection::File => "file",
+            Protection::Section => "section",
+        }
+    }
+}
+
+fn regression_protection(
+    path: &str,
+    contents: &str,
+    previous: &str,
+    command: &str,
+) -> Option<Protection> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let named = path
         .split('/')
@@ -950,21 +993,9 @@ fn regression_file(path: &str, contents: &str, previous: &str, command: &str) ->
         || [".test.", ".spec.", "_test.", "_spec."]
             .iter()
             .any(|p| name.contains(p));
-    // Rust's inline test module protects the whole source file only when that
-    // test section changed; a product edit above an unchanged module is allowed.
-    let test_section = |text: &str| {
-        [
-            "#[test]",
-            "#[cfg(test)]",
-            "#[tokio::test]",
-            "describe(",
-            "\nit(",
-        ]
-        .iter()
-        .filter_map(|marker| text.find(marker))
-        .min()
-    };
-    let inline = match (test_section(contents), test_section(previous)) {
+    // A source file counts only when its inline test section changed; a
+    // product edit above an unchanged module is not a regression test.
+    let inline = match (test_section_start(contents), test_section_start(previous)) {
         (Some(now), Some(before)) => contents[now..] != previous[before..],
         (Some(_), None) | (None, Some(_)) => true,
         (None, None) => false,
@@ -979,7 +1010,13 @@ fn regression_file(path: &str, contents: &str, previous: &str, command: &str) ->
             let boundary = |c: char| c.is_whitespace() || "\"';&|()".contains(c);
             before.is_none_or(|c| boundary(c) || c == '/') && after.is_none_or(boundary)
         });
-    named || inline || script
+    if named || script {
+        Some(Protection::File)
+    } else if inline {
+        Some(Protection::Section)
+    } else {
+        None
+    }
 }
 
 fn guard_bug_regression(
@@ -1041,11 +1078,19 @@ fn guard_bug_regression(
                 };
 
                 let contents = git::run_ok(&slot.worktree, &["show", &format!("{head}:{path}")])?;
-                if regression_file(path, &contents.stdout, &previous, &doc.repro_command) {
+                if let Some(protection) =
+                    regression_protection(path, &contents.stdout, &previous, &doc.repro_command)
+                {
                     let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", &head, "--", path])?;
-                    files.push(
-                        json!({"repo": repo, "path": path, "tree": tree.stdout, "head": head}),
-                    );
+                    let mut file = json!({
+                        "repo": repo, "path": path, "tree": tree.stdout, "head": head,
+                        "protect": protection.as_str(),
+                    });
+                    if protection == Protection::Section {
+                        let start = test_section_start(&contents.stdout).unwrap_or(0);
+                        file["section"] = json!(section_digest(&contents.stdout[start..]));
+                    }
+                    files.push(file);
                 }
             }
         }
@@ -1075,9 +1120,20 @@ fn guard_bug_regression(
                 .iter()
                 .find(|s| s.name == repo)
                 .ok_or_else(|| err(format!("回归测试仓库丢失：{repo}/{path}")))?;
-            let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", "HEAD", "--", path])?;
             let clean = git::run(&slot.worktree, &["diff", "--quiet", "HEAD", "--", path])?;
-            if Some(tree.stdout.as_str()) != file["tree"].as_str() || !clean.ok() {
+            let kept = if let Some(section) = file["section"].as_str() {
+                // Only the test section is fixed; the product code above it is
+                // what the fix round is there to change.
+                let current = git::run(&slot.worktree, &["show", &format!("HEAD:{path}")])?;
+                current.ok()
+                    && test_section_start(&current.stdout)
+                        .is_some_and(|start| section_digest(&current.stdout[start..]) == section)
+            } else {
+                // Snapshots taken before sections existed protect the whole file.
+                let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", "HEAD", "--", path])?;
+                Some(tree.stdout.as_str()) == file["tree"].as_str()
+            };
+            if !kept || !clean.ok() {
                 return Err(err(format!("回归测试被修改、删除或重命名：{repo}/{path}")));
             }
         }

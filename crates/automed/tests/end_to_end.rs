@@ -4746,6 +4746,70 @@ fn bug_regression_guard_allows_product_only_fixes() {
 }
 
 #[test]
+fn bug_regression_guard_protects_only_the_test_section_of_an_inline_test_file() {
+    needs_git!();
+    // Rust keeps unit tests in the product file. A regression test added to
+    // that module must not freeze the product code the fix has to change.
+    let located = "broken product\\n#[cfg(test)]\\nmod tests { #[test] fn regression() {} }\\n";
+    for (fix, allowed) in [
+        (
+            "fixed product\\n#[cfg(test)]\\nmod tests { #[test] fn regression() {} }\\n",
+            true,
+        ),
+        ("fixed product\\n#[cfg(test)]\\nmod tests {}\\n", false),
+    ] {
+        let mut w = World::new("regression-section");
+        let slug = slug_for("inline section");
+        std::fs::write(
+            w.repo.join("lib.rs"),
+            "old product\n#[cfg(test)]\nmod tests {}\n",
+        )
+        .unwrap();
+        automed::git::commit_paths(&w.repo, &["lib.rs"], "existing inline tests").unwrap();
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\nprintf '{located}' > lib.rs"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\nprintf '{fix}' > lib.rs"),
+        );
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "inline section");
+        w.settle();
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        let lib = snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == "lib.rs")
+            .expect("lib.rs is protected");
+        assert_eq!(lib["protect"], "section");
+        if allowed {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert!(
+                std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/lib.rs")))
+                    .unwrap()
+                    .starts_with("fixed product\n")
+            );
+        } else {
+            assert_regression_rejected(&w, &id, "lib.rs");
+        }
+    }
+}
+
+#[test]
 fn bug_regression_guard_survives_retry_and_extend() {
     needs_git!();
     for mutate in [false, true] {
