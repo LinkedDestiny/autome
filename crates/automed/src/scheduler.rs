@@ -3154,19 +3154,38 @@ fn run_gate(
 
     let ok = exit_code == 0;
     let tail = crate::gate::tail(&job.log, 60);
-    ctx.store.append_event(
-        "gate.result",
+    let mut result = json!({
+        "node": node.as_str(),
+        "sha": head,
+        "ok": ok,
+        "exit_code": exit_code,
+        "command": gate.command,
+        "log": job.log.to_string_lossy(),
+        "tail": tail,
+    });
+    let replay = record_gate_result(
+        &ctx.store,
         &task.id,
-        json!({
-            "node": node.as_str(),
-            "sha": head,
-            "ok": ok,
-            "exit_code": exit_code,
-            "command": gate.command,
-            "log": job.log.to_string_lossy(),
-            "tail": tail,
-        }),
+        node,
+        &mut result,
+        resolved.gate_same_failure_limit,
     )?;
+    if replay["tripped"] == true {
+        advance(
+            ctx,
+            &task.id,
+            &Trigger::GateSameFailure {
+                node,
+                count: replay["same_failures"].as_u64().unwrap_or(1) as u32,
+                summary: replay["fingerprint_summary"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                log: job.log.to_string_lossy().into_owned(),
+            },
+        )?;
+        return Ok(());
+    }
 
     if node == Node::ReproCheck {
         advance(
@@ -3219,6 +3238,51 @@ fn run_gate(
         }
     };
     finish_gate(ctx, task, project, node, outcome)
+}
+
+fn record_gate_result(
+    store: &crate::store::Store,
+    task_id: &str,
+    node: Node,
+    result: &mut Value,
+    limit: u32,
+) -> Result<Value> {
+    use autome_domain::gate_failure::{self, PreviousResult};
+    if result["ok"] == false && gate_failure::counts(node) {
+        let previous = store.last_event_in(
+            task_id,
+            &["gate.result", "gate.reused"],
+            "node",
+            node.as_str(),
+        )?;
+        if let Some((seq, kind, prev)) = &previous
+            && kind == "gate.result"
+            && prev["ok"] == false
+            && prev["fingerprint"].is_string()
+            && !store.any_event_after(task_id, &["gate.started", "session.started"], *seq)?
+        {
+            return Ok(prev.clone());
+        }
+        let prev = previous.map(|(_, kind, p)| PreviousResult {
+            ok: kind == "gate.reused" || p["ok"] == true,
+            fingerprint: p["fingerprint"].as_str().map(str::to_owned),
+            same_failures: p["same_failures"].as_u64().unwrap_or(0) as u32,
+            tripped: p["tripped"] == true,
+        });
+        let code = result["exit_code"].as_i64().unwrap_or(1) as i32;
+        let fingerprint = gate_failure::fingerprint(
+            &crate::gate::log_window(Path::new(result["log"].as_str().unwrap_or_default())),
+            code,
+            code == crate::gate::TIMED_OUT,
+        );
+        let streak = gate_failure::streak(prev.as_ref(), &fingerprint.id, limit);
+        result["fingerprint"] = json!(fingerprint.id);
+        result["fingerprint_summary"] = json!(fingerprint.summary);
+        result["same_failures"] = json!(streak.count);
+        result["tripped"] = json!(streak.tripped);
+    }
+    store.append_event("gate.result", task_id, result.clone())?;
+    Ok(result.clone())
 }
 
 fn finish_gate(
@@ -3823,6 +3887,205 @@ pub fn next_role(state: &TaskState) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
+    fn failure_result(node: Node, log: &Path) -> Value {
+        json!({"node":node.as_str(),"sha":"abc","ok":false,"exit_code":1,
+            "command":"false","log":log.to_string_lossy(),"tail":"original tail"})
+    }
+    fn recorded(store: &crate::store::Store, node: Node, log: &Path) -> Value {
+        store.append_event("gate.started", "T", json!({})).unwrap();
+        record_gate_result(store, "T", node, &mut failure_result(node, log), 3).unwrap()
+    }
+    #[test]
+    fn same_failure_result_fields() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let log = Path::new("/missing-log");
+        for node in [Node::Gate, Node::MergeGate, Node::FixGate] {
+            let original = failure_result(node, log);
+            let result = recorded(&store, node, log);
+            for (key, value) in original.as_object().unwrap() {
+                assert_eq!(&result[key], value);
+            }
+            assert_eq!(result.as_object().unwrap().len(), 11);
+            assert_eq!(result["same_failures"], 1);
+            assert_eq!(result["tripped"], false);
+            assert!(result["fingerprint"].is_string());
+            assert!(result["fingerprint_summary"].is_string());
+        }
+        let mut timed = failure_result(Node::Gate, log);
+        timed["exit_code"] = json!(124);
+        store.append_event("gate.started", "T", json!({})).unwrap();
+        let result = record_gate_result(&store, "T", Node::Gate, &mut timed, 3).unwrap();
+        assert_eq!(result["fingerprint_summary"], "门禁运行超时，被内核终止");
+    }
+    #[test]
+    fn same_failure_database_reopen() {
+        let w = World::new("same-failure-reopen");
+        let db = w.root.join("streak.db");
+        {
+            let store = crate::store::Store::open(&db).unwrap();
+            assert_eq!(
+                recorded(&store, Node::Gate, Path::new("/missing"))["same_failures"],
+                1
+            );
+        }
+        let store = crate::store::Store::open(&db).unwrap();
+        assert_eq!(
+            recorded(&store, Node::Gate, Path::new("/missing"))["same_failures"],
+            2
+        );
+    }
+    #[test]
+    fn same_failure_other_nodes_and_boundaries() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let log = Path::new("/missing");
+        recorded(&store, Node::Gate, log);
+        recorded(&store, Node::FixGate, log);
+        store
+            .append_event(
+                "gate.result",
+                "another-task",
+                failure_result(Node::Gate, log),
+            )
+            .unwrap();
+        assert_eq!(recorded(&store, Node::Gate, log)["same_failures"], 2);
+        assert_eq!(recorded(&store, Node::Gate, log)["tripped"], true);
+        assert_eq!(recorded(&store, Node::Gate, log)["same_failures"], 1);
+        for prev in [
+            json!({"node":"gate","ok":true}),
+            json!({"node":"gate","ok":false}),
+            json!({"node":"gate","ok":false,"fingerprint":"different","same_failures":2}),
+        ] {
+            store.append_event("gate.result", "T", prev).unwrap();
+            assert_eq!(recorded(&store, Node::Gate, log)["same_failures"], 1);
+        }
+    }
+    #[test]
+    fn same_failure_excluded_results() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        for (node, ok) in [
+            (Node::ReproCheck, false),
+            (Node::MainCheck, false),
+            (Node::Gate, true),
+        ] {
+            let mut result = failure_result(node, Path::new("/missing"));
+            result["ok"] = json!(ok);
+            let original = result.clone();
+            assert_eq!(
+                record_gate_result(&store, "T", node, &mut result, 3).unwrap(),
+                original
+            );
+        }
+    }
+    fn replay_gate(count: u32) {
+        let mut w = World::new(&format!("same-failure-replay-{count}"));
+        let task = w.add_task("T", "replay");
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+        );
+        w.set_state(&task.id, TaskState::Active { node: Node::Gate });
+        let path = config_io::project_config_path(&w.repo);
+        let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+        text.push_str("\n[gate]\ncommand = 'false'\n");
+        std::fs::write(path, text).unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::of(&project, &task.slug, &[]);
+        let head = gate_head(&layout).unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "gate", &head[..12]);
+        std::fs::create_dir_all(job.log.parent().unwrap()).unwrap();
+        std::fs::write(&job.log, "Error: missing ws").unwrap();
+        std::fs::write(&job.started, "1").unwrap();
+        std::fs::write(
+            &job.exit,
+            ExitMarker {
+                exit_code: 1,
+                ended_at: "now".into(),
+            }
+            .render(),
+        )
+        .unwrap();
+        let fp = autome_domain::gate_failure::fingerprint("Error: missing ws", 1, false);
+        let mut prev = failure_result(Node::Gate, &job.log);
+        prev["sha"] = json!(head);
+        prev["fingerprint"] = json!(fp.id);
+        prev["fingerprint_summary"] = json!(fp.summary);
+        prev["same_failures"] = json!(count);
+        prev["tripped"] = json!(count >= 3);
+        w.ctx
+            .store
+            .append_event("gate.result", &task.id, prev)
+            .unwrap();
+        let active = w.ctx.store.get_task(&task.id).unwrap();
+        run_gate(&mut w.ctx, &active, &project, &layout, Node::Gate).unwrap();
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.result").unwrap(),
+            1
+        );
+        if count >= 3 {
+            assert!(matches!(
+                w.state(&task.id),
+                TaskState::Failed {
+                    reason: autome_domain::task::FailureReason::GateSameFailure { count: 3, .. },
+                    ..
+                }
+            ));
+        } else {
+            assert_eq!(w.state(&task.id).node(), Some(Node::Implement));
+            w.ctx
+                .store
+                .append_event("session.started", &task.id, json!({}))
+                .unwrap();
+            let head = gate_head(&layout).unwrap();
+            let next_job = crate::gate::Job::at(&w.repo, &task.id, "gate", &head[..12]);
+            std::fs::write(&next_job.log, "Error: missing ws").unwrap();
+            std::fs::write(&next_job.started, "1").unwrap();
+            std::fs::write(
+                &next_job.exit,
+                ExitMarker {
+                    exit_code: 1,
+                    ended_at: "now".into(),
+                }
+                .render(),
+            )
+            .unwrap();
+            w.set_state(&task.id, TaskState::Active { node: Node::Gate });
+            run_gate(&mut w.ctx, &active, &project, &layout, Node::Gate).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.result").unwrap(),
+                2
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "gate.result")
+                    .unwrap()
+                    .unwrap()["same_failures"],
+                3
+            );
+            assert!(matches!(w.state(&task.id), TaskState::Failed { .. }));
+        }
+    }
+    #[test]
+    fn same_failure_replay_tripped() {
+        replay_gate(3);
+    }
+    #[test]
+    fn same_failure_replay_untripped() {
+        replay_gate(2);
+    }
+    #[test]
+    fn same_failure_reused_resets() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let log = Path::new("/missing");
+        recorded(&store, Node::MergeGate, log);
+        assert_eq!(recorded(&store, Node::MergeGate, log)["same_failures"], 2);
+        store
+            .append_event("gate.reused", "T", json!({"node":"merge_gate","sha":"abc"}))
+            .unwrap();
+        let result = recorded(&store, Node::MergeGate, log);
+        assert_eq!(result["same_failures"], 1);
+        assert_eq!(result["tripped"], false);
+    }
 
     #[test]
     fn audit_design_diff_allows_protocol_updates_but_rejects_body_edits() {
