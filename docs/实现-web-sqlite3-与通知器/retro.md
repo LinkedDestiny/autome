@@ -11,3 +11,5 @@
 实现 #3 | M-03 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-03-r3-impl.md | listen EPERM，live 与安全负向对照待复验
 实现 #4 | M-03 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-03-r4-impl.md | live/全量监听受 EPERM 阻断，夹具回归红绿已取证
 审计 #3 | M-03 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-03-r4-audit.md | 无
+
+实现 #5 | M-04 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-04-r5-impl.md | 30 个既有监听用例受 EPERM 等限制，视觉验收未取证

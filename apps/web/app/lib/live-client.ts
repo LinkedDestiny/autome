@@ -1,10 +1,24 @@
 import type { CoreMessage, LedgerEvent, ServerMessage } from '../../server/eventbus-protocol.ts';
 
+export type LiveMessage = { type: string } & Record<string, unknown>;
+export type LiveMessageListener = (type: string, message: LiveMessage) => void;
+const listeners = new Set<LiveMessageListener>();
+export function subscribeLiveMessages(listener: LiveMessageListener) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+export function publishLiveMessage(type: string, message: LiveMessage) {
+  for (const listener of listeners) {
+    try { listener(type, message); } catch { /* 订阅者之间互不影响。 */ }
+  }
+}
+
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 export type LiveSocket = Pick<WebSocket, 'send' | 'close' | 'onmessage' | 'onclose' | 'onerror'>;
 export const reconnectDelay = (attempt: number) => Math.min(500 * 2 ** attempt, 10000);
 
 export function createLiveClient(options: {
+  onMessage?: LiveMessageListener;
   url: string;
   createSocket: (url: string) => LiveSocket;
   onEvents: (events: LedgerEvent[]) => void;
@@ -35,7 +49,7 @@ export function createLiveClient(options: {
       if (stopped || current !== socket) return;
       let message: ServerMessage;
       try { message = JSON.parse(String(event.data)); } catch { return; }
-      if (!message) return;
+      if (!message || typeof message !== 'object' || Array.isArray(message) || typeof message.type !== 'string') return;
       switch (message.type) {
         case 'hello':
           if (lastSeq !== null) current.send(JSON.stringify({ type: 'resume', after: lastSeq }));
@@ -68,6 +82,7 @@ export function createLiveClient(options: {
           break;
         case 'core': options.onCore(message); break;
       }
+      options.onMessage?.(message.type, message as LiveMessage);
     };
   }
   options.onConnection('connecting');
