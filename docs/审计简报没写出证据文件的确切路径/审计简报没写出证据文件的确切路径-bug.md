@@ -1,10 +1,10 @@
 # 审计简报缺少本轮证据文件的确切路径
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p automed regression_evidence_destination -- --nocapture
 根因: 简报只展示角色会话序号和已有证据，未明确本轮证据写入路径；审计会话序号与门禁使用的实现轮号分叉后，按简报序号命名的证据被拒绝。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -40,6 +40,14 @@ fix-round: 1/3
 
 ## 修复说明
 
+第 2/3 修复轮：保留上一轮产品修复，不追加产品代码改动。宿主在 `a84378f0d8d8fe0799174731d21ebb44f184d422` 上报告的 Rust Test 失败在本轮未复现；提供的日志末尾没有具体失败用例，不能据此认定新的代码根因。定位轮回归测试完全未改动。
+
+执行同一组合命令 `( cargo test --offline -p automed regression_evidence_destination -- --nocapture ) && ( sh scripts/ci-local.sh )`：三个回归用例通过，项目门禁耗时 572 秒、退出码 1。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 步骤通过，只有 Web test 失败（19 个文件通过、3 个失败；198 个用例通过、11 个失败、16 个跳过）。错误为 `listen EPERM: operation not permitted 127.0.0.1`，同时出现文件监听 `EMFILE`。Desktop 步骤仍存在 Electron 下载 `fetch failed` 导致的跳过，不代表真实 Electron 验收通过。
+
+门禁完整输出：`.autome/output/fix-2-gate.log`；错误摘录：`.autome/output/fix-2-gate-errors.log`。单独再次执行原复现命令，退出码 0、三个用例通过，输出：`.autome/output/fix-2-regression.log`。以上路径均相对当前 worktree 根目录，运行产物不提交。当前受限环境无法确认完整门禁通过，需要 Autome 宿主复跑原组合命令；未修改门禁、测试或运行参数绕过限制。
+
+本轮仅更新本 bug 文档的轮次、待复核状态和验证记录；`git diff --check` 通过。不启动后续会话。
+
 第 1/3 修复轮在 `crates/automed/src/brief.rs` 的本里程碑段落补充本轮证据的完整写入路径。实现角色使用当前会话的 `input.round`，审计角色使用 `status.impl_round`，路径保留 `input.doc_dir`，并明确审计会话序号不用于证据命名。其它角色不增加证据写入要求。
 
 定位轮的回归测试未修改、删除、跳过或弱化。使用原复现命令验证：修复前退出码 101，3 个用例全部失败；修复后退出码 0，3 个用例全部通过。原始输出分别保存在 `.autome/output/fix-1-before.log` 和 `.autome/output/fix-1-regression.log`。
@@ -50,7 +58,7 @@ fix-round: 1/3
 
 ## 复核意见
 
-复核: 通过（第 1/3 轮）。
+第 2/3 轮待独立复核。以下保留第 1/3 轮通过意见，不作为本轮复核结论。
 
 - 复现命令复验：3 个 `regression_evidence_destination_*` 用例全部通过。automed 全部测试（含 17 个既有简报测试）无失败。
 - 差异范围：39c2c00..HEAD 对产品代码仅 `brief.rs` +12 行，回归测试未改动、未删除、未跳过、未弱化。
