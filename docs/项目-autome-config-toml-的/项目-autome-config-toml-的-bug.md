@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cargo test --offline -p automed --lib dispatch::tests::project_file_parallel_override_queues_the_second_task -- --exact
 根因: 项目注册时将全局 parallel 缓存为账本 parallel_limit，直接编辑项目配置不会同步该缓存，而 fill_slots 使用缓存而非合并后的项目配置。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -69,3 +69,11 @@ Web 测试结果为 3 个文件失败、19 个文件通过；11 项失败、198 
 - 门禁复验：automed 库测试 607 通过、端到端 80 通过、clippy `-D warnings` 与 `cargo fmt --check` 均通过。Web 测试因沙箱禁止监听端口失败，修复未触及 Web，属环境问题，留给宿主门禁。
 - 根因成立：`fill_slots` 原先读注册时缓存的 `project.parallel_limit`，而 `config.get` 读合并后的配置；修复改为 `resolve_config(...).loop_defaults.parallel.max(1)`，数据来源与展示一致，仅一行产品代码改动。
 - 范围：既有测试中直接写账本缓存的准备步骤改为写项目配置或 `config.set_loop`（否则新来源下这些测试失去意义），断言全部保留，改动合理且最小。
+
+**通过**（第 2/3 轮，独立复核）。
+
+- 差异：第 2 轮提交（452f2fd..fcca18c）只改动本 bug 文档，产品代码与测试零改动；第 1 轮的修复（仅 `scheduler.rs` 的 `fill_slots` 取值来源及既有测试的准备步骤）保持不变。定位轮回归测试自 f5bada6 起无差异，未删除、跳过或弱化。
+- 复现命令复验：1 passed / 0 failed / 0 ignored。
+- Rust 门禁复验：`cargo test --offline -p automed` 全部通过（607 库测试、80 端到端、其余 16 + 7），0 失败。修复轮所称宿主 Rust Test 失败在本机未复现，无证据表明与本修复相关。
+- 根因成立（同第 1 轮）：`fill_slots` 原用注册时缓存的 `parallel_limit`，改为合并后的配置，与 `config.get` 一致。
+- 遗留：Web test 失败源于沙箱禁止本地监听端口（EPERM/EMFILE），修复未触及 Web，属环境问题，需宿主在允许监听的环境复验完整门禁。
