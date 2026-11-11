@@ -1,10 +1,10 @@
 # 项目配置 parallel 未作用于调度器
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p automed --lib dispatch::tests::project_file_parallel_override_queues_the_second_task -- --exact
 根因: 项目注册时将全局 parallel 缓存为账本 parallel_limit，直接编辑项目配置不会同步该缓存，而 fill_slots 使用缓存而非合并后的项目配置。
-复核: 通过
+复核: 待复核
 repos: autome-v2
 
 ## 现象
@@ -39,6 +39,14 @@ repos: autome-v2
 问题是配置读取和调度决策的数据来源不一致。回归测试只约束外部行为，不要求未来修复必须保留或更新缓存；正确修复后应在同一命令下通过。本轮未修改任何产品逻辑，未进行真实 tmux/Agent 运行验收。
 
 ## 修复说明
+
+第 2/3 轮：在起点 `452f2fdf5156998de207caf26cf54e6f3580f6ba` 执行宿主指定的同一完整命令 `( cargo test --offline -p automed --lib dispatch::tests::project_file_parallel_override_queues_the_second_task -- --exact ) && ( sh scripts/ci-local.sh )`。原复现测试通过（1 passed / 0 failed / 0 ignored），配置门禁退出码 1，用时 374 秒，原始门禁输出见 `.autome/output/fix-2-gate.log`。
+
+此次 Rust Test 步骤全部通过，包括 607 项 automed 库测试、80 项端到端测试；独立 End to end、Format、Clippy、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过。宿主报告的 Rust Test 失败未在本轮复现；提供的宿主日志只有步骤汇总，缺少具体失败用例与 panic 信息，尚不能确定其根因。
+
+本地唯一失败步骤为 Web test：3 个文件失败、19 个文件通过；11 项失败、198 项通过、16 项因初始化失败跳过。日志包含 `listen EPERM: operation not permitted 127.0.0.1`、`EMFILE: too many open files, watch` 和服务初始化超时。当前沙箱禁止权限提升，无法在本会话解除监听限制。未修改、删除、跳过或弱化任何测试，也未修改门禁或产品代码；只更新本轮状态及验证记录，避免在没有失败证据时引入无关改动。完整门禁仍未通过，需宿主保留 Rust 失败的具体用例及错误段落，并在允许本地监听的环境复验同一命令。
+
+本轮 `git diff --check` 通过，定位轮回归测试保持不变。复核重置为待复核；以下第 1/3 轮复核意见仅为历史记录，不代表本轮已通过。未启动后续会话。
 
 第 1/3 轮：`fill_slots` 改为通过现有 `resolve_config` 读取最新全局配置与项目覆盖，以合并后的 `loop_defaults.parallel` 计算启动名额，不再使用注册时的账本缓存。保留原有最小值和槽位占用判断。
 
