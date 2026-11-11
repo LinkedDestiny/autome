@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib dispatch::tests::project_file_parallel_override_queues_the_second_task -- --exact
 根因: 项目注册时将全局 parallel 缓存为账本 parallel_limit，直接编辑项目配置不会同步该缓存，而 fill_slots 使用缓存而非合并后的项目配置。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -55,4 +55,9 @@ Web 测试结果为 3 个文件失败、19 个文件通过；11 项失败、198 
 ## 复核意见
 
 
-待独立复核。
+**通过**（第 1/3 轮，独立复核）。
+
+- 复现命令复验：`dispatch::tests::project_file_parallel_override_queues_the_second_task` 1 passed / 0 failed / 0 ignored。该测试在定位提交 f5bada6 与修复提交 ba4e3e7 间无差异，未被删除、跳过或弱化。
+- 门禁复验：automed 库测试 607 通过、端到端 80 通过、clippy `-D warnings` 与 `cargo fmt --check` 均通过。Web 测试因沙箱禁止监听端口失败，修复未触及 Web，属环境问题，留给宿主门禁。
+- 根因成立：`fill_slots` 原先读注册时缓存的 `project.parallel_limit`，而 `config.get` 读合并后的配置；修复改为 `resolve_config(...).loop_defaults.parallel.max(1)`，数据来源与展示一致，仅一行产品代码改动。
+- 范围：既有测试中直接写账本缓存的准备步骤改为写项目配置或 `config.set_loop`（否则新来源下这些测试失去意义），断言全部保留，改动合理且最小。
