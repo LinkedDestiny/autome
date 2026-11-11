@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed guards::tests::rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence -- --exact
 根因: 全部里程碑已完成的冲突修复仍被送入审计，而审计证据守卫无条件要求本轮证据，导致合法空审计被转为协议失败。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -53,4 +53,8 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+通过。
+- 差异 8ce6a69..c345f92 仅改 `crates/automed/src/guards.rs` 的 Audit 分支（+14/-1），两个回归测试未改动、未跳过。
+- 精确复现命令通过；`guards::tests::` 24 个全过，含反例 `an_audit_that_closes_a_pending_milestone_still_requires_current_evidence`；clippy `-D warnings` 无告警。
+- 根因成立：空审计被调度，而证据守卫无条件要求本轮证据。豁免依据开始快照（非空、全部 Done、结束表与之一致），无法靠本轮关闭最后一个待审项绕过；retro 单行、推进与编辑范围检查仍保留。
+- 未重跑完整门禁；修复轮报告 Web test 因沙箱 `listen EPERM` 失败，与本改动无关，需宿主环境重跑。
