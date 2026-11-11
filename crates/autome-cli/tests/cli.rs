@@ -147,6 +147,91 @@ impl Drop for Sandbox {
     }
 }
 
+#[test]
+fn status_shows_latest_five_sessions_in_chronological_order() {
+    use autome_domain::role::{Role, Runtime};
+    use autome_domain::session::{Session, SessionKind, SessionLifecycle};
+
+    let s = Sandbox::new("status-latest-five");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "session history", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+
+    // Fixed distinct timestamps and shuffled insertion avoid depending on
+    // scheduler timing, row insertion order, or a real model process.
+    for n in [4, 1, 7, 2, 6, 3, 5] {
+        store
+            .insert_session(&Session {
+                id: format!("history-{n}"),
+                task_id: id.into(),
+                kind: SessionKind::Role { role: Role::Impl },
+                runtime: Runtime::Claude,
+                model: "fixture".into(),
+                effort: None,
+                skills: vec![],
+                round: n,
+                started_at: format!("2026-01-{n:02}T00:00:00Z"),
+                ended_at: Some(format!("2026-01-{n:02}T00:01:00Z")),
+                lifecycle: SessionLifecycle::Exited { exit_code: 0 },
+                log_path: String::new(),
+                pid: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: Default::default(),
+            })
+            .unwrap();
+    }
+    drop(store);
+
+    let json = s.json(&["status", id]);
+    let all: Vec<_> = json["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        all,
+        [
+            "history-7",
+            "history-6",
+            "history-5",
+            "history-4",
+            "history-3",
+            "history-2",
+            "history-1"
+        ],
+        "kernel history must be complete and newest first"
+    );
+
+    let output = s.ok(&["status", id]);
+    assert!(output.contains("会话（最近 5 个）"), "{output}");
+    let shown: Vec<_> = output
+        .lines()
+        .filter_map(|line| {
+            let first = line.split_whitespace().next()?;
+            first.starts_with("history-").then_some(first)
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "history-3",
+            "history-4",
+            "history-5",
+            "history-6",
+            "history-7"
+        ],
+        "status must show exactly the newest five, oldest to newest\n{output}"
+    );
+}
+
 fn doc(status: &str, design_round: u32, impl_round: u32, milestones: &[(&str, &str)]) -> String {
     let rows: String = milestones
         .iter()
