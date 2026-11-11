@@ -572,7 +572,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 
 ### M-03 范围
 
-最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r3-audit.md · 审计通过 · 审计 #3
+最新证据：docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-03-r4-audit.md · 审计通过 · 审计 #3
 
 - 覆盖：A1（端到端节点序列）、A3、A6（运行时）、A7；C4、C5、C6。前置：M-02。
 - 改动：`automed/src/scheduler.rs`：
