@@ -2157,6 +2157,9 @@ fn start_session(
     };
 
     ensure_checkouts(ctx, task, project, resolved, kind)?;
+    if resolved.setup.is_some() {
+        crate::setup::skip_workspace(ctx, task, project).map_err(|e| err(e.to_string()))?;
+    }
     if let Some(setup) = &resolved.setup
         && !project.is_workspace()
         && let TaskState::Active { node } = ctx.store.get_task(&task.id)?.state
@@ -2856,6 +2859,54 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     let project = ctx.store.get_project(&task.project_id)?;
     let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, task));
 
+    if node == Node::Cleanup
+        && let Some(setup) = resolve_config(ctx, &project)?.setup
+    {
+        crate::setup::skip_workspace(ctx, task, &project).map_err(|e| err(e.to_string()))?;
+        if !project.is_workspace() {
+            let repo = Path::new(&project.path);
+            match crate::setup::ensure(
+                ctx,
+                task,
+                &project,
+                &setup,
+                crate::setup::Checkout {
+                    kind: autome_domain::setup::Checkout::Main,
+                    dir: repo,
+                    record: repo.join(".autome/output/setup/main.fp"),
+                },
+                node,
+            )
+            .map_err(|e| err(e.to_string()))?
+            {
+                crate::setup::Ready::Pending => return Ok(()),
+                crate::setup::Ready::Ready => {}
+                crate::setup::Ready::Failed {
+                    command,
+                    exit_code,
+                    log,
+                    tail,
+                } => {
+                    let detail = format!(
+                        "任务 {} 合并后，在主检出里准备命令 `{command}` 失败（退出码 {exit_code}）。日志：{log}\n\n{tail}",
+                        task.id
+                    );
+                    let id = ctx.store.raise_alert(
+                        &project.id,
+                        "setup_failed",
+                        Some(&task.id),
+                        &detail,
+                    )?;
+                    ctx.store.append_event(
+                        "project.alert",
+                        &project.id,
+                        json!({"alert_id": id, "kind": "setup_failed", "task_id": task.id}),
+                    )?;
+                }
+            }
+        }
+    }
+
     let result = match node {
         Node::Rebase => rebase_all(&layout),
         Node::Merging => merge_all(ctx, task, &layout)?,
@@ -2898,6 +2949,9 @@ fn run_gate(
     node: Node,
 ) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
+    if resolved.setup.is_some() {
+        crate::setup::skip_workspace(ctx, task, project).map_err(|e| err(e.to_string()))?;
+    }
     let repo = PathBuf::from(&project.path);
     let bug = uses_bug_loop(ctx, task)?;
     let bug_gate = bug && matches!(node, Node::ReproCheck | Node::FixGate | Node::MergeGate);
@@ -4213,6 +4267,89 @@ mod tests {
             .append_event("task.replied", &task.id, json!({}))
             .unwrap();
         assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 0);
+    }
+
+    #[test]
+    fn setup_in_the_main_checkout_waits_while_another_tasks_main_setup_is_running() {
+        needs_git!();
+        for timeout in [false, true] {
+            let mut w = World::new("setup-main-lock");
+            let mut task = w.add_task("T-1", "main-lock");
+            task.state = TaskState::Active {
+                node: Node::Cleanup,
+            };
+            w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+            w.with_worktree(&task);
+            let path = config_io::project_config_path(&w.repo);
+            let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+            text.push_str(if timeout { "\n[setup]\ncommand = 'sleep 30'\ntimeout_minutes = 1\nwatch = ['missing', 'empty', 'directory']\n" } else { "\n[setup]\ncommand = 'true'\n" });
+            std::fs::write(w.repo.join("empty"), "").unwrap();
+            std::fs::create_dir(w.repo.join("directory")).unwrap();
+            std::fs::write(path, text).unwrap();
+            let other = crate::gate::Job::at(&w.repo, "T-2", "setup", "main");
+            std::fs::create_dir_all(other.started.parent().unwrap()).unwrap();
+            std::fs::write(
+                &other.started,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string(),
+            )
+            .unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "setup.started").unwrap(),
+                0
+            );
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            std::fs::write(&other.pid, child.id().to_string()).unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "setup.started").unwrap(),
+                0
+            );
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+            child.kill().unwrap();
+            child.wait().unwrap();
+            std::fs::write(&other.exit, "0").unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "setup.started").unwrap(),
+                1
+            );
+            if timeout {
+                let job = crate::gate::Job::at(&w.repo, &task.id, "setup", "main");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !job.pid.exists() {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                std::fs::write(&job.started, "1").unwrap();
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while w.ctx.store.get_task(&task.id).unwrap().state == task.state {
+                assert!(std::time::Instant::now() < deadline);
+                run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(
+                w.ctx.store.get_task(&task.id).unwrap().state,
+                TaskState::Done
+            );
+            if timeout {
+                let alerts = w.ctx.store.open_alerts().unwrap();
+                assert_eq!(alerts.len(), 1);
+                assert!(alerts[0].detail.contains("退出码 124"));
+                assert!(!w.repo.join(".autome/output/setup/main.fp").exists());
+            } else {
+                assert!(w.repo.join(".autome/output/setup/main.fp").exists());
+            }
+        }
     }
 
     #[test]

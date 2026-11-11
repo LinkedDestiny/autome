@@ -23,6 +23,21 @@ pub enum Ready {
     },
 }
 
+pub fn skip_workspace(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if project.is_workspace() && ctx.store.count_events(&task.id, "setup.skipped")? == 0 {
+        ctx.store.append_event(
+            "setup.skipped",
+            &task.id,
+            json!({"reason": "工作区项目不支持准备命令"}),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn worktree_record(repo: &Path, task: &str) -> PathBuf {
     repo.join(".autome/output/setup")
         .join(task)
@@ -114,6 +129,18 @@ pub fn ensure(
     let previous = std::fs::read_to_string(&checkout.record).ok();
     if !setup::needs_run(previous.as_deref(), &fingerprint) {
         return Ok(Ready::Ready);
+    }
+    if checkout.kind == setup::Checkout::Main {
+        let jobs = repo.join(".autome/output/gates");
+        if jobs.exists() {
+            for entry in std::fs::read_dir(jobs)? {
+                let other = entry?.file_name().to_string_lossy().into_owned();
+                if other != task.id && gate::running(&gate::Job::at(repo, &other, "setup", "main"))
+                {
+                    return Ok(Ready::Pending);
+                }
+            }
+        }
     }
     write_record(&running, &fingerprint)?;
     gate::start(

@@ -5794,3 +5794,153 @@ fn setup_reruns_before_the_repro_check_when_the_locate_round_changed_a_watched_f
     }
     assert!(gates.iter().any(|(_, e)| e["node"] == "merge_gate"));
 }
+
+fn setup_main_task(w: &mut World, request: &str, change: bool) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        if change {
+            "echo v2 > deps.lock\ngit add deps.lock"
+        } else {
+            ""
+        },
+    );
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    std::fs::write(w.repo.join(".autome/fake/next"), "1").unwrap();
+    let id = create_task(w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    ok(&w.call("task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    id
+}
+
+#[test]
+fn setup_in_the_main_checkout_runs_after_a_merge_only_when_the_watch_changed() {
+    needs_git!();
+    let mut w = World::new("setup-main");
+    setup_fixture(&w, "main a", "");
+    let mut total = 0;
+    for (request, change, expected) in [
+        ("main a", false, 1),
+        ("main b", false, 0),
+        ("main c", true, 1),
+    ] {
+        let id = setup_main_task(&mut w, request, change);
+        assert_eq!(
+            setup_events(&w, &id, "setup.result")
+                .iter()
+                .filter(|(_, e)| e["checkout"] == "main" && e["ok"] == true)
+                .count(),
+            expected
+        );
+        total += expected;
+        let prefix = format!("{} ", w.repo.canonicalize().unwrap().display());
+        assert_eq!(
+            setup_runs(&w)
+                .iter()
+                .filter(|line| line.starts_with(&prefix))
+                .count(),
+            total
+        );
+        assert!(automed::git::is_clean(&w.repo).unwrap());
+    }
+}
+
+#[test]
+fn setup_failure_in_the_main_checkout_raises_an_alert_and_the_task_is_still_done() {
+    needs_git!();
+    let mut w = World::new("setup-main-fail");
+    let command = setup_fixture(
+        &w,
+        "main fail",
+        "[ \"$AUTOME_SETUP_CHECKOUT\" != main ] || exit 4",
+    );
+    let id = setup_main_task(&mut w, "main fail", false);
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "setup_failed");
+    for text in [&command, "退出码 4", "setup-main.log"] {
+        assert!(alerts[0].detail.contains(text));
+    }
+    assert!(!w.repo.join(".autome/output/setup/main.fp").exists());
+    assert!(!w.repo.join(".worktree/main-fail").exists());
+    assert!(!automed::git::branch_exists(&w.repo, "autome/main-fail"));
+    let result = setup_events(&w, &id, "setup.result");
+    assert!(
+        result
+            .iter()
+            .any(|(_, e)| e["checkout"] == "main" && e["exit_code"] == 4)
+    );
+}
+
+#[test]
+fn setup_is_skipped_in_a_workspace_with_one_event_per_task() {
+    needs_git!();
+    let mut w = Workspace::new("setup-skip", &["docs", "backend"]);
+    let config = w.ws().join(".autome/config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+    text.push_str(&format!(
+        "\n[setup]\ncommand = \"touch {}\"\n",
+        w.root.join("setup-runs").display()
+    ));
+    std::fs::write(config, text).unwrap();
+    let request = "workspace setup";
+    let slug = slug_for(request);
+    for (n, status, d, k, milestones) in [
+        (1, "设计中", 0, 0, vec![]),
+        (2, "设计中", 1, 0, vec![]),
+        (3, "设计中", 1, 0, vec![]),
+        (4, "实现中", 2, 0, vec![("M-01", "开放")]),
+        (5, "实现中", 2, 1, vec![("M-01", "待审")]),
+        (6, "实现中", 2, 1, vec![("M-01", "已完成")]),
+        (7, "已完成", 2, 1, vec![("M-01", "已完成")]),
+    ] {
+        w.doc_step(
+            n,
+            &slug,
+            if n == 1 {
+                ".worktree/workspace-setup"
+            } else {
+                ""
+            },
+            &ws_doc(status, d, k, &milestones, "backend"),
+            if n == 7 {
+                "echo lessons > docs/autome/workspace-setup/lessons.md"
+            } else {
+                ""
+            },
+        );
+    }
+    let out = call(
+        &mut w.ctx,
+        "task.create",
+        json!({"project_id": w.project_id, "request": request}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.settle();
+    ok(&call(&mut w.ctx, "task.approve", json!({"task_id": id})));
+    w.settle();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(matches!(
+        w.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Done
+    ));
+    assert_eq!(w.ctx.store.count_events(&id, "setup.skipped").unwrap(), 1);
+    assert_eq!(w.ctx.store.count_events(&id, "setup.started").unwrap(), 0);
+    assert!(!w.root.join("setup-runs").exists());
+}
