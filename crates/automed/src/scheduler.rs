@@ -681,7 +681,7 @@ fn evidence_filenames(worktree: &Path, doc_dir: &str) -> Vec<String> {
     out
 }
 
-/// Whether the session changed the design document beyond its milestone table.
+/// Whether the session changed the design beyond its protocol bookkeeping.
 ///
 /// Answered from the commit history rather than by storing the previous
 /// document: a design document runs to hundreds of kilobytes, and keeping a
@@ -708,7 +708,7 @@ fn design_changed_outside_milestones(
         worktree,
         &[
             "diff",
-            "--unified=0",
+            "--unified=2147483647",
             &format!("{head}..HEAD"),
             "--",
             &design,
@@ -718,20 +718,52 @@ fn design_changed_outside_milestones(
     if !diff.ok() {
         return None;
     }
-    // Changed lines only, and only the ones that are not milestone-table rows.
-    // A table row is `| M-01 | 待审 | … |`; anything else the audit touched is
-    // prose it was not asked to touch.
+    // Full context lets each side track the preamble and fenced examples.
+    // Only real header fields are bookkeeping; identical keys in the body
+    // must still count as design edits.
+    let mut headers = [true; 2];
+    let mut fences = [false; 2];
     let touched_prose = diff
         .stdout
         .lines()
-        .filter(|l| {
-            (l.starts_with('+') || l.starts_with('-'))
-                && !l.starts_with("+++")
-                && !l.starts_with("---")
-        })
-        .map(|l| l[1..].trim())
-        .filter(|l| !l.is_empty())
-        .any(|l| !(l.starts_with("| M-") || l.starts_with("最新证据：")));
+        .skip_while(|line| !line.starts_with("@@ "))
+        .any(|line| {
+            let Some(prefix @ (b' ' | b'+' | b'-')) = line.bytes().next() else {
+                return false;
+            };
+            let text = line[1..].trim();
+            let mut header_field = false;
+            for side in 0..2 {
+                if (side == 0 && prefix == b'+') || (side == 1 && prefix == b'-') {
+                    continue;
+                }
+                if text.starts_with("```") || text.starts_with("~~~") {
+                    fences[side] = !fences[side];
+                } else if !fences[side] && text.starts_with("## ") {
+                    headers[side] = false;
+                }
+                header_field |= headers[side]
+                    && !fences[side]
+                    && text.split_once([':', '：']).is_some_and(|(key, _)| {
+                        matches!(
+                            key.trim(),
+                            "status"
+                                | "design-round"
+                                | "implementation-round"
+                                | "current-milestone"
+                                | "current-milestone-reopens"
+                                | "convergence-mode"
+                                | "next-action"
+                                | "repos"
+                        )
+                    });
+            }
+            prefix != b' '
+                && !text.is_empty()
+                && !header_field
+                && !text.starts_with("| M-")
+                && !text.starts_with("最新证据：")
+        });
     Some(touched_prose)
 }
 
@@ -3565,6 +3597,48 @@ mod tests {
             actual, expected,
             "protocol bookkeeping must not count as an audit design edit"
         );
+    }
+
+    #[test]
+    fn audit_design_diff_keeps_status_examples_protected() {
+        let mut w = World::new("audit-status-examples");
+        let task = w.add_task("audit-examples", "audit-examples");
+        let doc = design_doc(
+            "实现中",
+            &[("M-01", MilestoneState::Pending)],
+            "\n## 验收契约\nstatus: 正文示例\n",
+        );
+        let doc = format!("```text\nstatus: 头部示例\n```\n{doc}");
+        w.write_design(&task, &doc);
+        let wt = w.with_worktree(&task);
+        git::commit_paths(&wt, &[&task.design_doc()], "before audit").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        w.ctx
+            .store
+            .append_event("task.head", &task.id, json!({ "sha": head }))
+            .unwrap();
+        for (from, to, changed) in [
+            ("status: 正文示例", "status: 改写正文", true),
+            ("status: 头部示例", "status: 改写示例", true),
+            (
+                "convergence-mode: normal",
+                "convergence-mode：domain-review",
+                false,
+            ),
+        ] {
+            w.write_design(&task, &doc.replace(from, to));
+            git::commit_paths(&wt, &[&task.design_doc()], "audit update").unwrap();
+            assert_eq!(
+                design_changed_outside_milestones(
+                    &wt,
+                    &task,
+                    Some(&guards::Snapshot::default()),
+                    &w.ctx,
+                ),
+                Some(changed),
+                "{from}"
+            );
+        }
     }
 
     #[test]

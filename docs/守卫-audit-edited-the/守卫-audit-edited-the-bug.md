@@ -1,7 +1,7 @@
 # 守卫误报审计状态块更新
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib scheduler::tests::audit_design_diff_allows_protocol_updates_but_rejects_body_edits -- --exact
 根因: scheduler.rs 的设计文档差异过滤只放行里程碑行和最新证据行，遗漏协议状态块字段，导致正常状态更新被标记为审计改设计。
 复核: 待复核
@@ -39,7 +39,16 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮未修复，等待 Autome 调度修复轮。
+本轮修复 scheduler 的设计差异过滤：使用完整 Git diff 上下文，分别跟踪修改前后的文档头部和代码围栏，只放行第一个二级标题之前、围栏之外的八个协议状态字段（支持中英文冒号）。里程碑行和最新证据行沿用原规则，正文中的同名字段仍触发报警。未修改 guards 的报警逻辑。
+
+定位轮回归测试未修改、删除、跳过或弱化。原复现命令修复前断言失败（0 passed、1 failed），修复后通过（1 passed、0 failed）；日志分别为 `.autome/output/fix-before.log`、`.autome/output/fix-after.log`。新增独立反例测试确认正文状态字段和头部围栏示例被修改时仍报警，并确认头部 convergence-mode 使用中文冒号更新可通过；两项差异测试均通过，日志为 `.autome/output/fix-boundaries.log`。
+
+配置的项目门禁 `sh scripts/ci-local.sh` 已完整执行，退出码 1，用时 176 秒，日志为 `.autome/output/fix-gate.log`。Format、Clippy、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过；Test 和 Web test 未通过，不能视为完整门禁通过。
+
+- Test 阶段的 `stopping_a_task_kills_the_cli_the_wrapper_started` 在读取 PID 时遇到 `ParseIntError { kind: Empty }`（end_to_end.rs:2749），该组 77 通过、1 失败。门禁后续 End to end 阶段通过；另用 `cargo test --offline -p automed --test end_to_end stopping_a_task_kills_the_cli_the_wrapper_started -- --exact` 单独复跑也通过（`.autome/output/fix-stop-recheck.log`），未改动该无关测试或生产代码。
+- Web test 为 3 个文件失败、19 个通过，11 个测试失败、198 个通过、16 个跳过，包含 `listen EPERM: operation not permitted 127.0.0.1` 的沙箱监听限制。未调整测试或门禁配置；仍需宿主在允许本地监听的环境运行完整门禁。
+
+`git diff --check` 通过，定位回归测试与定位提交逐字一致。本轮保持 `status: 已定位`、原复现命令及 `复核: 待复核`，等待 Autome 后续处理。
 
 ## 复核意见
 
