@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 23/30
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计复验 M-02（真实监听被 EPERM 阻断）；通过后推进 M-03 浏览器 live 客户端与路由重验
+next-action: 推进 M-03 浏览器 live 客户端、按事件重验路由、重连提示与 root 接线
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -276,7 +276,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 最小端到端：分页拉取的事件总线、/ws 升级、main 接线、命令行跨进程集成测试 | 0 | eventbus-e2e |
-| M-02 | 待审 | 断线续传、reload、core 消息与恢复补拉、W4/W8 挂点 | 0 | eventbus-resume |
+| M-02 | 已完成 | 断线续传、reload、core 消息与恢复补拉、W4/W8 挂点 | 0 | eventbus-resume |
 | M-03 | 开放 | 浏览器端 live 客户端、按事件重验路由、重连提示与 root 接线 | 0 | live-routes |
 | M-04 | 开放 | write-gate.test.ts 的原始 NUL 改为 \u0000 转义 | 0 | nul-escape |
 
@@ -315,7 +315,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   重连发 `resume` 收到漏掉的事件且只一次；⑦按 pid 文件杀掉 `automed`，所有连接收到 `core offline`（中文原因）
   再收到 `core connected`，之后命令行的改动照常推到。
 
-最新证据：docs/服务端每次-tick-后用-events/evidence/M-02-r23-impl.md · 待审（纯逻辑通过，真实监听受 EPERM 阻断） · 实现 #23
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-02-r23-audit.md · 通过 · 审计 #2
 
 **M-03**（R-04；前置 M-02）。`app/lib/live-client.ts`、`live-routes.ts`、`live.tsx`；`root.tsx` 挂钩子与提示。
 新测试（都不需要 DOM，也不监听端口）：

@@ -29,3 +29,4 @@
 审计 #1 | M-01 | 通过 | docs/服务端每次-tick-后用-events/evidence/M-01-r22-audit.md | 无
 
 实现 #23 | M-02 | 待审 | docs/服务端每次-tick-后用-events/evidence/M-02-r23-impl.md | 27 个 Web 用例受监听 EPERM 阻断，需审计复验
+审计 #2 | M-02 | 通过 | docs/服务端每次-tick-后用-events/evidence/M-02-r23-audit.md | 无
