@@ -4118,7 +4118,18 @@ fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
             },
         )
         .unwrap();
-    w.doc_step(1, &slug, &doc("实现中", 1, 1, &[("M-01", "待审")]));
+    // task.approve ticks after launching the implementation. Hold the CLI
+    // until we have observed that session, even when it runs very quickly.
+    w.doc_step_for_prelude(
+        1,
+        &slug,
+        &doc("实现中", 1, 1, &[("M-01", "待审")]),
+        &format!(
+            "while [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done\n",
+            w.root.join("release-impl").display(),
+            w.root.display()
+        ),
+    );
     w.doc_step(2, &slug, &doc("实现中", 1, 1, &[("M-01", "已完成")]));
     w.retro_step(3, &slug);
     ok(&w.call("task.approve", json!({"task_id":id})));
@@ -4129,16 +4140,8 @@ fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
             role: autome_domain::role::Role::Impl
         }
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while w.has_pending_work() {
-        let report = automed::scheduler::tick(&mut w.ctx);
-        assert!(report.errors.is_empty(), "{report:?}");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "legacy loop did not settle"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    std::fs::write(w.root.join("release-impl"), "go").unwrap();
+    resume_wait(&mut w, |w| !w.has_pending_work());
     assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
     assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 3);
     ok(&w.call("task.merge", json!({"task_id":id})));
