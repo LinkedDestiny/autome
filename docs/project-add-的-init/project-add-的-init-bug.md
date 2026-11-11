@@ -1,7 +1,7 @@
 # project add 初始化提交卷入用户未跟踪文档
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed dispatch::tests::project_add_init_commit_preserves_untracked_user_docs -- --exact
 根因: init_commit 将整个 docs 目录交给 git::commit_paths，git add 递归暂存用户原有的未跟踪文档并纳入初始化提交。
 复核: 待复核
@@ -52,7 +52,11 @@ personal.txt
 
 ## 修复说明
 
-定位轮仅新增回归测试和本记录，未修改产品逻辑。回归测试按协议保持失败，待后续修复轮处理。
+第 1/3 轮仅修改 `init_commit` 的暂存路径：移除整个 `docs` 目录，复用 `ONBOARDING_FILES`，明确纳入 `docs/agent-project-profile.md` 和 `AGENTS.md`；保留 `.autome` 脚手架及 `.gitignore` 的原有行为。这样合法 onboarding 产物仍可提交，其他用户文档不再被递归暂存。不涉及预先暂存内容等相邻问题。
+
+定位轮回归测试未修改、删除、跳过或弱化。同一个状态块复现命令在修复前失败（业务断言，1 failed），修复后成功（1 passed，0 failed）；日志分别为 `.autome/output/fix-1-before.log`、`.autome/output/fix-1-after.log`。
+
+配置门禁 `sh scripts/ci-local.sh` 已运行，退出码 1：Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 通过；Web test 未通过（3 个测试文件失败，11 failed、198 passed、16 skipped），日志报告 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`。当前执行环境阻塞 Web 服务监听，不能据此声称项目门禁通过；需由宿主在允许本机监听的环境重跑。未修改测试或门禁以绕过失败。完整日志为 `.autome/output/fix-1-gate.log`，不纳入提交。`git diff --check` 通过。
 
 ## 复核意见
 

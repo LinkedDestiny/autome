@@ -961,12 +961,9 @@ fn onboarding_save(ctx: &mut Ctx, params: &Value) -> DispatchResult {
 /// (design §6, requirement C-03).
 fn init_commit(project: &Project) -> std::result::Result<Option<String>, DispatchError> {
     let repo = std::path::Path::new(&project.path);
-    let mut paths: Vec<String> = vec![
-        ".autome".into(),
-        ".gitignore".into(),
-        "AGENTS.md".into(),
-        "docs".into(),
-    ];
+    let mut paths: Vec<String> = vec![".autome".into(), ".gitignore".into()];
+    // Stage only the wizard's artefacts, never the user's entire docs tree.
+    paths.extend(ONBOARDING_FILES.iter().map(|path| (*path).to_string()));
     paths.retain(|p| repo.join(p).exists());
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     Ok(git::commit_paths(
