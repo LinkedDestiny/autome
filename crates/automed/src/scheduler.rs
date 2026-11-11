@@ -1053,11 +1053,20 @@ fn regression_protection(
             .any(|p| name.contains(p));
     // A source file counts only when its inline test section changed; a
     // product edit above an unchanged module is not a regression test.
-    let inline = match (test_section_start(contents), test_section_start(previous)) {
-        (Some(now), Some(before)) => contents[now..] != previous[before..],
-        (Some(_), None) | (None, Some(_)) => true,
-        (None, None) => false,
-    };
+    // Only source code has inline tests; prose that merely quotes `#[test]`
+    // (a Bug doc explaining the fix, a README) does not.
+    let code = [
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".java", ".kt",
+        ".swift", ".rb", ".c", ".cc", ".cpp", ".h", ".cs", ".scala", ".ex", ".exs",
+    ]
+    .iter()
+    .any(|ext| name.ends_with(ext));
+    let inline = code
+        && match (test_section_start(contents), test_section_start(previous)) {
+            (Some(now), Some(before)) => contents[now..] != previous[before..],
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => false,
+        };
     let script = (contents.starts_with("#!")
         || [".sh", ".bash", ".py", ".rb", ".js", ".ts", ".mjs", ".cjs"]
             .iter()
@@ -1127,8 +1136,14 @@ fn guard_bug_regression(
                 .split('\0')
                 .filter(|p| !p.is_empty())
                 .collect();
+            let docs = format!("{}/", task.doc_dir());
             for entry in entries.chunks_exact(2) {
                 let path = entry[1];
+                // The Bug doc, card and replies are the protocol's own files:
+                // the fix and review rounds are required to edit them.
+                if path.starts_with(&docs) {
+                    continue;
+                }
                 let previous = if entry[0] == "M" {
                     git::run_ok(&slot.worktree, &["show", &format!("{base}:{path}")])?.stdout
                 } else {

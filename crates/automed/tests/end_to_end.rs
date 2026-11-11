@@ -4815,6 +4815,54 @@ fn bug_regression_guard_protects_only_the_test_section_of_an_inline_test_file() 
 }
 
 #[test]
+fn bug_regression_guard_leaves_the_bug_doc_and_prose_alone() {
+    needs_git!();
+    // A Bug doc that quotes `#[test]` is still the protocol's own file: the
+    // fix round must be able to write its 修复说明 into it.
+    let mut w = World::new("regression-prose");
+    let slug = slug_for("guard prose");
+    let located = format!("{}\n## 根因分析\n漏了 `#[test]` 标注\n", bug_doc("待复核"));
+    let fixed = format!("{located}\n## 修复说明\n补上了\n");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &located,
+        &format!("{BUG_LOCATE}\nprintf '# notes\\n#[test] is quoted here\\n' > NOTES.md"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &fixed,
+        &format!("{BUG_FIX}\nprintf '# notes\\nrewritten\\n' > NOTES.md"),
+    );
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &fixed.replace("复核: 待复核", "复核: 通过"),
+        "",
+    );
+    let id = create_bug(&mut w, "guard prose");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    let paths: Vec<&str> = snapshot["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["path"].as_str())
+        .collect();
+    assert_eq!(paths, vec!["regression.sh"]);
+}
+
+#[test]
 fn bug_regression_guard_survives_retry_and_extend() {
     needs_git!();
     for mutate in [false, true] {
