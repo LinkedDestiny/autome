@@ -1,9 +1,5 @@
-# 实现审计（审计 #7）
+# 审计结论（审计 #8）
 
-结论：通过。里程碑 M-01~M-05 均 `已完成`，reopen 为 0，convergence-mode normal。本轮无待审里程碑，表无需变更。
+结论：无待审里程碑，M-01 至 M-05 均为 `已完成`，里程碑表不变。
 
-- 实现 #9 仅把两条工作区 Bug Loop 测试的轮询期限由 30s 改为 90s（测试内部常量，产品不变）。
-- 宿主门禁在 62d15bfeb6 上全绿（退出码 0，653s），含 Web test。
-- 人工验收：H-01 仍待用户在合并前确认。
-- 本轮未构造新检查。
-- 证据：evidence/M-05-r9-audit.md
+全量 `cargo test --workspace` 1141 通过 / 0 失败 / 1 忽略；`autome-cli gate_same_failure` 2 个通过。证据：evidence/M-05-r10-audit.md。H-01 留待人工验收。
