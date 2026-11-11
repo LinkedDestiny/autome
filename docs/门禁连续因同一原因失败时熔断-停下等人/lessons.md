@@ -1,15 +1,26 @@
 # 教训 · 门禁连续因同一原因失败时熔断、停下等人（T-28）
 
-复盘轮 #2 覆盖写（第 1 轮复盘在审计 #5 之后，本轮补入实现 #7 与审计 #6）。依据：任务文件、`retro.md`、`evidence/` 下 13 份证据、审计与裁决记录、`brief/` 下的简报、审计 #6 的全量日志 `.autome/output/audit6-ci.log`，以及 `crates/automed/tests/end_to_end.rs`、`crates/autome-cli/src/render.rs` 的当前源码。Autome 本任务没有记录到指标，下文不引用任何指标数值；文中的数字都取自证据文件、日志或仓库实际内容。
+复盘轮 #3 覆盖写。第 2 轮复盘截止在审计 #6，本轮补入实现 #8、实现 #9 和审计 #7。依据：任务文件、`retro.md`、`evidence/` 下 16 份证据、审计与裁决记录、`brief/` 下的简报、主仓库 `.autome/output/gates/T-28/` 下 9 份宿主门禁日志及其退出码、`crates/automed/tests/end_to_end.rs` 当前源码，以及本轮对 `git merge-tree --write-tree HEAD main` 的实跑（输出存在 `.autome/output/retro3-merge-tree.txt`）。Autome 没有记录本任务的指标，所以下文不引用任何指标数值，出现的数字都来自证据文件、日志或仓库内容。
 
-运行概况（取自状态块与 `retro.md`）：设计 1 轮定稿（评审 2 条全部采纳），实现 7 轮，审计 6 轮，M-01..M-05 都是一次审计关闭、没有 reopen。M-03 多用了一轮实现（#4），起因是宿主门禁在 `ad5e78d` 上一条端到端用例失败，会话内复现不了。实现 #7 不对应任何开放里程碑：默认分支在本任务分叉后合入了 `c95ef10 fix(cli): render single-repo rebase without empty label`，同样改了 `render.rs`，两边产生冲突；实现 #7 把默认分支的修复和测试搬进本分支，审计 #6 全量复验后通过。H-01（真实桌面端失败卡片与恢复按钮）仍在人工验收清单里。`retro.md` 仍然只有逐轮行，没有 §终止 要求的总结段。
+运行概况（取自状态块、`retro.md` 和门禁日志）：
+- 设计 1 轮就定稿，实现用了 9 轮，审计 7 轮。M-01..M-05 都在第一次审计时关闭，没有 reopen。
+- 9 次宿主门禁里有 2 次退出码为 1：`ad5e78d` 和 `6c143f5`。两次都是 end_to_end 里的 World 用例，都失败在 `assert_eq!(w.node(&id)…)` 这句状态断言上，不是墙钟期限断言。
+- 实现 #7、#8、#9 都不对应开放里程碑：#7 处理 render.rs 冲突，#8 复核冲突，#9 修 `6c143f5` 的门禁失败。
+- H-01（真实桌面端失败卡片和恢复按钮）还在人工验收清单里。
+- `retro.md` 仍然只有逐轮记录，没有 §终止 要求的总结段。
 
-与第 1 轮复盘相比的改动：
-- L-05 的根因改写。第 1 轮写的是「沙箱内 Web test 必然失败」，但审计 #6 在会话内跑同一脚本时 Web test 通过（22 个文件、225 项）。这条根因被证据推翻，已经改掉；proposal 不变。
-- L-03、L-06 补入审计 #6 的事实。
-- 新增 L-07（端到端用例的墙钟期限）和 L-08（与默认分支冲突时的修复方法）。
+本轮核对出两件与前几轮结论相反的事实：
 
-跨任务复用：L-01 同 `内核支持任务类型-需求-bug` 等三份的 L-01；L-04 同 `在-apps-web-建-react` L-07、`服务端每次-tick-后用-events` L-06；L-05 同 `在-plugins-新增-autome-插件` L-02；L-06 同 `用户按合并时如果默认分支已经前进-任务自动` L-04。这四条的 `proposal` 按原文保留，便于跨任务计数。L-02、L-03、L-07、L-08 是本任务新出现的。
+1. **`6c143f5` 的门禁失败不是实现 #9 修的那条用例。** 完整门禁日志 `gate-6c143f56cbe2.log` 第 1171 行记录的失败是 `bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it`，位置 `end_to_end.rs:4284:5`，断言为 `left: Some("retro")`、`right: Some("implement")`。实现 #9 只拿到日志尾部，于是借审计 #6 沙箱日志里另一条用例（workspace_bug，30s 期限）推断根因，把那条和同类的一条从 30s 改成了 90s。随后 `62d15bf` 的门禁通过，审计 #7 据此写下「宿主门禁全绿」，结论是通过。但 4284 行这条用例本身一行没改，它在本任务里已经失败过两次（另一次是审计 #1），至今不在 Backlog。
+2. **render.rs 与默认分支的冲突仍然存在。** 本分支与 main 的 merge-base 仍是 `70cafab`。对 main `5a8cd57` 跑 `git merge-tree --write-tree HEAD main`，输出 `CONFLICT (content): Merge conflict in crates/autome-cli/src/render.rs`，冲突块落在合并结果第 381–407 行：本分支新增的两条 gate_same_failure 测试，对面 main 一侧为空。实现 #7 只是把 main 的修复按内容搬了过来，并没有合入 main 的提交。实现 #8 检查的是 `git ls-files -u` 和工作区冲突标记，据此得出「不能将过去发生的冲突当作当前仍未解决的冲突」，这个结论不成立。
+
+与第 2 轮复盘相比的改动：
+- 删去 L-07（端到端用例的墙钟期限）。本任务两次宿主门禁失败都不是期限断言。期限失败只出现在会话内全量运行里（审计 #1、审计 #6），这部分事实已并入 L-05。
+- L-03、L-04、L-05、L-06 补入实现 #9 和 `6c143f5` 门禁的事实。L-04、L-05、L-06 的 `proposal` 保留原文。
+- L-08 按「冲突仍在」改写了 proposal。第 2 轮的 L-08 只要求核对内容差异（`git diff main -- render.rs` 无删除行），而这一项实现 #7 已经做到，冲突照样留下了。
+- 新增 L-09：修门禁失败的轮次，要先从失败提交的门禁日志里点名失败用例。
+
+跨任务复用：L-01 同 `内核支持任务类型-需求-bug` 等三份任务的 L-01；L-04 同 `在-apps-web-建-react` L-07、`服务端每次-tick-后用-events` L-06；L-05 同 `在-plugins-新增-autome-插件` L-02；L-06 同 `用户按合并时如果默认分支已经前进-任务自动` L-04。这四条的 `proposal` 一字未改，方便跨任务计数。L-02、L-03、L-08、L-09 是本任务新出现的。
 
 ```yaml
 - id: L-01
@@ -36,8 +47,8 @@
 ```yaml
 - id: L-03
   domain: tooling
-  symptom: '宿主门禁在 ad5e78d 上失败于 end_to_end 的 bug_loop_fix_rounds_run_out_and_extend_adds_more（期望 Some("await_merge")，实际 None）；实现 #4 用了一整轮复查：ci-local 一次加单跑 11 次都通过，没有改代码，结论是「原偶发失败的因果证据仍未闭合」。对照：审计 #6 遇到的 bug_loop_a_workspace_bug_checks_out_every_member_… 失败用的是 Workspace，断言消息是 w.why(&id)，日志里直接给出 state=Active { node: MergeGate }、跑过的步骤=1 2 3 和完整事件序列，审计在同一轮内就定位成轮询期限问题'
-  root_cause: 'end_to_end.rs 已有诊断方法 why()（打印任务状态、替身实际跑过的轮次、事件序列与会话日志），是 2026-09-22 因「CI 失败、本机复现不了」加的，但只实现在 Workspace 上；fix_rounds_run_out 这条用例用的是 World，没有它，断言 assert_eq!(w.node(&id).as_deref(), Some("await_merge")) 失败时只打印 None，分不清是熔断、会话异常还是协议失败'
+  symptom: '本任务两次宿主门禁失败都失败在 World 用例的 assert_eq!(w.node(&id).as_deref(), …) 上，日志里只有左右两个值：ad5e78d 的 bug_loop_fix_rounds_run_out_and_extend_adds_more（end_to_end.rs:4427，实际 None），6c143f5 的 bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it（end_to_end.rs:4284，实际 Some("retro")，期望 Some("implement")）。前一次花掉实现 #4 一整轮，ci-local 一次加单跑 11 次都没复现，结论是「因果证据仍未闭合」；后一次的根因到任务结束也没人查。对照：审计 #6 遇到的 Workspace 用例失败带有 w.why(&id) 输出，日志里直接给出状态、跑过的步骤和事件序列，审计当轮就定位出了原因'
+  root_cause: 'end_to_end.rs 已有诊断方法 why()（打印任务状态、替身实际跑过的轮次、事件序列与会话日志），是 2026-09-22 为「CI 失败、本机复现不了」加的，但只实现在 Workspace 上；World 的状态断言失败时只打印一个节点名，分不清是熔断、会话异常、协议失败还是调度顺序问题，偶发失败也就无法事后分析'
   evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-impl.md'
   level: test
   proposal: 'crates/automed/tests/end_to_end.rs 的 World 提供与 Workspace::why 内容相同的诊断方法，文件里每一条 assert_eq!(w.node(…), …) 断言都把它作为失败消息'
@@ -47,9 +58,9 @@
 ```yaml
 - id: L-04
   domain: process
-  symptom: '实现 #4 是宿主门禁失败触发的，但 brief/impl-4.md 与 brief/impl-3.md 只差轮次号和 M-03 的状态（开放→待审），没有失败用例名、断言原文或门禁提交号；「上一轮对手轮的结论」一栏写的是「审计文件里没有提到 M-03」。证据里的失败信息来自会话自己读主仓库 .autome/output/gates/T-28/gate-ad5e78d0cf*.log'
-  root_cause: '简报只从里程碑表和审计文件取材，没有门禁失败这一栏；门禁失败触发的轮次拿到的简报和普通实现轮一样'
-  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/brief/impl-4.md'
+  symptom: '两次因宿主门禁失败派出的实现轮，简报里都没有失败信息。brief/impl-4.md 与 impl-3.md 只差轮次号和 M-03 状态；brief/impl-9.md 与 impl-8.md 只差轮次号（diff 只有第 1 行和第 232 行），「上一轮对手轮的结论」写的是「没有对应的里程碑」。实现 #9 证据自述「用户提供的 6c143f5 门禁尾部只显示 Test 失败，没有失败用例栈」，于是用审计 #6 日志里另一条用例推断根因，修了一条并没有在 6c143f5 失败的用例'
+  root_cause: '简报只从里程碑表和审计文件取材，没有门禁失败这一栏；门禁失败触发的轮次拿到的简报与普通实现轮一样，而 ci-local 的汇总尾部只有阶段名，不含 panicked 行'
+  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/brief/impl-9.md'
   level: brief
   proposal: '因宿主门禁失败派出的实现轮，其简报必须包含门禁日志中每个失败用例的全名与断言原文，以及门禁运行所在的提交号'
   predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
@@ -58,9 +69,9 @@
 ```yaml
 - id: L-05
   domain: tooling
-  symptom: '会话内全量跑 sh scripts/ci-local.sh 两次，两次都报出与产品无关的失败，需要另花篇幅解释。实现 #4：564 秒后退出 1，Web test 因 listen EPERM 127.0.0.1 与 EMFILE 失败 11 项，结论写成「未取得全绿证据」。审计 #6：Web test 通过（225 项），但 Test 阶段的 bug_loop_a_workspace_bug_checks_out_every_member_… 超过 30 秒轮询期限失败，同一次运行里 End to end 阶段又让这条用例通过了；而 brief/audit-6.md 已经写明宿主门禁在同一提交 8ca459e868 上 ci-local.sh 退出码 0'
-  root_cause: '宿主门禁已经在同一提交上跑过同一个脚本，会话内再全量跑一遍拿不到新信息，只会把会话环境的差异（沙箱回环监听权限因会话而异、并行负载下的墙钟期限）当成失败带进证据；简报没写「全仓门禁以宿主门禁为准」'
-  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-03-r4-impl.md'
+  symptom: '会话内全量跑 sh scripts/ci-local.sh 共 4 次，另有审计 #1 跑过 1 次 cargo test --workspace，没有一次能当作结论，每次都要另花篇幅解释与产品无关的失败。实现 #4：564 秒，退出 1，Web test listen EPERM/EMFILE 失败 11 项。审计 #1：end_to_end 与另一 worktree 并发，legacy_bug 用例超过 15 秒期限。审计 #6：Test 阶段 workspace_bug 用例超过 30 秒期限，同一次运行的 End to end 阶段又通过了。实现 #9 跑了两次（修复前 515 秒、修复后 407 秒），两次都退出 1，都因 Web test listen EPERM，证据结论是「未取得完整门禁通过证据，最终以 Autome 提交后宿主复验为准」；宿主门禁随后在 62d15bf 上 653 秒全部通过'
+  root_cause: '宿主门禁本来就会在提交上跑同一个脚本，会话内再全量跑一遍得不到新信息，只会把会话环境的差异（沙箱回环监听权限、与其它 worktree 并发时的墙钟期限）当成失败带进证据；简报没写「全仓门禁以宿主门禁为准」'
+  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r9-impl.md'
   level: brief
   proposal: '宿主门禁已经覆盖 scripts/ci-local.sh 时，实现轮简报写明「全仓门禁以提交后的宿主门禁为准」，实现轮证据里不再出现沙箱内的 ci-local.sh 全量运行，只跑本里程碑验收命令与它所在的测试组'
   predicted_impact: {metric: total_tokens, direction: down, scope: task, horizon: 3}
@@ -69,8 +80,8 @@
 ```yaml
 - id: L-06
   domain: process
-  symptom: '审计 #1 跑 workspace 全量时 bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it 超过 15 秒期限失败；实现 #4 对未复现的 bug_loop_fix_rounds_run_out_and_extend_adds_more 写了「后续若 Autome 再现，应采集 task.state、session 生命周期…」。这两件事都只留在证据文件里。审计 #6 是本任务第一次把这类失败写进设计文档 ## Backlog（B-01，只记了 workspace_bug 那条，没写断言原文）；前两条到任务结束仍不在 Backlog'
-  root_cause: '与本任务无关、按范围不修的失败没有固定去处，写不写进 Backlog 取决于当轮会话自己的判断；只写进证据文件的失败不会被后续任务读到，同一条用例下次失败要从头再查'
+  symptom: 'bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it 在本任务里失败过两次：审计 #1 的全量运行中超过 15 秒期限；宿主门禁 6c143f5 中失败在 end_to_end.rs:4284，断言为 Some("retro") 对 Some("implement")。两次都只留在证据文件或门禁日志里。设计文档 ## Backlog 到任务结束只有 B-01，记的是 workspace_bug 用例期限已改为 90s，既没有这条 legacy 用例，也没有 ad5e78d 上 fix_rounds_run_out 那条用例'
+  root_cause: '与本任务无关、按范围不修的失败没有固定去处，写不写进 Backlog 取决于当轮会话自己的判断；只写进证据的失败，后续轮次读不到，这里的后果是第二次失败被归到了另一条用例名下（见 L-09）'
   evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-01-r1-audit.md'
   level: rule
   proposal: '实现轮或审计轮遇到与本任务改动无关、且按范围约束不修的测试或门禁失败时，必须在设计文档 `## Backlog` 写一条，含失败用例全名、断言原文与机制'
@@ -78,23 +89,23 @@
 ```
 
 ```yaml
-- id: L-07
-  domain: tooling
-  symptom: '本任务有两条 end_to_end 用例在全量并行负载下撞到自己的墙钟轮询期限：审计 #1 的 bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it（15 秒），审计 #6 的 bug_loop_a_workspace_bug_checks_out_every_member_…（end_to_end.rs:4690，30 秒）。后一条单跑要 27.4 秒，只比期限少 2.6 秒；它在 audit6-ci.log 的 Test 阶段失败（该阶段 83 项共 281.61 秒），在同一次运行的 End to end 阶段通过（190.76 秒）'
-  root_cause: 'end_to_end.rs 的轮询期限写死在各用例里（10 秒 3 处、15 秒 1 处、30 秒 2 处、90 秒 3 处），按单跑耗时定，没有给 ci-local Test 阶段与其它 crate 并行时的减速留余量；失败与否取决于机器负载，与被测改动无关'
-  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r7-audit.md'
-  level: test
-  proposal: 'crates/automed/tests/end_to_end.rs 里每个墙钟轮询期限都不小于该用例单跑耗时的 3 倍；新增或修改这类期限的提交，在证据里写出该用例的单跑耗时'
-  predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
+- id: L-08
+  domain: verification
+  symptom: '默认分支在本任务分叉（70cafab）后合入了 c95ef10，同样改了 render.rs。实现 #7 把对面的 42 行修复和 2 条测试按内容搬进本分支，证据写的是「git diff main -- render.rs 没有删除行」，并没有合入 main 的提交。实现 #8 被再次派来处理同一冲突，只查了 git ls-files -u 和工作区冲突标记，结论是「不能将过去发生的冲突当作当前仍未解决的冲突」。复盘轮 #3 实跑 git merge-tree --write-tree HEAD main，仍输出 CONFLICT (content): Merge conflict in crates/autome-cli/src/render.rs，冲突块位于合并结果第 381–407 行（本分支新增的 gate_same_failure 两条测试，对 main 一侧为空），merge-base 仍是 70cafab'
+  root_cause: '三方合并比较的是双方相对 merge-base 的改动，不是最终内容。只要本分支没有合入默认分支的提交，同一位置两边的新增就仍算冲突，内容一致也无济于事；工作区和索引里的冲突状态只在合并进行中存在，查它们证明不了与默认分支可以合并'
+  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r8-impl.md'
+  level: rule
+  proposal: '处理与默认分支冲突的轮次，证据必须包含结束时 git merge-tree --write-tree HEAD <默认分支> 的输出，且其中 CONFLICT 行数为 0；只检查 git ls-files -u 或工作区冲突标记的轮次不得写「冲突已解决」'
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
 ```
 
 ```yaml
-- id: L-08
+- id: L-09
   domain: verification
-  symptom: '默认分支在本任务分叉（70cafab）之后合入 c95ef10，修了 render.rs 里单仓库 merge.rebased 的空仓库名，并加了 2 条测试；本分支也改了 render.rs，两边冲突。实现 #7 先把这 2 条测试原样搬进本分支再跑，1 过 1 败（实际输出「T-14 已自动 rebase： → main @ 5c8631f6a5」）；恢复默认分支的 42 行后 2 条都通过，git diff main -- render.rs 没有删除行'
-  root_cause: '冲突解决如果只看冲突块、取本分支一侧，默认分支的修复会被静默丢掉，而本分支已有的测试全绿，看不出来；只有把默认分支在同一文件上新增的测试搬过来先跑一次红，才能证明这次冲突修复没有覆盖掉对方的改动'
-  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r7-impl.md'
+  symptom: '实现 #9 修的是 6c143f5 的宿主门禁失败，但没有读该提交的完整门禁日志 gate-6c143f56cbe2.log（实现 #4 读过同目录下的 ad5e78d 日志）。它根据审计 #6 沙箱日志里的 workspace_bug 30s 超时，把两条 Workspace 用例的期限改成 90s；真正失败的是 legacy_bug 用例在 end_to_end.rs:4284 的状态断言，这条用例没有改动。审计 #7 以「62d15bf 宿主门禁全绿」为依据，写下「这同时消除了…悬挂项」，结论是通过；状态块 next-action 至今仍写「确认 Test 超时修复」'
+  root_cause: '偶发失败的修复，下一次门禁通过证明不了修对了：没修的那条用例本来也是偶尔才失败。协议没有要求修复轮先把「失败提交的门禁日志里哪条用例、哪一行失败」写进证据，也没有要求审计核对改动是否落在这条用例上'
+  evidence: 'docs/门禁连续因同一原因失败时熔断-停下等人/evidence/M-05-r9-impl.md'
   level: rule
-  proposal: '处理与默认分支冲突的轮次，证据必须包含：默认分支自分叉点以来在冲突文件上新增的测试搬入本分支后、修复前的运行结果，以及修复后 git diff <默认分支> -- <冲突文件> 的删除行数（非 0 时逐行说明）'
+  proposal: '以宿主门禁失败为起因的实现轮，证据必须逐字引用失败提交门禁日志中的 panicked 行（用例全名与文件:行号）；审计只在本轮改动触及该用例或该行断言所测的代码路径时，才可把这次门禁失败记为已修复'
   predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
