@@ -5,5 +5,7 @@ if (!checkNodeVersion(process.versions.node)) {
   process.exit(1);
 }
 
+(await import('./store-warnings.ts')).filterSqliteWarning(process);
+
 const { runFromEnv } = await import('./main.ts');
 await runFromEnv();
