@@ -3006,10 +3006,10 @@ fn stopped_gate_feedback_resumes_at_implementation_with_original_prompt() {
 fn stopped_task_resumes_at_original_node_after_waiting_for_slot() {
     needs_git!();
     let mut w = World::new("resume-slot");
-    w.ctx
-        .store
-        .update_project_parallel(&w.project_id, 1)
-        .unwrap();
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id": w.project_id, "parallel": 1}),
+    ));
     resume_block(&w, 5);
     resume_block(&w, 6);
     resume_block(&w, 7);
@@ -3078,10 +3078,10 @@ fn paused_implementation_case(mode: &str) {
     let original = w.ctx.store.running_session(&id).unwrap().unwrap().id;
     ok(&w.call("task.pause", json!({"task_id":id})));
     let blocker = if mode == "pause-slot" {
-        w.ctx
-            .store
-            .update_project_parallel(&w.project_id, 1)
-            .unwrap();
+        ok(&w.call(
+            "config.set_loop",
+            json!({"project_id": w.project_id, "parallel": 1}),
+        ));
         let b = create_task(&mut w, "pause blocker");
         resume_wait(&mut w, |w| w.root.join("ready-6").exists());
         Some(b)

@@ -1382,7 +1382,7 @@ fn task_docs_root(project: &Project, slug: &str) -> PathBuf {
 fn fill_slots(ctx: &mut Ctx) -> Result<Vec<String>> {
     let mut started = Vec::new();
     for project in ctx.store.list_projects()? {
-        let limit = project.parallel_limit.max(1);
+        let limit = resolve_config(ctx, &project)?.loop_defaults.parallel.max(1);
         let mut in_use = ctx.store.slots_in_use(&project.id)?;
         for task in ctx.store.queued_tasks(&project.id)? {
             if in_use >= limit {
@@ -3750,6 +3750,12 @@ mod tests {
     }
 
     impl World {
+        fn set_parallel(&self, parallel: u32) {
+            let mut config = config_io::load_project(&self.repo).unwrap();
+            config.loop_overrides.parallel = Some(parallel);
+            config_io::save_project(&self.repo, &config).unwrap();
+        }
+
         fn new(tag: &str) -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
             let root = std::env::temp_dir()
@@ -5025,10 +5031,7 @@ mod tests {
     fn with_every_slot_taken_the_requested_rebase_waits_in_the_queue_and_keeps_the_request() {
         needs_git!();
         let mut w = World::new("auto-slot");
-        w.ctx
-            .store
-            .update_project_parallel(&w.project_id, 1)
-            .unwrap();
+        w.set_parallel(1);
         let (task, wt) = stale_merge(&mut w);
         w.add_task("T-2", "busy");
         w.set_state(
@@ -5435,7 +5438,7 @@ mod tests {
     fn requeued_waits_for_slot_then_reenters_and_rejects_stop_without_killing() {
         needs_git!();
         let mut w = World::new("resume-slot");
-        w.ctx.store.update_project_parallel("p1", 1).unwrap();
+        w.set_parallel(1);
         let task = w.add_task("T-1", "a");
         w.write_design(
             &task,
@@ -5760,7 +5763,7 @@ mod tests {
     fn fill_slots_respects_the_projects_parallel_limit() {
         needs_git!();
         let mut w = World::new("slots");
-        w.ctx.store.update_project_parallel("p1", 2).unwrap();
+        w.set_parallel(2);
         for i in 0..4 {
             w.add_task(&format!("T-{i}"), &format!("s{i}"));
         }
@@ -5786,7 +5789,7 @@ mod tests {
     fn a_task_waiting_on_the_user_does_not_hold_a_slot() {
         needs_git!();
         let mut w = World::new("slots-waiting");
-        w.ctx.store.update_project_parallel("p1", 1).unwrap();
+        w.set_parallel(1);
         w.add_task("T-0", "s0");
         w.add_task("T-1", "s1");
         w.set_state(

@@ -3734,6 +3734,57 @@ mod tests {
     }
 
     #[test]
+    fn project_file_parallel_override_queues_the_second_task() {
+        assert!(git_available(), "this regression requires git");
+        let mut sb = Sandbox::new("cfg-file-parallel");
+        let mut global = config_io::load_global(&sb.ctx.autome_home).unwrap();
+        global.loop_defaults.parallel = 3;
+        config_io::save_global(&sb.ctx.autome_home, &global).unwrap();
+        let id = sb.add_project("repo");
+        let repo = sb.path("repo");
+        crate::git::commit_paths(
+            &repo,
+            &[".autome", ".gitignore", "AGENTS.md"],
+            "initialize regression fixture",
+        )
+        .unwrap();
+
+        // Edit the file after registration, without going through config.set_loop.
+        std::fs::write(repo.join(".autome/config.toml"), "[loop]\nparallel = 1\n").unwrap();
+        let config = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id": id})));
+        assert_eq!(
+            ok_payload(&config)["resolved"]["loop_defaults"]["parallel"],
+            1
+        );
+
+        let first = handle_command(
+            sb.ctx(),
+            &cmd("task.create", json!({"project_id": id, "request": "first"})),
+        );
+        assert_eq!(
+            ok_payload(&first)["started"],
+            true,
+            "{}",
+            ok_payload(&first)
+        );
+        let second = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({"project_id": id, "request": "second"}),
+            ),
+        );
+        let second = ok_payload(&second);
+        assert_eq!(
+            second["started"], false,
+            "project file parallel=1 must queue the second task: {second}"
+        );
+        assert_eq!(second["task"]["state"]["state"], "queued");
+        assert_eq!(second["queue_position"], 1);
+        assert_eq!(sb.ctx.store.slots_in_use(&id).unwrap(), 1);
+    }
+
+    #[test]
     fn setting_a_project_parallel_limit_updates_the_cached_row() {
         needs_git!();
         let mut sb = Sandbox::new("cfg-parallel-row");
@@ -4218,7 +4269,11 @@ mod tests {
                     },
                 )
                 .unwrap();
-            sb.ctx.store.update_project_parallel(project, 1).unwrap();
+            call(
+                sb,
+                "config.set_loop",
+                json!({"project_id": project, "parallel": 1}),
+            );
         }
         #[test]
         fn create_without_the_new_params_is_unchanged() {
