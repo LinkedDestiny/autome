@@ -10,3 +10,4 @@
 实现 #6 | M-05 | 待审 | docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-05-r6-impl.md | 无
 审计 #5 | M-05 | 通过 | docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-05-r6-audit.md | 无
 实现 #7 | M-06 | 待审 | docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-06-r7-impl.md | 无
+审计 #6 | M-06 | 通过 | docs/按计划-4-2-节实现-bug-修复-loop/evidence/M-06-r7-audit.md | 无

@@ -6,7 +6,7 @@ implementation-round: 7/30
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 等待独立审计复验 M-06；若退回，先修复 regression-guard 缺陷
+next-action: 全部里程碑已完成，进入收尾
 
 任务文件：`docs/按计划-4-2-节实现-bug-修复-loop/按计划-4-2-节实现-bug-修复-loop-task.md`。
 本任务的规则见 `docs/按计划-4-2-节实现-bug-修复-loop/protocol/loop-protocol.md` 与
@@ -457,7 +457,7 @@ Q1 → §1；Q2 → §1；Q3 → §2；Q4 → §3；Q5 → §4；Q6 → §4（�
 | M-03 | 已完成 | 调度器：Bug Loop 主路径与创建到合并的完整 e2e | 0 | scheduler-bug |
 | M-04 | 已完成 | task.reply、补充信息、不是 Bug、修复预算与命令行显示 | 0 | rpc-cli-bug |
 | M-05 | 已完成 | 需求任务零变化与全量门禁 | 0 | regression |
-| M-06 | 待审 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
+| M-06 | 已完成 | B-03：保护定位提交中的回归测试文件 | 0 | regression-guard |
 
 ## 里程碑说明
 
