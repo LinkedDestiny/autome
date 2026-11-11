@@ -1925,6 +1925,7 @@ fn trigger_name(t: &Trigger) -> &'static str {
         Trigger::Cancel => "cancel",
         Trigger::ExtendBudget { .. } => "extend_budget",
         Trigger::RerunFrom { .. } => "rerun_from",
+        Trigger::GateSameFailure { .. } => "gate_same_failure",
         Trigger::GateDone { .. } => "gate_done",
     }
 }

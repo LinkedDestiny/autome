@@ -70,6 +70,53 @@ pub fn apply_for(
         return apply_with_merge_request(state, trigger, ctx, merge_requested);
     }
     match (state, trigger) {
+        (
+            _,
+            Trigger::GateSameFailure {
+                node,
+                count,
+                summary,
+                log,
+            },
+        ) => {
+            if !matches!(state, TaskState::Active { node: current } if current == node && matches!(node, Node::FixGate | Node::MergeGate))
+            {
+                return Err(rejected("门禁结果与当前节点不符"));
+            }
+            Ok(Transition::fail(
+                *node,
+                FailureReason::GateSameFailure {
+                    count: *count,
+                    summary: summary.clone(),
+                    log: log.clone(),
+                },
+            ))
+        }
+        (
+            TaskState::Failed {
+                at,
+                reason: FailureReason::GateSameFailure { .. },
+            },
+            Trigger::RerunFrom { node },
+        ) if node == at && matches!(node, Node::FixGate | Node::MergeGate) => Ok(
+            Transition::active(*node, Action::DiscardGateRuns { node: *node }),
+        ),
+        (
+            TaskState::Failed {
+                at,
+                reason: FailureReason::GateSameFailure { .. },
+            },
+            Trigger::ExtendBudget { extra_rounds },
+        ) => {
+            let limit = ctx
+                .budget_n
+                .unwrap_or(ctx.config.bug.fix_rounds)
+                .checked_add(*extra_rounds)
+                .filter(|_| *extra_rounds > 0)
+                .ok_or_else(|| rejected("追加轮次必须大于 0 且不溢出"))?;
+            Ok(Transition::active(*at, Action::DiscardGateRuns { node: *at }).with_budget(limit))
+        }
+
         (TaskState::Queued, Trigger::SlotAvailable) => Ok(session(BugStep::Locate, None, ctx)),
         (
             TaskState::Stopped {
@@ -510,6 +557,152 @@ mod tests {
         }
         list
     }
+    fn same_failure_state(node: Node) -> TaskState {
+        TaskState::Failed {
+            at: node,
+            reason: FailureReason::GateSameFailure {
+                count: 3,
+                summary: "S".into(),
+                log: "/l".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn same_failure_bug_gate_trips_and_rejects_other_nodes() {
+        for node in [Node::FixGate, Node::MergeGate] {
+            let t = run(
+                &active(node),
+                &Trigger::GateSameFailure {
+                    node,
+                    count: 3,
+                    summary: "S".into(),
+                    log: "/l".into(),
+                },
+                &ctx(&config()),
+                BugProgress {
+                    fix_round: u32::MAX,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(t.next, same_failure_state(node));
+            assert_eq!(t.action, Action::None);
+        }
+        for (current, node) in [
+            (Node::Gate, Node::Gate),
+            (Node::MainCheck, Node::MainCheck),
+            (Node::ReproCheck, Node::ReproCheck),
+            (Node::Fix, Node::Fix),
+            (Node::FixGate, Node::MergeGate),
+        ] {
+            let e = run(
+                &active(current),
+                &Trigger::GateSameFailure {
+                    node,
+                    count: 3,
+                    summary: "S".into(),
+                    log: "/l".into(),
+                },
+                &ctx(&config()),
+                BugProgress::default(),
+            )
+            .unwrap_err();
+            assert!(e.reason.contains("门禁结果与当前节点不符"));
+        }
+    }
+
+    #[test]
+    fn same_failure_bug_rerun_and_extend() {
+        let c = config();
+        let mut context = ctx(&c);
+        for node in [Node::FixGate, Node::MergeGate] {
+            let state = same_failure_state(node);
+            let t = run(
+                &state,
+                &Trigger::RerunFrom { node },
+                &context,
+                BugProgress::default(),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(node));
+            assert_eq!(t.action, Action::DiscardGateRuns { node });
+            for budget in [None, Some(25)] {
+                context.budget_n = budget;
+                let t = run(
+                    &state,
+                    &Trigger::ExtendBudget { extra_rounds: 5 },
+                    &context,
+                    BugProgress::default(),
+                )
+                .unwrap();
+                assert_eq!(t.next, active(node));
+                assert_eq!(t.action, Action::DiscardGateRuns { node });
+                assert_eq!(t.budget_n, Some(budget.unwrap_or(c.bug.fix_rounds) + 5));
+            }
+            assert!(
+                run(
+                    &state,
+                    &Trigger::ExtendBudget { extra_rounds: 0 },
+                    &context,
+                    BugProgress::default()
+                )
+                .is_err()
+            );
+            context.budget_n = Some(u32::MAX);
+            assert!(
+                run(
+                    &state,
+                    &Trigger::ExtendBudget { extra_rounds: 1 },
+                    &context,
+                    BugProgress::default()
+                )
+                .is_err()
+            );
+            for other in [
+                Node::Gate,
+                Node::ReproCheck,
+                if node == Node::FixGate {
+                    Node::MergeGate
+                } else {
+                    Node::FixGate
+                },
+            ] {
+                assert!(
+                    run(
+                        &state,
+                        &Trigger::RerunFrom { node: other },
+                        &context,
+                        BugProgress::default()
+                    )
+                    .is_err()
+                );
+            }
+            let other_failure = TaskState::Failed {
+                at: node,
+                reason: FailureReason::Infeasible,
+            };
+            assert!(
+                run(
+                    &other_failure,
+                    &Trigger::RerunFrom { node },
+                    &context,
+                    BugProgress::default()
+                )
+                .is_err()
+            );
+            let t = run(
+                &state,
+                &Trigger::RerunFrom { node: Node::Fix },
+                &context,
+                BugProgress::default(),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(Node::Fix));
+            assert!(matches!(t.action, Action::StartBugSession { .. }));
+        }
+    }
+
     #[test]
     fn bug_loop_nodes_have_wire_names_roles_and_flags() {
         for (node, wire, role, core_step, wait) in [
