@@ -49,6 +49,17 @@ it('在途重验叠加新批，两批路由最终取得新数据', async () => {
   expect(c.router.state.loaderData.task).toBe(2); expect(c.router.state.loaderData.project).toBe(2);
   await c.router.revalidate(); expect(c.counts.other).toBe(1);
 });
+it('被中断的旧重验先 settle 时不清掉仍在进行的新批', async () => {
+  let releaseNew!: () => void;
+  const first = revalidateForEvents([event()], async () => {});
+  const second = revalidateForEvents([event('project.updated')], () => new Promise<void>(r => { releaseNew = r; }));
+  await first;
+  const url = new URL('http://localhost/x');
+  const args = { currentUrl: url, nextUrl: new URL(url.href), currentParams: {}, defaultShouldRevalidate: false } as never;
+  expect(liveShouldRevalidate(byKind('project.'))(args)).toBe(true);
+  releaseNew(); await second;
+  expect(liveShouldRevalidate(byKind('project.'))(args)).toBe(false);
+});
 it('事件待处理中参数导航与表单仍遵循默认重验', async () => {
   const c = await setup(); let release!: () => void;
   const pending = revalidateForEvents([], () => new Promise<void>(r => { release = r; }));
