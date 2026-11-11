@@ -396,7 +396,7 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
                 state == "queued"
                     || matches!(
                         node,
-                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check"
+                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check" | "repro_check" | "fix_gate"
                     )
                     // A crashed round whose retry is already due.
                     || matches!(
@@ -1643,7 +1643,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v1@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v2@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -3650,10 +3650,13 @@ fn task_card_a_drafted_bug_waits_then_starts_with_its_card_committed_before_the_
     let brief = "# 卡片\n修复 {request}，保留 {unknown}\r\n";
     let card = format!("docs/{slug}/{slug}-card.md");
     let prelude = format!("git cat-file -e HEAD:{card} || exit 80");
-    w.doc_step_for_prelude(1, &slug, &doc("设计中", 0, 0, &[]), &prelude);
-    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        &prelude,
+    );
     let out = w.call("task.create", json!({"project_id":w.project_id,"request":request,"kind":"bug","draft":true,"brief":brief}));
     let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
     w.settle();
@@ -3665,7 +3668,7 @@ fn task_card_a_drafted_bug_waits_then_starts_with_its_card_committed_before_the_
     let started = w.call("task.start", json!({"task_id":id}));
     assert_eq!(ok(&started)["started"], true);
     w.settle();
-    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
     let wt = w.repo.join(format!(".worktree/{slug}"));
     let committed = automed::git::run_ok(&wt, &["show", &format!("HEAD:{card}")]).unwrap();
     assert_eq!(committed.stdout.as_bytes(), brief.as_bytes());
@@ -3768,5 +3771,1156 @@ fn task_card_a_started_draft_waits_behind_the_parallel_limit() {
     );
     for id in ["queued-first", "queued-second", &id] {
         assert!(!w.ctx.store.list_sessions(id).unwrap().is_empty());
+    }
+}
+
+// Derive the fake document from the same frozen contract models receive.
+fn bug_doc(review: &str) -> String {
+    let contract = include_str!("../../../protocol/bug-protocol.md");
+    let region = contract
+        .split("<!-- kernel-contract: bug-status-block -->")
+        .nth(1)
+        .unwrap();
+    let example = region
+        .split("```text\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    example
+        .lines()
+        .filter(|l| !l.starts_with("repos:"))
+        .map(|line| {
+            if line.starts_with("复现命令:") {
+                "复现命令: sh regression.sh".to_owned()
+            } else if line.starts_with("复核:") {
+                format!("复核: {review}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n\n## 现象\n产品标记错误。\n\n## 复现\nsh regression.sh\n\n## 根因分析\nproduct.txt 应为 fixed。\n\n## 修复说明\n修复只改变产品标记。\n\n## 复核意见\n检查回归测试与产品差异。\n"
+}
+
+fn bug_step(w: &World, n: u32, slug: &str, body: &str, prelude: &str) {
+    w.step(n, &format!("set -e\n{prelude}\nmkdir -p docs/{slug}\ncat > docs/{slug}/{slug}-bug.md <<'BUG_EOF'\n{body}\nBUG_EOF\ngit add -A\ngit -c user.name=fake -c user.email=f@f commit -qm 'bug round {n}' || true\n"));
+}
+
+const BUG_LOCATE: &str = "printf 'broken\\n' > product.txt\nprintf 'echo regression-output; test \"$(cat product.txt)\" = fixed\\n' > regression.sh";
+const BUG_FIX: &str = "printf 'fixed\\n' > product.txt";
+
+fn create_bug(w: &mut World, request: &str) -> String {
+    let out = w.call("task.create", json!({"project_id": w.project_id, "request": request, "kind": "bug", "brief": "# Bug card\nExpected fixed"}));
+    ok(&out)["task"]["id"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
+    needs_git!();
+    let mut w = World::new("bug-merge");
+    let slug = slug_for("bug merge");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "bug merge");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(sessions.len(), 3);
+    for (n, phrase) in [(1, "定位轮"), (2, "修复轮"), (3, "复核轮")] {
+        assert!(w.prompt(n).contains(phrase), "{}", w.prompt(n));
+    }
+    assert!(
+        sessions
+            .iter()
+            .all(|s| matches!(s.kind, autome_domain::session::SessionKind::Bug { .. }))
+    );
+    assert!(w.prompt(1).contains(&format!("{slug}-bug.md")));
+    assert!(w.prompt(1).contains("bug-protocol.md"));
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    assert!(!wt.join(task.design_doc()).exists());
+    assert!(!wt.join(task.doc_dir()).join("brief").exists());
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "task.updated" && e.2 == id)
+        .filter_map(|e| e.3["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "locate",
+            "repro_check",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    let logs = std::fs::read_dir(w.repo.join(format!(".autome/output/gates/{id}")))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(logs.iter().any(|p| p.starts_with("repro_check-")));
+    assert!(logs.iter().any(|p| p.starts_with("fix_gate-")));
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join("product.txt")).unwrap(),
+        "fixed\n"
+    );
+    let merged = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    assert_eq!(
+        automed::git::run_ok(&w.repo, &["show", &format!("{merged}:product.txt")])
+            .unwrap()
+            .stdout,
+        "fixed\n"
+    );
+}
+
+#[test]
+fn bug_loop_a_repro_command_that_passes_on_the_locate_commit_returns_to_locate() {
+    needs_git!();
+    for command in [
+        "sh regression.sh",
+        "missing-autome-repro-command",
+        "exit 126",
+    ] {
+        let mut w = World::new("bug-repro-miss");
+        let slug = slug_for("repro miss");
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核").replace("sh regression.sh", command),
+            &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核").replace("已定位", "无法复现"),
+            "",
+        );
+        let id = create_bug(&mut w, "repro miss");
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+        let prompt = w.prompt(2);
+        assert!(
+            prompt.contains("复现检查没有失败") && prompt.contains(command),
+            "{prompt}"
+        );
+        assert!(prompt.contains(if command == "sh regression.sh" {
+            "regression-output"
+        } else {
+            "not_runnable"
+        }));
+        assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 0);
+        assert_eq!(
+            w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn bug_loop_a_fix_whose_repro_command_still_fails_returns_to_fix() {
+    needs_git!();
+    let mut w = World::new("bug-fix-fail");
+    let slug = slug_for("fix fail");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    // Changing the document cannot replace the frozen failing command.
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核").replace("sh regression.sh", "true"),
+        "",
+    );
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix fail");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(3).contains("regression-output"));
+    assert!(w.prompt(3).contains("2/3"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn bug_loop_the_project_gate_runs_after_the_repro_command_in_the_fix_gate() {
+    needs_git!();
+    let mut w = World::new("bug-project-gate");
+    w.configure(
+        "[gate]\ncommand = \"echo project-gate-output; test -f gate-ready\"\ntimeout_minutes = 1\n",
+    );
+    let slug = slug_for("project gate");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "project gate");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(3);
+    assert!(
+        prompt.find("regression-output").unwrap() < prompt.find("project-gate-output\n").unwrap()
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn bug_loop_review_rejection_returns_to_fix_and_counts_a_round() {
+    needs_git!();
+    let mut w = World::new("bug-reject");
+    let slug = slug_for("review reject");
+    for (n, review, prelude) in [
+        (1, "待复核", BUG_LOCATE),
+        (2, "待复核", BUG_FIX),
+        (3, "打回", ""),
+        (4, "待复核", ""),
+        (5, "通过", ""),
+    ] {
+        bug_step(&w, n, &slug, &bug_doc(review), prelude);
+    }
+    let id = create_bug(&mut w, "review reject");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        ok(&w.call("task.get", json!({"task_id":id})))["task"]["budget_n"],
+        3
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert!(w.prompt(4).contains("复核意见"));
+    assert!(w.prompt(5).contains("2/3"));
+}
+
+#[test]
+fn bug_loop_a_crashed_fix_session_is_retried_without_counting_a_round() {
+    needs_git!();
+    let mut w = World::new("bug-crash");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+    let slug = slug_for("fix crash");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    w.step(2, "exit 17\n");
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix crash");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        1
+    );
+    assert!(w.prompt(3).contains("1/3"));
+    assert_eq!(w.ctx.store.count_events(&id, "session.retry").unwrap(), 1);
+}
+
+#[test]
+fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
+    needs_git!();
+    let mut w = World::new("bug-legacy");
+    let slug = slug_for("legacy bug");
+    let out = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "legacy bug", "kind": "bug", "draft": true}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::AwaitDesignApproval,
+            },
+        )
+        .unwrap();
+    w.doc_step(1, &slug, &doc("实现中", 1, 1, &[("M-01", "待审")]));
+    w.doc_step(2, &slug, &doc("实现中", 1, 1, &[("M-01", "已完成")]));
+    w.retro_step(3, &slug);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    assert_eq!(w.node(&id).as_deref(), Some("implement"));
+    assert_eq!(
+        w.ctx.store.running_session(&id).unwrap().unwrap().kind,
+        autome_domain::session::SessionKind::Role {
+            role: autome_domain::role::Role::Impl
+        }
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while w.has_pending_work() {
+        let report = automed::scheduler::tick(&mut w.ctx);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "legacy loop did not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 3);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.loop_started").unwrap(),
+        0
+    );
+}
+
+#[test]
+fn bug_loop_a_malformed_bug_doc_is_a_protocol_failure() {
+    needs_git!();
+    for scenario in [
+        "missing-command",
+        "stale-review",
+        "missing-file",
+        "changed-status",
+        "pending-review",
+    ] {
+        let mut w = World::new("bug-protocol");
+        let slug = slug_for("bad bug doc");
+        if scenario == "missing-file" {
+            w.step(1, "exit 0\n");
+        } else {
+            let body = if scenario == "missing-command" {
+                bug_doc("待复核").replace("复现命令: sh regression.sh", "")
+            } else {
+                bug_doc("待复核")
+            };
+            bug_step(&w, 1, &slug, &body, BUG_LOCATE);
+            let fix = match scenario {
+                "changed-status" => bug_doc("待复核").replace("已定位", "无法复现"),
+                "stale-review" => bug_doc("通过"),
+                _ => bug_doc("待复核"),
+            };
+            bug_step(&w, 2, &slug, &fix, BUG_FIX);
+            bug_step(&w, 3, &slug, &bug_doc("待复核"), "");
+        }
+        let id = create_bug(&mut w, "bad bug doc");
+        w.settle();
+        let state = w.ctx.store.get_task(&id).unwrap().state;
+        let autome_domain::task::TaskState::Failed {
+            reason: autome_domain::task::FailureReason::Protocol { detail },
+            ..
+        } = state
+        else {
+            panic!("{scenario}: {state:?}");
+        };
+        assert!(
+            detail.contains(match scenario {
+                "missing-command" => "复现命令",
+                "missing-file" => "缺少文件",
+                "changed-status" => "status",
+                _ => "复核",
+            }),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn bug_loop_cannot_reproduce_waits_for_info_and_a_reply_returns_to_locate_with_it() {
+    needs_git!();
+    let mut w = World::new("bug-info");
+    let slug = slug_for("need info");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    // Repro misses return to Locate too: every later Locate still sees the file.
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+    );
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    let id = create_bug(&mut w, "need info");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    let dashboard = w.call("dashboard.get", json!({}));
+    assert!(ok(&dashboard)["waiting"].to_string().contains(&id));
+    for text in ["", " \n\t"] {
+        let out = w.call("task.reply", json!({"task_id":id,"info":text}));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    }
+    assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 0);
+    for method in ["task.pause", "task.stop", "task.extend_budget"] {
+        assert!(matches!(
+            w.call(method, json!({"task_id":id,"extra_rounds":1}))
+                .reply
+                .outcome,
+            ReplyOutcome::Error { .. }
+        ));
+    }
+    let text = "  请保留  双空格\n中文 {budget_line} `不是指令`\n";
+    let out = w.call("task.reply", json!({"task_id":id,"info":text}));
+    ok(&out);
+    let relative = format!("docs/{slug}/{slug}-replies.md");
+    let wt = w.repo.join(".worktree").join(&slug);
+    let replies = w.ctx.store.task_replies(&id).unwrap();
+    let expected = format!("## 第 1 条（{}）\n\n{text}\n\n", replies[0].0);
+    assert_eq!(
+        std::fs::read(wt.join(&relative)).unwrap(),
+        expected.as_bytes()
+    );
+    let committed = std::process::Command::new("git")
+        .args(["show", &format!("HEAD:{relative}")])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(committed.status.success());
+    assert_eq!(committed.stdout, expected.as_bytes());
+    w.settle();
+    for n in [2, 3] {
+        assert!(w.prompt(n).contains(&format!("{slug}-replies.md")));
+    }
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        1
+    );
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    let mut blocked = World::new("reply-write-failure");
+    let slug = slug_for("blocked reply");
+    bug_step(
+        &blocked,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "",
+    );
+    let id = create_bug(&mut blocked, "blocked reply");
+    blocked.settle();
+    let file = blocked
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/{slug}-replies.md"));
+    std::fs::create_dir(&file).unwrap();
+    let out = blocked.call("task.reply", json!({"task_id":id,"info":"落盘失败也保留"}));
+    assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    assert_eq!(
+        blocked.ctx.store.task_replies(&id).unwrap()[0].1["text"],
+        "落盘失败也保留"
+    );
+    assert!(matches!(
+        blocked.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Failed { .. }
+    ));
+}
+
+#[test]
+fn bug_loop_not_a_bug_waits_for_a_decision_and_can_be_cancelled_or_rebuilt_as_a_feature() {
+    needs_git!();
+    let mut w = World::new("not-bug");
+    let slug = slug_for("not bug");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "不是 Bug"),
+        "",
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "不是 Bug"),
+        "",
+    );
+    let id = create_bug(&mut w, "not bug");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("not_a_bug"));
+    for method in ["task.pause", "task.stop", "task.extend_budget"] {
+        let out = w.call(method, json!({"task_id":id,"extra_rounds":1}));
+        assert!(
+            matches!(out.reply.outcome, ReplyOutcome::Error { .. }),
+            "{method}"
+        );
+    }
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"确实是 Bug"})));
+    w.settle();
+    assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 1);
+    assert_eq!(w.node(&id).as_deref(), Some("not_a_bug"));
+    let brief = w.ctx.store.task_brief(&id).unwrap().unwrap();
+    let out = w.call("task.create",json!({"project_id":w.project_id,"request":"new feature","kind":"feature","brief":brief,"draft":true}));
+    let new_id = ok(&out)["task"]["id"].as_str().unwrap();
+    assert_eq!(w.ctx.store.task_brief(new_id).unwrap(), Some(brief));
+    ok(&w.call("task.cancel", json!({"task_id":id})));
+    assert_eq!(w.state(&id), "cancelled");
+    assert!(w.ctx.store.get_task(&id).unwrap().is_archived());
+}
+
+#[test]
+fn bug_loop_two_repro_misses_in_a_row_wait_for_info() {
+    needs_git!();
+    let mut w = World::new("two-misses");
+    let slug = slug_for("two misses");
+    for n in 1..=4 {
+        bug_step(
+            &w,
+            n,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+        );
+    }
+    let id = create_bug(&mut w, "two misses");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        2
+    );
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"再试一次"})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "bug.repro_missed").unwrap(),
+        4
+    );
+}
+
+#[test]
+fn bug_loop_fix_rounds_run_out_and_extend_adds_more() {
+    needs_git!();
+    let mut w = World::new("fix-budget");
+    w.configure("[bug]\nfix_rounds = 2\n");
+    let slug = slug_for("fix budget");
+    for n in 1..=3 {
+        bug_step(
+            &w,
+            n,
+            &slug,
+            &bug_doc("待复核"),
+            if n == 1 { BUG_LOCATE } else { "" },
+        );
+    }
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "fix budget");
+    w.settle();
+    let failed = w.ctx.store.get_task(&id).unwrap();
+    assert!(matches!(
+        failed.state,
+        autome_domain::task::TaskState::Failed {
+            reason: autome_domain::task::FailureReason::FixBudget { limit: 2 },
+            ..
+        }
+    ));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert!(matches!(
+        w.call("task.extend_budget", json!({"task_id":id,"extra_rounds":0}))
+            .reply
+            .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+    assert!(matches!(
+        w.call(
+            "task.extend_budget",
+            json!({"task_id":id,"extra_rounds":u32::MAX})
+        )
+        .reply
+        .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+    assert_eq!(w.ctx.store.get_task(&id).unwrap().budget_n, Some(2));
+    ok(&w.call("task.extend_budget", json!({"task_id":id,"extra_rounds":1})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let out = w.call("task.get", json!({"task_id":id}));
+    assert_eq!(ok(&out)["task"]["fix_round"], 3);
+    assert_eq!(ok(&out)["task"]["budget_n"], 3);
+}
+
+#[test]
+fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
+    needs_git!();
+    let mut w = World::new("fix-json");
+    let mut keys = Vec::new();
+    for kind in ["feature", "bug"] {
+        let out = w.call(
+            "task.create",
+            json!({"project_id":w.project_id,"request":kind,"kind":kind,"draft":true}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let out = w.call("task.get", json!({"task_id":id}));
+        let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        if kind == "bug" {
+            assert_eq!(task.remove("fix_round"), Some(json!(0)));
+        } else {
+            assert!(!task.contains_key("fix_round"));
+        }
+        keys.push(task.keys().cloned().collect::<Vec<_>>());
+        let out = w.call("task.reply", json!({"task_id":id,"info":"wrong state"}));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+        assert_eq!(w.ctx.store.count_events(&id, "task.replied").unwrap(), 0);
+    }
+    assert_eq!(keys[0], keys[1]);
+    let mut baseline = [
+        "id",
+        "kind",
+        "slug",
+        "title",
+        "request",
+        "state",
+        "budget_n",
+        "branch",
+        "created_at",
+        "completed_at",
+        "merge_commit",
+        "archived",
+        "protocol_ref",
+        "metrics",
+        "doc_dir",
+    ];
+    baseline.sort();
+    assert_eq!(keys[0], baseline);
+}
+
+#[test]
+fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos() {
+    needs_git!();
+    for (repos, keep_b) in [
+        ("repos: a", false),
+        ("repos: a", true),
+        ("", false),
+        ("repos: stranger", false),
+    ] {
+        let mut w = Workspace::new("bug-select", &["a", "b", "docs"]);
+        let slug = slug_for("workspace bug");
+        let doc = bug_doc("待复核").replace(
+            "复现命令: sh regression.sh",
+            &format!("复现命令: cd a && sh regression.sh\n{repos}"),
+        );
+        let extra = if keep_b {
+            "(cd b; echo preserve > keep.txt; git add keep.txt; git -c user.name=fake -c user.email=f@f commit -qm keep)"
+        } else {
+            ""
+        };
+        let check_b = if keep_b {
+            "test -f b/keep.txt"
+        } else {
+            "test ! -e b"
+        };
+        w.step(1,&format!("set -e\n{extra}\ntest -d a/.git || test -f a/.git\ntest -f b/.git\n(cd a; {BUG_LOCATE}; git add -A; git -c user.name=fake -c user.email=f@f commit -qm repro)\nmkdir -p docs/autome/{slug}\ncat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{doc}\nEOF\n"));
+        w.step(
+            2,
+            &format!(
+                "set -e\n{check_b}\ntest -f a/.git\necho kept > docs/kept.txt\n(cd a; {BUG_FIX})\n"
+            ),
+        );
+        let reviewed = doc.replace("复核: 待复核", "复核: 通过");
+        w.step(
+            3,
+            &format!("cat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{reviewed}\nEOF\n"),
+        );
+        let out = call(
+            &mut w.ctx,
+            "task.create",
+            json!({"project_id":w.project_id,"request":"workspace bug","kind":"bug"}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let state = w.ctx.store.get_task(&id).unwrap().state;
+            if state.node().is_some_and(|node| node.awaits_user())
+                || matches!(state, autome_domain::task::TaskState::Failed { .. })
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if repos == "repos: a" {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 1);
+            let cwd = w.ws().join(".worktree").join(&slug);
+            assert_eq!(cwd.join("b").exists(), keep_b);
+            assert!(cwd.join("docs/kept.txt").exists());
+        } else {
+            let task = w.ctx.store.get_task(&id).unwrap();
+            assert!(
+                matches!(task.state, autome_domain::task::TaskState::Failed { reason: autome_domain::task::FailureReason::Protocol { ref detail }, .. } if detail.contains("repos")),
+                "{:?}",
+                task.state
+            );
+        }
+    }
+}
+
+fn assert_regression_rejected(w: &World, id: &str, path: &str) {
+    let task = w.ctx.store.get_task(id).unwrap();
+    assert!(
+        matches!(task.state,
+        autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Fix,
+            reason: autome_domain::task::FailureReason::Protocol { ref detail }, ..
+        } if detail.contains(path)),
+        "{:?}",
+        task.state
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.regression_snapshot")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn bug_regression_guard_rejects_modified_or_deleted_tests() {
+    needs_git!();
+    for change in [
+        "echo true > regression.sh",
+        "rm regression.sh",
+        "mv regression.sh renamed.sh",
+        "chmod +x regression.sh",
+    ] {
+        let mut w = World::new("regression-reject");
+        let slug = slug_for("guard reject");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\n{change}"),
+        );
+        let id = create_bug(&mut w, "guard reject");
+        w.settle();
+        assert_regression_rejected(&w, &id, "regression.sh");
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        let head = snapshot["files"][0]["head"].as_str().unwrap();
+        let wt = w.repo.join(format!(".worktree/{slug}"));
+        let original = automed::git::run_ok(&wt, &["show", &format!("{head}:regression.sh")])
+            .unwrap()
+            .stdout;
+        assert_eq!(
+            original,
+            "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+        );
+        if change.starts_with("rm") || change.starts_with("mv") {
+            assert!(!wt.join("regression.sh").exists());
+        } else if change.starts_with("echo") {
+            assert_eq!(
+                std::fs::read_to_string(wt.join("regression.sh")).unwrap(),
+                "true\n"
+            );
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(wt.join("regression.sh")).unwrap(),
+                original
+            );
+        }
+    } // Empty input is never accepted as a protected fix.
+    let mut w = World::new("regression-empty");
+    let slug = slug_for("guard empty");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "exit 1");
+    bug_step(&w, 1, &slug, &doc, "echo broken > product.txt");
+    bug_step(&w, 2, &slug, &doc, BUG_FIX);
+    let id = create_bug(&mut w, "guard empty");
+    w.settle();
+    assert_regression_rejected(&w, &id, "保护集为空");
+
+    // Existing tests modified in locate, inline tests, names and directories.
+    for path in [
+        "tests/已有 测试.txt",
+        "__tests__/case.js",
+        "test/case.txt",
+        "sample.spec.js",
+        "src/lib.rs",
+    ] {
+        let mut w = World::new("regression-paths");
+        let slug = slug_for("guard paths");
+        let full = w.repo.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "old test\n").unwrap();
+        automed::git::commit_paths(&w.repo, &[path], "existing test").unwrap();
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\necho '#[test]' > '{path}'"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\necho weakened > '{path}'"),
+        );
+        let id = create_bug(&mut w, "guard paths");
+        w.settle();
+        assert_regression_rejected(&w, &id, path);
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/{path}"))).unwrap(),
+            "weakened\n"
+        );
+    }
+    let mut w = World::new("regression-script-spaces");
+    let slug = slug_for("script spaces");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "sh 'check bug.sh'");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &doc,
+        &format!("{BUG_LOCATE}\nmv regression.sh 'check bug.sh'"),
+    );
+    bug_step(&w, 2, &slug, &doc, "echo true > 'check bug.sh'");
+    let id = create_bug(&mut w, "script spaces");
+    w.settle();
+    assert_regression_rejected(&w, &id, "check bug.sh");
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/check bug.sh"))).unwrap(),
+        "true\n"
+    );
+}
+
+#[test]
+fn bug_regression_guard_allows_product_only_fixes() {
+    needs_git!();
+    let mut w = World::new("regression-product");
+    let slug = slug_for("guard product");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nmkdir -p tests __tests__ test src\necho check > tests/a.txt\necho check > __tests__/a.js\necho check > test/a.txt\necho check > sample.spec.js\necho '#[test]' > src/lib.rs"
+        ),
+    );
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "guard product");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["files"].as_array().unwrap().len(), 6);
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    for file in snapshot["files"].as_array().unwrap() {
+        let path = file["path"].as_str().unwrap();
+        let head = file["head"].as_str().unwrap();
+        assert_eq!(
+            std::fs::read(wt.join(path)).unwrap(),
+            automed::git::run_ok(&wt, &["show", &format!("{head}:{path}")])
+                .unwrap()
+                .stdout
+                .as_bytes()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(wt.join("product.txt")).unwrap(),
+        "fixed\n"
+    ); // A new locate takes a new baseline rather than retaining the first blob.
+    let mut w = World::new("regression-relocate");
+    let slug = slug_for("guard relocate");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\n{BUG_FIX}"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\necho '# second locate' >> regression.sh"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "guard relocate");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.regression_snapshot")
+            .unwrap(),
+        2
+    );
+    assert!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+            .unwrap()
+            .ends_with("# second locate\n")
+    );
+    let mut w = World::new("regression-inline-product");
+    let slug = slug_for("inline product");
+    std::fs::write(
+        w.repo.join("lib.rs"),
+        "old product\n#[cfg(test)]\nmod tests {}\n",
+    )
+    .unwrap();
+    automed::git::commit_paths(&w.repo, &["lib.rs"], "existing inline tests").unwrap();
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nprintf 'broken product\\n#[cfg(test)]\\nmod tests {{}}\\n' > lib.rs"
+        ),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_FIX}\nprintf 'fixed product\\n#[cfg(test)]\\nmod tests {{}}\\n' > lib.rs"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "inline product");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["files"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/lib.rs"))).unwrap(),
+        "fixed product\n#[cfg(test)]\nmod tests {}\n"
+    );
+}
+
+#[test]
+fn bug_regression_guard_survives_retry_and_extend() {
+    needs_git!();
+    for mutate in [false, true] {
+        let mut w = World::new("regression-retry");
+        w.configure("[bug]\nfix_rounds = 1\n[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+        let slug = slug_for("guard retry");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        w.step(2, "exit 17\n");
+        bug_step(&w, 3, &slug, &bug_doc("待复核"), "");
+        bug_step(
+            &w,
+            4,
+            &slug,
+            &bug_doc("待复核"),
+            if mutate {
+                "echo true > regression.sh"
+            } else {
+                BUG_FIX
+            },
+        );
+        bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "guard retry");
+        w.settle();
+        assert!(matches!(
+            w.ctx.store.get_task(&id).unwrap().state,
+            autome_domain::task::TaskState::Failed {
+                reason: autome_domain::task::FailureReason::FixBudget { .. },
+                ..
+            }
+        ));
+        let before = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap();
+        ok(&w.call(
+            "task.extend_budget",
+            json!({"task_id": id, "extra_rounds": 1}),
+        ));
+        w.settle();
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&id, "bug.regression_snapshot")
+                .unwrap(),
+            before
+        );
+        assert_eq!(w.ctx.store.count_events(&id, "session.retry").unwrap(), 1);
+        if mutate {
+            assert_regression_rejected(&w, &id, "regression.sh");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        let bytes = std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+            .unwrap();
+        assert_eq!(
+            bytes,
+            if mutate {
+                "true\n"
+            } else {
+                "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+            }
+        );
+    }
+    for mutate in [false, true] {
+        let mut w = World::new("regression-pause");
+        let slug = slug_for("guard pause");
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        let wait = format!(
+            "{}\n{}",
+            pause_prelude(&w, 2),
+            if mutate {
+                "echo true > regression.sh"
+            } else {
+                BUG_FIX
+            }
+        );
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), &wait);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "guard pause");
+        resume_wait(&mut w, |w| w.root.join("ready-2").exists());
+        ok(&w.call("task.pause", json!({"task_id": id})));
+        std::fs::write(w.root.join("release-2"), "go").unwrap();
+        resume_wait(&mut w, |w| {
+            w.ctx.store.running_session(&id).unwrap().is_none()
+        });
+        ok(&w.call("task.resume", json!({"task_id": id})));
+        w.settle();
+        if mutate {
+            assert_regression_rejected(&w, &id, "regression.sh");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/regression.sh")))
+                .unwrap(),
+            if mutate {
+                "true\n"
+            } else {
+                "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+            }
+        );
+    }
+}
+
+#[test]
+fn bug_regression_guard_checks_each_workspace_member() {
+    needs_git!();
+    for changed in ["a", "b", "none"] {
+        let mut w = Workspace::new("regression-workspace", &["a", "b", "docs"]);
+        let slug = slug_for("guard workspace");
+        let doc = bug_doc("待复核").replace(
+            "复现命令: sh regression.sh",
+            "复现命令: cd a && sh regression.sh\nrepos: a,b",
+        );
+        w.step(1, &format!("set -e\n(cd a; {BUG_LOCATE})\n(cd b; {BUG_LOCATE})\nmkdir -p docs/autome/{slug}\ncat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{doc}\nEOF"));
+        let mutation = if changed == "none" {
+            String::new()
+        } else {
+            format!("echo true > {changed}/regression.sh")
+        };
+        w.step(
+            2,
+            &format!("(cd a; {BUG_FIX})\n(cd b; {BUG_FIX})\n{mutation}"),
+        );
+        w.step(
+            3,
+            &format!(
+                "cat > docs/autome/{slug}/{slug}-bug.md <<'EOF'\n{}\nEOF",
+                doc.replace("复核: 待复核", "复核: 通过")
+            ),
+        );
+        let out = call(
+            &mut w.ctx,
+            "task.create",
+            json!({"project_id": w.project_id, "request":"guard workspace", "kind":"bug"}),
+        );
+        let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            let task = w.ctx.store.get_task(&id).unwrap();
+            if task.state.node().is_some_and(|n| n.awaits_user())
+                || matches!(task.state, autome_domain::task::TaskState::Failed { .. })
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let task = w.ctx.store.get_task(&id).unwrap();
+        if changed == "none" {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        } else {
+            assert!(
+                matches!(task.state, autome_domain::task::TaskState::Failed { at: autome_domain::task::Node::Fix, reason: autome_domain::task::FailureReason::Protocol { ref detail }, .. } if detail.contains(&format!("{changed}/regression.sh"))),
+                "{:?}",
+                task.state
+            );
+        }
+        for member in ["a", "b"] {
+            let bytes = std::fs::read_to_string(
+                w.ws()
+                    .join(format!(".worktree/{slug}/{member}/regression.sh")),
+            )
+            .unwrap();
+            assert_eq!(
+                bytes,
+                if changed == member {
+                    "true\n"
+                } else {
+                    "echo regression-output; test \"$(cat product.txt)\" = fixed\n"
+                }
+            );
+        }
     }
 }

@@ -256,6 +256,18 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
         };
     }
 
+    if let Some(t) = doc.get("bug") {
+        let t = t.as_table().ok_or("[bug] 不是一个表")?;
+        let mut bug = autome_domain::config::BugConfig::default();
+        if let Some(v) = t.get("fix_rounds") {
+            bug.fix_rounds =
+                v.as_integer()
+                    .filter(|n| (1..=20).contains(n))
+                    .ok_or("[bug] fix_rounds 必须是 1 到 20 的整数")? as u32;
+        }
+        config.bug = Some(bug);
+    }
+
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
         let command = t
@@ -482,6 +494,18 @@ pub fn save_project(repo: &Path, config: &ProjectConfig) -> Result<()> {
         }
     }
 
+    if let Some(bug) = config.bug {
+        if !(1..=20).contains(&bug.fix_rounds) {
+            return Err(ConfigError::Parse {
+                path: path.display().to_string(),
+                detail: "[bug] fix_rounds 必须是 1 到 20 的整数".into(),
+            });
+        }
+        ensure_table(doc.as_table_mut(), "bug")["fix_rounds"] = value(i64::from(bug.fix_rounds));
+    } else {
+        doc.as_table_mut().remove("bug");
+    }
+
     // An entirely empty `[loop]` table is noise in a committed file.
     if doc
         .get("loop")
@@ -581,6 +605,60 @@ pub fn skill_bindings(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bug_fix_rounds_are_read_from_the_bug_section() {
+        assert!(parse_project("").unwrap().bug.is_none());
+        assert_eq!(parse_project("[bug]").unwrap().bug.unwrap().fix_rounds, 3);
+        for rounds in [1, 3, 20] {
+            assert_eq!(
+                parse_project(&format!("[bug]\nfix_rounds = {rounds}"))
+                    .unwrap()
+                    .bug
+                    .unwrap()
+                    .fix_rounds,
+                rounds
+            );
+        }
+    }
+    #[test]
+    fn bug_fix_rounds_outside_one_to_twenty_are_refused() {
+        for value in [
+            "0",
+            "-1",
+            "21",
+            "4294967295",
+            "4294967296",
+            "1.0",
+            "true",
+            "\"3\"",
+            "[]",
+        ] {
+            assert_eq!(
+                parse_project(&format!("[bug]\nfix_rounds = {value}")).unwrap_err(),
+                "[bug] fix_rounds 必须是 1 到 20 的整数"
+            );
+        }
+        assert!(parse_project("bug = 3").is_err());
+    }
+    #[test]
+    fn bug_fix_rounds_survive_save_project() {
+        let dir = TempDir::new("bug-rounds");
+        let mut config = ProjectConfig {
+            bug: Some(autome_domain::config::BugConfig { fix_rounds: 20 }),
+            ..Default::default()
+        };
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().bug, config.bug);
+        config.bug = None;
+        save_project(dir.path(), &config).unwrap();
+        assert!(load_project(dir.path()).unwrap().bug.is_none());
+        for fix_rounds in [0, 21, u32::MAX] {
+            config.bug = Some(autome_domain::config::BugConfig { fix_rounds });
+            assert!(save_project(dir.path(), &config).is_err());
+            assert!(load_project(dir.path()).unwrap().bug.is_none());
+        }
+    }
+
     use super::*;
     use autome_domain::config::{Provenance, resolve};
     use std::sync::atomic::{AtomicU32, Ordering};

@@ -18,7 +18,7 @@ use autome_domain::environment::{self, Component};
 use autome_domain::project::{self, AddDisposition, Onboarding, Project, ProjectKind};
 use autome_domain::role::{Role, Runtime};
 use autome_domain::status_block::{self, StatusBlock};
-use autome_domain::task::{Disposition, Node, TaskState, Trigger};
+use autome_domain::task::{Disposition, Node, TaskKind, TaskState, Trigger};
 use serde_json::{Value, json};
 
 use crate::ipc::{Command, Event, PROTOCOL_VERSION, Reply, ReplyErrorCode, ReplyOutcome};
@@ -395,6 +395,20 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
                 feedback: str_param(p, "feedback")?.to_string(),
             },
         ),
+        "task.reply" => {
+            let id = str_param(p, "task_id")?;
+            let info = str_param(p, "info")?.to_string();
+            let task = ctx.store.get_task(id)?;
+            let trigger = if scheduler::uses_bug_loop(ctx, &task)? {
+                if info.trim().is_empty() {
+                    return Err(rejected("补充信息不能为空"));
+                }
+                Trigger::Reply { info }
+            } else {
+                Trigger::Reject { feedback: info }
+            };
+            task_trigger(ctx, id, trigger)
+        }
         "task.merge" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Merge),
         "task.pause" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Pause),
         "task.resume" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Resume),
@@ -525,7 +539,7 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     Ok((
         json!({
             "project": project,
-            "tasks": tasks.iter().map(task_json).collect::<Vec<_>>(),
+            "tasks": tasks.iter().map(|t| task_json(ctx, t)).collect::<Result<Vec<_>, _>>()?,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
             "violations": violations,
@@ -535,8 +549,8 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     ))
 }
 
-fn task_json(t: &crate::store::TaskRecord) -> Value {
-    json!({
+fn task_json(ctx: &Ctx, t: &crate::store::TaskRecord) -> Result<Value, DispatchError> {
+    let mut value = json!({
         "id": t.id,
         "kind": t.kind,
         "slug": t.slug,
@@ -554,7 +568,11 @@ fn task_json(t: &crate::store::TaskRecord) -> Value {
         // Where this task's documents live inside the repository holding
         // them, frozen when it was created. The panel opens paths under it.
         "doc_dir": t.doc_dir(),
-    })
+    });
+    if t.kind == TaskKind::Bug {
+        value["fix_round"] = json!(ctx.store.count_events(&t.id, "bug.fix_round_started")?);
+    }
+    Ok(value)
 }
 
 /// The rule files an agent is told to obey (requirement C-10).
@@ -1488,7 +1506,7 @@ fn create(
     let task = ctx.store.get_task(&id)?;
     Ok((
         json!({
-            "task": task_json(&task),
+            "task": task_json(ctx, &task)?,
             "started": started,
             "queue_position": queue_position(ctx, &task)?,
         }),
@@ -1509,7 +1527,7 @@ fn task_start(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     Ok((
         json!({
-            "task": task_json(&task),
+            "task": task_json(ctx, &task)?,
             "started": report.tasks_started.iter().any(|id| id == task_id),
             "queue_position": queue_position(ctx, &task)?,
         }),
@@ -1547,6 +1565,9 @@ fn queue_position(
 /// the design document, sessions, decisions and produced files.
 /// `task.retro` — run a retro round on a task that has already stopped.
 fn task_retro(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
+    if ctx.store.get_task(task_id)?.kind == TaskKind::Bug {
+        return Err(rejected("Bug 任务没有复盘"));
+    }
     scheduler::start_retro(ctx, task_id)?;
     let seq = ctx
         .store
@@ -1577,7 +1598,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 
     Ok((
         json!({
-            "task": task_json(&task),
+            "task": task_json(ctx, &task)?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
             "brief": ctx.store.task_brief(task_id)?,
             "queue_position": queue_position(ctx, &task)?,
@@ -2169,7 +2190,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
             let entry = json!({
                 "project_id": project.id,
                 "project_name": project.display_name,
-                "task": task_json(&task),
+                "task": task_json(ctx, &task)?,
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2605,6 +2626,97 @@ mod tests {
                 return;
             }
         };
+    }
+
+    #[test]
+    fn bug_loop_reply_on_a_feature_task_is_exactly_reject() {
+        needs_git!();
+        for kind in ["feature", "bug"] {
+            for state in [
+                TaskState::Draft,
+                TaskState::Active {
+                    node: Node::AwaitDesignApproval,
+                },
+            ] {
+                if kind == "bug" && state == TaskState::Draft {
+                    continue;
+                }
+                let mut results = Vec::new();
+                for method in ["task.reply", "task.reject"] {
+                    let mut sb = Sandbox::new("reply-parity");
+                    let project = sb.add_project("repo");
+                    std::fs::write(sb.path("repo/README.md"), "parity").unwrap();
+                    git::commit_paths(&sb.path("repo"), &["."], "initial").unwrap();
+                    let out = handle_command(
+                        sb.ctx(),
+                        &cmd(
+                            "task.create",
+                            json!({"project_id":project,"request":"parity","kind":kind,"draft":true}),
+                        ),
+                    );
+                    let id = ok_payload(&out)["task"]["id"].as_str().unwrap().to_owned();
+                    sb.ctx.store.set_task_state(&id, &state).unwrap();
+                    let seq = sb.ctx.store.latest_seq().unwrap();
+                    let out = handle_command(
+                        sb.ctx(),
+                        &cmd(
+                            method,
+                            json!({"task_id":id,"info":"原文  中文","feedback":"原文  中文"}),
+                        ),
+                    );
+                    let result = match out.reply.outcome {
+                        ReplyOutcome::Ok { .. } => "ok".to_owned(),
+                        ReplyOutcome::Error { message, .. } => message,
+                    };
+                    let events = sb
+                        .ctx
+                        .store
+                        .events_since(seq, 100)
+                        .unwrap()
+                        .into_iter()
+                        .map(|(_, kind, _)| kind)
+                        .collect::<Vec<_>>();
+                    assert!(!events.iter().any(|e| e == "task.replied"));
+                    results.push((result, sb.ctx.store.get_task(&id).unwrap().state, events));
+                }
+                assert_eq!(results[0], results[1], "{kind} {state:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn bug_loop_reply_is_a_write_method_not_a_read_method() {
+        assert!(!READ_METHODS.contains(&"task.reply"));
+        let mut sb = Sandbox::new("reply-invalid");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("task.reply", json!({"task_id":"missing","info":7})),
+        );
+        assert!(err_message(&out).contains("info"));
+    }
+
+    #[test]
+    fn bug_loop_a_bug_task_is_refused_a_retro() {
+        needs_git!();
+        let mut sb = Sandbox::new("bug-retro");
+        let project = sb.add_project("repo");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({"project_id":project,"request":"bug","kind":"bug","draft":true}),
+            ),
+        );
+        let id = ok_payload(&out)["task"]["id"].as_str().unwrap().to_owned();
+        let out = handle_command(sb.ctx(), &cmd("task.retro", json!({"task_id":id})));
+        assert_eq!(err_message(&out), "Bug 任务没有复盘");
+        assert_eq!(
+            sb.ctx
+                .store
+                .count_events(&id, "task.retro_started")
+                .unwrap(),
+            0
+        );
     }
 
     // ---- protocol --------------------------------------------------------

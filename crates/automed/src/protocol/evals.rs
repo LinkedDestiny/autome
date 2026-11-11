@@ -5,7 +5,7 @@
 //! than walked at build time so that a case which stops being embedded fails
 //! here rather than on a user's machine.
 
-pub const SEED: [(&str, &str); 78] = [
+pub const SEED: [(&str, &str); 92] = [
     (
         "evals/audit-manual-only-milestone-goes-to-checklist/case.yaml",
         include_str!(
@@ -421,5 +421,81 @@ pub const SEED: [(&str, &str); 78] = [
     (
         "evals/session-does-not-relay/scaffold.sh",
         include_str!("../../../../protocol/evals/session-does-not-relay/scaffold.sh"),
+    ),
+    (
+        "evals/fix-leaves-the-regression-test-alone/case.yaml",
+        include_str!("../../../../protocol/evals/fix-leaves-the-regression-test-alone/case.yaml"),
+    ),
+    (
+        "evals/fix-leaves-the-regression-test-alone/fixture/eval-case/eval-case-bug.md",
+        include_str!(
+            "../../../../protocol/evals/fix-leaves-the-regression-test-alone/fixture/eval-case/eval-case-bug.md"
+        ),
+    ),
+    (
+        "evals/fix-leaves-the-regression-test-alone/fixture/eval-case/eval-case-card.md",
+        include_str!(
+            "../../../../protocol/evals/fix-leaves-the-regression-test-alone/fixture/eval-case/eval-case-card.md"
+        ),
+    ),
+    (
+        "evals/fix-leaves-the-regression-test-alone/graders/behavior.md",
+        include_str!(
+            "../../../../protocol/evals/fix-leaves-the-regression-test-alone/graders/behavior.md"
+        ),
+    ),
+    (
+        "evals/fix-leaves-the-regression-test-alone/scaffold.sh",
+        include_str!("../../../../protocol/evals/fix-leaves-the-regression-test-alone/scaffold.sh"),
+    ),
+    (
+        "evals/fix-review-rejects-a-weakened-test/case.yaml",
+        include_str!("../../../../protocol/evals/fix-review-rejects-a-weakened-test/case.yaml"),
+    ),
+    (
+        "evals/fix-review-rejects-a-weakened-test/fixture/eval-case/eval-case-bug.md",
+        include_str!(
+            "../../../../protocol/evals/fix-review-rejects-a-weakened-test/fixture/eval-case/eval-case-bug.md"
+        ),
+    ),
+    (
+        "evals/fix-review-rejects-a-weakened-test/fixture/eval-case/eval-case-card.md",
+        include_str!(
+            "../../../../protocol/evals/fix-review-rejects-a-weakened-test/fixture/eval-case/eval-case-card.md"
+        ),
+    ),
+    (
+        "evals/fix-review-rejects-a-weakened-test/graders/behavior.md",
+        include_str!(
+            "../../../../protocol/evals/fix-review-rejects-a-weakened-test/graders/behavior.md"
+        ),
+    ),
+    (
+        "evals/fix-review-rejects-a-weakened-test/scaffold.sh",
+        include_str!("../../../../protocol/evals/fix-review-rejects-a-weakened-test/scaffold.sh"),
+    ),
+    (
+        "evals/locate-proves-the-bug-with-a-failing-test/case.yaml",
+        include_str!(
+            "../../../../protocol/evals/locate-proves-the-bug-with-a-failing-test/case.yaml"
+        ),
+    ),
+    (
+        "evals/locate-proves-the-bug-with-a-failing-test/fixture/eval-case/eval-case-card.md",
+        include_str!(
+            "../../../../protocol/evals/locate-proves-the-bug-with-a-failing-test/fixture/eval-case/eval-case-card.md"
+        ),
+    ),
+    (
+        "evals/locate-proves-the-bug-with-a-failing-test/graders/behavior.md",
+        include_str!(
+            "../../../../protocol/evals/locate-proves-the-bug-with-a-failing-test/graders/behavior.md"
+        ),
+    ),
+    (
+        "evals/locate-proves-the-bug-with-a-failing-test/scaffold.sh",
+        include_str!(
+            "../../../../protocol/evals/locate-proves-the-bug-with-a-failing-test/scaffold.sh"
+        ),
     ),
 ];

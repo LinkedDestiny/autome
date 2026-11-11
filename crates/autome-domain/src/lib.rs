@@ -43,3 +43,6 @@ pub mod skill;
 pub mod status_block;
 pub mod task;
 pub mod yaml_lite;
+
+pub mod bug_doc;
+pub mod bug_loop;

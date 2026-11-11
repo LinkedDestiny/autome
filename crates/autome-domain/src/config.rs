@@ -237,6 +237,8 @@ impl GlobalConfig {
 /// `<repo>/.autome/config.toml` — sparse by construction.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bug: Option<BugConfig>,
     #[serde(default, rename = "loop")]
     pub loop_overrides: LoopOverrides,
     #[serde(default)]
@@ -272,6 +274,21 @@ pub struct GateConfig {
     /// Run with `sh -c` in the task's working directory.
     pub command: String,
     pub timeout_minutes: u32,
+}
+
+pub const DEFAULT_FIX_ROUNDS: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BugConfig {
+    pub fix_rounds: u32,
+}
+
+impl Default for BugConfig {
+    fn default() -> Self {
+        Self {
+            fix_rounds: DEFAULT_FIX_ROUNDS,
+        }
+    }
 }
 
 pub const DEFAULT_GATE_TIMEOUT_MINUTES: u32 = 30;
@@ -334,6 +351,8 @@ pub struct ResolvedRole {
 /// The complete view a session is launched from (design §9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedConfig {
+    #[serde(default)]
+    pub bug: BugConfig,
     pub loop_defaults: LoopDefaults,
     pub roles: Vec<ResolvedRole>,
     /// The project's gate, if it has one (see `ProjectConfig::gate`).
@@ -401,6 +420,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             budget_factor,
         },
         roles,
+        bug: project.bug.unwrap_or_default(),
         gate: project.gate.clone(),
         retry: project.retry.unwrap_or_default(),
     }
@@ -561,6 +581,30 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bug_fix_rounds_default_to_three() {
+        let config = super::resolve(
+            &super::GlobalConfig::default(),
+            &super::ProjectConfig::default(),
+        );
+        assert_eq!(config.bug.fix_rounds, 3);
+    }
+    #[test]
+    fn bug_fix_rounds_project_override_resolves() {
+        for fix_rounds in [1, 20] {
+            let project = super::ProjectConfig {
+                bug: Some(super::BugConfig { fix_rounds }),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::resolve(&super::GlobalConfig::default(), &project)
+                    .bug
+                    .fix_rounds,
+                fix_rounds
+            );
+        }
+    }
+
     use super::*;
     use std::collections::HashMap;
 

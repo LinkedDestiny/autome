@@ -260,3 +260,92 @@ fn the_intake_prompt_with_a_task_card_matches_its_golden() {
     assert_eq!(got, golden("intake-card"));
     assert!(got.ends_with(&golden("intake")));
 }
+
+fn bug_rendered(step: autome_domain::session::BugStep, card: bool) -> String {
+    let templates = automed::protocol::seed();
+    let mut s = spec(SessionKind::Bug { step }, templates);
+    s.budget = Some(automed::launcher::BudgetLine { round: 2, limit: 3 });
+    let path = format!("{DOC_DIR}/{SLUG}-card.md");
+    if card {
+        s.card_path = Some(&path);
+    }
+    build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}")
+}
+
+fn check_bug_golden(name: &str, step: autome_domain::session::BugStep, card: bool) {
+    let got = bug_rendered(step, card);
+    if maybe_update_golden(name, &got) {
+        return;
+    }
+    assert_eq!(got, golden(name));
+}
+
+#[test]
+fn bug_loop_locate_prompt_matches_its_golden() {
+    check_bug_golden("locate", autome_domain::session::BugStep::Locate, false);
+}
+#[test]
+fn bug_loop_locate_prompt_with_a_card_matches_its_golden() {
+    check_bug_golden("locate-card", autome_domain::session::BugStep::Locate, true);
+    let got = bug_rendered(autome_domain::session::BugStep::Locate, true);
+    assert!(got.ends_with(&golden("locate")));
+    assert!(got.find("-card.md").unwrap() < got.find("{request}").unwrap());
+}
+#[test]
+fn bug_loop_fix_prompt_matches_its_golden() {
+    check_bug_golden("fix", autome_domain::session::BugStep::Fix, false);
+}
+#[test]
+fn bug_loop_fix_review_prompt_matches_its_golden() {
+    check_bug_golden(
+        "fix-review",
+        autome_domain::session::BugStep::FixReview,
+        false,
+    );
+}
+#[test]
+fn bug_loop_bug_prompts_leave_no_placeholder() {
+    use autome_domain::session::BugStep;
+    for (step, name) in [
+        (BugStep::Locate, "locate"),
+        (BugStep::Fix, "fix"),
+        (BugStep::FixReview, "fix-review"),
+    ] {
+        for (round, limit) in [(0, 1), (1, 1), (20, 20), (u32::MAX, u32::MAX)] {
+            let mut templates = automed::protocol::seed().clone();
+            let mut s = spec(SessionKind::Bug { step }, &templates);
+            s.budget = Some(automed::launcher::BudgetLine { round, limit });
+            s.request = "";
+            let got = build_prompt(&s).unwrap();
+            for placeholder in [
+                "{doc_dir}",
+                "{slug}",
+                "{request}",
+                "{budget_line}",
+                "{brief_path}",
+            ] {
+                assert!(!got.contains(placeholder), "{got}");
+            }
+            let expected = if step == BugStep::Locate {
+                format!("0/{limit}")
+            } else {
+                format!("{round}/{limit}")
+            };
+            assert!(got.contains(&expected));
+            s.card_path = Some("成员/任务卡.md");
+            s.request = "含 {literal} 的需求";
+            if step == BugStep::Locate {
+                assert!(build_prompt(&s).unwrap().contains(s.request));
+            }
+            s.budget = None;
+            assert!(build_prompt(&s).unwrap_err().detail.contains("预算"));
+            templates.remove(&format!("prompts/{name}.md"));
+            let s = spec(SessionKind::Bug { step }, &templates);
+            assert!(build_prompt(&s).unwrap_err().detail.contains(name));
+        }
+    }
+}

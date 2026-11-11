@@ -27,3 +27,47 @@ Autome 发布（ADR-0003），此前在 `~/.autome/protocol/` 仓库里的版本
 ```
 
 以后的改动在本文件末尾加新的 `## protocol/vN` 一节，按上面的字段写，一条改动一个块。
+
+## protocol/v2
+
+Bug Loop 的独立协议、定位、修复与复核模板。
+
+```yaml
+- id: B-1
+  kind: behavioral
+  clause: prompts/locate.md
+  evidence: [web-dashboard-via-loop §4.2, 按计划-4-2-节实现-bug-修复-loop 任务文件]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: evals/locate-proves-the-bug-with-a-failing-test/
+  realized_impact: null
+```
+
+```yaml
+- id: B-2
+  kind: behavioral
+  clause: prompts/fix.md
+  evidence: [web-dashboard-via-loop §4.2, 按计划-4-2-节实现-bug-修复-loop 任务文件]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: evals/fix-leaves-the-regression-test-alone/
+  realized_impact: null
+```
+
+```yaml
+- id: B-3
+  kind: behavioral
+  clause: prompts/fix-review.md
+  evidence: [web-dashboard-via-loop §4.2, 按计划-4-2-节实现-bug-修复-loop 任务文件]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: evals/fix-review-rejects-a-weakened-test/
+  realized_impact: null
+```
+
+```yaml
+- id: B-4
+  kind: behavioral
+  clause: bug-protocol.md
+  evidence: [web-dashboard-via-loop §4.2, 按计划-4-2-节实现-bug-修复-loop 任务文件]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: evals/locate-proves-the-bug-with-a-failing-test/
+  realized_impact: null
+```

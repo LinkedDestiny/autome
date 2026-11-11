@@ -296,6 +296,20 @@ fn task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_car
     let s = Sandbox::new("card-stdin");
     let slug = "stdin-card";
     task_card_prepare(&s, slug);
+    let contract = include_str!("../../../protocol/bug-protocol.md");
+    let example = contract
+        .split("```text\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap()
+        .replace("已定位", "无法复现");
+    std::fs::write(
+        s.repo.join(".autome/fake/1.sh"),
+        format!("mkdir -p docs/{slug}\ncat > docs/{slug}/{slug}-bug.md <<'EOF'\n{example}\nEOF\n"),
+    )
+    .unwrap();
     let brief = "# stdin card\n\n中文 {request}\n";
     let mut child = Command::new(env!("CARGO_BIN_EXE_autome"))
         .args([
@@ -327,7 +341,7 @@ fn task_card_a_brief_piped_on_stdin_creates_a_bug_draft_that_starts_with_its_car
     let started = s.json(&["task", "start", slug]);
     assert_eq!(started["task"]["id"], id);
     s.ok(&["run", "--until-idle", "--interval", "0.05"]);
-    assert_eq!(s.task_state(id)["node"], "await_design_approval");
+    assert_eq!(s.task_state(id)["node"], "await_info");
     let card = s
         .repo
         .join(format!(".worktree/{slug}/docs/{slug}/{slug}-card.md"));
@@ -376,7 +390,8 @@ fn task_card_a_brief_from_a_file_names_the_task_and_an_oversized_one_is_refused(
 
 #[test]
 fn task_card_reply_rejects_the_design_with_the_text_verbatim() {
-    for kind in ["feature", "bug"] {
+    // New Bug tasks use Locate; Bug reply coverage is planned separately in M-04.
+    for kind in ["feature"] {
         let s = Sandbox::new(&format!("card-reply-{kind}"));
         let slug = "reply-card";
         task_card_prepare(&s, slug);
@@ -418,4 +433,76 @@ fn task_card_start_refuses_a_task_that_is_not_a_draft() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("待开始"));
     assert_eq!(s.task_state(id)["state"], "cancelled");
+}
+
+fn bug_wait_step(s: &Sandbox, n: u32, slug: &str, status: &str) {
+    let body = format!("status: {status}\nfix-round: 0/3\n复现命令: 无\n根因: 无\n复核: 待复核\n");
+    std::fs::write(
+        s.repo.join(format!(".autome/fake/{n}.sh")),
+        format!(
+            "set -e\nmkdir -p docs/{slug}\ncat > docs/{slug}/{slug}-bug.md <<'EOF'\n{body}\nEOF\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim() {
+    let s = Sandbox::new("bug-reply");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let slug = "bug-reply";
+    bug_wait_step(&s, 1, slug, "无法复现");
+    bug_wait_step(&s, 2, slug, "不是 Bug");
+    let created = s.json(&["task", "new", "bug reply", "--kind", "bug"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(id)["node"], "await_info");
+    let text = "中文  双空格\n{request} 保留\n";
+    s.ok(&["reply", id, text]);
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(id)["node"], "not_a_bug");
+    let replies = std::fs::read_to_string(
+        s.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/{slug}-replies.md")),
+    )
+    .unwrap();
+    assert!(replies.ends_with(&format!("\n\n{text}\n\n")), "{replies}");
+    assert!(automed::git::is_clean(&s.repo.join(format!(".worktree/{slug}"))).unwrap());
+    let prompt = std::fs::read_to_string(s.repo.join(".autome/fake/2.prompt")).unwrap();
+    assert!(prompt.contains("bug-reply-replies.md"));
+}
+
+#[test]
+fn bug_loop_status_shows_the_bug_nodes_and_what_to_do_next() {
+    let s = Sandbox::new("bug-status");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    bug_wait_step(&s, 1, "bug-status", "无法复现");
+    bug_wait_step(&s, 2, "bug-status", "不是 Bug");
+    let created = s.json(&["task", "new", "bug status", "--kind", "bug"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    let status = s.ok(&["status", id]);
+    assert!(
+        status.contains("等你补充信息") && status.contains(&format!("autome reply {id}")),
+        "{status}"
+    );
+    s.ok(&["reply", id, "补充"]);
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    let status = s.ok(&["status", id]);
+    assert!(
+        status.contains("等你决定（不是 Bug）")
+            && status.contains("--kind feature")
+            && status.contains(&format!("autome cancel {id}")),
+        "{status}"
+    );
 }

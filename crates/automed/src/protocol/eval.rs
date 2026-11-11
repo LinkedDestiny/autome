@@ -122,7 +122,15 @@ pub fn run(dir: &std::path::Path) -> (String, i32) {
     };
     let report = check(&files);
     let code = if report.failed() { 1 } else { 0 };
-    (report.render(), code)
+    (
+        format!(
+            "版本：{}\n{}",
+            super::newest_version_heading(files.get("CHANGELOG.md").unwrap_or_default())
+                .unwrap_or_else(|| "未知".into()),
+            report.render()
+        ),
+        code,
+    )
 }
 
 /// Which cases layer 3 should run.
@@ -246,6 +254,7 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
     for file in phrases::ROLE_PROMPTS
         .iter()
         .chain(["prompts/intake.md", "prompts/onboarding.md"].iter())
+        .chain(phrases::BUG_PROMPTS.iter())
     {
         let Some(text) = files.get(file) else {
             continue;
@@ -266,7 +275,10 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
     // The one placeholder whose *absence* is a defect: a round with a budget
     // and nowhere to put it is told nothing about `N`, which is how a session
     // came to guess the factor and write `14/14` against the core's 35.
-    for file in ["prompts/impl.md", "prompts/audit.md"] {
+    for file in ["prompts/impl.md", "prompts/audit.md"]
+        .into_iter()
+        .chain(phrases::BUG_PROMPTS)
+    {
         if let Some(text) = files.get(file)
             && !text.contains("{budget_line}")
         {
@@ -331,6 +343,16 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
         };
         let mut bodies = Vec::new();
         let mut missing = false;
+        if files.prompt(case.prompt_name()).is_none() {
+            missing = true;
+            r.problems.push(Problem::fail(
+                L1,
+                format!(
+                    "{path} 的 prompt 模板 prompts/{}.md 不存在",
+                    case.prompt_name()
+                ),
+            ));
+        }
         for g in &case.graders {
             let full = format!("{dir}{g}");
             match files.get(&full) {
@@ -793,7 +815,7 @@ mod tests {
     fn with_behavioral_entry(eval: &str) -> ProtocolFiles {
         let mut files = seed().clone();
         let text = format!(
-            "{}\n## protocol/v2\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
+            "{}\n## protocol/v3\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
              clause: prompts/impl.md\n  evidence: [T-1 一处, T-2 另一处]\n  \
              predicted_impact: {{metric: protocol_failures, direction: down, scope: task, horizon: 3}}\n  \
              eval: {eval}\n  realized_impact: null\n```\n",
@@ -907,7 +929,7 @@ mod tests {
     #[test]
     fn a_changed_run_covers_the_new_cases_and_the_three_baselines() {
         let files = with_behavioral_entry("evals/impl-self-check-before-pending/");
-        let cases = changed_cases(&files, "protocol/v2");
+        let cases = changed_cases(&files, "protocol/v3");
         for baseline in BASELINE_CASES {
             assert!(cases.contains(&baseline.to_string()), "{cases:?}");
         }
@@ -1038,5 +1060,51 @@ mod tests {
         files.remove("CHANGELOG.md");
         let r = check(&files);
         assert!(r.failed(), "{}", r.render());
+    }
+    #[test]
+    fn bug_loop_protocol_eval_requires_budget_line_in_every_bug_prompt() {
+        assert!(!check(seed()).failed());
+        for file in phrases::BUG_PROMPTS {
+            let mut files = seed().clone();
+            files.insert(file, files.get(file).unwrap().replace("{budget_line}", ""));
+            let report = check(&files);
+            assert!(report.failed());
+            assert!(details(&report).contains("budget_line"));
+        }
+    }
+    #[test]
+    fn bug_loop_protocol_eval_requires_the_no_relay_phrase_in_bug_prompts() {
+        for file in phrases::BUG_PROMPTS {
+            let mut files = seed().clone();
+            files.insert(
+                file,
+                files.get(file).unwrap().replace("不要启动下一个会话", ""),
+            );
+            assert!(details(&check(&files)).contains("不要启动下一个会话"));
+            files.remove(file);
+            assert!(check(&files).failed());
+        }
+    }
+    #[test]
+    fn bug_loop_protocol_case_prompt_key_must_name_an_existing_template() {
+        let path = "evals/locate-proves-the-bug-with-a-failing-test/case.yaml";
+        let case = super::super::case::parse(seed().get(path).unwrap()).unwrap();
+        assert_eq!(case.prompt_name(), "locate");
+        let old = super::super::case::parse(seed().get("evals/auditor-rerun/case.yaml").unwrap())
+            .unwrap();
+        assert_eq!(old.prompt_name(), "audit");
+        for name in ["", "missing", "../missing"] {
+            let mut files = seed().clone();
+            files.insert(
+                path,
+                files
+                    .get(path)
+                    .unwrap()
+                    .replace("prompt: locate", &format!("prompt: {name}")),
+            );
+            let report = check(&files);
+            assert!(report.failed());
+            assert!(details(&report).contains("prompt 模板"));
+        }
     }
 }

@@ -19,15 +19,62 @@ use crate::role::{Role, Runtime};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionKind {
+    Bug { step: BugStep },
     Intake,
     Onboarding,
     Role { role: Role },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BugStep {
+    Locate,
+    Fix,
+    FixReview,
+}
+impl BugStep {
+    pub fn role(self) -> Role {
+        match self {
+            Self::Locate | Self::Fix => Role::Impl,
+            Self::FixReview => Role::Audit,
+        }
+    }
+    pub fn node(self) -> crate::task::Node {
+        use crate::task::Node;
+        match self {
+            Self::Locate => Node::Locate,
+            Self::Fix => Node::Fix,
+            Self::FixReview => Node::FixReview,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Locate => "定位",
+            Self::Fix => "修复",
+            Self::FixReview => "复核",
+        }
+    }
+}
+
 impl SessionKind {
+    pub fn for_node(node: crate::task::Node) -> Option<Self> {
+        use crate::task::Node;
+        match node {
+            Node::Intake => Some(Self::Intake),
+            Node::Locate => Some(Self::Bug {
+                step: BugStep::Locate,
+            }),
+            Node::Fix => Some(Self::Bug { step: BugStep::Fix }),
+            Node::FixReview => Some(Self::Bug {
+                step: BugStep::FixReview,
+            }),
+            _ => node.role().map(|role| Self::Role { role }),
+        }
+    }
     pub fn role(self) -> Option<Role> {
         match self {
             SessionKind::Role { role } => Some(role),
+            SessionKind::Bug { step } => Some(step.role()),
             _ => None,
         }
     }
@@ -35,6 +82,7 @@ impl SessionKind {
     /// Short label for the terminal tab title and the session list.
     pub fn label(self) -> String {
         match self {
+            SessionKind::Bug { step } => step.label().into(),
             SessionKind::Intake => "任务整理".into(),
             SessionKind::Onboarding => "Onboarding".into(),
             SessionKind::Role { role } => match role {

@@ -127,6 +127,9 @@ impl TaskRecord {
         autome_domain::project::Project::archive_dir(self.doc_root(), &self.slug)
     }
     /// `<doc_root>/<slug>/<slug>.md` — the design document the scheduler parses.
+    pub fn bug_doc(&self) -> String {
+        format!("{}/{}-bug.md", self.doc_dir(), self.slug)
+    }
     pub fn design_doc(&self) -> String {
         format!("{}/{}.md", self.doc_dir(), self.slug)
     }
@@ -611,11 +614,40 @@ impl Store {
         Ok(n.max(0) as u32)
     }
 
+    pub fn count_events_after(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        after_kind: &str,
+    ) -> Result<u32> {
+        let n: u32 = self.conn.query_row(
+            "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2
+             AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE subject_id = ?1 AND kind = ?3), 0)",
+            params![subject_id, kind, after_kind], |r| r.get(0),
+        )?;
+        Ok(n)
+    }
+
     pub fn latest_seq(&self) -> Result<u64> {
         let seq: i64 =
             self.conn
                 .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
         Ok(seq as u64)
+    }
+
+    /// All supplementary information for this task, in arrival order.
+    pub fn task_replies(&self, task_id: &str) -> Result<Vec<(String, Value)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT at, payload FROM events WHERE subject_id = ?1 AND kind = 'task.replied' ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (time, payload) = row?;
+            Ok((time, serde_json::from_str(&payload)?))
+        })
+        .collect()
     }
 
     /// Events after `after_seq`, oldest first. The Renderer's resync path.
