@@ -1,7 +1,7 @@
 # 没有待审里程碑的审计轮被判协议失败
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed guards::tests::rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence -- --exact
 根因: 全部里程碑已完成的冲突修复仍被送入审计，而审计证据守卫无条件要求本轮证据，导致合法空审计被转为协议失败。
 复核: 待复核
@@ -38,7 +38,18 @@ repos: autome-v2
 
 ## 修复说明
 
-定位轮仅新增回归测试和本文档，未修产品代码。修复轮次为 0/3。
+第 1/3 轮采用“允许合法空审计无证据”的最小修复：仅调整 `crates/automed/src/guards.rs` 的 Audit 分支。开始快照必须非空、全部里程碑已完成，且结束时的里程碑 ID/状态表与开始快照一致，才免除本轮审计证据要求。仍执行审计推进、retro 单行和编辑范围检查；实现轮的证据要求不变。
+
+该判断依据开始快照，不能通过本轮把最后一个待审项改为已完成来绕过证据要求。快照缺失、空表或里程碑表变化也不适用豁免。保留现有调度路径，空审计经原状态机进入复盘或 rebase。
+
+定位轮新增的两个回归测试均未修改。原精确复现命令修复前触发业务断言失败，修复后退出 0，目标测试 1 个通过。原始输出保存在 `.autome/output/fix-before.log` 和 `.autome/output/fix-after.log`。
+
+验证结果：
+
+- `cargo test --offline -p automed guards::tests::`：24 个通过，包括本轮关闭待审里程碑仍要求当前证据的反例；日志 `.autome/output/fix-guards.log`。
+- 配置门禁 `sh scripts/ci-local.sh`：已完整运行，退出 1，用时 257 秒。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过；Web test 未通过。
+- Web test：19 个文件通过、3 个文件失败；198 个测试通过、11 个失败、16 个跳过。失败涉及 `gateway-http.test.ts`、`server.test.ts`、`eventbus-live.test.ts`，日志为 `listen EPERM: operation not permitted 127.0.0.1`，部分启动日志另含文件监听 `EMFILE`，导致服务启动失败或超时。当前受限环境不允许提权，未改测试或门禁规避环境限制；需要宿主在允许监听端口的环境重跑配置门禁。完整日志 `.autome/output/fix-gate.log`。
+- `git diff --check` 通过。未运行可选 package 打包、真实 Agent 会话或浏览器人工验收。
 
 ## 复核意见
 

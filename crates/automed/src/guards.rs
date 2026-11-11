@@ -113,7 +113,20 @@ pub fn check(round: &Round<'_>) -> Vec<Finding> {
             out.extend(retro_one_line(round));
         }
         Role::Audit => {
-            out.extend(evidence_file(round, "audit"));
+            // Conflict repair can leave an already completed table unchanged.
+            // Use the starting snapshot so closing the last pending milestone
+            // in this audit still requires current evidence.
+            let unchanged_completed_table = round.before.is_some_and(|before| {
+                !before.milestones.is_empty()
+                    && before
+                        .milestones
+                        .iter()
+                        .all(|(_, state)| *state == MilestoneState::Done)
+                    && crate::task_metrics::snapshot(round.status) == before.milestones
+            });
+            if !unchanged_completed_table {
+                out.extend(evidence_file(round, "audit"));
+            }
             out.extend(audit_moved_the_table(round));
             out.extend(retro_one_line(round));
             out.extend(audit_stayed_in_its_column(round));
