@@ -7,3 +7,4 @@
 审计 #2 | M-02 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-02-r2-audit.md | 无
 
 实现 #3 | M-03 | 待审 | docs/在-plugins-新增-autome-插件/evidence/M-03-r3-impl.md | 全量 Web test 受沙箱监听权限限制
+审计 #3 | M-03 | 通过 | docs/在-plugins-新增-autome-插件/evidence/M-03-r3-audit.md | 无

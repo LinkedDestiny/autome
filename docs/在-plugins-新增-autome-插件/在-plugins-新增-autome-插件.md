@@ -3,7 +3,7 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 3/40
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
 next-action: 实现 M-04 README 程序化创建说明与插件市场 README
@@ -241,7 +241,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 |---|---|---|---|---|
 | M-01 | 已完成 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
 | M-02 | 已完成 | 任务卡校验与面板链接脚本 | 0 | |
-| M-03 | 待审 | autome-task 技能与短别名 | 0 | |
+| M-03 | 已完成 | autome-task 技能与短别名 | 0 | |
 | M-04 | 开放 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 开放 | eval 用例 | 0 | |
 | M-06 | 开放 | B-1：V7 示例键值一致性回归 | 0 | |
@@ -276,7 +276,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 ### M-03 验收契约
 
-最新证据：docs/在-plugins-新增-autome-插件/evidence/M-03-r3-impl.md · 专项验收通过，待审 · 实现 #3
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-03-r3-audit.md · 通过 · 审计 #3
 
 - 验收命令：`sh plugins/autome/tests/run.sh skill && sh plugins/autome/tests/verify-cli.sh skill`
 - 预期：skill 组 10 个用例通过（T1 八个固定小节按序存在；T2 第 4 步含闸门句「没有明确确认，不执行第 5 步」并列出「差不多」「再看看」为不算确认；T3 `create-command` 标记内恰有一条 `autome task new`，含 `--brief -`、`--kind {{KIND}}`、`--draft`、`-p {{PROJECT_ID}}`、`--json`、`< '{{CARD_FILE}}'`，且整个 SKILL.md 不含 `<<`；T4 第 4 步列出「直接开始」等五种说法，第 6 步写明创建后不调用 `autome task start`，并按排队、待开始、已开始、其它四种情形分条回显，排队条不含 `autome task start`；T5 `autome rpc`、`task.create`、`sqlite3` 只出现在「禁止」节；T6 `autome task start` 不出现在第 1–5 步；T7 第 2 步含两条安装命令原文；T8 第 3 步含 `autome project ls --json`、`pwd -P`、`removed_at`、`-p`；T9 引用 `check-card.sh`、`panel-url.sh` 且文件存在；T10 description 含「建成 autome 任务」）；verify-cli skill 组 6 个用例通过（V1 隔离账本的 `project ls --json` 含临时仓库且 `removed_at` 为 null；V2 从 `/tmp` 执行代入后的模板（feature、合格正文，正文写入临时文件并含一行 `AUTOME_CARD_EOF` 加 `touch` 探针命令，创建后探针文件不存在、`task.request` 为正文标题，`autome status T-1 --json` 的 `brief` 含该行原文）→ 退出 0，输出含 `"id": "T-1"`、`"kind": "feature"`、`"state": "draft"`、`"started": false` 与正文标题；V3 按技能规则删去 ` --draft` 后用 Bug 正文在空闲项目执行 → `"started": true`（槽位占满时的排队回显由 T4 与已有 Rust 测试覆盖，不推广这条结果）；V4 `-p prj-不存在` → 退出 1、标准错误以 `autome：没有叫` 开头；V5 65537 字节正文被 `check-card.sh` 拒绝且命令行也退出 1、报「超过 64KB」；V6 65536 字节正文两者都接受）。共 16 个。

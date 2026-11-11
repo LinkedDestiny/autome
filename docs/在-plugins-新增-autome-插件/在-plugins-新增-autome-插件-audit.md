@@ -1,5 +1,5 @@
-# 审计 #2 · M-02
+# 审计 #3 · M-03
 
-结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-02-r2-audit.md
+结论：通过。证据：docs/在-plugins-新增-autome-插件/evidence/M-03-r3-audit.md
 
-新造检查：三条负向对照（字节上限、healthz 体、代码块标题）均使对应用例变红，还原后 29/29；另手工喂 5 种卡文输入，行为符合设计。丢弃，不入库。
+新造检查：五条负向对照（--draft、-p、闸门句、排队条、heredoc）均使对应用例变红，还原后全绿；丢弃，不入库。提交由 Autome 兜底（如被拒）。
