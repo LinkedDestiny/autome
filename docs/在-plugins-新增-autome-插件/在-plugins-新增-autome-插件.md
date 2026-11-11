@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 7/40
+implementation-round: 8/40
 current-milestone: M-08
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-08 环境采集时序统一
+next-action: 独立审计 M-08 环境采集时序、回归检查与 H-07 说明
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -77,7 +77,7 @@ SKILL.md 用下列二级标题，`tests/run.sh skill` 按标题检查：`## 1. �
   | Bug `bug` | `## 现象`、`## 复现步骤`（至少一条编号步骤）、`## 期望行为`、`## 实际行为`、`## 环境` | `## 线索` |
 
   第一行是 `# <标题>`，标题由技能根据讨论起，一句话、不含 `#`，建议 30 字以内（它同时成为 slug 与分支名）。「要做什么」把讨论中定下的细节逐条写；「实际行为」尽量贴报错原文、日志片段（放进代码块）。
-- *什么算信息不全*：任一必填小节在讨论里找不到用户说过或明确同意过的内容。特别是：需求的「验收标准」、Bug 的「复现步骤」「期望行为」，**不得由技能推断补写**；Bug 的「环境」可以由技能读当前分支与提交（`git rev-parse --abbrev-ref HEAD`、`git rev-parse --short HEAD`）、`autome version` 作为**建议**提给用户，用户同意后才写入。用户明确说「复现不稳定」时，复现步骤写已知的触发条件并注明「不能稳定复现」（这是用户的原话，不算编造）。
+- *什么算信息不全*：任一必填小节在讨论里找不到用户说过或明确同意过的内容。特别是：需求的「验收标准」、Bug 的「复现步骤」「期望行为」，**不得由技能推断补写**；只有 Bug 的「环境」缺失可留待第 2 步，其余必填信息缺失仍先追问；本步不采集环境，也不把缺失的环境当作已填写。用户明确说「复现不稳定」时，复现步骤写已知的触发条件并注明「不能稳定复现」（这是用户的原话，不算编造）。
 - *追问方式*：**一次问完**。把所有缺的必填小节编号列出，每项一句具体问题（例如「验收标准：怎样算做完？给一两条能检查的条目」），不附带一份带占位符的草稿卡。用户回答后重新检查，仍有缺口就再问一次；用户明确说「不知道/先不写」的必填项，请他给一句最低限度的描述，不替他写。
 
 **第 2 步 检查命令行（Q6、A4、C3）。** 运行 `command -v autome`。找不到时只输出下面这段并结束本次技能，不尝试任何其他创建方式，也不帮用户执行安装：
@@ -94,6 +94,8 @@ SKILL.md 用下列二级标题，`tests/run.sh skill` 按标题检查：`## 1. �
 ```
 
 （第 1 步不需要命令行，放在前面是为了让没装命令行的用户也先把卡整理清楚；整理好的内容留在对话里，装好后再触发即可。）
+
+**补齐 Bug 环境。** 确认命令行存在后，仅在 Bug 环境缺失时，运行 `git rev-parse --abbrev-ref HEAD`、`git rev-parse --short HEAD` 与 `autome version`，将当前分支、提交和版本作为建议展示，询问是否确为本次 Bug 的环境。用户明确同意后才写入「环境」；不同意或只作模糊回应时，回第 1 步追问真实环境，不写入建议。采集失败或结果为空时，转达失败或空结果并回第 1 步追问，不编造环境。讨论里已有用户提供或确认的环境时直接沿用，无需采集。环境确认不等于确认创建，仍须经过第 4 步完整展示并等待确认。
 
 **第 3 步 确定项目（Q4、A2）。**
 
@@ -209,7 +211,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 三个脚本，分工按依赖划开。每个用例输出 `ok <编号> <名称>` 或 `not ok <编号> <名称>：<原因>`，最后一行 `<通过>/<总数> 通过`，有失败就非 0 退出。
 
-- **`tests/run.sh <组…|all>`**：零依赖（`/bin/sh`、`grep`、`sed`、`awk`、`git`），六组共 59 个用例（原契约 51 项，加 M-02 边界 8 项），用例清单见各里程碑验收契约。`panel` 组用 `PATH` 前置的 `curl` 替身驱动 `panel-url.sh`，替身的行为按真实 `curl` 对齐：连接被拒时退出 7、`-w '%{http_code}'` 打印 `000`；`-f` 遇 4xx/5xx 退出 22。另有一个用例用真实 `curl` 连无人监听的端口作对照。替身用符号链接放进临时目录（macOS 改名副本会被杀）。
+- **`tests/run.sh <组…|all>`**：零依赖（`/bin/sh`、`grep`、`sed`、`awk`、`git`），六组共 62 个用例（原契约 51 项，加 M-02 边界 8 项、M-08 时序 3 项），用例清单见各里程碑验收契约。`panel` 组用 `PATH` 前置的 `curl` 替身驱动 `panel-url.sh`，替身的行为按真实 `curl` 对齐：连接被拒时退出 7、`-w '%{http_code}'` 打印 `000`；`-f` 遇 4xx/5xx 退出 22。另有一个用例用真实 `curl` 连无人监听的端口作对照。替身用符号链接放进临时目录（macOS 改名副本会被杀）。
 - **`tests/hosts.sh`**：需要 `claude` 与 `codex`。Claude Code 跑 `plugin validate` 与 `plugin details`；Codex 在 `mktemp -d` 的 `CODEX_HOME` 下 `marketplace add` + `plugin add autome@autome` + `plugin list`，不碰 `~/.codex`。Cursor 本机没有命令行，只做 `run.sh structure` 的结构检查，真机加载列入人工验收清单。
 - **`tests/verify-cli.sh`**：需要 `autome` 与 `git`。开头 `AUTOME_HOME=$(mktemp -d)/home`、`unset AUTOMED_DB_PATH`，断言 `AUTOME_HOME` 不等于 `$HOME/.autome`；建临时 git 仓库、`project add --skip-onboarding`；结束删除临时目录。所有创建都发生在这个隔离账本里（C7）。不用 `autome` 替身——技能侧的确定性检查直接打真实命令行，没有替身与真实输出不一致的问题。
 
@@ -246,7 +248,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | M-05 | 已完成 | eval 用例 | 0 | |
 | M-06 | 已完成 | B-1：V7 示例键值一致性回归 | 0 | |
 | M-07 | 已完成 | B-2：人工验收逐项隔离前置 | 0 | |
-| M-08 | 开放 | B-3：环境采集时序统一 | 0 | |
+| M-08 | 待审 | B-3：环境采集时序统一 | 0 | |
 
 ## 里程碑说明
 
@@ -295,7 +297,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 最新证据：docs/在-plugins-新增-autome-插件/evidence/M-05-r5-audit.md · 通过 · 审计 #5
 
 - 验收命令：`sh plugins/autome/tests/run.sh evals`
-- 预期：evals 组 5 个用例通过（E1 三个场景目录各有含 `name`、`description`、`prompt`、`graders`、`runs`、`max_turns`、`timeout_seconds` 的 case.yaml 与至少一个 grader；E2 每个 grader 有「## 阳性对照」小节；E3 `ask-before-inventing` 的 grader 以「验收标准」判分；E4 没有 case.yaml 含 `scaffold_script`；E5 `evals/README.md` 含带 `--max-cost-usd` 的运行命令、「不进门禁」与「不要加 `--allow-tools Bash`」）。共 5 个；`run.sh all` 合计 59 个。
+- 预期：evals 组 5 个用例通过（E1 三个场景目录各有含 `name`、`description`、`prompt`、`graders`、`runs`、`max_turns`、`timeout_seconds` 的 case.yaml 与至少一个 grader；E2 每个 grader 有「## 阳性对照」小节；E3 `ask-before-inventing` 的 grader 以「验收标准」判分；E4 没有 case.yaml 含 `scaffold_script`；E5 `evals/README.md` 含带 `--max-cost-usd` 的运行命令、「不进门禁」与「不要加 `--allow-tools Bash`」）。共 5 个；`run.sh all` 当前合计 62 个（含 M-08 新增 3 项）。
 - 负向对照：删掉任一 grader 的阳性对照时 E2 失败；`evals/README.md` 的运行命令漏掉 `--max-cost-usd` 时 E5 失败。
 
 ### M-06 验收契约
@@ -312,6 +314,8 @@ B-2 / D1-N02 已纳入；前置 M-05。H-01、H-02、H-04 每条人工记录各�
 
 ### M-08 验收契约
 
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-08-r8-impl.md · 待审 · 实现 #8
+
 B-3 / D1-N03 已纳入；前置 M-03。统一 SKILL.md 的环境采集规则：第 1 步不跑命令，Bug 环境信息缺失时可留待第 2 步确认命令行存在后采集 Git 与 `autome version`，经用户同意后才写入；其余信息缺失仍先追问。验收：`sh plugins/autome/tests/run.sh skill`，新增检查确保环境采集命令仅位于第 2 步、且说明用户确认，补充该路径的人工对话检查说明。
 
 ## 人工验收清单
@@ -323,6 +327,8 @@ B-3 / D1-N03 已纳入；前置 M-03。统一 SKILL.md 的环境采集规则：�
 - H-04 先在 shell 执行 `export AUTOME_HOME=$(mktemp -d)`、`unset AUTOMED_DB_PATH`，在该隔离账本下注册一个临时仓库；从此 shell 启动 `apps/web` 面板及创建任务的宿主，让两者继承同一隔离环境，面板运行时在临时项目创建一张卡，回显里的面板链接能在浏览器里打开
 - H-05 本机跑一次 `claude plugin eval ./plugins/autome --ablation with-without --max-cost-usd 2.00 --runs 3 --threshold 0.7 --json`，三个场景都 ≥ 0.7
 - H-06 有 Cursor 时按 `plugins/README.md` 安装，确认技能出现在技能列表里并能触发
+
+- H-07 Bug 环境采集对话：在启动宿主的 shell 执行 `export AUTOME_HOME=$(mktemp -d)`、`unset AUTOMED_DB_PATH`，注册临时仓库并从中启动宿主、继承隔离环境。提供类型明确、除环境外信息齐全的 Bug：第 1 步不跑命令，第 2 步先确认命令行存在再采集分支、提交、版本；回复「差不多」或「不是这个环境」不得写入，提供真实环境或明确同意后才写入，仍须完整展示卡片并等待创建确认。分别重开对话检查：已有环境不采集；另缺复现步骤时先追问且不运行命令；PATH 缺 autome 时只给安装指引；非 Git 目录或采集失败、空结果时追问、不编造。未确认整卡前均不得创建。
 
 ## Backlog
 

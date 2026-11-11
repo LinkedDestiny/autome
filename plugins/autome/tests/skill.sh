@@ -21,3 +21,27 @@ T7() { for word in 'command -v autome' 'sh scripts/install-cli.sh' 'curl -fsSL h
 T8() { for word in 'autome project ls --json' 'pwd -P' removed_at '-p' 'path + "/"' 最长; do section '3. 确定项目' | has "$word" || return 1; done; }
 T9() { for name in check-card.sh panel-url.sh; do has "$name" < "$skill" && [ -f "$plugin/skills/autome-task/scripts/$name" ] || return 1; done; }
 T10() { grep '^description:' "$skill" | has '建成 autome 任务'; }
+T11() {
+  # All environment commands must occur after CLI discovery, in step 2 only.
+  awk '
+    /^## / { step=$0 }
+    /git rev-parse|autome version/ {
+      if (step!="## 2. 检查命令行" || !discovered) bad=1
+    }
+    /command -v autome/ && step=="## 2. 检查命令行" { discovered=1 }
+    END { exit bad }
+  ' "$skill" || return 1
+  for command in 'git rev-parse --abbrev-ref HEAD' 'git rev-parse --short HEAD' 'autome version'; do
+    section '2. 检查命令行' | has "$command" || return 1
+  done
+}
+T12() {
+  for word in '不跑命令' '只有 Bug 的「环境」缺失可留待第 2 步' '其余必填信息缺失仍先追问'; do
+    section '1. 整理与追问' | has "$word" || return 1
+  done
+}
+T13() {
+  for word in '确认命令行存在后' '环境缺失时' '用户明确同意后才写入' '不同意或只作模糊回应' '采集失败或结果为空' '回第 1 步追问' '不等于确认创建'; do
+    section '2. 检查命令行' | has "$word" || return 1
+  done
+}
