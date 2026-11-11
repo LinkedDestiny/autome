@@ -1,7 +1,7 @@
 # 审计简报缺少本轮证据文件的确切路径
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed regression_evidence_destination -- --nocapture
 根因: 简报只展示角色会话序号和已有证据，未明确本轮证据写入路径；审计会话序号与门禁使用的实现轮号分叉后，按简报序号命名的证据被拒绝。
 复核: 待复核
@@ -40,7 +40,13 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮仅新增回归测试及本报告，未修改产品逻辑。保持红灯供修复轮验证。
+第 1/3 修复轮在 `crates/automed/src/brief.rs` 的本里程碑段落补充本轮证据的完整写入路径。实现角色使用当前会话的 `input.round`，审计角色使用 `status.impl_round`，路径保留 `input.doc_dir`，并明确审计会话序号不用于证据命名。其它角色不增加证据写入要求。
+
+定位轮的回归测试未修改、删除、跳过或弱化。使用原复现命令验证：修复前退出码 101，3 个用例全部失败；修复后退出码 0，3 个用例全部通过。原始输出分别保存在 `.autome/output/fix-1-before.log` 和 `.autome/output/fix-1-regression.log`。
+
+执行配置的项目门禁 `sh scripts/ci-local.sh`，退出码 1，完整日志：`.autome/output/fix-1-gate.log`。Format、Clippy、工作区 Test、End to end、Adapter flags、Desktop、Contract、Web lint/typecheck/build 步骤通过；Web test 为 19 个文件通过、3 个文件失败，198 个用例通过、11 个失败、16 个跳过。失败日志显示本机监听 `127.0.0.1` 被拒绝（`listen EPERM`），实时服务启动还出现文件监听 `EMFILE`，不能宣称门禁全通过。Desktop 步骤虽返回成功，Electron 下载 `fetch failed` 导致真实 DOM 测试跳过，不能作为 Electron 验收通过证明。未修改门禁或测试以绕过环境限制，需宿主在可监听端口的环境复跑。
+
+`git diff --check` 通过。本轮只修改简报生成和本 bug 文档，不创建其它任务文档，不启动后续会话。
 
 ## 复核意见
 

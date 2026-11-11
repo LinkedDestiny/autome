@@ -231,6 +231,18 @@ pub fn build(input: &Inputs<'_>) -> String {
                     status.milestones_done(),
                     status.convergence_mode.as_str()
                 ));
+                let evidence_round = match input.role {
+                    Role::Impl => Some((input.round, "impl")),
+                    Role::Audit => Some((status.impl_round, "audit")),
+                    _ => None,
+                };
+                if let Some((round, suffix)) = evidence_round {
+                    s.push_str(&format!(
+                        "\n本轮证据必须写入 `{}/evidence/{}-r{round}-{suffix}.md`。\
+                         文件名中的轮号是实现轮号，审计会话序号不用于证据命名。\n",
+                        input.doc_dir, m.id
+                    ));
+                }
             }
         }
         None => s.push_str("还没有里程碑表，或者所有里程碑都已完成。\n"),
