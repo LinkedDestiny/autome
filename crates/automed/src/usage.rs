@@ -61,6 +61,17 @@ pub struct Transient {
 /// falls through to an ordinary crash, which is retried anyway — just with
 /// the retry counted.
 pub fn classify_failure(runtime: Runtime, stream: &str, now_epoch: i64) -> Option<Transient> {
+    classify_transient(error_texts(runtime, stream), now_epoch)
+}
+
+/// Only inspect error events, never model names quoted in normal agent output.
+pub fn model_not_found(runtime: Runtime, stream: &str) -> Option<String> {
+    error_texts(runtime, stream)
+        .into_iter()
+        .find(|text| text.to_lowercase().contains("model_not_found"))
+}
+
+fn error_texts(runtime: Runtime, stream: &str) -> Vec<String> {
     let mut texts: Vec<String> = Vec::new();
     for line in stream.lines() {
         let trimmed = line.trim();
@@ -104,6 +115,10 @@ pub fn classify_failure(runtime: Runtime, stream: &str, now_epoch: i64) -> Optio
         }
     }
 
+    texts
+}
+
+fn classify_transient(texts: Vec<String>, now_epoch: i64) -> Option<Transient> {
     const PHRASES: [&str; 12] = [
         "rate limit",
         "rate_limit",
@@ -334,6 +349,21 @@ mod tests {
     // ---- classify_failure ---------------------------------------------
 
     const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn missing_model_is_only_classified_from_errors() {
+        let failure =
+            r#"{"type":"turn.failed","error":{"message":"model_not_found: missing model"}}"#;
+        assert_eq!(
+            model_not_found(Runtime::Codex, failure).as_deref(),
+            Some("model_not_found: missing model")
+        );
+        let output = r#"{"type":"item.completed","item":{"type":"agent_message","text":"model_not_found: missing model"}}"#;
+        assert_eq!(model_not_found(Runtime::Codex, output), None);
+        let limit = r#"{"type":"turn.failed","error":{"message":"rate limit exceeded"}}"#;
+        assert_eq!(model_not_found(Runtime::Codex, limit), None);
+        assert!(classify_failure(Runtime::Codex, limit, NOW).is_some());
+    }
 
     #[test]
     fn claudes_usage_limit_result_is_transient_with_its_reset_time() {

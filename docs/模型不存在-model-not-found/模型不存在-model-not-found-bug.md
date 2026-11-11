@@ -1,7 +1,7 @@
 # 模型不存在被当成崩溃重试：定位记录
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end model_not_found_fails_as_config_without_retry -- --exact --nocapture
 根因: 非零退出被转换为 Crashed；classify_failure 仅识别限流，model_not_found 落入普通崩溃重试，耗尽后转为 SessionCrashed，未保留模型错误上下文。
 复核: 待复核
@@ -39,3 +39,17 @@ repos: autome-v2
 4. `crates/autome-domain/src/config.rs:511` 的配置校验检查本地范围、技能可见性及角色模型身份冲突，不查询供应商模型可用性。任务卡提及 doctor 的现象不意味着本轮需要新增联网预检；本轮确认的是运行时错误归类缺失。
 
 本轮仅增加回归测试和本记录，未修改产品代码。Claude 对应真实错误样本及 Codex 原始 JSONL 未提供，未伪称已采集；后续覆盖真实格式需要脱敏样本（含 CLI 版本、错误事件和退出码）。这不阻断当前 Codex 合成输入对既有调度错误的稳定复现。
+
+## 修复说明
+
+修复第 1/3 轮：复用原有错误事件提取逻辑，识别错误内容中的 `model_not_found`。在需求与 Bug 共用的重试入口优先将任务记为 `Failed{Config}`，不计入重试、不触发限流冷却；详情保留供应商错误、角色、实际 CLI 和模型，并指向 `~/.autome/config.toml` 的 `roles.<角色>.model`。内置系统会话单独提示检查 CLI 模型可用性，不指向不存在的角色配置。
+
+定位轮的回归测试及复现命令未修改。新增分类单测覆盖错误事件识别、普通输出不误判、限流分类保持不变。
+
+修复前原命令再次失败（重试次数断言失败，日志 `.autome/output/fix1-before.log`）；修复后原命令通过（1 passed，日志 `.autome/output/fix1-after.log`），最终代码再次运行同一命令也通过（1 passed，日志 `.autome/output/fix1-final-repro.log`）。最终 Format、Clippy 和 `git diff --check` 通过。
+
+已完整执行配置的项目门禁 `sh scripts/ci-local.sh`，退出 1，日志 `.autome/output/fix1-gate.log`。Format、Clippy、Rust Test、End to end、Adapter flags、Desktop、Contract、Web install/lint/typecheck/build 均通过；普通崩溃重试对照亦通过。Web test 为 19 个文件通过、3 个失败，198 个测试通过、11 个失败、16 个跳过：测试启动服务器遇到 `listen EPERM: operation not permitted 127.0.0.1`，另有 `EMFILE: too many open files, watch` 及启动等待超时。未修改或跳过测试来规避当前执行环境限制，不能认定项目门禁全绿，需由宿主在允许本地监听的环境重跑。未运行可选 package 构建或真实供应商模型调用。
+
+## 复核意见
+
+待独立复核。
