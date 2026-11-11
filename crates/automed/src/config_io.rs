@@ -268,6 +268,47 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
         config.bug = Some(bug);
     }
 
+    if let Some(t) = doc.get("setup") {
+        let t = t.as_table().ok_or("[setup] 不是一个表")?;
+        let command = t
+            .get("command")
+            .and_then(toml::Value::as_str)
+            .ok_or("[setup] 需要 command，例如 command = \"npm ci\"")?
+            .trim()
+            .to_string();
+        if !command.is_empty() {
+            let watch_error = "[setup] watch 必须是相对检出根目录的文件路径列表";
+            let watch = match t.get("watch") {
+                None => Vec::new(),
+                Some(v) => v
+                    .as_array()
+                    .ok_or(watch_error)?
+                    .iter()
+                    .map(|v| {
+                        let path = v.as_str().ok_or(watch_error)?.trim();
+                        if !autome_domain::setup::valid_watch_path(path) {
+                            return Err(watch_error);
+                        }
+                        Ok(path.to_string())
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            };
+            let timeout_minutes = match t.get("timeout_minutes") {
+                None => autome_domain::config::DEFAULT_SETUP_TIMEOUT_MINUTES,
+                Some(v) => v
+                    .as_integer()
+                    .filter(|m| *m > 0)
+                    .ok_or("[setup] timeout_minutes 必须是正整数")?
+                    .min(u32::MAX as i64) as u32,
+            };
+            config.setup = Some(autome_domain::config::SetupConfig {
+                command,
+                watch,
+                timeout_minutes,
+            });
+        }
+    }
+
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
         let command = t
@@ -605,6 +646,108 @@ pub fn skill_bindings(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn setup_section_is_read_with_command_watch_and_timeout() {
+        let config = parse_project(
+            "[setup]\ncommand = ' npm ci '\nwatch = [' lock ', 'dir/lock']\ntimeout_minutes = 12",
+        )
+        .unwrap()
+        .setup
+        .unwrap();
+        assert_eq!(config.command, "npm ci");
+        assert_eq!(config.watch, ["lock", "dir/lock"]);
+        assert_eq!(config.timeout_minutes, 12);
+    }
+    #[test]
+    fn setup_section_without_a_command_is_refused_and_an_empty_command_means_none() {
+        for body in ["[setup]", "[setup]\ncommand = 1"] {
+            assert!(parse_project(body).unwrap_err().contains("需要 command"));
+        }
+        for command in ["", "  "] {
+            assert!(
+                parse_project(&format!(
+                    "[setup]\ncommand = '{command}'\nwatch = 1\ntimeout_minutes = 0"
+                ))
+                .unwrap()
+                .setup
+                .is_none()
+            );
+        }
+    }
+    #[test]
+    fn setup_section_refuses_absolute_parent_or_non_string_watch_entries() {
+        assert!(
+            parse_project("setup = 1")
+                .unwrap_err()
+                .contains("不是一个表")
+        );
+        for watch in [
+            "1",
+            "'lock'",
+            "[1]",
+            "['']",
+            "['  ']",
+            "['/x']",
+            "['../x']",
+            "['a/../x']",
+            "['..']",
+            "['x/..']",
+        ] {
+            assert!(
+                parse_project(&format!("[setup]\ncommand = 'install'\nwatch = {watch}"))
+                    .unwrap_err()
+                    .contains("watch"),
+                "{watch}"
+            );
+        }
+        for timeout in ["0", "-1", "1.5", "'1'", "true"] {
+            assert!(
+                parse_project(&format!(
+                    "[setup]\ncommand = 'install'\ntimeout_minutes = {timeout}"
+                ))
+                .unwrap_err()
+                .contains("正整数")
+            );
+        }
+        for timeout in [1_i64, u32::MAX as i64, i64::MAX] {
+            assert_eq!(
+                parse_project(&format!(
+                    "[setup]\ncommand = 'install'\ntimeout_minutes = {timeout}"
+                ))
+                .unwrap()
+                .setup
+                .unwrap()
+                .timeout_minutes,
+                timeout.min(u32::MAX as i64) as u32
+            );
+        }
+        for path in ["lock", "./lock", "dir/.../lock", " 锁 "] {
+            assert!(autome_domain::setup::valid_watch_path(path));
+        }
+    }
+    #[test]
+    fn setup_section_defaults_to_no_watch_and_a_30_minute_timeout() {
+        assert!(parse_project("").unwrap().setup.is_none());
+        let config = parse_project("[setup]\ncommand = 'install'")
+            .unwrap()
+            .setup
+            .unwrap();
+        assert!(config.watch.is_empty());
+        assert_eq!(config.timeout_minutes, 30);
+    }
+    #[test]
+    fn setup_section_survives_save_project() {
+        let dir = TempDir::new("setup-save");
+        write_project(
+            dir.path(),
+            "[setup]\ncommand = 'install'\nwatch = ['lock']\ntimeout_minutes = 5\n",
+        );
+        let mut project = load_project(dir.path()).unwrap();
+        let setup = project.setup.clone();
+        project.loop_overrides.parallel = Some(2);
+        save_project(dir.path(), &project).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().setup, setup);
+    }
     #[test]
     fn bug_fix_rounds_are_read_from_the_bug_section() {
         assert!(parse_project("").unwrap().bug.is_none());

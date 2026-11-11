@@ -1910,6 +1910,7 @@ fn trigger_name(t: &Trigger) -> &'static str {
     match t {
         Trigger::BugSessionEnded { .. } => "bug_session_ended",
         Trigger::ReproDone { .. } => "repro_done",
+        Trigger::SetupFailed { .. } => "setup_failed",
         Trigger::Reply { .. } => "reply",
         Trigger::Start => "start",
         Trigger::SlotAvailable => "slot_available",

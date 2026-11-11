@@ -263,10 +263,22 @@ pub struct ProjectConfig {
     /// Loop runs exactly as it did before gates existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<GateConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<SetupConfig>,
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
 }
+
+/// Host command that prepares dependencies in a checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupConfig {
+    pub command: String,
+    pub watch: Vec<String>,
+    pub timeout_minutes: u32,
+}
+
+pub const DEFAULT_SETUP_TIMEOUT_MINUTES: u32 = 30;
 
 /// `[gate]` in a project's `.autome/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +369,8 @@ pub struct ResolvedConfig {
     pub roles: Vec<ResolvedRole>,
     /// The project's gate, if it has one (see `ProjectConfig::gate`).
     pub gate: Option<GateConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<SetupConfig>,
     pub retry: RetryPolicy,
 }
 
@@ -422,6 +436,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         roles,
         bug: project.bug.unwrap_or_default(),
         gate: project.gate.clone(),
+        setup: project.setup.clone(),
         retry: project.retry.unwrap_or_default(),
     }
 }
@@ -581,6 +596,20 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn setup_config_is_carried_into_the_resolved_config() {
+        let mut project = ProjectConfig::default();
+        assert!(resolve(&GlobalConfig::default(), &project).setup.is_none());
+        project.setup = Some(SetupConfig {
+            command: "install".into(),
+            watch: vec!["lock".into()],
+            timeout_minutes: 30,
+        });
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &project).setup,
+            project.setup
+        );
+    }
     #[test]
     fn bug_fix_rounds_default_to_three() {
         let config = super::resolve(
