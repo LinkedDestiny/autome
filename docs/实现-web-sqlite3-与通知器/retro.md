@@ -23,3 +23,4 @@
 实现 #8 | M-07 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-impl.md | 全量遇 listen EPERM / watcher EMFILE
 审计 #7 | M-07 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-audit.md | 无
 实现 #9 | M-07 | 门禁原失败未复现，状态不变 | docs/实现-web-sqlite3-与通知器/evidence/M-07-r9-impl.md | Web listen EPERM / watcher EMFILE；待宿主复跑
+实现 #10 | M-02 | 真实账本超时修复，状态不变 | docs/实现-web-sqlite3-与通知器/evidence/M-02-r10-impl.md | 完整门禁待宿主复验，范围外 Rust 超时及本地监听限制

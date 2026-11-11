@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 9/35
+implementation-round: 10/35
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: Autome 在本轮提交上重跑 sh scripts/ci-local.sh；若 End to end 再失败，保留失败用例全名和断言以定位
+next-action: Autome 在本轮提交上重跑 sh scripts/ci-local.sh，确认真实账本测试超时修复及完整门禁；失败时保留用例全名和断言
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -334,7 +334,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-02 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-audit.md · 通过 · 审计 #2
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r10-impl.md · 真实账本夹具超时修复，完整门禁待宿主复验；保持审计通过状态 · 实现 #10
 
 - 验收命令：`npm test --prefix apps/web -- test/notifier-rules.test.ts test/notifier.test.ts test/notifier-real.test.ts`；然后全量四件。
 - 预期：三文件共 25 个用例全过。`notifier-rules.test.ts` 12 个：7 条规则各 1 个（输入为「实测事件原文」seq 21、45、124、116、102、53 的原行，
@@ -438,6 +438,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ## Backlog
 
+- B-05 范围外门禁失败：`bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos`（`crates/automed/tests/end_to_end.rs:4531`）与 `bug_regression_guard_checks_each_workspace_member`（同文件 `:5069`）的 `assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));` 失败，状态为 `Active { node: MergeGate }`。这两个用例给整段工作区 Bug 流程 30 秒，实际在到达等待用户/失败态之前耗尽；未证明产品行为错误。本任务禁止修改 `crates/`，由内核测试维护者复验超时预算与门禁耗时。
 - B-01 已纳入独立里程碑 M-06（实现随 M-04，用户 2026-11-11 意见 2）：`createLiveClient` 的消息回调，见 §6、M-04。
 - B-03 用户 2026-11-11 裁定忽略、不做；评审 N-01：「进入」的记忆不持久（§3），seq 不同但状态相同的两条事件若恰好跨重启，会比不中断多一条通知。当前设计接受这个最坏结果（不漏发）；若 W6 之后觉得吵，再把最近状态存进 `event_cursor` 的另一个名字下。
 - B-04 已纳入独立里程碑 M-07（实现随 M-02，用户 2026-11-11）：重试同一事件仍生成通知的补步写进「M-02 验收契约」的 `notifier.test.ts` 用例。
@@ -445,4 +446,4 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ## 争议项
 
-- D-01 本地门禁重复遇到 `listen EPERM: operation not permitted 127.0.0.1` / `File watcher error: EMFILE: too many open files, watch`，无法取得整条门禁通过证据。由 Autome 在宿主工作目录 `/Users/dannie/project/autome-v2/.worktree/实现-web-sqlite3-与通知器` 执行 `sh scripts/ci-local.sh`；若再次出现宿主的 End to end 失败，保留该步骤的失败用例全名、断言和上下文。当前提供的宿主尾部日志只有汇总，不能据此定位根因。
+- D-01 本地门禁重复遇到 `listen EPERM: operation not permitted 127.0.0.1` / `File watcher error: EMFILE: too many open files, watch`，无法取得整条门禁通过证据。由 Autome 在宿主工作目录 `/Users/dannie/project/autome-v2/.worktree/实现-web-sqlite3-与通知器` 执行 `sh scripts/ci-local.sh`；若再次失败，保留失败用例全名、断言和上下文，以区分真实账本夹具超时、监听限制及其它故障。
