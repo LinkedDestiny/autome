@@ -1,7 +1,7 @@
 # Web 通知（W4）：web.sqlite3 面板库、事件→通知规则与实时推送、顶栏铃铛已读与后台系统通知
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -82,10 +82,12 @@ Electron 侧、偏好设置界面、改 W3 总线语义或 W2 安全语义、令
 | `server/notifier.ts` | 通知器：持久游标、补拉、补齐信息、落库、推送 | 否 |
 | `server/notifier-api.ts` | 铃铛接口的处理函数（列表、已读）与 `attachNotifier`（tick 与内核状态的挂法） | 否 |
 | `server/main.ts`、`server/http.ts`、`server/start.js` | 只接线（见 §5、§6、§1 末） | — |
-| `app/components/bell-client.ts` | 铃铛的连接与拉取控制器（不依赖 React） | 否 |
-| `app/components/bell-system.ts` | 系统通知接口 `SystemNotifier`、浏览器实现、是否弹出的判定 | 否 |
-| `app/components/bell.tsx` | `NotificationBell` 组件与 `useBell` | 否 |
-| `app/root.tsx` | 在 `LiveBanner` 之后挂一行 `<NotificationBell />` | — |
+| `app/components/bell-client.ts` | 铃铛的拉取控制器（不依赖 React、不自己建连接）：`handleMessage(raw)`、单飞拉取、已读 POST；`tapSocket(socket, controller)` | 否 |
+| `app/components/bell-live.tsx` | `useLiveWithBell()`：与 `useLiveEvents()` 同样用 `createLiveClient` 建**唯一一条** `/ws`，只是 `createSocket` 里给 socket 挂一个旁听监听，把消息同时交给铃铛控制器；提供 `BellProvider` 上下文 | 否 |
+| `app/components/bell-targets.ts` | 通知目标路由表与 `resolveTarget(item, targets)`（§7 跳转） | 否 |
+| `app/components/bell-system.ts` | 系统通知接口 `SystemNotifier`、浏览器实现、可见性锁、认领、是否弹出的判定 | 否 |
+| `app/components/bell.tsx` | `NotificationBell` 组件 | 否 |
+| `app/root.tsx` | 用 `useLiveWithBell()` 取代 `useLiveEvents()`（连接数不变，仍是一条），在 `LiveBanner` 之后挂 `<NotificationBell />` | — |
 
 `start.js` 的改动：版本检查通过后、导入 `main.ts` 之前，`(await import('./store-warnings.ts')).filterSqliteWarning(process)`。
 过滤条件同时满足才丢弃：告警类型是 `ExperimentalWarning`，且文字以 `SQLite is an experimental feature` 开头；其它告警原样交给
@@ -142,7 +144,8 @@ CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 - 表外一律不产生通知：其它 `active` 节点（含 Bug 的 `not_a_bug`）、`draft`、`queued`、`paused`、`stopped`、`cancelled`，以及
   `task.created`、`task.protocol_failure`、`project.alert_dismissed` 等其它事件。
 - **「进入」**：通知器在进程内记住每个任务最近一条 `task.updated` 的 `state`（不论是否命中规则）；新事件的 `state` 与上一条深相等时不算进入、
-  不产生通知，中间隔了别的状态再回来算新的进入（T-5 的 seq 124 / 145 / 150）。记忆不持久：重启后每个任务的第一条事件按进入处理。
+  不产生通知，中间隔了别的状态再回来算新的进入（T-5 的 seq 124 / 145 / 150）。记忆不持久：重启后每个任务的第一条事件按进入处理。记忆只在这条事件**确定处理完之后**更新（不命中规则的事件立即更新；命中的在 `commit` 成功或按「带 `code` 的拒绝」
+  生成通知之后更新）；补齐因无 `code` 的错误停下时不更新，下次重试同一条仍按进入处理，不会被当成重复跳过。
   实测账本没有连续相同状态，这条规则防的是将来内核重复记事件；重启时恰好跨过一对重复事件的最坏结果是多一条通知，不会漏发。
 - **`{reason}`**：按 `FailureReason.kind` 查表——`design_budget`「设计轮次用完（上限 {limit}）」、`impl_budget`「实现轮次用完（上限 {limit}）」、
   `fix_budget`「修复轮次用完（上限 {limit}）」、`infeasible`「设计判定不可实现」、`protocol`「协议失败（{detail}）」、
@@ -203,13 +206,18 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - 改动非空时广播新增的扩展消息 `{"type":"notification-read","ids":[…]}`（先落库再广播；`ids` 为空不广播）。它是新类型，不改变
   §5.2 已有消息的形状。
 
-**浏览器端怎么收到推送**：`app/lib/live-client.ts` 会丢掉扩展消息、又不在本任务可改范围内，所以铃铛自己连同一个 `/ws`（W3 总线、同一个
-`broadcast`），不另开服务端通道，也不轮询。这条连接只用三类消息：`hello`（连上或重连后重新拉取，补上断线期间的变化）、`notification`、
-`notification-read`（都触发重新拉取），其余（`event`、`core`、`reload`）忽略，不发 `resume`。重连退避沿用 `live-client.ts` 导出的
-`reconnectDelay`。W5 搬外壳时合并成一条连接，见 Backlog B-01。
+**浏览器端怎么收到推送（只有一条 `/ws`，满足 R-05）**：`app/lib/live-client.ts` 会丢掉扩展消息，`app/lib/` 又不在本任务可改范围内，但 `createLiveClient`
+的 `createSocket` 是注入点，`app/root.tsx` 在范围内。做法：`app/components/bell-live.tsx` 的 `useLiveWithBell()` 取代 `root.tsx` 里的 `useLiveEvents()`——
+同样用 `createLiveClient` 建连接（`onConnection / onCore / onEvents / onReload` 的接法与 `app/lib/live.tsx` 一致，W3 的续传与重验行为不变），
+区别只有 `createSocket: address => tapSocket(new window.WebSocket(address), controller)`：`tapSocket` 用 `addEventListener('message', …)` 给同一个 socket
+加一个旁听监听（`createLiveClient` 自己用 `onmessage` 属性，两者互不覆盖），把每条原始消息交给铃铛控制器的 `handleMessage`。重连时 `createLiveClient`
+新建 socket，会再经过 `createSocket` 被再次旁听。所以**每个标签页始终只有一条 `/ws`**，不新增服务端通道，不轮询。
+控制器只关心四类消息：`hello`（首次连上或重连后重新拉取，补上断线期间的变化）、`notification`、`notification-read`（都触发重新拉取），其余（`event`、
+`core`、`reload`）与非 JSON 忽略；重连与退避由 `createLiveClient` 负责，控制器不管。`useLiveWithBell()` 与 `useLiveEvents()` 的函数体重复约 15 行，这是
+为了不改 `app/lib/` 付出的代价，W5 搬外壳时删掉重复（Backlog B-01）。
 
 **不维护副本**：铃铛的未读数和列表一律来自 `GET /api/notifications`，收到消息只触发重新拉取，不在客户端自增自减。拉取单飞：在途时再来消息
-只记一次「再拉」。单条已读 / 全部已读发 POST 后重新拉取；其它标签页靠 `notification-read` 广播重新拉取，于是一个标签页点已读，所有标签页
+只记一次「再拉」。`notification` 触发的拉取完成后，控制器把「这条消息 + 刷新后的列表」交给 `onNotification`（§7 的系统通知据此判断条目是否新鲜、是否已读）；拉取失败则不交。单条已读 / 全部已读发 POST 后重新拉取；其它标签页靠 `notification-read` 广播重新拉取，于是一个标签页点已读，所有标签页
 的计数都会变。
 
 ### 7. 铃铛界面与系统通知（R-06、R-07）
@@ -219,16 +227,28 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 - **按钮**：中文 `aria-label`「通知，N 条未读」；徽标 0 不显示，1..99 显示原数，≥100 显示「99+」。
 - **展开面板**：`max-height: 60vh; overflow-y: auto`，内部滚动；每项显示标题、`body`（有则显示）、时间（本地 `MM-DD HH:mm`）、未读圆点；
   顶部「全部已读」（无未读时禁用）；空列表「还没有通知」；拉取失败「通知加载失败：…」。
-- **跳转**：有 `task_id` 的链到 `/tasks/<task_id>`（W7 的路由），没有任务的告警链到 `/projects/<project_id>`（W6），两者都没有不出链接。
-  用 React Router 的 `<Link>`，点击时先发单条已读再跳转。目标路由在 W6/W7 之前不存在，React Router 显示自带的 404 页，铃铛本身不抛错。
-- **系统通知接口**：`SystemNotifier = { permission(): 'default'|'granted'|'denied'|'unsupported'; request(): Promise<…>; show({id,title,body,href}): void }`。
-  `browserSystemNotifier(window)` 用 `new Notification(title, { body, tag: id })`，点击时 `window.focus()` 并跳到 `href`。
+- **每条的操作**：未读项有「标为已读」按钮（单条已读，不跳转）；点击标题链接同样先发单条已读。
+- **跳转与目标不可用（R-06）**：`bell-targets.ts` 里一张表 `TARGETS = [{ pattern: '/tasks/:taskId', available: false }, { pattern: '/projects/:projectId', available: false }]`，
+  `resolveTarget(item, targets = TARGETS)` 返回 `{ href: string | null, note?: string }`：有 `task_id` 取 `/tasks/<task_id>`，否则有 `project_id` 取
+  `/projects/<project_id>`，两者都没有 `href` 为 `null`；对应表项 `available` 为 `false`（W6/W7 的页面还没有）时 `href` 同样为 `null`，且 `note` 为「详情页尚未开放」。
+  `href` 非空才渲染 React Router `<Link>`；为 `null` 时标题是纯文本、下方显示淡色的 `note`（若有）。**因此 W6/W7 之前，铃铛与系统通知都不会把用户带进 404**，
+  也不抛错。`available` 由守卫用例与 `app/routes.ts` 绑定：用例读 `routes.ts` 文本，断言 `tasks` / `projects` 路由出现与否和对应表项的 `available` 一致——
+  W6/W7 加路由时这条用例会变红，提醒同时把表项改为 `true`。铃铛列表、系统通知的 `href` 都经 `resolveTarget` 得出，各入口行为一致。
+- **系统通知接口**：`SystemNotifier = { permission(): 'default'|'granted'|'denied'|'unsupported'; request(): Promise<…>; show({id,title,body,href: string | null}): void }`。
+  `browserSystemNotifier(window)` 用 `new Notification(title, { body, tag: id })`，点击时 `window.focus()`，`href` 非空才跳转（`resolveTarget` 为 `null` 时只回到面板，不进 404）。
   `NotificationBell` 接受可选的 `systemNotifier`，缺省用浏览器实现；W11 传入调 preload `notify()` 的实现即可替换。
-- **何时弹**：收到 `notification` 消息时，`levelOf(kind) === 'need_you'` 且权限为 `granted` 才继续：
-  - 本标签页可见：只「认领」这条 id（不弹，用户已经在看面板）；
-  - 不可见：等 400 ms（让可见的标签页先认领），再认领，认领成功且仍不可见才 `show`。
-  - 认领：`navigator.locks.request('autome-notify', …)` 临界区内读写 `localStorage['autome.notified']`（最近 100 个 id 的数组），已在其中就放弃。
-    所以多个后台标签页同一通知只弹一次，有一个标签页在前台时不弹。`navigator.locks` 不可用时直接弹，靠同一 `tag` 让系统合并。
+- **何时弹**：不依赖任何固定等待时间或消息到达的先后。收到 `notification` 消息并拿到刷新后的列表（§6）后，依次满足才继续：
+  `levelOf(kind) === 'need_you'`；权限为 `granted`；列表里找得到这条 id 且 `read_at` 为空；`Date.now() - created_at ≤ 60 s`（新鲜期。浏览器与服务端在同一台机器上，
+  时钟一致；陈旧的通知只在铃铛里，不再弹横幅）。然后进入「认领」：
+  - **可见性锁**：每个标签页在可见期间持有一把共享 Web Lock `autome-visible`（`document.visibilityState === 'visible'` 时请求，转为不可见或卸载时释放；标签页关闭 /
+    崩溃由浏览器自动释放）。这样「有没有标签页在前台」是实时状态，不取决于哪个标签页先处理消息、处理得多慢。
+  - **认领**：`navigator.locks.request('autome-notify', …)`（独占）临界区内读写 `localStorage['autome.notified']`，值为 `{ [id]: 认领时刻毫秒 }`。若 `id` 已在其中→放弃；
+    否则写入 `id`，并顺手清掉**早于 10 分钟**的条目（按时间清理，**不按条数**），然后在临界区内用 `navigator.locks.query()` 看是否有别的标签页持有 `autome-visible`，
+    且本标签页自己也不可见：都满足才在出临界区后 `show`。**谁先认领谁决定，决定对所有标签页生效**：有标签页在前台时，先到的后台标签页只认领不弹，之后任何标签页（含前台那个
+    迟到的）再处理同一条都因已认领而放弃。
+  - 为什么保留期（10 分钟）大于新鲜期（60 秒）：被清掉的记录对应的通知一定已过新鲜期，迟到的标签页即使找不到认领记录也不会弹——所以多条消息涌入（>100 条）、标签页被冻结后很久才处理，
+    都不会造成重复。
+  - `navigator.locks` 或 `localStorage` 不可用（抛错）时没有可行的跨页协调，只看本标签页自己的 `visibilityState`，不可见就直接 `show`，靠同一 `tag` 让系统合并同 id 的横幅。
 - **权限**：只在用户点击面板里的「开启系统通知」按钮时调 `request()`（需要用户手势）；挂载、收到通知时都不请求。`denied` 时面板显示
   「系统通知已被浏览器拒绝，铃铛照常提醒」；`unsupported`、`granted` 不显示提示。
 
@@ -244,7 +264,9 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   与 W3 同一限制，记为已知风险，不在本任务处理。
 - **重复事件**：「进入」的记忆不持久，跨重启最多多一条通知（§3），不漏。
 - **补齐失败卡住游标**：内核离线时通知器停在那一条，内核恢复后 `onStatus(connected)` 立即重试；内核明确拒绝的不卡（§4.5）。
-- **两条 `/ws` 连接**：每个标签页多一条连接，总线多发一份 `event` 消息；本机场景开销可忽略，W5 合并（B-01）。
+- **跨标签页协调依赖 Web Locks**：`navigator.locks` 的 `request`（独占 / 共享）与 `query()` 是标准 API（Chrome 69+、Firefox 96+、Safari 15.4+），但本机没有浏览器可在实现轮
+  验证；单测用实现了 `request` / `query` 语义的假 locks，真实浏览器里的行为由 H-03 人工验收。
+- **重复代码**：`useLiveWithBell()` 与 `useLiveEvents()` 有约 15 行重复，W5 删除（B-01）。
 - 每个里程碑报 Web 与 desktop 的用例总数和与基线的差，`skipped` 必须为 0（desktop 基线自带的 1 个跳过除外，报告时单列）；
   负向对照逐条实跑并写退出码，全部还原后 `git status --porcelain` 为空。
 
@@ -258,7 +280,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | M-04 | 开放 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
 | M-05 | 开放 | 后台标签页系统通知：可替换接口、权限按钮、多标签页只弹一次 | 0 | system-notify |
 
-## 里程碑说明
+## 验收说明
 
 所有验收命令在仓库根执行，每条单独运行、单独记退出码，不用 `&&` 串起来。下文「全量四件」指：
 `npm test --prefix apps/web`、`npm run lint --prefix apps/web`、`npm run typecheck --prefix apps/web`、`npm test --prefix apps/desktop`。
@@ -268,7 +290,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | M-01 | R-01 | 无 | `server/store.ts`、`server/store-warnings.ts`、`server/start.js`、`test/store.test.ts`、`test/store-warnings.test.ts` |
 | M-02 | R-02、R-03 | M-01 | `server/notifier-rules.ts`、`server/notifier.ts`、`test/notifier-rules.test.ts`、`test/notifier.test.ts`、`test/notifier-real.test.ts`、`test/fixtures/w4-ledger.sh` |
 | M-03 | R-03、R-04（服务端）、R-05 | M-02 | `server/notifier-api.ts`、`server/main.ts`、`server/http.ts`、`test/notifier-api.test.ts`、`test/notifier-live.test.ts` |
-| M-04 | R-04（浏览器端）、R-06 | M-03 | `app/components/bell-client.ts`、`app/components/bell.tsx`、`app/root.tsx`、`test/bell-client.test.ts`、`test/bell-view.test.ts` |
+| M-04 | R-04（浏览器端）、R-05（单连接）、R-06 | M-03 | `app/components/bell-client.ts`、`app/components/bell-live.tsx`、`app/components/bell-targets.ts`、`app/components/bell.tsx`、`app/root.tsx`、`test/bell-client.test.ts`、`test/bell-view.test.ts` |
 | M-05 | R-07 | M-04 | `app/components/bell-system.ts`、`app/components/bell.tsx`、`test/bell-system.test.ts`、`test/bell-view.test.ts` |
 
 ### M-01 验收契约
@@ -317,38 +339,48 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 ### M-04 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/bell-client.test.ts test/bell-view.test.ts`；然后全量四件；再 `npm run build --prefix apps/web`。
-- 预期：`bell-client.test.ts` 6 个用例（假 socket、假 fetch、假计时器）：收到 `hello` 才拉取；`notification` 与 `notification-read` 触发重新拉取并把
-  `notification` 交给 `onNotification`；拉取单飞（在途时来两条消息只补拉一次）；`markRead` / `markAll` 的 POST 体与失败时的中文错误且计数不变；
-  断线按 `reconnectDelay` 重连、重连 `hello` 后重新拉取、`stop` 后不再重连；忽略 `event` / `core` / `reload` 与非 JSON。`bell-view.test.ts` 6 个用例
-  （`renderToString`）：徽标 0 / 1 / 99 / 100→「99+」与中文 `aria-label`；展开列表的标题、正文、时间、未读圆点，无未读时「全部已读」禁用；
-  链接 `/tasks/T-3`、`/projects/<id>`、无链接三种；空列表与加载失败文案；容器 `position:fixed`、面板 `max-height` 与 `overflow-y:auto`；用
-  `createRoutesStub` 渲染 root 的 `App`，HTML 里同时有铃铛按钮与子路由内容。Web 全量 31 个文件、288 个用例，0 跳过；desktop 同基线；build 通过。
-- 负向对照：收到 `notification` 时在客户端自增未读数而不重新拉取时，`bell-client` 第 2 个与重连用例失败；徽标阈值写成 `> 100` 时 100→「99+」断言失败。
+- 预期：`bell-client.test.ts` 6 个用例（假 socket、假 fetch）：`hello` 才触发拉取，`notification` 与 `notification-read` 触发重新拉取，拉取完成后把
+  「消息 + 刷新后的列表」交给 `onNotification`（拉取失败不交）；拉取单飞（在途时来两条消息只补拉一次）；`markRead` / `markAll` 的 POST 体与失败时的中文错误且计数不变；
+  `tapSocket` 只用 `addEventListener` 旁听、返回同一个 socket，`createLiveClient` 经它建连接时每次连接只创建一个 socket（计数 1）、其 `onmessage` 不被覆盖
+  （`event` 仍交给 `onEvents`），断线重连新建的 socket 再次被旁听、重连 `hello` 后重新拉取、`stop` 后不再重连；控制器忽略 `event` / `core` / `reload` 与非 JSON。
+  `bell-view.test.ts` 7 个用例（`renderToString`）：徽标 0 / 1 / 99 / 100→「99+」与中文 `aria-label`；展开列表的标题、正文、时间、未读圆点与「标为已读」按钮，无未读时「全部已读」禁用；
+  目标：默认表（W6/W7 前 `available: false`）下任务通知与项目告警都不渲染链接、显示「详情页尚未开放」，注入 `available: true` 的表后链到 `/tasks/T-3`、`/projects/<id>`，
+  无任务无项目的不出链接；空列表与加载失败文案；容器 `position:fixed`、面板 `max-height` 与 `overflow-y:auto`；用 `createRoutesStub` 渲染 root 的 `App`，HTML 里同时有
+  铃铛按钮与子路由内容，且 `root.tsx` 源码里不再直接调用 `useLiveEvents(`（只剩 `useLiveWithBell`，保证只有一条连接）；守卫用例：读 `app/routes.ts` 文本，
+  `tasks` / `projects` 路由出现与否与 `TARGETS` 的 `available` 一致。Web 全量 31 个文件、289 个用例，0 跳过；desktop 同基线；build 通过。
+- 负向对照：收到 `notification` 时在客户端自增未读数而不重新拉取时，`bell-client` 第 2 个与重连用例失败；`tapSocket` 改成 `socket.onmessage = …` 覆盖时，`tapSocket` 用例失败；
+  徽标阈值写成 `> 100` 时 100→「99+」断言失败；`TARGETS` 的 `available` 改成 `true`（而 `routes.ts` 没有对应路由）时，守卫用例与默认表的无链接断言失败。
 
 ### M-05 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/bell-system.test.ts test/bell-view.test.ts`；然后全量四件；再 `npm run build --prefix apps/web`。
-- 预期：`bell-system.test.ts` 9 个用例（假 `SystemNotifier`、假 locks 与 storage、假计时器）：「需要你」+ 后台 + 已授权 → 400 ms 后 `show` 一次且
-  `tag` 为通知 id；知会级不弹；前台标签页不弹且认领该 id、随后另一后台标签页不弹；两个后台标签页同一通知只弹一次；`default` / `denied` /
-  `unsupported` 不弹也不请求权限；`request` 只在调用 `request()` 时发生；认领记录只留最近 100 个、无 `navigator.locks` 时直接弹；点击系统通知
-  `focus` 并跳到 `/tasks/T-3`；`browserSystemNotifier` 传给 `Notification` 的参数，以及 `NotificationBell` 使用传入的 `systemNotifier` 而不碰全局
-  `Notification`。`bell-view.test.ts` 在 M-04 的 6 个之上加 1 个：权限 `default` 显示「开启系统通知」按钮、`denied` 显示拒绝提示、`granted` /
-  `unsupported` 不显示。两文件共 16 个。Web 全量 32 个文件、298 个用例，0 跳过；desktop 同基线；build 通过。
-- 负向对照：去掉跨标签页认领时，「两个后台标签页只弹一次」用例失败；挂载时就调 `request()` 时，「只在调用 `request()` 时请求」用例失败；
-  不判断级别时，「知会级不弹」用例失败。
+- 预期：`bell-system.test.ts` 9 个用例（假 `SystemNotifier`、实现了独占 / 共享 `request` 与 `query` 的假 locks、假 storage、假 `Date.now`，多个标签页共用一份 locks 与 storage）：
+  (1)「需要你」+ 后台 + 已授权 + 新鲜未读 → 无需等待、`show` 一次且 `tag` 为通知 id；(2) 知会级、已读的条目、超过 60 秒的陈旧条目、列表里找不到的 id 都不弹；
+  (3) 另一标签页可见（持有 `autome-visible`）时后台标签页不弹但认领，随后另一后台标签页不弹，可见标签页自己迟到处理也不弹（覆盖「后台先到」「前台先到」两种顺序，
+  含处理时差 500 ms 以上）；可见性跟踪随 `visibilitychange` 与卸载释放锁；(4) 两个后台标签页同一通知只弹一次；(5) n1 弹出后再认领 150 条其它 id，迟到标签页处理 n1 仍不弹
+  （记录按 10 分钟清理而非按条数）；时间推进超过 10 分钟后旧记录被清掉，且此时 n1 已过新鲜期仍不弹；(6) `default` / `denied` / `unsupported` 不弹也不请求权限，`request` 只在调用
+  `request()` 时发生；(7) 没有 `navigator.locks`（或 `localStorage` 抛错）时只看本标签页可见性、直接弹；(8) 点击系统通知 `focus`，`href` 为 `/tasks/T-3` 时跳转，
+  `href` 为 `null` 时只 `focus` 不跳转；(9) `browserSystemNotifier` 传给 `Notification` 的参数，以及 `NotificationBell` 使用传入的 `systemNotifier` 而不碰全局 `Notification`。
+  `bell-view.test.ts` 在 M-04 的 7 个之上加 1 个：权限 `default` 显示「开启系统通知」按钮、`denied` 显示拒绝提示、`granted` / `unsupported` 不显示。两文件共 17 个。
+  Web 全量 32 个文件、299 个用例，0 跳过；desktop 同基线；build 通过。
+- 负向对照：去掉跨标签页认领时，用例 (4) 失败；挂载时就调 `request()` 时，用例 (6) 失败；不判断级别时，用例 (2) 失败；去掉对 `autome-visible` 的检查时，用例 (3) 失败；
+  把认领记录改回只留最近 100 条（按条数淘汰）并去掉新鲜期判断时，用例 (5) 失败。
 
 ## 人工验收清单
 
 - H-01 开两个标签页打开面板，在 A 的铃铛里点一条「已读」，B 的未读数不刷新页面即减少；在 A 点「全部已读」，B 的徽标消失。
-- H-02 点铃铛里的「开启系统通知」，浏览器弹出授权框；允许后切到别的标签页，用 `autome` 让一个任务进入等你批准，系统弹出「T-x 设计已定稿，等你批准」横幅；点横幅回到面板并跳到 `/tasks/T-x`。
-- H-03 两个面板标签页都放在后台时造出一条「需要你」通知，系统横幅只出现一次；有一个面板标签页在前台时不弹横幅。
+- H-02 点铃铛里的「开启系统通知」，浏览器弹出授权框；允许后切到别的标签页，用 `autome` 让一个任务进入等你批准，系统弹出「T-x 设计已定稿，等你批准」横幅；点横幅回到面板标签页，W7 路由上线前停留在当前页（不进 404），上线后跳到 `/tasks/T-x`。铃铛里该条标题是纯文本并显示「详情页尚未开放」。
+- H-03 两个面板标签页都放在后台时造出一条「需要你」通知，系统横幅只出现一次；有一个面板标签页在前台（另一个在后台）时不弹横幅；这是 Web Locks（`autome-visible` / `autome-notify`）在真实浏览器里的唯一验证，失败即退回 M-05。
 - H-04 在授权框里选「拒绝」，铃铛面板显示「系统通知已被浏览器拒绝，铃铛照常提醒」，铃铛计数与列表照常工作。
 - H-05 1512×944 窗口下页面本身无纵向滚动条；铃铛列表条目多于一屏时只在面板内部滚动。
 - H-06 用 Node 22（`/opt/homebrew/opt/node@22/bin/node apps/web/server/start.js`）启动面板，终端里不出现 `SQLite is an experimental feature` 告警。
+- H-07 开着面板的标签页在开发者工具 Network 的 WS 过滤下只看到一条 `/ws` 连接。
 
 ## Backlog
 
-- B-01 铃铛自带一条 `/ws` 连接，因为 `app/lib/live-client.ts` 会丢弃扩展消息且不在本任务范围；W5 搬外壳时给 `createLiveClient` 加扩展消息回调，铃铛改用 `useLiveEvents` 的同一连接。
+- B-01 `app/components/bell-live.tsx` 的 `useLiveWithBell()` 与 `app/lib/live.tsx` 的 `useLiveEvents()` 有约 15 行重复，因为 `app/lib/` 不在本任务范围；W5 搬外壳时给 `createLiveClient` 加扩展消息回调，删掉 `tapSocket` 与重复的 hook，`root.tsx` 改回 `useLiveEvents()`。
+- B-03 评审 N-01：「进入」的记忆不持久（§3），seq 不同但状态相同的两条事件若恰好跨重启，会比不中断多一条通知。当前设计接受这个最坏结果（不漏发）；若 W6 之后觉得吵，再把最近状态存进 `event_cursor` 的另一个名字下。
+- B-04 评审 N-02：实现时「最近状态」的记忆只在事件确定处理完之后更新（§3 已写明）；`notifier.test.ts` 的「补齐抛无 `code` 错误」用例里补一步：重试同一事件仍生成通知。
 - B-02 W6 的「等你处理」角标从 `store.unreadByTask(<levelOf 为 need_you 的 kind>)` 取数，由 W5 的 `getLoadContext` 把库对象交给 loader。
 
 ## 争议项
