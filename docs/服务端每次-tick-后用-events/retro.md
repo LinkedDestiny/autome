@@ -30,3 +30,5 @@
 
 实现 #23 | M-02 | 待审 | docs/服务端每次-tick-后用-events/evidence/M-02-r23-impl.md | 27 个 Web 用例受监听 EPERM 阻断，需审计复验
 审计 #2 | M-02 | 通过 | docs/服务端每次-tick-后用-events/evidence/M-02-r23-audit.md | 无
+
+实现 #24 | M-03 | 待审 | docs/服务端每次-tick-后用-events/evidence/M-03-r24-impl.md | 27 个真实监听用例受 EPERM/EMFILE 阻断

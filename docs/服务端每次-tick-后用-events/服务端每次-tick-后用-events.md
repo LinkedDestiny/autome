@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 23/30
+implementation-round: 24/30
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03 浏览器 live 客户端、按事件重验路由、重连提示与 root 接线
+next-action: M-03 审计通过后推进 M-04，替换 write-gate.test.ts 两处原始 NUL 并验证运行时值及用例数不变
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -277,7 +277,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 |---|---|---|---|---|
 | M-01 | 已完成 | 最小端到端：分页拉取的事件总线、/ws 升级、main 接线、命令行跨进程集成测试 | 0 | eventbus-e2e |
 | M-02 | 已完成 | 断线续传、reload、core 消息与恢复补拉、W4/W8 挂点 | 0 | eventbus-resume |
-| M-03 | 开放 | 浏览器端 live 客户端、按事件重验路由、重连提示与 root 接线 | 0 | live-routes |
+| M-03 | 待审 | 浏览器端 live 客户端、按事件重验路由、重连提示与 root 接线 | 0 | live-routes |
 | M-04 | 开放 | write-gate.test.ts 的原始 NUL 改为 \u0000 转义 | 0 | nul-escape |
 
 ## 里程碑说明
@@ -331,6 +331,8 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
   对真实的 `app/root.tsx` 与 `app/routes/**` 通过。
 - `test/live-banner.test.ts`（2，`react-dom/server` 的 `renderToString` + `createElement`）：①`reconnecting` 渲染
   `role="status"` 与「连接中断，正在重连」；②`connecting`、`open` 不渲染任何内容。
+
+最新证据：docs/服务端每次-tick-后用-events/evidence/M-03-r24-impl.md · 待审（新增验收通过，真实监听受环境阻断） · 实现 #24
 
 **M-04**（R-06；前置：无，排在最后只是为了不打断主链路）。只把第 117、398 行字符串里的 0x00 换成源码 `\u0000`，
 文件其余字节不变。
