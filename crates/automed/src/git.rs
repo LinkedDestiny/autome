@@ -1173,6 +1173,29 @@ mod tests {
     }
 
     #[test]
+    fn commit_safety_narrow_commit_rejects_pre_staged_deletions() {
+        assert!(git_available(), "this regression requires git");
+        let repo = repo_with_commit("commit-safety");
+        for i in 0..60 {
+            write(repo.path(), &format!("tracked-{i:03}.txt"), "tracked\n");
+        }
+        commit_paths(repo.path(), &["."], "fixture baseline").unwrap();
+        let before = head_sha(repo.path()).unwrap();
+        // Narrow inputs/replies commits still consume the existing whole index.
+        run_ok(repo.path(), &["rm", "--cached", "--", "tracked-*.txt"]).unwrap();
+        write(repo.path(), "reply.md", "new user input\n");
+        let result = commit_paths(repo.path(), &["reply.md"], "chore(autome): inputs");
+        assert!(
+            result.is_err(),
+            "应拒绝已暂存的 60 个删除，实际: {result:?}"
+        );
+        assert_eq!(head_sha(repo.path()).unwrap(), before);
+        let detail = result.unwrap_err().to_string();
+        assert!(detail.contains("本轮会删除 60 个文件"), "{detail}");
+        assert!(detail.contains("tracked-000.txt"), "{detail}");
+    }
+
+    #[test]
     fn commit_paths_stages_only_what_it_is_given() {
         needs_git!();
         let repo = repo_with_commit("narrow");

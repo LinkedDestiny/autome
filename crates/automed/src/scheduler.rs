@@ -4538,6 +4538,134 @@ mod tests {
         assert_eq!(event["rate_limited"], serde_json::json!(false));
     }
 
+    // A real checkout and a successful fake session: no model, daemon or sleeps.
+    fn commit_safety_finished_session(deleted: usize) -> (World, PathBuf, String) {
+        assert!(
+            git::run(std::path::Path::new("."), &["--version"])
+                .unwrap()
+                .ok()
+        );
+        let mut w = World::new("commit-safety");
+        let task = w.add_task("T-1", "a");
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        w.ctx.store.set_task_budget("T-1", 25).unwrap();
+        let wt = w.with_worktree(&task);
+
+        for i in 0..deleted {
+            std::fs::write(wt.join(format!("tracked-{i:03}.txt")), "tracked\n").unwrap();
+        }
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Pending)], ""),
+        );
+        let evidence = wt.join(task.doc_dir()).join("evidence");
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::write(evidence.join("M-01-r1-impl.md"), "fixture evidence\n").unwrap();
+        git::commit_paths(&wt, &["."], "fixture baseline").unwrap();
+        let before = git::head_sha(&wt).unwrap();
+        for i in 0..deleted {
+            std::fs::remove_file(wt.join(format!("tracked-{i:03}.txt"))).unwrap();
+        }
+        // The session's work, left uncommitted.
+        std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
+
+        let session = Session {
+            id: "s1".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Role { role: Role::Impl },
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 3,
+            started_at: now_iso(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
+        };
+        w.ctx.store.insert_session(&session).unwrap();
+        let dir = w.repo.join(SessionPaths::dir("T-1"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s1.exit"),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+
+        let result = reap_session(&mut w.ctx, &session);
+        assert!(
+            result.is_ok(),
+            "收尾应将任务置为失败，而不是仅返回错误: {result:?}"
+        );
+
+        (w, wt, before)
+    }
+
+    #[test]
+    fn commit_safety_sweep_rejects_sixty_deletions_and_fails_task() {
+        let (w, wt, before) = commit_safety_finished_session(60);
+        assert_eq!(
+            git::head_sha(&wt).unwrap(),
+            before,
+            "兜底不得提交删除 60 个文件的快照"
+        );
+        let state = w.state("T-1");
+        assert!(
+            matches!(state, TaskState::Failed { .. }),
+            "任务必须失败: {state:?}"
+        );
+        let detail = serde_json::to_string(&state).unwrap();
+        assert!(
+            detail.contains("本轮会删除 60 个文件"),
+            "缺少删除数: {detail}"
+        );
+        assert!(detail.contains("tracked-000.txt"), "缺少删除路径: {detail}");
+    }
+
+    #[test]
+    fn commit_safety_sweep_allows_fifty_and_keeps_new_source() {
+        let (w, wt, before) = commit_safety_finished_session(50);
+        assert_ne!(git::head_sha(&wt).unwrap(), before);
+        assert!(!matches!(w.state("T-1"), TaskState::Failed { .. }));
+        let source = git::run(&wt, &["show", "HEAD:feature.txt"]).unwrap();
+        assert!(source.ok(), "兜底不能丢弃新建源文件: {source:?}");
+        assert_eq!(source.stdout, "the work\n");
+        let removed = git::run(
+            &wt,
+            &["diff", "--name-only", "--diff-filter=D", &before, "HEAD"],
+        )
+        .unwrap();
+        assert!(removed.ok());
+        assert_eq!(removed.stdout.lines().count(), 50);
+    }
+
+    #[test]
+    fn commit_safety_sweep_reports_new_source_in_task_events() {
+        let (w, wt, _) = commit_safety_finished_session(0);
+        assert!(git::run(&wt, &["show", "HEAD:feature.txt"]).unwrap().ok());
+        let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+        // Do not prescribe a new event name or payload schema in the locating round.
+        assert!(
+            events.iter().any(|(_, _, subject, payload)| {
+                subject == "T-1" && payload.to_string().contains("feature.txt")
+            }),
+            "兜底已经收进 feature.txt，但任务事件没有新增文件记录: {events:?}"
+        );
+    }
+
     #[test]
     fn a_session_that_forgot_to_commit_has_its_work_swept_up() {
         // The failure this prevents: a round does all the work correctly,
