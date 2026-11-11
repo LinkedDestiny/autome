@@ -1,12 +1,12 @@
 # Web 通知（W4）：web.sqlite3 面板库、事件→通知规则与实时推送、顶栏铃铛已读与后台系统通知
 
-status: 实现中
+status: 已完成
 design-round: 2/15
 implementation-round: 8/35
-current-milestone: M-07
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-07 补齐失败重试与负向对照，并在可监听环境复验全量检查
+next-action: 无
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -303,7 +303,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | M-04 | 已完成 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
 | M-05 | 已完成 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
 | M-06 | 已完成 | B-01：createLiveClient 消息回调独立验收（实现随 M-04 接线） | 0 | live-client |
-| M-07 | 待审 | B-04：同一事件补齐失败后重试生成通知的独立回归验收（实现随 M-02） | 0 | notifier |
+| M-07 | 已完成 | B-04：同一事件补齐失败后重试生成通知的独立回归验收（实现随 M-02） | 0 | notifier |
 
 ## 验收说明
 
@@ -420,7 +420,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-07 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-impl.md · 专项通过，全量环境阻断，待审 · 实现 #8
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-07-r8-audit.md · 通过 · 审计 #7
 
 - 用户 2026-11-11 将 B-04 纳入为独立里程碑；补步已是 M-02 的强制契约，本里程碑对其作独立回归验收，不重复实现。
 - 命令：`npm test --prefix apps/web -- test/notifier.test.ts`；然后全量四件。
