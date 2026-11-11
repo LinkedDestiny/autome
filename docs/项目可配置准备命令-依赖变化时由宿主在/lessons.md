@@ -1,17 +1,22 @@
 # 教训 · 宿主准备命令 [setup]（T-27）
 
-复盘轮 #3 覆盖写。L-02..L-05 的 proposal 原文不动，方便跨任务计数。L-01 原先在 symptom、root_cause、proposal 里写了字面的三个反引号，按 yaml 围栏切块时会在 L-01 中间截断，所以改成文字；proposal 只把其中的「不要加（三个反引号）围栏」改成「不要加代码围栏」，意思不变。L-04 只把 symptom 更新到复盘 #3 时的状态，L-05 的 root_cause 按源码更正了一处（会话 prompt 其实列出了冲突文件）；新增 L-06。依据：任务文件、`retro.md`、`evidence/` 下全部 13 份证据（这次新增的是 `M-02-r7-impl.md`）、审计与裁决记录、`brief/impl-6.md` 与 `brief/impl-7.md` 的 diff、`crates/automed/src/git.rs` 与 `launcher.rs` 的 rebase 相关代码，以及本轮用 `git merge-tree` 做的只读模拟（输出在 `.autome/output/r3-replay-ce7d7d8.txt`、`.autome/output/r3-merge-render.rs`）。
+复盘轮 #4 覆盖写。L-01..L-06 的 proposal 原文不动，方便跨任务计数。L-04、L-05、L-06 只把 symptom 更新到复盘 #4 的状态，补上实现 #8 的证据。新增 L-07。依据：
+- 任务文件、`retro.md`、`evidence/` 下全部 14 份证据。这次新增的是 `M-02-r8-impl.md` 和 `M-04-r8-audit.md`。
+- 审计与裁决记录，以及 `brief/impl-7.md` 与 `impl-8.md`、`brief/audit-6.md` 与 `audit-7.md` 的 diff。
+- 本轮在 HEAD 7744490 上用 `git merge-tree` 做的两次只读模拟。输出在 `.autome/output/r4retro-merge-tree.txt` 和 `.autome/output/r4retro-replay-ce7d7d8.txt`。
 
-**指标与实际仍然不符。** 本轮收到的指标依然是「设计轮 0/0、实现轮 0/0、里程碑数 0、人工验收未确认 0、协议失败 1、总 turns 16、总 tokens 817294」，和复盘 #1、#2 收到的一模一样。设计文档状态块现在是 `design-round: 1/15`、`implementation-round: 7/20`，里程碑表 M-01..M-04 四行都已完成，`## 人工验收清单` 里 H-01、H-02 都未确认。`retro.md` 记到实现 #7。`brief/audit-6.md` 已生成，但任务分支上没有审计 #6 的提交或证据。下文的轮次数字都取自状态块、`retro.md` 与证据文件，不取自这组指标。
+**指标与实际仍然不符。** 本轮收到的指标是「设计轮 0/0、实现轮 0/0、里程碑数 0、人工验收未确认 0、协议失败 1、总 turns 16、总 tokens 817294」，和复盘 #1、#2、#3 收到的一模一样。设计文档状态块现在是 `design-round: 1/15`、`implementation-round: 8/20`、`status: 已完成`。里程碑表 M-01..M-04 四行都已完成，`## 人工验收清单` 里 H-01、H-02 都未确认。下文的轮次数字都取自状态块、`retro.md` 与证据文件，不取自这组指标。
 
-运行概况：设计 1 轮定稿，M-01..M-04 都是一次审计关闭，reopen 0，实现缺陷 0，验证缺口 0。四个里程碑之后，多出来的成本有这几处：
+运行概况：设计 1 轮定稿，M-01..M-04 都是一次审计关闭，reopen 0，实现缺陷 0，验证缺口 0。四个里程碑全部关闭后，任务又因同一处 render.rs rebase 冲突转了三圈。每圈是实现 → 审计 → 复盘，共计实现 #6/#7/#8、审计 #5/#6/#7、复盘 #1..#4。冲突到现在还在：
+- 整条分支与 main（5a8cd57）三方合并，render.rs 内容冲突。
+- 第一个改 render.rs 的提交 ce7d7d8 重放到 main 上，render.rs 同样冲突。
 
-- 任务整理轮的围栏状态块造成一次协议失败（L-01），这次失败把指标冻结住了（L-04）。
-- 实现 #2 整轮没改产品代码（L-02）。
-- 同一条抖动测试反复出现，却一直没进 Backlog（L-03）。
-- 合并 rebase 冲突连派了两轮实现（#6、#7），外加一轮审计 #5。
-  - 简报里没有冲突现场（L-05）。
-  - 两轮用来判断「冲突已解决」的检查，都看不到 rebase 重放时的冲突（L-06）。按本轮模拟，分支 rebase 到 main 时 render.rs 仍会冲突。
+这三圈的成本来自三处：
+- 简报里没有冲突现场（L-05）。
+- 实现轮判「已解决」用的检查看不到重放时的冲突（L-06）。
+- 宿主在冲突修复轮之后不先验证能否 rebase，就照常派审计、派复盘（L-07）。
+
+复盘 #3 写下的 L-05、L-06 没有送到实现 #8：`brief/impl-8.md` 和 `impl-7.md` 只有轮次数字不同。实现 #8 用的检查和实现 #7 逐条相同，结论也相同。
 
 ```yaml
 - id: L-01
@@ -38,7 +43,7 @@
 ```yaml
 - id: L-03
   domain: process
-  symptom: 'bug_regression_guard_checks_each_workspace_member 在本任务里失败过三次：实现 #1 的宿主门禁（ac5aff9）、审计 #3 的全量 e2e、审计 #5 的全量 cargo test（1100 通过 / 1 失败，单跑 47s 通过）。审计 #3 和审计 #5 都在结论里把它判为「负载下的时序抖动、与本任务无关」，但到复盘 #3，设计文档 `## Backlog` 仍然没有它的条目。同类抖动里，bug_loop 遗留任务那条到审计 #2 才记为 B-A2-01，gate.rs 超时那条到审计 #4 才记为 B-06'
+  symptom: 'bug_regression_guard_checks_each_workspace_member 在本任务里失败过三次：实现 #1 的宿主门禁（ac5aff9）、审计 #3 的全量 e2e、审计 #5 的全量 cargo test（1100 通过 / 1 失败，单跑 47s 通过）。审计 #3 和审计 #5 都在结论里把它判为「负载下的时序抖动、与本任务无关」，但到复盘 #4，设计文档 `## Backlog` 仍然没有它的条目。同类抖动里，bug_loop 遗留任务那条到审计 #2 才记为 B-A2-01，gate.rs 超时那条到审计 #4 才记为 B-06'
   root_cause: '审计轮只在本轮结论或证据里写「无关的抖动」，没有落到设计文档的 Backlog。后续轮次和下一个任务读的是 Backlog，不是某一轮的结论段，所以同一条抖动每出现一次都要重新诊断（审计 #5 又单跑了一次、又写了一遍因果证据）'
   evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r6-audit.md'
   level: rule
@@ -49,8 +54,8 @@
 ```yaml
 - id: L-04
   domain: tooling
-  symptom: '复盘 #1、#2、#3 收到的指标完全相同：「设计轮 0/0、实现轮 0/0、里程碑数 0、人工验收未确认 0、总 turns 16、总 tokens 817294」。复盘 #3 启动时，设计文档状态块是 design-round 1/15、implementation-round 7/20，里程碑表四行都已完成，人工验收清单 H-01、H-02 都未确认。复盘 #1 之后又跑了实现 #6、审计 #5、实现 #7，指标里的轮次、turns、tokens 都没有跟着变'
-  root_cause: 'scheduler.rs 只在第 1610 行（measure_now 时，即转入 Failed/Cancelled 或进入 Cleanup）调用 write_task_metrics。任务整理轮的围栏状态块（L-01）让任务转入 Failed，那一刻状态块解析失败，status 为 None，task_metrics.rs 的 aggregate 因此写出 0/0 与 0 个里程碑（第 132–143 行只在 Some 时赋值）。之后直到三次复盘都没有再经过这几个转移，复盘 prompt 渲染的一直是这份旧指标'
+  symptom: '复盘 #1、#2、#3、#4 收到的指标完全相同：「设计轮 0/0、实现轮 0/0、里程碑数 0、人工验收未确认 0、总 turns 16、总 tokens 817294」。复盘 #4 启动时，设计文档状态块是 design-round 1/15、implementation-round 8/20，里程碑表四行都已完成，人工验收清单 H-01、H-02 都未确认。复盘 #1 之后又跑了实现 #6/#7/#8、审计 #5/#6/#7，指标里的轮次、turns、tokens 都没有跟着变'
+  root_cause: 'scheduler.rs 只在第 1610 行（measure_now 时，即转入 Failed/Cancelled 或进入 Cleanup）调用 write_task_metrics。任务整理轮的围栏状态块（L-01）让任务转入 Failed，那一刻状态块解析失败，status 为 None，task_metrics.rs 的 aggregate 因此写出 0/0 与 0 个里程碑（第 132–143 行只在 Some 时赋值）。之后直到四次复盘都没有再经过这几个转移，复盘 prompt 渲染的一直是这份旧指标'
   evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/项目可配置准备命令-依赖变化时由宿主在.md'
   level: test
   proposal: '复盘轮 prompt 里的设计轮、实现轮与里程碑数必须等于启动复盘时设计文档状态块的 design-round、implementation-round 与里程碑表行数，由一条 automed 测试在「指标列已有旧值」的前提下断言这一点'
@@ -60,9 +65,9 @@
 ```yaml
 - id: L-05
   domain: process
-  symptom: '四个里程碑关闭、复盘 #1 结束后，合并到 main 时 render.rs 与 main 的 c95ef10（单仓库 merge.rebased 文案修复）冲突，Autome 先后派出实现 #6、实现 #7。brief/impl-6.md 和 brief/impl-7.md 只有轮次行不同，都写着「还没有里程碑表，或者所有里程碑都已完成」，都没有冲突文件、main 提交号和 rebase 状态。实现 #6 开工时没有进行中的 rebase（无 REBASE_HEAD、无冲突标记），只能自己对比本地 main，推断出缺的是 merge.rebased 分支和两个测试；实现 #7 开工时同样找不到冲突现场，于是判定「当前不存在待解决的 Git 冲突」'
+  symptom: '四个里程碑关闭、复盘 #1 结束后，合并到 main 时 render.rs 与 main 的 c95ef10（单仓库 merge.rebased 文案修复）冲突，Autome 先后派出实现 #6、#7、#8。brief/impl-6.md、impl-7.md、impl-8.md 只有轮次数字不同，都写着「还没有里程碑表，或者所有里程碑都已完成」，都没有冲突文件、main 提交号和 rebase 状态。实现 #6 开工时没有进行中的 rebase（无 REBASE_HEAD、无冲突标记），只能自己对比本地 main，推断出缺的是 merge.rebased 分支和两个测试；实现 #7、#8 开工时同样找不到冲突现场，都判定「不存在正在等待解决的 Git 冲突」'
   root_cause: 'Autome 因合并 rebase 冲突派实现轮时，冲突文件清单只出现在会话 prompt 的注入段落里（launcher.rs 第 425–435 行「本分支 rebase 到最新默认分支时发生冲突，涉及文件……请解决这些冲突并提交」），没有写进简报；注入段落也不写 main 的提交号，不写 rebase 已被 git.rs 第 582 行 `rebase --abort` 中止。工作区里不留冲突现场，会话不知道冲突发生在重放哪一个提交时'
-  evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r6-impl.md'
+  evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/brief/impl-8.md'
   level: brief
   proposal: '因合并 rebase 冲突派出的实现轮，其简报必须列出冲突文件清单、冲突时 main 的提交号，并写明 rebase 是否已中止'
   predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
@@ -71,10 +76,21 @@
 ```yaml
 - id: L-06
   domain: verification
-  symptom: '实现 #6 在分支顶上追加 e329a0a，把 main 的 merge.rebased 分支和两个测试搬进 render.rs，用「git diff main -- render.rs 无删除行」判定冲突已解决，审计 #5 也随之通过；Autome 再次 rebase 又冲突，派出实现 #7。实现 #7 只看了 `git ls-files -u` 为空、render.rs 无冲突标记，就写下「当前不存在待解决的 Git 冲突」「本轮无需重复修改产品代码」，然后结束。复盘 #3 在 81afb1c 上用 git merge-tree 只读模拟：把 ce7d7d8 重放到 main（5a8cd57）时 render.rs 内容冲突；整条分支与 main 三方合并，render.rs 同样冲突，因为 e329a0a 搬来的测试和 main 不在同一位置。冲突至今没有解决'
-  root_cause: 'git.rs 第 571–583 行的合并前同步，是在任务检出里执行 `git rebase main`，一冲突就 `--abort`。rebase 逐个重放提交，第一个改 render.rs 的 ce7d7d8 就和 c95ef10 冲突，后面追加的修复提交改变不了这一步。两轮用来判断「已解决」的检查（对 main 的 diff、未合并索引、冲突标记）都只看当前工作区，看不到重放时才会出现的冲突'
-  evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r7-impl.md'
+  symptom: '实现 #6 在分支顶上追加 e329a0a，把 main 的 merge.rebased 分支和两个测试搬进 render.rs，用「git diff main -- render.rs 无删除行」判定冲突已解决。实现 #7（bdc830b 起）和实现 #8（21fa8fa 起）的证据逐条相同：`git ls-files -u` 为空、render.rs 无冲突标记、`cargo test -p autome-cli` 33 个通过，结论都是「不存在待解决的 Git 冲突，本轮不重复修改产品代码」。复盘 #4 在 7744490 上用 git merge-tree 只读模拟：整条分支与 main（5a8cd57）三方合并，render.rs 内容冲突；把 ce7d7d8 重放到 main，render.rs 同样冲突。冲突至今没有解决'
+  root_cause: 'git.rs 第 571–583 行的合并前同步，是在任务检出里执行 `git rebase main`，一冲突就 `--abort`。rebase 逐个重放提交，第一个改 render.rs 的 ce7d7d8 就和 c95ef10 冲突，后面追加的修复提交改变不了这一步。三轮用来判断「已解决」的检查（对 main 的 diff、未合并索引、冲突标记、CLI 测试）都只看当前工作区，看不到重放时才会出现的冲突'
+  evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-02-r8-impl.md'
   level: rule
   proposal: '因 rebase 冲突派出的实现轮，结束前必须在任务检出里实跑 `git rebase <默认分支>` 并在证据中记录其退出码为 0；只凭「无冲突标记」「未合并索引为空」或「对默认分支的 diff 无删除行」判定冲突已解决的，不算完成'
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+```
+
+```yaml
+- id: L-07
+  domain: process
+  symptom: '实现 #8 声称冲突已解决后，Autome 照常派出审计 #7，又派出复盘 #4。审计 #7 的证据写「没有待审里程碑，没有可退回或可关闭的对象，表保持不变」，判通过的依据是 setup 过滤测试和 3d71ab9 上的 ci-local 通过；ci-local 不检查能否 rebase 到 main。同样的组合已经出现三次：实现 #6 → 审计 #5 → 复盘 #2，实现 #7 → 审计 #6 → 复盘 #3，实现 #8 → 审计 #7 → 复盘 #4。每一圈都要等到下一次合并前同步，宿主才发现冲突还在。复盘 #4 用 git merge-tree 几秒钟就复现了冲突（.autome/output/r4retro-merge-tree.txt）'
+  root_cause: '宿主只在合并前同步时才 rebase 一次。冲突修复轮结束后，宿主没有先验证能否干净 rebase，就按普通实现轮的流程派审计、派复盘。所以「冲突是否已解决」由一个看不到重放冲突的审计轮来判（见 L-06），三圈下来没有一个节点做过真正能证伪的检查'
+  evidence: 'docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-04-r8-audit.md'
+  level: test
+  proposal: '因 rebase 冲突派出的实现轮结束后，Autome 必须先对默认分支做一次 rebase 检查（实跑后中止，或 git merge-tree 只读模拟）；仍冲突就不派审计轮和复盘轮，而是再派实现轮或停下等人，并由一条 automed 测试断言这一点'
+  predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
 ```
