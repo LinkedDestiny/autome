@@ -3,23 +3,23 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { openStore, migrate, MIGRATIONS, type NotificationInput } from '../server/store.ts';
+import { openWebStore, migrate, MIGRATIONS, type NotificationInput } from '../server/store.ts';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function setup() {
   const home = mkdtempSync(join(tmpdir(), 'web-store-'));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  let store = openStore(home);
+  let store = openWebStore(home);
   cleanup.push(() => store.close());
   const db = new DatabaseSync(join(home, 'state/web.sqlite3'));
   cleanup.push(() => db.close());
-  return { home, db, store, reopen() { store.close(); store = openStore(home); return store; } };
+  return { home, db, store, reopen() { store.close(); store = openWebStore(home); return store; } };
 }
 function input(seq = 1, task: string | null = 'T-1'): NotificationInput {
   return { kind: 'failed', project_id: 'p', task_id: task, title: '任务失败', body: null, event_seq: seq };
 }
-function add(store: ReturnType<typeof openStore>, seq = 1, task: string | null = 'T-1') {
+function add(store: ReturnType<typeof openWebStore>, seq = 1, task: string | null = 'T-1') {
   return store.commit({ cursor: { name: 'notifier', seq }, notification: input(seq, task) })!;
 }
 
@@ -59,7 +59,7 @@ test('库比代码新时抛中文错误且库不变', () => {
   const { db, home, store } = setup(); add(store);
   db.exec('UPDATE schema_version SET version=9');
   const before = db.prepare('SELECT * FROM notifications').all();
-  expect(() => openStore(home)).toThrow(`面板库版本 9 比当前程序支持的 1 新，请升级 Autome，或移走 ${join(home, 'state/web.sqlite3')} 后重启`);
+  expect(() => openWebStore(home)).toThrow(`面板库版本 9 比当前程序支持的 1 新，请升级 Autome，或移走 ${join(home, 'state/web.sqlite3')} 后重启`);
   expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(9);
   expect(db.prepare('SELECT * FROM notifications').all()).toEqual(before);
 });

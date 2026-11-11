@@ -53,7 +53,7 @@ export type NotificationInput = {
 export type Notification = NotificationInput & { id: string; created_at: string; read_at: string | null };
 type Cursor = { name: string; seq: number };
 
-export function openStore(home = resolveAutomeHome(process.env)) {
+export function openWebStore(home = resolveAutomeHome(process.env)) {
   const path = join(home, 'state', 'web.sqlite3');
   mkdirSync(join(home, 'state'), { recursive: true });
   const db = new DatabaseSync(path);
