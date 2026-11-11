@@ -1,7 +1,7 @@
 # 单项目配置解析失败阻断其它项目补位
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture
 根因: fill_slots 在逐项目循环中用 resolve_config(ctx, &project)? 读取上限，单项目配置错误提前返回整个函数，tick 仅记录错误而不继续处理后续项目。
 复核: 待复核
@@ -41,6 +41,14 @@ repos: crates/automed
 
 ## 修复说明
 
+第 3/3 轮复查：保留已有项目级配置错误隔离实现。重新执行宿主相同组合命令：`( cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture ) && ( sh scripts/ci-local.sh )`。原复现测试通过；完整门禁退出码 1，用时 453 秒。
+
+Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 通过。Format 仍失败：5 处 rustfmt 换行差异全部位于定位轮回归测试。用户本轮再次明确禁止修改回归测试，已询问是否允许仅格式调整，截至本轮记录未收到例外许可，因此没有改动测试或绕过门禁。Web test 为 4 个文件失败、11 个用例失败、271 个通过、19 个跳过，日志包含 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`；受限环境结果不等同于宿主结果。
+
+本轮只更新状态与验证记录，产品代码、回归测试及门禁配置均未变更。`git diff --check` 通过。完整日志：`.autome/output/fix-round-3-gate.log`；格式检查日志：`.autome/output/fix-round-3-format.log`，均不进入提交。完整门禁未通过，仍待解决测试格式调整授权及具备本地监听权限环境下的验证。
+
+以下保留第 2/3 轮记录：
+
 第 2/3 轮复查：保留第 1 轮项目级配置错误隔离实现，未修改定位轮回归测试，也未修改门禁配置。原复现命令再次通过（1 passed、0 failed）；完整 `cargo test --workspace --all-targets` 本轮通过，未复现宿主汇总中的 Test 失败。宿主提供的末尾日志没有具体失败用例，不能据此推断新的产品根因。
 
 Format 再次失败，全部差异位于定位轮回归测试，均为 rustfmt 换行要求。当前指令明确禁止修改该测试，因而未应用格式化，也未使用跳过或放宽格式检查的方式绕过门禁。已请求仅格式化的例外许可；截至记录时未收到答复，仍按原限制执行。
@@ -66,4 +74,4 @@ Format 再次失败，全部差异位于定位轮回归测试，均为 rustfmt �
 
 ## 复核意见
 
-待独立复核。第 2/3 轮原复现命令及完整 Rust Test 通过；项目门禁仍受 Format 与 Web test 阻塞，详见修复说明。
+待独立复核。第 3/3 轮原复现命令及完整 Rust Test 通过；项目门禁仍受 Format 与 Web test 阻塞，详见修复说明。
