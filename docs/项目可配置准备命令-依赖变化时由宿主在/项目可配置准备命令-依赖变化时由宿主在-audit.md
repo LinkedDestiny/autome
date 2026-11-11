@@ -1,6 +1,5 @@
-# 实现审计 · 审计 #2
+# 实现审计 · 审计 #3
 
-M-02：通过。验收命令计数与预期一致（automed lib 614、end_to_end 88、autome-cli 20+11、过滤 `setup` 的 e2e 8）；fmt、clippy -D warnings、workspace 全量绿。
-负向对照（缺陷注入后均还原）：启动准备后直接判 Ready → E1 失败；停止时不 `discard_node("setup")` → E4 失败；`poll_as` 文案写死「门禁」→ L1 失败；`running` 不认 `.started` → L4 失败；成功后记当前指纹 → E14 失败。「失败后不删 `.exit`」注入未被拦住，但 `gate::start` 先 `job.clear()`，该变体与正确实现等价，E2 已断言重跑后 `setup.started` 共 2 条。
-一次 e2e 全量里 `bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it` 失败；基线 2553923 同样约 2/20、本分支 1/20，未配 `[setup]`，判为既有竞速，进 Backlog B-A2-01，不计缺陷。
-无实现缺陷、无验证缺口。注入脚本 `.autome/output/a2-mut.sh`（可丢弃）。
+M-03：通过。三个负向对照（去掉门禁前准备、`_verify` 失败改为让任务失败、指纹判定恒真）都让对应 e2e 变红，还原后 `setup` 过滤 e2e 13 个通过，automed lib 616 个通过。
+全量 e2e 里 `bug_regression_guard_checks_each_workspace_member` 在并发负载下 30 秒轮询超时一次，单跑 3/3 通过，工作区项目不进准备路径，判为负载竞速，不计缺陷。
+证据：docs/项目可配置准备命令-依赖变化时由宿主在/evidence/M-03-r4-audit.md
