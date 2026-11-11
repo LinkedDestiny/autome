@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
@@ -80,6 +80,38 @@ test('命令行跨进程 cancel 在一个 tick 周期内送达且不重复', asy
   await new Promise(r => setTimeout(r, 3500));
   const events = c.messages.filter(m => m.type === 'event'); expect(events.filter(e => e.seq === (received as { seq: number }).seq)).toHaveLength(1);
   expect(events.every((e, i) => i === 0 || e.seq > events[i - 1].seq)).toBe(true);
+});
+test('断线期间命令行写入，重连 resume 补发一次', async () => {
+  command(['task', 'new', '续传测试', '-p', repo]);
+  const first = connect(); const hello = await waitFor(() => first.messages.find(m => m.type === 'hello'));
+  const checkpoint = (hello as { seq: number }).seq;
+  const closed = once(first.ws, 'close'); first.ws.close(); await closed;
+  command(['cancel', 'T-2']);
+  const c = connect(); await waitFor(() => c.messages.find(m => m.type === 'hello'));
+  c.ws.send(JSON.stringify({ type: 'resume', after: checkpoint }));
+  const received = await waitFor(() => c.messages.find(m => m.type === 'event' && m.subject === 'T-2' && m.kind === 'task.updated' && (m.payload as { state?: { state?: string } }).state?.state === 'cancelled'));
+  await new Promise(r => setTimeout(r, 3500));
+  const events = c.messages.filter(m => m.type === 'event');
+  expect(events.filter(e => e.seq === (received as { seq: number }).seq)).toHaveLength(1);
+  expect(events.every((e, i) => i === 0 || e.seq > events[i - 1].seq)).toBe(true);
+});
+test('杀内核推送 offline 到 connected，离线写入恢复补齐', async () => {
+  command(['task', 'new', '恢复测试', '-p', repo]);
+  const clients = [connect(), connect()];
+  for (const c of clients) await waitFor(() => c.messages.find(m => m.type === 'hello'));
+  process.kill(Number(readFileSync(join(home, 'automed.pid'), 'utf8').trim()), 'SIGKILL');
+  for (const c of clients) {
+    const offline = await waitFor(() => c.messages.find(m => m.type === 'core' && m.status === 'offline'));
+    expect(offline).toMatchObject({ reason: expect.stringContaining('内核已退出') });
+  }
+  command(['cancel', 'T-3']);
+  for (const c of clients) {
+    await waitFor(() => c.messages.find(m => m.type === 'core' && m.status === 'connected'));
+    const received = await waitFor(() => c.messages.find(m => m.type === 'event' && m.subject === 'T-3' && m.kind === 'task.updated' && (m.payload as { state?: { state?: string } }).state?.state === 'cancelled'));
+    const events = c.messages.filter(m => m.type === 'event');
+    expect(events.filter(e => e.seq === (received as { seq: number }).seq)).toHaveLength(1);
+    expect(events.every((e, i) => i === 0 || e.seq > events[i - 1].seq)).toBe(true);
+  }
 });
 test('SIGTERM 关闭客户端且服务五秒内退出', async () => {
   const c = connect(); await waitFor(() => c.messages.find(m => m.type === 'hello'));

@@ -7,6 +7,7 @@ export function createWsUpgrade(bus: ReturnType<typeof createEventBus>): Upgrade
   return (request, socket, head) => {
     server.handleUpgrade(request, socket, head, ws => {
       const disconnect = bus.connect(ws);
+      ws.on('message', (data, binary) => { if (!binary) bus.receive(ws, data.toString()); });
       ws.on('close', disconnect);
       ws.on('error', disconnect);
     });
