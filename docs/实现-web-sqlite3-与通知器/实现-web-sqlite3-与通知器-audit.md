@@ -1,8 +1,7 @@
-# 实现审计
+# 审计 #2 · M-02
 
-## 审计 #1 · M-01 · 通过
+结论：**通过**，M-02 标为已完成。证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-audit.md
 
-三条负向对照均使验收用例失败并已还原；验收命令 17/17；全量四件通过（Web 242 用例、0 跳过；desktop 104/103/1 同基线）。未发现产品缺陷或验证缺口。
-
-证据：docs/实现-web-sqlite3-与通知器/evidence/M-01-r1-audit.md
-本轮新造检查（通过，丢弃）：Node 22 下过滤 SQLite 告警而保留其它 ExperimentalWarning，结果符合预期。
+- 五条负向对照全部使验收命令变红，还原后 25/25 全绿。
+- Web 全量 267、desktop 104（1 跳过为基线），lint/typecheck 通过。
+- 实现缺陷：无；验证缺口：无；Backlog 无新增。

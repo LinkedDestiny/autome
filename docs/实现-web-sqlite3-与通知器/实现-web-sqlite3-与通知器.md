@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 2/35
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-02（含受限的 Web 监听回归）；通过后实现 M-03 接线与推送
+next-action: 实现 M-03 接线与推送（server/notifier-api.ts、main.ts、http.ts）
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -298,7 +298,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 面板库 web.sqlite3：结构、迁移、去重、游标与已读读写，过滤 SQLite 告警 | 0 | store |
-| M-02 | 待审 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
+| M-02 | 已完成 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
 | M-03 | 开放 | 接线与推送：通知器挂到 tick 之后，铃铛接口，notification 与 notification-read 广播 | 0 | api |
 | M-04 | 开放 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
 | M-05 | 开放 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
@@ -334,7 +334,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### M-02 验收契约
 
-最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-impl.md · 验收通过，Web 全量监听受限，待审 · 实现 #2
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`npm test --prefix apps/web -- test/notifier-rules.test.ts test/notifier.test.ts test/notifier-real.test.ts`；然后全量四件。
 - 预期：三文件共 25 个用例全过。`notifier-rules.test.ts` 12 个：7 条规则各 1 个（输入为「实测事件原文」seq 21、45、124、116、102、53 的原行，
