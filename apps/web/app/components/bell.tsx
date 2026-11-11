@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { subscribeLiveMessages } from '../lib/live-client.ts';
 import { createBellClient, EMPTY_BELL, type BellSnapshot } from './bell-client.ts';
 import { resolveTarget, TARGETS } from './bell-targets.ts';
+import { browserSystemNotifier, showSystemNotification, type SystemNotifier, type SystemPermission } from './bell-system.ts';
 
 function localTime(value: string) {
   const date = new Date(value);
@@ -10,9 +11,10 @@ function localTime(value: string) {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TARGETS }: {
+export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TARGETS, permission = 'unsupported', onRequest }: {
   snapshot: BellSnapshot; open: boolean; onToggle: () => void;
   onRead: (id: string) => Promise<void>; onAll: () => Promise<void>; targets?: typeof TARGETS;
+  permission?: SystemPermission; onRequest?: () => void;
 }) {
   return <div style={{ position: 'fixed', top: 16, right: 20, zIndex: 10, fontFamily: 'system-ui, sans-serif', color: '#1f2937' }}>
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
@@ -24,6 +26,8 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 16 }}>
         <strong>通知</strong><button type="button" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
       </header>
+      {permission === 'default' && <button type="button" onClick={onRequest} style={{ margin: '0 16px 16px' }}>开启系统通知</button>}
+      {permission === 'denied' && <p style={{ padding: '0 16px' }}>系统通知已被浏览器拒绝，铃铛照常提醒</p>}
       {snapshot.error && <p role="alert" style={{ padding: '0 16px', color: '#b91c1c' }}>{snapshot.error}</p>}
       {!snapshot.items.length && <p style={{ padding: '0 16px 16px' }}>还没有通知</p>}
       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -50,17 +54,26 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
   </div>;
 }
 
-export function NotificationBell() {
+export function NotificationBell({ systemNotifier }: { systemNotifier?: SystemNotifier } = {}) {
+  const notifier = useRef<SystemNotifier | null>(null);
+  const [permission, setPermission] = useState<SystemPermission>('unsupported');
   const [snapshot, setSnapshot] = useState(EMPTY_BELL);
   const [open, setOpen] = useState(false);
   const client = useRef<ReturnType<typeof createBellClient> | null>(null);
   useEffect(() => {
-    const controller = createBellClient({ fetch: window.fetch.bind(window), onChange: setSnapshot });
+    const system = systemNotifier ?? browserSystemNotifier(window);
+    notifier.current = system;
+    setPermission(system.permission());
+    const controller = createBellClient({ fetch: window.fetch.bind(window), onChange: setSnapshot,
+      onNotification: (message, items) => showSystemNotification(system, document.hidden, message, items),
+    });
     client.current = controller;
     const unsubscribe = subscribeLiveMessages(controller.handleMessage);
     void controller.start();
     return () => { unsubscribe(); controller.stop(); client.current = null; };
-  }, []);
-  return <BellView snapshot={snapshot} open={open} onToggle={() => setOpen(value => !value)}
+  }, [systemNotifier]);
+  return <BellView snapshot={snapshot} permission={permission} onRequest={() => {
+    void notifier.current?.request().then(setPermission);
+  }} open={open} onToggle={() => setOpen(value => !value)}
     onRead={async id => { await client.current?.markRead(id); }} onAll={async () => { await client.current?.markAll(); }} />;
 }

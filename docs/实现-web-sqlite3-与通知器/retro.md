@@ -14,3 +14,5 @@
 
 实现 #5 | M-04 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-04-r5-impl.md | 30 个既有监听用例受 EPERM 等限制，视觉验收未取证
 审计 #4 | M-04 | 通过 | docs/实现-web-sqlite3-与通知器/evidence/M-04-r5-audit.md | 无
+
+实现 #6 | M-05 | 待审 | docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-impl.md | 全量30例受监听权限阻断；真实通知保留人工验收

@@ -62,3 +62,10 @@ it('目标可用性与真实路由表一致', () => {
     const prefix = target.pattern.split('/')[1]; expect(target.available).toBe(new RegExp(`['"\x60]/?${prefix}(?:/|['"\x60])`).test(source));
   }
 });
+it('权限 default 显示开启按钮，denied 提示，granted 与 unsupported 隐藏', () => {
+  for (const permission of ['default', 'denied', 'granted', 'unsupported'] as const) {
+    const html = renderToString(createElement(MemoryRouter, null, createElement(BellView, { snapshot: { unread: 0, items: [] }, open: true, permission, onRequest: vi.fn(), onToggle: vi.fn(), onRead: async () => {}, onAll: async () => {} })));
+    expect(html.includes('开启系统通知')).toBe(permission === 'default');
+    expect(html.includes('系统通知已被浏览器拒绝，铃铛照常提醒')).toBe(permission === 'denied');
+  }
+});

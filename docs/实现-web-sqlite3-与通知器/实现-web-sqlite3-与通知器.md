@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 5/35
+implementation-round: 6/35
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-05 后台系统通知、权限按钮与 tag 合并
+next-action: 独立审计 M-05 系统通知；通过后推进 M-06 消息回调独立验收
 
 任务文件：`docs/实现-web-sqlite3-与通知器/实现-web-sqlite3-与通知器-task.md`。
 本任务的规则见 `docs/实现-web-sqlite3-与通知器/protocol/loop-protocol.md` 与
@@ -247,7 +247,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 
 ### 7. 铃铛界面与系统通知（R-06、R-07）
 
-- **挂法**：`NotificationBell` 无 props，自带数据与连接。`root.tsx` 只加一行 `<NotificationBell />`；容器 `position: fixed`、右上角，
+- **挂法**：`NotificationBell` 自带数据订阅，接受可选 `systemNotifier`（见下文）。`root.tsx` 只加一行 `<NotificationBell />`；容器 `position: fixed`、右上角，
   不占文档流，不引起页面纵向滚动。W5 搬进外壳时把这一行挪进顶栏即可。
 - **按钮**：中文 `aria-label`「通知，N 条未读」；徽标 0 不显示，1..99 显示原数，≥100 显示「99+」。
 - **展开面板**：`max-height: 60vh; overflow-y: auto`，内部滚动；每项显示标题、`body`（有则显示）、时间（本地 `MM-DD HH:mm`）、未读圆点；
@@ -301,7 +301,7 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
 | M-02 | 已完成 | 规则表与通知器：持久游标补拉、补齐信息、崩溃与换账本，真实账本验证 | 0 | notifier |
 | M-03 | 已完成 | 接线与推送：通知器挂到 tick 之后，铃铛接口，notification 与 notification-read 广播 | 0 | api |
 | M-04 | 已完成 | 顶栏铃铛：未读数、列表、单条与全部已读、跨标签页同步、挂到 root | 0 | bell |
-| M-05 | 开放 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
+| M-05 | 待审 | 后台标签页系统通知：可替换接口、权限按钮、按通知 id 作 tag 合并重复 | 0 | system-notify |
 | M-06 | 开放 | B-01：createLiveClient 消息回调独立验收（实现随 M-04 接线） | 0 | live-client |
 | M-07 | 开放 | B-04：同一事件补齐失败后重试生成通知的独立回归验收（实现随 M-02） | 0 | notifier |
 
@@ -394,6 +394,8 @@ JSON 解析与错误处理，不改已有路由；写接口同样经过最前面
   徽标阈值写成 `> 100` 时 100→「99+」断言失败；`TARGETS` 的 `available` 改成 `true`（而 `routes.ts` 没有对应路由）时，守卫用例与默认表的无链接断言失败。
 
 ### M-05 验收契约
+
+最新证据：docs/实现-web-sqlite3-与通知器/evidence/M-05-r6-impl.md · 待审 · 实现 #6
 
 - 验收命令：`npm test --prefix apps/web -- test/bell-system.test.ts test/bell-view.test.ts`；然后全量四件；再 `npm run build --prefix apps/web`。
 - 预期：`bell-system.test.ts` 8 个用例（假 `SystemNotifier`、假 `document.hidden`、假 `Notification` 构造函数，不需要真实浏览器）：
