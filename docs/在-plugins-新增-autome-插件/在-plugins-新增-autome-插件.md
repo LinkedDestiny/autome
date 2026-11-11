@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/40
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-02：check-card.sh、panel-url.sh 与 run.sh 的 card、panel 组
+next-action: 审计 M-02；下一实现轮推进 M-03 技能与短别名
 
 任务文件：`docs/在-plugins-新增-autome-插件/在-plugins-新增-autome-插件-task.md`（下称「任务文件」；验收标准指它 §3 的六条，记作 A1–A6；硬性约束指它 §5，记作 C1–C12；待定问题指它 §7，记作 Q1–Q9）。
 
@@ -209,7 +209,7 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 三个脚本，分工按依赖划开。每个用例输出 `ok <编号> <名称>` 或 `not ok <编号> <名称>：<原因>`，最后一行 `<通过>/<总数> 通过`，有失败就非 0 退出。
 
-- **`tests/run.sh <组…|all>`**：零依赖（`/bin/sh`、`grep`、`sed`、`awk`、`git`），六组共 51 个用例，用例清单见各里程碑验收契约。`panel` 组用 `PATH` 前置的 `curl` 替身驱动 `panel-url.sh`，替身的行为按真实 `curl` 对齐：连接被拒时退出 7、`-w '%{http_code}'` 打印 `000`；`-f` 遇 4xx/5xx 退出 22。另有一个用例用真实 `curl` 连无人监听的端口作对照。替身用符号链接放进临时目录（macOS 改名副本会被杀）。
+- **`tests/run.sh <组…|all>`**：零依赖（`/bin/sh`、`grep`、`sed`、`awk`、`git`），六组共 59 个用例（原契约 51 项，加 M-02 边界 8 项），用例清单见各里程碑验收契约。`panel` 组用 `PATH` 前置的 `curl` 替身驱动 `panel-url.sh`，替身的行为按真实 `curl` 对齐：连接被拒时退出 7、`-w '%{http_code}'` 打印 `000`；`-f` 遇 4xx/5xx 退出 22。另有一个用例用真实 `curl` 连无人监听的端口作对照。替身用符号链接放进临时目录（macOS 改名副本会被杀）。
 - **`tests/hosts.sh`**：需要 `claude` 与 `codex`。Claude Code 跑 `plugin validate` 与 `plugin details`；Codex 在 `mktemp -d` 的 `CODEX_HOME` 下 `marketplace add` + `plugin add autome@autome` + `plugin list`，不碰 `~/.codex`。Cursor 本机没有命令行，只做 `run.sh structure` 的结构检查，真机加载列入人工验收清单。
 - **`tests/verify-cli.sh`**：需要 `autome` 与 `git`。开头 `AUTOME_HOME=$(mktemp -d)/home`、`unset AUTOMED_DB_PATH`，断言 `AUTOME_HOME` 不等于 `$HOME/.autome`；建临时 git 仓库、`project add --skip-onboarding`；结束删除临时目录。所有创建都发生在这个隔离账本里（C7）。不用 `autome` 替身——技能侧的确定性检查直接打真实命令行，没有替身与真实输出不一致的问题。
 
@@ -240,10 +240,13 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 插件骨架、三宿主 manifest 与市场登记 | 0 | |
-| M-02 | 开放 | 任务卡校验与面板链接脚本 | 0 | |
+| M-02 | 待审 | 任务卡校验与面板链接脚本 | 0 | |
 | M-03 | 开放 | autome-task 技能与短别名 | 0 | |
 | M-04 | 开放 | README 程序化创建说明与插件市场 README | 0 | |
 | M-05 | 开放 | eval 用例 | 0 | |
+| M-06 | 开放 | B-1：V7 示例键值一致性回归 | 0 | |
+| M-07 | 开放 | B-2：人工验收逐项隔离前置 | 0 | |
+| M-08 | 开放 | B-3：环境采集时序统一 | 0 | |
 
 ## 里程碑说明
 
@@ -265,8 +268,10 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 ### M-02 验收契约
 
+最新证据：docs/在-plugins-新增-autome-插件/evidence/M-02-r2-impl.md · 专项通过，待审 · 实现 #2
+
 - 验收命令：`sh plugins/autome/tests/run.sh card panel`
-- 预期：card 组 14 个用例通过（K1 合格需求退出 0 并输出字节数；K2 合格 Bug；K3 第一行不是 `# ` 退出 1；K4 缺「不做什么」；K5 小节顺序颠倒；K6 多余二级标题；K7 需求「验收标准」写「无」；K8 Bug「复现步骤」没有编号项；K9 恰好 65536 字节退出 0；K10 65537 字节退出 1 且原因含 65537；K11 正文含独占一行的 `AUTOME_CARD_EOF` 与其后一行 shell 命令文字，仍退出 0、字节数等于 `wc -c` 且命令文字未被执行（探针文件不存在）；K12 类型参数 `chore` 退出 2；K13 代码块里的 `## ` 不算标题；K14 可选小节「线索」写「无」退出 0）；panel 组 7 个用例通过（P1 无 server.json 且默认端口不通 → 空输出、退出 0；P2 默认端口健康、任务页 404 → `http://127.0.0.1:7420/`；P3 隔离 `AUTOME_HOME` 的 server.json 端口 7555 健康、任务页 200 → `http://127.0.0.1:7555/tasks/T-9`；P4 server.json 端口不通、默认端口健康 → 默认端口首页；P5 healthz 返回 200 但体里没有 `"ok":true` → 空；P6 `PATH` 上没有 curl → 空、退出 0；P7 真实 curl、`AUTOME_PANEL_DEFAULT_PORT=1` 且无 server.json → 空）。共 21 个。
+- 预期：card 组 14 个用例通过（K1 合格需求退出 0 并输出字节数；K2 合格 Bug；K3 第一行不是 `# ` 退出 1；K4 缺「不做什么」；K5 小节顺序颠倒；K6 多余二级标题；K7 需求「验收标准」写「无」；K8 Bug「复现步骤」没有编号项；K9 恰好 65536 字节退出 0；K10 65537 字节退出 1 且原因含 65537；K11 正文含独占一行的 `AUTOME_CARD_EOF` 与其后一行 shell 命令文字，仍退出 0、字节数等于 `wc -c` 且命令文字未被执行（探针文件不存在）；K12 类型参数 `chore` 退出 2；K13 代码块里的 `## ` 不算标题；K14 可选小节「线索」写「无」退出 0）；panel 组 7 个用例通过（P1 无 server.json 且默认端口不通 → 空输出、退出 0；P2 默认端口健康、任务页 404 → `http://127.0.0.1:7420/`；P3 隔离 `AUTOME_HOME` 的 server.json 端口 7555 健康、任务页 200 → `http://127.0.0.1:7555/tasks/T-9`；P4 server.json 端口不通、默认端口健康 → 默认端口首页；P5 healthz 返回 200 但体里没有 `"ok":true` → 空；P6 `PATH` 上没有 curl → 空、退出 0；P7 真实 curl、`AUTOME_PANEL_DEFAULT_PORT=1` 且无 server.json → 空）。共 21 个契约用例；另补 K15 空输入、K16 空白标题、K17 四种必填占位、K18 空白可选小节、K19 编号验收项、P8 超时、P9 HTTP 错误、P10 无法解析端口，M-02 合计 29 个。
 - 负向对照：字节上限写成 `-lt 65536` 时 K9 失败；只看 healthz 状态码不看响应体时 P5 失败；不跳过代码块内的 `## ` 时 K13 失败。
 
 ### M-03 验收契约
@@ -284,10 +289,23 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 ### M-05 验收契约
 
 - 验收命令：`sh plugins/autome/tests/run.sh evals`
-- 预期：evals 组 5 个用例通过（E1 三个场景目录各有含 `name`、`description`、`prompt`、`graders`、`runs`、`max_turns`、`timeout_seconds` 的 case.yaml 与至少一个 grader；E2 每个 grader 有「## 阳性对照」小节；E3 `ask-before-inventing` 的 grader 以「验收标准」判分；E4 没有 case.yaml 含 `scaffold_script`；E5 `evals/README.md` 含带 `--max-cost-usd` 的运行命令、「不进门禁」与「不要加 `--allow-tools Bash`」）。共 5 个；`run.sh all` 合计 51 个。
+- 预期：evals 组 5 个用例通过（E1 三个场景目录各有含 `name`、`description`、`prompt`、`graders`、`runs`、`max_turns`、`timeout_seconds` 的 case.yaml 与至少一个 grader；E2 每个 grader 有「## 阳性对照」小节；E3 `ask-before-inventing` 的 grader 以「验收标准」判分；E4 没有 case.yaml 含 `scaffold_script`；E5 `evals/README.md` 含带 `--max-cost-usd` 的运行命令、「不进门禁」与「不要加 `--allow-tools Bash`」）。共 5 个；`run.sh all` 合计 59 个。
 - 负向对照：删掉任一 grader 的阳性对照时 E2 失败；`evals/README.md` 的运行命令漏掉 `--max-cost-usd` 时 E5 失败。
 
+### M-06 验收契约
+
+B-1 / D1-N01 已纳入；前置 M-04。V7 同时比较示例键与值，仅规范化设计允许替换的 id、路径、时间；增加将 `"state": "draft"` 改成 `"state": "pending"` 的负向回归，必须被拒绝。验收：`sh plugins/autome/tests/verify-cli.sh readme`，真实示例通过、pending 变体失败。M-04 实现 V7 时遵守此值契约，本里程碑交付独立负向回归。
+
+### M-07 验收契约
+
+B-2 / D1-N02 已纳入；前置 M-05。H-01、H-02、H-04 每条人工记录各自写明隔离 `AUTOME_HOME`、`unset AUTOMED_DB_PATH`，不只依赖共同说明。验收：逐条提取三条记录，各自匹配两个前置；不要求本轮执行人工宿主验收。
+
+### M-08 验收契约
+
+B-3 / D1-N03 已纳入；前置 M-03。统一 SKILL.md 的环境采集规则：第 1 步不跑命令，Bug 环境信息缺失时可留待第 2 步确认命令行存在后采集 Git 与 `autome version`，经用户同意后才写入；其余信息缺失仍先追问。验收：`sh plugins/autome/tests/run.sh skill`，新增检查确保环境采集命令仅位于第 2 步、且说明用户确认，补充该路径的人工对话检查说明。
+
 ## 人工验收清单
+
 
 - H-01 Claude Code：`AUTOME_HOME=$(mktemp -d)` 下注册一个临时仓库，在它的子目录里 `AUTOME_HOME=… claude --plugin-dir plugins/autome`，讨论一个需求后说「建成 autome 任务」——技能触发，展示类型、项目、「存为待开始」、字节数与完整正文后停下等待；回「差不多」不创建；回「确认」后创建并回显 `T-1` 与 `autome task start T-1`；人工验证入口共同前置：隔离 `AUTOME_HOME` 并 `unset AUTOMED_DB_PATH`（H-01、H-02、H-04 同）
 - H-02 Codex：同 H-01 的隔离账本，`codex` 装上 `autome@autome` 后走一遍，记下沙箱是否拦截写 `$AUTOME_HOME` 以及技能怎样转达
@@ -298,9 +316,5 @@ autome task new --brief - --kind {{KIND}} --draft -p {{PROJECT_ID}} --json < '{{
 
 ## Backlog
 
-- D1-N01：M-04 V7 实现时同时校验键与值（拒绝 `"state": "pending"`），与负向对照一致。
-- D1-N02：H-01、H-02、H-04 的人工记录里各写一句隔离前置（隔离 `AUTOME_HOME`、`unset AUTOMED_DB_PATH`）。
-- D1-N03：第 1 步「不跑命令」与 Bug「环境」建议读取 Git/`autome version` 的例外，实现时在 SKILL.md 里统一写明（环境采集放到第 2 步命令行检查之后）。
-- D1-N04：`server.json` 字段名待 W10 定，W10、W7 合并后核对 `panel-url.sh` 一次。
 
 ## 争议项

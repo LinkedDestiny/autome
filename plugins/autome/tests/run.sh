@@ -9,7 +9,7 @@ total=0
 check() {
   total=$((total + 1))
   if "$@"; then passed=$((passed + 1)); printf 'ok %s\n' "$1"
-  else printf 'not ok %s：结构断言不满足\n' "$1"; fi
+  else printf 'not ok %s：断言不满足\n' "$1"; fi
 }
 field() { sed -n 's/^  "'"$2"'": "\([^"]*\)"[,]*$/\1/p' "$1"; }
 manifest() { printf '%s/.%s-plugin/plugin.json' "$plugin" "$1"; }
@@ -79,10 +79,16 @@ S10() {
   git -C "$repo" diff --quiet "$base" -- plugins/loop/ &&
   [ -z "$(git -C "$repo" ls-files --others --exclude-standard -- plugins/loop/)" ]
 }
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+. "$plugin/tests/card-panel.sh"
 [ "$#" -gt 0 ] || set -- all
+[ "$*" != all ] || set -- structure card panel
 for group do
   case "$group" in
-    structure|all) for test in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10; do check "$test"; done ;;
+    structure) for test in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10; do check "$test"; done ;;
+    card) for test in K1 K2 K3 K4 K5 K6 K7 K8 K9 K10 K11 K12 K13 K14 K15 K16 K17 K18 K19; do check "$test"; done ;;
+    panel) for test in P1 P2 P3 P4 P5 P6 P7 P8 P9 P10; do check "$test"; done ;;
     *) printf '未知检查组：%s\n' "$group" >&2; exit 2 ;;
   esac
 done
