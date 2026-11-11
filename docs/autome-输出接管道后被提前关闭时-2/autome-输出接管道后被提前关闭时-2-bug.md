@@ -1,7 +1,7 @@
 # autome 输出管道提前关闭时 panic
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli --test cli broken_pipe -- --nocapture
 根因: status 的 task_detail 使用 println! 写 stdout，读端关闭后产生 BrokenPipe，打印宏直接 panic，绕过 CLI 的 Result 错误处理。
 复核: 待复核
@@ -32,7 +32,11 @@ repos: autome-v2
 
 ## 修复说明
 
-定位轮未修改产品代码；仅新增回归测试与本文档。后续修复轮处理。
+本轮在 `crates/autome-cli/src/main.rs` 为 CLI 的 `print!` / `println!` 添加局部输出封装，直接检查 stdout 写入及 flush 的错误。仅在 `ErrorKind::BrokenPipe` 时安静退出 0；其它输出错误继续 panic，其它业务错误处理不变。未改变 SIGPIPE 处置，也未修改内嵌驱动的子进程 stdin 写入行为。
+
+定位轮两条回归测试保持原样。原复现命令在修复前为 1 passed、1 failed，修复后为 2 passed、0 failed，分别验证管道关闭后的安静退出和 SIGPIPE 仍被忽略。日志为 `.autome/output/fix-1-before.log`、`.autome/output/fix-1-after.log`。`cargo fmt --all -- --check` 和 `git diff --check` 通过。
+
+已运行配置门禁 `sh scripts/ci-local.sh`，833 秒后退出 1。Format、Clippy、Rust 全量 Test、End to end、Adapter flags、Desktop、Contract、Web install/lint/typecheck/build 步骤通过；Web test 为 4 failed / 29 passed 文件、11 failed / 271 passed / 19 skipped 测试。失败日志明确包含 `listen EPERM: operation not permitted 127.0.0.1`，以及文件监听 `EMFILE: too many open files, watch`，当前受限环境未能完成服务监听验收。Desktop 步骤虽通过，但 Electron DOM 测试因缺少 Electron 二进制被原测试跳过，不能视为真实 Electron 验收通过。未修改或跳过任何测试，未运行可选 package。完整日志为 `.autome/output/fix-1-gate.log`；整体门禁尚未通过，需由宿主在可监听环境重新验证。
 
 ## 复核意见
 

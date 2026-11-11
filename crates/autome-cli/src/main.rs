@@ -18,6 +18,29 @@ use args::Args;
 use client::{CliError, Client, Result};
 use serde_json::{Value, json};
 
+// Keep closed output pipes local to CLI output; changing SIGPIPE would also
+// affect the embedded driver's writes to child processes.
+macro_rules! print {
+    ($($arg:tt)*) => {
+        print_stdout(format_args!($($arg)*))
+    };
+}
+
+macro_rules! println {
+    () => { print!("\n") };
+    ($($arg:tt)*) => { print!("{}\n", format_args!($($arg)*)) };
+}
+
+fn print_stdout(args: std::fmt::Arguments<'_>) {
+    let mut stdout = std::io::stdout().lock();
+    if let Err(error) = stdout.write_fmt(args).and_then(|()| stdout.flush()) {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        panic!("failed printing to stdout: {error}");
+    }
+}
+
 const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、审计，到合并
 
 用法：autome <命令> [参数]
