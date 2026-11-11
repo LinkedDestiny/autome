@@ -1,0 +1,32 @@
+# 内核契约区清单。由 Autome 生成，**改这个文件不会改变内核的判断**——
+# 期望哈希存在二进制里，这份只是给人看的。
+#
+# 每一项对应协议文件里一对 `<!-- kernel-contract: 名字 -->` 标记。
+# 标记之间的文本是内核解析的东西：状态块字段、里程碑表列、Backlog 与
+# 争议项的格式、四条守卫条文。改它们要改内核，不能只改协议。
+
+[[region]]
+file = "loop-protocol.md"
+name = "roles"
+hash = "1f1546c7729ea83f92d11a8364b50577175d35c953b56a88b152290022985a68"
+
+[[region]]
+file = "loop-protocol.md"
+name = "backlog-disputes"
+hash = "86e68dfcd4e64bd35a608a118ad8a94100f8a569ef8b3424f1cc6e10e869e24b"
+
+[[region]]
+file = "session-protocol.md"
+name = "boundaries"
+hash = "1f090f8cc0924a90d31b0a377d7e6394855b7358eb45231f101fbe76a16c939c"
+
+[[region]]
+file = "session-protocol.md"
+name = "status-block"
+hash = "ced505bd06c277cbc143724cd29c2c2a0d7da7accc225f5fb654a7d2f6683a0d"
+
+[[region]]
+file = "session-protocol.md"
+name = "milestone-table"
+hash = "d7d4b08d620eed980a9e70476128a1f89d7b33c6f4a8481ffdfcb0ac762f1dda"
+

@@ -1,3 +1,5 @@
+import { createEventBus } from './eventbus.ts';
+import { createWsUpgrade } from './eventbus-ws.ts';
 import { CoreSupervisor } from './core/supervisor.ts';
 import { resolveAutomedBinary } from './core/binary.ts';
 import { resolveAutomeHome } from './home.ts';
@@ -8,7 +10,8 @@ import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
 export async function startServer({ port, mode, home = resolveAutomeHome(process.env), binaryPath = resolveAutomedBinary().path }: { port: number; mode: Mode; home?: string; binaryPath?: string }) {
-  const core = new CoreSupervisor({ home, binaryPath, log: console.error });
+  const bus = createEventBus({ call: (method, params) => core.call(method, params), log: console.error });
+  const core = new CoreSupervisor({ home, binaryPath, log: console.error, onStatus: status => bus.setCoreStatus(status) });
   const gateway = createGateway({ core, home });
   const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway });
   try {
@@ -23,12 +26,14 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
     await closeMiddleware();
     throw error;
   }
+  registerUpgrade('/ws', createWsUpgrade(bus));
   void core.start().catch(error => console.error(String(error)));
-  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error });
+  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: () => { void bus.pull(); } });
   return {
-    server, gateway, registerUpgrade,
+    server, gateway, registerUpgrade, bus,
     async close() {
       ticker.stop();
+      bus.close();
       await core.stop();
       await closeMiddleware();
       await new Promise<void>((resolve, reject) => {

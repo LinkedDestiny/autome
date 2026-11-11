@@ -12,7 +12,8 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "express": "^5",
-    "isbot": "^5"
+    "isbot": "^5",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
     "@react-router/dev": "^8.5.1",
@@ -27,7 +28,8 @@
     "@types/node": "^22.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "@types/express": "^5"
+    "@types/express": "^5",
+    "@types/ws": "^8.18.2"
   },
   "scripts": {
     "dev": "node server/start.js",
