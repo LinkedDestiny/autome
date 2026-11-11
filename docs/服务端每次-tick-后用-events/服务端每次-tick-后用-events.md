@@ -1,12 +1,12 @@
 # Web 事件总线（W3）：tick 后 events.since 拉取、/ws 推送与 useLiveEvents 按事件重验路由
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 25/30
-current-milestone: M-04
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计轮复验 M-04 两处 NUL 转义及 Web 全量，复核受环境阻断的 27 个监听用例
+next-action: 无
 
 任务文件：`docs/服务端每次-tick-后用-events/服务端每次-tick-后用-events-task.md`。
 本任务的规则见 `docs/服务端每次-tick-后用-events/protocol/loop-protocol.md` 与
@@ -278,7 +278,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 | M-01 | 已完成 | 最小端到端：分页拉取的事件总线、/ws 升级、main 接线、命令行跨进程集成测试 | 0 | eventbus-e2e |
 | M-02 | 已完成 | 断线续传、reload、core 消息与恢复补拉、W4/W8 挂点 | 0 | eventbus-resume |
 | M-03 | 已完成 | 浏览器端 live 客户端、按事件重验路由、重连提示与 root 接线 | 0 | live-routes |
-| M-04 | 待审 | write-gate.test.ts 的原始 NUL 改为 \u0000 转义 | 0 | nul-escape |
+| M-04 | 已完成 | write-gate.test.ts 的原始 NUL 改为 \u0000 转义 | 0 | nul-escape |
 
 ## 里程碑说明
 
@@ -338,6 +338,7 @@ R-02 的测试要 `target/debug/autome`。ci-local 已经有（见背景），�
 文件其余字节不变。
 
 最新证据：docs/服务端每次-tick-后用-events/evidence/M-04-r25-impl.md · 专项通过，Web 全量环境受阻，待审 · 实现 #25
+最新审计：docs/服务端每次-tick-后用-events/evidence/M-04-r25-audit.md · 通过 · 审计 #4
 
 **R-06 验收判据与 Git 行为的冲突（裁决 D1-P03）。** 任务 R-06 写「`git diff --numstat <基线> -- …` 显示行数而不是
 `-`」。实测（Git 2.53.0）：基线 blob 本身含 2 个 NUL，Git 只要比较的任一侧含 NUL 就整体按二进制处理，所以**无论新版本
