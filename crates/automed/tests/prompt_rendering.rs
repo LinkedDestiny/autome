@@ -52,6 +52,7 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
     PromptSpec {
         kind,
         templates,
+        gate_before_merge: None,
         brief_path: BRIEF,
         slug: SLUG,
         doc_dir: DOC_DIR,

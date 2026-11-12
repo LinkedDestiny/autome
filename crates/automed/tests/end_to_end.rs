@@ -7404,3 +7404,70 @@ fn gate_queue_order_survives_a_core_restart() {
     queue_release(&w, &c);
     queue_wait(&mut w, |w| !setup_events(w, &c, "gate.result").is_empty());
 }
+
+#[test]
+fn prompt_before_merge_feature_repair_round_runs_only_the_failing_part() {
+    needs_git!();
+    let mut w = World::new("prompt-before-merge-feature");
+    let script = write_gate_script(&w);
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "prompt feature repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(8);
+    assert!(prompt.contains("gate says no: gate-ok is missing"));
+    assert!(prompt.contains(&automed::launcher::gate_line(&command)));
+    assert!(prompt.contains("单独复现并修好它"));
+    assert!(!prompt.contains("在同一命令下确认通过"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(events.iter().any(|(_, k, s, p)| s == &id
+        && k == "gate.result"
+        && p["node"] == "merge_gate"
+        && p["ok"] == false));
+}
+
+#[test]
+fn prompt_before_merge_bug_repair_round_runs_only_the_failing_part() {
+    needs_git!();
+    let mut w = World::new("prompt-before-merge-bug");
+    let command = "echo project-gate-output; test -f gate-ready";
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "prompt bug repair";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(4);
+    assert!(prompt.contains("project-gate-output"));
+    assert!(prompt.contains(&automed::launcher::gate_line(command)));
+    assert!(prompt.contains("复现命令和与改动直接相关的测试子集"));
+    assert!(!prompt.contains("用同一命令确认通过"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(events.iter().any(|(_, k, s, p)| s == &id
+        && k == "gate.result"
+        && p["node"] == "merge_gate"
+        && p["ok"] == false));
+}

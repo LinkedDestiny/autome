@@ -26,6 +26,7 @@ pub struct Case {
     pub name: String,
     pub role: Role,
     pub prompt: Option<String>,
+    pub gate_command: Option<String>,
     pub description: String,
     /// How many times to run it. The verdict is the majority.
     pub runs: u32,
@@ -87,6 +88,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
         "name",
         "role",
         "prompt",
+        "gate_command",
         "description",
         "runs",
         "max_turns",
@@ -125,6 +127,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
         name,
         role,
         prompt: get("prompt").map(str::to_string),
+        gate_command: get("gate_command").map(str::to_string),
         description: get("description").unwrap_or("").to_string(),
         runs: num("runs", DEFAULT_RUNS as u64)? as u32,
         max_turns: num("max_turns", DEFAULT_MAX_TURNS as u64)? as u32,
@@ -268,5 +271,24 @@ mod tests {
             assert!(problems.is_empty(), "{path}: {problems:?}");
         }
         assert!(cases >= 9, "only {cases} cases are seeded");
+    }
+    #[test]
+    fn before_merge_prompt_case_accepts_only_the_new_known_field() {
+        let text = "name: demo\nrole: impl\ngraders:\n  - grade.md\n";
+        assert_eq!(parse(text).unwrap().gate_command, None);
+        for cmd in ["", "echo {slug}", "ci_script=x; sh \"${ci_script}\""] {
+            assert_eq!(
+                parse(&format!("{text}gate_command: {cmd}\n"))
+                    .unwrap()
+                    .gate_command
+                    .as_deref(),
+                Some(cmd)
+            );
+        }
+        assert!(
+            parse(&format!("{text}unknown: x\n"))
+                .unwrap_err()
+                .contains("unknown")
+        );
     }
 }

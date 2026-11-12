@@ -2727,6 +2727,7 @@ fn launch_session(
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         templates: &protocol,
+        gate_before_merge: resolved.gate_before_merge(),
         brief_path: &brief_path,
         slug: &task.slug,
         doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
@@ -4180,6 +4181,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
         templates: protocol,
+        gate_before_merge: None,
         brief_path: "",
         slug: "onboarding",
         // Onboarding writes the project profile and AGENTS.md at the

@@ -409,6 +409,13 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
+    pub fn gate_before_merge(&self) -> Option<&str> {
+        self.gate
+            .as_ref()
+            .filter(|_| self.gate_run == GateRun::BeforeMerge)
+            .map(|gate| gate.command.as_str())
+    }
+
     pub fn gates_each_round(&self) -> bool {
         self.gate.is_some() && self.gate_run == GateRun::EachRound
     }
@@ -1242,6 +1249,29 @@ mod tests {
         let value = serde_json::to_value(&project).unwrap();
         let impl_table = value.pointer("/roles/impl").unwrap().as_object().unwrap();
         assert_eq!(impl_table.keys().collect::<Vec<_>>(), vec!["model"]);
+    }
+    #[test]
+    fn before_merge_prompt_command_requires_both_gate_and_mode() {
+        for mode in [None, Some(GateRun::EachRound), Some(GateRun::BeforeMerge)] {
+            for command in [None, Some("echo {slug}")] {
+                let project = ProjectConfig {
+                    gate_run: mode,
+                    gate: command.map(|command| GateConfig {
+                        command: command.into(),
+                        timeout_minutes: 1,
+                    }),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    resolve(&GlobalConfig::default(), &project).gate_before_merge(),
+                    if mode == Some(GateRun::BeforeMerge) {
+                        command
+                    } else {
+                        None
+                    }
+                );
+            }
+        }
     }
 }
 

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 4/40
+implementation-round: 5/40
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-05：prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入
+next-action: 等待 M-05 独立审计；通过后推进 M-06 的五份模板分段、金样与协议 v3 eval 用例
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -564,7 +564,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
    从写入模板原文改为写入 `select_gate_run(模板, EachRound)`（§6.9）。比对断言不改。
 
 配置类新字段都是旁挂 `Option` / 有 `Default`；`render_gate_line` 是私有函数，没有测试直接调用；`brief::build`、`golden()` 不改签名；
-`gate::Job` 只在 `Job::at` 里构造（一处，生产代码）；`case::Case` 只由 `case::parse` 构造。实现期若发现还有其它必须改动的现有用例，
+`gate::Job` 只在 `Job::at` 里构造（一处，生产代码）；`case::Case` 在生产代码由 `case::parse` 构造，`eval_run::tests::case()` 另有测试字面量，新增字段需补 `None`；`eval_run` 的既有渲染测试调用需适配新增参数与 Result 返回值，原断言不变。实现期若发现还有其它必须改动的现有用例，
 在当轮证据里逐条列出，理由不能是「新行为与旧断言不符」。
 
 ### 11. 否决的做法
@@ -625,7 +625,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-02 | 已完成 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
 | M-03 | 已完成 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 已完成 | 审计简报的宿主门禁证据与金样 | 0 | |
-| M-05 | 开放 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
+| M-05 | 待审 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
 | M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
 | M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
@@ -750,6 +750,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：`before_merge` 下仍取最后一条 `gate.result` 不看 sha 时，「旧 sha 结果出常量文案」单测与 e2e 中修好后那一轮审计简报的断言失败（简报里出现失败那次的 sha 与「未通过」）；把常量文案改动一个字时审计简报金样比对失败；`each_round` 下也走新规则（例如无结果时也出常量）时，「each_round 相等」单测失败。
 
 ### M-05 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-05-r5-impl.md · 验收通过，待审 · 实现 #5
 
 - 验收命令：`cargo test -p autome-domain before_merge_prompt && cargo test -p automed --lib launcher && cargo test -p automed --lib protocol:: && cargo test -p automed --test prompt_rendering && cargo test -p automed --test end_to_end prompt_before_merge && git diff --quiet HEAD -- protocol/prompts crates/automed/tests/golden/prompts && test -z "$(git log --format=%h $(git merge-base HEAD main)..HEAD -- protocol/prompts crates/automed/tests/golden/prompts)"`
 - 预期：autome-domain 过滤 `before_merge_prompt` 4 个通过；automed lib 过滤 `launcher` 63 个通过（基线 57 + 6）、过滤 `protocol::` 66 个通过（基线 61 + 5）；prompt_rendering 17 个全部通过、金样文件一字未改；e2e 过滤 `prompt_before_merge` 2 个通过；最后两条 git 检查无输出、退出码 0（本分支至此没有改过任何模板与 prompt 金样）。
