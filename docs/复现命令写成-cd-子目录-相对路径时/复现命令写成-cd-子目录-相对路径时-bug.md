@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_cd_repro_ -- --nocapture
 根因: regression_protection 仅在命令原文匹配仓库相对路径，未解析 cd 改变的目录；定位阶段无条件保存空保护快照，直到修复阶段才检查为空。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -47,7 +47,12 @@ fix-round: 1/3
 - 仅更新既有空保护夹具的失败节点断言为 `Locate`；定位轮新增的 5 个回归用例未修改、删除、跳过或弱化。另增路径解析单测，覆盖连续 cd、引号、父目录、子 shell 恢复及路径不匹配。
 - 原复现命令修复前退出码 101（2 通过、3 失败），修复后退出码 0（5 通过、0 忽略）。路径解析单测 1 通过。日志：`.autome/output/fix1-before.log`、`.autome/output/fix1-after-final.log`、`.autome/output/fix1-unit.log`。
 - 直接相关测试 `cargo test --offline -p automed --test end_to_end bug_regression_guard_` 全部通过（8 通过、0 忽略），覆盖修改/删除/重命名/模式变更拒绝、内联及追加测试保护、多仓库、重试与旧快照兼容。日志：`.autome/output/fix1-guards.log`。`cargo fmt --all` 和 `git diff --check` 通过。
-- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前执行；等待独立复核。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前执行；等独立复核（第 1/3 轮）：通过。
+
+- 复现命令独立重跑：5 个 `bug_cd_repro_` 用例全部通过；`bug_regression_guard_` 8 个通过；automed 库内单测 762 通过（含新增路径解析单测）。未跑全量门禁。
+- 根因成立：路径只按命令原文匹配，且定位阶段不拒绝空保护集；两处在 `scheduler.rs` 均有对应修复，原完整路径匹配保留，不会收窄既有行为。
+- 回归测试：定位提交的 5 个用例在修复提交中未被改动；仅把既有空保护夹具的失败节点断言由 Fix 改为 Locate，与新契约一致，且旧空快照在修复阶段的拒绝由新用例 `legacy_empty_snapshot_still_fails_at_fix` 保住，不算弱化。
+- 范围：仅改 `scheduler.rs`（静态 cd 路径解析 + 定位空集拒绝）与测试，无无关改动。解析器为静态字面量识别，不执行 shell，`cd` 参数含变量或多参数时忽略，保守不误保护。
 
 ## 复核意见
 
