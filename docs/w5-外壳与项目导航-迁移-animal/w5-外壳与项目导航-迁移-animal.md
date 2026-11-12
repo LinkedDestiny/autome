@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-01；复跑受监听限制的全量验收，通过后推进 M-02
+next-action: 实现 M-02：animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -320,7 +320,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
+| M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 开放 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 开放 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
