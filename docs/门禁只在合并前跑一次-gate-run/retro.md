@@ -28,3 +28,4 @@
 复盘 #2 | 无 | 覆盖写 6 条教训：保留 L-01..L-04，新增 L-05（rebase 集成轮改动未经审计，审计 #9 以无待审里程碑结束）、L-06（rebase 后 607e967..d0dbb75 共 7 个提交带冲突标记，2e411a2 才清理）；本任务仍无宿主门禁运行，验收 6 无证据 | docs/门禁只在合并前跑一次-gate-run/lessons.md | 无
 实现 #10 | M-08 | Clippy 修复，原里程碑状态不变 | docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r10-impl.md | 本地 Electron SIGABRT、Web listen EPERM，待宿主门禁复验
 审计 #10 | 无 | 无待审里程碑，仅复核 7ab2cd2 的 clippy 修复（行为不变，宿主门禁 0），表不变 | docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r10-audit.md | 无
+复盘 #3 | 无 | 覆盖写 7 条教训：L-01 补合并前门禁 Clippy 失败的后果，新增 L-07（M-04 引入的 needless_borrow 漏过五个审计，到合并前门禁才暴露，多花实现 #10）；保留 L-02..L-06 | docs/门禁只在合并前跑一次-gate-run/lessons.md | 无
