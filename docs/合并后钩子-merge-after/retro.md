@@ -12,3 +12,4 @@
 审计 #4 | M-04 | 通过 | docs/合并后钩子-merge-after/evidence/M-04-r5-audit.md | 无
 复盘 #1 | 无 | 写 4 条教训（L-01..L-04）；本任务无 Autome 指标，未引用数值 | docs/合并后钩子-merge-after/lessons.md | 无
 实现 #6 | M-04 | 退回 + 集成复验 | docs/合并后钩子-merge-after/evidence/M-04-r6-impl.md | rebase 完成；钩子8项绿；Electron/Web环境受限，main队列全量曾失败
+审计 #5 | M-04 | 通过 | docs/合并后钩子-merge-after/evidence/M-04-r6-audit.md | 无

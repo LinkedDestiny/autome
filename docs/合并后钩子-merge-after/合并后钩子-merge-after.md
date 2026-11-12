@@ -207,7 +207,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 | M-01 | 已完成 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
 | M-02 | 已完成 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
 | M-03 | 已完成 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
-| M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
+| M-04 | 已完成 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
 
 ## 验收契约
 
@@ -250,7 +250,7 @@ automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_m
 
 ### M-04 验收契约
 
-最新证据：docs/合并后钩子-merge-after/evidence/M-04-r6-impl.md · rebase 完成，集成复验受阻，保持开放 · 实现 #6
+最新证据：docs/合并后钩子-merge-after/evidence/M-04-r6-audit.md · 通过 · 审计 #5
 
 覆盖范围 6、7，验收 4、5、6，约束 8、9，问题 10；前置：M-03。改动：README 的 `[gate]` 配置示例块加 `[merge]` 两行，其下条目列表在 **Preparation** 之后加一条 **After merge**（时机、主检出、环境变量、超时缺省 10、失败只报警、MainCheck 未通过与工作区跳过、钩子只应写被 gitignore 的产物、停止后恢复会重跑）；`docs/development/technical-design.md` §3.3 配置示例加 `[merge]`、§8.1 加钩子作业与 Cleanup 前置子阶段、§9 加解析规则。不新增用例。
 
@@ -271,6 +271,7 @@ automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_m
 - B-04 让 `[setup]` 的主检出准备也等待别的任务的 `after_merge-*` 作业（风险 R4）；需要另开任务，因为它改变 `[setup]` 的互斥语义。
 - B-05 被暂停任务的在途钩子超时后要等任务恢复才会被杀、才释放主检出互斥（风险 R5）；可让互斥判定顺带按超时放行。
 - B-07 M-04 的文档核对只统计 `README.md` 里 `[merge]` / `AUTOME_MERGE_COMMIT` 的出现次数，鉴别力不足以证明「示例块与条目都改了」；实现 / 审计时直接读示例块与条目核对，或把验收命令改成按段落匹配（评审 N1）。
+- B-08 main 的 `gate_queue_upgrade_collects_two_old_jobs_without_killing_them` 间歇失败（scheduler_gate_queue_tests.rs:225，干净 main 副本也复现），疑为时序；与本任务无关。
 - B-06 MainCheck 未通过而跳过钩子时，把「合并后命令未执行」追加进 `main_gate_failed` 警报的 detail，让用户在仪表盘上一眼看到。
 
 ## 争议项
