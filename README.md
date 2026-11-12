@@ -122,6 +122,9 @@ reuse_for_main_check = true # the default; false always runs the post-merge gate
 after = "sh scripts/install-cli.sh" # optional; sh -c in the main checkout
 after_timeout_minutes = 10          # optional; the default
 
+[budget]
+per_task_usd = 20          # optional per-task USD limit; warns without stopping the task
+
 [retry]
 attempts = 2               # the default; 0 restores "a crash fails the task"
 backoff_seconds = 60       # doubles each time: 1, 2, 4 minutes

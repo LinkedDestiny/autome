@@ -57,6 +57,22 @@ impl BugStep {
 }
 
 impl SessionKind {
+    /// Stable key for the cumulative cost breakdown.
+    pub fn cost_key(self) -> &'static str {
+        match self {
+            Self::Role { role } => role.as_str(),
+            Self::Bug {
+                step: BugStep::Locate,
+            } => "locate",
+            Self::Bug { step: BugStep::Fix } => "fix",
+            Self::Bug {
+                step: BugStep::FixReview,
+            } => "fix_review",
+            Self::Intake => "intake",
+            Self::Onboarding => "onboarding",
+        }
+    }
+
     pub fn for_node(node: crate::task::Node) -> Option<Self> {
         use crate::task::Node;
         match node {

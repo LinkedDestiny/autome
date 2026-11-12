@@ -16,6 +16,49 @@
 //!   `cache_read ÷ turns`, which collapses the moment a cache misses.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use crate::session::Session;
+
+/// Reported dollars for finished sessions; missing prices contribute zero.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CostSummary {
+    pub usd_total: f64,
+    pub sessions: u32,
+    pub sessions_without_cost: u32,
+    pub by_role: BTreeMap<String, RoleCost>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoleCost {
+    pub usd_total: f64,
+    pub sessions: u32,
+    pub sessions_without_cost: u32,
+}
+
+impl CostSummary {
+    pub fn of<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> Self {
+        let mut summary = Self::default();
+        for session in sessions {
+            if session.is_running() {
+                continue;
+            }
+            let cost = session.metrics.cost_usd.unwrap_or(0.0);
+            let missing = u32::from(session.metrics.cost_usd.is_none());
+            summary.usd_total += cost;
+            summary.sessions += 1;
+            summary.sessions_without_cost += missing;
+            let role = summary
+                .by_role
+                .entry(session.kind.cost_key().into())
+                .or_default();
+            role.usd_total += cost;
+            role.sessions += 1;
+            role.sessions_without_cost += missing;
+        }
+        summary
+    }
+}
 
 /// One session's usage, filled in when the session is reaped (plan §3.1).
 ///
@@ -388,5 +431,185 @@ mod tests {
         };
         assert_eq!(m.reopens_in("promo-case"), 2);
         assert_eq!(m.reopens_in("nope"), 0);
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+    use crate::role::{Role, Runtime};
+    use crate::session::{BugStep, SessionKind, SessionLifecycle};
+
+    fn session(cost: Option<f64>) -> Session {
+        Session {
+            id: "s".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Role { role: Role::Plan },
+            runtime: Runtime::Claude,
+            model: "test".into(),
+            effort: None,
+            skills: vec![],
+            round: 1,
+            started_at: "t0".into(),
+            ended_at: Some("t1".into()),
+            lifecycle: SessionLifecycle::Exited { exit_code: 0 },
+            log_path: "".into(),
+            pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: SessionMetrics {
+                cost_usd: cost,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn cost_summary_counts_a_session_without_cost_as_zero_and_lists_it_separately() {
+        let sessions = [session(Some(1.25)), session(Some(2.5)), session(None)];
+        let result = CostSummary::of(&sessions);
+        assert_eq!(
+            (
+                result.usd_total,
+                result.sessions,
+                result.sessions_without_cost
+            ),
+            (3.75, 3, 1)
+        );
+        for cost in [None, Some(0.0), Some(0.001), Some(1_000_000.0)] {
+            let result = CostSummary::of(&[session(cost)]);
+            assert_eq!(
+                (
+                    result.usd_total,
+                    result.sessions,
+                    result.sessions_without_cost
+                ),
+                (cost.unwrap_or(0.0), 1, u32::from(cost.is_none()))
+            );
+        }
+    }
+
+    #[test]
+    fn cost_summary_skips_running_sessions() {
+        let mut sessions = vec![session(Some(1.25)), session(Some(2.5)), session(None)];
+        let baseline = CostSummary::of(&sessions);
+        let mut running = session(Some(99.0));
+        running.lifecycle = SessionLifecycle::Running;
+        running.kind = SessionKind::Onboarding;
+        sessions.push(running);
+        assert_eq!(CostSummary::of(&sessions), baseline);
+        for lifecycle in [
+            SessionLifecycle::Exited { exit_code: 0 },
+            SessionLifecycle::Exited { exit_code: 1 },
+            SessionLifecycle::Killed,
+            SessionLifecycle::Vanished,
+        ] {
+            sessions[3].lifecycle = lifecycle;
+            assert_eq!(CostSummary::of(&sessions).sessions, 4);
+            assert_eq!(CostSummary::of(&sessions).usd_total, 102.75);
+        }
+    }
+
+    #[test]
+    fn cost_summary_splits_by_role_with_bug_steps_and_intake_as_their_own_keys() {
+        let kinds = [
+            (SessionKind::Role { role: Role::Plan }, "plan"),
+            (SessionKind::Role { role: Role::Review }, "review"),
+            (
+                SessionKind::Role {
+                    role: Role::Adjudicate,
+                },
+                "adjudicate",
+            ),
+            (SessionKind::Role { role: Role::Impl }, "impl"),
+            (SessionKind::Role { role: Role::Audit }, "audit"),
+            (SessionKind::Role { role: Role::Retro }, "retro"),
+            (
+                SessionKind::Bug {
+                    step: BugStep::Locate,
+                },
+                "locate",
+            ),
+            (SessionKind::Bug { step: BugStep::Fix }, "fix"),
+            (
+                SessionKind::Bug {
+                    step: BugStep::FixReview,
+                },
+                "fix_review",
+            ),
+            (SessionKind::Intake, "intake"),
+            (SessionKind::Onboarding, "onboarding"),
+        ];
+        let mut sessions = vec![];
+        for (kind, key) in kinds {
+            assert_eq!(kind.cost_key(), key);
+            for cost in [Some(1.25), None] {
+                let mut s = session(cost);
+                s.kind = kind;
+                sessions.push(s);
+            }
+            let summary = CostSummary::of(&sessions);
+            assert_eq!(
+                summary.by_role[key],
+                RoleCost {
+                    usd_total: 1.25,
+                    sessions: 2,
+                    sessions_without_cost: 1
+                }
+            );
+            assert_eq!(summary.by_role.len(), sessions.len() / 2);
+        }
+    }
+
+    #[test]
+    fn cost_summary_of_no_sessions_is_zero_not_absent() {
+        let summary = CostSummary::of(&[]);
+        assert_eq!(
+            serde_json::to_value(summary).unwrap(),
+            serde_json::json!({
+                "usd_total": 0.0, "sessions": 0, "sessions_without_cost": 0, "by_role": {}
+            })
+        );
+    }
+}
+
+/// Warn once per increasing budget, absorbing only floating point tail error.
+pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Option<u64>) -> bool {
+    let limit = limit_cents as f64;
+    let tolerance = 1e-6 + limit * 1e-12;
+    usd_total * 100.0 > limit + tolerance
+        && last_alerted_cents.is_none_or(|last| limit_cents > last)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::budget_crossed;
+    #[test]
+    fn budget_alert_requires_strictly_more_than_the_limit() {
+        for (total, cents, expected) in [
+            (20.0, 2000, false),
+            (20.25, 2000, true),
+            (0.07, 7, false),
+            (0.071, 7, true),
+            (0.1 + 0.2, 30, false),
+            (0.0, 1, false),
+            (0.01, 1, false),
+            (0.011, 1, true),
+            (1_000_000.0, 100_000_000, false),
+            (1_000_000.001, 100_000_000, true),
+        ] {
+            assert_eq!(budget_crossed(total, cents, None), expected);
+        }
+    }
+    #[test]
+    fn budget_alert_does_not_repeat_for_the_same_or_a_lower_limit() {
+        assert!(!budget_crossed(40.0, 2000, Some(2000)));
+        assert!(!budget_crossed(40.0, 1500, Some(2000)));
+    }
+    #[test]
+    fn budget_alert_fires_again_only_after_a_raised_limit_is_crossed() {
+        assert!(!budget_crossed(30.0, 3000, Some(2000)));
+        assert!(!budget_crossed(25.0, 3000, Some(2000)));
+        assert!(budget_crossed(30.25, 3000, Some(2000)));
     }
 }

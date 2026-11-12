@@ -37,6 +37,42 @@ pub fn stream_complete_bytes(bytes: &[u8], ended: bool) -> usize {
     }
 }
 
+pub fn usd(v: f64) -> String {
+    format!("${v:.2}")
+}
+
+pub fn cost_cell(task: &Value) -> String {
+    let Some(cost) = task["cost_usd"].as_f64() else {
+        return String::new();
+    };
+    let mut cell = usd(cost);
+    if task["cost_sessions_without_cost"].as_u64().unwrap_or(0) > 0 {
+        cell.push('*');
+    }
+    cell
+}
+
+#[test]
+fn cost_cli_usd_has_two_decimals() {
+    assert_eq!(usd(3.75), "$3.75");
+    assert_eq!(usd(0.0), "$0.00");
+    assert_eq!(usd(1234.5), "$1234.50");
+}
+
+#[test]
+fn cost_cli_cell_marks_tasks_with_sessions_without_cost() {
+    use serde_json::json;
+    assert_eq!(
+        cost_cell(&json!({"cost_usd":3.75,"cost_sessions_without_cost":1})),
+        "$3.75*"
+    );
+    assert_eq!(
+        cost_cell(&json!({"cost_usd":0,"cost_sessions_without_cost":0})),
+        "$0.00"
+    );
+    assert_eq!(cost_cell(&json!({})), "");
+}
+
 pub fn node_label(node: &str) -> &str {
     match node {
         "locate" => "定位",
@@ -442,6 +478,15 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
                 .join("；");
             format!("{subject} 已自动 rebase：{repos}")
         }
+        "task.budget_exceeded" => format!(
+            "{subject} 累计费用 ${:.2} 超过预算 ${:.2}，任务照常继续  → autome alerts",
+            p["usd_total"].as_f64().unwrap_or(0.0),
+            p["limit_usd"].as_f64().unwrap_or(0.0)
+        ),
+        "project.alert" if s("kind") == "budget_exceeded" => format!(
+            "报警（{subject}）：{} 费用超出预算  → autome alerts",
+            s("task_id")
+        ),
         "project.alert" => format!("报警（{subject}）：{}  → autome alerts", s("kind")),
         "guard.warning" => format!("{subject} 守卫提醒：{}", s("code")),
         "task.protocol_failure" => format!("{subject} 协议失败：{}", s("detail")),
@@ -961,4 +1006,31 @@ mod stream_tests {
         assert_eq!(stream_complete_bytes(b"\n", false), 1);
         assert_eq!(stream_complete_bytes(b"\xc3", false), 0);
     }
+}
+
+#[test]
+fn budget_alert_event_and_alert_lines() {
+    use serde_json::json;
+    assert_eq!(
+        event_line(
+            "task.budget_exceeded",
+            "T-9",
+            &json!({"usd_total": 0.5, "limit_usd": 0.4})
+        )
+        .unwrap(),
+        "T-9 累计费用 $0.50 超过预算 $0.40，任务照常继续  → autome alerts"
+    );
+    assert_eq!(
+        event_line(
+            "project.alert",
+            "p",
+            &json!({"kind": "budget_exceeded", "task_id": "T-9"})
+        )
+        .unwrap(),
+        "报警（p）：T-9 费用超出预算  → autome alerts"
+    );
+    assert_eq!(
+        event_line("project.alert", "p", &json!({"kind": "main_gate_failed"})).unwrap(),
+        "报警（p）：main_gate_failed  → autome alerts"
+    );
 }

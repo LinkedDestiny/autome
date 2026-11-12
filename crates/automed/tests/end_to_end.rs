@@ -346,6 +346,20 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
         );
     }
 
+    fn doc_step_with_cost(&self, n: u32, slug: &str, body: &str, cost: f64) {
+        let usage = Self::FAKE_USAGE.replace(
+            "\"total_cost_usd\":0.25",
+            &format!("\"total_cost_usd\":{cost}"),
+        );
+        self.step(
+            n,
+            &format!(
+                "{}cat <<'AUTOME_USAGE'\n{usage}\nAUTOME_USAGE\n",
+                Self::doc_script(slug, n, body, "")
+            ),
+        );
+    }
+
     /// What the retro round does: write `docs/<slug>/lessons.md` and leave
     /// the design document alone.
     fn retro_step(&self, n: u32, slug: &str) {
@@ -5263,6 +5277,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
     assert_eq!(keys[0], keys[1]);
     let mut baseline = [
         "id",
+        "cost_usd",
+        "cost_sessions_without_cost",
         "kind",
         "slug",
         "title",
@@ -7981,4 +7997,165 @@ fn merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume() {
         }
         assert!(w.ctx.store.open_alerts().unwrap().is_empty());
     }
+}
+
+#[test]
+fn cost_rollup_task_get_sums_two_sessions_and_counts_missing_cost() {
+    needs_git!();
+    let mut w = World::new("cost-rollup");
+    let request = "show task costs";
+    let slug = slug_for(request);
+    w.doc_step_with_cost(1, &slug, &doc("设计中", 1, 0, &[]), 1.25);
+    w.doc_step_with_cost(2, &slug, &doc("设计中", 1, 0, &[]), 99.0);
+    w.doc_step_with_cost(3, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]), 2.5);
+    let created = w.call(
+        "task.create",
+        json!({
+            "project_id": w.project_id, "request": request,
+            "brief": "# Task\nShow cumulative reported costs.", "draft": true
+        }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_owned();
+    // Start at design so the measured scenario consists of precisely the
+    // plan/review/adjudicate sessions, without an unrelated intake session.
+    w.ctx
+        .store
+        .set_task_state(
+            &task_id,
+            &autome_domain::task::TaskState::Requeued {
+                resume: autome_domain::task::Node::Design,
+            },
+        )
+        .unwrap();
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert_eq!(sessions.len(), 3);
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|s| (s.kind.cost_key(), s.metrics.cost_usd))
+            .collect::<Vec<_>>(),
+        vec![
+            ("adjudicate", Some(2.5)),
+            ("review", None),
+            ("plan", Some(1.25))
+        ]
+    );
+    let response = w.call("task.get", json!({"task_id": task_id}));
+    let cost = &ok(&response)["cost"];
+    assert_eq!(cost["usd_total"], 3.75);
+    assert_eq!(cost["sessions"], 3);
+    assert_eq!(cost["sessions_without_cost"], 1);
+    assert_eq!(cost["by_role"]["plan"]["usd_total"], 1.25);
+    assert_eq!(
+        cost["by_role"]["review"],
+        json!({"usd_total": 0.0, "sessions": 1, "sessions_without_cost": 1})
+    );
+    assert_eq!(
+        cost["usd_total"].as_f64().unwrap(),
+        sessions
+            .iter()
+            .filter_map(|s| s.metrics.cost_usd)
+            .sum::<f64>()
+    );
+}
+
+fn run_budget_alert_task(configured: bool) {
+    let mut w = World::new(if configured { "budget" } else { "no-budget" });
+    if configured {
+        w.configure("[budget]\nper_task_usd = 0.4\n");
+    }
+    let request = "budget alert coverage";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_with_usage(n, &slug, &body);
+    }
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    let before = w.ctx.store.list_sessions(&id).unwrap();
+    let before_ids: Vec<_> = before.iter().map(|s| s.id.clone()).collect();
+    assert!(
+        before
+            .iter()
+            .filter_map(|s| s.metrics.cost_usd)
+            .sum::<f64>()
+            >= 0.5
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.budget_exceeded")
+            .unwrap(),
+        u32::from(configured)
+    );
+    if configured {
+        let alerts = w.ctx.store.open_alerts().unwrap();
+        assert_eq!(
+            alerts
+                .iter()
+                .filter(|a| a.kind == "budget_exceeded")
+                .count(),
+            1
+        );
+        let alert = alerts.iter().find(|a| a.kind == "budget_exceeded").unwrap();
+        assert_eq!(alert.task_id.as_deref(), Some(id.as_str()));
+        assert!(alert.detail.contains("任务照常继续"));
+        w.ctx.store.dismiss_alert(&alert.id).unwrap();
+    }
+    w.call("task.approve", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let after = w.ctx.store.list_sessions(&id).unwrap();
+    assert!(
+        after
+            .iter()
+            .any(|s| !before_ids.contains(&s.id) && s.metrics.cost_usd.is_some_and(|v| v > 0.0))
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.budget_exceeded")
+            .unwrap(),
+        u32::from(configured)
+    );
+    assert!(
+        w.ctx
+            .store
+            .open_alerts()
+            .unwrap()
+            .iter()
+            .all(|a| a.kind != "budget_exceeded")
+    );
+    let events = w.ctx.store.events_since(0, 1000).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind, p)| kind == "project.alert"
+                && p["kind"] == "budget_exceeded"
+                && p["task_id"] == id)
+            .count(),
+        usize::from(configured)
+    );
+}
+
+#[test]
+fn budget_alert_fires_once_and_the_task_keeps_going() {
+    needs_git!();
+    run_budget_alert_task(true);
+}
+
+#[test]
+fn budget_alert_without_a_budget_section_raises_nothing() {
+    needs_git!();
+    run_budget_alert_task(false);
 }

@@ -71,6 +71,8 @@ docs/.archive/<slug>/      归档或取消的任务文档
 
 ### 3.3 配置文件
 
+项目可选配置 `[budget] per_task_usd = 20`，金额范围 0.01–1000000 美元、最多两位小数；单任务累计超限只告警不停任务，省略则不启用预算告警。
+
 ```toml
 # .autome/config.toml（项目）· 只写覆盖项；~/.autome/config.toml（全局）· 写全量默认
 [loop]

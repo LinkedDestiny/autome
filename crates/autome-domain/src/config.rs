@@ -241,6 +241,8 @@ impl GlobalConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bug: Option<BugConfig>,
     #[serde(default, rename = "loop")]
     pub loop_overrides: LoopOverrides,
@@ -291,6 +293,12 @@ pub struct MergeAfterConfig {
 }
 
 pub const DEFAULT_MERGE_AFTER_TIMEOUT_MINUTES: u32 = 10;
+
+/// Optional per-task budget, stored in whole cents. Exceeding it only warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetConfig {
+    pub per_task_cents: u64,
+}
 
 /// Host command that prepares dependencies in a checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
