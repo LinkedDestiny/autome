@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 7/25
+implementation-round: 8/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 全部里程碑已完成，等待用户确认人工验收清单并合并
+next-action: rebase 已完成；复核 r8 门禁失败与人工验收 H-01–H-03 后合并
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -321,7 +321,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-04-r6-audit.md · 通过 · 审计 #5
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
   `ls` 费用列与脚注、`status` 运行中行费用；`USAGE` 末尾说明配置节的那句加上 `[budget]`。
-最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-audit.md · 通过 · 审计 #6
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r8-impl.md · rebase 完成，复验存在阻塞（保留审计关闭状态） · 实现 #8
 
 ## 验收契约
 

@@ -14,3 +14,4 @@
 实现 #7 | M-05 | 环境阻塞，保持开放 | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-impl.md | Electron SIGABRT；Web listen EPERM / watch EMFILE
 审计 #6 | M-05 | 通过 | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-audit.md | 无
 复盘 #1 | 无 | 写 4 条教训（L-01..L-04） | docs/费用可见-任务与项目累计费用进-task/lessons.md | 无
+实现 #8 | M-05 | rebase 完成，保留已审状态 | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r8-impl.md | 门禁队列测试失败及桌面/Web 验证阻塞

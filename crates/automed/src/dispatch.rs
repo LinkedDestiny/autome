@@ -2033,6 +2033,7 @@ fn task_convert(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let report = scheduler::tick(ctx);
     let task = ctx.store.get_task(&task.id)?;
     Ok((
+        json!({"task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(&task.id)?))?, "started": report.tasks_started.contains(&task.id), "queue_position": queue_position(ctx, &task)?, "converted_from": id}),
         vec![
             event(
                 seqs[0],
