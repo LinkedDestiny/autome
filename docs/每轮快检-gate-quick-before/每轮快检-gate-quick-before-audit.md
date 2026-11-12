@@ -1,4 +1,6 @@
-# 审计 #2：M-02 通过
+# 实现审计
 
-验收命令全部通过（lib 19、e2e 8）；三条负向对照注入均使对应用例失败，已还原；fmt、clippy 退出码 0。
-证据：docs/每轮快检-gate-quick-before/evidence/M-02-r2-audit.md。无实现缺陷、无验证缺口。
+## M-03 · 审计 #3 · 通过
+
+验收命令（lib 8、e2e 4）全部通过；两条负向对照均令对应用例变红并已还原；fmt、clippy 通过。无缺陷、无验证缺口。
+证据：docs/每轮快检-gate-quick-before/evidence/M-03-r3-audit.md

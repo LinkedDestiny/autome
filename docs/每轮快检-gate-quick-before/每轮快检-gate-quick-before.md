@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 3/25
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-03；通过后推进 M-04 会话文字与协议 v5
+next-action: 推进 M-04 会话文字与协议 v5
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -415,7 +415,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 |---|---|---|---|---|
 | M-01 | 已完成 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
 | M-02 | 已完成 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
-| M-03 | 待审 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
+| M-03 | 已完成 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 开放 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
 | M-05 | 开放 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
 
@@ -446,7 +446,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
     → 回 `implement`，该轮 prompt 含标记串与快检命令（只断言这两样，措辞归 M-04）→ 再次快检通过 → 合并前完整门禁 1 次；快检计数 2）、
     `gate_quick_each_round_ignores_quick_event_for_event`（同一剧本跑两遍，一遍多写 `quick`：快检脚本 0 次，门禁事件的
     `(事件种类, node, kind)` 序列两遍相同）；`gate_quick_feature_removing_quick_while_running_paused_or_stopped`（在跑、暂停、停止后移除 quick，恢复后跳过并清理进程组）。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-03-r3-audit.md · 通过 · 审计 #3
 
 - **M-03**（覆盖：目标 2（Bug）、4；验收 3；约束 4、5、6、8、11。前置：M-02）。方案 §3 的 Bug 部分、§4、§5 的 Bug 边角。新增用例：
   - automed lib 4 个（`gate_quick_bug_` 开头）：FixGate 跑 `( 复现 ) && ( quick )`、`kind: quick`、没有 `.repro-only`、标记超时 =
