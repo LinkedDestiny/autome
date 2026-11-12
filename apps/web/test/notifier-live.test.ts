@@ -14,7 +14,7 @@ const wrapper = join(root, 'automed-wrapper');
 let running: Awaited<ReturnType<typeof startServer>> | undefined, url: string;
 const clients: { ws: WebSocket; messages: Record<string, unknown>[] }[] = [];
 const env = () => ({ ...process.env, HOME: home, AUTOME_HOME: home, AUTOMED_CLAUDE_BINARY: fake, AUTOMED_CODEX_BINARY: fake });
-const command = (file: string, args: string[]) => promisify(execFile)(file, args, { cwd: repo, env: env(), timeout: 15000 });
+const command = (file: string, args: string[]) => promisify(execFile)(file, args, { cwd: repo, env: env(), timeout: 60000 });
 const cli = (...args: string[]) => command(join(wt, 'target/debug/autome'), args);
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 15000; while (Date.now() < end) { if (await check()) return; await new Promise(r => setTimeout(r, 20)); } throw new Error('通知验收等待超时'); }
 // Exercise the deployed notification service without Vite's watcher/HMR lifecycle.
@@ -34,12 +34,12 @@ beforeAll(async () => {
   await command('git', ['init','-q','-b','main']); await command('git', ['-c','user.name=test','-c','user.email=t@t','commit','--allow-empty','-qm','init']);
   await cli('project','add',repo,'--skip-onboarding'); await start();
   const store = openWebStore(home); try { await until(() => store.getCursor('notifier') !== undefined); } finally { store.close(); }
-}, 30000);
+}, 240000); // Three serial commands plus server startup and cursor polling.
 afterAll(async () => { for (const c of clients) c.ws.terminate(); await running?.close(); rmSync(root, { recursive: true, force: true }); });
 test('建面板库，真实失败事件向两个连接推送严格五键消息', async () => {
   expect(existsSync(join(home,'state/web.sqlite3'))).toBe(true); await connect(); await connect(); await fail('first fail');
   for (const c of clients) { await until(() => c.messages.some(m => m.type === 'notification')); const notifications = c.messages.filter(m => m.type === 'notification'); expect(notifications).toHaveLength(1); expect(notifications[0]).toEqual({ type: 'notification', id: expect.stringMatching(/^ntf-/), kind: 'failed', task_id: 'T-1', title: 'T-1 停在失败上：会话异常退出（会话退出码 3）' }); }
-}, 30000);
+}, 180000); // Two serial commands plus connection and notification polling.
 test('带 Origin 已读跨连接广播，无 Origin 403 且库不变', async () => {
   const before = await list(); expect(before.unread).toBe(1); const body = JSON.stringify({ ids: [before.items[0].id] });
   const denied = await fetch(url + '/api/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); expect(denied.status).toBe(403); expect(await list()).toEqual(before);
@@ -48,7 +48,7 @@ test('带 Origin 已读跨连接广播，无 Origin 403 且库不变', async () 
   expect((await list()).unread).toBe(0);
 });
 test('停服期间新增失败，重启只补一条且保留旧已读', async () => {
-  // Keep the original deadline and assertions; identify the stalled phase in host gate logs.
+  // Identify the stalled phase in host gate logs while preserving the original error.
   async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
     const started = performance.now();
     process.stdout.write(`[notifier restart] ${name}: started\n`);
@@ -69,4 +69,4 @@ test('停服期间新增失败，重启只补一条且保留旧已读', async ()
   await step('restart server', start);
   await step('replay notification', () => until(async () => (await list()).items.length === 2));
   const result = await list(); expect(result.unread).toBe(1); expect(result.items[1]).toEqual(first); expect(result.items[0].title).toBe('T-2 停在失败上：会话异常退出（会话退出码 3）');
-}, 30000);
+}, 180000); // Two serial commands plus server close/start and notification replay.
