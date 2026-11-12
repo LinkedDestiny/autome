@@ -34,6 +34,10 @@ pub fn node_label(node: &str) -> &str {
     }
 }
 
+pub fn gate_queue_line(position: u64) -> String {
+    format!("排队等门禁（前面还有 {} 个）", position.saturating_sub(1))
+}
+
 pub fn milestone_label(state: &str) -> &str {
     match state {
         "open" => "开放",
@@ -69,12 +73,32 @@ pub fn state_line(state: &Value) -> String {
     }
 }
 
+pub fn gate_verdict(p: &Value) -> String {
+    if p["ok"].as_bool() == Some(true) {
+        return "通过".into();
+    }
+    autome_domain::gate_failure::kernel_timeout(p["tail"].as_str().unwrap_or("")).map_or_else(
+        || "未通过".into(),
+        |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
+    )
+}
+
 fn failure(reason: &Value) -> String {
     let detail = reason["detail"].as_str().unwrap_or("");
     match reason["kind"].as_str().unwrap_or("") {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
         "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
+        "gate_same_failure"
+            if reason["summary"].as_str() == Some(autome_domain::gate_failure::TIMEOUT_SUMMARY) =>
+        {
+            format!(
+                "门禁超时：连续 {} 次运行超过时限被内核终止（日志：{}）",
+                reason["count"],
+                reason["log"].as_str().unwrap_or("")
+            )
+        }
+
         "gate_same_failure" => format!(
             "门禁连续 {} 次因同一原因失败：{}（日志：{}）",
             reason["count"],
@@ -203,6 +227,18 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("command"),
             p["exit_code"]
         ),
+        "bug.repro_missed"
+            if s("why") == "timed_out"
+                && autome_domain::gate_failure::kernel_timeout(&s("tail")).is_some() =>
+        {
+            format!(
+                "{subject} 门禁超时：{} 运行超过 {} 分钟被内核终止，本次不能据此断言未复现\n{}",
+                s("command"),
+                autome_domain::gate_failure::kernel_timeout(&s("tail")).unwrap(),
+                s("tail")
+            )
+        }
+
         "bug.repro_missed" => format!(
             "{subject} 未复现：{}；{}\n{}",
             s("command"),
@@ -296,6 +332,11 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("log")
         ),
         "setup.skipped" => format!("{subject} 准备命令跳过：{}", s("reason")),
+        "gate.queued" => format!(
+            "{subject} 排队等门禁（{}，入队时前面还有 {} 个）",
+            node_label(&s("node")),
+            p["position"].as_u64().unwrap_or(1).saturating_sub(1)
+        ),
         "gate.started" => format!(
             "{subject} {}开始：{} @ {}",
             node_label(&s("node")),
@@ -305,11 +346,7 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         "gate.result" => format!(
             "{subject} {}{}（退出码 {}）  日志：{}",
             node_label(&s("node")),
-            if p["ok"].as_bool() == Some(true) {
-                "通过"
-            } else {
-                "未通过"
-            },
+            gate_verdict(p),
             p["exit_code"],
             s("log")
         ),
@@ -369,6 +406,60 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn gate_queue_line_counts_only_waiters_ahead() {
+        for (position, ahead) in [(1, 0), (2, 1), (u64::MAX, u64::MAX - 1), (0, 0)] {
+            assert_eq!(
+                gate_queue_line(position),
+                format!("排队等门禁（前面还有 {ahead} 个）")
+            );
+        }
+    }
+
+    #[test]
+    fn gate_queue_event_labels_the_node_and_snapshot() {
+        for (node, label) in [
+            ("gate", "门禁"),
+            ("merge_gate", "合并前门禁"),
+            ("main_check", "验证 main"),
+            ("repro_check", "复现检查"),
+            ("fix_gate", "修复门禁"),
+            ("implement", "实现"),
+            ("cleanup", "清理"),
+        ] {
+            for (position, ahead) in [(1, 0), (3, 2)] {
+                assert_eq!(
+                    event_line(
+                        "gate.queued",
+                        "T-1",
+                        &json!({"node":node,"position":position})
+                    ),
+                    Some(format!(
+                        "T-1 排队等门禁（{label}，入队时前面还有 {ahead} 个）"
+                    ))
+                );
+            }
+        }
+        assert!(event_line("gate.queue_dropped", "T-1", &json!({})).is_none());
+        assert!(event_line("bug.fix_round_requested", "T-1", &json!({})).is_none());
+    }
+
+    #[test]
+    fn gate_queue_state_line_keeps_the_original_node() {
+        for (node, label) in [
+            ("gate", "门禁"),
+            ("merge_gate", "合并前门禁"),
+            ("main_check", "验证 main"),
+            ("repro_check", "复现检查"),
+            ("fix_gate", "修复门禁"),
+        ] {
+            assert_eq!(
+                state_line(&json!({"state":"active","node":node})),
+                format!("运行中 · {label}")
+            );
+        }
+    }
+
+    #[test]
     fn sweep_event_prints_count_and_escaped_paths_on_one_line() {
         let line = super::event_line(
             "task.swept",
@@ -381,6 +472,54 @@ mod tests {
         assert!(line.contains("21 个文件"));
         assert!(line.contains("source.rs"));
         assert_eq!(line.lines().count(), 1);
+    }
+
+    #[test]
+    fn gate_timeout_result_event() {
+        for tail in ["=== Autome：门禁运行超过 3 分钟，已终止 ===", "exit 124"] {
+            let p = json!({"node":"gate","ok":false,"exit_code":124,"tail":tail,"log":"/log"});
+            let line = event_line("gate.result", "T", &p).unwrap();
+            assert_eq!(line.contains("门禁超时"), tail.starts_with("==="));
+            assert!(line.contains("/log"));
+        }
+    }
+    #[test]
+    fn gate_timeout_status_verdict() {
+        assert_eq!(
+            gate_verdict(&json!({"ok":false,"tail":"=== Autome：门禁运行超过 3 分钟，已终止 ==="})),
+            "门禁超时（运行超过 3 分钟，被内核终止）"
+        );
+        assert_eq!(gate_verdict(&json!({"ok":false,"exit_code":124})), "未通过");
+        assert_eq!(gate_verdict(&json!({"ok":true})), "通过");
+    }
+    #[test]
+    fn gate_timeout_same_failure() {
+        let line = failure(
+            &json!({"kind":"gate_same_failure","summary":autome_domain::gate_failure::TIMEOUT_SUMMARY,"count":3,"log":"/log"}),
+        );
+        assert_eq!(
+            line,
+            "门禁超时：连续 3 次运行超过时限被内核终止（日志：/log）"
+        );
+    }
+    #[test]
+    fn gate_timeout_repro_event() {
+        for why in ["timed_out", "passed"] {
+            for tail in ["=== Autome：门禁运行超过 3 分钟，已终止 ===", "exit 124"] {
+                let line = event_line(
+                    "bug.repro_missed",
+                    "T",
+                    &json!({"why":why,"tail":tail,"command":"check"}),
+                )
+                .unwrap();
+                let timeout = why == "timed_out" && tail.starts_with("===");
+                assert_eq!(line.contains("不能据此断言未复现"), timeout);
+                assert!(line.contains(tail));
+                if !timeout {
+                    assert!(line.starts_with("T 未复现：check；"));
+                }
+            }
+        }
     }
 
     use super::*;

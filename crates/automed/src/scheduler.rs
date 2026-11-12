@@ -153,7 +153,12 @@ pub fn tick(ctx: &mut Ctx) -> TickReport {
 }
 
 fn tick_locked(ctx: &mut Ctx) -> TickReport {
+    let tick_started = std::time::SystemTime::now();
     let mut report = TickReport::default();
+    match crate::gate_queue::reclaim(ctx) {
+        Ok(errors) => report.errors.extend(errors),
+        Err(e) => report.errors.push(e.to_string()),
+    }
 
     // The first tick of a process recovers first. Doing it here rather than
     // asking the shell to call `scheduler.recover` is deliberate: the shell
@@ -203,10 +208,19 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
         {
             match run_core_step(ctx, task, *node) {
                 Ok(()) => report.tasks_advanced.push(task.id.clone()),
-                Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+                Err(e) => {
+                    if let Err(drop_error) =
+                        crate::gate_queue::drop_on_error(ctx, task, &e.to_string())
+                    {
+                        report.errors.push(drop_error.to_string());
+                    }
+                    report.errors.push(format!("{}: {e}", task.id));
+                }
             }
         }
     }
+
+    ctx.gate_prev_tick = Some(tick_started);
 
     // 3. Fill free slots from each project's queue.
     match fill_slots_reporting_errors(ctx, &mut report.errors) {
@@ -624,7 +638,14 @@ fn start_due_retries(ctx: &mut Ctx, report: &mut TickReport) {
         }
         match redispatch_with(ctx, &task.id, node, inject.as_ref()) {
             Ok(()) => report.tasks_started.push(task.id.clone()),
-            Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+            Err(e) => {
+                if let Err(drop_error) =
+                    crate::gate_queue::drop_on_error(ctx, &task, &e.to_string())
+                {
+                    report.errors.push(drop_error.to_string());
+                }
+                report.errors.push(format!("{}: {e}", task.id));
+            }
         }
     }
 }
@@ -2060,6 +2081,12 @@ fn read_status(project: &Project, task: &TaskRecord) -> Option<StatusBlock> {
 
 /// One line for the audit round's brief: what the core's own run of the gate
 /// found, on which commit, and where the full output is.
+fn main_gate_timeout_note(tail: &str) -> String {
+    autome_domain::gate_failure::kernel_timeout(tail).map_or_else(String::new, |n| {
+        format!("：门禁超时（运行超过 {n} 分钟，被内核终止）")
+    })
+}
+
 fn render_gate_line(result: &Value) -> Option<String> {
     let sha = result.get("sha")?.as_str()?;
     let command = result.get("command")?.as_str()?;
@@ -2070,9 +2097,16 @@ fn render_gate_line(result: &Value) -> Option<String> {
         .unwrap_or(-1);
     let log = result.get("log").and_then(Value::as_str).unwrap_or("");
     let short = &sha[..sha.len().min(10)];
-    let verdict = if ok { "通过" } else { "未通过" };
+    let verdict =
+        autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
+            .filter(|_| !ok)
+            .map_or_else(
+                || format!("{}（退出码 {code}）", if ok { "通过" } else { "未通过" }),
+                |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
+            );
+
     Some(format!(
-        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}（退出码 {code}）。完整输出：`{log}`。\n\
+        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}。完整输出：`{log}`。\n\
          这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
     ))
 }
@@ -2133,7 +2167,7 @@ fn perform(
         Action::StartBugSession { step, inject } => {
             if *step == BugStep::Fix {
                 ctx.store.append_event(
-                    "bug.fix_round_started",
+                    "bug.fix_round_requested",
                     &task.id,
                     json!({"round": bug_progress(ctx, task)?.fix_round + 1,
                         "limit": task.budget_n.unwrap_or(resolved.bug.fix_rounds)}),
@@ -2375,6 +2409,23 @@ fn start_session(
                 return Ok(());
             }
         }
+    }
+
+    if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
+        && ctx
+            .store
+            .last_event_of(
+                &task.id,
+                &["bug.fix_round_requested", "bug.fix_round_started"],
+            )?
+            .is_some_and(|(_, kind, _)| kind == "bug.fix_round_requested")
+    {
+        ctx.store.append_event(
+            "bug.fix_round_started",
+            &task.id,
+            json!({"round": bug_progress(ctx, task)?.fix_round + 1,
+                "limit": task.budget_n.unwrap_or(resolved.bug.fix_rounds)}),
+        )?;
     }
 
     // The session's id is fixed before anything else: a round carrying the
@@ -3293,6 +3344,10 @@ fn run_gate(
         _ => (layout.cwd.clone(), gate_head(layout)?),
     };
     let key = &head[..head.len().min(12)];
+    if node != Node::MainCheck {
+        crate::gate::discard_stale(&repo, &task.id, node.as_str(), key)
+            .map_err(|e| err(e.to_string()))?;
+    }
     let job = crate::gate::Job::at(&repo, &task.id, node.as_str(), key);
 
     if !job.exists() {
@@ -3311,6 +3366,7 @@ fn run_gate(
             )?;
             return finish_gate(ctx, task, project, node, GateOutcome::Passed);
         }
+        let mut held = false;
         if let Some(setup) = &resolved.setup
             && !project.is_workspace()
         {
@@ -3320,7 +3376,7 @@ fn run_gate(
             } else {
                 crate::setup::worktree_record(&repo, &task.id)
             };
-            match crate::setup::ensure(
+            match crate::setup::ensure_with_hold(
                 ctx,
                 task,
                 project,
@@ -3338,14 +3394,17 @@ fn run_gate(
             )
             .map_err(|e| err(e.to_string()))?
             {
-                crate::setup::Ready::Pending => return Ok(()),
-                crate::setup::Ready::Ready => {}
-                crate::setup::Ready::Failed {
-                    command,
-                    exit_code,
-                    log,
-                    tail,
-                } => {
+                (crate::setup::Ready::Pending, _) => return Ok(()),
+                (crate::setup::Ready::Ready, continuation) => held = continuation,
+                (
+                    crate::setup::Ready::Failed {
+                        command,
+                        exit_code,
+                        log,
+                        tail,
+                    },
+                    _,
+                ) => {
                     if !verify {
                         advance(
                             ctx,
@@ -3383,6 +3442,12 @@ fn run_gate(
                     return finish_gate(ctx, task, project, node, GateOutcome::Passed);
                 }
             }
+        }
+        if !held
+            && !crate::gate_queue::admit(ctx, task, project, node, "gate", None)
+                .map_err(|e| err(e.to_string()))?
+        {
+            return Ok(());
         }
         crate::gate::start(
             &job,
@@ -3478,8 +3543,9 @@ fn run_gate(
             let _ = std::fs::remove_file(crate::setup::verify_record(&repo, &task.id, &head));
         }
         if !ok {
+            let timeout = main_gate_timeout_note(&tail);
             let detail = format!(
-                "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`（退出码 {exit_code}）。\
+                "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`{timeout}（退出码 {exit_code}）。\
                  合并前，这个分支在 rebase 后的提交上通过了同一门禁，所以要么 main 在 rebase 之后又动过，\
                  要么门禁本身不稳定。日志：{}\n\n{}",
                 task.id,
@@ -4541,12 +4607,37 @@ mod tests {
             "#!/bin/sh\necho mine\n"
         );
     }
+    #[test]
+    fn gate_timeout_main_alert_note() {
+        assert!(
+            main_gate_timeout_note("=== Autome：门禁运行超过 3 分钟，已终止 ===")
+                .contains("门禁超时（运行超过 3 分钟，被内核终止）")
+        );
+        assert_eq!(main_gate_timeout_note("exit 124"), "");
+    }
+    #[test]
+    fn gate_timeout_audit_line() {
+        for (tail, expected) in [
+            (
+                "=== Autome：门禁运行超过 3 分钟，已终止 ===",
+                "门禁超时（运行超过 3 分钟，被内核终止）",
+            ),
+            ("exit 124", "未通过（退出码 124）"),
+        ] {
+            let line = render_gate_line(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
+            assert!(line.contains(expected));
+            assert!(line.contains("/log"));
+        }
+    }
+
     use super::*;
     use autome_domain::status_block::MilestoneState;
     use autome_domain::task::Disposition;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    include!("scheduler_gate_queue_tests.rs");
 
     /// A real repository, a real store, and a fake CLI that writes whatever
     /// design document the test wants. This is as close to the production path

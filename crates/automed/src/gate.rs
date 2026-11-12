@@ -234,6 +234,24 @@ pub fn stop_all(repo: &Path, task_id: &str) {
 
 /// Remove only this node's jobs, after stopping any surviving wrapper.
 pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<()> {
+    discard_except(repo, task_id, node, None)
+}
+
+pub fn discard_stale(
+    repo: &Path,
+    task_id: &str,
+    node: &str,
+    keep_key: &str,
+) -> std::io::Result<()> {
+    discard_except(repo, task_id, node, Some(keep_key))
+}
+
+fn discard_except(
+    repo: &Path,
+    task_id: &str,
+    node: &str,
+    keep: Option<&str>,
+) -> std::io::Result<()> {
     let dir = dir_for(repo, task_id);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -257,7 +275,9 @@ pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<(
             ".exit.code",
         ] {
             if let Some(stem) = name.strip_suffix(suffix) {
-                stems.insert(stem.to_string());
+                if keep.is_none_or(|key| stem != format!("{node}-{key}")) {
+                    stems.insert(stem.to_string());
+                }
                 break;
             }
         }
@@ -396,6 +416,29 @@ mod tests {
         assert_eq!(log_window(&log), "");
         assert_eq!(log_window(&dir), "");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn gate_timeout_real_poll_tail_matches_domain() {
+        let dir = sandbox("timeout-domain");
+        let job = Job::at(&dir, "T-1", "gate", "abc");
+        start(&job, &dir, "sleep 30", &[]).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.pid.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(job.pid.exists());
+        std::fs::write(&job.started, (now_secs() - 3600).to_string()).unwrap();
+        assert_eq!(
+            poll_as(&job, 1, "门禁"),
+            Poll::Done {
+                exit_code: TIMED_OUT
+            }
+        );
+        assert_eq!(
+            autome_domain::gate_failure::kernel_timeout(&tail(&job.log, 60)),
+            Some(1)
+        );
     }
 
     use super::*;

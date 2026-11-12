@@ -1,0 +1,19 @@
+设计 #1 | 无 | 设计初稿（6 个里程碑，FIFO 无优先、项目值取小、超时按内核终止行判定） | docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate.md | 无
+评审 #2 | M-01 | 退回 + 名额生命周期 | docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-review.md | P01 Active 作业无人收束；P02 探测失败漏计
+实现 #1 | M-01 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-01-r1-impl.md | 无
+审计 #1 | M-01 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-02-r2-impl.md | 无
+审计 #2 | M-02 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-02-r2-audit.md | 无
+
+实现 #3 | M-03 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-03-r3-impl.md | 无
+审计 #3 | M-03 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-03-r3-audit.md | 无
+实现 #4 | M-04 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-04-r4-impl.md | 无
+审计 #4 | M-04 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-04-r4-audit.md | 无
+实现 #5 | M-05 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-05-r5-impl.md | 无
+审计 #5 | M-05 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-05-r5-audit.md | 无
+实现 #6 | M-06 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-06-r6-impl.md | 无
+审计 #6 | M-06 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-06-r6-audit.md | 无
+复盘 #1 | 无 | 教训 5 条（clippy 进每个 Rust 里程碑、名额持有者释放表、无关失败进 Backlog、用例数口径、指标实现轮与状态块不符） | docs/宿主门禁按机器排队-gate/lessons.md | 无
+实现 #7 | M-06 | 通过（rebase 兼容复验，沿用审计关闭） | docs/宿主门禁按机器排队-gate/evidence/M-06-r7-impl.md | 无；H-01 待人工确认
+审计 #7 | 无 | 无待审里程碑（M-01–M-06 均已完成，状态块已完成），未改里程碑表 | 无新证据文件 | 无；H-01 待人工确认
+复盘 #2 | 无 | 教训 6 条（沿用 L-01..L-05，L-05 补实现 #7 后指标仍为 2；新增 L-06 任务关闭后 rebase 冲突改动未经审计复验） | docs/宿主门禁按机器排队-gate/lessons.md | 无

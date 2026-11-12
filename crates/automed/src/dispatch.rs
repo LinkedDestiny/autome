@@ -56,6 +56,8 @@ pub struct Ctx {
     /// the app was closed, bringing the scaffold up to `SCAFFOLD_VERSION` —
     /// never ran outside the tests.
     pub recovered: bool,
+    /// Start of the last tick that completed core steps; bounds uncollected jobs.
+    pub gate_prev_tick: Option<std::time::SystemTime>,
     /// The driver lock while this context holds it (see `driver_lock`).
     /// Held for one tick or one write command, so the desktop app and the
     /// `autome` command can drive the same ledger without both starting the
@@ -80,6 +82,7 @@ impl Ctx {
             environment: EnvCache::default(),
             launch_mode: crate::launcher::LaunchMode::Headless,
             recovered: false,
+            gate_prev_tick: None,
             driver_lock: None,
             driver_lock_notice: None,
         }
@@ -1609,6 +1612,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "task": task_json(ctx, &task)?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
             "brief": ctx.store.task_brief(task_id)?,
+            "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
             "status_block": status.map(status_json),
             "status_error": doc.error().is_some(),
@@ -2188,6 +2192,7 @@ fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
 /// The dashboard: everything waiting on the user, and everything running,
 /// across every project (requirement U-02).
 fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
+    let gate_waiters = crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?;
     let mut waiting = Vec::new();
     let mut running = Vec::new();
 
@@ -2201,6 +2206,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "project_id": project.id,
                 "project_name": project.display_name,
                 "task": task_json(ctx, &task)?,
+                "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2636,6 +2642,150 @@ mod tests {
                 return;
             }
         };
+    }
+
+    fn gate_queue_fixture(sb: &mut Sandbox, project: &str, name: &str) -> String {
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({"project_id":project, "request":name, "draft":true}),
+            ),
+        );
+        let id = ok_payload(&out)["task"]["id"].as_str().unwrap().to_owned();
+        sb.ctx
+            .store
+            .set_task_state(&id, &TaskState::Active { node: Node::Gate })
+            .unwrap();
+        id
+    }
+
+    fn gate_queue_get(sb: &mut Sandbox, id: &str) -> Value {
+        let out = handle_command(sb.ctx(), &cmd("task.get", json!({"task_id":id})));
+        ok_payload(&out).clone()
+    }
+
+    #[test]
+    fn gate_queue_task_get_reports_live_rank_without_reusing_slot_position() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("gate-queue-get");
+        let project = sb.add_project("repo");
+        let a = gate_queue_fixture(&mut sb, &project, "first");
+        let b = gate_queue_fixture(&mut sb, &project, "second");
+        // Reverse task creation order; the reader must use event order, not task order.
+        for id in [&b, &a] {
+            sb.ctx
+                .store
+                .append_event("gate.queued", id, json!({"node":"gate","position":99}))
+                .unwrap();
+        }
+        assert_eq!(gate_queue_get(&mut sb, &b)["gate_queue_position"], 1);
+        let got = gate_queue_get(&mut sb, &a);
+        assert_eq!(got["gate_queue_position"], 2);
+        assert_eq!(got.get("queue_position"), Some(&Value::Null));
+        assert_eq!(
+            got["task"]["state"],
+            json!({"state":"active","node":"gate"})
+        );
+        sb.ctx
+            .store
+            .append_event("gate.started", &b, json!({}))
+            .unwrap();
+        assert_eq!(gate_queue_get(&mut sb, &a)["gate_queue_position"], 1);
+        assert_eq!(
+            gate_queue_get(&mut sb, &b).get("gate_queue_position"),
+            Some(&Value::Null)
+        );
+    }
+
+    #[test]
+    fn gate_queue_task_get_null_and_all_queue_invalidation_events() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("gate-queue-null");
+        let project = sb.add_project("repo");
+        let id = gate_queue_fixture(&mut sb, &project, "task");
+        assert_eq!(
+            gate_queue_get(&mut sb, &id).get("gate_queue_position"),
+            Some(&Value::Null)
+        );
+        for kind in [
+            "gate.started",
+            "setup.started",
+            "session.started",
+            "session.deferred",
+            "task.updated",
+            "gate.queue_dropped",
+        ] {
+            sb.ctx
+                .store
+                .append_event("gate.queued", &id, json!({"position":1}))
+                .unwrap();
+            assert_eq!(gate_queue_get(&mut sb, &id)["gate_queue_position"], 1);
+            sb.ctx
+                .store
+                .append_event("gate.result", &id, json!({"ok":false,"exit_code":1}))
+                .unwrap();
+            assert_eq!(gate_queue_get(&mut sb, &id)["gate_queue_position"], 1);
+            sb.ctx.store.append_event(kind, &id, json!({})).unwrap();
+            assert_eq!(
+                gate_queue_get(&mut sb, &id).get("gate_queue_position"),
+                Some(&Value::Null),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_queue_dashboard_reports_cross_project_rank_and_null_on_waiting() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("gate-queue-dashboard");
+        let p = sb.add_project("one");
+        let q = sb.add_project("two");
+        let a = gate_queue_fixture(&mut sb, &p, "a");
+        let b = gate_queue_fixture(&mut sb, &q, "b");
+        let c = gate_queue_fixture(&mut sb, &p, "c");
+        sb.ctx
+            .store
+            .set_task_state(
+                &c,
+                &TaskState::Active {
+                    node: Node::AwaitMerge,
+                },
+            )
+            .unwrap();
+        for (i, id) in [&a, &b].into_iter().enumerate() {
+            sb.ctx
+                .store
+                .append_event("gate.queued", id, json!({"position":i+1}))
+                .unwrap();
+        }
+        for started in [false, true] {
+            if started {
+                sb.ctx
+                    .store
+                    .append_event("setup.started", &a, json!({}))
+                    .unwrap();
+            }
+            let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+            let d = ok_payload(&out);
+            for (id, expected) in [
+                (&a, if started { Value::Null } else { json!(1) }),
+                (&b, json!(if started { 1 } else { 2 })),
+            ] {
+                let row = d["running"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["task"]["id"] == *id)
+                    .unwrap();
+                assert_eq!(row.get("gate_queue_position"), Some(&expected));
+            }
+            assert_eq!(d["waiting"][0]["task"]["id"], c);
+            assert_eq!(
+                d["waiting"][0].get("gate_queue_position"),
+                Some(&Value::Null)
+            );
+        }
     }
 
     #[test]

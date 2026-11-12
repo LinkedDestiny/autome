@@ -65,6 +65,18 @@ pub fn ensure(
     checkout: Checkout<'_>,
     node: Node,
 ) -> Result<Ready, Box<dyn std::error::Error>> {
+    ensure_with_hold(ctx, task, project, config, checkout, node).map(|(ready, _)| ready)
+}
+
+pub fn ensure_with_hold(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    config: &SetupConfig,
+    checkout: Checkout<'_>,
+    node: Node,
+) -> Result<(Ready, bool), Box<dyn std::error::Error>> {
+    let mut held = false;
     let repo = Path::new(&project.path);
     let kind = checkout.kind.as_str();
     let job = gate::Job::at(repo, &task.id, "setup", kind);
@@ -74,7 +86,7 @@ pub fn ensure(
         .join(format!("{kind}.running"));
     if job.exists() {
         match gate::poll_as(&job, config.timeout_minutes, "准备命令") {
-            gate::Poll::Running => return Ok(Ready::Pending),
+            gate::Poll::Running => return Ok((Ready::Pending, false)),
             gate::Poll::Vanished => job.clear(),
             gate::Poll::Done { exit_code } => {
                 // The wrapper removes its PID after publishing exit. Wait for
@@ -84,8 +96,9 @@ pub fn ensure(
                     .and_then(|s| s.trim().parse::<i32>().ok())
                     .is_some_and(crate::launcher::pid_alive)
                 {
-                    return Ok(Ready::Pending);
+                    return Ok((Ready::Pending, false));
                 }
+                held = crate::gate_queue::continuation(ctx, task, &job, kind)?;
                 let fingerprint = std::fs::read_to_string(&running).ok();
                 if let Some(ref fingerprint) = fingerprint {
                     let tail = gate::tail(&job.log, 20);
@@ -106,12 +119,15 @@ pub fn ensure(
                     let _ = std::fs::remove_file(path);
                 }
                 if fingerprint.is_some() && exit_code != 0 {
-                    return Ok(Ready::Failed {
-                        command: config.command.clone(),
-                        exit_code,
-                        log: job.log.to_string_lossy().into_owned(),
-                        tail: gate::tail(&job.log, 20),
-                    });
+                    return Ok((
+                        Ready::Failed {
+                            command: config.command.clone(),
+                            exit_code,
+                            log: job.log.to_string_lossy().into_owned(),
+                            tail: gate::tail(&job.log, 20),
+                        },
+                        false,
+                    ));
                 }
             }
         }
@@ -128,7 +144,7 @@ pub fn ensure(
     let fingerprint = setup::fingerprint(&config.command, &inputs);
     let previous = std::fs::read_to_string(&checkout.record).ok();
     if !setup::needs_run(previous.as_deref(), &fingerprint) {
-        return Ok(Ready::Ready);
+        return Ok((Ready::Ready, held));
     }
     if checkout.kind == setup::Checkout::Main {
         let jobs = repo.join(".autome/output/gates");
@@ -137,10 +153,13 @@ pub fn ensure(
                 let other = entry?.file_name().to_string_lossy().into_owned();
                 if other != task.id && gate::running(&gate::Job::at(repo, &other, "setup", "main"))
                 {
-                    return Ok(Ready::Pending);
+                    return Ok((Ready::Pending, false));
                 }
             }
         }
+    }
+    if !held && !crate::gate_queue::admit(ctx, task, project, node, "setup", Some(kind))? {
+        return Ok((Ready::Pending, false));
     }
     write_record(&running, &fingerprint)?;
     gate::start(
@@ -158,5 +177,5 @@ pub fn ensure(
             "reason": if previous.is_some() { "变化" } else { "首次" },
         }),
     )?;
-    Ok(Ready::Pending)
+    Ok((Ready::Pending, false))
 }

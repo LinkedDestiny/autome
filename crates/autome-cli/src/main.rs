@@ -598,6 +598,9 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
                 render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or(""))
             ));
         }
+        if let Some(position) = e["gate_queue_position"].as_u64() {
+            line.push_str(&format!("  · {}", render::gate_queue_line(position)));
+        }
         println!("{line}");
     }
     if !cooldowns.is_empty() {
@@ -631,6 +634,9 @@ fn task_detail(got: &Value) {
         got["project"]["name"].as_str().unwrap_or_default(),
         t["branch"].as_str().unwrap_or_default()
     );
+    if let Some(position) = got["gate_queue_position"].as_u64() {
+        println!("  门禁排队  {}", render::gate_queue_line(position));
+    }
     println!("  需求      {}", t["request"].as_str().unwrap_or_default());
     if let Some(sb) = got["status_block"].as_object() {
         let ms: Vec<String> = sb
@@ -669,11 +675,7 @@ fn task_detail(got: &Value) {
             "  门禁      {} 在 {} 上{}（{}）  日志 {}",
             render::node_label(g.get("node").and_then(Value::as_str).unwrap_or("?")),
             render::short(g.get("sha").and_then(Value::as_str).unwrap_or("")),
-            if g.get("ok").and_then(Value::as_bool) == Some(true) {
-                "通过"
-            } else {
-                "未通过"
-            },
+            render::gate_verdict(&got["gate"]),
             g.get("command").and_then(Value::as_str).unwrap_or(""),
             g.get("log").and_then(Value::as_str).unwrap_or("")
         );

@@ -131,6 +131,12 @@ fn read(path: &Path) -> Result<String> {
 fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
     let doc: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut config = GlobalConfig::default();
+    if let Some(t) = doc.get("gate") {
+        let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        if let Some(v) = t.get("concurrency") {
+            config.gate.concurrency = parse_gate_concurrency(v)?;
+        }
+    }
 
     if let Some(t) = doc.get("loop").and_then(toml::Value::as_table) {
         if let Some(v) = t.get("parallel").and_then(toml::Value::as_integer) {
@@ -317,6 +323,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                     .ok_or("[gate] reuse_for_main_check 必须是 true 或 false")?,
             );
         }
+        if let Some(v) = t.get("concurrency") {
+            config.gate_concurrency = Some(parse_gate_concurrency(v)?);
+        }
         if let Some(v) = t.get("same_failure_limit") {
             config.gate_same_failure_limit = Some(
                 v.as_integer()
@@ -328,6 +337,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
         let command = t
             .get("command")
             .and_then(toml::Value::as_str)
+            .or_else(|| {
+                (!t.contains_key("command") && config.gate_concurrency.is_some()).then_some("")
+            })
             .ok_or("[gate] 需要 command，例如 command = \"make check\"")?
             .trim()
             .to_string();
@@ -658,6 +670,14 @@ pub fn skill_bindings(
     by_skill
 }
 
+fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
+    value
+        .as_integer()
+        .filter(|n| (1..=10).contains(n))
+        .map(|n| n as u32)
+        .ok_or_else(|| "[gate] concurrency 必须是 1 到 10 的整数".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -727,6 +747,100 @@ mod tests {
                 enabled
             );
         }
+    }
+
+    #[test]
+    fn gate_concurrency_global_defaults_and_reads() {
+        for text in ["", "[gate]", "[gate]\nunknown = true"] {
+            assert_eq!(parse_global(text).unwrap().gate.concurrency, 1);
+        }
+        for n in [1, 3, 10] {
+            assert_eq!(
+                parse_global(&format!("[gate]\nconcurrency = {n}"))
+                    .unwrap()
+                    .gate
+                    .concurrency,
+                n
+            );
+        }
+        assert_eq!(parse_global("gate = 1").unwrap_err(), "[gate] 不是一个表");
+    }
+    #[test]
+    fn gate_concurrency_global_invalid_values() {
+        for n in [
+            "0",
+            "-1",
+            "1.5",
+            "'2'",
+            "11",
+            "true",
+            "[]",
+            "''",
+            "4294967296",
+        ] {
+            assert_eq!(
+                parse_global(&format!("[gate]\nconcurrency = {n}")).unwrap_err(),
+                "[gate] concurrency 必须是 1 到 10 的整数"
+            );
+        }
+        assert!(parse_global("[gate]\nconcurrency = 01").is_err());
+    }
+    #[test]
+    fn gate_concurrency_project_reads() {
+        assert_eq!(parse_project("").unwrap().gate_concurrency, None);
+        for n in [1, 3, 10] {
+            let config =
+                parse_project(&format!("[gate]\ncommand = 'check'\nconcurrency = {n}")).unwrap();
+            assert_eq!(config.gate_concurrency, Some(n));
+            assert_eq!(config.gate.unwrap().command, "check");
+        }
+    }
+    #[test]
+    fn gate_concurrency_project_invalid_values() {
+        for n in [
+            "0",
+            "-1",
+            "1.5",
+            "'2'",
+            "11",
+            "true",
+            "[]",
+            "''",
+            "4294967296",
+        ] {
+            for command in ["", "command = 'check'\n"] {
+                assert_eq!(
+                    parse_project(&format!("[gate]\n{command}concurrency = {n}")).unwrap_err(),
+                    "[gate] concurrency 必须是 1 到 10 的整数"
+                );
+            }
+        }
+        assert_eq!(parse_project("gate = 1").unwrap_err(), "[gate] 不是一个表");
+        assert!(parse_project("[gate]\nconcurrency = 01").is_err());
+    }
+    #[test]
+    fn gate_concurrency_without_command_means_no_gate() {
+        let config = parse_project("[gate]\nconcurrency = 1").unwrap();
+        assert_eq!(config.gate, None);
+        assert_eq!(config.gate_concurrency, Some(1));
+        assert!(parse_project("[gate]\nconcurrency = 1\ncommand = 2").is_err());
+    }
+    #[test]
+    fn gate_concurrency_save_global_preserves_handwritten_value() {
+        let dir = TempDir::new("concurrency-global");
+        let path = global_config_path(dir.path());
+        std::fs::write(&path, "[gate]\nconcurrency = 7 # keep\n").unwrap();
+        save_global(dir.path(), &GlobalConfig::default()).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains("concurrency = 7 # keep"));
+        assert_eq!(parse_global(&text).unwrap().gate.concurrency, 7);
+    }
+    #[test]
+    fn gate_concurrency_save_project_preserves_handwritten_value() {
+        let dir = TempDir::new("concurrency-project");
+        write_project(dir.path(), "[gate]\nconcurrency = 7 # keep\n");
+        save_project(dir.path(), &ProjectConfig::default()).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().gate_concurrency, Some(7));
     }
 
     #[test]

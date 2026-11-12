@@ -121,6 +121,8 @@ pub enum Provenance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalConfig {
     #[serde(default)]
+    pub gate: GlobalGateConfig,
+    #[serde(default)]
     pub loop_defaults: LoopDefaults,
     pub roles: BTreeMap<Role, RoleConfig>,
     /// Presentation, not Loop behaviour — but it lives here for the same
@@ -205,6 +207,7 @@ impl Default for GlobalConfig {
         // so it sits on the other runtime for the same reason the audit does.
         roles.insert(Role::Retro, role(Runtime::Codex, Some("high")));
         Self {
+            gate: GlobalGateConfig::default(),
             loop_defaults: LoopDefaults::default(),
             roles,
             ui: UiConfig::default(),
@@ -269,6 +272,8 @@ pub struct ProjectConfig {
     pub gate_same_failure_limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_reuse_for_main_check: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_concurrency: Option<u32>,
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
@@ -379,6 +384,8 @@ pub struct ResolvedConfig {
     pub setup: Option<SetupConfig>,
     pub gate_same_failure_limit: u32,
     pub gate_reuse_for_main_check: bool,
+    #[serde(default = "default_gate_concurrency")]
+    pub gate_concurrency: u32,
     pub retry: RetryPolicy,
 }
 
@@ -444,6 +451,10 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         roles,
         bug: project.bug.unwrap_or_default(),
         gate: project.gate.clone(),
+        gate_concurrency: project
+            .gate_concurrency
+            .unwrap_or(global.gate.concurrency)
+            .min(global.gate.concurrency),
         setup: project.setup.clone(),
         gate_same_failure_limit: project
             .gate_same_failure_limit
@@ -1172,5 +1183,83 @@ mod tests {
         let value = serde_json::to_value(&project).unwrap();
         let impl_table = value.pointer("/roles/impl").unwrap().as_object().unwrap();
         assert_eq!(impl_table.keys().collect::<Vec<_>>(), vec!["model"]);
+    }
+}
+
+pub const DEFAULT_GATE_CONCURRENCY: u32 = 1;
+fn default_gate_concurrency() -> u32 {
+    DEFAULT_GATE_CONCURRENCY
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalGateConfig {
+    #[serde(default = "default_gate_concurrency")]
+    pub concurrency: u32,
+}
+impl Default for GlobalGateConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: DEFAULT_GATE_CONCURRENCY,
+        }
+    }
+}
+
+#[cfg(test)]
+mod gate_concurrency_tests {
+    use super::*;
+    #[test]
+    fn gate_concurrency_defaults_to_one() {
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &ProjectConfig::default()).gate_concurrency,
+            1
+        );
+        let mut value = serde_json::to_value(GlobalConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("gate");
+        assert_eq!(
+            serde_json::from_value::<GlobalConfig>(value)
+                .unwrap()
+                .gate
+                .concurrency,
+            1
+        );
+        let mut value =
+            serde_json::to_value(resolve(&GlobalConfig::default(), &ProjectConfig::default()))
+                .unwrap();
+        value.as_object_mut().unwrap().remove("gate_concurrency");
+        assert_eq!(
+            serde_json::from_value::<ResolvedConfig>(value)
+                .unwrap()
+                .gate_concurrency,
+            1
+        );
+    }
+    #[test]
+    fn gate_concurrency_project_override() {
+        let global = GlobalConfig {
+            gate: GlobalGateConfig { concurrency: 10 },
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(&global, &ProjectConfig::default()).gate_concurrency,
+            10
+        );
+        for limit in [1, 3, 10] {
+            let project = ProjectConfig {
+                gate_concurrency: Some(limit),
+                ..Default::default()
+            };
+            assert_eq!(resolve(&global, &project).gate_concurrency, limit);
+        }
+    }
+    #[test]
+    fn gate_concurrency_cannot_exceed_global() {
+        let project = ProjectConfig {
+            gate_concurrency: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &project).gate_concurrency,
+            1
+        );
     }
 }

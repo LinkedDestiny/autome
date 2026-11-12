@@ -2,6 +2,20 @@
 use crate::task::Node;
 use sha2::{Digest, Sha256};
 
+pub const TIMEOUT_SUMMARY: &str = "门禁运行超时，被内核终止";
+
+/// Recognize the kernel's final termination line, not a command's exit code.
+pub fn kernel_timeout(tail: &str) -> Option<u32> {
+    let line = tail.lines().rev().find(|line| !line.trim().is_empty())?;
+    let minutes = line
+        .strip_prefix("=== Autome：门禁运行超过 ")?
+        .strip_suffix(" 分钟，已终止 ===")?;
+    if minutes.is_empty() || !minutes.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    minutes.parse::<u32>().ok().filter(|n| *n > 0)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     pub id: String,
@@ -142,7 +156,7 @@ fn identity(material: &str, summary: String) -> Fingerprint {
 
 pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
     if timed_out {
-        return identity("timeout", "门禁运行超时，被内核终止".to_owned());
+        return identity("timeout", TIMEOUT_SUMMARY.to_owned());
     }
     let mut lines: Vec<_> = log.split('\n').rev().take(400).map(clean).collect();
     lines.reverse();
@@ -214,6 +228,46 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_timeout_reads_kernel_minutes_and_boundaries() {
+        for n in [1, 30, u32::MAX] {
+            assert_eq!(
+                kernel_timeout(&format!(
+                    "output\n=== Autome：门禁运行超过 {n} 分钟，已终止 ===\n"
+                )),
+                Some(n)
+            );
+        }
+        assert_eq!(
+            kernel_timeout("=== Autome：门禁运行超过 01 分钟，已终止 ==="),
+            Some(1)
+        );
+    }
+    #[test]
+    fn gate_timeout_rejects_other_output() {
+        for tail in [
+            "",
+            "test failed",
+            "=== Autome：准备命令运行超过 1 分钟，已终止 ===",
+            "=== Autome：门禁运行超过 1 分钟，已终止 ===\nlater output",
+        ] {
+            assert_eq!(kernel_timeout(tail), None);
+        }
+        for n in ["0", "-1", "+1", "1.5", "", "4294967296"] {
+            assert_eq!(
+                kernel_timeout(&format!("=== Autome：门禁运行超过 {n} 分钟，已终止 ===")),
+                None
+            );
+        }
+    }
+    #[test]
+    fn gate_timeout_exit_124_alone_is_not_kernel_timeout() {
+        assert_eq!(
+            kernel_timeout("timeout: command exited with status 124"),
+            None
+        );
+    }
+
     use super::*;
     fn fp(log: &str) -> Fingerprint {
         fingerprint(log, 1, false)
