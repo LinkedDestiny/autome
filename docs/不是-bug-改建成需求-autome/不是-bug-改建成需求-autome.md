@@ -1,12 +1,12 @@
 # 「不是 Bug」改建成需求：`task.convert` RPC 与 `autome task convert`
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 实现 M-01：store.convert_task（单事务）、cancel_task 抽出 discard_checkout、dispatch 的 task.convert 及其 10 个新用例
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -44,7 +44,7 @@ next-action: 无
 内核方法、CLI 命令、网页网关三处都能调用它（A-01…A-07）。
 
 **非目标**：W7 按钮与 `apps/web/app` 页面；协议 prompt 与 `protocol/`；需求改建成 Bug；从 `not_a_bug` 以外的状态改建；
-`apps/desktop`；T-37 的内容；崩溃恢复时清理半截状态（见「风险」R1）；`autome-domain` 不改（`Cancel` 在 `not_a_bug` 已合法）。
+`apps/desktop`；T-37 的内容；崩溃后残留的 worktree 与分支的自动回收（见「风险」R1）；`autome-domain` 不改（`Cancel` 在 `not_a_bug` 已合法）。
 
 ## 方案
 
@@ -68,45 +68,52 @@ next-action: 无
 8. 附件：逐个检查 `Path::is_file`。缺失时报 `TransitionRejected`「附件不存在：<源路径>；原任务里的副本在 <worktree>/<doc_dir>/attachments/<文件名>，
    放回原处后重试」，只有副本存在时才带分号后面那半句（问题 2）。
 
-**第 2 步：建新任务，但不写事件。** 把 `create` 里组装 `TaskRecord` 与 `create_task` 的部分抽成一个内部函数，供 `create` 与 `task_convert`
-共用，现有 `task.create` 的行为不变（约束 6）。新任务的字段这样取：
+**第 2 步：先停会话。** 调 `stop_running_session(原 id)`（与 `task.cancel` 相同）。它是整个流程里**唯一在提交之前有副作用的步骤**，
+也是提交之前唯一还会失败的非预检步骤（`gate::discard_node` 读目录出错会返回错误）：失败就原样返回错误，此时还没有写任何东西，
+新任务不存在，原任务仍停在 `not_a_bug`。`not_a_bug` 节点正常情况下没有会话和门禁在跑，走同一条路径是为了清理行为与 `task.cancel` 一致（问题 7）。
 
-- `kind = Feature`，`state = Draft`。
-- `request` 取原任务的 `request`，`title` 直接取原任务的 `title`（与 `first_line(request)` 等值，但写明是沿用）。
-- `slug` 照常从 `request` 派生并去重。原任务仍在任务列表里，所以新 slug 是 `<原 slug>-2` 这一类（问题 1）。
-  原任务归档到 `<doc_root>/.archive/<原 slug>`，新任务的文档目录是 `<doc_root>/<新 slug>`，两者不会冲突。
-- `attachments`、`doc_refs` 原样复制原任务记录里的值，指向同一批源文件。
-- `brief` 取 `store.task_brief(原 id)` 的值，原样传入，`None` 时也是 `None`；不 trim，不重新校验。
-- `doc_root` 用当前配置重新解析，与 `create` 相同。
+**第 3 步：一次数据库提交。** 先在内存里准备好全部内容，再交给新增的 `store.convert_task(...)`，由它在**一个** SQLite 事务里完成下面所有写入，
+成功才 `commit`；任何一条失败整个事务回滚，其它连接和进程在提交之前读到的永远是旧状态（新任务不存在、原任务仍是 `not_a_bug`），
+提交之后读到的永远是新状态（新任务已建、原任务已取消并已归档、事件已写）。读操作不持有驱动锁，所以这个原子性必须由数据库事务给出，
+不能靠驱动锁或事后删除。
 
-**第 3 步：取消原任务。** 先调 `stop_running_session(原 id)`，再调 `scheduler::apply_trigger(原 id, Cancel)`；
-这里**不**调 `task_trigger`，所以中途不会 tick。`not_a_bug` 节点正常情况下没有会话和门禁在跑，但走同一条路径没有坏处，
-也与 `task.cancel` 的清理完全一致：归档文档、删除 worktree 和分支、置归档标记（问题 7）。
+准备（都在提交之前，纯内存或只读）：
 
-**失败补偿（约束 4）。** 如果 `apply_trigger` 返回错误，先重新读原任务：
+- 新任务记录：把 `create` 里组装 `TaskRecord` 的部分抽成内部函数，供 `create` 与 `task_convert` 共用，现有 `task.create` 的行为不变（约束 6）。字段这样取：
+  - `kind = Feature`；`state` 为 `start` 为真时 `Queued`，否则 `Draft`（与 `task.create` 带不带 `draft` 的两种结果一致，所以不再需要单独的 `Start` 转换与 `task.started` 事件）。
+  - `request` 取原任务的 `request`，`title` 直接取原任务的 `title`（与 `first_line(request)` 等值，但写明是沿用）。
+  - `slug` 照常从 `request` 派生并去重。原任务仍在任务列表里，所以新 slug 是 `<原 slug>-2` 这一类（问题 1）。
+    原任务归档到 `<doc_root>/.archive/<原 slug>`，新任务的文档目录是 `<doc_root>/<新 slug>`，两者不会冲突。
+  - `attachments`、`doc_refs` 原样复制原任务记录里的值，指向同一批源文件。
+  - `brief` 取 `store.task_brief(原 id)` 的值，原样传入，`None` 时也是 `None`；不 trim，不重新校验。
+  - `doc_root` 用当前配置重新解析，与 `create` 相同。
+- 原任务的取消转换：用与 `advance` 相同的 `bug_loop::apply_for(Bug, 原状态, Cancel, ..)` 求出转换，要求 `next == Cancelled` 且 `action == RunCancel`，
+  否则返回内部错误且不写任何东西（防止域层改动后这里悄悄不再等价于取消）。不另走 `advance`，因为 `advance` 会在状态落库之后才执行清理，拆不成一次提交。
 
-- 原任务还不是 `Cancelled`：说明状态没落库，调新增的 `store.discard_task(新 id)` 删掉新任务，再把原错误返回给调用方。
-- 原任务已经是 `Cancelled`：说明错误出在 `perform` 之后的步骤（例如 `set_task_archived`）。这时取消已经生效，
-  用 `tracing::warn` 记一笔，继续执行第 4 步。
+`convert_task` 在同一个事务里依次做：
 
-`discard_task(id)` 在一个事务里删除 `task_briefs` 与 `tasks` 里属于该 id 的行。如果这个任务已经有事件或会话，它返回 `Conflict`
-拒绝删除，所以只能用来撤回一个刚建、还没人看到过的任务。
+1. 插入新任务行；新任务为 `Queued` 时调 `mark_queued`；有 brief 时插入 `task_briefs`。
+2. `set_task_state(原 id, Cancelled)`。
+3. `set_task_archived(原 id, true)`。**归档标记在提交里置位**：`cancel_task` 里唯一会返回错误的步骤就是这一句（其余文件系统步骤的错误本来就被忽略），
+   把它提到提交里，提交之后的清理就没有可失败的数据库步骤了。
+4. 事件，顺序固定（问题 3、5）：
+   - `task.created`，挂在新任务下，载荷 `{project_id, converted_from: <原 id>}`。普通创建仍然只写 `{project_id}`，两种载荷共存。
+   - `task.converted`，挂在原任务下，载荷 `{from: <原 id>, to: <新 id>}`。
+   - `task.updated`，挂在原任务下，载荷 `{state: Cancelled, trigger: "cancel"}`，与 `advance` 写的一致。
 
-**第 4 步：写事件，然后排队或 tick。** 事件的写入顺序固定（问题 3、5）：
+**第 4 步：提交之后的清理与排队。** 这一步里没有任何会让「改建」失败的步骤，也不再有「状态已变但清理没做」需要靠推断来判断的情形：
 
-1. `task.created`，挂在新任务下，载荷 `{project_id, converted_from: <原 id>}`。普通创建仍然只写 `{project_id}`，两种载荷共存。
-2. `task.converted`，挂在原任务下，载荷 `{from: <原 id>, to: <新 id>}`。
+1. `write_task_metrics(原 id)`：与 `advance` 在进入 `Cancelled` 时一样，必须在 worktree 还在时做；失败只 `tracing::warn`，不影响结果。
+2. 把 `cancel_task` 里的文件系统部分抽成 `discard_checkout(ctx, task, project)`（复制文档目录到 `.archive/<slug>`、强制删 worktree 与分支，错误一律忽略），
+   `cancel_task` 变成「`discard_checkout` + `set_task_archived`」，行为不变；改建调用 `discard_checkout`。
+3. `scheduler::tick`：只调一次，对应 `task_cancel` 原本就有的那一下。`start: true` 时新任务已是 `queued`，这一下 tick 就会在有空位时启动它；
+   不传或 `false` 时新任务是草稿，不会被启动。tick 发生在原任务取消**之后**。
 
-然后看 `start`：
-
-- `start: true`：调现有的 `task_start(新 id)`。它做 `Start` 转换（`draft` → `queued`）、`mark_queued`、写 `task.started`、tick，
-  结果与 `task.create` 不带 `draft` 时一样，有空位就立即开工。
-- 不传或 `start: false`：只调一次 `scheduler::tick`。这一下 tick 对应 `task_cancel` 原本就有的那一下，新任务是草稿，不会被它启动。
-
-不论哪一种，tick 都发生在原任务取消**之后**。
+**崩溃与残留。** 提交之前崩溃：什么都没有发生。提交之后、清理之前崩溃：库里是完整、一致的新状态（新任务在、原任务已取消并已标归档），
+可能残留的只是原 worktree 与分支没删，这是资源残留而不是「半截改建」，用户看不到两个任务的矛盾状态。本任务不做这类残留的自动回收。
 
 **返回值（问题 6）。** 形状与 `task.create` 对齐，多一个字段：
-`{task: <新任务 task_json>, started: bool, queue_position, converted_from: <原 id>}`。
+`{task: <新任务 task_json>, started: bool, queue_position, converted_from: <原 id>}`；`started` 与 `queue_position` 的取法同 `create`（取 tick 之后新任务的状态）。
 Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 `task.updated`（原任务），这样桌面端和网页端的刷新路径都不用改。
 
 ### 2. CLI（A-02、A-05，`crates/autome-cli`）
@@ -142,12 +149,14 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 1. `request` 沿用原任务的 `request`，`title` 沿用原任务的 `title`；slug 去重后带后缀，原任务的 slug 继续占位；归档目录与新文档目录不冲突。见方案 1 第 2 步。
 2. 附件复制的是源路径，并且要求源文件仍然存在；缺失就拒绝改建，并在错误信息里给出 worktree 副本的位置。A-04 断言两处：
    新任务记录里的源路径都是文件；`start: true` 开工后，新 worktree 的 `<doc_dir>/attachments/<文件名>` 存在，且字节与源文件相同。
-3. 顺序是：预检 → 建新任务（草稿，不写事件）→ 取消原任务 → 写 `task.created`、`task.converted` → 排队或 tick。
-   取消失败时删掉新任务；tick 在取消之后。
+3. 顺序是：预检 → 停会话（唯一提交前的副作用）→ **一次数据库提交**（新任务 + brief + 原任务 `Cancelled` 并置归档标记 + 三条事件）→
+   提交后清理文件系统（`discard_checkout`）→ tick。提交前任何失败都什么也没写；提交本身全有或全无；tick 在取消之后。
+   不再有「先建后撤回」的补偿路径，也就没有 `discard_task`。
 4. `kind` 必填，只接受 `"feature"`，错误文案见方案 1 第 1 步。
 5. 两条事件的挂载位置与载荷见方案 1 第 4 步。网页端通知器会跳过未知事件（`notifier.ts:39`），不需要改。
 6. 返回 `{task, started, queue_position, converted_from}`；CLI 的 `--json` 打印整个返回值，新任务是其中的 `.task`。非 `--json` 的输出见方案 2。
-7. 完全复用 `task_cancel` 的两步，只是省掉中间那一下 tick。`not_a_bug` 正常情况下没有会话和门禁在跑，复用同一路径是为了清理行为与 `task.cancel` 一致。
+7. 停会话复用 `stop_running_session`，清理复用 `cancel_task` 里抽出的 `discard_checkout`（归档文档、删 worktree 与分支，行为与 `task.cancel` 一致），
+   状态与归档标记则并入提交事务，不经 `advance`。`not_a_bug` 正常情况下没有会话和门禁在跑，复用同一路径是为了清理行为一致。
 8. 网关校验 `task_id` 是非空字符串、`kind === 'feature'`、`start` 是布尔值或不传；改动分三处局部插入，见方案 3。
 9. 拒绝的情形：
    - 非 Bug 任务：`TransitionRejected`。
@@ -160,12 +169,14 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 
 ## 风险与验证安排
 
-- **R1 崩溃窗口。** 如果进程恰好死在第 2 步提交之后、第 3 步落库之前，会留下一个没有 `task.created` 事件的草稿，原任务仍停在 `not_a_bug`。
-  这时用户看到的是「多了一个草稿」，可以直接取消它，原任务也照样能再改建一次。这个窗口只有两次 SQLite 提交之间那一段，本任务不做崩溃恢复。
-  先建草稿、取消成功后才排队，就是为了让这种残留不会自己开工。
-- **R2 取消失败的补偿。** 这条路径没法靠真实故障稳定触发，所以 M-01 用 SQLite 触发器注入。做法是测试另开一个 `rusqlite::Connection`
-  打开 `ctx.store.path()`，建一个 `BEFORE UPDATE ON tasks WHEN OLD.id = <原 id>` 的 `RAISE(ABORT)` 触发器，
-  让 `set_task_state` 失败，再断言新任务已被撤回。`store.rs:3055` 已经用过同样的手法。
+- **R1 崩溃窗口。** 提交是单个 SQLite 事务，所以不存在「新任务已建、原任务没取消」的可见状态，崩溃也不会产生它。
+  唯一的残留是：提交之后、`discard_checkout` 之前进程退出，原 worktree 与分支没被删（库里已标归档）。这是资源残留，不是半截改建，
+  本任务不做自动回收。`task.cancel` 自己「状态落库后 `perform` 失败」的既有窗口不属于本任务，见 Backlog。
+- **R2 提交失败的验证。** 提交阶段的失败没法靠真实故障稳定触发，所以 M-01 用 SQLite 触发器注入：测试另开一个 `rusqlite::Connection`
+  打开 `ctx.store.path()`，分别建 `BEFORE INSERT ON events WHEN NEW.kind='task.converted'`、`BEFORE UPDATE ON tasks WHEN OLD.id=<原 id>`、
+  `BEFORE INSERT ON task_briefs` 三种 `RAISE(ABORT)` 触发器，覆盖事务的最后一步、状态/归档更新、以及 brief 插入。
+  每种都断言：调用返回错误；用**另一个连接**读，新任务和它的 brief 不存在、原任务仍是 `not_a_bug` 且未归档、没有新增任何事件、原 worktree 与分支仍在；
+  删掉触发器后重试同一调用成功。`store.rs:3055` 已经用过同样的手法。
 - **R3 与 T-37 的文本冲突。** 改动只有一行白名单、一个独立分支、`specific` 里一行和一个新测试。哪一方后合并，冲突都只在相邻行，rebase 时手工合并即可。
 - **验证体系**：全部使用仓库已有的测试：dispatch 单测、`end_to_end.rs` 的 `World` 夹具（真实 Git 与 worktree，模型用替身）、
   `cli.rs`（真实二进制）和 vitest。宿主门禁 `sh scripts/ci-local.sh` 每个实现轮都会跑。
@@ -177,56 +188,63 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 内核 task.convert（预检、建新、取消、补偿、事件）与端到端用例 | 0 | convert-core |
+| M-01 | 开放 | 内核 task.convert（预检、单事务改建与取消、清理、事件）与端到端用例 | 0 | convert-core |
 | M-02 | 开放 | CLI autome task convert、帮助与 not_a_bug 提示 | 0 | convert-cli |
 | M-03 | 开放 | 网页写网关放行 task.convert 与全量回归 | 0 | convert-web |
 
 ## 验收契约
 
-M-01 覆盖 A-01、A-04，没有前置里程碑。M-02 覆盖 A-02、A-05，前置 M-01。M-03 覆盖 A-03、A-06、A-07，前置 M-01，并且要在 M-02 之后做全量回归。
+M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程碑。M-02 覆盖 A-02、A-05，前置 M-01。M-03 覆盖 A-03、A-06、A-07，前置 M-01，并且要在 M-02 之后做全量回归。
 
 ### M-01 验收契约
 
-- 验收命令：`cargo test -p automed task_convert && cargo test -p automed discard_task`
-- 预期：`task_convert` 过滤共 8 个用例通过，`discard_task` 过滤 1 个通过。这 9 个都是新增用例，基线上两个过滤都是 0 个。
+- 验收命令：`cargo test -p automed task_convert`
+- 预期：该过滤共 10 个用例通过，全是新增用例，基线上为 0 个。
 
-  `dispatch::tests` 下 7 个：
+  `dispatch::tests` 下 8 个：
   1. `task_convert_rebuilds_a_not_a_bug_task_as_a_draft_feature`：
      - 新任务 `kind=feature`、状态 `draft`；
      - brief 逐字节相同（brief 含中文、尾随空格和 `{request}`）；
      - `request`、`title`、`attachments`、`doc_refs` 与原任务相同；
-     - 原任务 `cancelled` 且已归档；
-     - 两条事件的挂载与载荷正确，写入顺序为先 `task.created` 后 `task.converted`；
+     - 原任务 `cancelled` 且已归档，原 worktree 与分支已删，文档已复制到 `.archive/<原 slug>`；
+     - 三条事件的挂载与载荷正确，顺序为 `task.created`、`task.converted`、`task.updated`；
      - 返回值四个字段齐全；
      - `READ_METHODS` 不含 `task.convert`。
-  2. `task_convert_with_start_queues_the_new_task`：新任务进入 `queued` 或 `active`，返回值 `started` 与 tick 的结果一致，并写了 `task.started`。
+  2. `task_convert_with_start_queues_the_new_task`：新任务进入 `queued` 或 `active`，返回值 `started` 与新任务实际状态一致，写了 `task.created` 且没有 `task.started`。
   3. `task_convert_rejects_every_state_other_than_not_a_bug`：覆盖 draft、queued、active/locate、active/await_info、paused、failed、cancelled、done 和已归档；
      每个都返回 `TransitionRejected`，错误信息含当前状态，任务数不变，原状态不变。
   4. `task_convert_rejects_a_feature_task`
   5. `task_convert_rejects_bad_params`：缺 `task_id`、`kind` 缺失、`kind` 为 `"bug"`、`start` 为 `"yes"` 时返回 `InvalidParams`；任务不存在时返回 `NotFound`。
   6. `task_convert_rejects_a_missing_attachment_without_touching_either_task`
-  7. `task_convert_puts_back_the_new_task_when_cancelling_the_original_fails`：用 R2 的触发器注入失败，断言调用返回错误、没有新任务也没有它的 brief、
-     原任务仍是 `not_a_bug`、没有写 `task.converted`。
+  7. `task_convert_leaves_nothing_behind_when_a_commit_step_fails`：按 R2 对三种触发器逐一注入，断言见 R2；每种注入后重试成功。
+  8. `task_convert_writes_nothing_when_stopping_the_session_fails`：把 gate 的任务目录（`gate::dir_for(项目路径, 原 id)`，必要时改成 `pub(crate)`）处放一个普通文件，使 `discard_node` 的读目录失败，
+     断言调用返回错误、没有新任务、原任务仍是 `not_a_bug` 且未归档、没有新增事件；移走该文件后重试成功。
+
+  `store::tests` 下 1 个：`task_convert_commits_both_tasks_or_neither_across_connections`。直接调 `store.convert_task`：
+  另开第二个连接，提交前读不到新任务、原任务未归档；成功后两者同时可见（新任务、brief、原任务 `Cancelled` 与归档标记、三条事件）；
+  注入最后一条事件失败时，第二个连接读到的与调用前完全相同。
 
   `end_to_end` 下 1 个：`bug_loop_not_a_bug_task_convert_rebuilds_it_as_a_feature_with_its_attachments`。
   - 用一个真实附件和一份 brief 建 Bug 任务。
   - 会话还在 `active/locate` 时调 `task.convert`，应被拒。
   - `settle` 到 `not_a_bug` 后，用 `start: true` 改建。新任务 `kind=feature`；`task.get` 返回的 brief 与原任务相同；
-    记录里的附件路径存在；新 worktree 的 `<doc_dir>/attachments/<文件名>` 存在，且字节与源文件相同；原任务 `cancelled` 且已归档。
+    记录里的附件路径存在；新 worktree 的 `<doc_dir>/attachments/<文件名>` 存在，且字节与源文件相同；原任务 `cancelled`、已归档，原 worktree 已不在。
   - 对原任务再调一次 `task.convert`，应被拒。
 
-  `store::tests` 下 1 个：`discard_task_removes_a_fresh_task_and_refuses_one_with_history`。
-
-  现有的 `bug_loop_not_a_bug_waits_for_a_decision_and_can_be_cancelled_or_rebuilt_as_a_feature` 保留不动。
+  现有的 `bug_loop_not_a_bug_waits_for_a_decision_and_can_be_cancelled_or_rebuilt_as_a_feature` 保留不动。`cancel_task` 抽出 `discard_checkout` 后，
+  现有取消相关用例（含 `task.cancel` 的归档断言）必须保持通过。
 - 负向对照（任一种错误实现都会让验收变红）：
 
   | 错误实现 | 变红的用例 |
   |---|---|
-  | 漏掉第 3 步取消 | 用例 1 和端到端（原任务不是 `cancelled`） |
-  | 补偿里不调 `discard_task` | 用例 7（新任务残留） |
+  | 漏掉原任务取消 | 用例 1 和端到端（原任务不是 `cancelled`） |
+  | 新任务与原任务取消分成两次提交 | 用例 7 与 store 用例（注入失败后新任务残留，或第二连接读到中间态） |
+  | 归档标记留在提交之后设置 | store 用例（成功后原任务应同时可见 `Cancelled` 与归档标记）；用例 1 的「已归档」断言在提交后补置时仍绿，所以以 store 用例为准 |
+  | 在停会话之前就建新任务 | 用例 8（新任务残留） |
   | 只检查 `kind`、不检查节点 | 用例 3 的 await_info 一项通过了改建 |
   | 新任务的 brief 用 `trim` 后的值或重新拼的标题 | 用例 1 的逐字节比较 |
   | 没复制 `attachments` | 端到端 worktree 里没有附件 |
+  | 提交后没做 `discard_checkout` | 用例 1 与端到端（原 worktree 仍在） |
   | 把 `task.convert` 加进 `READ_METHODS` | 用例 1 |
 
 ### M-02 验收契约
@@ -278,8 +296,8 @@ M-01 覆盖 A-01、A-04，没有前置里程碑。M-02 覆盖 A-02、A-05，前�
     - `start` 为 `1`
     - `task_id` 为 513 字符
   - `npm test --prefix apps/web` 全绿，0 failed，通过数比改动前多 1（实现轮先在改动前跑一次，把数记进证据）。
-  - `cargo test --workspace` 全绿：1205 passed、0 failed、1 ignored。这是设计轮基线 1193 加上 12 个新用例（M-01 的 9 个与 M-02 的 3 个）；
-    如果其它任务先合并进基线，以「改动前基线 + 12」为准。
+  - `cargo test --workspace` 全绿：1206 passed、0 failed、1 ignored。这是设计轮基线 1193 加上 13 个新用例（M-01 的 10 个与 M-02 的 3 个）；
+    如果其它任务先合并进基线，以「改动前基线 + 13」为准。
 - 负向对照（任一种错误实现都会让验收变红）：
 
   | 错误实现 | 变红的用例 |
@@ -293,5 +311,8 @@ M-01 覆盖 A-01、A-04，没有前置里程碑。M-02 覆盖 A-02、A-05，前�
 - H-01 在一个真实项目里把 Bug 任务跑到「不是 Bug」，执行 `autome task convert <任务>` 后用 `autome status` 确认：新需求任务是待开始，原任务已取消，任务卡正文与原卡一致
 
 ## Backlog
+
+- B-01 `task.cancel` 既有窗口：`advance` 先落库 `Cancelled` 再 `perform(RunCancel)`，`perform` 失败（如 `set_task_archived`）时任务停在「已取消但未归档」且无法再次取消。不属本任务范围（约束 1、6），来源 D1-P02 的检查范围；`task.convert` 已绕开它（归档标记并入提交）。
+- B-02 实现注意：`discard_checkout` 抽出后 `cancel_task` 必须逐字保持原行为（先复制文档、后删 worktree 与分支）；`convert_task` 内不要调用会自行开启事务的 store 方法（`create_task`），改用 `insert_task`/`mark_queued` 等不开事务的内部方法。
 
 ## 争议项
