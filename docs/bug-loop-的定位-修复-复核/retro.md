@@ -5,3 +5,4 @@
 审计 #1 | M-01 | 通过 | docs/bug-loop-的定位-修复-复核/evidence/M-01-r2-audit.md | 无
 实现 #3 | M-02 | 开放，e2e 与 Rust 通过 | evidence/M-02-r3-impl.md | Electron SIGABRT、本地监听 EPERM，完整门禁未通过
 审计 #2 | M-02 | 通过 | docs/bug-loop-的定位-修复-复核/evidence/M-02-r3-audit.md | 无
+复盘 #1 | 全部 | 写 4 条教训（L-01..L-04；L-01、L-03、L-04 沿用既有任务的 proposal 原文）；本任务无 Autome 指标，未引用数值 | docs/bug-loop-的定位-修复-复核/lessons.md | 无
