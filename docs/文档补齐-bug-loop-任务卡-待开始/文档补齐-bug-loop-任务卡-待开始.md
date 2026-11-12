@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/15
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 待独立审计；通过后下一实现轮推进 M-02 的 §8.2、§9 与 §14 文档补齐
+next-action: 下一实现轮推进 M-02 的 §8.2、§9 与 §14 文档补齐
 
 任务文件：`docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始-task.md`（目标、范围、硬性约束与验收标准以它为准；下文 `任务 §n` 指它的小节，`要求 n` 指任务 §3 的条目，`验收 n` 指任务 §4 的条目，`约束 n` 指任务 §5 的条目）。
 
@@ -266,7 +266,7 @@ if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1
 
 ### M-01 验收契约
 
-最新证据：docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
+最新证据：docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-01-r1-impl.md · 审计通过 · 实现 #1（审计证据 evidence/M-01-r1-audit.md）
 
 - 验收命令：`sed -n '/^~~~sh check-docs$/,/^~~~$/p' docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始.md | sed '1d;$d' | sh -s M-01`
 - 预期：输出 `M-01 PASS 103/103`，退出码 0；基线上同一命令为 `M-01 FAIL 77/103`。
@@ -288,7 +288,7 @@ if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | technical-design §5.1 追加 Draft、新增 §5.6 Bug Loop（要求 2、3） | 0 | |
+| M-01 | 已完成 | technical-design §5.1 追加 Draft、新增 §5.6 Bug Loop（要求 2、3） | 0 | |
 | M-02 | 开放 | technical-design §8.2 任务卡与待开始、§9 [bug]、§14 命令（要求 2、3；前置 M-01） | 0 | |
 | M-03 | 开放 | README 命令行与配置补齐、全量门禁（要求 1、3，验收 3；前置 M-02） | 0 | |
 
