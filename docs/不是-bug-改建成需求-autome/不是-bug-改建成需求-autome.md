@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 2/15
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-02；通过后实现 M-03 网页写网关与全量回归
+next-action: 实现 M-03 网页写网关与全量回归
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -189,7 +189,7 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 内核 task.convert（预检、单事务改建与取消、清理、事件）与端到端用例 | 0 | convert-core |
-| M-02 | 待审 | CLI autome task convert、帮助与 not_a_bug 提示 | 0 | convert-cli |
+| M-02 | 已完成 | CLI autome task convert、帮助与 not_a_bug 提示 | 0 | convert-cli |
 | M-03 | 开放 | 网页写网关放行 task.convert 与全量回归 | 0 | convert-web |
 
 ## 验收契约
@@ -251,7 +251,7 @@ M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程
 
 ### M-02 验收契约
 
-最新证据：docs/不是-bug-改建成需求-autome/evidence/M-02-r2-impl.md · 验收通过，宿主门禁存在环境阻塞 · 实现 #2
+最新证据：docs/不是-bug-改建成需求-autome/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`cargo test -p autome-cli task_convert`
 - 预期：3 个用例通过，都是新增的，基线上为 0 个。`cli.rs` 的集成测试从 13 个变成 15 个。
