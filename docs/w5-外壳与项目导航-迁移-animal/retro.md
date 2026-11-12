@@ -21,3 +21,5 @@
 实现 #8 | M-05 | 门禁未闭合，保留原状态并补阶段诊断 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r8-impl.md | notifier-live 重启超时；本地监听 EPERM 阻断复现
 
 实现 #9 | M-05 | 退回 Desktop 门禁调查，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r9-impl.md | Electron 启动 SIGABRT，宿主超时未闭合
+
+实现 #10 | M-05 | 门禁修复候选，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r10-impl.md | 本地监听 EPERM，提交后由 Autome 复验

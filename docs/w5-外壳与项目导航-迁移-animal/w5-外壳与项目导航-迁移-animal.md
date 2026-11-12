@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 9/25
+implementation-round: 10/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在宿主复跑 sh scripts/ci-local.sh，以 dom harness 最后一个 started 阶段和 check 定位 Desktop 的 60 秒超时；本地 Electron 启动 SIGABRT，尚未取得修复通过证据
+next-action: 由 Autome 在本轮提交上复跑 sh scripts/ci-local.sh，确认生产模式通知重启用例在原 30 秒内通过；本地监听 EPERM，尚无原检查红转绿证据
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -451,7 +451,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-05 ⌘K 跳转面板与新建任务卡入口
 
-最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r9-impl.md · Desktop 超时诊断已补充，未修复通过，原状态保留 · 实现 #9
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r10-impl.md · 通知测试隔离开发工具生命周期，宿主待复验，原状态保留 · 实现 #10
 
 - 覆盖：R-03，以及 R-05 中受写判定约束的入口。前置：M-04。
 - 结果：新增 `palette-model.ts` 和 `command-palette.tsx`。顶栏的「搜索或跳转」按钮和「新建任务卡」按钮接到面板。`App` 里挂上 `attachPaletteShortcut(window, …)`。

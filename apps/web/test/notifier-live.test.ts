@@ -17,10 +17,16 @@ const env = () => ({ ...process.env, HOME: home, AUTOME_HOME: home, AUTOMED_CLAU
 const command = (file: string, args: string[]) => promisify(execFile)(file, args, { cwd: repo, env: env(), timeout: 15000 });
 const cli = (...args: string[]) => command(join(wt, 'target/debug/autome'), args);
 async function until(check: () => boolean | Promise<boolean>) { const end = Date.now() + 15000; while (Date.now() < end) { if (await check()) return; await new Promise(r => setTimeout(r, 20)); } throw new Error('通知验收等待超时'); }
-async function start() { running = await startServer({ port: 0, mode: 'development', home, binaryPath: wrapper }); const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('无监听地址'); url = `http://127.0.0.1:${address.port}`; }
+// Exercise the deployed notification service without Vite's watcher/HMR lifecycle.
+// Development SSR and HMR remain covered by server.test.ts and shell-live.test.ts.
+async function start() { running = await startServer({ port: 0, mode: 'production', home, binaryPath: wrapper }); const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('无监听地址'); url = `http://127.0.0.1:${address.port}`; }
 async function list() { return (await (await fetch(url + '/api/notifications')).json()).payload as { unread: number; items: { id: string; title: string; read_at: string | null }[] }; }
 async function connect() { const ws = new WebSocket(url.replace('http:', 'ws:') + '/ws', { origin: url }); const client = { ws, messages: [] as Record<string, unknown>[] }; ws.on('message', data => client.messages.push(JSON.parse(data.toString()))); clients.push(client); await until(() => client.messages.some(m => m.type === 'hello')); return client; }
 async function fail(title: string) { await cli('task', 'new', title, '-p', repo); await cli('run', '--until-idle', '--interval', '0.2'); }
+beforeAll(async () => {
+  // Build explicitly so this suite also runs alone, before any other build test.
+  await promisify(execFile)('npm', ['run', 'build'], { cwd: resolve(wt, 'apps/web'), timeout: 60000 });
+}, 60000);
 beforeAll(async () => {
   mkdirSync(repo); mkdirSync(home); writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\nexit 3\n', { mode: 0o755 });
   configureFailureRepo(repo);
