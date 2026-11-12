@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 6/25
+implementation-round: 7/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 由 Autome 重跑合并前完整门禁，按结果继续调度
+next-action: 由 Autome 重跑合并前完整门禁，复验 CLI JSON 测试夹具修复并按结果调度
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -373,6 +373,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 - `scheduler.rs` 的 `start_onboarding` 里的 `PromptSpec`（产品代码）同样补两个 `None`。
 - 协议版本固定断言随 §9 的协议 v5 升级：`protocol::tests::the_version_in_force_is_the_newest_changelog_heading_over_the_seed` 与 e2e `every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task` 的 v4 预期更新为 v5，保留哈希与冻结断言；这是版本发布元数据更新，不改变无 quick 的行为契约。
 - `scheduler::Route::Rerouted` 用 `Box<ResolvedConfig>` 承载增大的配置，避免 `large_enum_variant`，路由判断不变。
+- `crates/autome-cli/tests/cli.rs` 的 `run_json_tick_error_and_interrupt_have_no_idle_trailer` 用草稿构造 Gate 测试任务，避免自动启动的会话回收错误抢先输出；增加无运行会话断言，保留 SIGINT / 无 idle 尾行检查，并加强任务错误前缀与 TOML 错误断言。这是隔离测试夹具的竞态，不改变产品行为。
 - 其余现有单测、金样、e2e 一行不改。给 `gate.started` / `gate.result` 加 `kind` 是任务卡要求的可见变化，已核对：现有测试对这两种事件
   只断言单个字段或计数，没有按整份载荷相等比较的（按整份比较的是 `main_check` 的 `gate.reused`，它不加 `kind`）；读者见 §10。
 - 若实现中发现某条现有测试必须改，实现轮在证据里逐条列出并说明理由，理由不能是「新行为与旧断言不符」。
@@ -468,7 +469,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
   - prompt_rendering 3 个（`gate_quick_` 开头）与金样 4 份：`golden/prompts/impl-before-merge-quick.md`、`fix-before-merge-quick.md`、
     `fix-review-before-merge-quick.md`、`golden/briefs/audit-before-merge-quick.md`。现有金样一份不改。
   - 协议 v5：§9 三处文本、`CHANGELOG.md` 两个块。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-05-r5-audit.md · 通过 · 审计 #5
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-05-r7-impl.md · CLI 测试夹具竞态修复，相关子集通过 · 实现 #7
 
 - **M-05**（覆盖：目标 5（人读）、7、8；验收 5（渲染单测）；约束 9、13、15。前置：M-02、M-03）。方案 §10、§11、§12。新增用例：
   autome-cli 2 个（`render::tests::gate_quick_run_lines_name_the_quick_run`、`render::tests::gate_quick_status_line_names_the_kind`，
