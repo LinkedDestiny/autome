@@ -1,7 +1,7 @@
 # 审计角色关闭时 Bug Loop 静默跳过复核
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_review_policy -- --nocapture
 根因: Bug Loop 在审计关闭时将 FixGate 成功直接转到 Rebase；启动入口没有 Bug 专用审计必需检查，通用 SAME-MODEL 校验又豁免关闭的角色，且跳过分支不记录告警。
 复核: 待复核
@@ -55,6 +55,14 @@ FixGate 成功后统一进入 FixReview，不再按审计开关跳到 Rebase；�
 配置门禁 `sh scripts/ci-local.sh` 已完整运行，耗时 1026 秒，退出码 1，未全绿。Format、Clippy、Rust 全仓测试（含 106 条端到端测试）、Contract、Web lint/typecheck/build 均通过；Rust 另有 1 条既有 ignored。Desktop 为 104 通过、1 失败：`test/dom.test.js:30` 的 Electron DOM harness 返回空退出码，stderr 为空，未进一步定位原因。Web 为 271 通过、11 失败、19 跳过，4 个测试文件失败；日志记录本地监听 `listen EPERM: operation not permitted 127.0.0.1`、文件监听 `EMFILE` 以及 server 钩子超时，部分用例因初始化失败未执行，不能视为通过。未改动或弱化这些检查，需宿主在具备本地监听与 Electron 运行条件的环境重新验收。完整日志为 `.autome/output/fix-1-gate.log`。
 
 `git diff --check` 通过。本轮不启动后续会话，不推送、不合并，独立复核仍待 Autome 调度。
+
+第 2/3 轮：宿主在 `8ebb3049989c98bb8ac95b1f6aa2078ca2705ee9` 上的门禁只报告 Web `notifier-live.test.ts:44` 停服重启用例超时。本轮检查该用例及 HTTP、通知、内核子进程关闭链路，未取得足以确定超时根因的证据。定向命令 `npm run test --prefix apps/web -- test/notifier-live.test.ts` 在初始化监听时因 `listen EPERM: operation not permitted 127.0.0.1` 失败，3 条测试未执行，未复现宿主的停服重启超时。日志为 `.autome/output/fix-2-notifier-before.log`。
+
+本轮未修改产品代码、门禁或任何测试，仅更新预算轮次及验证记录。原 Bug 根因与第 1 轮修复保持不变，`status: 已定位`、原复现命令和 `复核: 待复核` 保持不变。原复现命令实跑为 3 通过、0 失败，独立日志为 `.autome/output/fix-2-repro.log`。
+
+已执行宿主指定的同一组合命令 `( cd crates/automed && cargo test --offline --test end_to_end bug_review_policy -- --nocapture ) && ( sh scripts/ci-local.sh )`：复现通过后完整门禁运行 512 秒，退出码 1。Format、Clippy、Rust 全仓测试（含 106 条端到端测试）、Contract、Web lint/typecheck/build 通过；Rust 保留 1 条既有 ignored。Desktop 的 `test/dom.test.js:30` Electron DOM harness 退出码为 null、stderr 为空；Web 为 271 通过、11 失败、19 跳过，4 个测试文件失败，日志包含监听 `EPERM` 和文件监听 `EMFILE`。完整门禁日志为 `.autome/output/fix-2-gate.log`。
+
+本轮门禁未通过，宿主的 notifier 超时尚未解决，不能宣称修复完成。当前沙箱不允许本地监听且不提供提权，需 Autome 在具备监听及 Electron 条件的宿主继续验证；若仍出现原超时，需要区分服务关闭、重启初始化和 CLI 执行阶段再修复，不能通过延长超时或弱化测试掩盖问题。`git diff --check` 通过；本轮结束后由 Autome 调度，不自行启动下一会话。
 
 ## 复核意见
 
