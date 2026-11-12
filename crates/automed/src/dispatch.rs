@@ -1445,10 +1445,14 @@ fn create(
 ) -> DispatchResult {
     let (kind, brief, draft) = card;
     let project = ctx.store.get_project(project_id)?;
-    let doc_root = resolve_doc_root(
-        &project,
-        &config_io::load_project(std::path::Path::new(&project.path))?,
-    )?;
+    let project_config = config_io::load_project(std::path::Path::new(&project.path))?;
+    if kind == TaskKind::Bug && !draft {
+        let global = config_io::load_global(&ctx.autome_home)?;
+        if !config::resolve(&global, &project_config).is_enabled(Role::Audit) {
+            return Err(rejected("Bug 任务需要独立复核，请启用审计角色后启动"));
+        }
+    }
+    let doc_root = resolve_doc_root(&project, &project_config)?;
 
     let base = autome_domain::project::slugify(request);
     let slug = {
