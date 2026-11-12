@@ -1,32 +1,39 @@
 # 教训 · Bug Loop 的定位 / 修复 / 复核 prompt 列出任务附件与 `--doc` 参考（T-41）
 
-复盘轮 #1 覆盖写。依据：任务文件、`retro.md`、`evidence/` 下 5 份证据、评审 / 裁决 / 审计记录、`brief/impl-*.md`
-与 `brief/audit-*.md`、任务分支 `git log 83c80e9..HEAD`。本任务没有 Autome 指标，下文不引用任何指标数值。
+复盘轮 #2 覆盖写（复盘 #1 之后又跑了 M-03：rebase main、协议版本顺延为 v4、实现 #4 + 审计 #3）。依据：任务文件、
+`retro.md`、`evidence/` 下 7 份证据、评审 / 裁决 / 审计记录、`.autome/output/r4-conflicts.txt`、`git log`，以及本轮在
+HEAD（`ab750c9`）上的一次复跑。本任务没有 Autome 指标，下文不引用任何指标数值。
 
-设计 1 轮定稿（评审 R1-01 范围越界，裁决 #1 采纳，未多开设计轮）；M-01、M-02 都是一次审计关闭，reopen 0，审计
-无实现缺陷、无验证缺口。多出来的轮次只有一处：实现 #1 把 M-01 标待审后，宿主门禁在 `3e839ce` 上报 Test 失败，
-实现 #2 只改了 `end_to_end.rs` 里一行版本断言（L-01、L-02）。另外两条是执行环境问题，与之前任务的同类教训
-**沿用原 proposal 原文**，以便跨任务计数（L-03、L-04）。
+**本轮复跑发现 HEAD 上有一个确定性失败的测试。**
+`cargo test -p automed --test end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task`
+退出码 101：`end_to_end.rs:1734` 断言 `starts_with("protocol/v3@")`，实际值是 `protocol/v4@5d67a6c…`
+（原始输出：`.autome/output/retro2-e2e-protocol-version.txt`）。M-01 的实现 #1 坏的是同一行（当时是 v2→v3），
+那次被每轮宿主门禁拦下，多花了实现 #2。这次是 M-03 的 rebase 把版本号顺延到 v4，实现 #4 改了 `protocol/mod.rs`
+的断言，没改这一行。M-03 的验收只跑 `end_to_end bug_loop` 过滤子集；审计 #3 写的全量结果是「仅 scheduler 时序用例
+失败，其余全过」。但那个用例在 automed 的 lib 单测里，cargo 默认在第一个失败的测试二进制处停下，`end_to_end`
+根本没跑到（L-01、L-02、L-05）。任务状态已是「已完成」，合并前门禁会在这里报红。本轮按约束不改代码和里程碑表。
+
+L-03、L-04 与复盘 #1 相同，proposal 原文不动，以便跨任务计数。
 
 ```yaml
 - id: L-01
   domain: verification
-  symptom: '实现 #1（3e839ce）的 M-01 验收只跑 launcher / prompt_rendering / protocol:: 与静态门，证据写「M-02 的 e2e、workspace 全量、ci-local、插件 eval 本轮未跑，留给下一里程碑」，然后标待审；宿主门禁在 3e839ce416 上报 Test 失败（end_to_end 的 every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task 仍断言 protocol/v2@，实际 protocol/v3@），于是派出实现 #2，它只把 end_to_end.rs 一行前缀断言改成 protocol/v3@（a8116e3：end_to_end.rs 2 行改动）'
-  root_cause: 'M-01 改了协议版本（全仓库可见的产品行为），但验收契约只覆盖 launcher、金样与 protocol 模块；cargo test --workspace 只排在 M-02「全量门禁」里程碑，M-01 打破 end_to_end 时实现轮自己的验收看不到'
-  evidence: 'docs/bug-loop-的定位-修复-复核/evidence/M-01-r2-impl.md'
+  symptom: '同一类破坏出现了两次。M-01 实现 #1 的验收只跑 launcher / prompt_rendering / protocol:: 和静态门，宿主门禁在 3e839ce 上报 end_to_end 失败（仍断言 protocol/v2@），实现 #2 只改了一行断言。M-03 实现 #4 写「未跑 cargo test --workspace 和 ci-local.sh；本轮只验收冲突关联子集，全量门禁由合并前宿主执行」，契约里的 e2e 也只有 `end_to_end bug_loop` 过滤；rebase 把协议顺延到 v4 后，同一个 e2e 用例在 HEAD 上确定性失败（复盘 #2 复跑退出码 101），里程碑却已关闭'
+  root_cause: '改协议版本号是全仓库可见的行为变化，但里程碑验收契约只列了自己直接改的那几个测试目标，用例过滤（bug_loop）把断言版本号的 e2e 用例排除在外；全量运行被推给另一个里程碑或合并前门禁，实现轮自己的验收看不到这次破坏'
+  evidence: 'docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-impl.md'
   level: rule
   proposal: '凡改动产品代码的里程碑，其验收契约的验收命令必须包含 `cargo test --workspace`，不得把全量运行只放在单独的「全量门禁」里程碑'
-  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
 
 ```yaml
 - id: L-02
-  domain: design
-  symptom: '定稿设计（4ec408f）「背景与现状」第 6 条只列出 protocol/mod.rs:401 的 protocol/v2 断言要改，并判 version_page.rs、autome-domain/src/changelog.rs 的 protocol/v2 为样例不用改；漏掉两处：eval.rs:818/932 的测试夹具固定追加 `## protocol/v3`，与真实新版本重名（实现 #1 首跑 protocol:: 60 通过、1 失败，当轮补进设计清单）；end_to_end.rs:1701 `starts_with("protocol/v2@")`（实现 #1 没跑到，宿主门禁报红，多花实现 #2）。两处都能在基线上用 `git grep -n "protocol/v[23]" 83c80e9 -- crates` 一次列出'
-  root_cause: '设计只检索了旧版本号的部分出现位置，没有对 crates/ 全量检索旧版本号与新版本号两个字面量，并对每一条命中给出处理结论'
-  evidence: 'docs/bug-loop-的定位-修复-复核/evidence/M-01-r1-impl.md'
-  level: rule
-  proposal: '设计把协议版本从 vN 升到 vN+1 时，必须写出在基线上对 `crates/` 执行 `git grep -n "protocol/vN"` 与 `git grep -n "protocol/vN+1"` 的全部命中，并对每一条命中写明「改」或「不改的理由」'
+  domain: verification
+  symptom: '`crates/automed/tests/end_to_end.rs` 的 every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task 在同一行已经有 `assert_eq!(protocol_ref, automed::protocol::current().0.to_wire())`，下一行又写死了 `starts_with("protocol/vN@")`。本任务两次升版都撞上这一行：v2→v3（实现 #2 专门改它）和 v3→v4（M-03 漏改，HEAD 上失败）。同一类写死版本号的问题还有 eval.rs 夹具：基线固定追加 `## protocol/v3`，与真实新版本重名。本任务改成 v999，main 上的 T-61 独立改成 v90，两边改法不同，rebase 时 eval.rs 成为 6 个冲突文件之一（.autome/output/r4-conflicts.txt）'
+  root_cause: '断言当前版本的测试不止 protocol/mod.rs 一处，e2e 用例里还有一份写死的字面量；每次升版都要人记得同步改它，而升版可能发生在设计轮、实现轮或 rebase 顺延中的任何一处'
+  evidence: 'docs/bug-loop-的定位-修复-复核/evidence/M-01-r2-impl.md'
+  level: test
+  proposal: '`git grep -nE ''"protocol/v[0-9]'' -- crates/automed/tests` 输出为空：`crates/automed/tests/` 下需要当前协议版本的断言一律取 `automed::protocol::current()`，写死的当前版本号只保留在 `protocol/mod.rs` 的那一条单测里'
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
 ```
 
@@ -50,4 +57,15 @@
   level: rule
   proposal: '验收命令需要监听 127.0.0.1 的任务，实现轮会话以允许回环监听的权限启动，判据是实现证据里不再出现 `listen EPERM`'
   predicted_impact: {metric: total_tokens, direction: down, scope: task, horizon: 3}
+```
+
+```yaml
+- id: L-05
+  domain: verification
+  symptom: '审计 #3 的「cargo test --workspace 补记」写「全量结果：仅 scheduler::tests::gate_queue_upgrade_collects_two_old_jobs_without_killing_them 失败，其余全过」，并据此关闭 M-03。这个用例属于 automed 的 lib 单测二进制，cargo test 默认在第一个失败的测试二进制处停下，同一 crate 的 tests/end_to_end.rs 没有运行。复盘 #2 单跑 end_to_end 里的 every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task，确定性失败（断言 protocol/v3@，实际 protocol/v4@），而审计证据里只记了一个失败。审计没有留下全量运行的日志，无法核对实际跑了哪些测试二进制'
+  root_cause: '把「出现失败的那次全量运行」读成「其余测试都跑过且通过」，没有核对每个测试二进制是否都有 test result 行；时序不稳定的失败恰好挡住了后面的确定性失败'
+  evidence: 'docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-audit.md'
+  level: rule
+  proposal: '`cargo test --workspace` 有任何失败时，证据里写「其余全过」之前，必须先用 `cargo test --workspace --no-fail-fast` 重跑，并把每个测试二进制的 `test result:` 行（或其总数与失败数）写进证据'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
