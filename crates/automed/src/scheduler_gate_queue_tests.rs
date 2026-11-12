@@ -803,3 +803,101 @@ fn gate_queue_fix_round_is_counted_once_after_setup_not_while_waiting() {
             .unwrap();
     }
 }
+
+// Regression: user actions must enter the same slot admission path as resume.
+fn user_action_slot_regression(trigger: Trigger, initial: TaskState, resume: Node) {
+    assert!(
+        git_available(),
+        "Git is required; this regression must not skip"
+    );
+    let mut w = World::new("user-action-slot");
+    w.set_parallel(1);
+    let task = w.add_task("T-target", "target");
+    w.write_design(
+        &task,
+        &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+    );
+    w.set_state(&task.id, initial);
+    w.add_task("T-busy", "busy");
+    w.set_state(
+        "T-busy",
+        TaskState::Active {
+            node: Node::Implement,
+        },
+    );
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+    assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+
+    // This is the production entry called by dispatch::task_trigger, before
+    // its subsequent tick can mask transient oversubscription by doing work.
+    apply_trigger(&mut w.ctx, &task.id, &trigger).unwrap();
+    assert_eq!(
+        w.ctx.store.slots_in_use(&w.project_id).unwrap(),
+        1,
+        "{trigger:?} bypassed parallel=1; target={:?}, sessions={:?}",
+        w.state(&task.id),
+        w.ctx.store.list_sessions(&task.id).unwrap()
+    );
+    assert_eq!(w.state(&task.id), TaskState::Requeued { resume });
+    assert!(w.ctx.store.list_sessions(&task.id).unwrap().is_empty());
+    assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+
+    w.set_state(
+        "T-busy",
+        TaskState::Stopped {
+            at: Node::Implement,
+        },
+    );
+    assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+    assert_eq!(w.state(&task.id), TaskState::Active { node: resume });
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+    if resume == Node::Implement {
+        assert_eq!(w.ctx.store.list_sessions(&task.id).unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn user_action_slot_approve_waits_for_capacity() {
+    user_action_slot_regression(
+        Trigger::Approve,
+        TaskState::Active {
+            node: Node::AwaitDesignApproval,
+        },
+        Node::Implement,
+    );
+}
+
+#[test]
+fn user_action_slot_rerun_waits_for_capacity() {
+    user_action_slot_regression(
+        Trigger::RerunFrom {
+            node: Node::Implement,
+        },
+        TaskState::Stopped {
+            at: Node::Implement,
+        },
+        Node::Implement,
+    );
+}
+
+#[test]
+fn user_action_slot_merge_waits_for_capacity() {
+    user_action_slot_regression(
+        Trigger::Merge,
+        TaskState::Active {
+            node: Node::AwaitMerge,
+        },
+        Node::Merging,
+    );
+}
+
+#[test]
+fn user_action_slot_resume_control_waits_then_starts() {
+    user_action_slot_regression(
+        Trigger::Resume,
+        TaskState::Stopped {
+            at: Node::Implement,
+        },
+        Node::Implement,
+    );
+}
