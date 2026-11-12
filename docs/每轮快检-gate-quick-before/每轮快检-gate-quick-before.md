@@ -6,7 +6,7 @@ implementation-round: 2/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-02；通过后推进 M-03 Bug FixGate 复现命令加快检
+next-action: 推进 M-03 Bug FixGate 复现命令加快检
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -414,7 +414,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
-| M-02 | 待审 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
+| M-02 | 已完成 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 开放 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 开放 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
 | M-05 | 开放 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
@@ -430,7 +430,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
     `gate_quick_merge_and_main_check_nodes_unchanged`。
   - automed lib `config_io` 8 个（`gate_quick_` 开头）：默认与显式超时、只有 `quick` 报错（有无 `concurrency`、`command = ''`）、超时越界、
     非字符串与空白、只有超时、全局忽略、`save_project` 保留文本与注释并重载生效、`each_round` + `quick` 的 `violations` 为空。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-02-r2-impl.md · 验收通过，待审 · 实现 #2
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-02-r2-audit.md · 已完成 · 审计 #2
 
 - **M-02**（覆盖：目标 2、3、4、5（事件）；验收 2、4（`each_round` 不跑快检）；约束 1、5、6、7、8、11。前置：M-01）。方案 §3、§5、§6、§7
   的需求部分，以及 `gate.rs` 标记、`gate_queue.rs` 巡检超时。新增用例：
