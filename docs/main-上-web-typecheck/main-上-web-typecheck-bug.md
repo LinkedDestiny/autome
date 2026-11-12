@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd apps/web && node --test test/web-typecheck-regression.mjs
 根因: tsconfig 将 scripts 纳入 allowJs、checkJs、strict 检查，notifier-live-regression.mjs 的参数及 cases 集合缺少类型声明或可推断类型，产生 14 处隐式 any 诊断。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -53,4 +53,10 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+通过。
+
+- 复现命令独立复验：退出 0，真实 `npm run typecheck` 通过（修复前按记录为 14 条隐式 any 诊断）。
+- 回归测试 `apps/web/test/web-typecheck-regression.mjs` 自定位提交 cf20485 起未改动（`git diff cf20485 HEAD` 仅涉及脚本与本文档），未删除、跳过或弱化；它直接调用真实 typecheck 并要求退出 0，与具体修法无关，有意义。
+- 根因成立：strict+checkJs 覆盖 scripts 下的 `.mjs`，该脚本缺类型信息。修复只在 `notifier-live-regression.mjs` 添加 JSDoc 类型注解与参数类型，运行逻辑、tsconfig 均未变，范围最小，未靠放宽检查绕过。
+- `node --test scripts/notifier-live-regression.mjs`：2 通过、0 失败、0 跳过；apps/web 下 ESLint 无输出（通过）。
+- 完整 ci-local 在修复轮因沙箱端口监听 EPERM/Electron SIGABRT 未全绿，与本改动（仅类型注解）无关，本轮未重跑，交宿主门禁在正常环境判定。
