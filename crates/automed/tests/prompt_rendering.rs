@@ -78,6 +78,51 @@ fn rendered(kind: SessionKind) -> String {
         .replace(BRIEF, "{brief_path}")
 }
 
+// T-62: the agent must be told the same write boundary that the scheduler
+// enforces. Golden snapshots alone preserve the omission just as faithfully.
+fn assert_document_only_scope(prompt: &str) {
+    let plain = prompt.replace(['*', '`'], "");
+    assert!(
+        plain.contains("只能修改 {doc_dir}/ 下的文件"),
+        "缺少本任务文档目录的明确写入边界"
+    );
+    for term in ["被跟踪", "产品代码", "测试", "格式化", "lint", "协议失败"] {
+        assert!(plain.contains(term), "范围告知缺少：{term}");
+    }
+}
+
+#[test]
+fn scope_contract_audit_declares_guard_boundary() {
+    assert_document_only_scope(&rendered(SessionKind::Role { role: Role::Audit }));
+}
+
+#[test]
+fn scope_contract_retro_declares_guard_boundary() {
+    assert_document_only_scope(&rendered(SessionKind::Role { role: Role::Retro }));
+}
+
+#[test]
+fn scope_contract_fix_review_declares_guard_boundary() {
+    assert_document_only_scope(&bug_rendered(
+        autome_domain::session::BugStep::FixReview,
+        false,
+    ));
+}
+
+#[test]
+fn scope_contract_audit_limits_verification_gap_repairs() {
+    let prompt = rendered(SessionKind::Role { role: Role::Audit });
+    let gap = prompt
+        .lines()
+        .find(|line| line.starts_with("- **验证缺口**"))
+        .expect("审计必须保留验证缺口结论");
+    // Check the instruction itself, not incidental mentions elsewhere in
+    // the prompt: adding a warning must not leave this permission unbounded.
+    for term in ["验收契约", ".autome/output/", "不进仓库", "实现轮"] {
+        assert!(gap.contains(term), "验证缺口的操作范围缺少：{term}");
+    }
+}
+
 fn diff_report(name: &str, got: &str, want: &str) -> String {
     let g: Vec<&str> = got.lines().collect();
     let w: Vec<&str> = want.lines().collect();
