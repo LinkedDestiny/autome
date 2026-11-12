@@ -142,13 +142,20 @@ pub fn start(job: &Job, cwd: &Path, command: &str, env: &[(&str, &str)]) -> std:
 
 /// Looks at a started job. Kills it if it has run past `timeout_minutes`.
 pub fn poll(job: &Job, timeout_minutes: u32) -> Poll {
-    if let Some(marker) = std::fs::read_to_string(&job.exit)
-        .ok()
-        .and_then(|t| ExitMarker::parse(&t))
-    {
-        return Poll::Done {
-            exit_code: marker.exit_code,
-        };
+    poll_as(job, timeout_minutes, "门禁")
+}
+
+pub fn poll_as(job: &Job, timeout_minutes: u32, what: &str) -> Poll {
+    let completed = || {
+        std::fs::read_to_string(&job.exit)
+            .ok()
+            .and_then(|t| ExitMarker::parse(&t))
+            .map(|marker| Poll::Done {
+                exit_code: marker.exit_code,
+            })
+    };
+    if let Some(done) = completed() {
+        return done;
     }
     let pid = std::fs::read_to_string(&job.pid)
         .ok()
@@ -164,7 +171,7 @@ pub fn poll(job: &Job, timeout_minutes: u32) -> Poll {
             if elapsed >= u64::from(timeout_minutes) * 60 {
                 kill_group(pid);
                 let note =
-                    format!("\n=== Autome：门禁运行超过 {timeout_minutes} 分钟，已终止 ===\n");
+                    format!("\n=== Autome：{what}运行超过 {timeout_minutes} 分钟，已终止 ===\n");
                 append(&job.log, &note);
                 write_marker(&job.exit, TIMED_OUT);
                 return Poll::Done {
@@ -176,7 +183,31 @@ pub fn poll(job: &Job, timeout_minutes: u32) -> Poll {
         // The pid file is written by the wrapper's first line; a job started
         // a moment ago may not have one yet.
         None if elapsed < 10 => Poll::Running,
-        _ => Poll::Vanished,
+        // The wrapper may publish its result and exit between the first
+        // marker read and the liveness check. Collect it instead of rerunning.
+        _ => completed().unwrap_or(Poll::Vanished),
+    }
+}
+
+/// Read-only liveness, including the wrapper startup window.
+pub fn running(job: &Job) -> bool {
+    if !job.exists()
+        || std::fs::read_to_string(&job.exit)
+            .ok()
+            .and_then(|text| ExitMarker::parse(&text))
+            .is_some()
+    {
+        return false;
+    }
+    match std::fs::read_to_string(&job.pid)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+    {
+        Some(pid) => crate::launcher::pid_alive(pid),
+        None => std::fs::read_to_string(&job.started)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .is_some_and(|started| now_secs().saturating_sub(started) < 10),
     }
 }
 
@@ -344,6 +375,102 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
+    }
+
+    #[test]
+    fn setup_job_past_its_timeout_is_killed_with_124_and_a_setup_note() {
+        let repo = sandbox("setup-timeout");
+        for what in ["准备命令", "门禁"] {
+            let job = Job::at(&repo, "T-1", "setup", what);
+            start(&job, &repo, "sleep 30", &[]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::fs::read_to_string(&job.pid)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .is_none()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(job.pid.exists());
+            let pid: i32 = std::fs::read_to_string(&job.pid)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let result = if what == "门禁" {
+                poll(&job, 0)
+            } else {
+                poll_as(&job, 0, what)
+            };
+            assert_eq!(result, Poll::Done { exit_code: 124 });
+            assert!(tail(&job.log, 5).contains(&format!("{what}运行超过")));
+            assert!(!crate::launcher::pid_alive(pid));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_exit_published_between_marker_read_and_liveness_check_is_collected() {
+        use std::io::Write;
+        let repo = sandbox("setup-exit-race");
+        let job = Job::at(&repo, "T-1", "setup", "worktree");
+        std::fs::create_dir_all(job.pid.parent().unwrap()).unwrap();
+        std::fs::write(&job.started, now_secs().to_string()).unwrap();
+        assert!(
+            Command::new("mkfifo")
+                .arg(&job.pid)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let pid = job.pid.clone();
+        let exit = job.exit.clone();
+        let writer = std::thread::spawn(move || {
+            // Opening the FIFO waits until poll has already read the absent exit marker.
+            let mut file = std::fs::OpenOptions::new().write(true).open(pid).unwrap();
+            write_marker(&exit, 0);
+            writeln!(file, "{}", i32::MAX).unwrap();
+        });
+        let result = poll_as(&job, 1, "准备命令");
+        writer.join().unwrap();
+        assert_eq!(result, Poll::Done { exit_code: 0 });
+    }
+
+    #[test]
+    fn setup_jobs_are_discarded_by_their_own_prefix_and_leave_gate_jobs_alone() {
+        let repo = sandbox("setup-discard");
+        let setup = Job::at(&repo, "T-1", "setup", "worktree");
+        let gate = Job::at(&repo, "T-1", "gate", "abc");
+        for job in [&setup, &gate] {
+            start(job, &repo, "echo ok", &[]).unwrap();
+            assert_eq!(wait_done(job, 5), Poll::Done { exit_code: 0 });
+        }
+        discard_node(&repo, "T-1", "setup").unwrap();
+        assert!(!setup.started.exists() && !setup.log.exists() && !setup.exit.exists());
+        assert!(gate.started.exists() && gate.log.exists() && gate.exit.exists());
+    }
+
+    #[test]
+    fn setup_job_counts_as_running_from_its_started_file_until_its_exit_marker() {
+        let repo = sandbox("setup-running");
+        let job = Job::at(&repo, "T-1", "setup", "main");
+        assert!(!running(&job));
+        std::fs::create_dir_all(job.started.parent().unwrap()).unwrap();
+        std::fs::write(&job.started, now_secs().to_string()).unwrap();
+        assert!(running(&job));
+        std::fs::write(&job.started, (now_secs() - 10).to_string()).unwrap();
+        assert!(!running(&job));
+        std::fs::write(&job.started, now_secs().to_string()).unwrap();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        std::fs::write(&job.pid, child.id().to_string()).unwrap();
+        assert!(running(&job));
+        write_marker(&job.exit, 0);
+        assert!(!running(&job));
+        std::fs::remove_file(&job.exit).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!running(&job));
     }
 
     #[test]

@@ -118,6 +118,11 @@ timeout_minutes = 30       # the default; a gate that runs longer has failed
 [retry]
 attempts = 2               # the default; 0 restores "a crash fails the task"
 backoff_seconds = 60       # doubles each time: 1, 2, 4 minutes
+
+[setup]
+command = "npm ci --prefix apps/web"
+watch = ["apps/web/package-lock.json"]
+timeout_minutes = 30       # optional; preparation timeout
 ```
 
 - **The gate.** With `[gate]` set, Autome runs the command itself after every
@@ -129,6 +134,18 @@ backoff_seconds = 60       # doubles each time: 1, 2, 4 minutes
   run cannot undo the merge, so a failure there raises an alert on the
   dashboard instead. The audit round's brief says what the host saw, so the
   auditor reads a verdict it did not have to take on trust.
+- **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
+  sessions and gates, in the merge verification checkout, and in the main
+  checkout after merging (even without a gate). Each checkout remembers the
+  last successful command and watched file contents; unchanged inputs skip it.
+  An empty watch list runs once per checkout, then again only if the command
+  changes. A blank command disables setup. Workspace projects skip it with
+  one event per task. Failures or timeouts fail the task before merging; after
+  merging they raise a project alert and cleanup continues. Logs and markers
+  live in `.autome/output/`; `autome run` prints preparation events.
+  Prefer commands such as `npm ci` that preserve lock files: a command that
+  changes tracked files in the main checkout leaves it dirty and can block
+  the next merge.
 - **Retries.** A session that crashes — non-zero exit, process gone — is
   started again after a backoff instead of failing the task. A session that
   wrote nonsense is not retried; that is a protocol problem, not bad luck.

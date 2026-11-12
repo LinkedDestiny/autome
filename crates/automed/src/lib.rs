@@ -60,6 +60,7 @@ pub mod launcher;
 pub mod layout;
 pub mod protocol;
 pub mod scheduler;
+pub mod setup;
 pub mod skills;
 pub mod store;
 pub mod stream_render;

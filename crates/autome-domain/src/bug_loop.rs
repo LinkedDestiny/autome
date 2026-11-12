@@ -282,6 +282,31 @@ pub fn apply_for(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn setup_failure_fails_a_bug_task_at_its_bug_node() {
+        for node in [Node::Locate, Node::ReproCheck, Node::FixGate] {
+            let result = at(
+                node,
+                Trigger::SetupFailed {
+                    command: "install".into(),
+                    exit_code: 124,
+                    log: "setup.log".into(),
+                },
+            );
+            assert_eq!(
+                result.next,
+                TaskState::Failed {
+                    at: node,
+                    reason: FailureReason::Setup {
+                        command: "install".into(),
+                        exit_code: 124,
+                        log: "setup.log".into()
+                    }
+                }
+            );
+            assert_eq!(result.action, Action::None);
+        }
+    }
     use super::*;
     use crate::{
         config::{GateConfig, GlobalConfig, ProjectConfig, ResolvedConfig, resolve},

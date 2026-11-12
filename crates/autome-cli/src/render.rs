@@ -268,6 +268,24 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             local_time(&s("until")),
             s("reason")
         ),
+        "setup.started" => format!(
+            "{subject} 准备命令开始（{}）：{}  日志：{}",
+            setup_checkout_label(&s("checkout")),
+            s("command"),
+            s("log")
+        ),
+        "setup.result" => format!(
+            "{subject} 准备命令{}（{}，退出码 {}）  日志：{}",
+            if p["ok"].as_bool() == Some(true) {
+                "通过"
+            } else {
+                "未通过"
+            },
+            setup_checkout_label(&s("checkout")),
+            p["exit_code"],
+            s("log")
+        ),
+        "setup.skipped" => format!("{subject} 准备命令跳过：{}", s("reason")),
         "gate.started" => format!(
             "{subject} {}开始：{} @ {}",
             node_label(&s("node")),
@@ -386,6 +404,44 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn setup_events_are_printed_by_autome_run() {
+        for (checkout, label) in [
+            ("worktree", "任务检出"),
+            ("verify", "合并提交检出"),
+            ("main", "主检出"),
+        ] {
+            let p = json!({"checkout":checkout,"command":"npm ci","log":"/tmp/setup.log"});
+            let start = event_line("setup.started", "T-1", &p).unwrap();
+            assert!(
+                start.contains(label)
+                    && start.contains("npm ci")
+                    && start.contains("/tmp/setup.log")
+            );
+            for ok in [true, false] {
+                let line = event_line("setup.result", "T-1", &json!({
+                    "checkout":checkout,"ok":ok,"exit_code":if ok {0} else {7},"log":"/tmp/setup.log"
+                })).unwrap();
+                assert!(line.contains(label) && line.contains("/tmp/setup.log"));
+                assert!(line.contains(if ok {
+                    "准备命令通过"
+                } else {
+                    "准备命令未通过"
+                }));
+                assert!(line.contains(if ok { "退出码 0" } else { "退出码 7" }));
+            }
+        }
+        assert!(
+            event_line(
+                "setup.skipped",
+                "T-1",
+                &json!({"reason":"工作区项目不支持准备命令"})
+            )
+            .unwrap()
+            .contains("准备命令跳过：工作区项目不支持准备命令")
+        );
     }
 
     #[test]
@@ -563,5 +619,14 @@ mod bug_tests {
                 .contains(label)
             );
         }
+    }
+}
+
+fn setup_checkout_label(checkout: &str) -> &str {
+    match checkout {
+        "worktree" => "任务检出",
+        "verify" => "合并提交检出",
+        "main" => "主检出",
+        other => other,
     }
 }

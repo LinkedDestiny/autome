@@ -249,6 +249,8 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 
 ### 8.1 驱动锁、门禁、重试与冷却、表态租约
 
+**宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。主检出准备按其它任务的作业存活状态互斥，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
+
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 
 **宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同则沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。每次门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
@@ -258,6 +260,8 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 **表态租约。** 用户对 Backlog 与争议项的表态，不再在会话启动前就记为已消费。启动带 `Decisions` 注入的会话时，把「已表态、未消费、未被别的会话带走」的条目标上 `carried_by = 会话`，prompt 与简报只列这批。会话正常结束才写 `consumed_by`；崩溃、守卫失败或被叫停，就清掉 `carried_by`，下一个会话重新带上。复盘关闭时的忽略项等没有会话可携带的路径，照旧直接消费。
 
 ## 9. 配置解析
+
+项目级 `[setup]` 使用 `command`、`watch`、`timeout_minutes`：必须是表，command 必须是字符串，去空白为空等于未配置（不再校验其余字段）。watch 缺省空列表，否则必须是字符串数组，每项去空白后非空、非绝对路径、不含 `..` 路径段；相对检出根目录。timeout_minutes 缺省 30，必须是正整数。保存其它配置时原样保留该表；生效配置从项目复制，不从全局继承。
 
 - 生效配置 = 全局 `~/.autome/config.toml` 逐字段被项目 `.autome/config.toml` 覆盖。「恢复默认」即删除项目文件中的该字段。
 - 保存前校验：runtime 合法；review ≠ plan、audit ≠ impl（比较 `runtime:model` 字面值）；每个绑定技能对该角色 runtime 可见；parallel 1..5。任一失败返回结构化原因，界面据此标红。

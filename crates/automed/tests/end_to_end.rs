@@ -4118,7 +4118,18 @@ fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
             },
         )
         .unwrap();
-    w.doc_step(1, &slug, &doc("实现中", 1, 1, &[("M-01", "待审")]));
+    // task.approve ticks after launching the implementation. Hold the CLI
+    // until we have observed that session, even when it runs very quickly.
+    w.doc_step_for_prelude(
+        1,
+        &slug,
+        &doc("实现中", 1, 1, &[("M-01", "待审")]),
+        &format!(
+            "while [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done\n",
+            w.root.join("release-impl").display(),
+            w.root.display()
+        ),
+    );
     w.doc_step(2, &slug, &doc("实现中", 1, 1, &[("M-01", "已完成")]));
     w.retro_step(3, &slug);
     ok(&w.call("task.approve", json!({"task_id":id})));
@@ -4129,16 +4140,8 @@ fn bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it() {
             role: autome_domain::role::Role::Impl
         }
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while w.has_pending_work() {
-        let report = automed::scheduler::tick(&mut w.ctx);
-        assert!(report.errors.is_empty(), "{report:?}");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "legacy loop did not settle"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    std::fs::write(w.root.join("release-impl"), "go").unwrap();
+    resume_wait(&mut w, |w| !w.has_pending_work());
     assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
     assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 3);
     ok(&w.call("task.merge", json!({"task_id":id})));
@@ -5218,4 +5221,729 @@ fn bug_regression_guard_checks_each_workspace_member() {
             );
         }
     }
+}
+
+// Preparation uses real host jobs, with only the model session substituted.
+fn setup_fixture(w: &World, request: &str, script_body: &str) -> String {
+    let script = w.root.join("setup.sh");
+    std::fs::write(&script, format!(
+        "echo \"$PWD $(cat deps.lock 2>/dev/null | tr '\n' ' ')\" >> '{root}/setup-runs'\necho setup-output\n{script_body}\nmkdir -p deps\necho ready > deps/stamp\n",
+        root = w.root.display()
+    )).unwrap();
+    let ignore = w.repo.join(".gitignore");
+    let mut text = std::fs::read_to_string(&ignore).unwrap();
+    text.push_str("\ndeps/\n");
+    std::fs::write(ignore, text).unwrap();
+    std::fs::write(w.repo.join("deps.lock"), "v1").unwrap();
+    automed::git::commit_paths(&w.repo, &[".gitignore", "deps.lock"], "setup fixture").unwrap();
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[setup]\ncommand = \"{command}\"\nwatch = [\"deps.lock\"]\n"
+    ));
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        1,
+        &slug,
+        &doc("设计中", 0, 0, &[]),
+        &format!(
+            "[ -f deps/stamp ] || touch '{}'",
+            w.root.join("no-stamp").display()
+        ),
+    );
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    command
+}
+
+fn setup_events(w: &World, id: &str, kind: &str) -> Vec<(u64, Value)> {
+    w.ctx
+        .store
+        .events_since_with_subject(0, u32::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|(_, k, subject, _)| k == kind && subject == id)
+        .map(|(seq, _, _, payload)| (seq, payload))
+        .collect()
+}
+
+fn setup_runs(w: &World) -> Vec<String> {
+    std::fs::read_to_string(w.root.join("setup-runs"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn setup_runs_in_the_task_worktree_before_the_first_session() {
+    needs_git!();
+    let mut w = World::new("setup-first");
+    let request = "setup first";
+    setup_fixture(&w, request, "");
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    assert!(!w.root.join("no-stamp").exists());
+    let results = setup_events(&w, &id, "setup.result");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1["ok"], true);
+    assert_eq!(results[0].1["checkout"], "worktree");
+    assert!(results[0].0 < setup_events(&w, &id, "session.started")[0].0);
+    assert_eq!(
+        setup_runs(&w),
+        vec![format!(
+            "{} v1",
+            w.repo
+                .join(format!(".worktree/{}", slug_for(request)))
+                .canonicalize()
+                .unwrap()
+                .display()
+        )]
+    );
+}
+
+#[test]
+fn setup_failure_before_the_first_session_fails_the_task_with_command_exit_code_and_log() {
+    needs_git!();
+    let mut w = World::new("setup-failure");
+    let request = "setup failure";
+    let command = setup_fixture(&w, request, "exit 7");
+    let id = create_task(&mut w, request);
+    w.settle();
+    let state = serde_json::to_value(w.ctx.store.get_task(&id).unwrap().state).unwrap();
+    assert_eq!(state["state"], "failed");
+    assert_eq!(state["reason"]["kind"], "setup");
+    assert_eq!(state["reason"]["exit_code"], 7);
+    assert_eq!(state["reason"]["command"], command);
+    let log = state["reason"]["log"].as_str().unwrap();
+    assert!(
+        std::fs::read_to_string(log)
+            .unwrap()
+            .contains("setup-output")
+    );
+    assert!(setup_events(&w, &id, "session.started").is_empty());
+    assert!(setup_events(&w, &id, "gate.started").is_empty());
+    assert!(!automed::setup::worktree_record(&w.repo, &id).exists());
+    let script = w.root.join("setup.sh");
+    let body = std::fs::read_to_string(&script)
+        .unwrap()
+        .replace("exit 7", "true");
+    std::fs::write(script, body).unwrap();
+    ok(&w.call("task.rerun_from", json!({"task_id":id,"node":"intake"})));
+    w.settle();
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 2);
+    assert_eq!(setup_events(&w, &id, "setup.result")[1].1["ok"], true);
+    assert!(!setup_events(&w, &id, "session.started").is_empty());
+}
+
+#[test]
+fn setup_still_running_when_the_core_restarts_is_collected_not_run_again() {
+    needs_git!();
+    let mut w = World::new("setup-restart");
+    let request = "setup restart";
+    setup_fixture(&w, request, "sleep 1");
+    let id = create_task(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
+    assert!(setup_events(&w, &id, "setup.result").is_empty());
+    automed::scheduler::recover(&mut w.ctx);
+    w.settle();
+    assert_eq!(setup_runs(&w).len(), 1);
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 1);
+    assert!(!setup_events(&w, &id, "session.started").is_empty());
+}
+
+#[test]
+fn setup_stopped_by_the_user_is_killed_and_runs_again_on_resume() {
+    needs_git!();
+    let mut w = World::new("setup-stop");
+    let request = "setup stop";
+    std::fs::write(w.root.join("slow"), "").unwrap();
+    setup_fixture(
+        &w,
+        request,
+        &format!(
+            "echo $$ > '{root}/setup-pid'\nif [ -f '{root}/slow' ]; then sleep 30; fi",
+            root = w.root.display()
+        ),
+    );
+    let id = create_task(&mut w, request);
+    resume_wait(&mut w, |w| {
+        std::fs::read_to_string(w.root.join("setup-pid"))
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .is_some()
+    });
+    let pid: i32 = std::fs::read_to_string(w.root.join("setup-pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    resume_wait(&mut w, |_| !automed::launcher::pid_alive(pid));
+    assert!(!automed::launcher::pid_alive(pid));
+    assert!(
+        std::fs::read_dir(automed::gate::dir_for(&w.repo, &id))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("setup-"))
+    );
+    std::fs::remove_file(w.root.join("slow")).unwrap();
+    ok(&w.call("task.resume", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 2);
+    assert_eq!(setup_events(&w, &id, "setup.result")[0].1["ok"], true);
+    assert!(!setup_events(&w, &id, "session.started").is_empty());
+}
+
+#[test]
+fn setup_events_are_absent_when_no_setup_is_configured() {
+    needs_git!();
+    let mut w = World::new("setup-none");
+    let id = run_gated_task(&mut w, "without setup");
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    for kind in ["setup.started", "setup.result", "setup.skipped"] {
+        assert!(setup_events(&w, &id, kind).is_empty());
+    }
+}
+
+#[test]
+fn setup_run_in_flight_is_collected_under_its_own_fingerprint_when_the_watched_file_changes() {
+    needs_git!();
+    let mut w = World::new("setup-changed");
+    let request = "setup changed";
+    setup_fixture(&w, request, "sleep 2");
+    let id = create_task(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
+    std::fs::write(
+        w.repo
+            .join(format!(".worktree/{}/deps.lock", slug_for(request))),
+        "v1\nv2",
+    )
+    .unwrap();
+    w.settle();
+    let starts = setup_events(&w, &id, "setup.started");
+    let results = setup_events(&w, &id, "setup.result");
+    assert_eq!(starts.len(), 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].1["fingerprint"], starts[0].1["fingerprint"]);
+    assert_eq!(results[1].1["fingerprint"], starts[1].1["fingerprint"]);
+    assert_ne!(starts[0].1["fingerprint"], starts[1].1["fingerprint"]);
+    assert_eq!(starts[1].1["reason"], "变化");
+    assert!(results.iter().all(|(_, p)| p["ok"] == true));
+    assert!(results[0].0 < starts[1].0);
+    assert!(results[1].0 < setup_events(&w, &id, "session.started")[0].0);
+    assert_eq!(setup_runs(&w).len(), 2);
+    let files: Vec<_> = std::fs::read_dir(automed::gate::dir_for(&w.repo, &id))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("setup-"))
+        .collect();
+    assert_eq!(files, vec!["setup-worktree.log"]);
+}
+
+#[test]
+fn setup_run_in_flight_that_fails_after_the_watched_file_changed_still_fails_the_task() {
+    needs_git!();
+    let mut w = World::new("setup-changed-fail");
+    let request = "setup changed fail";
+    setup_fixture(&w, request, "sleep 2; exit 3");
+    let id = create_task(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
+    std::fs::write(
+        w.repo
+            .join(format!(".worktree/{}/deps.lock", slug_for(request))),
+        "v2",
+    )
+    .unwrap();
+    w.settle();
+    let state = serde_json::to_value(w.ctx.store.get_task(&id).unwrap().state).unwrap();
+    assert_eq!(state["state"], "failed");
+    assert_eq!(state["reason"]["kind"], "setup");
+    assert_eq!(state["reason"]["exit_code"], 3);
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 1);
+    let results = setup_events(&w, &id, "setup.result");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1["ok"], false);
+    assert!(setup_events(&w, &id, "session.started").is_empty());
+    assert!(!automed::setup::worktree_record(&w.repo, &id).exists());
+}
+
+#[test]
+fn setup_pause_cancel_vanished_and_input_boundaries_follow_the_same_job_lifecycle() {
+    needs_git!();
+    for action in ["pause", "cancel", "vanished", "unattributed", "finishing"] {
+        let mut w = World::new(&format!("setup-{action}"));
+        let request = format!("setup {action}");
+        setup_fixture(&w, &request, "sleep 30");
+        let id = create_task(&mut w, &request);
+        resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
+        let job = automed::gate::Job::at(&w.repo, &id, "setup", "worktree");
+        assert!(automed::gate::running(&job));
+        if action == "pause" {
+            ok(&w.call("task.pause", json!({"task_id":id})));
+            assert!(automed::gate::running(&job));
+            assert!(setup_events(&w, &id, "session.started").is_empty());
+            // Resume collects the original job rather than launching another.
+            ok(&w.call("task.resume", json!({"task_id":id})));
+            assert_eq!(setup_events(&w, &id, "setup.started").len(), 1);
+            ok(&w.call("task.stop", json!({"task_id":id})));
+        } else if action == "finishing" {
+            // Reproduce the exit-publication/PID-removal window with a live
+            // real wrapper. Its paths cannot be collected and reused yet.
+            std::fs::write(
+                &job.exit,
+                "exit_code=0\nended_at=2026-11-11T00:00:00Z\nmarker_end\n",
+            )
+            .unwrap();
+            automed::scheduler::tick(&mut w.ctx);
+            assert!(setup_events(&w, &id, "setup.result").is_empty());
+            assert!(setup_events(&w, &id, "session.started").is_empty());
+            assert_eq!(setup_events(&w, &id, "setup.started").len(), 1);
+            ok(&w.call("task.stop", json!({"task_id":id})));
+        } else if action == "cancel" {
+            ok(&w.call("task.cancel", json!({"task_id":id})));
+            assert!(!automed::gate::running(&job));
+            assert!(!job.exists());
+        } else {
+            automed::gate::stop_all(&w.repo, &id);
+            if action == "unattributed" {
+                std::fs::remove_file(
+                    w.repo
+                        .join(".autome/output/setup")
+                        .join(&id)
+                        .join("worktree.running"),
+                )
+                .unwrap();
+                std::fs::write(
+                    &job.exit,
+                    "exit_code=0\nended_at=2026-11-11T00:00:00Z\nmarker_end\n",
+                )
+                .unwrap();
+            } else {
+                let _ = std::fs::remove_file(&job.exit);
+                // Dead pid and no exit marker must restart, not claim success.
+            }
+            let script = w.root.join("setup.sh");
+            let text = std::fs::read_to_string(&script)
+                .unwrap()
+                .replace("sleep 30", "true");
+            std::fs::write(script, text).unwrap();
+            w.settle();
+            assert_eq!(setup_events(&w, &id, "setup.started").len(), 2);
+            assert_eq!(setup_events(&w, &id, "setup.result").len(), 1);
+            assert!(!setup_events(&w, &id, "session.started").is_empty());
+        }
+    }
+
+    // Host-side file reads: a directory and a missing file are both absent,
+    // whereas an empty file has a distinct fingerprint.
+    let mut w = World::new("setup-inputs");
+    let request = "setup inputs";
+    setup_fixture(&w, request, "");
+    let id = create_task(&mut w, request);
+    w.settle();
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let project = w.ctx.store.get_project(&w.project_id).unwrap();
+    let dir = w.repo.join(format!(".worktree/{}", slug_for(request)));
+    let record = automed::setup::worktree_record(&w.repo, &id);
+    let mut config = autome_domain::config::SetupConfig {
+        command: "true".into(),
+        watch: vec!["missing".into(), "directory".into()],
+        timeout_minutes: 30,
+    };
+    std::fs::create_dir(dir.join("directory")).unwrap();
+    let absent =
+        autome_domain::setup::fingerprint("true", &[("missing", None), ("directory", None)]);
+    std::fs::write(&record, &absent).unwrap();
+    let check = |ctx: &mut Ctx, config: &autome_domain::config::SetupConfig| {
+        automed::setup::ensure(
+            ctx,
+            &task,
+            &project,
+            config,
+            automed::setup::Checkout {
+                kind: autome_domain::setup::Checkout::Worktree,
+                dir: &dir,
+                record: record.clone(),
+            },
+            autome_domain::task::Node::Intake,
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        check(&mut w.ctx, &config),
+        automed::setup::Ready::Ready
+    ));
+    std::fs::write(dir.join("missing"), "").unwrap();
+    assert!(matches!(
+        check(&mut w.ctx, &config),
+        automed::setup::Ready::Pending
+    ));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match check(&mut w.ctx, &config) {
+            automed::setup::Ready::Ready => break,
+            automed::setup::Ready::Pending => {
+                assert!(std::time::Instant::now() < deadline, "setup did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            automed::setup::Ready::Failed { .. } => panic!("successful input check failed"),
+        }
+    }
+    assert_ne!(std::fs::read_to_string(&record).unwrap(), absent);
+    config.watch.clear();
+    std::fs::write(&record, autome_domain::setup::fingerprint("true", &[])).unwrap();
+    assert!(matches!(
+        check(&mut w.ctx, &config),
+        automed::setup::Ready::Ready
+    ));
+}
+
+fn setup_gate_task(w: &mut World, request: &str, body: &str, fail_setup: bool) -> (String, String) {
+    let command = setup_fixture(w, request, body);
+    let gate = write_gate_script(w);
+    w.configure(&format!("[gate]\ncommand = \"sh {}\"\n", gate.display()));
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        if fail_setup {
+            "echo bad > deps.lock\ngit add deps.lock"
+        } else {
+            ""
+        },
+    );
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        "echo v2 > deps.lock\necho ok > gate-ok\ngit add deps.lock gate-ok",
+    );
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+    let id = create_task(w, request);
+    w.settle();
+    w.call("task.approve", json!({"task_id": id}));
+    w.settle();
+    (id, command)
+}
+
+#[test]
+fn setup_reruns_before_the_gate_only_when_a_watched_file_changed() {
+    needs_git!();
+    let mut w = World::new("setup-gate-change");
+    let (id, _) = setup_gate_task(&mut w, "setup gate change", "", false);
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = setup_events(&w, &id, "setup.result");
+    let gates = setup_events(&w, &id, "gate.started");
+    assert_eq!(
+        setup_runs(&w).len(),
+        2,
+        "runs={:?}; results={results:?}; starts={:?}",
+        setup_runs(&w),
+        setup_events(&w, &id, "setup.started")
+    );
+    assert_eq!(results.len(), 2);
+    assert_eq!(gates.len(), 3);
+    assert_eq!(gates[2].1["node"], "merge_gate");
+    assert!(results[0].0 < gates[0].0 && gates[0].0 < results[1].0 && results[1].0 < gates[1].0);
+    assert_eq!(results[1].1["node"], "gate");
+    assert_eq!(setup_events(&w, &id, "setup.started").len(), 2);
+}
+
+#[test]
+fn setup_failure_before_a_gate_fails_the_task_and_starts_no_gate() {
+    needs_git!();
+    let mut w = World::new("setup-gate-fail");
+    let (id, command) = setup_gate_task(
+        &mut w,
+        "setup gate fail",
+        "if grep -q bad deps.lock; then exit 9; fi",
+        true,
+    );
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let state = serde_json::to_value(task.state).unwrap();
+    assert_eq!(state["state"], "failed", "{state}");
+    assert_eq!(state["at"], "gate");
+    assert_eq!(state["reason"]["kind"], "setup");
+    assert_eq!(state["reason"]["exit_code"], 9);
+    assert_eq!(state["reason"]["command"], command);
+    assert!(
+        state["reason"]["log"]
+            .as_str()
+            .unwrap()
+            .ends_with("setup-worktree.log")
+    );
+    assert!(setup_events(&w, &id, "gate.started").is_empty());
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 5);
+}
+
+fn assert_setup_verify_removed(w: &World, id: &str) {
+    let commit = w.ctx.store.get_task(id).unwrap().merge_commit.unwrap();
+    assert!(
+        !w.repo
+            .join(format!(".worktree/_verify-{}", &commit[..12]))
+            .exists()
+    );
+    assert!(!automed::setup::verify_record(&w.repo, id, &commit).exists());
+}
+
+#[test]
+fn setup_runs_in_the_merge_commit_checkout_before_the_main_check() {
+    needs_git!();
+    let mut w = World::new("setup-verify");
+    let (id, _) = setup_gate_task(&mut w, "setup verify", "", false);
+    // The gate genuinely requires preparation in the fresh checkout.
+    std::fs::write(w.root.join("gate.sh"), "test -f deps/stamp\n").unwrap();
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let results = setup_events(&w, &id, "setup.result");
+    let verify = results
+        .iter()
+        .find(|(_, e)| e["checkout"] == "verify")
+        .unwrap();
+    let gates = setup_events(&w, &id, "gate.started");
+    let main = gates
+        .iter()
+        .find(|(_, e)| e["node"] == "main_check")
+        .unwrap();
+    assert!(verify.0 < main.0);
+    assert_eq!(verify.1["ok"], true);
+    assert_eq!(
+        setup_runs(&w)
+            .iter()
+            .filter(|line| line.contains("_verify-"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        setup_events(&w, &id, "gate.result").last().unwrap().1["ok"],
+        true
+    );
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+    assert_setup_verify_removed(&w, &id);
+}
+
+#[test]
+fn setup_failure_in_the_merge_commit_checkout_raises_an_alert_and_skips_the_main_check() {
+    needs_git!();
+    let mut w = World::new("setup-verify-fail");
+    let (id, command) = setup_gate_task(
+        &mut w,
+        "setup verify fail",
+        "case \"$PWD\" in *_verify-*) exit 5 ;; esac",
+        false,
+    );
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "setup_failed");
+    for text in [&command, "退出码 5", "setup-verify.log"] {
+        assert!(alerts[0].detail.contains(text), "{}", alerts[0].detail);
+    }
+    let skipped = setup_events(&w, &id, "gate.skipped");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].1["node"], "main_check");
+    assert!(
+        setup_events(&w, &id, "gate.started")
+            .iter()
+            .all(|(_, e)| e["node"] != "main_check")
+    );
+    assert_setup_verify_removed(&w, &id);
+}
+
+#[test]
+fn setup_reruns_before_the_repro_check_when_the_locate_round_changed_a_watched_file() {
+    needs_git!();
+    let mut w = World::new("setup-repro");
+    let request = "setup repro";
+    setup_fixture(&w, request, "");
+    let slug = slug_for(request);
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\necho located > deps.lock"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_FIX}\necho fixed > deps.lock"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = setup_events(&w, &id, "setup.result");
+    assert_eq!(results.len(), 3);
+    let gates = setup_events(&w, &id, "gate.started");
+    for (index, node) in [(1, "repro_check"), (2, "fix_gate")] {
+        assert_eq!(results[index].1["node"], node);
+        assert_eq!(results[index].1["ok"], true);
+        assert!(results[index].0 < gates.iter().find(|(_, e)| e["node"] == node).unwrap().0);
+    }
+    assert!(gates.iter().any(|(_, e)| e["node"] == "merge_gate"));
+}
+
+fn setup_main_task(w: &mut World, request: &str, change: bool) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        if change {
+            "echo v2 > deps.lock\ngit add deps.lock"
+        } else {
+            ""
+        },
+    );
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    std::fs::write(w.repo.join(".autome/fake/next"), "1").unwrap();
+    let id = create_task(w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    ok(&w.call("task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    id
+}
+
+#[test]
+fn setup_in_the_main_checkout_runs_after_a_merge_only_when_the_watch_changed() {
+    needs_git!();
+    let mut w = World::new("setup-main");
+    setup_fixture(&w, "main a", "");
+    let mut total = 0;
+    for (request, change, expected) in [
+        ("main a", false, 1),
+        ("main b", false, 0),
+        ("main c", true, 1),
+    ] {
+        let id = setup_main_task(&mut w, request, change);
+        assert_eq!(
+            setup_events(&w, &id, "setup.result")
+                .iter()
+                .filter(|(_, e)| e["checkout"] == "main" && e["ok"] == true)
+                .count(),
+            expected
+        );
+        total += expected;
+        let prefix = format!("{} ", w.repo.canonicalize().unwrap().display());
+        assert_eq!(
+            setup_runs(&w)
+                .iter()
+                .filter(|line| line.starts_with(&prefix))
+                .count(),
+            total
+        );
+        assert!(automed::git::is_clean(&w.repo).unwrap());
+    }
+}
+
+#[test]
+fn setup_failure_in_the_main_checkout_raises_an_alert_and_the_task_is_still_done() {
+    needs_git!();
+    let mut w = World::new("setup-main-fail");
+    let command = setup_fixture(
+        &w,
+        "main fail",
+        "[ \"$AUTOME_SETUP_CHECKOUT\" != main ] || exit 4",
+    );
+    let id = setup_main_task(&mut w, "main fail", false);
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "setup_failed");
+    for text in [&command, "退出码 4", "setup-main.log"] {
+        assert!(alerts[0].detail.contains(text));
+    }
+    assert!(!w.repo.join(".autome/output/setup/main.fp").exists());
+    assert!(!w.repo.join(".worktree/main-fail").exists());
+    assert!(!automed::git::branch_exists(&w.repo, "autome/main-fail"));
+    let result = setup_events(&w, &id, "setup.result");
+    assert!(
+        result
+            .iter()
+            .any(|(_, e)| e["checkout"] == "main" && e["exit_code"] == 4)
+    );
+}
+
+#[test]
+fn setup_is_skipped_in_a_workspace_with_one_event_per_task() {
+    needs_git!();
+    let mut w = Workspace::new("setup-skip", &["docs", "backend"]);
+    let config = w.ws().join(".autome/config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+    text.push_str(&format!(
+        "\n[setup]\ncommand = \"touch {}\"\n",
+        w.root.join("setup-runs").display()
+    ));
+    std::fs::write(config, text).unwrap();
+    let request = "workspace setup";
+    let slug = slug_for(request);
+    for (n, status, d, k, milestones) in [
+        (1, "设计中", 0, 0, vec![]),
+        (2, "设计中", 1, 0, vec![]),
+        (3, "设计中", 1, 0, vec![]),
+        (4, "实现中", 2, 0, vec![("M-01", "开放")]),
+        (5, "实现中", 2, 1, vec![("M-01", "待审")]),
+        (6, "实现中", 2, 1, vec![("M-01", "已完成")]),
+        (7, "已完成", 2, 1, vec![("M-01", "已完成")]),
+    ] {
+        w.doc_step(
+            n,
+            &slug,
+            if n == 1 {
+                ".worktree/workspace-setup"
+            } else {
+                ""
+            },
+            &ws_doc(status, d, k, &milestones, "backend"),
+            if n == 7 {
+                "echo lessons > docs/autome/workspace-setup/lessons.md"
+            } else {
+                ""
+            },
+        );
+    }
+    let out = call(
+        &mut w.ctx,
+        "task.create",
+        json!({"project_id": w.project_id, "request": request}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.settle();
+    ok(&call(&mut w.ctx, "task.approve", json!({"task_id": id})));
+    w.settle();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert!(matches!(
+        w.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Done
+    ));
+    assert_eq!(w.ctx.store.count_events(&id, "setup.skipped").unwrap(), 1);
+    assert_eq!(w.ctx.store.count_events(&id, "setup.started").unwrap(), 0);
+    assert!(!w.root.join("setup-runs").exists());
 }

@@ -193,6 +193,11 @@ impl Node {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FailureReason {
+    Setup {
+        command: String,
+        exit_code: i32,
+        log: String,
+    },
     /// The design loop used up `design_rounds`.
     DesignBudget {
         limit: u32,
@@ -409,6 +414,11 @@ impl PendingDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum Trigger {
+    SetupFailed {
+        command: String,
+        exit_code: i32,
+        log: String,
+    },
     BugSessionEnded {
         outcome: crate::bug_loop::BugSessionOutcome,
     },
@@ -831,6 +841,23 @@ fn apply_inner(
     // Control triggers first: they apply from many states, and handling them
     // once here keeps the node table below about the Loop itself.
     match trigger {
+        Trigger::SetupFailed {
+            command,
+            exit_code,
+            log,
+        } => {
+            return match state {
+                TaskState::Active { node } if !node.awaits_user() => Ok(Transition::fail(
+                    *node,
+                    FailureReason::Setup {
+                        command: command.clone(),
+                        exit_code: *exit_code,
+                        log: log.clone(),
+                    },
+                )),
+                _ => Err(reject("任务不在运行中")),
+            };
+        }
         Trigger::Start => {
             return if matches!(state, TaskState::Draft) {
                 Ok(Transition::to(TaskState::Queued, Action::None))
@@ -1381,6 +1408,82 @@ pub fn compute_budget(config: &ResolvedConfig, status: &StatusBlock) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    fn setup_trigger() -> Trigger {
+        Trigger::SetupFailed {
+            command: "install".into(),
+            exit_code: 7,
+            log: "output/setup.log".into(),
+        }
+    }
+    fn setup_reason() -> FailureReason {
+        FailureReason::Setup {
+            command: "install".into(),
+            exit_code: 7,
+            log: "output/setup.log".into(),
+        }
+    }
+    #[test]
+    fn setup_failure_fails_an_active_task_at_its_node_with_command_exit_code_and_log() {
+        let config = resolve(&GlobalConfig::default(), &ProjectConfig::default());
+        for node in Node::ALL
+            .iter()
+            .chain(Node::BUG.iter())
+            .copied()
+            .filter(|node| !node.awaits_user())
+        {
+            let result = apply(&active(node), &setup_trigger(), &ctx(&config)).unwrap();
+            assert_eq!(
+                result.next,
+                TaskState::Failed {
+                    at: node,
+                    reason: setup_reason()
+                }
+            );
+            assert_eq!(result.action, Action::None);
+        }
+    }
+    #[test]
+    fn setup_failure_is_rejected_unless_the_task_is_running() {
+        let config = resolve(&GlobalConfig::default(), &ProjectConfig::default());
+        let mut states = vec![
+            TaskState::Draft,
+            TaskState::Queued,
+            TaskState::Done,
+            TaskState::Cancelled,
+            TaskState::Failed {
+                at: Node::Gate,
+                reason: setup_reason(),
+            },
+        ];
+        for node in Node::ALL.iter().chain(Node::BUG.iter()).copied() {
+            states.extend([
+                TaskState::Paused { resume: node },
+                TaskState::Stopped { at: node },
+                TaskState::Requeued { resume: node },
+            ]);
+            if node.awaits_user() {
+                states.push(active(node));
+            }
+        }
+        for state in states {
+            assert!(
+                apply(&state, &setup_trigger(), &ctx(&config)).is_err(),
+                "{state:?}"
+            );
+        }
+    }
+    #[test]
+    fn setup_failure_reason_serializes_as_kind_setup() {
+        let value = serde_json::to_value(setup_reason()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"kind":"setup", "command":"install", "exit_code":7, "log":"output/setup.log"})
+        );
+        assert_eq!(
+            serde_json::from_value::<FailureReason>(value).unwrap(),
+            setup_reason()
+        );
+    }
     use super::*;
     use crate::config::{GlobalConfig, ProjectConfig, RoleOverrides, resolve};
     use crate::status_block::{ConvergenceMode, Milestone, MilestoneState};
