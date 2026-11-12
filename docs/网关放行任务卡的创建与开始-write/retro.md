@@ -12,3 +12,5 @@
 实现 #4 | M-03 | 退回 + 环境阻塞（保持开放） | docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-impl.md | 监听 EPERM，正文保存未取证
 审计 #3 | M-03 | 通过 | docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-audit.md | 无
 实现 #5 | M-04 | 未通过，保持开放 | docs/网关放行任务卡的创建与开始-write/evidence/M-04-r5-impl.md | HTTP 监听 EPERM；全量 321 比基线增加 2
+
+实现 #6 | M-04 | 门禁修复未完成，保持开放 | docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-impl.md | 本地监听 EPERM，宿主原失败未复现

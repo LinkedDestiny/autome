@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 5/20
+implementation-round: 6/20
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-04：在允许本地监听的环境复验两条替身 CLI 生命周期测试及全量验收（本轮监听 EPERM；预期 321）
+next-action: 先在允许本地监听的环境复现并修复 notifier-live 停服重启用例的宿主门禁失败，再复验 M-04；本轮受监听 EPERM 阻断
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -376,7 +376,7 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 
 ### M-04 验收契约
 
-最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-04-r5-impl.md · 未通过（监听 EPERM，保持开放） · 实现 #5
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-impl.md · 门禁修复未完成（监听 EPERM，保持开放） · 实现 #6
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/gateway-task-lifecycle.test.ts test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：指定两个文件共 6 个用例全部通过（gateway-task-lifecycle 0→2、gateway-task-card 4）；全量 `npm test` 0 失败、用例总数 = B + 20；lint 0 警告、typecheck 通过；替身 `history` 非空，证据里写明会话只落到替身 CLI。
