@@ -318,6 +318,20 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 
 **表态租约。** 用户对 Backlog 与争议项的表态，不再在会话启动前就记为已消费。启动带 `Decisions` 注入的会话时，把「已表态、未消费、未被别的会话带走」的条目标上 `carried_by = 会话`，prompt 与简报只列这批。会话正常结束才写 `consumed_by`；崩溃、守卫失败或被叫停，就清掉 `carried_by`，下一个会话重新带上。复盘关闭时的忽略项等没有会话可携带的路径，照旧直接消费。
 
+### 8.2 任务卡正文、附件与待开始（Draft）
+
+`task.create` 的 `kind` 缺省为 `feature`，只接受 `feature` / `bug`，其它值拒绝。可选的 `brief` 是任务卡正文，必须是字符串，去空白为空或超过 65536 字节均拒绝（分别报「任务卡正文必须是字符串」「任务卡正文不能为空」「任务卡正文超过 64KB」）。出处：`crates/automed/src/dispatch.rs` 的 `task_create`。
+
+提供 `brief` 而没有 `request` 时，从正文第一个 `# ` 行取标题；没有这样的行则取第一非空行并去掉前导 `#` 与空白，结果仍为空时报「任务卡正文缺少标题：第一行写 `# 标题`」。两者都提供时由 `request` 命名任务，正文原样保留。出处：`crates/automed/src/dispatch.rs` 的 `task_create`、测试 `a_brief_without_a_request_takes_its_request_from_the_first_heading`、`with_both_the_request_names_the_task_and_the_brief_is_kept_verbatim`。
+
+正文原样存入 SQLite 的 `task_briefs` 表；`task.get` 返回 `brief`，没有正文时显式为 `null`，任务列表不带正文。附件 `attachments` 在建卡时逐个检查是否为文件，否则报「附件不存在：<路径>」。出处：`crates/automed/src/store.rs` 的 `create_task`、`task_brief`；`crates/automed/src/dispatch.rs` 的 `task_create`、测试 `archived_brief_remains_readable_and_lists_omit_it`、`missing_brief_is_explicit_null`。
+
+`draft: true` 创建 `Draft`（待开始），不触发调度、不建 worktree，返回 `started: false`、`queue_position: null`。非草稿 Bug 任务建卡时即检查审计角色是否开启；草稿到开始时再检查（§5.6）。出处：`crates/automed/src/dispatch.rs` 的 `create`、测试 `a_draft_is_created_without_starting_or_a_queue_position_and_is_not_on_the_dashboard`；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`。
+
+`autome task start <任务>` 对应 `task.start`：施加 `Start`，只有 `Draft` 可转为 `Queued`，其它状态拒绝「只有待开始的任务可以开始」；记 `task.started` 后调度一次，返回 `task`、`started`、`queue_position`。草稿也可直接取消、归档，全程无需建立 worktree。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、测试 `task_start_refuses_a_task_that_is_not_a_draft`、`a_draft_is_cancelled_and_archived_without_a_worktree`；`crates/autome-domain/src/task.rs` 的 `apply`；`crates/autome-cli/src/main.rs` 的 `USAGE`。
+
+任务检出建好后、首个会话前，`write_task_inputs` 把正文写成 `<doc_dir>/<slug>-card.md`（已有文件不覆盖），附件仅首次复制到 `<doc_dir>/attachments/`；这些输入以一条 `chore(autome): <任务 id> inputs` 提交进任务分支。出处：`crates/automed/src/scheduler.rs` 的 `write_task_inputs` 及其会话启动调用处。
+
 ## 9. 配置解析
 
 项目级 `[setup]` 使用 `command`、`watch`、`timeout_minutes`：必须是表，command 必须是字符串，去空白为空等于未配置（不再校验其余字段）。watch 缺省空列表，否则必须是字符串数组，每项去空白后非空、非绝对路径、不含 `..` 路径段；相对检出根目录。timeout_minutes 缺省 30，必须是正整数。保存其它配置时原样保留该表；生效配置从项目复制，不从全局继承。
@@ -326,6 +340,8 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 - 保存前校验：runtime 合法；review ≠ plan、audit ≠ impl（比较 `runtime:model` 字面值）；每个绑定技能对该角色 runtime 可见；parallel 1..5。任一失败返回结构化原因，界面据此标红。
 - automed 监听两份配置文件变化，新会话启动时读取最新生效值。运行中会话不受影响。
 - 界面保存只写文件，不执行 git 提交。
+
+项目级 `[bug] fix_rounds` 缺省为 3，必须是 1 到 20 的整数，否则报「[bug] fix_rounds 必须是 1 到 20 的整数」；`[bug]` 只在项目配置中提供，不从全局继承。出处：`crates/automed/src/config_io.rs` 的 `parse_project`；`crates/autome-domain/src/config.rs` 的 `DEFAULT_FIX_ROUNDS`、`resolve`。
 
 ## 10. Onboarding 与初始化
 
@@ -363,6 +379,10 @@ SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog
 沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。
 
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
+
+补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。
+
+`task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
 
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
 
