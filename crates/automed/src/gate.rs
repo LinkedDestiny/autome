@@ -71,6 +71,25 @@ impl Job {
         }
     }
 
+    /// Persists that this FixGate started without the project gate. This
+    /// survives clear/start; the scheduler replaces it before every launch.
+    pub fn set_repro_only(&self, value: bool) -> std::io::Result<()> {
+        let path = self.started.with_extension("repro-only");
+        if value {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(path, "")
+        } else {
+            match std::fs::remove_file(path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            }
+        }
+    }
+
+    pub fn repro_only(&self) -> bool {
+        self.started.with_extension("repro-only").exists()
+    }
+
     /// Whether this job was ever started (and not cleared since).
     pub fn exists(&self) -> bool {
         self.started.exists()
@@ -273,6 +292,7 @@ fn discard_except(
             ".log",
             ".exit.tmp",
             ".exit.code",
+            ".repro-only",
         ] {
             if let Some(stem) = name.strip_suffix(suffix) {
                 if keep.is_none_or(|key| stem != format!("{node}-{key}")) {
@@ -303,7 +323,15 @@ fn discard_except(
         }
     }
     for stem in stems {
-        for suffix in ["started", "pid", "exit", "log", "exit.tmp", "exit.code"] {
+        for suffix in [
+            "started",
+            "pid",
+            "exit",
+            "log",
+            "exit.tmp",
+            "exit.code",
+            "repro-only",
+        ] {
             match std::fs::remove_file(dir.join(format!("{stem}.{suffix}"))) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -448,6 +476,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn before_merge_repro_marker_survives_start_and_clear_but_not_discard() {
+        let repo = sandbox("repro-marker");
+        let job = Job::at(&repo, "T-1", "fix_gate", "abc");
+        assert!(!job.repro_only());
+        job.set_repro_only(false).unwrap();
+        job.set_repro_only(true).unwrap();
+        assert!(job.repro_only());
+        job.set_repro_only(false).unwrap();
+        assert!(!job.repro_only());
+        job.set_repro_only(true).unwrap();
+        start(&job, &repo, "true", &[]).unwrap();
+        assert!(job.exists() && job.repro_only());
+        assert_eq!(wait_done(&job, 1), Poll::Done { exit_code: 0 });
+        job.clear();
+        assert!(!job.exists() && job.repro_only());
+        discard_node(&repo, "T-1", "fix_gate").unwrap();
+        assert!(!job.repro_only());
+        // File-system failure must propagate rather than start an unmarked job.
+        std::fs::create_dir(job.started.with_extension("repro-only")).unwrap();
+        assert!(job.set_repro_only(true).is_err());
+        assert!(job.set_repro_only(false).is_err());
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     fn wait_done(job: &Job, timeout_minutes: u32) -> Poll {

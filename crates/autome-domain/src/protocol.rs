@@ -22,7 +22,50 @@
 //!    the binary, not read from the files being checked.** An expectation
 //!    stored inside the file it guards is not an expectation.
 
+use crate::config::GateRun;
 use std::collections::BTreeMap;
+
+/// Select gate-mode sections without altering retained bytes.
+pub fn select_gate_run(text: &str, run: GateRun) -> Result<String, String> {
+    let mut active = None;
+    let mut seen = Vec::new();
+    let mut out = String::new();
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let marker = line.trim_end();
+        let mode = match marker {
+            "<!-- gate-run: each_round -->" => Some(GateRun::EachRound),
+            "<!-- gate-run: before_merge -->" => Some(GateRun::BeforeMerge),
+            "<!-- /gate-run -->" => {
+                if active.is_none() {
+                    return Err(format!("第 {} 行：gate-run 没有开始标记", i + 1));
+                }
+                active = None;
+                seen.clear();
+                continue;
+            }
+            _ if marker.contains("<!-- gate-run:") || marker.contains("<!-- /gate-run") => {
+                return Err(format!("第 {} 行：未知或非独占行的 gate-run 标记", i + 1));
+            }
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            if seen.contains(&mode) {
+                return Err(format!("第 {} 行：gate-run 嵌套或重复模式", i + 1));
+            }
+            seen.push(mode);
+            active = Some(mode);
+        } else if active.is_none() || active == Some(run) {
+            out.push_str(line);
+        }
+    }
+    if active.is_some() {
+        return Err(format!(
+            "第 {} 行：gate-run 缺少结束标记",
+            text.lines().count()
+        ));
+    }
+    Ok(out)
+}
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -589,5 +632,71 @@ mod tests {
         let before = f.sized_bytes();
         f.insert("prompts/impl.md", "y".repeat(9_000));
         assert_eq!(f.sized_bytes(), before);
+    }
+    #[test]
+    fn before_merge_prompt_unmarked_bytes_are_unchanged() {
+        for text in ["", "hello", "\n中文\r\ntext\n"] {
+            for mode in [GateRun::EachRound, GateRun::BeforeMerge] {
+                assert_eq!(select_gate_run(text, mode).unwrap(), text);
+            }
+        }
+    }
+    #[test]
+    fn before_merge_prompt_sections_preserve_exact_bytes() {
+        let text = "top\n\n<!-- gate-run: each_round --> \t\nold\n<!-- gate-run: before_merge -->\nnew\n<!-- /gate-run -->\n\nend\n<!-- gate-run: before_merge -->\nonly\n<!-- /gate-run -->";
+        assert_eq!(
+            select_gate_run(text, GateRun::EachRound).unwrap(),
+            "top\n\nold\n\nend\n"
+        );
+        assert_eq!(
+            select_gate_run(text, GateRun::BeforeMerge).unwrap(),
+            "top\n\nnew\n\nend\nonly\n"
+        );
+        let only_each = "<!-- gate-run: each_round -->\r\nold\r\n<!-- /gate-run -->\r\n";
+        assert_eq!(
+            select_gate_run(only_each, GateRun::EachRound).unwrap(),
+            "old\r\n"
+        );
+        assert_eq!(
+            select_gate_run(only_each, GateRun::BeforeMerge).unwrap(),
+            ""
+        );
+        let reversed = "<!-- gate-run: before_merge -->\nnew\n<!-- gate-run: each_round -->\nold\n<!-- /gate-run -->\n";
+        assert_eq!(
+            select_gate_run(reversed, GateRun::EachRound).unwrap(),
+            "old\n"
+        );
+        assert_eq!(
+            select_gate_run(reversed, GateRun::BeforeMerge).unwrap(),
+            "new\n"
+        );
+        for mode in [GateRun::EachRound, GateRun::BeforeMerge] {
+            assert_eq!(select_gate_run("<!-- gate-run: before_merge -->\n<!-- gate-run: each_round -->\n<!-- /gate-run -->", mode).unwrap(), "");
+        }
+    }
+    #[test]
+    fn before_merge_prompt_invalid_sections_report_lines() {
+        for (text, line) in [
+            ("<!-- gate-run: before_merge -->\nx", 2),
+            ("<!-- /gate-run -->", 1),
+            (
+                "<!-- gate-run: each_round -->\n<!-- gate-run: each_round -->\n<!-- /gate-run -->",
+                2,
+            ),
+            (
+                "<!-- gate-run: each_round -->\n<!-- gate-run: before_merge -->\n<!-- gate-run: each_round -->",
+                3,
+            ),
+            ("<!-- gate-run: sometimes -->", 1),
+            ("prefix <!-- gate-run: before_merge -->", 1),
+        ] {
+            for mode in [GateRun::EachRound, GateRun::BeforeMerge] {
+                assert!(
+                    select_gate_run(text, mode)
+                        .unwrap_err()
+                        .contains(&format!("第 {line} 行"))
+                );
+            }
+        }
     }
 }

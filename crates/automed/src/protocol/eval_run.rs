@@ -239,7 +239,13 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
         ));
         return result;
     };
-    let prompt = render_prompt(template, &plan.slug);
+    let prompt = match render_prompt(template, &plan.slug, case.gate_command.as_deref()) {
+        Ok(prompt) => prompt,
+        Err(e) => {
+            result.errors.push(e);
+            return result;
+        }
+    };
 
     for run in 0..case.runs {
         let dir = match scaffold(plan, case, run) {
@@ -292,23 +298,41 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
 /// A case exercises one round in isolation: there is no brief, no budget and
 /// no metrics, and the prompt has to say so rather than leave a literal
 /// `{brief_path}` in front of the model.
-fn render_prompt(template: &str, slug: &str) -> String {
-    template
-        .replace("{doc_dir}", &format!("docs/{slug}"))
-        .replace("{slug}", slug)
-        .replace("{budget_line}", "")
-        .replace(
-            "{brief_path}",
-            &format!("docs/{slug}/brief/（本次评估没有简报，直接读任务目录）"),
-        )
-        .replace("{task_metrics}", "（本次评估没有指标）")
-        .replace(
-            "{metric_vocabulary}",
-            &autome_domain::metrics::TaskMetrics::METRIC_NAMES.join(" / "),
-        )
-        .replace("{request}", "")
-        .replace("{inputs}", "")
-        .replace("{design_rounds}", "15")
+fn render_prompt(template: &str, slug: &str, gate_command: Option<&str>) -> Result<String, String> {
+    use autome_domain::{config::GateRun, protocol::select_gate_run};
+    let template = select_gate_run(
+        template,
+        if gate_command.is_some() {
+            GateRun::BeforeMerge
+        } else {
+            GateRun::EachRound
+        },
+    )?;
+    let render = |part: &str| {
+        part.replace("{doc_dir}", &format!("docs/{slug}"))
+            .replace("{slug}", slug)
+            .replace("{budget_line}", "")
+            .replace(
+                "{brief_path}",
+                &format!("docs/{slug}/brief/（本次评估没有简报，直接读任务目录）"),
+            )
+            .replace("{task_metrics}", "（本次评估没有指标）")
+            .replace(
+                "{metric_vocabulary}",
+                &autome_domain::metrics::TaskMetrics::METRIC_NAMES.join(" / "),
+            )
+            .replace("{request}", "")
+            .replace("{inputs}", "")
+            .replace("{design_rounds}", "15")
+    };
+    Ok(match gate_command {
+        Some(command) => template
+            .split("{gate_line}")
+            .map(render)
+            .collect::<Vec<_>>()
+            .join(&crate::launcher::gate_line(command)),
+        None => render(&template),
+    })
 }
 
 fn scaffold(plan: &Plan<'_>, case: &Case, run: u32) -> Result<PathBuf, String> {
@@ -495,6 +519,7 @@ mod tests {
     fn case(name: &str, runs: u32, max_turns: u32) -> Case {
         Case {
             prompt: None,
+            gate_command: None,
             name: name.into(),
             role: Role::Impl,
             description: String::new(),
@@ -612,7 +637,7 @@ mod tests {
     #[test]
     fn no_placeholder_reaches_the_model_even_though_a_case_has_no_brief() {
         let files = crate::protocol::seed().clone();
-        let rendered = render_prompt(files.prompt("impl").unwrap(), "demo");
+        let rendered = render_prompt(files.prompt("impl").unwrap(), "demo", None).unwrap();
         assert!(!rendered.contains("{brief_path}"), "{rendered}");
         assert!(!rendered.contains("{budget_line}"), "{rendered}");
         assert!(!rendered.contains("{slug}"), "{rendered}");
@@ -701,5 +726,20 @@ mod tests {
             assert!(!seen[0].contains("{budget_line}"));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+    #[test]
+    fn before_merge_prompt_eval_selects_mode_before_inserting_command() {
+        let template = "{slug}\n<!-- gate-run: each_round -->\nold\n<!-- gate-run: before_merge -->\n{gate_line}\n<!-- /gate-run -->\n";
+        assert_eq!(
+            render_prompt(template, "demo", None).unwrap(),
+            "demo\nold\n"
+        );
+        for cmd in ["make check", "echo {slug}", "sh \"${ci_script}\""] {
+            assert_eq!(
+                render_prompt(template, "demo", Some(cmd)).unwrap(),
+                format!("demo\n{}\n", crate::launcher::gate_line(cmd))
+            );
+        }
+        assert!(render_prompt("<!-- /gate-run -->", "demo", None).is_err());
     }
 }

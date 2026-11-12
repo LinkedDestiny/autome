@@ -267,6 +267,8 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_run: Option<GateRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_same_failure_limit: Option<u32>,
@@ -288,6 +290,21 @@ pub struct SetupConfig {
 }
 
 pub const DEFAULT_SETUP_TIMEOUT_MINUTES: u32 = 30;
+
+/// When the host runs the project's full gate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateRun {
+    #[default]
+    EachRound,
+    BeforeMerge,
+}
+
+impl GateRun {
+    pub fn is_each_round(&self) -> bool {
+        *self == Self::EachRound
+    }
+}
 
 /// `[gate]` in a project's `.autome/config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +399,8 @@ pub struct ResolvedConfig {
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
+    #[serde(default, skip_serializing_if = "GateRun::is_each_round")]
+    pub gate_run: GateRun,
     pub gate_same_failure_limit: u32,
     pub gate_reuse_for_main_check: bool,
     #[serde(default = "default_gate_concurrency")]
@@ -390,6 +409,17 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
+    pub fn gate_before_merge(&self) -> Option<&str> {
+        self.gate
+            .as_ref()
+            .filter(|_| self.gate_run == GateRun::BeforeMerge)
+            .map(|gate| gate.command.as_str())
+    }
+
+    pub fn gates_each_round(&self) -> bool {
+        self.gate.is_some() && self.gate_run == GateRun::EachRound
+    }
+
     pub fn role(&self, role: Role) -> &ResolvedRole {
         self.roles
             .iter()
@@ -455,6 +485,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             .gate_concurrency
             .unwrap_or(global.gate.concurrency)
             .min(global.gate.concurrency),
+        gate_run: project.gate_run.unwrap_or_default(),
         setup: project.setup.clone(),
         gate_same_failure_limit: project
             .gate_same_failure_limit
@@ -640,6 +671,41 @@ mod tests {
                 enabled
             );
         }
+    }
+
+    #[test]
+    fn before_merge_defaults_override_and_json_compatibility() {
+        let mut project = ProjectConfig::default();
+        let default = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(default.gate_run, GateRun::EachRound);
+        assert!(
+            serde_json::to_value(&default)
+                .unwrap()
+                .get("gate_run")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::from_value::<ResolvedConfig>(serde_json::to_value(&default).unwrap())
+                .unwrap(),
+            default
+        );
+        project.gate_run = Some(GateRun::EachRound);
+        assert_eq!(resolve(&GlobalConfig::default(), &project), default);
+        project.gate_run = Some(GateRun::BeforeMerge);
+        let before = resolve(&GlobalConfig::default(), &project);
+        assert_eq!(before.gate_run, GateRun::BeforeMerge);
+        assert!(!before.gates_each_round());
+        assert_eq!(
+            serde_json::to_value(&before).unwrap()["gate_run"],
+            "before_merge"
+        );
+        project.gate = Some(GateConfig {
+            command: "check".into(),
+            timeout_minutes: 1,
+        });
+        assert!(!resolve(&GlobalConfig::default(), &project).gates_each_round());
+        project.gate_run = Some(GateRun::EachRound);
+        assert!(resolve(&GlobalConfig::default(), &project).gates_each_round());
     }
 
     #[test]
@@ -1183,6 +1249,29 @@ mod tests {
         let value = serde_json::to_value(&project).unwrap();
         let impl_table = value.pointer("/roles/impl").unwrap().as_object().unwrap();
         assert_eq!(impl_table.keys().collect::<Vec<_>>(), vec!["model"]);
+    }
+    #[test]
+    fn before_merge_prompt_command_requires_both_gate_and_mode() {
+        for mode in [None, Some(GateRun::EachRound), Some(GateRun::BeforeMerge)] {
+            for command in [None, Some("echo {slug}")] {
+                let project = ProjectConfig {
+                    gate_run: mode,
+                    gate: command.map(|command| GateConfig {
+                        command: command.into(),
+                        timeout_minutes: 1,
+                    }),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    resolve(&GlobalConfig::default(), &project).gate_before_merge(),
+                    if mode == Some(GateRun::BeforeMerge) {
+                        command
+                    } else {
+                        None
+                    }
+                );
+            }
+        }
     }
 }
 

@@ -2563,6 +2563,362 @@ fn an_included_backlog_item_reaches_the_next_prompt_and_survives_a_crash() {
 /// The project's gate as a script outside the repository: passes when the
 /// commit has a `gate-ok` file, and — when told to — fails on the checkout
 /// the core makes of the merge commit.
+#[test]
+fn feature_before_merge_two_milestones_run_the_gate_once_before_the_merge() {
+    needs_git!();
+    let mut w = World::new("before-merge-two");
+    let calls = w.root.join("calls");
+    w.configure(&format!(
+        "[gate]\nreuse_for_main_check = false\nrun = \"before_merge\"\ncommand = \"echo $AUTOME_GATE_NODE >> {}\"\n",
+        calls.display()
+    ));
+    let request = "two milestones before merge";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (
+            4,
+            doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]),
+        ),
+        (
+            5,
+            doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]),
+        ),
+        (
+            6,
+            doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]),
+        ),
+        (
+            7,
+            doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]),
+        ),
+        (
+            8,
+            doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "已完成")]),
+        ),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(std::fs::read_to_string(&calls).unwrap(), "merge_gate\n");
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|(_, k, s, p)| s == &id && k == "task.updated" && p["state"]["node"] == "gate")
+    );
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|(_, k, s, _)| s == &id && k == "gate.started")
+        .map(|(_, _, _, p)| p["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(starts, ["merge_gate"]);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        std::fs::read_to_string(calls).unwrap(),
+        "merge_gate\nmain_check\n"
+    );
+    // The reverse switch takes effect at the next implementation completion.
+    let mut w = World::new("before-merge-reverse");
+    w.configure("[gate]\nrun = \"before_merge\"\ncommand = \"true\"\n");
+    let request = "reverse gate mode";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        &format!(
+            "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done",
+            w.root.join("impl-ready").display(),
+            w.root.join("impl-release").display(),
+            w.root.display()
+        ),
+    );
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("impl-ready").exists());
+    let config = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("run = \"before_merge\"", "run = \"each_round\"");
+    std::fs::write(config, text).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "restore each round").unwrap();
+    std::fs::write(w.root.join("impl-release"), "go").unwrap();
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|(_, k, s, p)| s == &id && k == "gate.started" && p["node"] == "gate")
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "gate.skipped").unwrap(), 0);
+}
+
+#[test]
+fn feature_before_merge_a_failing_merge_gate_returns_to_implement_and_merges_after_the_fix() {
+    needs_git!();
+    let mut w = World::new("before-merge-failure");
+    let script = write_gate_script(&w);
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = \"before_merge\"\ncommand = \"{command}\"\n"
+    ));
+    let request = "before merge repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(8).contains("gate says no: gate-ok is missing"));
+    assert!(w.prompt(8).contains(&command));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let failed = events
+        .iter()
+        .find(|(_, k, s, p)| s == &id && k == "gate.result" && p["ok"] == false)
+        .unwrap();
+    assert_eq!(failed.3["node"], "merge_gate");
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|(seq, k, s, _)| *seq > failed.0 && s == &id && k == "task.updated")
+        .filter_map(|(_, _, _, p)| p["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "implement",
+            "audit",
+            "retro",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|(_, k, s, p)| s == &id && k == "gate.started" && p["node"] == "gate")
+    );
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+
+#[test]
+fn brief_before_merge_audit_brief_never_shows_a_stale_result() {
+    needs_git!();
+    let mut w = World::new("brief-before-merge");
+    let script = write_gate_script(&w);
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = \"before_merge\"\ncommand = \"{command}\"\n"
+    ));
+    let request = "before merge repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(8).contains("gate says no: gate-ok is missing"));
+    assert!(w.prompt(8).contains(&command));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let failed = events
+        .iter()
+        .find(|(_, k, s, p)| s == &id && k == "gate.result" && p["ok"] == false)
+        .unwrap();
+    assert_eq!(failed.3["node"], "merge_gate");
+    let failed_sha = failed.3["sha"].as_str().unwrap();
+    let brief_dir = w.repo.join(format!(".worktree/{slug}/docs/{slug}/brief"));
+    for round in [1, 2] {
+        let text = std::fs::read_to_string(brief_dir.join(format!("audit-{round}.md"))).unwrap();
+        assert!(text.contains("## 宿主门禁"), "{text}");
+        assert!(
+            text.contains(automed::brief::GATE_ONLY_BEFORE_MERGE),
+            "{text}"
+        );
+        assert!(!text.contains(&failed_sha[..10]), "{text}");
+        assert!(!text.contains("：未通过"), "{text}");
+    }
+
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|(seq, k, s, _)| *seq > failed.0 && s == &id && k == "task.updated")
+        .filter_map(|(_, _, _, p)| p["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "implement",
+            "audit",
+            "retro",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|(_, k, s, p)| s == &id && k == "gate.started" && p["node"] == "gate")
+    );
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+
+fn feature_before_merge_switch_gate(interrupt: Option<&str>) {
+    let mut w = World::new("before-merge-switch");
+    let script = w.root.join("gate.sh");
+    std::fs::write(&script, format!("if [ \"$AUTOME_GATE_NODE\" = gate ]; then\n touch '{}'\n while [ -d '{}' ]; do sleep 0.02; done\nfi\n", w.root.join("gate-ready").display(), w.root.display())).unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = \"each_round\"\ncommand = \"sh {}\"\n",
+        script.display()
+    ));
+    let request = "switch pending gate";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成")]),
+        &format!(
+            "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done",
+            w.root.join("audit-ready").display(),
+            w.root.join("audit-release").display(),
+            w.root.display()
+        ),
+    );
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("gate-ready").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("gate"));
+    let head = automed::git::head_sha(&w.repo.join(format!(".worktree/{slug}"))).unwrap();
+    let job = automed::gate::Job::at(&w.repo, &id, "gate", &head[..12]);
+    let pid: i32 = std::fs::read_to_string(&job.pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    if let Some(method) = interrupt {
+        ok(&w.call(method, json!({"task_id":id})));
+    }
+    let config = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("run = \"each_round\"", "run = \"before_merge\"");
+    std::fs::write(config, text).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "switch gate mode").unwrap();
+    if interrupt.is_some() {
+        ok(&w.call("task.resume", json!({"task_id":id})));
+    }
+    resume_wait(&mut w, |w| w.root.join("audit-ready").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    assert!(!automed::launcher::pid_alive(pid));
+    #[cfg(unix)]
+    assert_ne!(
+        unsafe { libc::kill(-pid, 0) },
+        0,
+        "gate process group survived"
+    );
+    assert!(!job.started.exists() && !job.pid.exists() && !job.exit.exists() && !job.log.exists());
+    let skipped = w
+        .ctx
+        .store
+        .last_event(&id, "gate.skipped")
+        .unwrap()
+        .unwrap();
+    assert_eq!(skipped["node"], "gate");
+    assert_eq!(skipped["reason"], "门禁只在合并前运行");
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 1);
+    assert_eq!(w.ctx.store.count_events(&id, "gate.result").unwrap(), 0);
+    std::fs::write(w.root.join("audit-release"), "go").unwrap();
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 2);
+    assert_eq!(
+        w.ctx.store.last_event(&id, "gate.result").unwrap().unwrap()["node"],
+        "merge_gate"
+    );
+}
+
+#[test]
+fn feature_before_merge_switching_while_blocked_on_the_gate_skips_it() {
+    needs_git!();
+    feature_before_merge_switch_gate(None);
+    feature_before_merge_switch_gate(Some("task.pause"));
+}
+
+#[test]
+fn feature_before_merge_switching_while_stopped_at_the_gate_skips_it_on_resume() {
+    needs_git!();
+    feature_before_merge_switch_gate(Some("task.stop"));
+    for method in ["task.rerun_from", "task.extend_budget"] {
+        let mut w = World::new("before-merge-tripped");
+        let id = run_same_failure_task(&mut w, false);
+        assert_same_failure_stopped(&mut w, &id);
+        w.configure("run = \"before_merge\"\n");
+        std::fs::write(w.root.join("environment-fixed"), "fixed").unwrap();
+        let params = if method == "task.rerun_from" {
+            json!({"task_id":id, "node":"gate"})
+        } else {
+            json!({"task_id":id, "extra_rounds":1})
+        };
+        ok(&w.call(method, params));
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        assert_eq!(same_failure_implementations(&w, &id), 3);
+        let skipped = w
+            .ctx
+            .store
+            .last_event(&id, "gate.skipped")
+            .unwrap()
+            .unwrap();
+        assert_eq!(skipped["node"], "gate");
+        let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(_, k, s, p)| s == &id && k == "gate.started" && p["node"] == "gate")
+                .count(),
+            3
+        );
+        assert_eq!(
+            w.ctx.store.last_event(&id, "gate.result").unwrap().unwrap()["node"],
+            "merge_gate"
+        );
+    }
+}
+
 fn write_gate_script(w: &World) -> PathBuf {
     let script = w.root.join("gate.sh");
     std::fs::write(
@@ -4167,6 +4523,107 @@ fn bug_review_policy_same_model_is_refused_for_bug_start() {
     assert!(message.contains("配置无效"), "{message}");
     assert_eq!(w.state(&id), "draft");
     assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn bug_loop_before_merge_fix_gate_runs_only_the_repro_and_merge_gate_runs_both() {
+    needs_git!();
+    let mut w = World::new("bug-before-merge");
+    let gate = "echo project-gate-output; test -f gate-ready";
+    w.configure(&format!(
+        "[gate]\ncommand = '{gate}'\nrun = 'before_merge'\ntimeout_minutes = 1\n"
+    ));
+    let slug = slug_for("before merge bug");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "before merge bug");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(4).contains("project-gate-output"));
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "task.updated" && e.2 == id)
+        .filter_map(|e| e.3["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "locate",
+            "repro_check",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.started" && e.2 == id)
+        .collect();
+    for node in ["fix_gate", "merge_gate"] {
+        let commands: Vec<_> = starts
+            .iter()
+            .filter(|e| e.3["node"] == node)
+            .map(|e| e.3["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(commands.len(), 2);
+        let expected = if node == "fix_gate" {
+            "sh regression.sh".to_owned()
+        } else {
+            format!("( sh regression.sh ) && ( {gate} )")
+        };
+        assert!(commands.iter().all(|c| *c == expected));
+    }
+    let merge_results: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.result" && e.2 == id && e.3["node"] == "merge_gate")
+        .map(|e| e.3["ok"].as_bool().unwrap())
+        .collect();
+    assert_eq!(merge_results, [false, true]);
+    assert_eq!(w.ctx.store.count_events(&id, "gate.reused").unwrap(), 0);
+}
+
+#[test]
+fn bug_loop_before_merge_an_ineffective_fix_fails_the_fix_gate() {
+    needs_git!();
+    let mut w = World::new("bug-before-merge-ineffective");
+    w.configure("[gate]\ncommand = 'true'\nrun = 'before_merge'\n");
+    let slug = slug_for("ineffective fix");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "ineffective fix");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(3).contains("regression-output"));
+    assert!(w.prompt(3).contains("2/3"));
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.result" && e.2 == id && e.3["node"] == "fix_gate")
+        .map(|e| {
+            (
+                e.3["command"].as_str().unwrap(),
+                e.3["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [("sh regression.sh", false), ("sh regression.sh", true)]
+    );
 }
 
 #[test]
@@ -6946,4 +7403,120 @@ fn gate_queue_order_survives_a_core_restart() {
     assert!(setup_events(&w, &b, "gate.started")[0].0 < setup_events(&w, &c, "gate.started")[0].0);
     queue_release(&w, &c);
     queue_wait(&mut w, |w| !setup_events(w, &c, "gate.result").is_empty());
+}
+
+#[test]
+fn prompt_before_merge_feature_repair_round_runs_only_the_failing_part() {
+    needs_git!();
+    let mut w = World::new("prompt-before-merge-feature");
+    let script = write_gate_script(&w);
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "prompt feature repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(8);
+    assert!(prompt.contains("gate says no: gate-ok is missing"));
+    assert!(prompt.contains(&automed::launcher::gate_line(&command)));
+    assert!(prompt.contains("单独复现并修好它"));
+    assert!(!prompt.contains("在同一命令下确认通过"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(events.iter().any(|(_, k, s, p)| s == &id
+        && k == "gate.result"
+        && p["node"] == "merge_gate"
+        && p["ok"] == false));
+}
+
+#[test]
+fn prompt_before_merge_bug_repair_round_runs_only_the_failing_part() {
+    needs_git!();
+    let mut w = World::new("prompt-before-merge-bug");
+    let command = "echo project-gate-output; test -f gate-ready";
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "prompt bug repair";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let prompt = w.prompt(4);
+    assert!(prompt.contains("project-gate-output"));
+    assert!(prompt.contains(&automed::launcher::gate_line(command)));
+    assert!(prompt.contains("复现命令和与改动直接相关的测试子集"));
+    assert!(!prompt.contains("用同一命令确认通过"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    assert!(events.iter().any(|(_, k, s, p)| s == &id
+        && k == "gate.result"
+        && p["node"] == "merge_gate"
+        && p["ok"] == false));
+}
+
+#[test]
+fn protocol_before_merge_feature_rounds_are_told_the_host_runs_the_full_suite() {
+    needs_git!();
+    let mut w = World::new("protocol-before-merge-feature");
+    w.configure("[gate]\nrun = 'before_merge'\ncommand = 'true'\n");
+    let request = "protocol feature prompts";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    for n in [2, 5, 6] {
+        assert!(w.prompt(n).contains(&automed::launcher::gate_line("true")));
+    }
+    assert!(
+        w.prompt(2)
+            .contains("不要把跑全量门禁写成任何里程碑的验收命令")
+    );
+    assert!(w.prompt(6).contains("不要因为没跑全量而不给结论"));
+    assert!(!w.prompt(6).contains("项目测试体系全量跑一次即可"));
+}
+
+#[test]
+fn protocol_before_merge_bug_rounds_are_told_the_host_runs_the_full_suite() {
+    needs_git!();
+    let mut w = World::new("protocol-before-merge-bug");
+    w.configure("[gate]\nrun = 'before_merge'\ncommand = 'true'\n");
+    let request = "protocol bug prompts";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    for n in [2, 3] {
+        assert!(w.prompt(n).contains(&automed::launcher::gate_line("true")));
+    }
+    assert!(w.prompt(2).contains("再跑与本轮改动直接相关的测试子集"));
+    assert!(!w.prompt(2).contains("再运行配置的项目门禁"));
+    assert!(
+        w.prompt(3)
+            .contains("本项目门禁只在合并前运行，本轮没有宿主门禁结果")
+    );
+    assert!(!w.prompt(3).contains("独立复验复现命令与项目门禁"));
 }

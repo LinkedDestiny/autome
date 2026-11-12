@@ -42,6 +42,51 @@ pub struct Requirement {
 const EVERY_ROLE: &str = "*";
 
 const REQUIRED: &[(&str, &str, &str)] = &[
+    (
+        "bug-protocol.md",
+        "修复门禁只跑复现命令，项目门禁留到合并前门禁",
+        "B-02 与目标 3：before_merge 下修复门禁只验证复现命令，完整项目门禁由合并前门禁执行。",
+    ),
+    (
+        "prompts/plan.md",
+        "<!-- gate-run: before_merge -->",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/impl.md",
+        "<!-- gate-run: before_merge -->",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/audit.md",
+        "<!-- gate-run: before_merge -->",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/fix.md",
+        "<!-- gate-run: before_merge -->",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/fix-review.md",
+        "<!-- gate-run: before_merge -->",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/fix-review.md",
+        "本项目门禁只在合并前运行，本轮没有宿主门禁结果",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/audit.md",
+        "不要因为没跑全量而不给结论",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
+    (
+        "prompts/fix-review.md",
+        "不要因为没跑全量而不给结论",
+        "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
+    ),
     // ---- every role template -------------------------------------------
     (
         EVERY_ROLE,

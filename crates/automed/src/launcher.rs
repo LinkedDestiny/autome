@@ -321,6 +321,7 @@ pub struct BudgetLine {
 
 /// Everything needed to write a session's prompt.
 pub struct PromptSpec<'a> {
+    pub gate_before_merge: Option<&'a str>,
     pub kind: SessionKind,
     /// The prompt templates of the protocol version this task is pinned to.
     /// Passed in rather than read here: two tasks in the same project can be
@@ -374,6 +375,42 @@ fn gate_failure_verdict(tail: &str) -> String {
         || "没有通过".into(),
         |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止），不是测试失败的结论。请先看日志里卡在哪一步"),
     )
+}
+
+pub fn gate_line(command: &str) -> String {
+    format!("全量门禁（`{command}`）由宿主在合并前统一运行，本轮不要自己跑。")
+}
+
+pub const BUG_REVIEW_GATE_NOTE: &str = "本项目门禁只在合并前运行，本轮没有宿主门禁结果；修复门禁只跑了复现命令，它通过不等于项目门禁通过。";
+
+fn select_prompt(template: &str, command: Option<&str>) -> Result<String> {
+    use autome_domain::{config::GateRun, protocol::select_gate_run};
+    select_gate_run(
+        template,
+        if command.is_some() {
+            GateRun::BeforeMerge
+        } else {
+            GateRun::EachRound
+        },
+    )
+    .map_err(err)
+}
+
+// Data slots are split before substitutions and validation. Inserted command
+// and request bytes are never interpreted as template syntax.
+fn render_gate_parts(
+    template: &str,
+    command: Option<&str>,
+    render: impl Fn(&str) -> Result<String>,
+) -> Result<String> {
+    match command {
+        Some(command) => Ok(template
+            .split("{gate_line}")
+            .map(render)
+            .collect::<Result<Vec<_>>>()?
+            .join(&gate_line(command))),
+        None => render(template),
+    }
 }
 
 /// Builds the prompt text a session is started with.
@@ -442,7 +479,11 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             tail,
         }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
             let verdict = gate_failure_verdict(tail);
-            p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
+            if let Some(cmd) = spec.gate_before_merge {
+                p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", gate_line(cmd)));
+            } else {
+                p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
+            }
         }
         Some(Inject::RebaseConflict { files }) => {
             p.push_str(&format!(
@@ -468,7 +509,10 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             // failed" without either is a claim it cannot check.
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
-            p.push_str(&format!(
+            if let Some(cmd) = spec.gate_before_merge {
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。\n", gate_line(cmd)));
+            } else {
+                p.push_str(&format!(
                 "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n\
                  ```\n{tail}\n```\n\n\
                  本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。\
@@ -476,6 +520,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                  implementation-round 照常加一，照常写本轮的证据文件。\
                  门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n"
             ));
+            }
         }
         None => {}
     }
@@ -514,6 +559,10 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
         .templates
         .prompt(name)
         .ok_or_else(|| err(format!("协议版本里没有 prompts/{name}.md")))?;
+    let legacy_review = step == BugStep::FixReview
+        && spec.gate_before_merge.is_some()
+        && !template.contains("<!-- gate-run: before_merge -->");
+    let template = select_prompt(template, spec.gate_before_merge)?;
     let budget = spec
         .budget
         .as_ref()
@@ -537,15 +586,20 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
     let parts = template
         .split("{request}")
         .map(|part| {
-            let rendered = part
-                .replace("{doc_dir}", spec.doc_dir)
-                .replace("{slug}", spec.slug)
-                .replace("{budget_line}", &budget_line);
-            check_no_placeholders_left(&rendered, &format!("prompts/{name}.md"))?;
-            Ok(rendered)
+            render_gate_parts(part, spec.gate_before_merge, |part| {
+                let rendered = part
+                    .replace("{doc_dir}", spec.doc_dir)
+                    .replace("{slug}", spec.slug)
+                    .replace("{budget_line}", &budget_line);
+                check_no_placeholders_left(&rendered, &format!("prompts/{name}.md"))?;
+                Ok(rendered)
+            })
         })
         .collect::<Result<Vec<_>>>()?;
-    let rendered = parts.join(spec.request);
+    let mut rendered = parts.join(spec.request);
+    if legacy_review {
+        rendered.push_str(&format!("\n{BUG_REVIEW_GATE_NOTE}\n"));
+    }
     if step == BugStep::Locate
         && let Some(card_path) = spec.card_path
     {
@@ -565,6 +619,8 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
         ))
     })?;
 
+    let template = select_prompt(template, spec.gate_before_merge)?;
+
     // The denominator comes from here or it comes from a guess. See BudgetLine.
     let budget_line = match (role, spec.budget.as_ref()) {
         (Role::Impl, Some(b)) => format!(
@@ -581,18 +637,20 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
         _ => String::new(),
     };
 
-    let rendered = template
-        .replace("{doc_dir}", spec.doc_dir)
-        .replace("{slug}", spec.slug)
-        .replace("{budget_line}", &budget_line)
-        .replace("{brief_path}", spec.brief_path)
-        .replace("{task_metrics}", &render_task_metrics(spec.task_metrics))
-        .replace(
-            "{metric_vocabulary}",
-            &autome_domain::metrics::TaskMetrics::METRIC_NAMES.join(" / "),
-        );
-    check_no_placeholders_left(&rendered, &format!("prompts/{}.md", role.as_str()))?;
-    Ok(rendered)
+    render_gate_parts(&template, spec.gate_before_merge, |part| {
+        let rendered = part
+            .replace("{doc_dir}", spec.doc_dir)
+            .replace("{slug}", spec.slug)
+            .replace("{budget_line}", &budget_line)
+            .replace("{brief_path}", spec.brief_path)
+            .replace("{task_metrics}", &render_task_metrics(spec.task_metrics))
+            .replace(
+                "{metric_vocabulary}",
+                &autome_domain::metrics::TaskMetrics::METRIC_NAMES.join(" / "),
+            );
+        check_no_placeholders_left(&rendered, &format!("prompts/{}.md", role.as_str()))?;
+        Ok(rendered)
+    })
 }
 
 /// The retro round is handed the task's measured numbers so it writes against
@@ -1197,6 +1255,7 @@ mod tests {
         PromptSpec {
             kind,
             templates,
+            gate_before_merge: None,
             brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
             doc_dir: "docs/checkout-flow",
@@ -2249,5 +2308,183 @@ mod tests {
         assert!(conflict.contains("git rebase --continue"));
         assert!(conflict.contains("已中止"));
         assert!(!conflict.contains("保持里程碑"));
+    }
+    const MODE_TEMPLATE: &str = "{slug}\n<!-- gate-run: each_round -->\nold\n<!-- gate-run: before_merge -->\nnew {gate_line}\n<!-- /gate-run -->\n";
+
+    #[test]
+    fn before_merge_prompt_role_selects_sections_and_preserves_command_data() {
+        let mut tpl = templates();
+        tpl.insert("prompts/impl.md", MODE_TEMPLATE);
+        let mut s = spec(SessionKind::Role { role: Role::Impl }, &[], None, &tpl);
+        assert_eq!(build_prompt(&s).unwrap(), "checkout-flow\nold\n");
+        for cmd in [
+            "make check",
+            "ci_script=scripts/ci-local.sh; sh \"${ci_script}\"",
+            "echo {slug}",
+        ] {
+            s.gate_before_merge = Some(cmd);
+            assert_eq!(
+                build_prompt(&s).unwrap(),
+                format!("checkout-flow\nnew {}\n", gate_line(cmd))
+            );
+        }
+        for bad in ["{gate_line}", "{unknown}"] {
+            let mut bad_tpl = tpl.clone();
+            bad_tpl.insert("prompts/impl.md", bad);
+            let mut bad_spec = spec(SessionKind::Role { role: Role::Impl }, &[], None, &bad_tpl);
+            assert!(build_prompt(&bad_spec).is_err());
+            if bad == "{unknown}" {
+                bad_spec.gate_before_merge = Some("make check");
+                assert!(build_prompt(&bad_spec).is_err());
+            }
+        }
+    }
+    #[test]
+    fn before_merge_prompt_bug_preserves_request_and_command_data() {
+        let mut tpl = templates();
+        tpl.insert("prompts/fix.md", format!("{MODE_TEMPLATE}{{request}}\n"));
+        let mut s = spec(SessionKind::Bug { step: BugStep::Fix }, &[], None, &tpl);
+        s.budget = Some(BudgetLine { round: 1, limit: 3 });
+        s.request = "<!-- gate-run: before_merge --> {gate_line} {slug}";
+        assert_eq!(
+            build_prompt(&s).unwrap(),
+            format!("checkout-flow\nold\n{}\n", s.request)
+        );
+        for cmd in [
+            "make check",
+            "ci_script=scripts/ci-local.sh; sh \"${ci_script}\"",
+            "echo {slug}",
+        ] {
+            s.gate_before_merge = Some(cmd);
+            assert_eq!(
+                build_prompt(&s).unwrap(),
+                format!("checkout-flow\nnew {}\n{}\n", gate_line(cmd), s.request)
+            );
+        }
+        for bad in ["{gate_line}", "{unknown}"] {
+            let mut bad_tpl = tpl.clone();
+            bad_tpl.insert("prompts/fix.md", bad);
+            let mut bad_spec = spec(SessionKind::Bug { step: BugStep::Fix }, &[], None, &bad_tpl);
+            bad_spec.budget = Some(BudgetLine { round: 1, limit: 3 });
+            assert!(build_prompt(&bad_spec).is_err());
+        }
+    }
+    #[test]
+    fn before_merge_prompt_feature_failure_limits_repair_scope() {
+        let tpl = templates();
+        let inject = Inject::GateFailed {
+            head: "1234567890abcdef".into(),
+            command: "failed-command".into(),
+            tail: "failure-tail".into(),
+        };
+        let mut s = spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            Some(&inject),
+            &tpl,
+        );
+        let original = build_prompt(&s).unwrap();
+        let expected = "\nAutome 在提交 `1234567890` 上运行了项目门禁 `failed-command`，没有通过。输出末尾（原文）：\n\n```\nfailure-tail\n```\n\n本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n";
+        assert!(original.ends_with(expected));
+        s.gate_before_merge = Some("echo {slug}");
+        let p = build_prompt(&s).unwrap();
+        for phrase in [
+            "failure-tail",
+            "failed-command",
+            "单独复现并修好它",
+            "合并前重跑",
+            &gate_line("echo {slug}"),
+        ] {
+            assert!(p.contains(phrase));
+        }
+        assert!(!p.contains("在同一命令下确认通过"));
+    }
+    #[test]
+    fn before_merge_prompt_bug_failure_limits_repair_scope() {
+        let tpl = templates();
+        let inject = Inject::GateFailed {
+            head: "abcdef".into(),
+            command: "failed-command".into(),
+            tail: "failure-tail".into(),
+        };
+        let mut s = spec(
+            SessionKind::Bug { step: BugStep::Fix },
+            &[],
+            Some(&inject),
+            &tpl,
+        );
+        s.budget = Some(BudgetLine { round: 2, limit: 3 });
+        assert!(build_prompt(&s).unwrap().ends_with("\nAutome 在提交 `abcdef` 上运行门禁 `failed-command`，没有通过。输出末尾（原文）：\n```\nfailure-tail\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
+        s.gate_before_merge = Some("echo {slug}");
+        let p = build_prompt(&s).unwrap();
+        for phrase in [
+            "failure-tail",
+            "failed-command",
+            "复现命令和与改动直接相关的测试子集",
+            &gate_line("echo {slug}"),
+        ] {
+            assert!(p.contains(phrase));
+        }
+        assert!(!p.contains("用同一命令确认通过"));
+    }
+    #[test]
+    fn before_merge_prompt_intake_and_onboarding_are_unchanged() {
+        let tpl = templates();
+        for kind in [SessionKind::Intake, SessionKind::Onboarding] {
+            let mut s = spec(kind, &[], None, &tpl);
+            let old = build_prompt(&s).unwrap();
+            s.gate_before_merge = Some("make check");
+            assert_eq!(build_prompt(&s).unwrap(), old);
+        }
+    }
+    #[test]
+    fn before_merge_prompt_legacy_bug_review_gets_one_note() {
+        let mut tpl = templates();
+        // Freeze the unsegmented templates that older tasks retain.
+        for role in ["locate", "fix", "fix-review"] {
+            let path = format!("prompts/{role}.md");
+            let old = autome_domain::protocol::select_gate_run(
+                tpl.get(&path).unwrap(),
+                autome_domain::config::GateRun::EachRound,
+            )
+            .unwrap();
+            tpl.insert(&path, old);
+        }
+        for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            let mut s = spec(SessionKind::Bug { step }, &[], None, &tpl);
+            s.budget = Some(BudgetLine { round: 1, limit: 3 });
+            let old = build_prompt(&s).unwrap();
+            s.gate_before_merge = Some("make check");
+            assert_eq!(
+                build_prompt(&s).unwrap(),
+                if step == BugStep::FixReview {
+                    format!("{old}\n{BUG_REVIEW_GATE_NOTE}\n")
+                } else {
+                    old
+                }
+            );
+        }
+        let mut tpl = tpl.clone();
+        tpl.insert(
+            "prompts/fix-review.md",
+            format!(
+                "<!-- gate-run: before_merge -->\n{BUG_REVIEW_GATE_NOTE}\n<!-- /gate-run -->\n"
+            ),
+        );
+        let mut s = spec(
+            SessionKind::Bug {
+                step: BugStep::FixReview,
+            },
+            &[],
+            None,
+            &tpl,
+        );
+        s.budget = Some(BudgetLine { round: 1, limit: 3 });
+        assert_eq!(build_prompt(&s).unwrap(), "");
+        s.gate_before_merge = Some("make check");
+        assert_eq!(
+            build_prompt(&s).unwrap(),
+            format!("{BUG_REVIEW_GATE_NOTE}\n")
+        );
     }
 }

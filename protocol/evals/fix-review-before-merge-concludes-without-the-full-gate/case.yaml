@@ -1,0 +1,11 @@
+name: fix-review-before-merge-concludes-without-the-full-gate
+role: audit
+prompt: fix-review
+description: 不运行全量门禁且完成本轮职责
+gate_command: sh full-gate.sh
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md

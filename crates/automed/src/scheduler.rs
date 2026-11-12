@@ -2087,30 +2087,6 @@ fn main_gate_timeout_note(tail: &str) -> String {
     })
 }
 
-fn render_gate_line(result: &Value) -> Option<String> {
-    let sha = result.get("sha")?.as_str()?;
-    let command = result.get("command")?.as_str()?;
-    let ok = result.get("ok")?.as_bool()?;
-    let code = result
-        .get("exit_code")
-        .and_then(Value::as_i64)
-        .unwrap_or(-1);
-    let log = result.get("log").and_then(Value::as_str).unwrap_or("");
-    let short = &sha[..sha.len().min(10)];
-    let verdict =
-        autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
-            .filter(|_| !ok)
-            .map_or_else(
-                || format!("{}（退出码 {code}）", if ok { "通过" } else { "未通过" }),
-                |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
-            );
-
-    Some(format!(
-        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}。完整输出：`{log}`。\n\
-         这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
-    ))
-}
-
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
         Trigger::BugSessionEnded { .. } => "bug_session_ended",
@@ -2690,6 +2666,15 @@ fn launch_session(
     // Written before the prompt that points at it. A round told to read a
     // brief that is not there would go and read the design document instead,
     // which is the thing the brief exists to make optional.
+    let gate_evidence = if kind.role() == Some(Role::Audit) {
+        crate::brief::gate_evidence(
+            resolved,
+            ctx.store.last_event(&task.id, "gate.result")?.as_ref(),
+            gate_head(&layout).ok().as_deref(),
+        )
+    } else {
+        None
+    };
     let brief_path = match kind
         .role()
         .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
@@ -2706,6 +2691,7 @@ fn launch_session(
             round,
             budget.as_ref(),
             decisions,
+            gate_evidence,
         )?,
         None => String::new(),
     };
@@ -2741,6 +2727,7 @@ fn launch_session(
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind,
         templates: &protocol,
+        gate_before_merge: resolved.gate_before_merge(),
         brief_path: &brief_path,
         slug: &task.slug,
         doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
@@ -2924,6 +2911,7 @@ fn write_brief(
     round: u32,
     budget: Option<&launcher::BudgetLine>,
     decisions: &[crate::store::DecisionRecord],
+    gate: Option<String>,
 ) -> Result<String> {
     let rel = crate::brief::path(&task.doc_dir(), role, round);
     // What the prompt names: the same file, from where the session stands.
@@ -2973,14 +2961,7 @@ fn write_brief(
             }
             s
         }),
-        gate: match role {
-            Role::Audit => ctx
-                .store
-                .last_event(&task.id, "gate.result")?
-                .as_ref()
-                .and_then(render_gate_line),
-            _ => None,
-        },
+        gate,
     });
 
     let full = worktree.join(&rel);
@@ -3262,7 +3243,21 @@ fn run_gate(
     }
     let repo = PathBuf::from(&project.path);
     let bug = uses_bug_loop(ctx, task)?;
+    if !bug
+        && node == Node::Gate
+        && resolved.gate.is_some()
+        && resolved.gate_run == config::GateRun::BeforeMerge
+    {
+        crate::gate::discard_node(&repo, &task.id, "gate").map_err(|e| err(e.to_string()))?;
+        ctx.store.append_event(
+            "gate.skipped",
+            &task.id,
+            json!({ "node": "gate", "reason": "门禁只在合并前运行" }),
+        )?;
+        return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+    }
     let bug_gate = bug && matches!(node, Node::ReproCheck | Node::FixGate | Node::MergeGate);
+    let mut repro_command = None;
     let selected_gate = if bug_gate {
         let event = ctx
             .store
@@ -3278,9 +3273,14 @@ fn run_gate(
         let repro = event["command"]
             .as_str()
             .ok_or_else(|| err("缺少复现命令"))?;
+        repro_command = Some(repro.to_owned());
         Some(config::GateConfig {
             command: match (&resolved.gate, node) {
-                (Some(gate), n) if n != Node::ReproCheck => {
+                (Some(gate), n)
+                    if n == Node::MergeGate
+                        || (n == Node::FixGate
+                            && resolved.gate_run == config::GateRun::EachRound) =>
+                {
                     format!("( {repro} ) && ( {} )", gate.command)
                 }
                 _ => repro.to_owned(),
@@ -3449,6 +3449,12 @@ fn run_gate(
         {
             return Ok(());
         }
+        if bug && node == Node::FixGate {
+            job.set_repro_only(
+                resolved.gate.is_some() && resolved.gate_run == config::GateRun::BeforeMerge,
+            )
+            .map_err(|e| err(format!("无法记录修复门禁模式：{e}")))?;
+        }
         crate::gate::start(
             &job,
             &cwd,
@@ -3488,6 +3494,11 @@ fn run_gate(
         return Ok(());
     }
 
+    let command = if bug && node == Node::FixGate && job.repro_only() {
+        repro_command.expect("Bug FixGate has a recorded reproduction command")
+    } else {
+        gate.command.clone()
+    };
     let ok = exit_code == 0;
     let tail = crate::gate::tail(&job.log, 60);
     let mut result = json!({
@@ -3495,7 +3506,7 @@ fn run_gate(
         "sha": head,
         "ok": ok,
         "exit_code": exit_code,
-        "command": gate.command,
+        "command": command,
         "log": job.log.to_string_lossy(),
         "tail": tail,
     });
@@ -3570,7 +3581,7 @@ fn run_gate(
     } else {
         GateOutcome::Failed {
             head: head.clone(),
-            command: gate.command.clone(),
+            command,
             tail,
         }
     };
@@ -4170,6 +4181,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
         kind: SessionKind::Onboarding,
         templates: protocol,
+        gate_before_merge: None,
         brief_path: "",
         slug: "onboarding",
         // Onboarding writes the project profile and AGENTS.md at the
@@ -4624,7 +4636,7 @@ mod tests {
             ),
             ("exit 124", "未通过（退出码 124）"),
         ] {
-            let line = render_gate_line(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
+            let line = crate::brief::gate_line_of_result(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
             assert!(line.contains(expected));
             assert!(line.contains("/log"));
         }
@@ -4797,6 +4809,253 @@ mod tests {
                 return;
             }
         };
+    }
+
+    fn repro_gate_world(
+        mode: &str,
+        code: i32,
+    ) -> (
+        World,
+        TaskRecord,
+        Project,
+        TaskLayout,
+        crate::gate::Job,
+        String,
+    ) {
+        let mut w = World::new("before-merge-repro");
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        // A disk ledger lets the crash tests remove only the startup event.
+        w.ctx.store = crate::store::Store::open(w.root.join("ledger.db")).unwrap();
+        w.ctx.store.insert_project(&project).unwrap();
+        let base = w.add_task("base", "unused");
+        let task = TaskRecord {
+            id: "T-1".into(),
+            slug: "repro".into(),
+            kind: TaskKind::Bug,
+            state: TaskState::Active {
+                node: Node::FixGate,
+            },
+            ..base
+        };
+        w.ctx.store.insert_task(&task).unwrap();
+        let wt = w.with_worktree(&task);
+        freeze_protocol(&mut w.ctx, &task, &wt).unwrap();
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        w.ctx
+            .store
+            .append_event("bug.loop_started", &task.id, json!({}))
+            .unwrap();
+        let repro = format!("while ! test -f released; do sleep 0.01; done; exit {code}");
+        w.ctx
+            .store
+            .append_event("bug.reproduced", &task.id, json!({"command": repro}))
+            .unwrap();
+        repro_gate_config(&w, mode, "true");
+        let layout = TaskLayout::of(&project, &task.slug, &[]);
+        assert_eq!(layout.cwd, wt);
+        let head = gate_head(&layout).unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "fix_gate", &head[..12]);
+        (w, task, project, layout, job, repro)
+    }
+
+    fn repro_gate_config(w: &World, mode: &str, command: &str) {
+        let run = if mode.is_empty() {
+            String::new()
+        } else {
+            format!("run = '{mode}'\n")
+        };
+        std::fs::write(
+            config_io::project_config_path(&w.repo),
+            format!("[gate]\ncommand = '{command}'\n{run}timeout_minutes = 1\n"),
+        )
+        .unwrap();
+    }
+
+    fn complete_repro_gate(
+        w: &mut World,
+        task: &TaskRecord,
+        project: &Project,
+        layout: &TaskLayout,
+        job: &crate::gate::Job,
+    ) -> Value {
+        std::fs::write(layout.cwd.join("released"), "").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !job.exit.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "repro job did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        run_gate(&mut w.ctx, task, project, layout, Node::FixGate).unwrap();
+        w.ctx
+            .store
+            .last_event(&task.id, "gate.result")
+            .unwrap()
+            .unwrap()
+    }
+
+    fn assert_repro_not_reused(
+        w: &mut World,
+        task: &TaskRecord,
+        project: &Project,
+        layout: &TaskLayout,
+    ) {
+        let result = w
+            .ctx
+            .store
+            .last_event(&task.id, "gate.result")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result["sha"],
+            gate_head(layout).unwrap(),
+            "reuse must be tested on the identical head"
+        );
+        w.set_state(
+            &task.id,
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+        );
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_gate(&mut w.ctx, &task, project, layout, Node::MergeGate).unwrap();
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+            0
+        );
+        let starts = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+        assert_eq!(
+            starts
+                .iter()
+                .filter(|e| e.1 == "gate.started" && e.2 == task.id && e.3["node"] == "merge_gate")
+                .count(),
+            1
+        );
+        crate::gate::discard_node(&w.repo, &task.id, "merge_gate").unwrap();
+    }
+
+    #[test]
+    fn before_merge_fix_gate_records_repro_across_mode_switch_even_on_failure() {
+        needs_git!();
+        for code in [0, 9, 126, 127, 124] {
+            let (mut w, task, project, layout, job, repro) = repro_gate_world("before_merge", code);
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+            assert!(job.started.exists() && job.repro_only());
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "gate.started")
+                    .unwrap()
+                    .unwrap()["command"],
+                repro
+            );
+            repro_gate_config(&w, "each_round", "true");
+            let result = complete_repro_gate(&mut w, &task, &project, &layout, &job);
+            assert_eq!(result["command"], repro);
+            assert_eq!(result["exit_code"], code);
+            assert_eq!(result["ok"], code == 0);
+            let expected_node = if code == 0 {
+                Node::FixReview
+            } else {
+                Node::Fix
+            };
+            assert_eq!(
+                w.state(&task.id),
+                TaskState::Active {
+                    node: expected_node
+                }
+            );
+            if code != 0 {
+                let sessions = w.ctx.store.list_sessions(&task.id).unwrap();
+                let inject = carried_inject(&w.ctx, &task.id, &sessions.last().unwrap().id)
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(inject, Inject::GateFailed { command, .. } if command == repro));
+            }
+        }
+    }
+
+    #[test]
+    fn before_merge_fix_gate_result_cannot_be_reused_on_the_same_head() {
+        needs_git!();
+        for (start, end) in [
+            ("before_merge", "each_round"),
+            ("before_merge", "before_merge"),
+            ("each_round", "before_merge"),
+        ] {
+            let (mut w, task, project, layout, job, repro) = repro_gate_world(start, 0);
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+            assert_eq!(job.repro_only(), start == "before_merge");
+            repro_gate_config(&w, end, "true");
+            assert_eq!(
+                complete_repro_gate(&mut w, &task, &project, &layout, &job)["command"],
+                repro
+            );
+            assert_repro_not_reused(&mut w, &task, &project, &layout);
+        }
+    }
+
+    #[test]
+    fn before_merge_fix_gate_crash_window_ignores_missing_and_stale_start_events() {
+        needs_git!();
+        for stale in [false, true] {
+            let (mut w, task, project, layout, job, repro) = repro_gate_world("before_merge", 0);
+            if stale {
+                repro_gate_config(&w, "each_round", "true");
+                run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+                crate::gate::discard_node(&w.repo, &task.id, "fix_gate").unwrap();
+                repro_gate_config(&w, "before_merge", "true");
+            }
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+            assert!(job.started.exists() && job.repro_only());
+            rusqlite::Connection::open(w.root.join("ledger.db")).unwrap().execute(
+                "DELETE FROM events WHERE seq = (SELECT MAX(seq) FROM events WHERE kind = 'gate.started')", []
+            ).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                u32::from(stale)
+            );
+            repro_gate_config(&w, "each_round", "true");
+            assert_eq!(
+                complete_repro_gate(&mut w, &task, &project, &layout, &job)["command"],
+                repro
+            );
+            assert_repro_not_reused(&mut w, &task, &project, &layout);
+        }
+    }
+
+    #[test]
+    fn before_merge_unconfigured_fix_gate_keeps_legacy_current_command_accounting() {
+        needs_git!();
+        for mode in ["", "each_round"] {
+            let (mut w, task, project, layout, job, repro) = repro_gate_world(mode, 0);
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+            assert!(!job.repro_only());
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "gate.started")
+                    .unwrap()
+                    .unwrap()["command"],
+                format!("( {repro} ) && ( true )")
+            );
+            repro_gate_config(&w, mode, "echo B");
+            assert_eq!(
+                complete_repro_gate(&mut w, &task, &project, &layout, &job)["command"],
+                format!("( {repro} ) && ( echo B )")
+            );
+            assert!(!job.repro_only());
+        }
+        let (mut w, task, project, layout, job, repro) = repro_gate_world("before_merge", 0);
+        // Empty gate remains the historical repro-only path, without a marker.
+        repro_gate_config(&w, "before_merge", "");
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+        assert!(!job.repro_only());
+        assert_eq!(
+            complete_repro_gate(&mut w, &task, &project, &layout, &job)["command"],
+            repro
+        );
     }
 
     #[test]

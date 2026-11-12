@@ -13,7 +13,7 @@
 |---|---|
 | `loop-protocol.md` | 六个角色共同遵守的规则：原则、角色、文件、设计循环、里程碑、实现与审计循环、Backlog、内核检查。 |
 | `session-protocol.md` | 一次会话的边界：怎么开始、怎么结束、硬性边界、状态块长什么样、什么才算协议失败。 |
-| `prompts/*.md` | 每个角色一份 prompt 模板。Autome 填 `{doc_dir}`、`{budget_line}` 这些占位符，填不完的会话不启动。 |
+| `prompts/*.md` | 每个角色一份 prompt 模板。Autome 填 `{doc_dir}`、`{budget_line}` 这些占位符，填不完的会话不启动。  `<!-- gate-run: … -->` 包住的行按项目 `[gate] run` 取舍。 |
 | `brief-map.toml` | 角色 → 协议小节的映射，决定每轮简报里摘哪几段。 |
 | `evals/` | 行为用例。`behavioral` 类改动必须带一个，且要「改前红、改后绿」。 |
 | `CHANGELOG.md` | 每个版本改了什么、依据是哪些任务、预测哪个指标会怎么动。 |

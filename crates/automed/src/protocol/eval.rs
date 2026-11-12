@@ -259,6 +259,24 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
         let Some(text) = files.get(file) else {
             continue;
         };
+        for mode in [
+            autome_domain::config::GateRun::EachRound,
+            autome_domain::config::GateRun::BeforeMerge,
+        ] {
+            match autome_domain::protocol::select_gate_run(text, mode) {
+                Err(e) => r.problems.push(Problem::fail(L1, format!("{file}: {e}"))),
+                Ok(selected)
+                    if mode == autome_domain::config::GateRun::EachRound
+                        && selected.contains("{gate_line}") =>
+                {
+                    r.problems.push(Problem::fail(
+                        L1,
+                        format!("{file}: {{gate_line}} 只能在 before_merge 段内"),
+                    ))
+                }
+                _ => {}
+            }
+        }
         for name in placeholders(text) {
             if !KNOWN_PLACEHOLDERS.contains(&name.as_str()) {
                 r.problems.push(Problem::fail(
@@ -387,7 +405,8 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
 }
 
 /// Placeholders a template may use.
-const KNOWN_PLACEHOLDERS: [&str; 9] = [
+const KNOWN_PLACEHOLDERS: [&str; 10] = [
+    "gate_line",
     "slug",
     // The task's document directory as the round sees it. Not the same string
     // for every project: a workspace session starts beside its member
@@ -815,7 +834,7 @@ mod tests {
     fn with_behavioral_entry(eval: &str) -> ProtocolFiles {
         let mut files = seed().clone();
         let text = format!(
-            "{}\n## protocol/v4\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
+            "{}\n## protocol/v90\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
              clause: prompts/impl.md\n  evidence: [T-1 一处, T-2 另一处]\n  \
              predicted_impact: {{metric: protocol_failures, direction: down, scope: task, horizon: 3}}\n  \
              eval: {eval}\n  realized_impact: null\n```\n",
@@ -929,7 +948,7 @@ mod tests {
     #[test]
     fn a_changed_run_covers_the_new_cases_and_the_three_baselines() {
         let files = with_behavioral_entry("evals/impl-self-check-before-pending/");
-        let cases = changed_cases(&files, "protocol/v4");
+        let cases = changed_cases(&files, "protocol/v90");
         for baseline in BASELINE_CASES {
             assert!(cases.contains(&baseline.to_string()), "{cases:?}");
         }
@@ -1105,6 +1124,61 @@ mod tests {
             let report = check(&files);
             assert!(report.failed());
             assert!(details(&report).contains("prompt 模板"));
+        }
+    }
+    #[test]
+    fn before_merge_prompt_unclosed_sections_fail_layer_one() {
+        let mut files = seed().clone();
+        files.insert(
+            "prompts/impl.md",
+            format!(
+                "<!-- gate-run: before_merge -->\n{}",
+                files.prompt("impl").unwrap()
+            ),
+        );
+        let r = check(&files);
+        assert!(r.failed());
+        assert!(details(&r).contains("prompts/impl.md: 第"));
+    }
+    #[test]
+    fn before_merge_prompt_gate_line_outside_section_is_refused() {
+        let mut files = seed().clone();
+        files.insert(
+            "prompts/impl.md",
+            format!("{}\n{{gate_line}}", files.prompt("impl").unwrap()),
+        );
+        let r = check(&files);
+        assert!(r.failed());
+        assert!(details(&r).contains("{gate_line} 只能在 before_merge 段内"));
+    }
+    #[test]
+    fn before_merge_prompt_gate_line_in_section_is_accepted() {
+        let mut files = seed().clone();
+        files.insert(
+            "prompts/impl.md",
+            format!(
+                "{}\n<!-- gate-run: before_merge -->\n{{gate_line}}\n<!-- /gate-run -->\n",
+                files.prompt("impl").unwrap()
+            ),
+        );
+        let r = check(&files);
+        assert!(!r.failed(), "{}", r.render());
+    }
+    #[test]
+    fn before_merge_prompt_seed_segments_render_in_both_modes() {
+        use autome_domain::{config::GateRun, protocol::select_gate_run};
+        for name in ["plan", "impl", "audit", "fix", "fix-review"] {
+            let template = seed().prompt(name).unwrap();
+            let before = select_gate_run(template, GateRun::BeforeMerge).unwrap();
+            assert_eq!(before.matches("{gate_line}").count(), 1, "{name}");
+            for mode in [GateRun::EachRound, GateRun::BeforeMerge] {
+                let text = select_gate_run(template, mode).unwrap();
+                assert!(!text.contains("<!-- gate-run:"), "{name}");
+                assert!(!text.contains("<!-- /gate-run -->"), "{name}");
+                if mode == GateRun::EachRound {
+                    assert!(!text.contains("{gate_line}"));
+                }
+            }
         }
     }
 }
