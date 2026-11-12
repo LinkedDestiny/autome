@@ -8,3 +8,4 @@
 实现 #2 | M-02 | 退回 + read-gate（保持开放，环境未取证） | docs/网关放行任务卡的创建与开始-write/evidence/M-02-r2-impl.md | 监听 EPERM、文件监听 EMFILE
 
 实现 #3 | M-02 | 退回 + 环境阻塞（保持开放） | docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-impl.md | 本地监听 EPERM，宿主原失败未复现
+审计 #2 | M-02 | 通过 | docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-audit.md | 无

@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 3/20
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 先在允许本地监听的环境复现并修复 notifier-live 重启用例失败，重跑 sh scripts/ci-local.sh；本轮未推进新里程碑
+next-action: 实现 M-03：在 gateway-task-card.test.ts 加经网关建卡后读回正文逐字节相等的用例（按 M-03 验收契约，基线为全量 318）
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -295,7 +295,7 @@ sidecar 以 `{ ...process.env, ...env }` 启动内核；仓库已有同法夹具
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 写网关放行 task.start、task.reply 与任务卡字段，经真实内核取证 | 0 | write-gate |
-| M-02 | 开放 | 读网关放行 project.probe 与 config.validate，反向检查，经真实内核取证 | 0 | read-gate |
+| M-02 | 已完成 | 读网关放行 project.probe 与 config.validate，反向检查，经真实内核取证 | 0 | read-gate |
 | M-03 | 开放 | 经网关建的任务卡读回内核保存的正文，逐字节相等 | 0 | card-verbatim |
 | M-04 | 开放 | task.start、task.reply 经网关成功使用，替身 CLI 夹具取证 | 0 | task-lifecycle |
 
@@ -360,7 +360,7 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 
 ### M-02 验收契约
 
-最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-impl.md · 修复阻塞（监听 EPERM，保持开放） · 实现 #3
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-audit.md · 通过 · 审计 #2
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/read-gate.test.ts test/write-gate.test.ts test/gateway.test.ts test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：指定四个文件共 74 个用例全部通过（read-gate 11→15、write-gate 43、gateway 12→13、gateway-task-card 2→3）；全量 `npm test` 0 失败、用例总数 = B + 17；lint 0 警告、typecheck 通过。
