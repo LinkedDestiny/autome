@@ -345,6 +345,22 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             local_time(&s("until")),
             s("reason")
         ),
+        "merge.after_started" => format!(
+            "{subject} 合并后命令开始：{}  日志：{}",
+            s("command"),
+            s("log")
+        ),
+        "merge.after" => format!(
+            "{subject} 合并后命令{}（退出码 {}）  日志：{}",
+            if p["ok"].as_bool() == Some(true) {
+                "通过"
+            } else {
+                "未通过"
+            },
+            p["exit_code"],
+            s("log")
+        ),
+        "merge.after_skipped" => format!("{subject} 合并后命令跳过：{}", s("reason")),
         "setup.started" => format!(
             "{subject} 准备命令开始（{}）：{}  日志：{}",
             setup_checkout_label(&s("checkout")),
@@ -500,6 +516,31 @@ mod tests {
         assert!(next.contains("autome cancel T-42"));
         assert!(next.contains("autome reply T-42"));
         assert!(!next.contains("task new --kind feature --brief"));
+    }
+
+    #[test]
+    fn merge_after_events_are_printed_by_autome_run() {
+        use serde_json::json;
+        let p = json!({"command":"sh deploy.sh", "log":"hook.log", "ok":true, "exit_code":0, "reason":"没有单一的合并提交"});
+        assert_eq!(
+            super::event_line("merge.after_started", "T-1", &p).unwrap(),
+            "T-1 合并后命令开始：sh deploy.sh  日志：hook.log"
+        );
+        assert_eq!(
+            super::event_line("merge.after", "T-1", &p).unwrap(),
+            "T-1 合并后命令通过（退出码 0）  日志：hook.log"
+        );
+        let mut p = p;
+        p["ok"] = json!(false);
+        p["exit_code"] = json!(6);
+        assert_eq!(
+            super::event_line("merge.after", "T-1", &p).unwrap(),
+            "T-1 合并后命令未通过（退出码 6）  日志：hook.log"
+        );
+        assert_eq!(
+            super::event_line("merge.after_skipped", "T-1", &p).unwrap(),
+            "T-1 合并后命令跳过：没有单一的合并提交"
+        );
     }
 
     #[test]

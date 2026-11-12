@@ -1912,6 +1912,28 @@ impl Store {
     // Project alerts
     // -----------------------------------------------------------------
 
+    /// The result is the durable completion marker; publish its alert atomically.
+    pub fn conclude_merge_after(
+        &self,
+        project: &str,
+        task: &str,
+        payload: Value,
+        failure: Option<&str>,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(detail) = failure {
+            let id = self.raise_alert(project, "after_merge_failed", Some(task), detail)?;
+            self.append_event(
+                "project.alert",
+                project,
+                serde_json::json!({"alert_id": id, "kind": "after_merge_failed", "task_id": task}),
+            )?;
+        }
+        self.append_event("merge.after", task, payload)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn raise_alert(
         &self,
         project_id: &str,
@@ -2226,6 +2248,28 @@ mod tests {
             p.push(suffix);
             let _ = std::fs::remove_file(std::path::PathBuf::from(p));
         }
+    }
+
+    #[test]
+    fn merge_after_failure_alert_and_result_event_are_written_in_one_transaction() {
+        let s = Store::open_in_memory().unwrap();
+        s.insert_project(&project("p", "/tmp/repo")).unwrap();
+        s.insert_task(&task("T-1", "p", "hook")).unwrap();
+        let payload = serde_json::json!({"ok": false, "exit_code": 6});
+        s.conclude_merge_after("p", "T-1", payload.clone(), Some("failed"))
+            .unwrap();
+        assert_eq!(s.open_alerts().unwrap().len(), 1);
+        assert_eq!(s.open_alerts().unwrap()[0].kind, "after_merge_failed");
+        assert_eq!(s.count_events("p", "project.alert").unwrap(), 1);
+        assert_eq!(s.count_events("T-1", "merge.after").unwrap(), 1);
+        s.conn.execute_batch("CREATE TRIGGER reject_merge_after BEFORE INSERT ON events WHEN NEW.kind = 'merge.after' BEGIN SELECT RAISE(ABORT, 'write failure'); END;").unwrap();
+        assert!(
+            s.conclude_merge_after("p", "T-1", payload, Some("failed"))
+                .is_err()
+        );
+        assert_eq!(s.open_alerts().unwrap().len(), 1);
+        assert_eq!(s.count_events("p", "project.alert").unwrap(), 1);
+        assert_eq!(s.count_events("T-1", "merge.after").unwrap(), 1);
     }
 
     fn project(id: &str, path: &str) -> Project {

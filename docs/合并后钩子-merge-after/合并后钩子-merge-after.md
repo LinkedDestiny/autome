@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/20
+implementation-round: 3/20
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-02：Cleanup 前置钩子作业（主检出执行、merge.after_started/merge.after 事件与警报、超时、重入与零差异、autome run 打印），按 M-02 验收契约
+next-action: 独立复验 M-02；通过后推进 M-03 的跳过、主检出互斥、准备协作与停止恢复验收
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -205,7 +205,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
-| M-02 | 开放 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
+| M-02 | 待审 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
 | M-03 | 开放 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
 | M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
 
@@ -224,6 +224,8 @@ automed lib `config_io.rs`：C1 `merge_after_section_is_read_with_command_and_ti
 - 负向对照：`resolve()` 不拷贝 `merge_after` → D1 失败；`Failed` 判成 `Run`（只看「有没有跑过 MainCheck」）→ D3 失败；先判 verdict 再判工作区 → D4 的「工作区 + Passed」得 `Run` 而失败；缺省超时写成 30（抄 `[setup]`）→ C2 失败；空白 `after` 被当成命令或仍校验超时 → C2 失败；`[merge] = 1` 被静默接受 → C3 失败。
 
 ### M-02 验收契约
+
+最新证据：docs/合并后钩子-merge-after/evidence/M-02-r3-impl.md · 待审 · 实现 #3
 
 覆盖范围 2、3、4（结果、警报、打印），验收 1、2、3，约束 1、2、3、4、5、7，问题 2、6；前置：M-01。新增用例：
 end_to_end：E1 `merge_after_runs_in_the_main_checkout_after_the_main_check_and_before_cleanup`（沿用 `run_gated_task` 配 `[gate]`，再配 `[merge] after = "sh <hook.sh>"`；`task.merge` 后 settle：任务 `done`；主检出有 `hook-out/stamp`；`hook-runs` 恰 1 行，`$PWD` 等于主检出的规范路径、`AUTOME_TASK` 等于任务 id、`AUTOME_MERGE_COMMIT` 等于 `task.merge_commit`、`wt=present`；序号 `gate.result{node:"main_check",ok:true}` < `merge.after_started` < `merge.after{ok:true,exit_code:0}` < state 为 Done 的 `task.updated`；`merge.after.log` 文件存在且 `tail` 含脚本输出；主检出 `git::is_clean`；无警报）、E2 `merge_after_failure_raises_one_alert_and_the_task_is_still_done`（钩子 `exit 6`：任务 `done`，任务 worktree 与分支已删；打开的警报恰 1 条、kind `after_merge_failed`、detail 含命令、「退出码 6」与 `after_merge-` 日志路径；`merge.after{ok:false,exit_code:6}` 恰 1 条）、E3 `merge_after_events_are_absent_when_no_merge_after_is_configured`（两种夹具都跑到 `done`：不写 `[merge]`；写 `[merge]\nafter = "  "`。`merge.after_started` / `merge.after` / `merge.after_skipped` 计数均为 0，没有 `after_merge_failed` 警报，`.autome/output/gates/<task>/` 下没有 `after_merge-*` 文件）。

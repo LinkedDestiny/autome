@@ -3077,7 +3077,16 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
     let project = ctx.store.get_project(&task.project_id)?;
     let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, task));
 
+    let merge_after = if node == Node::Cleanup {
+        resolve_config(ctx, &project)?.merge_after
+    } else {
+        None
+    };
+    let begun = merge_after.is_some()
+        && crate::merge_after::begun(ctx, task, Path::new(&project.path))
+            .map_err(|e| err(e.to_string()))?;
     if node == Node::Cleanup
+        && !begun
         && let Some(setup) = resolve_config(ctx, &project)?.setup
     {
         crate::setup::skip_workspace(ctx, task, &project).map_err(|e| err(e.to_string()))?;
@@ -3122,6 +3131,20 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
                     )?;
                 }
             }
+        }
+    }
+
+    if let Some(config) = merge_after {
+        if !begun {
+            crate::merge_after::prepared(Path::new(&project.path), task)
+                .map_err(|e| err(e.to_string()))?;
+        }
+        if matches!(
+            crate::merge_after::phase(ctx, task, &project, &config)
+                .map_err(|e| err(e.to_string()))?,
+            crate::merge_after::Phase::Pending
+        ) {
+            return Ok(());
         }
     }
 
@@ -5178,6 +5201,211 @@ mod tests {
             .append_event("task.replied", &task.id, json!({}))
             .unwrap();
         assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 0);
+    }
+
+    fn merge_after_fixture(command: &str) -> (World, TaskRecord, crate::gate::Job, PathBuf) {
+        let mut w = World::new("merge-after");
+        let mut task = w.add_task("T-1", "hook");
+        task.state = TaskState::Active {
+            node: Node::Cleanup,
+        };
+        task.merge_commit = Some(git::head_sha(&w.repo).unwrap());
+        w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+        w.ctx
+            .store
+            .complete_task(&task.id, task.merge_commit.as_deref())
+            .unwrap();
+        let wt = w.with_worktree(&task);
+        let path = config_io::project_config_path(&w.repo);
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(
+            path,
+            format!("{text}\n[merge]\nafter = '{command}'\nafter_timeout_minutes = 1\n"),
+        )
+        .unwrap();
+        let job = crate::gate::Job::at(
+            &w.repo,
+            &task.id,
+            "after_merge",
+            &task.merge_commit.as_ref().unwrap()[..12],
+        );
+        (w, task, job, wt)
+    }
+
+    fn merge_after_collect(w: &mut World, task: &TaskRecord) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while w.ctx.store.get_task(&task.id).unwrap().state != TaskState::Done {
+            assert!(std::time::Instant::now() < deadline, "hook never completed");
+            run_core_step(&mut w.ctx, task, Node::Cleanup).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn merge_after_past_its_timeout_is_killed_with_124_and_reported_as_a_failure() {
+        needs_git!();
+        let (mut w, task, job, _) =
+            merge_after_fixture("sleep 30 & echo $! > .autome/output/hook-child; wait");
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.pid.exists() || !w.repo.join(".autome/output/hook-child").exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let pid: i32 = std::fs::read_to_string(&job.pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let child: i32 = std::fs::read_to_string(w.repo.join(".autome/output/hook-child"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        std::fs::write(&job.started, "1").unwrap();
+        merge_after_collect(&mut w, &task);
+        let result = w
+            .ctx
+            .store
+            .last_event(&task.id, "merge.after")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["exit_code"], 124);
+        assert_eq!(result["ok"], false);
+        assert!(
+            result["tail"]
+                .as_str()
+                .unwrap()
+                .contains("合并后命令运行超过 1 分钟")
+        );
+        let alerts = w.ctx.store.open_alerts().unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].detail.contains("超时"));
+        assert!(!crate::launcher::pid_alive(child));
+        assert!(!crate::launcher::pid_alive(pid));
+    }
+
+    #[test]
+    fn merge_after_in_flight_is_waited_for_collected_once_and_never_rerun() {
+        needs_git!();
+        let (mut w, task, _, wt) = merge_after_fixture("sleep 1; echo hook-done");
+        for _ in 0..2 {
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+            assert!(wt.exists());
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_started")
+                    .unwrap(),
+                1
+            );
+        }
+        merge_after_collect(&mut w, &task);
+        w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        assert_eq!(
+            w.ctx.store.get_task(&task.id).unwrap().state,
+            TaskState::Done
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "merge.after_started")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            1
+        );
+        assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+        // A vanished wrapper is unknown, not a failed hook: retry next tick.
+        let (mut w, task, job, _) = merge_after_fixture("echo recovered");
+        std::fs::create_dir_all(job.started.parent().unwrap()).unwrap();
+        std::fs::write(&job.started, "1").unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        assert!(!job.exists());
+        assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            0
+        );
+        merge_after_collect(&mut w, &task);
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "merge.after_started")
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            1
+        );
+        assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+
+        // Removing the configuration while pending restores ordinary Cleanup.
+        let (mut w, task, job, wt) = merge_after_fixture("sleep 1; echo detached");
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        let path = config_io::project_config_path(&w.repo);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(path, text.split("\n[merge]").next().unwrap()).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        assert_eq!(
+            w.ctx.store.get_task(&task.id).unwrap().state,
+            TaskState::Done
+        );
+        assert!(!wt.exists());
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            0
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.exit.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn merge_after_started_event_is_backfilled_when_the_job_exists_without_one() {
+        needs_git!();
+        let command = "echo invocation >> .autome/output/hook-starts; sleep 1; echo hook-done";
+        let (mut w, task, job, _) = merge_after_fixture(command);
+        crate::gate::start(&job, &w.repo, command, &[]).unwrap();
+        let started = std::fs::read_to_string(&job.started).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        let event = w
+            .ctx
+            .store
+            .last_event(&task.id, "merge.after_started")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["command"], command);
+        assert_eq!(
+            event["commit"],
+            task.merge_commit.as_ref().unwrap().as_str()
+        );
+        assert_eq!(event["log"], job.log.to_str().unwrap());
+        assert_eq!(std::fs::read_to_string(&job.started).unwrap(), started);
+        merge_after_collect(&mut w, &task);
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "merge.after_started")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            1
+        );
+        assert_eq!(std::fs::read_to_string(job.log).unwrap(), "hook-done\n");
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(".autome/output/hook-starts")).unwrap(),
+            "invocation\n"
+        );
     }
 
     #[test]
