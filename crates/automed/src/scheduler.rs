@@ -6002,7 +6002,11 @@ mod tests {
             project.added_at = "2000-01-01T00:00:00Z".into();
             w.ctx.store.insert_project(&project).unwrap();
             assert_eq!(
-                w.ctx.store.list_projects().unwrap().iter()
+                w.ctx
+                    .store
+                    .list_projects()
+                    .unwrap()
+                    .iter()
                     .map(|p| p.id.as_str())
                     .collect::<Vec<_>>(),
                 vec!["p1", "p2"]
@@ -6014,11 +6018,8 @@ mod tests {
             assert_eq!(w.ctx.store.slots_in_use("p1").unwrap(), 0);
             assert_eq!(w.ctx.store.slots_in_use("p2").unwrap(), 0);
             if broken_config {
-                std::fs::write(
-                    w.repo.join(".autome/config.toml"),
-                    "[loop\nparallel = 1\n",
-                )
-                .unwrap();
+                std::fs::write(w.repo.join(".autome/config.toml"), "[loop\nparallel = 1\n")
+                    .unwrap();
             }
 
             let report = tick(&mut w.ctx);
@@ -6028,17 +6029,32 @@ mod tests {
                 TaskState::Active { node: Node::Intake },
                 "healthy project must start despite broken_config={broken_config}: {report:?}"
             );
-            assert!(w.ctx.store.running_session("T-healthy-1").unwrap().is_some());
+            assert!(
+                w.ctx
+                    .store
+                    .running_session("T-healthy-1")
+                    .unwrap()
+                    .is_some()
+            );
             assert!(report.tasks_started.contains(&"T-healthy-1".to_string()));
             // Config says one slot while the database says three (T-29 semantics).
             assert_eq!(w.state("T-healthy-2"), TaskState::Queued);
-            assert!(w.ctx.store.running_session("T-healthy-2").unwrap().is_none());
+            assert!(
+                w.ctx
+                    .store
+                    .running_session("T-healthy-2")
+                    .unwrap()
+                    .is_none()
+            );
             if broken_config {
                 assert_eq!(w.state("T-broken"), TaskState::Queued);
                 assert!(w.ctx.store.running_session("T-broken").unwrap().is_none());
                 assert_eq!(report.tasks_started, vec!["T-healthy-1".to_string()]);
                 assert!(
-                    report.errors.iter().any(|e| e.contains(&broken.display_name)),
+                    report
+                        .errors
+                        .iter()
+                        .any(|e| e.contains(&broken.display_name)),
                     "configuration error must name the affected project: {report:?}"
                 );
             } else {
