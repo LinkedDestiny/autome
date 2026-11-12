@@ -27,3 +27,4 @@
 复盘 #2 | M-01..M-05（已完成） | 教训 6 条（新增 L-05 门禁误派、L-06 分阶段诊断） | docs/w5-外壳与项目导航-迁移-animal/lessons.md | 无
 实现 #11 | M-05 | 门禁定位，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r11-impl.md | 内核 PID 发布竞态；任务禁止改 crates，未修复
 审计 #8 | 无 | 通过（无待审项，表不变；宿主门禁 9ff58fe 全绿） | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r11-audit.md | 无
+复盘 #3 | M-01..M-05（已完成） | 教训 7 条（新增 L-07 范围外失败未入 Backlog；L-05 补 b44b444 证据） | docs/w5-外壳与项目导航-迁移-animal/lessons.md | 无
