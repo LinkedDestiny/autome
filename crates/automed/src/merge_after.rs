@@ -133,6 +133,9 @@ pub fn phase(
             .append_event("merge.after_skipped", &task.id, json!({"reason": reason}))?;
         return Ok(Phase::Done);
     }
+    if another_main_job_running(repo, &task.id)? {
+        return Ok(Phase::Pending);
+    }
     gate::start(
         &job,
         repo,
@@ -141,4 +144,34 @@ pub fn phase(
     )?;
     started(ctx, task, config, &job)?;
     Ok(Phase::Pending)
+}
+
+fn another_main_job_running(repo: &Path, task_id: &str) -> Result<bool> {
+    let root = gate::dir_for(repo, task_id);
+    let Some(root) = root.parent().filter(|path| path.exists()) else {
+        return Ok(false);
+    };
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name() == task_id {
+            continue;
+        }
+        let other = entry.file_name();
+        let other = other.to_string_lossy();
+        if gate::running(&gate::Job::at(repo, &other, "setup", "main")) {
+            return Ok(true);
+        }
+        for file in std::fs::read_dir(entry.path())? {
+            let name = file?.file_name();
+            if let Some(key) = name
+                .to_string_lossy()
+                .strip_prefix("after_merge-")
+                .and_then(|name| name.strip_suffix(".started"))
+                && gate::running(&gate::Job::at(repo, &other, "after_merge", key))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }

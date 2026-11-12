@@ -5203,6 +5203,178 @@ mod tests {
         assert_eq!(bug_progress(&w.ctx, &task).unwrap().repro_misses, 0);
     }
 
+    #[test]
+    fn merge_after_waits_while_another_tasks_hook_or_main_setup_is_running() {
+        needs_git!();
+        for (node, key) in [("after_merge", "abcdef"), ("setup", "main")] {
+            let (mut w, task, _, _) = merge_after_fixture("echo unlocked");
+            let other = crate::gate::Job::at(&w.repo, "T-2", node, key);
+            std::fs::create_dir_all(other.started.parent().unwrap()).unwrap();
+            std::fs::write(
+                &other.started,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string(),
+            )
+            .unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_started")
+                    .unwrap(),
+                0
+            );
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            std::fs::write(&other.pid, child.id().to_string()).unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            let starts = w
+                .ctx
+                .store
+                .count_events(&task.id, "merge.after_started")
+                .unwrap();
+            let state = w.ctx.store.get_task(&task.id).unwrap().state;
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert_eq!(starts, 0);
+            assert_eq!(state, task.state);
+            std::fs::write(&other.exit, "0").unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_started")
+                    .unwrap(),
+                1
+            );
+            merge_after_collect(&mut w, &task);
+        }
+        // The remaining skip-plan rows have no natural successful-merge fixture.
+        for missing_commit in [false, true] {
+            let (mut w, mut task, _, _) = merge_after_fixture("echo must-not-run");
+            if missing_commit {
+                task.merge_commit = None;
+            } else {
+                w.ctx
+                    .store
+                    .append_event("gate.skipped", &task.id, json!({"node":"main_check"}))
+                    .unwrap();
+            }
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx.store.get_task(&task.id).unwrap().state,
+                TaskState::Done
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_started")
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "merge.after_skipped")
+                    .unwrap()
+                    .unwrap()["reason"],
+                if missing_commit {
+                    "没有单一的合并提交"
+                } else {
+                    "验证 main 被跳过"
+                }
+            );
+            w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_skipped")
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn merge_after_waiting_for_another_hook_does_not_rerun_a_failed_main_setup() {
+        needs_git!();
+        let (mut w, task, _, _) = merge_after_fixture("echo after-failure");
+        let path = config_io::project_config_path(&w.repo);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                "{text}\n[setup]\ncommand = 'echo $PWD >> .autome/output/setup-runs; exit 4'\n"
+            ),
+        )
+        .unwrap();
+        let other = crate::gate::Job::at(&w.repo, "T-2", "after_merge", "abcdef");
+        crate::gate::start(&other, &w.repo, "sleep 30", &[]).unwrap();
+        let prepared = crate::gate::dir_for(&w.repo, &task.id).join("after_merge.prepared");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !prepared.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for _ in 0..4 {
+            run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&task.id, "merge.after_started")
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                std::fs::read_to_string(w.repo.join(".autome/output/setup-runs")).unwrap(),
+                format!("{}\n", w.repo.canonicalize().unwrap().display())
+            );
+            let alerts = w.ctx.store.open_alerts().unwrap();
+            assert_eq!(alerts.len(), 1);
+            assert_eq!(alerts[0].kind, "setup_failed");
+        }
+        crate::gate::stop_all(&w.repo, "T-2");
+        std::fs::write(&other.exit, "0").unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Cleanup).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "merge.after_started")
+                .unwrap(),
+            1
+        );
+        merge_after_collect(&mut w, &task);
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "merge.after").unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "merge.after")
+                .unwrap()
+                .unwrap()["ok"],
+            true
+        );
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(".autome/output/setup-runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(w.ctx.store.open_alerts().unwrap().len(), 1);
+    }
+
     fn merge_after_fixture(command: &str) -> (World, TaskRecord, crate::gate::Job, PathBuf) {
         let mut w = World::new("merge-after");
         let mut task = w.add_task("T-1", "hook");
