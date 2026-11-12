@@ -1,7 +1,7 @@
 # 宿主门禁按机器排队：`[gate] concurrency` 缺省 1，排队不计预算、超时从启动算
 
-status: 设计中
-design-round: 1/15
+status: 实现中
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -71,7 +71,9 @@ MergeGate 优先权（见方案 §4）。
 - (b) J 已写退出标记、但 T 还没收它，且 T 处于 `Active`：
   - 准备作业（stem 以 `setup-` 开头）：`.started` 还在即未收（`ensure` 收完会删 `.started`）；
   - 门禁作业：T 为 `Active { node: X }`，J 的 stem 以 `X-` 开头，且 T 在节点 X 上最后一条 `gate.started` /
-    `gate.result` 是 `gate.started`、其 `log` 等于 J 的日志路径。
+    `gate.result` 是 `gate.started`、其 `log` 等于 J 的日志路径；
+  - 但 (b) **有期限（D2-P01）**：J 的退出标记早于「完成了内核步骤的上一次 tick 的开始时刻」时，(b) 不再成立（见下
+    「持有名额的作业必须有不依赖业务路径的收束」）。
 
 `Vanished`（没有退出标记、没有活进程、启动超过 10 秒）的作业不占名额。
 
@@ -84,9 +86,35 @@ FixGate），`run_gate` 每次只 poll 当前 head 的那一个；head 在两次
 节点最多剩当前 head 的一个作业，旧 head 的作业不可能继续占名额或继续跑。MainCheck 的 head 是固定的合并提交，不会变，
 不需要清扫。清扫放在 `run_gate` 最前面，所以即使任务此刻因别的原因排队，也会先收束旧作业再判准入。
 
+**持有名额的作业必须有不依赖业务路径的收束（D2-P01）。** 上面的“Active 任务必然继续 poll”并不总成立：`run_gate` 要先
+成功 `gate_head` 才到清扫和 poll，门禁前准备会因 `[setup]` 被移除而不再进 `ensure`，会话前准备可能被冷却路由提前返回，
+Cleanup 在配置缺失时跳过主检出准备。这些路径下，一个 `Active` 任务名下的作业既没有人超时处理、也没有人收。名额回收因此
+不能只靠业务路径，每个 tick 在内核步骤**之前**做两件与任务状态、配置能否解析都无关的事（都不写事件、不收结果、不删文件、
+不伪造门禁通过）：
+
+1. **全任务超时回收**（D1-P04 的「空闲任务超时回收」推广到全部未结束任务，含 `Active`）：对 `list_unfinished` 里每个任务，
+   枚举其 `gates/<T>/` 下 `gate::running` 为真的作业，按 `.started` 与超时调一次 `gate::poll_as`——它已有的行为是：未超时
+   返回 `Running`；超时则杀进程组、追加终止行、写退出码 124。仍活着的作业因此最迟在超时后结束，不会只被“减计数”。
+   超时值取该任务所属项目的有效配置（门禁 `[gate] timeout_minutes`、准备命令 `[setup] timeout_minutes`）；**配置被移除、
+   读不到或解析失败时**，门禁取 30 分钟、准备取 `DEFAULT_SETUP_TIMEOUT_MINUTES`（30）——这两个缺省值本来就是配置的缺省，
+   没有新增来源。对 `Active` 任务这是幂等的：回收先杀掉，随后 `run_gate` / `ensure` 照常 poll 到同一个 `Done(124)`，
+   `gate.result` / `setup.result` 与现在逐字相同。
+2. **遗留的已退出作业不无限占位**：规则 (b) 只需要覆盖「同一个 tick 里 B 先于 A 被处理」这一个窗口。因此 (b) 以时间为
+   界：核心在内存里记下「完成了内核步骤的上一次 tick 的开始时刻」`prev_tick`（被 `skipped` 的 tick 不算；core 重启后为空，
+   此时 (b) 保持成立，下一个 tick 即有值，所以只多占一个 tick）；Active 任务名下已退出的作业，若其退出标记（`.exit`）的
+   修改时间早于 `prev_tick`，说明上一个 tick 的步骤已经有机会收它而没有收（A 的步骤出错、跳过 `ensure`、`gate_head` 读不到、
+   配置被移除……），此后 (b) 不再成立，名额释放。时间判据成立的依据：A 的步骤在上一个 tick 里观察到作业仍在 `Running`，
+   则退出必然晚于该步骤、晚于 `prev_tick`，(b) 仍然成立，所以正常收尾路径的顺序保证（T1）不受影响。被释放的作业**文件
+   仍在**，不删、不当作 `Vanished`：A 的业务路径恢复后照常收到真实退出码、写 `gate.result`（此时它可能晚于别的任务的
+   `gate.started`，只丢失账本顺序的便利，没有错误结果）；永远没有人收的遗留文件（例如 `[setup]` 被移除后留下的准备作业文件）
+   不占名额，也不影响任何结果，`[setup]` 再次出现时由 `ensure` 按现有逻辑收走。
+
+这样，持有名额的作业在任何路径下都有界：仍在跑的最迟 `timeout_minutes` 后被杀，已退出的最迟再过一个 tick 释放。第 1 项
+同时取代下面「暂停的任务」一段里的「空闲任务」限定。
+
 规则 (b) 是为了让「第一个任务的 `gate.result` 先于第二个任务的 `gate.started`」在账本顺序上成立：一个 tick 内任务按
 `created_at` 处理，若 B 排在 A 前面、A 的作业刚好结束还没被收，只看进程存活会让 B 先启动、A 后写结果。(b) 让 A 的作业
-在被收之前一直占着名额。它只对 `Active` 任务成立，所以暂停、停止、失败的任务不会因为一个没人收的已结束作业而永久占位。
+在被收之前一直占着名额。它只对 `Active` 任务成立、且有上面的期限，所以暂停、停止、失败的任务，以及业务路径不可达的 `Active` 任务，都不会因为一个没人收的已结束作业而永久占位。
 
 由此逐条回答约束 5：
 
@@ -99,11 +127,8 @@ FixGate），`run_gate` 每次只 poll 当前 head 的那一个；head 在两次
   这是真实的机器负载。
 - **暂停的任务**：作业仍在跑（现有行为，恢复后接着收同一作业，`paused_gate_resumes_at_gate_without_restarting_job`），
   按 (a) **继续占名额**，因为它确实在消耗机器，而限制并发负载正是本任务的目的。现有代码只 poll `Active` 任务的作业，
-  暂停期间不会超时，一个挂死的作业会让后面的人无限等（D1-P04）。因此新增**空闲任务的超时回收**：每个 tick 在内核步骤
-  之前，对每个未结束且**不是 `Active`** 的任务（暂停、停止、失败），枚举其 `gates/<T>/` 下仍存活的作业（`gate::running`
-  为真），按 `.started` 与该作业的超时（门禁取任务所属项目有效配置的 `[gate] timeout_minutes`，缺省 30，准备命令取其
-  配置的超时）调一次 `gate::poll_as`——它已有的行为就是：未超时返回 `Running`；超时则杀进程组、在日志末尾追加终止行、
-  写退出码 124。回收**只做这一件事**，不收结果、不删文件、不写事件：作业被杀后 (a) 不再成立，(b) 因任务非 `Active`
+  暂停期间不会超时，一个挂死的作业会让后面的人无限等（D1-P04）。因此由上面的**全任务超时回收**覆盖（对暂停、停止、失败的任务同样每个 tick
+  调一次 `gate::poll_as`）。回收**只做这一件事**，不收结果、不删文件、不写事件：作业被杀后 (a) 不再成立，(b) 因任务非 `Active`
   不成立，名额释放；任务恢复后沿用现有路径收到退出码 124，`gate.result` 照常带终止行（与「恢复时超时立即生效」的现有
   语义结果一致，只是提前到超时那一刻）。由此，任何在途作业——包括暂停任务的——最迟在 `timeout_minutes` 后结束
   （见 §4 的有限等待论证与风险 R3）。
@@ -159,8 +184,8 @@ position(waiters, task_id) -> Option<usize>   // 1 起
 这是严格的 FIFO：队首没轮到时，后面的人即使所在项目名额更大也不能越过它。因此：
 
 - **不饿死**：队首只等 `held < limit`；队首在等时没有任何新作业能被准入（所有人都在它后面）。前提有两个，都由本设计
-  保证而不是假设：(1) 每个在跑的作业都会结束——`Active` 任务的作业由 `run_gate` / `ensure` 的 poll 在 `timeout_minutes`
-  内杀掉，非 `Active` 任务（含暂停）的作业由 §2 的空闲任务超时回收杀掉，旧 head 的作业由 §2 的清扫收束，升级时遗留的旧
+  保证而不是假设：(1) 每个在跑的作业都会结束——正常路径下 `Active` 任务的作业由 `run_gate` / `ensure` 的 poll 在 `timeout_minutes`
+  内杀掉，其余任务（含暂停、业务路径不可达的 `Active` 任务）的作业由 §2 的全任务超时回收杀掉、已退出的遗留作业由 §2 的 (b) 期限释放，旧 head 的作业由 §2 的清扫收束，升级时遗留的旧
   作业同理（§10）；(2) 队首能推进——走不到准入判定的队首由 §3 的 `gate.queue_dropped` 退队。在这两个前提下，队首至多再等
   `held` 个作业结束，第 k 个排队者至多再等有限个作业。仍然成立的人为例外只有：用户自己把任务暂停且不恢复——暂停使
   `task.updated` 让它出队，它不再是排队者。
@@ -177,7 +202,21 @@ position(waiters, task_id) -> Option<usize>   // 1 起
 
 准入在 `automed` 新模块 `gate_queue.rs` 里做：`held(ctx)` 按 §2 现算；`waiters(ctx)` 对每个未结束任务取其最后一条
 §3 所列种类的事件，挑出有效排队项并读出各自项目的 `limit`；`admit(ctx, task, project, node, job, checkout)` 调纯函数，
-判「等」且没有有效排队项时写 `gate.queued`。读不到某个项目目录时该项目的作业按 0 计，不报错。
+判「等」且没有有效排队项时写 `gate.queued`。
+
+**读不到作业目录不等于没有作业（D2-P02）。** `held(ctx)` 对每个未结束任务 T 的探测结果是三值，不再把读取失败按 0 计：
+
+- `read_dir(gates/<T>)` 成功：按 §2 枚举；
+- 返回 `NotFound`，且 T 所属项目的 `project.path` 本身存在、可读：没有作业（`gate::start` 才建目录），记 0；
+- 其它情形（`project.path` 不存在或不可读、权限错误、I/O 错误），但 T 的账本事件能**证实没有在途作业**——T 没有任何
+  `gate.started` / `setup.started`，或其最后一条 `gate.started` 之后已有 `gate.result`、最后一条 `setup.started` 之后已有
+  `setup.result`——记 0，不报错；
+- 其余：**未知占用**。此时 `held` 视为已满（等于该次判定的 `limit`），任何任务的准入都判「等」（照常写 `gate.queued`、
+  排队、不动预算），直到该目录可读或该任务结束。内核同时向本 tick 的 `report.errors` 追加一条 tick 级信息：
+  `无法确认项目 {名字} 的宿主作业（{原因}）：任务 {id} 可能仍有作业在运行，已暂停准入新的宿主作业；请恢复该目录，或取消该任务`。
+  它不属于任何任务的步骤，所以不触发 `gate.queue_dropped`；已在跑的作业的收取路径不经过准入，不受影响。
+  这是有意的保守：不扫全机进程就无法确认的活进程，宁可多等，也不让并行数超过 N。恢复路径是用户可达的（目录恢复可读、或取消
+  该任务——取消后任务不在 `list_unfinished`），不是永久锁死；而「路径存在、只是没有作业」这一常见情形不受影响。
 
 各作业是否占名额、何时占、何时放：
 
@@ -345,7 +384,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 4. 上限 10（§7）。
 5. 门禁前准备与门禁连占一个名额；`setup-verify` 属于 MainCheck 那次准入；`setup-main` 与会话前准备各自在 `ensure` 里
    判准入，`setup-main` 先过现有互斥再判准入（§5）。
-6. 暂停任务的在途作业继续占名额，但由空闲任务超时回收保证最迟 `timeout_minutes` 后释放；暂停期间已退出的作业不占名额、
+6. 暂停任务的在途作业继续占名额，但由 §2 的全任务超时回收保证最迟 `timeout_minutes` 后释放；暂停期间已退出的作业不占名额、
    恢复后无接续资格；排队中被暂停 / 停止的任务因 `task.updated` 出队，恢复后重新排到队尾（§2、§3、§5）。
 7. 升级时超额的旧作业照常收完，期间不准入新作业（§10）。
 8. 九处文案、判据、不改 serde 形状、`timeout(1)` 的 124 不算（§9）。
@@ -370,7 +409,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
   覆盖：任务卡第 1 条、约束 7、8、12，验收 4（缺省 1）。前置：无。
 - **M-02** 结果：`automed::gate_queue` 现算占用与排队；`run_gate`、`start_session` 的准备、`Cleanup` 的主检出准备三处
   接入准入（准入点是每个「要起进程」的点，接续资格见 §5）；`gate.queued` / `gate.queue_dropped` 事件；旧 head 作业清扫
-  （`gate::discard_stale`）、空闲任务的超时回收、不可推进队首的退队；Bug Loop 修复轮次改为起会话时才记
+  （`gate::discard_stale`）、全任务超时回收与 (b) 期限释放（D2-P01）、作业目录读取失败的未知占用（D2-P02）、不可推进队首的退队；Bug Loop 修复轮次改为起会话时才记
   （`bug.fix_round_requested` 标记）；暂停 / 停止 / 作废 / 升级 / 重启路径的名额与排队行为按 §2、§3、§5、§6、§10 实现。
   覆盖：任务卡第 2、4 条，约束 1–7、13、14。前置：M-01。
 - **M-03** 结果：`task.get.gate_queue_position`、`dashboard.get` 每项同名字段；CLI `status` / `status <id>` / `run`
@@ -404,7 +443,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 ### M-02 验收契约
 
 - 验收命令：`cargo test -p automed --lib`（新增用例单独复跑：`cargo test -p automed --lib scheduler::tests::gate_queue_`）
-- 预期：`automed --lib` 共 672 个用例全部通过（M-01 完成时 655 + 新增 17）；17 个新用例都在 `scheduler::tests` 里、名字以
+- 预期：`automed --lib` 共 676 个用例全部通过（M-01 完成时 655 + 新增 21）；21 个新用例都在 `scheduler::tests` 里、名字以
   `gate_queue_` 开头——第二个门禁排队且不产生作业文件与 `gate.started`；门禁前准备与门禁连占
   一个名额，另一任务无法在两者之间插入；已结束未收的作业在被收之前占名额（B 先于 A 被处理也不能抢先）；升级时两个旧作业
   并行在跑，都被正常收完、不被杀、第三个任务等到两者都结束；排队中暂停 / 停止后出队、恢复后排到队尾；`stop_all` /
@@ -414,19 +453,23 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
   `record_gate_result` 的同因计数；（D1 新增 5 个）head 在两次 tick 之间变化时旧 head 的作业（活的被杀、已退出未收的被删）
   不再占名额、新 head 照常准入；暂停期间已退出的准备作业在恢复后不免准入——另一任务已占满名额时，恢复的任务重新排到队尾，
   不与其并行；队首在准入之前持续出错时写 `gate.queue_dropped`、后面的任务顺位前移；暂停任务的挂死作业在 `timeout_minutes`
-  后被回收（退出码 124、日志有终止行）、名额释放，恢复后收到同一结果；Bug Loop 的 Fix 会话前准备被名额挡住期间
+  后被回收（退出码 124、日志有终止行）、名额释放，恢复后收到同一结果；（D2 新增 4 个）`Active` 任务的 head 读取失败（或 `[setup]` 被移除）而其活作业无人 poll 时，全任务超时回收仍在
+`timeout_minutes` 后杀掉它（退出码 124、日志有终止行）、名额释放，业务路径恢复后收到同一结果；同一情形下已正常退出但无人收的作业，
+在上一个 tick 之后不再占名额（B 得以启动），而该作业文件仍在、A 恢复后照常收到真实退出码；`[setup]` 被移除后遗留的准备作业
+文件不占名额；作业目录读取失败（项目路径被移走）而账本显示有未收尾的 `gate.started` 时，另一项目的准入判「等」并在 tick 报告
+给出可恢复的信息，目录恢复后准入放行，而账本证实没有在途作业的项目目录读取失败不挡人；Bug Loop 的 Fix 会话前准备被名额挡住期间
   `bug.fix_round_started` 数不变、等待后真正启动只加 1、崩溃重试与暂停恢复不再加。基线清单中的原有用例（其中 `scheduler` 85 个、`setup` 11 个、`gate::` 11 个）一个不少、
   一行不改。
 - 负向对照：准入放在 `setup::ensure` 之后（准备与门禁各排一次）时「门禁前准备与门禁连占一个名额」失败；占用只看
   `gate::running`、不含规则 (b) 时「已结束未收的作业在被收之前占名额」失败；把 `gate.queued` 加进 `any_event_after` 的列表时
   「排队事件不打断同因计数」失败；`held` 只数 `Active` 任务的作业时「暂停任务的活作业占名额」失败；不做旧 head 清扫时旧 head 作业用例失败；
   接续资格只看「准备作业文件还在」而不看 `task.updated` 时暂停恢复用例失败；`perform` 仍直接写 `bug.fix_round_started`
-  时 Fix 轮次用例失败；不做空闲任务超时回收时挂死作业用例失败。
+  时 Fix 轮次用例失败；不做全任务超时回收时挂死作业与业务路径不可达两个用例失败；(b) 不设期限时「无人收的已退出作业不占名额」失败；读取失败按 0 计时未知占用用例失败。
 
 ### M-03 验收契约
 
 - 验收命令：`cargo test -p automed --lib && cargo test -p autome-cli`（新增用例单独复跑：`cargo test -p automed --lib dispatch::tests::gate_queue_`、`cargo test -p autome-cli gate_queue_`）
-- 预期：`automed --lib` 共 675 个全部通过（672 + 新增 3，都在 `dispatch::tests`：`task.get` 对排队任务给出
+- 预期：`automed --lib` 共 679 个全部通过（676 + 新增 3，都在 `dispatch::tests`：`task.get` 对排队任务给出
   `gate_queue_position` 且 `queue_position` 仍为 `null`；不排队时为 `null`；`dashboard.get` 的 `running` 项带同名字段）；
   `autome-cli` 共 42 个全部通过（基线 39 + 新增 3，都在 `render` 的测试里：`gate_queue_line` 的 k = 名次 − 1；
   `event_line("gate.queued")` 写出节点与「入队时前面还有 k 个」；`state_line` 对停在门禁节点的任务输出不变）；
@@ -436,7 +479,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 ### M-04 验收契约
 
 - 验收命令：`cargo test -p autome-domain && cargo test -p automed --lib && cargo test -p autome-cli && cargo test -p automed --test prompt_rendering`（新增用例单独复跑：三个 crate 各加过滤器 `gate_timeout_`）
-- 预期：`autome-domain` 共 397 个（394 + 3）、`automed --lib` 共 680 个（675 + 5）、`autome-cli` 共 46 个（42 + 4）、
+- 预期：`autome-domain` 共 397 个（394 + 3）、`automed --lib` 共 684 个（679 + 5）、`autome-cli` 共 46 个（42 + 4）、
   `prompt_rendering` 16 个（不变）全部通过。新增用例名以 `gate_timeout_` 开头：domain 3 个（识别 `poll_as` 的终止行并取出
   分钟数；识别不到普通失败输出；只有退出码 124 而无终止行不算）；automed 5 个
   （真实 `poll_as` 杀掉的作业其 `tail` 被 `kernel_timeout` 识别；两种 Loop 的注入在超时时含「门禁超时」、非超时仍含
@@ -459,8 +502,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 ### M-06 验收契约
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && npm test --prefix apps/desktop && grep -n "concurrency" README.md && grep -n "concurrency" docs/development/technical-design.md`
-- 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1258 个用例（基线 1201 + 本任务新增 57：
-  domain 12、automed lib 32、autome-cli 7、end_to_end 6）；clippy、fmt 无输出；桌面端 105 个用例、104 通过 1 跳过（与基线
+- 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1262 个用例（基线 1201 + 本任务新增 61：
+  domain 12、automed lib 36、autome-cli 7、end_to_end 6）；clippy、fmt 无输出；桌面端 105 个用例、104 通过 1 跳过（与基线
   相同）；两条 `grep` 分别在 README 的「Host gate, retries and cooldowns」一节与 `technical-design.md` §8.1 的「宿主门禁」
   「宿主准备」段落各至少命中一行（基线两个文件都是 0 处）。
 - 负向对照：README 未补 `concurrency` 时第一条 `grep` 无命中、命令非零退出；任何一个旧用例被删除或改名时 `--list` 与基线
@@ -525,7 +568,7 @@ worktree、真实包装脚本与真实后台作业，只把模型换成替身（
 - **R2 本任务自己的门禁仍按旧逻辑并行跑。** 实现期 Autome 跑的门禁命令是旧二进制，可能被别的任务挤到超时；按协议如实
   记录，不改 `ci-local.sh`、不调 `timeout_minutes`（约束 15）。
 - **R3 暂停任务的作业占着名额。** 现有「暂停不 poll」行为与「活作业占名额」的组合会让挂死的门禁在暂停期间无限占位。
-  已解决（D1-P04）：§2 的空闲任务超时回收在每个 tick 对非 `Active` 任务的存活作业调一次 `gate::poll_as`，到点杀掉并写
+  已解决（D1-P04）：§2 的全任务超时回收（D2-P01 起覆盖 `Active` 任务）在每个 tick 对存活作业调一次 `gate::poll_as`，到点杀掉并写
   124，名额随之释放；恢复后收到的就是这个 124。残余：回收的时间精度是一个 tick；超时值取当前有效配置，配置在作业
   启动后被改过时以回收时刻的为准（与 `run_gate` 的 poll 同样的取法）。
 - **R4 缺省从「不限」变成 1 会让多任务的门禁整体变慢。** 这是任务卡要求的缺省；需要并行的用户在全局写更大的值。
@@ -533,6 +576,9 @@ worktree、真实包装脚本与真实后台作业，只把模型换成替身（
   等）在缺省 1 下只是串行，`settle` 会把队列跑空；M-05 的基线核对会暴露任何因此超时的旧用例。
 - **R5 与并行任务的冲突。** 其它任务也在改 `scheduler.rs`、`task.rs`、`dispatch.rs`、`end_to_end.rs`。排队逻辑集中在新模块
   `automed::gate_queue` 与 `autome_domain::gate_queue`，三处启动点各只插几行，降低 rebase 冲突（约束 16）。
+- **R6 未知占用与 (b) 期限的保守代价（D2）。** 作业目录读取失败且账本不能证实没有在途作业时，整本账本暂停准入新的宿主作业，直到
+  目录恢复或该任务取消（tick 报告点名项目与任务）；(b) 的期限在 core 重启后第一个 tick 内不生效。两者都只会多等、不会超额，
+  且用户可达。残余：项目目录被永久删除而任务既不取消又不结束时，账本会一直等到用户处理——这是有意取舍，不扫全机进程。
 - **回退**：在全局写 `[gate] concurrency = 10` 即基本回到不排队的行为；代码回退是撤掉三处准入调用，新事件与新字段是纯增量，
   旧读者不受影响。
 
