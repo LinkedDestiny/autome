@@ -659,7 +659,7 @@ fn bug_loop_status_shows_the_bug_nodes_and_what_to_do_next() {
     let status = s.ok(&["status", id]);
     assert!(
         status.contains("等你决定（不是 Bug）")
-            && status.contains("--kind feature")
+            && status.contains(&format!("autome task convert {id}"))
             && status.contains(&format!("autome cancel {id}")),
         "{status}"
     );
@@ -752,4 +752,97 @@ fn broken_pipe_sigpipe_remains_ignored_in_cli_process() {
     write.unwrap();
     assert!(rest.contains("pipe-probe"), "{rest}");
     assert!(out.stderr.is_empty(), "{:?}", out.stderr);
+}
+
+#[test]
+fn task_convert_rebuilds_a_not_a_bug_task_from_the_command_line() {
+    let s = Sandbox::new("convert-draft");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    for args in [vec!["--help"], vec!["help"]] {
+        assert!(s.ok(&args).contains("task convert"));
+    }
+    // Exercise both JSON and the three-line human output on separate originals.
+    for (n, slug) in [(1, "convert-json"), (2, "convert-text")] {
+        bug_wait_step(&s, n, slug, "不是 Bug");
+        let created = s.json(&["task", "new", slug, "--kind", "bug"]);
+        let id = created["task"]["id"].as_str().unwrap();
+        s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+        assert!(
+            s.ok(&["status", id])
+                .contains(&format!("autome task convert {id}"))
+        );
+        if n == 1 {
+            let out = s.json(&["task", "convert", "convert-j"]);
+            assert_eq!(out["task"]["kind"], "feature");
+            assert_eq!(out["task"]["state"]["state"], "draft");
+            assert_eq!(out["converted_from"], id);
+            assert_eq!(out["started"], false);
+            assert!(out.get("queue_position").is_some());
+        } else {
+            let out = s.ok(&["task", "convert", id]);
+            let lines: Vec<_> = out.lines().collect();
+            assert_eq!(lines.len(), 3, "{out}");
+            assert!(lines[0].contains("convert-text-2"));
+            assert_eq!(lines[1], format!("由 {id} 改建，{id} 已取消。"));
+            assert!(lines[2].contains("已存为待开始。用 `autome task start T-"));
+        }
+        assert_eq!(s.task_state(id)["state"], "cancelled");
+        let refused = s.autome(&["task", "convert", id]);
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("不是 Bug"));
+    }
+}
+
+#[test]
+fn task_convert_with_start_queues_and_rejects_other_tasks() {
+    let s = Sandbox::new("convert-start");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    // Each mode gets its own fake-session sequence; --start launches a session.
+    for (n, slug) in [(1, "start-json"), (2, "start-text")] {
+        let s = Sandbox::new(slug);
+        s.ok(&[
+            "project",
+            "add",
+            s.repo.to_str().unwrap(),
+            "--skip-onboarding",
+        ]);
+        bug_wait_step(&s, 1, slug, "不是 Bug");
+        let created = s.json(&["task", "new", slug, "--kind", "bug"]);
+        let id = created["task"]["id"].as_str().unwrap();
+        s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+        if n == 1 {
+            let out = s.json(&["task", "convert", id, "--start"]);
+            assert_ne!(out["task"]["state"]["state"], "draft");
+            assert_eq!(out["task"]["kind"], "feature");
+            assert_eq!(out["converted_from"], id);
+            // Cancel the new task before preparing the next original.
+            s.ok(&["cancel", out["task"]["id"].as_str().unwrap()]);
+        } else {
+            let out = s.ok(&["task", "convert", id, "--start"]);
+            assert_eq!(out.lines().count(), 3, "{out}");
+            assert!(out.contains(&format!("由 {id} 改建，{id} 已取消。")));
+            assert!(out.contains("Loop 由 `autome run` 或打开的桌面端推进。"));
+        }
+        assert_eq!(s.task_state(id)["state"], "cancelled");
+    }
+    let draft = s.json(&["task", "new", "feature draft", "--draft"]);
+    let id = draft["task"]["id"].as_str().unwrap();
+    let refused = s.autome(&["task", "convert", id]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("只有 Bug"));
+    assert_eq!(s.task_state(id)["state"], "draft");
+    assert_eq!(s.autome(&["task", "convert"]).status.code(), Some(2));
+    for name in ["", "T-999999"] {
+        assert_eq!(s.autome(&["task", "convert", name]).status.code(), Some(1));
+    }
 }

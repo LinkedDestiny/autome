@@ -239,7 +239,7 @@ Every command takes `--json`. Exit status is 0 on success, 1 when the core
 refused or something failed, 2 for a mistake on the command line.
 `autome rpc <method> '<json>'` reaches any JSON-RPC method the desktop uses.
 `autome help` lists the rest: reject with feedback, pause, resume, stop,
-cancel, rerun from a node, extend the budget, decide Backlog items and
+cancel, turn a not-a-bug task into a feature, rerun from a node, extend the budget, decide Backlog items and
 disputes, follow a session's log, dismiss alerts.
 
 ## The protocol
