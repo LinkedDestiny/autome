@@ -2081,6 +2081,12 @@ fn read_status(project: &Project, task: &TaskRecord) -> Option<StatusBlock> {
 
 /// One line for the audit round's brief: what the core's own run of the gate
 /// found, on which commit, and where the full output is.
+fn main_gate_timeout_note(tail: &str) -> String {
+    autome_domain::gate_failure::kernel_timeout(tail).map_or_else(String::new, |n| {
+        format!("：门禁超时（运行超过 {n} 分钟，被内核终止）")
+    })
+}
+
 fn render_gate_line(result: &Value) -> Option<String> {
     let sha = result.get("sha")?.as_str()?;
     let command = result.get("command")?.as_str()?;
@@ -2091,9 +2097,16 @@ fn render_gate_line(result: &Value) -> Option<String> {
         .unwrap_or(-1);
     let log = result.get("log").and_then(Value::as_str).unwrap_or("");
     let short = &sha[..sha.len().min(10)];
-    let verdict = if ok { "通过" } else { "未通过" };
+    let verdict =
+        autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
+            .filter(|_| !ok)
+            .map_or_else(
+                || format!("{}（退出码 {code}）", if ok { "通过" } else { "未通过" }),
+                |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
+            );
+
     Some(format!(
-        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}（退出码 {code}）。完整输出：`{log}`。\n\
+        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}。完整输出：`{log}`。\n\
          这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
     ))
 }
@@ -3530,8 +3543,9 @@ fn run_gate(
             let _ = std::fs::remove_file(crate::setup::verify_record(&repo, &task.id, &head));
         }
         if !ok {
+            let timeout = main_gate_timeout_note(&tail);
             let detail = format!(
-                "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`（退出码 {exit_code}）。\
+                "任务 {} 合并后，main 上的提交 `{}` 没有通过门禁 `{}`{timeout}（退出码 {exit_code}）。\
                  合并前，这个分支在 rebase 后的提交上通过了同一门禁，所以要么 main 在 rebase 之后又动过，\
                  要么门禁本身不稳定。日志：{}\n\n{}",
                 task.id,
@@ -4593,6 +4607,29 @@ mod tests {
             "#!/bin/sh\necho mine\n"
         );
     }
+    #[test]
+    fn gate_timeout_main_alert_note() {
+        assert!(
+            main_gate_timeout_note("=== Autome：门禁运行超过 3 分钟，已终止 ===")
+                .contains("门禁超时（运行超过 3 分钟，被内核终止）")
+        );
+        assert_eq!(main_gate_timeout_note("exit 124"), "");
+    }
+    #[test]
+    fn gate_timeout_audit_line() {
+        for (tail, expected) in [
+            (
+                "=== Autome：门禁运行超过 3 分钟，已终止 ===",
+                "门禁超时（运行超过 3 分钟，被内核终止）",
+            ),
+            ("exit 124", "未通过（退出码 124）"),
+        ] {
+            let line = render_gate_line(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
+            assert!(line.contains(expected));
+            assert!(line.contains("/log"));
+        }
+    }
+
     use super::*;
     use autome_domain::status_block::MilestoneState;
     use autome_domain::task::Disposition;

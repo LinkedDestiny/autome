@@ -418,6 +418,29 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn gate_timeout_real_poll_tail_matches_domain() {
+        let dir = sandbox("timeout-domain");
+        let job = Job::at(&dir, "T-1", "gate", "abc");
+        start(&job, &dir, "sleep 30", &[]).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.pid.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(job.pid.exists());
+        std::fs::write(&job.started, (now_secs() - 3600).to_string()).unwrap();
+        assert_eq!(
+            poll_as(&job, 1, "门禁"),
+            Poll::Done {
+                exit_code: TIMED_OUT
+            }
+        );
+        assert_eq!(
+            autome_domain::gate_failure::kernel_timeout(&tail(&job.log, 60)),
+            Some(1)
+        );
+    }
+
     use super::*;
 
     fn sandbox(tag: &str) -> PathBuf {

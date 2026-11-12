@@ -369,6 +369,13 @@ const REBASE_YOURSELF: &str = "Autome 已中止那次 rebase，所以工作树�
 逐个解决这些文件里的冲突，`git add` 后 `git rebase --continue`，直到 rebase 完成。\
 不要用 merge：Autome 下一次仍会 rebase，合并提交解决不了冲突。";
 
+fn gate_failure_verdict(tail: &str) -> String {
+    autome_domain::gate_failure::kernel_timeout(tail).map_or_else(
+        || "没有通过".into(),
+        |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止），不是测试失败的结论。请先看日志里卡在哪一步"),
+    )
+}
+
 /// Builds the prompt text a session is started with.
 ///
 /// The entry sentence is quoted verbatim from the task-file protocol (§5.2),
@@ -403,7 +410,13 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             why,
             tail,
         }) => {
-            p.push_str(&format!("\n复现检查没有失败：提交 `{head}`，命令 `{command}`，退出码 {exit_code}。原因：{why}\n输出末尾（原文）：\n```\n{tail}\n```\n请重新定位并提交稳定的回归测试。\n"));
+            if let Some(n) =
+                autome_domain::gate_failure::kernel_timeout(tail).filter(|_| why == "timed_out")
+            {
+                p.push_str(&format!("\n复现检查门禁超时：提交 `{head}`，命令 `{command}` 运行超过 {n} 分钟被内核终止，没有得出结论，不能据此断言未复现。输出末尾（原文）：\n```\n{tail}\n```\n请先看日志里卡在哪一步，再决定重新定位还是缩小复现命令。\n"));
+            } else {
+                p.push_str(&format!("\n复现检查没有失败：提交 `{head}`，命令 `{command}`，退出码 {exit_code}。原因：{why}\n输出末尾（原文）：\n```\n{tail}\n```\n请重新定位并提交稳定的回归测试。\n"));
+            }
         }
         Some(Inject::FixRejected) => {
             p.push_str(&format!(
@@ -428,7 +441,8 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             command,
             tail,
         }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
-            p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，没有通过。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
+            let verdict = gate_failure_verdict(tail);
+            p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
         }
         Some(Inject::RebaseConflict { files }) => {
             p.push_str(&format!(
@@ -452,9 +466,10 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             // The output verbatim and the commit it came from: the round has
             // to reproduce the failure before it can fix it, and "the gate
             // failed" without either is a claim it cannot check.
+            let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             p.push_str(&format!(
-                "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，没有通过。输出末尾（原文）：\n\n\
+                "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n\
                  ```\n{tail}\n```\n\n\
                  本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。\
                  本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，\
@@ -1098,6 +1113,60 @@ pub fn system_role_config() -> RoleConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_timeout_both_loop_injections_keep_ordinary_failure() {
+        for kind in [
+            SessionKind::Bug { step: BugStep::Fix },
+            SessionKind::Role { role: Role::ALL[0] },
+        ] {
+            for tail in [
+                "=== Autome：门禁运行超过 3 分钟，已终止 ===",
+                "exit 124",
+                "test failed",
+            ] {
+                let inject = Inject::GateFailed {
+                    head: "abcdef".into(),
+                    command: "check".into(),
+                    tail: tail.into(),
+                };
+                let tpl = templates();
+                let mut input = spec(kind, &[], Some(&inject), &tpl);
+                input.budget = Some(BudgetLine { round: 2, limit: 3 });
+                let p = build_prompt(&input).unwrap();
+                assert!(p.contains(tail));
+                assert!(p.contains(if tail.starts_with("===") {
+                    "门禁超时"
+                } else {
+                    "没有通过"
+                }));
+                if tail.starts_with("===") {
+                    assert!(p.contains("先看日志里卡在哪一步"));
+                }
+            }
+        }
+    }
+    #[test]
+    fn gate_timeout_repro_injection_requires_reason_and_kernel_line() {
+        for why in ["timed_out", "passed", "missing"] {
+            for tail in ["=== Autome：门禁运行超过 3 分钟，已终止 ===", "exit 124"] {
+                let p = bug_injected(
+                    BugStep::Locate,
+                    &Inject::ReproNotFailing {
+                        head: "abc".into(),
+                        command: "check".into(),
+                        exit_code: 124,
+                        why: why.into(),
+                        tail: tail.into(),
+                    },
+                );
+                let timeout = why == "timed_out" && tail.starts_with("===");
+                assert_eq!(p.contains("不能据此断言未复现"), timeout);
+                assert_eq!(p.contains("复现检查没有失败"), !timeout);
+                assert!(p.contains(tail));
+            }
+        }
+    }
+
     use super::*;
     use autome_domain::task::Disposition;
 

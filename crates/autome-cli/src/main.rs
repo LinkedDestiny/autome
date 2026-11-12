@@ -675,11 +675,7 @@ fn task_detail(got: &Value) {
             "  门禁      {} 在 {} 上{}（{}）  日志 {}",
             render::node_label(g.get("node").and_then(Value::as_str).unwrap_or("?")),
             render::short(g.get("sha").and_then(Value::as_str).unwrap_or("")),
-            if g.get("ok").and_then(Value::as_bool) == Some(true) {
-                "通过"
-            } else {
-                "未通过"
-            },
+            render::gate_verdict(&got["gate"]),
             g.get("command").and_then(Value::as_str).unwrap_or(""),
             g.get("log").and_then(Value::as_str).unwrap_or("")
         );
