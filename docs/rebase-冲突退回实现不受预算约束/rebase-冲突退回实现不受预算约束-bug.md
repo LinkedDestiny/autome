@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cargo test --offline -p automed --lib rebase_retry_regression -- --nocapture
 根因: Rebase 冲突分支无条件启动实现轮，未检查已用实现预算或累计同文件集冲突；已完成里程碑又使审计直接进入复盘和 rebase，形成无限回路。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -61,9 +61,10 @@ fix-round: 2/3
 
 ## 复核意见
 
-复核: 通过。
+复核: 通过（第 2/3 轮）。
 
-- 复现命令独立重跑：2 passed / 0 failed（`.autome/output/review-repro.log`）。边界测试 `rebase_conflict_streak_normalizes_files_and_resets_on_recovery` 通过；两个正常路径对照测试通过。
-- 差异 `cbbe2c1..0c63c8d` 对 `crates` 仅新增（scheduler.rs +171/-2，其中 -2 为 `let mut transition`），定位轮两个回归测试原样保留，无删除、跳过或弱化。
-- 根因站得住：`Rebase+Conflict` 无条件退回实现；修复在 scheduler 的 `advance` 入口补上 ImplBudget 检查与账本持久的连续相同文件集计数（排序去重、变化/成功/rerun/extend 归零），改动集中在冲突路径，范围最小；正常收尾路径不变。阈值 3 是修复选择，已在修复说明中如实标注。
-- 门禁：clippy `-D warnings` 通过；workspace 测试中 lib 623、domain 345 等通过；集成测试 `bug_loop_a_workspace_bug_checks_out_...` 在整体负载下失败一次（停在 MergeGate），单独重跑 1 passed，该用例属工作区 Bug 流程，与 rebase 冲突路径无关，判为负载下的时序抖动。Web test 的 EPERM/EMFILE 为沙箱环境限制，需宿主复跑。
+- 复现命令独立重跑：2 passed / 0 failed，39.43 秒（`.autome/output/review2-repro.log`）。
+- 差异 `2d01d5f..598149a` 对 `crates` 仅第 1 轮的 scheduler.rs 新增（+170/-1）；第 2 轮提交 `598149a` 只改 `scripts/ci-local.sh` 和本文档，未触碰任何测试文件、断言或产品逻辑，两个回归测试及边界测试保留，无删除、跳过或弱化。
+- 第 2 轮改动合理且最小：`cargo test --workspace --all-targets` 已含 `end_to_end` 与 `real_cli`（含 `every_adapter_flag`），原脚本随后又单独重复运行，去掉重复不损失覆盖；`sh -n`、`git diff --check` 通过。该改动只降低门禁耗时，不能保证任意负载下不超时。
+- 根因与第 1 轮修复（ImplBudget 检查加连续相同冲突文件集 3 次熔断）站得住，范围集中在冲突路径；阈值 3 为修复选择，已如实标注。
+- 未完整重跑 `ci-local.sh`：Web test 的 EPERM/EMFILE 与 Desktop DOM harness 退出属沙箱限制，与本修复无关，需宿主在允许本地监听与 Electron 的环境复跑门禁。
