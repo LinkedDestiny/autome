@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib user_action_slot_ -- --test-threads=1
 根因: 用户触发经 apply_trigger/advance 直接将不占槽任务迁移到 Active 并执行动作，未经过 fill_slots 的容量准入；随后 tick 不能撤回已产生的超额占槽。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -59,4 +59,13 @@ K0b 文档核对：`docs/用户按合并时如果默认分支已经前进-任务
 
 ## 复核意见
 
-待独立复核。真实 HTTP/CLI e2e、parallel=3 的多动作累计、extend/reply 及带 rebase/门禁的 merge 验收仍需后续补充。
+复核: 通过（第 1/3 轮复核）。
+
+证据：
+- 复现命令独立重跑：4 passed / 0 failed（approve、merge、rerun 均在满槽时进入 Requeued，resume 对照仍通过）。
+- 新增 `deferred_merge_keeps_decisions_for_the_new_session` 通过；`scheduler::tests` 子集 119 passed / 0 failed（含新增测试）。
+- 回归测试：fix 提交 a78d324 未改动 `scheduler_gate_queue_tests.rs`，没有删除、跳过或弱化断言；断言针对占槽数不变量，有意义。
+- 根因站得住：用户触发经 `advance` 直接迁入占槽状态，绕过 `fill_slots` 准入。修复在 `advance` 统一判断「不占槽 → 占槽」且满槽时转 Requeued，并保存原动作，放行时恢复；占槽任务内部流转不受影响。
+- 范围：产品代码仅 `scheduler.rs` +99 行（含一个新增测试），最小。
+
+未覆盖（沿用修复说明所述，留给宿主合并前门禁与后续补充）：全量 `ci-local.sh`、parallel=3 累计场景、extend/reply 满槽专项、真实 CLI/模型 e2e。
