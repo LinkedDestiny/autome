@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 1/20
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在允许本地监听的环境重跑验收命令，核对指定 57 例及全量 312 例；HTTP 证据通过后再标待审
+next-action: M-02：读网关放行 project.probe 与 config.validate，加反向检查与真实内核用例
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -294,7 +294,7 @@ sidecar 以 `{ ...process.env, ...env }` 启动内核；仓库已有同法夹具
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 写网关放行 task.start、task.reply 与任务卡字段，经真实内核取证 | 0 | write-gate |
+| M-01 | 已完成 | 写网关放行 task.start、task.reply 与任务卡字段，经真实内核取证 | 0 | write-gate |
 | M-02 | 开放 | 读网关放行 project.probe 与 config.validate，反向检查，经真实内核取证 | 0 | read-gate |
 | M-03 | 开放 | 经网关建的任务卡读回内核保存的正文，逐字节相等 | 0 | card-verbatim |
 | M-04 | 开放 | task.start、task.reply 经网关成功使用，替身 CLI 夹具取证 | 0 | task-lifecycle |
