@@ -1,7 +1,7 @@
 # rebase 冲突退回实现不受预算约束
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib rebase_retry_regression -- --nocapture
 根因: Rebase 冲突分支无条件启动实现轮，未检查已用实现预算或累计同文件集冲突；已完成里程碑又使审计直接进入复盘和 rebase，形成无限回路。
 复核: 待复核
@@ -38,3 +38,17 @@ fix-round: 0/3
 任务卡提到的 T-28 门禁熔断在当前 checkout 未找到对应实现，后续不能直接假设已有可复用机制。N 的具体值仍未指定；后续修复还应验证文件集顺序不影响指纹、文件集变化与成功会中断连续计数，以及用户 rerun/extend 后从零计数。本轮测试锁定已观察到的两个缺陷，不宣称覆盖这些尚不存在的机制。
 
 可选的“冲突退回会话结束后、审计前提前检查”不作为本轮必要条件。未修改产品逻辑，未创建需求设计或里程碑文档；修复和独立复核由后续节点处理。
+
+## 修复说明
+
+第 1/3 轮：在 scheduler 的 rebase 结果转移入口读取账本中的下一实现轮次；超出任务预算时停止在 Rebase，以现有 ImplBudget 原因保留追加预算能力，不再启动实现会话。正常成功收尾路径不变。
+
+以账本事件持久保存连续冲突文件集和次数，文件名排序、去重后比较。本轮采用连续 3 次相同文件集冲突即停止（最多自动退回实现 2 次）的阈值；这是修复选择，并非任务卡给定数字。文件集变化重新计数，非冲突 rebase 结果及已接受的 rerun/extend 操作重置计数。重复冲突以 RebaseConflict 原因停下，等待用户检查后重跑。
+
+定位轮两个回归用例完整保留；新增边界测试覆盖文件顺序、重复文件名、文件集变化、成功和用户恢复操作的计数行为。修复前原命令实跑 0 passed / 2 failed，退出码 101（`.autome/output/fix-before.log`）；产品逻辑修复后同命令 2 passed / 0 failed（`.autome/output/fix-after-final.log`）。新增边界测试 1 passed / 0 failed（`.autome/output/fix-boundaries.log`）。`git diff --check` 通过。
+
+最终代码执行配置门禁 `sh scripts/ci-local.sh`，退出码 1，用时 543 秒，完整日志 `.autome/output/fix-gate-final.log`。Format、Clippy、workspace 全量 Rust 测试、End to end、Adapter flags、Desktop、Contract、Web lint/typecheck/build 均通过；仅 Web test 失败（4 个文件失败、29 个通过；11 failed / 271 passed / 19 skipped）。失败栈报告本地监听 `listen EPERM: operation not permitted 127.0.0.1`，live 测试还报告文件监听 `EMFILE` 与启动等待超时。前一遍完整门禁也出现相同环境失败（`.autome/output/fix-gate.log`）。没有修改这些测试、手动跳过检查或将门禁标为通过；当前环境不允许权限升级，需宿主在具备本地监听和文件监听能力的环境复跑门禁。未运行可选 `--package` 发布打包。
+
+## 复核意见
+
+待独立复核。
