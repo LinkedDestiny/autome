@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 3/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 宿主在本轮提交上重跑 sh scripts/ci-local.sh 并保留 Desktop 完整错误；定位 Electron 启动失败后复验 M-01，不推进 M-02
+next-action: 推进 M-02（项目与看板费用聚合）
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -297,7 +297,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | 任务费用纯聚合与 task.get.cost | 0 | |
+| M-01 | 已完成 | 任务费用纯聚合与 task.get.cost | 0 | |
 | M-02 | 开放 | 项目与看板费用字段 | 0 | |
 | M-03 | 开放 | [budget] 配置读写 | 0 | |
 | M-04 | 开放 | 超限告警与读者文案 | 0 | |
@@ -307,7 +307,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 - **M-01** 覆盖验收 1、2，G1 的 `task.get` 部分。前置：无。结果：`CostSummary` 与 `SessionKind::cost_key`；
   `task.get.cost`；`running_totals` 注释。新增测试见契约。
-最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r3-impl.md · Desktop 启动失败已复现，未取得门禁通过，保持待审 · 实现 #3
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r3-audit.md · 通过 · 审计 #1
 
 - **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`（子查询，非 JOIN）；`task_json` 的 `cost_usd` /
   `cost_sessions_without_cost`；`project.get` / `project.list` 的 `cost_usd_total` 与 `cost_sessions_without_cost`；
