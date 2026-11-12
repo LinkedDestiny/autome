@@ -112,7 +112,11 @@ cooperate. Configure commands and retry policy in the project's `.autome/config.
 ```toml
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
+<<<<<<< HEAD
 concurrency = 1            # optional project limit, capped by the global limit
+=======
+run = "each_round"          # the default; "before_merge" runs the full gate only once, before the merge
+>>>>>>> b0a360a (docs: explain before-merge gate tradeoffs)
 timeout_minutes = 30       # the default; a gate that runs longer has failed
 same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
 reuse_for_main_check = true # the default; false always runs the post-merge gate
@@ -127,6 +131,7 @@ watch = ["apps/web/package-lock.json"]
 timeout_minutes = 30       # optional; preparation timeout
 ```
 
+<<<<<<< HEAD
 - **Host job queue.** Global `~/.autome/config.toml` accepts `[gate] concurrency = 1`
   (default 1, integers 1–10). Gate, MergeGate, MainCheck, ReproCheck, FixGate and
   preparation commands share this limit across projects in one Autome ledger/core;
@@ -144,6 +149,10 @@ timeout_minutes = 30       # optional; preparation timeout
   events restore FIFO order after a core restart. This does not limit commands
   launched inside agent sessions, such as their own `cargo test`.
 - **The gate.** With `[gate] command` set, Autome runs the command itself after every
+=======
+- **The gate.** With `[gate]` set and the default `run = "each_round"`, Autome
+  runs the command itself after every
+>>>>>>> b0a360a (docs: explain before-merge gate tradeoffs)
   implementation round, on the commit that round produced, and only an exit
   code of 0 lets the round reach audit. A failure goes straight back to
   implementation with the command and the log's tail in the prompt. After
@@ -161,6 +170,17 @@ timeout_minutes = 30       # optional; preparation timeout
   another gate; set the option to `false` to always run the post-merge check.
   The audit round's brief says what the host saw, so the
   auditor reads a verdict it did not have to take on trust.
+
+  With `run = "before_merge"`, full gating drops from once per round to
+  once per task, at MergeGate. Gate problems and regressions surface not until the merge
+  is about to happen, when the host runs the full gate; a failure sends the task
+  back for another implementation round before retrying MergeGate. In this mode,
+  sessions do not run the full gate themselves: implementation, audit, fix and
+  fix-review sessions run milestone acceptance or reproduction commands and
+  tests directly related to the changes. Bug fix rounds run only the repro command;
+  Bug MergeGate still runs both the repro command and the project gate.
+  The post-merge MainCheck described above remains unchanged.
+
 - **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
   sessions and gates, in the merge verification checkout, and in the main
   checkout after merging (even without a gate). Each checkout remembers the

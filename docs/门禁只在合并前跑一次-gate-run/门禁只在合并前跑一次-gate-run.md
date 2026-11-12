@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 7/40
+implementation-round: 8/40
 current-milestone: M-08
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-08（README 与技术设计文档）
+next-action: 独立审计 M-08，复验文档契约并核对宿主门禁结果
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -628,7 +628,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-05 | 已完成 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 已完成 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
 | M-07 | 已完成 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
-| M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
+| M-08 | 待审 | README 与技术设计写明取舍 | 0 | |
 
 ## 里程碑说明
 
@@ -774,6 +774,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：`bug-protocol.md` 只加了 `REQUIRED` 条目、没改第 40 行时，第一条 grep 以 1 退出，且 `the_seed_passes_the_static_and_parse_layers` 与 `protocol eval`（报 `bug-protocol.md` 缺必含短语）失败；G-6 写成 `kind: behavioral` 而 `eval: null` 时，`protocol eval` 的 CHANGELOG 条目门槛以 1 退出；新 `REQUIRED` 条目的 `why` 不足 20 字节时 `every_requirement_carries_a_reason` 失败。
 
 ### M-08 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r8-impl.md · 待审 · 实现 #8
 
 - 验收命令：`for p in 'run = "each_round"' before_merge 'once per task' 'not until the merge' 'sessions do not run the full gate themselves' 'only the repro command'; do grep -qF "$p" README.md || { echo "README 缺: $p"; exit 1; }; done; for p in before_merge 每个任务一次 合并前才暴露 多退回一次实现轮 会话不再各自兜底 只跑复现命令; do grep -qF "$p" docs/development/technical-design.md || { echo "技术设计缺: $p"; exit 1; }; done; cargo fmt --all -- --check`
 - 预期：两组 grep 全部命中、无输出；`cargo fmt --all -- --check` 退出码 0。本里程碑不新增用例；全量（autome-domain 394 + 1、automed lib 675、end_to_end 123、prompt_rendering 20，以及 clippy `-D warnings`、桌面端与 Web 测试）由宿主门禁 `sh scripts/ci-local.sh` 在本轮 head 上跑，审计轮以简报「## 宿主门禁」那一行（本轮 head 上「通过」）为任务验收 6 的证据，不自己再跑。
