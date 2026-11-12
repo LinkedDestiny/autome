@@ -313,6 +313,9 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             p["exit_code"],
             s("log")
         ),
+        "gate.reused" if p["node"] == "main_check" => {
+            format!("{subject} 验证 main 沿用合并前门禁的结果（内容相同）")
+        }
         "gate.reused" => format!(
             "{subject} {}：提交 {} 已经通过过，沿用",
             node_label(&s("node")),
@@ -452,6 +455,27 @@ mod tests {
             .unwrap()
             .contains("准备命令跳过：工作区项目不支持准备命令")
         );
+    }
+
+    #[test]
+    fn main_check_reuse_is_printed_by_autome_run() {
+        for (node, expected) in [
+            (
+                "main_check",
+                "T-1 验证 main 沿用合并前门禁的结果（内容相同）",
+            ),
+            (
+                "merge_gate",
+                "T-1 合并前门禁：提交 123456789a 已经通过过，沿用",
+            ),
+        ] {
+            assert_eq!(
+                event_line("gate.reused", "T-1", &json!({
+                    "node": node, "sha": "123456789abcdef", "from_sha": "abcdef", "tree": "fedcba"
+                })).as_deref(),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

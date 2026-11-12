@@ -115,6 +115,7 @@ the project's `.autome/config.toml`:
 command = "make check"     # run with sh -c in the task's worktree
 timeout_minutes = 30       # the default; a gate that runs longer has failed
 same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
+reuse_for_main_check = true # the default; false always runs the post-merge gate
 
 [retry]
 attempts = 2               # the default; 0 restores "a crash fails the task"
@@ -137,7 +138,12 @@ timeout_minutes = 30       # optional; preparation timeout
   again on the rebased head before the merge stopping point (skipped when the
   head already passed), and once more on `main` after the merge — that last
   run cannot undo the merge, so a failure there raises an alert on the
-  dashboard instead. The audit round's brief says what the host saw, so the
+  dashboard instead. By default (`reuse_for_main_check = true`), when the merge
+  commit has the same tree as the commit that passed MergeGate, Autome reuses
+  that result if the merged head and the actual gate command also match. It
+  records `gate.reused` without creating a verification checkout or starting
+  another gate; set the option to `false` to always run the post-merge check.
+  The audit round's brief says what the host saw, so the
   auditor reads a verdict it did not have to take on trust.
 - **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
   sessions and gates, in the merge verification checkout, and in the main

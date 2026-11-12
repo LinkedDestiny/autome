@@ -561,6 +561,24 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    pub fn last_event_before(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        before_seq: u64,
+    ) -> Result<Option<Value>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE subject_id = ?1 AND kind = ?2 AND seq < ?3
+             ORDER BY seq DESC LIMIT 1",
+                params![subject_id, kind, before_seq],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
     pub fn last_event_in(
         &self,
         subject_id: &str,

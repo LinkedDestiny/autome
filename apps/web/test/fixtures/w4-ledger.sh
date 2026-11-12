@@ -170,6 +170,7 @@ mkdir -p .autome
 cat > .autome/config.toml <<CFG
 [gate]
 command = "sh $ROOT/gate.sh"
+reuse_for_main_check = false # This ledger must exercise the post-merge failure alert.
 timeout_minutes = 5
 
 [retry]
