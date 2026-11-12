@@ -4,3 +4,4 @@
 实现 #2 | M-01 | 待审 | docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r2-impl.md | 门禁未通过：Electron SIGABRT、Web listen EPERM；待宿主复验
 实现 #3 | M-01 | 待审 | docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r3-impl.md | Desktop SIGABRT 未修复；当前环境禁止回环监听
 审计 #1 | M-01 | 通过 | docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r3-audit.md | 无
+实现 #4 | M-02 | 待审 | docs/费用可见-任务与项目累计费用进-task/evidence/M-02-r4-impl.md | 无

@@ -15,6 +15,7 @@
 
 use autome_domain::config::{self, ConfigViolation, ProjectConfig, RoleOverrides};
 use autome_domain::environment::{self, Component};
+use autome_domain::metrics::CostSummary;
 use autome_domain::project::{self, AddDisposition, Onboarding, Project, ProjectKind};
 use autome_domain::role::{Role, Runtime};
 use autome_domain::status_block::{self, StatusBlock};
@@ -523,13 +524,56 @@ fn role_param(params: &Value, key: &str) -> std::result::Result<Role, DispatchEr
 // Projects
 // ---------------------------------------------------------------------------
 
+fn project_costs(
+    ctx: &Ctx,
+    project_id: &str,
+) -> Result<std::collections::BTreeMap<String, CostSummary>, DispatchError> {
+    let sessions = ctx.store.sessions_in_project(project_id)?;
+    let mut groups = std::collections::BTreeMap::<String, Vec<_>>::new();
+    for session in &sessions {
+        groups
+            .entry(session.task_id.clone())
+            .or_default()
+            .push(session);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(id, rows)| (id, CostSummary::of(rows)))
+        .collect())
+}
+
+fn project_cost_json(
+    tasks: &[crate::store::TaskRecord],
+    costs: &std::collections::BTreeMap<String, CostSummary>,
+) -> (Value, u32) {
+    let (mut unfinished, mut finished, mut missing) = (0.0, 0.0, 0);
+    for task in tasks {
+        if let Some(cost) = costs.get(&task.id) {
+            if task.state.is_terminal() {
+                finished += cost.usd_total;
+            } else {
+                unfinished += cost.usd_total;
+            }
+            missing += cost.sessions_without_cost;
+        }
+    }
+    (
+        json!({"unfinished": unfinished, "finished": finished}),
+        missing,
+    )
+}
+
 fn project_list(ctx: &mut Ctx) -> DispatchResult {
     let projects = ctx.store.list_projects()?;
     let mut out = Vec::new();
     for p in projects {
         let tasks = ctx.store.list_tasks(&p.id)?;
+        let costs = project_costs(ctx, &p.id)?;
+        let (total, missing) = project_cost_json(&tasks, &costs);
         out.push(json!({
             "project": p,
+            "cost_usd_total": total,
+            "cost_sessions_without_cost": missing,
             "counts": crate::store::task_counts(&tasks),
             "slots_in_use": tasks.iter().filter(|t| t.state.occupies_slot()).count(),
         }));
@@ -540,6 +584,8 @@ fn project_list(ctx: &mut Ctx) -> DispatchResult {
 fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let project = ctx.store.get_project(project_id)?;
     let tasks = ctx.store.list_tasks(project_id)?;
+    let costs = project_costs(ctx, project_id)?;
+    let (total, missing) = project_cost_json(&tasks, &costs);
     let global = config_io::load_global(&ctx.autome_home)?;
     let project_config = config_io::load_project(std::path::Path::new(&project.path))?;
     let resolved = config::resolve(&global, &project_config);
@@ -550,7 +596,9 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     Ok((
         json!({
             "project": project,
-            "tasks": tasks.iter().map(|t| task_json(ctx, t)).collect::<Result<Vec<_>, _>>()?,
+            "cost_usd_total": total,
+            "cost_sessions_without_cost": missing,
+            "tasks": tasks.iter().map(|t| task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))).collect::<Result<Vec<_>, _>>()?,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
             "violations": violations,
@@ -560,9 +608,15 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     ))
 }
 
-fn task_json(ctx: &Ctx, t: &crate::store::TaskRecord) -> Result<Value, DispatchError> {
+fn task_json(
+    ctx: &Ctx,
+    t: &crate::store::TaskRecord,
+    cost: &CostSummary,
+) -> Result<Value, DispatchError> {
     let mut value = json!({
         "id": t.id,
+        "cost_usd": cost.usd_total,
+        "cost_sessions_without_cost": cost.sessions_without_cost,
         "kind": t.kind,
         "slug": t.slug,
         "title": t.title,
@@ -1539,7 +1593,7 @@ fn create(
     let task = ctx.store.get_task(&id)?;
     Ok((
         json!({
-            "task": task_json(ctx, &task)?,
+            "task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(&task.id)?))?,
             "started": started,
             "queue_position": queue_position(ctx, &task)?,
         }),
@@ -1560,7 +1614,7 @@ fn task_start(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     Ok((
         json!({
-            "task": task_json(ctx, &task)?,
+            "task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(&task.id)?))?,
             "started": report.tasks_started.iter().any(|id| id == task_id),
             "queue_position": queue_position(ctx, &task)?,
         }),
@@ -1631,7 +1685,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 
     Ok((
         json!({
-            "task": task_json(ctx, &task)?,
+            "task": task_json(ctx, &task, &CostSummary::of(&sessions))?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
             "brief": ctx.store.task_brief(task_id)?,
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
@@ -1979,7 +2033,6 @@ fn task_convert(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let report = scheduler::tick(ctx);
     let task = ctx.store.get_task(&task.id)?;
     Ok((
-        json!({"task": task_json(ctx, &task)?, "started": report.tasks_started.contains(&task.id), "queue_position": queue_position(ctx, &task)?, "converted_from": id}),
         vec![
             event(
                 seqs[0],
@@ -2317,6 +2370,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
     let mut running = Vec::new();
 
     for project in ctx.store.list_projects()? {
+        let costs = project_costs(ctx, &project.id)?;
         for task in ctx.store.list_tasks(&project.id)? {
             if task.state.is_terminal() {
                 continue;
@@ -2325,8 +2379,8 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
             let entry = json!({
                 "project_id": project.id,
                 "project_name": project.display_name,
-                "task": task_json(ctx, &task)?,
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
+                "task": task_json(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
                 "retry": retry_json(ctx, &task.id)?,
@@ -3608,6 +3662,182 @@ mod tests {
             &json!("completed")
         );
         assert!(ok_payload(&last).get("init_commit").unwrap().is_string());
+    }
+
+    fn cost_task(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({"project_id":project,"request":name,"draft":true}),
+            ),
+        );
+        let id = ok_payload(&out)["task"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(ok_payload(&out)["task"]["cost_usd"], 0.0);
+        sb.ctx.store.set_task_state(&id, &state).unwrap();
+        id
+    }
+
+    fn cost_session(sb: &Sandbox, task: &str, suffix: &str, cost: Option<f64>, running: bool) {
+        use autome_domain::session::{Session, SessionKind, SessionLifecycle};
+        let session = Session {
+            id: format!("{task}-{suffix}"),
+            task_id: task.into(),
+            kind: SessionKind::Intake,
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 1,
+            started_at: "2026-11-12T00:00:00Z".into(),
+            ended_at: if running {
+                None
+            } else {
+                Some("2026-11-12T00:01:00Z".into())
+            },
+            lifecycle: if running {
+                SessionLifecycle::Running
+            } else {
+                SessionLifecycle::Exited { exit_code: 0 }
+            },
+            log_path: "l".into(),
+            pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: autome_domain::metrics::SessionMetrics {
+                cost_usd: cost,
+                ..Default::default()
+            },
+        };
+        sb.ctx.store.insert_session(&session).unwrap();
+        sb.ctx
+            .store
+            .set_session_metrics(&session.id, &session.metrics)
+            .unwrap();
+    }
+
+    #[test]
+    fn cost_rollup_project_get_splits_unfinished_and_finished() {
+        let mut sb = Sandbox::new("cost-states");
+        let project = sb.add_project("p");
+        let states = [
+            TaskState::Done,
+            TaskState::Cancelled,
+            TaskState::Failed {
+                at: Node::Design,
+                reason: autome_domain::task::FailureReason::DesignBudget { limit: 1 },
+            },
+            TaskState::Stopped { at: Node::Design },
+            TaskState::Draft,
+            TaskState::Active { node: Node::Design },
+        ];
+        let mut ids = Vec::new();
+        for (i, state) in states.into_iter().enumerate() {
+            let id = cost_task(&mut sb, &project, &format!("task {i}"), state);
+            cost_session(&sb, &id, "paid", Some((i + 1) as f64), false);
+            cost_session(&sb, &id, "missing", None, false);
+            cost_session(&sb, &id, "running", Some(100.0), true);
+            ids.push(id);
+        }
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":project})));
+        let p = ok_payload(&out);
+        assert_eq!(
+            p["cost_usd_total"],
+            json!({"finished":3.0,"unfinished":18.0})
+        );
+        assert_eq!(p["cost_sessions_without_cost"], 6);
+        for (i, id) in ids.iter().enumerate() {
+            let task = p["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["id"] == *id)
+                .unwrap();
+            assert_eq!(task["cost_usd"], (i + 1) as f64);
+            assert_eq!(task["cost_sessions_without_cost"], 1);
+        }
+        // A terminal classification changes the bucket, never the amount.
+        sb.ctx
+            .store
+            .set_task_state(&ids[5], &TaskState::Cancelled)
+            .unwrap();
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":project})));
+        assert_eq!(
+            ok_payload(&out)["cost_usd_total"],
+            json!({"finished":9.0,"unfinished":12.0})
+        );
+    }
+
+    #[test]
+    fn cost_rollup_project_list_keeps_projects_apart() {
+        let mut sb = Sandbox::new("cost-projects");
+        let mut expected = Vec::new();
+        for (name, amount) in [("p", 1.25), ("q", 2.5), ("empty", 0.0)] {
+            let project = sb.add_project(name);
+            if amount > 0.0 {
+                let id = cost_task(&mut sb, &project, name, TaskState::Draft);
+                cost_session(&sb, &id, "paid", Some(amount), false);
+                cost_session(&sb, &id, "missing", None, false);
+            }
+            let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":project})));
+            let rows = sb.ctx.store.sessions_in_project(&project).unwrap();
+            assert_eq!(rows.len(), if amount > 0.0 { 2 } else { 0 });
+            let p = ok_payload(&out);
+            assert_eq!(
+                p["cost_usd_total"],
+                json!({"unfinished":amount,"finished":0.0})
+            );
+            assert_eq!(
+                p["cost_sessions_without_cost"],
+                if amount > 0.0 { 1 } else { 0 }
+            );
+            expected.push((
+                project,
+                p["cost_usd_total"].clone(),
+                p["cost_sessions_without_cost"].clone(),
+            ));
+        }
+        let out = handle_command(sb.ctx(), &cmd("project.list", json!({})));
+        let projects = ok_payload(&out)["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 3);
+        for (id, total, missing) in expected {
+            let p = projects.iter().find(|p| p["project"]["id"] == id).unwrap();
+            assert_eq!(p["cost_usd_total"], total);
+            assert_eq!(p["cost_sessions_without_cost"], missing);
+        }
+    }
+
+    #[test]
+    fn cost_rollup_dashboard_task_cards_carry_cost() {
+        let mut sb = Sandbox::new("cost-dashboard");
+        let project = sb.add_project("p");
+        let waiting = cost_task(
+            &mut sb,
+            &project,
+            "waiting",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+        let running = cost_task(
+            &mut sb,
+            &project,
+            "running",
+            TaskState::Active { node: Node::Design },
+        );
+        for (id, amount) in [(&waiting, 1.25), (&running, 2.5)] {
+            cost_session(&sb, id, "paid", Some(amount), false);
+            cost_session(&sb, id, "missing", None, false);
+            cost_session(&sb, id, "running", None, true);
+        }
+        let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+        let p = ok_payload(&out);
+        for (key, id, amount) in [("waiting", waiting, 1.25), ("running", running, 2.5)] {
+            assert_eq!(p[key].as_array().unwrap().len(), 1);
+            assert_eq!(p[key][0]["task"]["id"], id);
+            assert_eq!(p[key][0]["task"]["cost_usd"], amount);
+            assert_eq!(p[key][0]["task"]["cost_sessions_without_cost"], 1);
+        }
     }
 
     #[test]

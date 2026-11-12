@@ -1527,6 +1527,19 @@ impl Store {
         Ok(out)
     }
 
+    /// All sessions belonging to a project, without ambiguous joined columns.
+    pub fn sessions_in_project(&self, project_id: &str) -> Result<Vec<Session>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "{SESSION_SELECT_BASE} WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1) ORDER BY started_at DESC"
+        ))?;
+        let rows = stmt.query_map(params![project_id], row_to_session)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row??);
+        }
+        Ok(out)
+    }
+
     /// The session currently running for a task, if any. A task has at most
     /// one (design §8), so more than one running row is a bug worth surfacing
     /// rather than silently picking from.

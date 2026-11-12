@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/25
+implementation-round: 4/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02（项目与看板费用聚合）
+next-action: 独立审计 M-02；通过后推进 M-03 配置读写
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -298,7 +298,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 任务费用纯聚合与 task.get.cost | 0 | |
-| M-02 | 开放 | 项目与看板费用字段 | 0 | |
+| M-02 | 待审 | 项目与看板费用字段 | 0 | |
 | M-03 | 开放 | [budget] 配置读写 | 0 | |
 | M-04 | 开放 | 超限告警与读者文案 | 0 | |
 | M-05 | 开放 | CLI 费用展示与全量门禁 | 0 | |
@@ -312,6 +312,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 - **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`（子查询，非 JOIN）；`task_json` 的 `cost_usd` /
   `cost_sessions_without_cost`；`project.get` / `project.list` 的 `cost_usd_total` 与 `cost_sessions_without_cost`；
   `dashboard.get` 任务卡因 `task_json` 带上费用。
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-02-r4-impl.md · 待审 · 实现 #4
 - **M-03** 覆盖 G3 的配置部分、约束 4。前置：无（可与 M-01/M-02 独立，按编号顺序做）。结果：`BudgetConfig`、
   `parse_project` / `save_project` 支持 `[budget]`；README 与 technical-design 各补一处。
 - **M-04** 覆盖验收 3、G3 告警部分、约束 3。前置 M-01、M-03。结果：`budget_crossed`（带浮点容差）；`check_budget` 挂在回收后；
