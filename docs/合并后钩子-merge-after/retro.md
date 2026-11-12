@@ -17,3 +17,4 @@
 
 实现 #7 | M-04 | 退回 + 验证环境 | docs/合并后钩子-merge-after/evidence/M-04-r7-impl.md | rebase 完成；Electron SIGABRT，Web EPERM/EMFILE
 审计 #6 | M-04 | 通过 | docs/合并后钩子-merge-after/evidence/M-04-r7-audit.md | 无
+复盘 #3 | 无 | 覆盖写 lessons.md 为 7 条（L-01..L-07；L-02/L-03 补入实现 #7 与审计 #6 的复现，新增 L-07：fail-fast 使审计 #6 的 cargo test 漏跑 end_to_end 等 177 项而证据未对基线总数）；本任务无 Autome 指标，未引用数值 | docs/合并后钩子-merge-after/lessons.md | 无

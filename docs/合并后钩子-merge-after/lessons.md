@@ -1,12 +1,12 @@
 # 合并后钩子 `[merge] after` · 复盘教训
 
-复盘 #2，覆盖复盘 #1 的版本。本任务没有 Autome 记录的指标，下文不引用指标数值，只引用证据文件里的事实。依据：`retro.md`、`evidence/` 下 11 份证据、评审 / 裁决 / 审计记录、`brief/impl-2.md`、`brief/impl-6.md`、`brief/audit-4.md`、`brief/audit-5.md` 与 git 记录（含 `c1a2c15` 的测试 diff）。
+复盘 #3，覆盖复盘 #2 的版本。本任务没有 Autome 记录的指标，下文不引用指标数值，只引用证据文件里的事实。依据：`retro.md`、`evidence/` 下 13 份证据、评审 / 裁决 / 审计记录、`brief/impl-2.md`、`brief/impl-6.md`、`brief/impl-7.md`、`brief/audit-4.md`、`brief/audit-5.md`、`brief/audit-6.md`、git 记录，以及审计 #6 的原始日志 `.autome/output/m04a-all.txt`（只用来核对 L-07）。
 
-运行概况：设计 1 轮（评审 #1 两项问题在裁决 #1 全部采纳），实现 6 轮、审计 5 轮。M-01..M-04 的 reopen 都是 0，没有审计退回。复盘 #1 之后又跑了两轮：实现 #6 应用户追加要求把分支 rebase 到 main（90802f6），把已关闭的 M-04 改回「开放」；审计 #5 复验通过，再次关闭 M-04（1385 个用例，1384 通过、1 忽略）。
+运行概况：设计 1 轮（评审 #1 提的两项问题，裁决 #1 全部采纳），实现 7 轮，审计 6 轮。M-01..M-04 的 reopen 都是 0，没有审计退回。复盘 #2 之后又跑了两轮：实现 #7 应用户追加要求再次 rebase 到 main（1d06101），解决了 README 冲突，又把已关闭的 M-04 改回「开放」；审计 #6 复验通过，第三次关闭 M-04。
 
-六个实现轮里有三轮没有推进产品：实现 #2 只给一条测试加了诊断；实现 #5 文档已完成，但因为沙箱里 ci-local 失败把 M-04 留在「开放」；实现 #6 完成 rebase、修了两个过时夹具，同样因为环境问题和一个 main 上的不稳定用例把 M-04 留在「开放」。三轮的阻塞都来自执行环境，或者来自本任务之外的用例；审计轮在自己的环境里每次都复验通过。
+实现 #5、#6、#7 三轮都是在沙箱里跑 ci-local 失败后把 M-04 留在「开放」，失败全部出在 Electron / Web 的执行环境上。审计 #4、#5、#6 在各自环境里跑同一条命令，每次都是 exit 0。
 
-L-01..L-04 沿用复盘 #1 的 proposal 原句，便于跨任务累计。L-02、L-03 在实现 #6 / 审计 #5 又各出现一次，下面已补进症状。L-05、L-06 是本次新增。
+L-01..L-06 沿用复盘 #1 / #2 的 proposal 原句，方便跨任务累计。L-02、L-03 在实现 #7 / 审计 #6 又各出现一次，症状里已补上。L-07 是本次新增。
 
 ```yaml
 - id: L-01
@@ -22,9 +22,9 @@ L-01..L-04 沿用复盘 #1 的 proposal 原句，便于跨任务累计。L-02、
 ```yaml
 - id: L-02
   domain: tooling
-  symptom: '实现轮在会话沙箱里跑了三次全量 sh scripts/ci-local.sh，三次都失败在与本任务无关的环境上：实现 #2（723 秒）、实现 #5（429 秒，单独跑 Electron --version 也退出 134）、实现 #6（Desktop 105 项 1 项 SIGABRT；Web 385 项里 18 项失败、19 项跳过，报错 listen EPERM 127.0.0.1 与 EMFILE）。同样的命令在宿主门禁 6f1d610 上通过；审计 #4 和审计 #5 在各自环境里跑都是 exit 0，审计 #5 证据写「Electron 与 Web 在本会话环境可跑，实现轮 #6 的环境阻塞不复现」（626 秒）'
+  symptom: '实现轮在会话沙箱里跑了四次全量 sh scripts/ci-local.sh，四次都失败在与本任务无关的环境上：实现 #2（723 秒）、实现 #5（429 秒，单独跑 Electron --version 也退出 134）、实现 #6 和实现 #7（718 秒），后两次都是 Desktop 105 项里 1 项 SIGABRT，Web 385 项里 18 项失败、19 项跳过，报错 listen EPERM 127.0.0.1 与 EMFILE。同样的命令在宿主门禁 6f1d610 上通过；审计 #4、#5、#6 在各自环境里跑都是 exit 0。审计 #5 证据写「Electron 与 Web 在本会话环境可跑，实现轮 #6 的环境阻塞不复现」（626 秒），审计 #6 写「实现 #7 的 Electron SIGABRT / Web EPERM 属环境问题，本轮未复现」（680 秒）'
   root_cause: '实现轮的沙箱不允许 Electron 启动和回环监听，宿主门禁与审计轮的环境允许；M-04 的验收命令仍要求实现轮在会话里跑 ci-local，这种运行在实现轮必然失败，也给不出结论'
-  evidence: docs/合并后钩子-merge-after/evidence/M-04-r6-impl.md
+  evidence: docs/合并后钩子-merge-after/evidence/M-04-r7-impl.md
   level: brief
   proposal: '宿主门禁已经覆盖 scripts/ci-local.sh 时，实现轮简报写明「全仓门禁以提交后的宿主门禁为准」，实现轮证据里不再出现沙箱内的 ci-local.sh 全量运行，只跑本里程碑验收命令与它所在的测试组'
   predicted_impact: {metric: total_tokens, direction: down, scope: task, horizon: 3}
@@ -33,9 +33,9 @@ L-01..L-04 沿用复盘 #1 的 proposal 原句，便于跨任务累计。L-02、
 ```yaml
 - id: L-03
   domain: protocol-format
-  symptom: '两次同样的情况。实现 #5 写完文档，cargo test 1219 个用例全部执行，也有独立复现（Electron --version 退出 134），却因 ci-local 被环境阻断写「M-04 保持开放，不标待审」；brief/audit-4.md 里 M-04 仍是「开放」，Autome 照样派出审计 #4，审计复验通过后关闭。实现 #6 在 rebase 后又因 Electron SIGABRT、Web listen EPERM 把 M-04 改回「开放」、status 改为「实现中」；brief/audit-5.md 里 M-04 仍是「开放」，审计 #5 复验通过后关闭'
+  symptom: '三次同样的情况。实现 #5 写完文档，cargo test 1219 个用例全部执行，也有独立复现（Electron --version 退出 134），却因 ci-local 被环境阻断写「M-04 保持开放，不标待审」；brief/audit-4.md 里 M-04 仍是「开放」，Autome 照样派出审计 #4，审计复验通过后关闭。实现 #6 在 rebase 后又因 Electron SIGABRT、Web listen EPERM 把 M-04 改回「开放」、status 改为「实现中」；brief/audit-5.md 里 M-04 仍是「开放」，审计 #5 复验通过后关闭。实现 #7 在 rebase 并解决 README 冲突后，cargo test 1385 项全过，README 冲突专项检查 4/4 通过，只因 Desktop SIGABRT、Web EPERM/EMFILE，又把 M-04 改回「开放」，证据原文「未取得 M-04 完整通过证据，所以不标待审」；brief/audit-6.md 里 M-04 仍是「开放」，审计 #6 复验通过后关闭'
   root_cause: '协议的里程碑状态只有「开放 / 待审 / 已完成」，表达不了「实现完成、只有验收被执行环境阻断」；实现轮按字面留「开放」，调度却照常派审计，状态与实际流转不一致'
-  evidence: docs/合并后钩子-merge-after/evidence/M-04-r6-audit.md
+  evidence: docs/合并后钩子-merge-after/evidence/M-04-r7-impl.md
   level: protocol
   proposal: '协议明确规定：代码已落地、只有验收被执行环境阻断，并且证据里有不依赖应用代码的独立复现时，实现轮把里程碑标为「待审」，并在证据文件首行写明阻断项'
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: project, horizon: 3}
@@ -72,4 +72,15 @@ L-01..L-04 沿用复盘 #1 的 proposal 原句，便于跨任务累计。L-02、
   level: rule
   proposal: '全量回归中失败的用例若不在本分支相对 main 的 diff 所改动的文件里，实现轮必须在 main 的干净副本上重复运行该用例至少 5 次，并在证据里写出运行次数与失败次数，再决定里程碑状态'
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: project, horizon: 3}
+```
+
+```yaml
+- id: L-07
+  domain: verification
+  symptom: '审计 #6 的证据写「cargo test --workspace --all-targets：1 个失败 gate_queue_upgrade_collects_two_old_jobs_without_killing_them（B-08）……其余 1206 通过、1 忽略」，没有写总数，也没有和基线 1385 比较。原始日志里这次运行在 automed lib（744 通过、1 失败）之后就停了，退出 101；1206 + 1 + 1 = 1208 = 35 + 16 + 411 + 1 + 745，end_to_end 142、prompt_rendering 28、real_cli 7 共 177 个用例没有执行，本任务的钩子 e2e 都在 end_to_end 里。实现 #6 碰到同样的中断时写明了「第二次在 lib 失败后尚未执行 e2e/prompt_rendering/real_cli」。审计 #6 最终靠 ci-local 退出 0 补上了全量结论，证据里却没有说明这次 cargo test 是一次不完整的运行'
+  root_cause: 'cargo test 默认 fail-fast，一个目标失败后就不再跑排在后面的目标。B-08 是 automed lib 里已知的间歇失败用例，而 automed lib 排在 end_to_end 前面，所以 B-08 每触发一次，全部 e2e 就跟着被跳过；证据只报通过数和失败数，不对总数，这种缺口从证据上看不出来'
+  evidence: docs/合并后钩子-merge-after/evidence/M-04-r7-audit.md
+  level: rule
+  proposal: '全工作区 cargo test 一律加 --no-fail-fast；证据必须写出实际执行的用例总数，与基线不一致时逐个列出没有执行的测试目标'
+  predicted_impact: {metric: verification_gaps, direction: down, scope: project, horizon: 3}
 ```
