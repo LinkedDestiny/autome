@@ -1,7 +1,7 @@
 # 费用可见：任务与项目的累计费用，可选预算告警
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -145,9 +145,11 @@ impl CostSummary {
 
 - `task.get`：已有 `list_sessions(task_id)`，直接 `CostSummary::of(&sessions)`。
 - `project.get` / `project.list` / `dashboard.get`：在 `store.rs` 新增
-  `sessions_in_project(project_id) -> Vec<Session>`——**一条** `SESSION_SELECT_BASE` + `JOIN tasks ON
-  tasks.id = sessions.task_id WHERE tasks.project_id = ?1` 的查询，在 Rust 里按 `task_id` 分组后对每组
-  `CostSummary::of`。不逐任务调 `list_sessions`，也不在 SQL 里重写一遍口径（口径只在 `CostSummary::of` 一处）。
+  `sessions_in_project(project_id) -> Vec<Session>`——**一条** `SESSION_SELECT_BASE` + `WHERE task_id IN (SELECT id FROM tasks
+  WHERE project_id = ?1)` 的查询，在 Rust 里按 `task_id` 分组后对每组 `CostSummary::of`。
+  **不用 JOIN**：`SESSION_SELECT_BASE` 的 `id`、`kind`、`protocol_ref`、`rules_hash` 没有表名前缀，与 `tasks`
+  的同名列拼 JOIN 会在 prepare 阶段报 `ambiguous column name`（评审 R1-P03，已在 SQLite 内存表上复现）；
+  子查询里的 `id` 属于 `tasks`，外层列都属于 `sessions`，没有歧义。不逐任务调 `list_sessions`，也不在 SQL 里重写一遍口径（口径只在 `CostSummary::of` 一处）。
 - `task_json` 增加一个参数，接收该任务的 `&CostSummary`。只返回单个任务的调用方（`dispatch.rs:1513`、`1534`、
   `1605`）用 `list_sessions` 现算；列表调用方（`project.get`、`dashboard.get`）用上面的分组结果，缺组即空汇总。
 
@@ -202,14 +204,24 @@ impl CostSummary {
 
 ```rust
 pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Option<u64>) -> bool {
-    usd_total * 100.0 > limit_cents as f64 && last_alerted_cents.is_none_or(|last| limit_cents > last)
+    let limit = limit_cents as f64;
+    // 美元金额累加、乘 100 都带二进制浮点尾差（0.07*100.0 = 7.000000000000001，
+    // 0.10+0.20 再乘 100 = 30.000000000000004）。比较时给上限加一个吸收尾差的容差，
+    // 真正的子美分超额（0.071 美元对 7 美分）仍然越线。
+    let tolerance = 1e-6 + limit * 1e-12;
+    usd_total * 100.0 > limit + tolerance && last_alerted_cents.is_none_or(|last| limit_cents > last)
 }
 ```
+
+容差只用在这一处比较里：`CostSummary.usd_total` 仍是原始和（§1.1），不在聚合处取整，也不改会话费用。
+容差 1e-6 美分（1e-8 美元）远小于 1 美分，也比 `f64` 在常见金额上的累加误差（约 1e-14 美分量级）大得多；
+1e-12 的相对项让它在上限取最大值 1e8 美分时仍盖得住累加误差。
 
 | 情形 | 结果 |
 |---|---|
 | 从未告警，累计 > 上限 | 告警 |
-| 累计 = 上限 | 不告警（「超过」是严格大于） |
+| 累计 = 上限（含浮点尾差：0.07 对 7 美分，0.10 + 0.20 对 30 美分） | 不告警（「超过」是严格大于） |
+| 累计只比上限多出子美分（0.071 对 7 美分） | 告警（真实超额） |
 | 已对同一上限告警过，继续花钱 | 不告警（「一条警报」是字面意思） |
 | 用户把上限调低（已告警 2000，现 1500） | 不告警：这个任务已经被提醒过超预算 |
 | 用户把上限调高（已告警 2000，现 3000）且累计 > 3000 | 再告警一次：用户改了预期，新预期又被越过了 |
@@ -226,15 +238,20 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 1. `config_io::load_project(project.path)` 取 `budget`；`None` 直接返回——不读会话、不写任何东西（约束 4）。
 2. `CostSummary::of(&store.list_sessions(task.id))`，`budget_crossed(...)` 为假则返回。
-3. 依次：`raise_alert(project.id, "budget_exceeded", Some(task.id), detail)`；
+3. 调用 `store` 上新增的 `raise_budget_alert(project_id, task_id, detail, usd_total, limit_cents)`，它在**同一个
+   SQLite 事务**（`self.conn.unchecked_transaction()`，`store.rs` 已有同样用法）里依次写：
+   `raise_alert(project.id, "budget_exceeded", Some(task.id), detail)`；
    `append_event("task.budget_exceeded", task.id, {alert_id, usd_total, limit_usd, limit_cents})`；
    `append_event("project.alert", project.id, {alert_id, kind: "budget_exceeded", task_id})`（与事实 2 的写法一致，
-   通知器与 `autome run` 的事件流因此能看到）。
+   通知器与 `autome run` 的事件流因此能看到）。三条要么都在、要么都不在：去重靠 `task.budget_exceeded` 事件，
+   若警报先提交、事件写失败，下一次回收会看不到去重标记而再发一条警报（评审 R1-P02）；反过来则出现
+   「已去重却没有警报」。事务任一步失败即整体回滚，调用方只记日志，下次回收重新判定。
+   不新增表、不做重试或补偿。
 
 `detail` 固定为：
 `任务 <id> 累计费用 $<x.xx>，超过本项目单任务预算 $<y.yy>（.autome/config.toml [budget] per_task_usd）。任务照常继续；要停下用 autome stop <id>。`
 
-**尽力而为，不影响回收。** `check_budget` 的任何错误（配置读不出、写库失败）只 `tracing::warn!`，不向上传——
+**尽力而为，不影响回收。** `check_budget` 的任何错误（配置读不出、事务写库失败）只 `tracing::warn!`，不向上传——
 和 `record_usage` 同理：丢一条警报不能变成丢一个任务。它不读写任务状态、不碰调度与轮次（约束 3）。
 配置从项目主检出读（与门禁、重试等其它项目配置一致），改了立即对下一次回收生效。
 
@@ -263,6 +280,9 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 | 浮点和的末位误差让「等于和」不稳 | M-01、M-04 | 用例只用二进制可精确表示的金额（0.25、1.25、2.5、0.4 的比较在美分上做） |
 | `save_project` 抹掉或改写用户的 `[budget]` | M-03 | `budget_config_save_*` 两条：原样保留与 None 不多写 |
 | 每个会话都告警一次 | M-04 | e2e 断言警报与事件都恰为 1，且之后还有带费用的会话 |
+| 浮点尾差让等额费用误报超限 | M-04 | `budget_alert_requires_strictly_more_than_the_limit` 含 0.07/7 美分、0.10+0.20/30 美分（假）与 0.071/7 美分（真） |
+| 警报与去重事件分开提交，写失败后重复报警 | M-04 | `budget_alert_record_is_all_or_nothing`：事务内某一步失败后三条记录都不在 |
+| 项目级会话查询列名歧义 | M-02 | `cost_rollup_` 三个用例都经过 `sessions_in_project`，歧义会在 prepare 阶段让它们全部失败 |
 | 告警逻辑意外停任务或抛错中断回收 | M-04 | e2e 断言任务走到 `await_merge`；`check_budget` 错误只记日志 |
 | 项目汇总串项目 / 终态边界错 | M-02 | 两项目 + 六种状态的 `cost_rollup_` 单测 |
 | 全量门禁红（fmt / clippy / 桌面 / Web） | 每个里程碑 | 宿主每个实现轮后跑 `sh scripts/ci-local.sh`；M-05 把它写进验收 |
@@ -284,13 +304,13 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 - **M-01** 覆盖验收 1、2，G1 的 `task.get` 部分。前置：无。结果：`CostSummary` 与 `SessionKind::cost_key`；
   `task.get.cost`；`running_totals` 注释。新增测试见契约。
-- **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`；`task_json` 的 `cost_usd` /
+- **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`（子查询，非 JOIN）；`task_json` 的 `cost_usd` /
   `cost_sessions_without_cost`；`project.get` / `project.list` 的 `cost_usd_total` 与 `cost_sessions_without_cost`；
   `dashboard.get` 任务卡因 `task_json` 带上费用。
 - **M-03** 覆盖 G3 的配置部分、约束 4。前置：无（可与 M-01/M-02 独立，按编号顺序做）。结果：`BudgetConfig`、
   `parse_project` / `save_project` 支持 `[budget]`；README 与 technical-design 各补一处。
-- **M-04** 覆盖验收 3、G3 告警部分、约束 3。前置 M-01、M-03。结果：`budget_crossed`；`check_budget` 挂在回收后；
-  事件、警报、`project.alert`；CLI `event_line` 两处文案；Web 通知器标题。
+- **M-04** 覆盖验收 3、G3 告警部分、约束 3。前置 M-01、M-03。结果：`budget_crossed`（带浮点容差）；`check_budget` 挂在回收后；
+  `store.raise_budget_alert`（一次事务写警报与两条事件）；CLI `event_line` 两处文案；Web 通知器标题。
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
   `ls` 费用列与脚注、`status` 运行中行费用；`USAGE` 末尾说明配置节的那句加上 `[budget]`。
 
@@ -346,11 +366,14 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 ### M-04 验收契约
 
-- 验收命令：`cargo test -p autome-domain --lib budget_alert_ && cargo test -p automed --test end_to_end budget_alert_ && cargo test -p autome-cli budget_alert_ && npm test --prefix apps/web -- test/notifier-rules.test.ts -t 预算告警`
-- 预期：共 7 个用例通过（基线 0，新增 7）。autome-domain 3 个：
-  `budget_alert_requires_strictly_more_than_the_limit`（2000 美分，20.0 → 假，20.25 → 真）、
+- 验收命令：`cargo test -p autome-domain --lib budget_alert_ && cargo test -p automed --lib budget_alert_ && cargo test -p automed --test end_to_end budget_alert_ && cargo test -p autome-cli budget_alert_ && npm test --prefix apps/web -- test/notifier-rules.test.ts -t 预算告警`
+- 预期：共 8 个用例通过（基线 0，新增 8）。autome-domain 3 个：
+  `budget_alert_requires_strictly_more_than_the_limit`（2000 美分，20.0 → 假，20.25 → 真；7 美分对 0.07 → 假、0.071 → 真；30 美分对 0.10 + 0.20 → 假）、
   `budget_alert_does_not_repeat_for_the_same_or_a_lower_limit`、
   `budget_alert_fires_again_only_after_a_raised_limit_is_crossed`（覆盖方案 §4.1 表的后五行）；
+  automed lib（`store.rs` 测试模块）1 个：`budget_alert_record_is_all_or_nothing`（正常调用 `raise_budget_alert` 后
+  `open_alerts()` 有 1 条、`task.budget_exceeded` 与 `project.alert` 事件各 1 条；另开一个账本把 `events` 表删掉，
+  调用返回错误，`open_alerts()` 为空）；
   end_to_end 2 个：`budget_alert_fires_once_and_the_task_keeps_going`（`configure("[budget]\nper_task_usd = 0.4")`，
   每个 Claude 会话报 0.25；第二个 Claude 会话后累计 0.5 越线，之后至少还有一个带费用的 Claude 会话；任务最终到
   `await_merge`；`open_alerts()` 中 `kind == "budget_exceeded"` 的恰 1 条且 `task_id` 正确，
@@ -361,7 +384,8 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
   apps/web 1 个：`预算告警标题`（`renderTitle` 对 `{kind: 'budget_exceeded', task_id: 'T-9'}` 得 `T-9 费用超出预算`）。
 - 负向对照：判定写成 `>=` 时第 1 个单测失败；不去重时 e2e 第 1 条的「恰 1 条」失败（第三个 Claude 会话后变 2）；
   去重只比较上限是否相等（不比大小）时第 2 个单测「调低上限不再告警」失败；超限后把任务停下或置失败时
-  e2e 第 1 条走不到 `await_merge`；无 `[budget]` 时仍按某默认值告警则 e2e 第 2 条失败。
+  e2e 第 1 条走不到 `await_merge`；无 `[budget]` 时仍按某默认值告警则 e2e 第 2 条失败；比较不带容差时第 1 个单测的 0.07 / 7 美分与 0.10 + 0.20 / 30 美分两处失败；
+警报与事件不在同一事务（先 `raise_alert` 再逐条 `append_event`）时 `budget_alert_record_is_all_or_nothing` 的回滚断言失败（警报残留）。
 
 ### M-05 验收契约
 
@@ -391,6 +415,8 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 - B-02 `setup_failed` 在 Web 通知标题与 CLI `project.alert` 行仍显示原始 kind，可与 `budget_exceeded` 一起做成统一的种类文案表。
 - B-03 `autome project ls` 文本输出加项目累计费用列。
 - B-04 `stop_on_exceed`（任务卡点名的后续项）。
+- B-05 `autome status` 运行中行的 `$3.75*` 没有星号脚注（只有 `ls` 末尾有），可复用同一句释义（评审 N-01）。
+- B-06 `autome alerts`（`main.rs:983–991`）直接打印原始 `kind`，可与 B-02 的统一种类文案表一起做；`budget_exceeded` 的 detail 已是完整中文，含义可读（评审 N-02）。
 
 ## 争议项
 
