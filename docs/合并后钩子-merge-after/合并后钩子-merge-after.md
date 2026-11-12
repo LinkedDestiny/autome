@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/20
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-03 审计通过后推进 M-04：补齐 README 与技术设计说明，并运行全量回归
+next-action: 推进 M-04：补齐 README 与技术设计说明，并运行全量回归
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -206,7 +206,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 |---|---|---|---|---|
 | M-01 | 已完成 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
 | M-02 | 已完成 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
-| M-03 | 待审 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
+| M-03 | 已完成 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
 | M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
 
 ## 验收契约
@@ -238,7 +238,7 @@ autome-cli `render.rs`：R1 `merge_after_events_are_printed_by_autome_run`（开
 
 ### M-03 验收契约
 
-最新证据：docs/合并后钩子-merge-after/evidence/M-03-r4-impl.md · 验收通过，待审 · 实现 #4
+最新证据：docs/合并后钩子-merge-after/evidence/M-03-r4-audit.md · 通过 · 审计 #3
 
 覆盖范围 5，问题 1、3、4、5、7、8，约束 3、7；前置：M-02。新增用例：
 end_to_end：E4 `merge_after_is_skipped_when_the_main_check_failed`（`run_gated_task` + 合并前在沙箱放 `main-should-fail`，沿用 `write_gate_script` 的 `_verify` 失败分支：任务 `done`；`main_gate_failed` 警报 1 条、`after_merge_failed` 0 条；`merge.after_skipped{reason:"验证 main 未通过"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E5 `merge_after_runs_after_the_main_checkout_setup_and_even_when_it_failed`（沿用 `setup_fixture` 配 `[setup]` 与 `[merge] after`，钩子脚本先 `sleep 1` 以确保至少一次 Pending 重入，并把主检出有没有 `deps/stamp` 记进 `hook-runs`。两段：a 准备成功——`setup.result{checkout:"main"}` 序号 < `merge.after_started`，钩子记录 `stamp=yes`；b 准备在主检出 `exit 4`——`setup_failed` 警报恰 1 条、`merge.after{ok:true}` 1 条、`setup-runs` 里主检出路径的行恰 1 行）、E6 `merge_after_is_skipped_in_a_workspace_with_one_event_per_task`（沿用 `Workspace` 夹具配 `[merge] after`：任务 `done`；`merge.after_skipped{reason:"工作区项目不支持合并后命令"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E7 `merge_after_runs_for_a_bug_task_too`（沿用 `bug_loop_a_bug_runs_from_creation_to_a_merge_commit` 的步骤配 `[merge] after`，`task.merge` 后：任务 `done`、`merge.after{ok:true}` 1 条、`hook-runs` 1 行含该任务 id）、E8 `merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume`（钩子先把自己的 pid 写进沙箱，沙箱有 `slow` 时 `sleep 30`；看到 `merge.after_started` 后 `task.stop`：该 pid 不再存活、`gates/<task>/after_merge-*` 无文件、任务 `stopped`；删 `slow`、`task.resume` 后 settle：`merge.after_started` 2 条、`merge.after{ok:true}` 1 条、无警报、任务 `done`）。
