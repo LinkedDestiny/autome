@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 5/25
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计复验 M-04 的计数、总览及实时更新；通过后实现 M-05 跳转面板
+next-action: 实现 M-05 ⌘K 跳转面板与新建任务卡入口
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -324,7 +324,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 已完成 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
-| M-04 | 待审 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
+| M-04 | 已完成 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
 ## 验收说明
@@ -420,7 +420,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-04 项目栏计数与首页总览，实时更新
 
-最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-impl.md · 非监听验收通过，监听与全门禁受阻待复验 · 实现 #5
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-audit.md · 通过 · 审计 #5
 
 - 覆盖：R-01、R-02。前置：M-01、M-02、M-03。
 - 结果：新增 `shell-data.ts`，`loadShell` 按完整形态实现，根 loader 改为调用它。新增 `project-list.tsx`（项目栏，带计数）、`overview-card.tsx`、`nav-links.ts`、`routes/_index.tsx`。`routes.ts` 的 index 改指向 `routes/_index.tsx`，删除 `routes/home.tsx`。按表修改 `server.test.ts` 的两条。
