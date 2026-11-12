@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 0/0
+implementation-round: 1/30
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在 autome-domain 新增 gate_queue 纯函数与 [gate] concurrency 配置形状，并在 config_io 读写全局/项目的 concurrency
+next-action: M-01 待审计独立复验；通过后推进 M-02 的名额探测、事件恢复与三处启动点接入
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -395,7 +395,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 排队判定纯函数与 concurrency 配置 | 0 | |
+| M-01 | 待审 | 排队判定纯函数与 concurrency 配置 | 0 | |
 | M-02 | 开放 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
 | M-03 | 开放 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 开放 | 门禁超时文案 | 0 | |
@@ -426,6 +426,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 ## 里程碑验收契约
 
 ### M-01 验收契约
+
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
 
 - 验收命令：`cargo test -p autome-domain && cargo test -p automed --lib`
 - 预期：`autome-domain` 共 394 个用例全部通过（基线 385 + 新增 9）；`automed --lib` 共 655 个全部通过（基线 648 + 新增 7）。
