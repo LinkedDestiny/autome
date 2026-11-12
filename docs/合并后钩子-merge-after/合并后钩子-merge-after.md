@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/20
+implementation-round: 2/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-01；通过后推进 M-02 的 Cleanup 前置钩子作业与事件
+next-action: 在宿主复核 Desktop 完整日志及本轮 Electron/Web 环境阻塞，ci-local 全绿后独立审计 M-01；不推进新里程碑
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -213,7 +213,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 
 ### M-01 验收契约
 
-最新证据：docs/合并后钩子-merge-after/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
+最新证据：docs/合并后钩子-merge-after/evidence/M-01-r2-impl.md · Desktop 门禁未通过，保持待审 · 实现 #2
 
 覆盖范围 1，约束 6，问题 1、4 的纯判定部分；前置：无。新增用例（名字都含 `merge_after`）：
 autome-domain：D1 `merge_after_config_is_carried_into_the_resolved_config`（有与无两种）、D2 `merge_after_runs_when_the_main_check_passed_or_was_not_configured`（`NotRun`、`Passed` → `Run`）、D3 `merge_after_is_skipped_when_the_main_check_failed_or_was_skipped`（`Failed` → 「验证 main 未通过」，`Skipped` → 「验证 main 被跳过」）、D4 `merge_after_is_skipped_in_a_workspace_or_without_a_merge_commit`（工作区配四种 verdict 都是「工作区项目不支持合并后命令」；单仓无合并提交 + `Passed` → 「没有单一的合并提交」）。

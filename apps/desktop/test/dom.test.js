@@ -80,6 +80,7 @@ test('electron dom harness: real-DOM assertions against the actual renderer', { 
     !proc.error || proc.error.code !== 'ETIMEDOUT',
     `dom-harness.js did not finish within 60s. stderr:\n${stderr}`
   );
+  assert.ifError(proc.error);
   assert.equal(proc.status, 0, `dom-harness.js exited ${proc.status}, signal=${proc.signal}, error=${proc.error?.code ?? 'none'}, stderr:\n${stderr}`);
 
   let checks;
