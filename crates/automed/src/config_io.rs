@@ -311,6 +311,12 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
 
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        if let Some(v) = t.get("reuse_for_main_check") {
+            config.gate_reuse_for_main_check = Some(
+                v.as_bool()
+                    .ok_or("[gate] reuse_for_main_check 必须是 true 或 false")?,
+            );
+        }
         if let Some(v) = t.get("same_failure_limit") {
             config.gate_same_failure_limit = Some(
                 v.as_integer()
@@ -654,6 +660,75 @@ pub fn skill_bindings(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_reuse_for_main_check_is_read_from_the_project_file() {
+        for text in ["", "[gate]\ncommand = 'check'"] {
+            let project = parse_project(text).unwrap();
+            assert_eq!(project.gate_reuse_for_main_check, None);
+            assert!(
+                autome_domain::config::resolve(&GlobalConfig::default(), &project)
+                    .gate_reuse_for_main_check
+            );
+        }
+        for enabled in [false, true] {
+            for command in ["check", ""] {
+                let project = parse_project(&format!(
+                    "[gate]\ncommand = '{command}'\nreuse_for_main_check = {enabled}"
+                ))
+                .unwrap();
+                assert_eq!(project.gate_reuse_for_main_check, Some(enabled));
+            }
+        }
+    }
+
+    #[test]
+    fn gate_reuse_for_main_check_rejects_non_booleans() {
+        for value in [
+            "'false'",
+            "'yes'",
+            "'true'",
+            "''",
+            "0",
+            "1",
+            "-1",
+            "1.5",
+            "[]",
+            "{}",
+            "2024-02-29",
+        ] {
+            for command in ["check", ""] {
+                assert_eq!(
+                    parse_project(&format!(
+                        "[gate]\ncommand = '{command}'\nreuse_for_main_check = {value}"
+                    ))
+                    .unwrap_err(),
+                    "[gate] reuse_for_main_check 必须是 true 或 false"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gate_reuse_for_main_check_survives_save_project() {
+        let dir = TempDir::new("reuse-main-check-save");
+        for enabled in [false, true] {
+            write_project(
+                dir.path(),
+                &format!("[gate]\ncommand = 'check'\nreuse_for_main_check = {enabled}\n"),
+            );
+            let mut project = load_project(dir.path()).unwrap();
+            project.loop_overrides.parallel = Some(2);
+            save_project(dir.path(), &project).unwrap();
+            let reloaded = load_project(dir.path()).unwrap();
+            assert_eq!(reloaded.gate_reuse_for_main_check, Some(enabled));
+            assert_eq!(
+                autome_domain::config::resolve(&GlobalConfig::default(), &reloaded)
+                    .gate_reuse_for_main_check,
+                enabled
+            );
+        }
+    }
+
     #[test]
     fn setup_section_is_read_with_command_watch_and_timeout() {
         let config = parse_project(

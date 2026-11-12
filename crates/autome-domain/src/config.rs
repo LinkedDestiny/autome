@@ -267,6 +267,8 @@ pub struct ProjectConfig {
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_same_failure_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_reuse_for_main_check: Option<bool>,
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
@@ -376,6 +378,7 @@ pub struct ResolvedConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
     pub gate_same_failure_limit: u32,
+    pub gate_reuse_for_main_check: bool,
     pub retry: RetryPolicy,
 }
 
@@ -445,6 +448,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         gate_same_failure_limit: project
             .gate_same_failure_limit
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
+        gate_reuse_for_main_check: project.gate_reuse_for_main_check.unwrap_or(true),
         retry: project.retry.unwrap_or_default(),
     }
 }
@@ -604,6 +608,29 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_reuse_for_main_check_defaults_true_and_project_overrides() {
+        let project: ProjectConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(project.gate_reuse_for_main_check, None);
+        assert!(resolve(&GlobalConfig::default(), &project).gate_reuse_for_main_check);
+        assert!(
+            serde_json::to_value(&project)
+                .unwrap()
+                .get("gate_reuse_for_main_check")
+                .is_none()
+        );
+        for enabled in [false, true] {
+            let project = ProjectConfig {
+                gate_reuse_for_main_check: Some(enabled),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&GlobalConfig::default(), &project).gate_reuse_for_main_check,
+                enabled
+            );
+        }
+    }
+
     #[test]
     fn setup_config_is_carried_into_the_resolved_config() {
         let mut project = ProjectConfig::default();

@@ -411,6 +411,31 @@ pub fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The id of the tree a commit points at.
+pub fn tree_id(repo: &Path, commit: &str) -> Result<String> {
+    Ok(run_ok(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{commit}^{{tree}}"),
+        ],
+    )?
+    .line()
+    .to_string())
+}
+
+/// The second parent of a merge commit: the head that was merged in.
+pub fn second_parent(repo: &Path, commit: &str) -> Result<String> {
+    Ok(run_ok(
+        repo,
+        &["rev-parse", "--verify", "--quiet", &format!("{commit}^2")],
+    )?
+    .line()
+    .to_string())
+}
+
 pub fn head_sha(repo: &Path) -> Result<String> {
     Ok(run_ok(repo, &["rev-parse", "HEAD"])?.line().to_string())
 }
@@ -944,6 +969,62 @@ pub fn commit_subjects(repo: &Path, base: &str, branch: &str) -> Result<Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tree_id_of_a_no_ff_merge_equals_the_merged_head_and_differs_after_a_new_commit() {
+        let dir = repo_with_commit("tree-id");
+        let repo = dir.path();
+        run_ok(repo, &["checkout", "-b", "feature"]).unwrap();
+        write(repo, "feature", "new content");
+        commit_paths(repo, &["feature"], "feature").unwrap();
+        let head = head_sha(repo).unwrap();
+        run_ok(repo, &["checkout", "main"]).unwrap();
+        run_ok(repo, &["merge", "--no-ff", "feature", "-m", "merge"]).unwrap();
+        let merged = head_sha(repo).unwrap();
+        assert_ne!(merged, head);
+        assert_eq!(
+            tree_id(repo, &merged).unwrap(),
+            tree_id(repo, &head).unwrap()
+        );
+        write(repo, "later", "changed content");
+        commit_paths(repo, &["later"], "later").unwrap();
+        assert_ne!(
+            tree_id(repo, "HEAD").unwrap(),
+            tree_id(repo, &merged).unwrap()
+        );
+    }
+
+    #[test]
+    fn tree_id_of_an_unknown_commit_is_an_error() {
+        let dir = repo_with_commit("tree-id-error");
+        for commit in [
+            "does-not-exist",
+            "",
+            "0000000000000000000000000000000000000000",
+        ] {
+            assert!(tree_id(dir.path(), commit).is_err());
+        }
+        let non_repo = TempDir::new("tree-id-non-repo");
+        assert!(tree_id(non_repo.path(), "HEAD").is_err());
+    }
+
+    #[test]
+    fn second_parent_of_a_no_ff_merge_is_the_merged_head_and_a_plain_commit_has_none() {
+        let dir = repo_with_commit("second-parent");
+        let repo = dir.path();
+        assert!(second_parent(repo, "HEAD").is_err());
+        run_ok(repo, &["checkout", "-b", "feature"]).unwrap();
+        write(repo, "feature", "new content");
+        commit_paths(repo, &["feature"], "feature").unwrap();
+        let head = head_sha(repo).unwrap();
+        assert!(second_parent(repo, &head).is_err());
+        run_ok(repo, &["checkout", "main"]).unwrap();
+        run_ok(repo, &["merge", "--no-ff", "feature", "-m", "merge"]).unwrap();
+        assert_eq!(second_parent(repo, "HEAD").unwrap(), head);
+        for commit in ["does-not-exist", ""] {
+            assert!(second_parent(repo, commit).is_err());
+        }
+    }
+
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
