@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: cd crates/automed && cargo test --offline -p automed --test end_to_end waiting_regression -- --nocapture
 根因: 测试基础设施把未到期重试排除在未完成工作之外，并在多处条件等待中独立使用短截止时间，导致提前返回或正常推进时超时报错。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -90,3 +90,10 @@ repos: autome-v2
 - 根因站得住：未到期 pending_retry 被排除在未完成工作外，加上各处局部短截止；rebase 后仍由共用 `scheduling_wait` 与 `has_pending_work` 承担，与第 1 轮结论一致。
 - 范围：`git diff 185e8cd HEAD -- crates/automed/src` 为空，产品代码未动；本轮只是 rebase 冲突解决，保留 main 新增的 setup 测试。
 - 备注：Web test 在沙箱因 listen EPERM / EMFILE 失败，属环境限制，本改动未触及 Web；修复轮已如实说明 main 在 rebase 期间继续推进，合并前门禁须在宿主基于最新 main 重跑。
+
+复核第 3/3 轮：通过。
+- 复现命令独立重跑：2 passed、0 failed；完整 end_to_end 独立重跑：103 passed、0 failed、0 ignored（141.45 秒）。
+- 回归测试：两个 waiting_regression 测试函数体自定位提交 19e8acf 到当前 HEAD 哈希一致，未删除、跳过或弱化；文件内无 `#[ignore]`。
+- 根因站得住：未到期 pending_retry 被排除在未完成工作之外，加上各处局部短截止；仍由共用 `scheduling_wait` 与 `has_pending_work` 解决。
+- 范围：`git diff 19e8acf HEAD -- crates/automed/src` 为空，产品代码未动；本轮仅为 rebase 到 main（9b5750b 已为祖先），main 新增测试保留。
+- 备注：Desktop 的 dom harness 退出与 Web test 的 listen EPERM / EMFILE 属沙箱环境限制，本改动未触及 Desktop/Web；合并前门禁须在宿主复跑。
