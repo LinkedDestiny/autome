@@ -1,8 +1,12 @@
-# 教训 · 费用可见（T-44）复盘 #1
+# 教训 · 费用可见（T-44）复盘 #2
 
-指标对照：验证缺口 1 = L-01（M-02 审计）；协议失败 1 = L-03（账本 `task.protocol_failure`，审计 #2 改了 `crates/automed/tests/end_to_end.rs`）；
-两次门禁修复实现轮（实现 #2、#3）在账本 sessions 表合计 8,334,491 tokens（含缓存读写，口径大于 Autome 的 total_tokens）、31 分钟，零产品改动 = L-02、L-04。
-L-01、L-02、L-04 的 proposal 与先前任务的条目逐字相同（L-04 的括注「本任务为 crates/」原样保留，本任务命中的是前一个条件「拿不到失败用例全名与断言原文」），是第二次及以上出现；L-03 是首次出现。
+覆盖 #1。指标对照：验证缺口 1 = L-01（M-02 审计）；协议失败 1 = L-03（审计 #2 改了 `crates/automed/tests/end_to_end.rs`，被内核范围守卫判越界）。
+复盘 #1 之后只多了两轮：实现 #8（变基到 main）和审计 #7（无待审里程碑的复核），产出 L-05、L-06。
+L-01..L-04 原样保留：L-01、L-02、L-04 的 proposal 与先前任务的条目逐字相同，L-03 是首次出现。
+
+L-05 的机制已对照源码核实，不只是推断。`gate::running`（`crates/automed/src/gate.rs` 第 221–230 行）在没有 pid 文件时，只要 `started` 时间戳距今不到 10 秒就算运行中。而 `queue_job` 夹具（`scheduler_gate_queue_tests.rs` 第 45–65 行）只写 `started`、不写 pid。
+所以 B 的旧门禁从建立（第 212 行）到第 225 行断言之间只要过了 10 秒，就会被当成已消失，槽位放出，C 启动，`gate.started` 变成 1。
+实现 #8 在 Codex 沙箱里单跑这条用例用了 15.56 秒，失败；审计 #7 跑全量时 automed lib 共 76.13 秒，这条用例通过（`.autome/output/audit7-test.txt` 第 1093 行）。
 
 ```yaml
 - id: L-01
@@ -40,4 +44,22 @@ L-01、L-02、L-04 的 proposal 与先前任务的条目逐字相同（L-04 的�
   level: brief
   proposal: '宿主门禁失败时，若拿不到失败用例全名与断言原文，或失败用例位于任务文件禁止修改的路径（本任务为 crates/），Autome 先在同一提交上重跑一次门禁、不派实现轮；只有重跑仍以同一可改范围内的用例失败时才派实现轮，并在简报里附该用例全名与断言原文'
   predicted_impact: {metric: total_tokens, direction: down, scope: task, horizon: 3}
+
+- id: L-05
+  domain: verification
+  symptom: '实现 #8 变基后，main 带进来的 scheduler::tests::gate_queue_upgrade_collects_two_old_jobs_without_killing_them 在第 225 行失败（期望 C 的 gate.started 为 0，实际 1），单跑复现，耗时 15.56 秒；同一代码上审计 #7 跑 cargo test --workspace，这条用例通过'
+  root_cause: '用例夹具 queue_job 只写 started 时间戳不写 pid，而 gate::running 对没有 pid 的任务只给 started 之后 10 秒的存活窗口，所以用例在墙钟上超过 10 秒就失败；结果取决于机器快慢，不取决于产品代码'
+  evidence: docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r8-impl.md
+  level: test
+  proposal: '让 gate_queue_upgrade_collects_two_old_jobs_without_killing_them 的旧门禁夹具写入一个存活进程的 pid（或把时钟注入 gate::running），使这条用例在第 212 行到第 225 行之间插入 11 秒等待后仍然通过'
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+
+- id: L-06
+  domain: verification
+  symptom: '实现 #8 证据「未闭合问题」点名 gate_queue_upgrade_collects_two_old_jobs_without_killing_them 失败、单跑仍失败；紧接着的审计 #7 证据只有一句「变基后 cargo test --workspace 全绿（rc=0，0 失败）」，既没提这条用例，也没解释两轮结果为什么不一致'
+  root_cause: '没有待审里程碑时，审计 #7 简报的「上一轮对手轮的结论」只写「没有待审的里程碑」，实现证据里的未闭合失败没有传到审计；审计跑出全绿就结案了，没有按协议「复现不了不等于不存在」给出时序上的解释'
+  evidence: docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r8-audit.md
+  level: brief
+  proposal: '前一实现轮证据里有点名的失败用例时，下一审计轮简报的「上一轮对手轮的结论」逐条列出这些用例全名；审计证据对每一条写明本轮结果，结果不一致时写出原因或明确写「未解释」'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
