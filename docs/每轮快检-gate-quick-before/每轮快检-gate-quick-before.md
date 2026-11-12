@@ -421,7 +421,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 
 ## 里程碑说明
 
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-01-r1-impl.md · 待审 · 实现 #1
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-01-r1-audit.md · 已完成 · 审计 #1
 
 - **M-01**（覆盖：目标 1、3；验收 1、4（解析与保存）；约束 2、3、4、12。前置：无）。方案 §1、§2。新增用例：
   - autome-domain 6 个（名字以 `gate_quick_` 开头）：`gate_quick_implement_with_audit_enters_gate`（转换与 `each_round` 下逐字段相等）、
