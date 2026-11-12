@@ -1,7 +1,7 @@
 # approve / merge / rerun 绕过并行容量检查
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib user_action_slot_ -- --test-threads=1
 根因: 用户触发经 apply_trigger/advance 直接将不占槽任务迁移到 Active 并执行动作，未经过 fill_slots 的容量准入；随后 tick 不能撤回已产生的超额占槽。
 复核: 待复核
@@ -47,7 +47,15 @@ K0b 文档核对：`docs/用户按合并时如果默认分支已经前进-任务
 
 ## 修复说明
 
-定位轮未修产品代码。后续需统一重新占槽的准入，保留恢复节点及动作必要上下文；不得删除、跳过或弱化本回归测试。
+第 1/3 轮在 `scheduler::advance` 统一检查从不占槽到占槽的迁移。项目已满槽时保存原动作并转为 `Requeued { resume }`，不执行启动动作；`SlotAvailable` 放行时恢复原动作。已有占槽任务内部流转不重复申请槽位，有空槽的直接启动行为保持不变。
+
+原动作通过任务事件保存，保留新会话启动、决策注入及门禁记录清理语义，避免统一改成 Reenter 后误恢复旧会话。预算仍在用户触发时更新；排队不提前消费决策，完成放行或退出排队后清除待执行动作。该准入按状态迁移判断，覆盖 approve、merge、rerun 以及 extend/reply 的重新占槽分支。
+
+定位轮回归文件未修改。新增 `deferred_merge_keeps_decisions_for_the_new_session`，验证满槽合并先排队、决策未提前消费，释放槽位后由新实现会话携带决策。
+
+验证结果：修复前同一复现命令为 1 passed / 3 failed；最终产品代码修复后为 **4 passed / 0 failed / 0 ignored**。新增决策测试 **1 passed / 0 failed**。原始日志分别为 `.autome/output/fix-1-before.log`、`.autome/output/fix-1-after-final.log`、`.autome/output/fix-1-decisions.log`。
+
+相关子集 `cargo test --offline -p automed --lib scheduler::tests -- --test-threads=1`：**118 passed / 0 failed / 0 ignored**，日志 `.autome/output/fix-1-scheduler.log`。该子集启动后追加的上述决策测试另行实跑通过；子集已使用最终产品逻辑。`cargo fmt --all -- --check`、`git diff --check` 通过。未运行 `sh scripts/ci-local.sh`，由宿主合并前执行。真实 CLI/模型 e2e、parallel=3 累计场景和 extend/reply 满槽专项尚未实跑，不以统一准入的静态覆盖替代验收。
 
 ## 复核意见
 

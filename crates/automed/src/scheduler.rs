@@ -1846,6 +1846,43 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         read_status(&project, &task)
     });
 
+    // Reacquiring a slot must obey the same limit as starting from the queue.
+    // Keep the original action: Reenter alone would resume an old session
+    // instead of rerunning it, and would lose decision injections.
+    if matches!(task.state, TaskState::Requeued { .. })
+        && matches!(trigger, Trigger::SlotAvailable)
+        && transition.next.occupies_slot()
+        && let Some(saved) = ctx.store.last_event(task_id, "task.deferred_action")?
+        && saved["node"] == json!(transition.next.node())
+        && !saved["action"].is_null()
+    {
+        transition.action =
+            serde_json::from_value(saved["action"].clone()).map_err(|e| err(e.to_string()))?;
+    }
+    let defer = !task.state.occupies_slot()
+        && transition.next.occupies_slot()
+        && ctx.store.slots_in_use(&project.id)? >= resolved.loop_defaults.parallel.max(1);
+    if defer {
+        let resume = transition.next.node().expect("slot states have a node");
+        ctx.store.append_event(
+            "task.deferred_action",
+            task_id,
+            json!({"node": resume, "action": transition.action}),
+        )?;
+        transition.next = TaskState::Requeued { resume };
+        // Decisions belong to the deferred session, not to this queue entry.
+        transition.consumes_decisions = false;
+        transition.action = Action::None;
+    } else if !matches!(transition.next, TaskState::Requeued { .. })
+        && ctx
+            .store
+            .last_event(task_id, "task.deferred_action")?
+            .is_some_and(|saved| !saved["action"].is_null())
+    {
+        ctx.store
+            .append_event("task.deferred_action", task_id, json!({"action": null}))?;
+    }
+
     if matches!(trigger, Trigger::Pause | Trigger::Stop)
         && let Some((node, _, inject)) = ctx.store.pending_retry(task_id)?
         && task.state.node() == Some(node)
@@ -7376,6 +7413,68 @@ mod tests {
         assert_eq!(decisions.len(), 2);
         assert!(decisions.iter().any(|d| d.item_id == "B-01"));
         assert!(decisions.iter().any(|d| d.item_id == "D3-P02"));
+    }
+
+    #[test]
+    fn deferred_merge_keeps_decisions_for_the_new_session() {
+        assert!(git_available());
+        let mut w = World::new("deferred-decisions");
+        w.set_parallel(1);
+        let target = w.add_task("T-target", "target");
+        w.write_design(
+            &target,
+            &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+        );
+        w.set_state(
+            &target.id,
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+        );
+        w.add_task("T-busy", "busy");
+        w.set_state(
+            "T-busy",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        w.ctx.store.set_task_budget(&target.id, 25).unwrap();
+        w.ctx
+            .store
+            .sync_decisions(&target.id, &[("B-01".into(), "上限".into())], &[])
+            .unwrap();
+        w.ctx
+            .store
+            .set_disposition(&target.id, "backlog", "B-01", Disposition::Include, None)
+            .unwrap();
+
+        apply_trigger(&mut w.ctx, &target.id, &Trigger::Merge).unwrap();
+        assert_eq!(
+            w.state(&target.id),
+            TaskState::Requeued {
+                resume: Node::Implement
+            }
+        );
+        assert!(w.ctx.store.list_sessions(&target.id).unwrap().is_empty());
+        let decisions = w.ctx.store.list_decisions(&target.id).unwrap();
+        assert!(decisions[0].carried_by.is_none());
+        assert!(decisions[0].consumed_at.is_none());
+
+        w.set_state(
+            "T-busy",
+            TaskState::Stopped {
+                at: Node::Implement,
+            },
+        );
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![target.id.clone()]);
+        let session = w.ctx.store.running_session(&target.id).unwrap().unwrap();
+        let decisions = w.ctx.store.list_decisions(&target.id).unwrap();
+        assert_eq!(
+            decisions[0].carried_by.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert!(decisions[0].consumed_at.is_none());
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
     }
 
     #[test]
