@@ -265,6 +265,8 @@ pub struct ProjectConfig {
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_same_failure_limit: Option<u32>,
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
@@ -302,6 +304,8 @@ impl Default for BugConfig {
         }
     }
 }
+
+pub const DEFAULT_GATE_SAME_FAILURE_LIMIT: u32 = 3;
 
 pub const DEFAULT_GATE_TIMEOUT_MINUTES: u32 = 30;
 
@@ -371,6 +375,7 @@ pub struct ResolvedConfig {
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
+    pub gate_same_failure_limit: u32,
     pub retry: RetryPolicy,
 }
 
@@ -437,6 +442,9 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         bug: project.bug.unwrap_or_default(),
         gate: project.gate.clone(),
         setup: project.setup.clone(),
+        gate_same_failure_limit: project
+            .gate_same_failure_limit
+            .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
         retry: project.retry.unwrap_or_default(),
     }
 }
@@ -610,6 +618,23 @@ mod tests {
             project.setup
         );
     }
+    #[test]
+    fn same_failure_limit_defaults_and_project_override() {
+        assert_eq!(resolved_default().gate_same_failure_limit, 3);
+        let project: ProjectConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(project.gate_same_failure_limit, None);
+        for limit in [1, 3, 10] {
+            let project = ProjectConfig {
+                gate_same_failure_limit: Some(limit),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve(&GlobalConfig::default(), &project).gate_same_failure_limit,
+                limit
+            );
+        }
+    }
+
     #[test]
     fn bug_fix_rounds_default_to_three() {
         let config = super::resolve(

@@ -561,6 +561,41 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    pub fn last_event_in(
+        &self,
+        subject_id: &str,
+        kinds: &[&str],
+        field: &str,
+        value: &str,
+    ) -> Result<Option<(u64, String, Value)>> {
+        let raw: Option<(u64, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT seq, kind, payload FROM events WHERE subject_id = ?1
+             AND kind IN (SELECT value FROM json_each(?2))
+             AND json_extract(payload, ?3) = ?4 ORDER BY seq DESC LIMIT 1",
+                params![
+                    subject_id,
+                    serde_json::to_string(kinds)?,
+                    format!("$.{field}"),
+                    value
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        raw.map(|(seq, kind, payload)| Ok((seq, kind, serde_json::from_str(&payload)?)))
+            .transpose()
+    }
+
+    pub fn any_event_after(&self, subject_id: &str, kinds: &[&str], seq: u64) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE subject_id = ?1 AND seq > ?2
+             AND kind IN (SELECT value FROM json_each(?3)))",
+            params![subject_id, seq, serde_json::to_string(kinds)?],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn session_started_event(&self, task_id: &str, session_id: &str) -> Result<Option<Value>> {
         self.session_event(task_id, session_id, "session.started")
     }

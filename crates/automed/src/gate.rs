@@ -294,6 +294,27 @@ pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<(
     Ok(())
 }
 
+/// The fingerprint window: at most 400 complete lines from the last 256 KiB.
+pub fn log_window(log: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let read = || -> std::io::Result<String> {
+        let mut file = std::fs::File::open(log)?;
+        let offset = file.metadata()?.len().saturating_sub(256 * 1024);
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = Vec::new();
+        file.take(256 * 1024).read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let text = if offset > 0 {
+            text.split_once('\n').map_or("", |(_, rest)| rest)
+        } else {
+            &text
+        };
+        let lines: Vec<_> = text.lines().rev().take(400).collect();
+        Ok(lines.into_iter().rev().collect::<Vec<_>>().join("\n"))
+    };
+    read().unwrap_or_default()
+}
+
 /// The last `lines` lines of a log, for the prompt and the panel. Bounded in
 /// bytes too: one line of minified output must not become the whole prompt.
 pub fn tail(log: &Path, lines: usize) -> String {
@@ -357,6 +378,26 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn same_failure_log_window() {
+        let dir = sandbox("same-failure-window");
+        let log = dir.join("log");
+        assert_eq!(log_window(&log), "");
+        std::fs::write(&log, "").unwrap();
+        assert_eq!(log_window(&log), "");
+        std::fs::write(&log, "单行").unwrap();
+        assert_eq!(log_window(&log), "单行");
+        let lines = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        std::fs::write(&log, lines.join("\n")).unwrap();
+        assert_eq!(log_window(&log), lines[100..].join("\n"));
+        std::fs::write(&log, format!("{}\nlast\n", "中".repeat(100_000))).unwrap();
+        assert_eq!(log_window(&log), "last");
+        std::fs::write(&log, "x".repeat(300_000)).unwrap();
+        assert_eq!(log_window(&log), "");
+        assert_eq!(log_window(&dir), "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
 
     fn sandbox(tag: &str) -> PathBuf {

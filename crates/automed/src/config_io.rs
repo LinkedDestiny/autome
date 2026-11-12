@@ -311,6 +311,14 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
 
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        if let Some(v) = t.get("same_failure_limit") {
+            config.gate_same_failure_limit = Some(
+                v.as_integer()
+                    .filter(|n| (1..=10).contains(n))
+                    .ok_or("[gate] same_failure_limit 必须是 1 到 10 的整数")?
+                    as u32,
+            );
+        }
         let command = t
             .get("command")
             .and_then(toml::Value::as_str)
@@ -748,6 +756,51 @@ mod tests {
         save_project(dir.path(), &project).unwrap();
         assert_eq!(load_project(dir.path()).unwrap().setup, setup);
     }
+    #[test]
+    fn same_failure_config_default() {
+        let p = parse_project("[gate]\ncommand = 'false'").unwrap();
+        assert_eq!(
+            autome_domain::config::resolve(&GlobalConfig::default(), &p).gate_same_failure_limit,
+            3
+        );
+    }
+    #[test]
+    fn same_failure_config_bounds() {
+        for n in [1, 10] {
+            let p =
+                parse_project(&format!("[gate]\ncommand = ''\nsame_failure_limit = {n}")).unwrap();
+            assert_eq!(p.gate_same_failure_limit, Some(n));
+        }
+    }
+    #[test]
+    fn same_failure_config_invalid() {
+        for n in ["0", "11", "-1", "2.5", "'3'", "true", "[]", "4294967296"] {
+            for command in ["false", ""] {
+                assert_eq!(
+                    parse_project(&format!(
+                        "[gate]\ncommand = '{command}'\nsame_failure_limit = {n}"
+                    ))
+                    .unwrap_err(),
+                    "[gate] same_failure_limit 必须是 1 到 10 的整数"
+                );
+            }
+        }
+    }
+    #[test]
+    fn same_failure_config_save_preserves() {
+        let dir = TempDir::new("same-failure");
+        write_project(
+            dir.path(),
+            "[gate]\ncommand = 'false'\nsame_failure_limit = 7",
+        );
+        let config = load_project(dir.path()).unwrap();
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(
+            load_project(dir.path()).unwrap().gate_same_failure_limit,
+            Some(7)
+        );
+    }
+
     #[test]
     fn bug_fix_rounds_are_read_from_the_bug_section() {
         assert!(parse_project("").unwrap().bug.is_none());

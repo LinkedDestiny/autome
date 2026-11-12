@@ -75,6 +75,12 @@ fn failure(reason: &Value) -> String {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
         "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
+        "gate_same_failure" => format!(
+            "门禁连续 {} 次因同一原因失败：{}（日志：{}）",
+            reason["count"],
+            reason["summary"].as_str().unwrap_or(""),
+            reason["log"].as_str().unwrap_or("")
+        ),
         "infeasible" => "设计文档判定不可实现".into(),
         "protocol" => format!("协议失败：{detail}"),
         "session_crashed" => format!("会话崩溃：{detail}"),
@@ -109,6 +115,10 @@ pub fn next_step(task: &Value) -> Option<String> {
         ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
             Some(format!("autome extend {id} 1"))
         }
+        ("failed", _) if state["reason"]["kind"] == "gate_same_failure" => Some(format!(
+            "autome rerun {id} {}    或    autome extend {id} 1",
+            state["at"].as_str().unwrap_or("?")
+        )),
         ("active", "await_merge") => Some(format!("autome merge {id}")),
         ("failed", _) => Some(format!(
             "autome status {id}    （看原因，再 rerun / extend / cancel）"
@@ -442,6 +452,30 @@ mod tests {
             .unwrap()
             .contains("准备命令跳过：工作区项目不支持准备命令")
         );
+    }
+
+    #[test]
+    fn gate_same_failure_explains_the_reason_and_log() {
+        for count in [1, 3, 10] {
+            let reason = json!({"kind":"gate_same_failure","count":count,"summary":"错误 S","log":"/日志/gate.log"});
+            assert_eq!(
+                failure(&reason),
+                format!("门禁连续 {count} 次因同一原因失败：错误 S（日志：/日志/gate.log）")
+            );
+        }
+    }
+
+    #[test]
+    fn gate_same_failure_offers_rerun_and_extend() {
+        for at in ["gate", "merge_gate", "fix_gate"] {
+            let task = json!({"id":"T-9","state":{"state":"failed","at":at,"reason":{"kind":"gate_same_failure","count":3,"summary":"S","log":"/l"}}});
+            assert_eq!(
+                next_step(&task),
+                Some(format!(
+                    "autome rerun T-9 {at}    或    autome extend T-9 1"
+                ))
+            );
+        }
     }
 
     #[test]

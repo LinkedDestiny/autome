@@ -33,6 +33,7 @@
 pub mod changelog;
 pub mod config;
 pub mod environment;
+pub mod gate_failure;
 pub mod lesson;
 pub mod metrics;
 pub mod project;

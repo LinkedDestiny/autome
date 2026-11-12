@@ -198,6 +198,12 @@ pub enum FailureReason {
         exit_code: i32,
         log: String,
     },
+    /// Consecutive failures of the same gate for the same reason.
+    GateSameFailure {
+        count: u32,
+        summary: String,
+        log: String,
+    },
     /// The design loop used up `design_rounds`.
     DesignBudget {
         limit: u32,
@@ -463,6 +469,13 @@ pub enum Trigger {
     /// From the failure panel: go back and re-run from a node.
     RerunFrom {
         node: Node,
+    },
+    /// A gate reached the consecutive same-failure limit.
+    GateSameFailure {
+        node: Node,
+        count: u32,
+        summary: String,
+        log: String,
     },
     /// The project's gate finished at one of the three gate nodes.
     GateDone {
@@ -858,6 +871,26 @@ fn apply_inner(
                 _ => Err(reject("任务不在运行中")),
             };
         }
+        Trigger::GateSameFailure {
+            node,
+            count,
+            summary,
+            log,
+        } => {
+            if !matches!(state, TaskState::Active { node: current } if current == node && matches!(node, Node::Gate | Node::MergeGate))
+            {
+                return Err(reject("门禁结果与当前节点不符"));
+            }
+            return Ok(Transition::fail(
+                *node,
+                FailureReason::GateSameFailure {
+                    count: *count,
+                    summary: summary.clone(),
+                    log: log.clone(),
+                },
+            ));
+        }
+
         Trigger::Start => {
             return if matches!(state, TaskState::Draft) {
                 Ok(Transition::to(TaskState::Queued, Action::None))
@@ -954,12 +987,22 @@ fn apply_inner(
         }
 
         // ---- Failure panel ----------------------------------------------
-        (TaskState::Failed { reason, .. }, Trigger::ExtendBudget { extra_rounds }) => {
+        (TaskState::Failed { at, reason }, Trigger::ExtendBudget { extra_rounds }) => {
             let extra = *extra_rounds;
             if extra == 0 {
                 return Err(reject("追加轮次必须大于 0"));
             }
             match reason {
+                FailureReason::GateSameFailure { .. } => {
+                    let budget = ctx.budget_n.ok_or_else(|| reject("读不到实现预算"))?;
+                    let limit = budget
+                        .checked_add(extra)
+                        .ok_or_else(|| reject("追加轮次不能溢出"))?;
+                    Ok(
+                        Transition::active(*at, Action::DiscardGateRuns { node: *at })
+                            .with_budget(limit),
+                    )
+                }
                 FailureReason::ImplBudget { limit } => Ok(start_impl(ctx, Some(limit + extra))),
                 FailureReason::DesignBudget { .. } => Ok(Transition::active(
                     Node::Design,
@@ -971,6 +1014,16 @@ fn apply_inner(
                 _ => Err(reject("只有轮次耗尽的失败可以追加轮次")),
             }
         }
+        (
+            TaskState::Failed {
+                at,
+                reason: FailureReason::GateSameFailure { .. },
+            },
+            Trigger::RerunFrom { node },
+        ) if node == at && matches!(node, Node::Gate | Node::MergeGate) => Ok(Transition::active(
+            *node,
+            Action::DiscardGateRuns { node: *node },
+        )),
         (TaskState::Failed { .. } | TaskState::Stopped { .. }, Trigger::RerunFrom { node }) => {
             let node = *node;
             match node {
@@ -1496,6 +1549,231 @@ mod tests {
             true,
         )
         .unwrap()
+    }
+
+    fn same_failure_trigger(node: Node) -> Trigger {
+        Trigger::GateSameFailure {
+            node,
+            count: 3,
+            summary: "missing ws".into(),
+            log: "/gate.log".into(),
+        }
+    }
+
+    fn same_failure_state(node: Node) -> TaskState {
+        TaskState::Failed {
+            at: node,
+            reason: FailureReason::GateSameFailure {
+                count: 3,
+                summary: "missing ws".into(),
+                log: "/gate.log".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn same_failure_gate_trips() {
+        let t = apply(
+            &active(Node::Gate),
+            &same_failure_trigger(Node::Gate),
+            &ctx(&cfg()),
+        )
+        .unwrap();
+        assert_eq!(t.next, same_failure_state(Node::Gate));
+        assert_eq!(t.action, Action::None);
+    }
+
+    #[test]
+    fn same_failure_merge_gate_trips() {
+        let t = apply_with_merge_request(
+            &active(Node::MergeGate),
+            &same_failure_trigger(Node::MergeGate),
+            &ctx(&cfg()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(t.next, same_failure_state(Node::MergeGate));
+        assert_eq!(t.action, Action::None);
+        assert!(!t.merge_requested);
+    }
+
+    #[test]
+    fn same_failure_takes_priority_over_exhausted_budget() {
+        let c = cfg();
+        let mut context = ctx(&c);
+        context.budget_n = Some(0);
+        let t = apply(
+            &active(Node::Gate),
+            &same_failure_trigger(Node::Gate),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(t.next, same_failure_state(Node::Gate));
+        assert_eq!(t.action, Action::None);
+    }
+
+    #[test]
+    fn same_failure_rejects_wrong_nodes() {
+        for node in [
+            Node::MainCheck,
+            Node::ReproCheck,
+            Node::Implement,
+            Node::FixGate,
+        ] {
+            let e = apply(&active(node), &same_failure_trigger(node), &ctx(&cfg())).unwrap_err();
+            assert!(e.reason.contains("门禁结果与当前节点不符"));
+        }
+        assert!(
+            apply(
+                &active(Node::Gate),
+                &same_failure_trigger(Node::MergeGate),
+                &ctx(&cfg())
+            )
+            .is_err()
+        );
+        assert!(
+            apply(
+                &TaskState::Stopped { at: Node::Gate },
+                &same_failure_trigger(Node::Gate),
+                &ctx(&cfg())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn same_failure_rerun_discards_gate_runs() {
+        for node in [Node::Gate, Node::MergeGate] {
+            let t = apply(
+                &same_failure_state(node),
+                &Trigger::RerunFrom { node },
+                &ctx(&cfg()),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(node));
+            assert_eq!(t.action, Action::DiscardGateRuns { node });
+        }
+    }
+
+    #[test]
+    fn same_failure_rerun_rejects_other_failure_or_gate() {
+        for node in [Node::Gate, Node::MergeGate, Node::FixGate] {
+            let state = TaskState::Failed {
+                at: node,
+                reason: FailureReason::Infeasible,
+            };
+            assert!(apply(&state, &Trigger::RerunFrom { node }, &ctx(&cfg())).is_err());
+            assert!(
+                apply(
+                    &TaskState::Stopped { at: node },
+                    &Trigger::RerunFrom { node },
+                    &ctx(&cfg())
+                )
+                .is_err()
+            );
+        }
+        for node in [Node::MergeGate, Node::FixGate] {
+            assert!(
+                apply(
+                    &same_failure_state(Node::Gate),
+                    &Trigger::RerunFrom { node },
+                    &ctx(&cfg())
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn same_failure_rerun_implement_starts_role() {
+        let t = apply(
+            &same_failure_state(Node::Gate),
+            &Trigger::RerunFrom {
+                node: Node::Implement,
+            },
+            &ctx(&cfg()),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: None
+            }
+        );
+    }
+
+    #[test]
+    fn same_failure_extend_adds_budget_and_discards_runs() {
+        let c = cfg();
+        let mut context = ctx(&c);
+        for node in [Node::Gate, Node::MergeGate] {
+            context.budget_n = Some(25);
+            let t = apply(
+                &same_failure_state(node),
+                &Trigger::ExtendBudget { extra_rounds: 5 },
+                &context,
+            )
+            .unwrap();
+            assert_eq!(t.next, active(node));
+            assert_eq!(t.action, Action::DiscardGateRuns { node });
+            assert_eq!(t.budget_n, Some(30));
+        }
+        context.budget_n = None;
+        let e = apply(
+            &same_failure_state(Node::Gate),
+            &Trigger::ExtendBudget { extra_rounds: 5 },
+            &context,
+        )
+        .unwrap_err();
+        assert!(e.reason.contains("读不到实现预算"));
+        context.budget_n = Some(u32::MAX);
+        assert!(
+            apply(
+                &same_failure_state(Node::Gate),
+                &Trigger::ExtendBudget { extra_rounds: 1 },
+                &context
+            )
+            .is_err()
+        );
+        context.budget_n = Some(0);
+        let t = apply(
+            &same_failure_state(Node::Gate),
+            &Trigger::ExtendBudget {
+                extra_rounds: u32::MAX,
+            },
+            &context,
+        )
+        .unwrap();
+        assert_eq!(t.budget_n, Some(u32::MAX));
+    }
+
+    #[test]
+    fn same_failure_extend_zero_is_rejected() {
+        let e = apply(
+            &same_failure_state(Node::Gate),
+            &Trigger::ExtendBudget { extra_rounds: 0 },
+            &ctx(&cfg()),
+        )
+        .unwrap_err();
+        assert!(e.reason.contains("追加轮次必须大于 0"));
+    }
+
+    #[test]
+    fn same_failure_reason_json_shape() {
+        let reason = FailureReason::GateSameFailure {
+            count: 3,
+            summary: "S".into(),
+            log: "/l".into(),
+        };
+        let value =
+            serde_json::json!({"kind":"gate_same_failure","count":3,"summary":"S","log":"/l"});
+        assert_eq!(serde_json::to_value(&reason).unwrap(), value);
+        assert_eq!(
+            serde_json::from_value::<FailureReason>(value).unwrap(),
+            reason
+        );
     }
 
     #[test]
