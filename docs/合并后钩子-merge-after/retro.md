@@ -3,3 +3,4 @@
 裁决 #1 | M-01 | 采纳 D1-P01、D1-P02（prepared 标记、事务写警报+结果、补开始事件）；设计定稿 → 实现中 | docs/合并后钩子-merge-after/合并后钩子-merge-after-adjudication.md | 无
 实现 #1 | M-01 | 待审 | docs/合并后钩子-merge-after/evidence/M-01-r1-impl.md | 无
 实现 #2 | M-01 | 待审 | docs/合并后钩子-merge-after/evidence/M-01-r2-impl.md | Electron SIGABRT；Web EPERM/EMFILE，门禁未绿
+审计 #1 | M-01 | 通过 | docs/合并后钩子-merge-after/evidence/M-01-r2-audit.md | 无
