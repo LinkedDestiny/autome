@@ -1,7 +1,7 @@
 # 实现审计
 
-## M-02 通过
+## M-03 通过
 
-验收命令：`scheduler::` 91 个、`end_to_end` 115 个全部通过；全工作区 1222 通过 + 1 ignored（基线即有）= 1223，与预期一致。
-负向对照 (a) 不看开关、(b) 比 sha 不比树、(c) 不比树、(e) 不检查 ok、(g) Bug 不比命令、(h) 不比命令、(i) 找不到 gate.started 放行，
-共 7 个变异均被验收用例拦住，已全部还原（工作区无源码改动）。无实现缺陷、无验证缺口。证据：`evidence/M-02-r2-audit.md`。
+验收命令：`render::` 16 个通过；README `reuse_for_main_check` 2 处、technical-design 1 处；`cargo test --workspace` 1223 通过 + 1 ignored = 1224，与预期一致。
+`ci-local`：Format/Clippy/Test/Contract/Web 四步全 ok；Desktop 一步在全量负载下 Electron DOM 夹具 60s 超时，单独复跑 `npm test --prefix apps/desktop` 166/166 通过（本任务未改 desktop 任何文件，属负载抖动，非产品缺陷）。
+负向对照：守卫改为 `if false`、守卫改为对所有 gate.reused 生效，新用例均失败；已还原。无实现缺陷、无验证缺口。证据：`evidence/M-03-r3-audit.md`。
