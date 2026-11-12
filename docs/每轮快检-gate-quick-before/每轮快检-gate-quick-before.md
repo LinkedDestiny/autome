@@ -1,7 +1,7 @@
 # 每轮快检（`[gate] quick`）：`before_merge` 下实现轮 / 修复轮之后由宿主跑一条静态检查
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -165,7 +165,10 @@ Bug 状态机不改：`Node::Fix => core(Node::FixGate)` 保持，变的只是 F
 
 - 标记是 `quick`：`poll` 用标记里的超时，`gate.result` 的 `command` 用标记里的命令，`kind` 记 `quick`——不论现在的配置是什么。
 - 标记是 `full` / `repro`：`poll` 超时与 `command` **按今天的逻辑**取（当前配置算出的完整门禁命令、`repro-only` 时取复现命令），
-  `kind` 取标记里的值。这样没配 `quick` 的项目连「运行中改了 `command` 文本」这种边角也与今天逐事件相同（约束 1）。
+  `kind` 取标记里的值。这里的「今天的逻辑」指**不经过快检选择的原函数**（需求取 `resolved.gate.command`；Bug 按节点与模式拼），所以
+  `command` 永远不会被记成快检命令（不会出现 `kind: full, command: <quick>`）；唯一残留的边角是 Bug 的 FixGate 以 `each_round`
+  启动、运行中切到 `before_merge`，今天的函数会把 `command` 记成复现命令——这是 T-61 的既有记账，约束 1 要求保持（Backlog B-03）。
+  这样没配 `quick` 的项目连「运行中改了 `command` 文本」这种边角也与今天逐事件相同（约束 1）。
 - 没有标记（升级前启动的作业）：按今天的逻辑取命令，`kind` 按旧规则推出：`ReproCheck` 或 `repro-only` 或 Bug 节点没拼项目门禁
   → `repro`，否则 `full`。
 
@@ -205,10 +208,13 @@ FixGate 在三种模式下都用 `timeout_minutes`，换成 5 分钟会让一条
 
 ### 6. 同因熔断与作业文件（约束 7）
 
-- **熔断仍按节点计数**，快检失败计入它所在的节点（需求 `gate`、Bug `fix_gate`）。新增一条：`record_gate_result` 找到的上一条结果
-  与本次都带 `kind` 且两者不同 → 视为没有上一条（连续计数从 1 开始）。任一方没有 `kind`（升级前的结果）→ 按今天的规则。
-  理由：模式切换前后，同一节点上一次是完整门禁、一次是快检，它们跑的不是同一条命令，指纹碰巧相同也不能叫「同因」；
-  这条只会让熔断更晚触发，不会更早。正常运行中同一节点只有一种 `kind`，不受影响。`kind` 由 `run_gate` 在组装结果时写入，
+- **熔断仍按节点计数**，快检失败计入它所在的节点（需求 `gate`、Bug `fix_gate`）。新增一条，且**只涉及 `quick`**：
+  `record_gate_result` 找到的上一条结果与本次都带 `kind`、两者不同、并且其中至少一个是 `quick` → 视为没有上一条（连续计数从 1
+  开始）。`full ↔ repro` 的切换**不隔断**，任一方没有 `kind`（升级前的结果）也**不隔断**，都按今天的规则累计。
+  理由：模式切换前后，同一节点上一次是快检、一次是完整门禁（或复现命令），它们跑的不是同一条命令，指纹碰巧相同也不能叫「同因」；
+  而 `full ↔ repro`（Bug 的 FixGate 在 `each_round` 与 `before_merge` 间切换，复现命令先失败时两种运行的日志与退出码相同）是没配
+  `quick` 的项目也会遇到的路径，约束 1 要求熔断计数与今天逐项相同，所以不动（评审 R1-01）。这条只会让涉及 `quick` 的切换后熔断更晚
+  触发，不会更早。正常运行中同一节点只有一种 `kind`，不受影响。`kind` 由 `run_gate` 在组装结果时写入，
   `record_gate_result` 只读不加字段——现有熔断单测（`same_failure_*`）直接传入不带 `kind` 的载荷并断言返回值与传入相等，保持原样通过。
 - **作业文件名不变**（`<节点>-<head 前 12 位>.*`），快检与完整门禁在同一节点、同一 head 上共用一个作业槽。一个槽同一时刻只有
   一次运行；收结果按 `.kind` 标记认它是哪一种，所以不会把另一种的在途作业当成自己的；`gate::start` 启动前清掉旧 `.log`，
@@ -222,11 +228,12 @@ FixGate 在三种模式下都用 `timeout_minutes`，换成 5 分钟会让一条
 | 情形 | 走向 |
 |---|---|
 | `Gate` 上快检在跑 / 排队 / 已暂停 / 已停止，拿掉 `quick`（仍 `before_merge`） | 走 T-61 的跳过分支：`discard_node` 杀掉进程组、写 `gate.skipped{node: gate, reason: 门禁只在合并前运行}`，按通过继续 |
-| `Gate` 上快检在跑，改成 `each_round` | 按 `.kind` 收成 `kind: quick` 的结果，`command` 是快检命令；通过 → 审计（简报写快检），之后 MergeGate 照跑完整门禁（快检结果不可沿用） |
+| `Gate` 上快检在跑，改成 `each_round` | 按 `.kind` 收成 `kind: quick` 的结果，`command` 是快检命令；通过 → 审计（简报写快检，末句按当前配置说「已改为每轮运行完整门禁，这条结果是切换前的快检」，§8），之后 MergeGate 照跑完整门禁（快检结果不可沿用） |
 | `Gate` 上快检在跑，改了 `quick` 文本或超时 | 按标记里的命令与超时收结果；下一轮用新值 |
 | `Gate` 上完整门禁在跑（`each_round`），改成 `before_merge` + `quick` | 不再跳过；按 `.kind` 收成 `kind: full` 的结果，`command` 按今天逻辑；下一轮起跑快检 |
 | `Gate` 上排队中（作业未启动），任意切换 | 开跑那一刻按当前配置选种类；`before_merge` 无 `quick` 时走跳过分支 |
-| FixGate 上 `( 复现 ) && ( quick )` 在跑，拿掉 `quick` 或改成 `each_round` | 按 `.kind` 收成 `kind: quick`、`command` 为组合命令 |
+| FixGate 上 `( 复现 ) && ( quick )` 在跑，拿掉 `quick` 或改成 `each_round` | 按 `.kind` 收成 `kind: quick`、`command` 为组合命令；复核的说明按该结果的 `kind` 生成（§8：`before_merge` 段填快检说明，`each_round` 段追加更正句） |
+| FixGate 上 `( 复现 ) && ( 完整 )` 在跑（`each_round`），改成 `before_merge` + `quick` | 按 `.kind` 收成 `kind: full`；复核走 `before_merge` 段，说明写「切换前已跑过复现命令和完整门禁」而不是「只跑复现命令」（§8） |
 | FixGate 上只跑复现命令（`repro-only`），加上 `quick` | 按 `.repro-only` 与 `.kind` 收成 `kind: repro`、`command` 为复现命令（T-61 测试照旧） |
 | head 在作业期间变了 | 现有逻辑：作废、下一 tick 按当前配置重跑 |
 | 任务停在审计等别的节点时加上 `quick` | 下一次实现轮结束时生效 |
@@ -252,6 +259,9 @@ FixGate 在三种模式下都用 `timeout_minutes`，换成 5 分钟会让一条
 
 > 本轮宿主只跑了快检：\`<命令>\`，在提交 \`<sha 前 10 位>\` 上<通过 | 未通过 | 快检超时（运行超过 N 分钟，被内核终止）>，退出码 N。完整输出：\`<日志>\`。
 > 快检不是全量门禁：它只说明这条命令里的检查是否通过，不能当作全量回归的证据；全量门禁只在合并前运行。复验时可以引用它，但它不替代你自己的负向对照。
+
+最后一句里的「全量门禁只在合并前运行」是对**当前配置**的陈述，只在当前是 `before_merge` 时成立。当前配置已是 `each_round`（快检在途时才切换）时，
+这一分句换成 `当前配置已改为每轮运行完整门禁，这条结果是切换前的快检。`，其余文字不变（评审 R1-02 第 3 条路径）。
 
 `gate_evidence` 的分支不变（T-61 规则保留：`before_merge` 下结果的 `sha` 不等于本轮 head 不引用），只有「`before_merge` 且没有
 当前 head 的结果」那句在快检生效时换成 `本项目全量门禁只在合并前运行；本轮的提交上还没有宿主快检结果。`，未生效时仍是
@@ -284,18 +294,28 @@ GateFailed 的那次转换紧跟在那条 `gate.result` 之后，会话启动（
 
 **Bug 复核。** 协议 v5 把 `fix-review.md` `before_merge` 段写死的那句换成占位符 `{fix_gate_note}`（§9），宿主填：
 
-- `last_gate` 是 `fix_gate` 节点、`kind == "quick"` 的结果 →
-  `本项目全量门禁只在合并前运行，本轮没有全量门禁结果；修复门禁跑的是复现命令和快检（\`<该结果的 command>\`），它通过不等于项目门禁通过。`
-- 其它 → `BUG_REVIEW_GATE_NOTE` 原文（金样 `fix-review-before-merge.md` 逐字节不变）。
+说明按「最后一次 FixGate 实际跑了什么」（`last_gate` 的 `kind` / `command` / `exit_code`）决定，不按当前配置；当前配置只决定它落在哪里
+（`before_merge` 段的占位符，或下面的补充句）：
 
-依据是最后一次 FixGate 实际跑了什么，而不是当前配置，因此中途切换也不会说错。
+- `kind == "quick"` →
+  `本项目全量门禁只在合并前运行，本轮没有全量门禁结果；修复门禁跑的是复现命令和快检（\`<该结果的 command>\`，退出码 N），它通过不等于项目门禁通过。`
+- `kind == "full"` 且快检当前生效（走 `before_merge` 段，即启动时是 `each_round`、运行中才切换的路径）→
+  `本项目全量门禁只在合并前运行；本轮修复门禁在切换配置前已跑过复现命令和完整门禁（\`<该结果的 command>\`，退出码 N），不是只跑复现命令。`
+- 其它（没有 `last_gate`、`repro`、或没配 `quick` 的 `full`）→ `BUG_REVIEW_GATE_NOTE` 原文（金样 `fix-review-before-merge.md` 逐字节不变；
+  没配 `quick` 的项目模式切换时的既有说法也不动，约束 1）。
+
+**当前是 `each_round`、最后一次 FixGate 却是快检**（快检在途时切到 `each_round`）：`each_round` 段没有占位符，渲染末尾追加一次
+`更正：本轮修复门禁跑的是复现命令和快检（\`<命令>\`，退出码 N），不是完整门禁；它通过不等于项目门禁通过。`。这和下面旧模板的补充句同属一个
+机制：**最后一次 FixGate 是快检、而渲染出的正文里没有 `{fix_gate_note}` 的位置**（`each_round` 段、v3 / v4 的 `before_merge` 段、没有
+`before_merge` 段的旧模板）时，末尾追加且只追加一次。没配 `quick`、也没有快检结果的项目不触发，渲染逐字节不变。
 
 **旧模板（约束 10）。** 固定在旧协议版本的任务遇到 `quick`：
 
 - `impl.md` / `fix.md`（v3、v4 有 `{gate_line}`）：快检句随 `{gate_line}` 进来。v3 之前没有 `before_merge` 段的模板读不到快检句，
   快检照跑，失败时注入会说清楚。
-- `fix-review.md` v3 / v4（有 `before_merge` 段、没有 `{fix_gate_note}`）且应填快检说明时：渲染末尾追加一次
-  `更正：本项目配了快检，上面「修复门禁只跑了复现命令」不属实——修复门禁跑的是复现命令和快检（\`<命令>\`），它通过仍不等于项目门禁通过。`
+- `fix-review.md` v3 / v4（有 `before_merge` 段、没有 `{fix_gate_note}`）且最后一次 FixGate 是快检时：渲染末尾追加一次
+  `更正：上面「修复门禁只跑了复现命令」不属实——修复门禁跑的是复现命令和快检（\`<命令>\`，退出码 N），它通过仍不等于项目门禁通过。`
+  最后一次 FixGate 是 `full` 而快检当前生效时，更正句改为 `更正：上面「修复门禁只跑了复现命令」不属实——本轮修复门禁在切换配置前已跑过复现命令和完整门禁（\`<命令>\`，退出码 N）。`
 - 没有 `before_merge` 段的旧 `fix-review.md`：现有 `legacy_review` 追加 `BUG_REVIEW_GATE_NOTE`，应填快检说明时改为追加快检说明。
 - 任何情形都不渲染失败、不留未填占位符。
 
@@ -413,7 +433,8 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
   - automed lib 9 个（`gate_quick_host_` 开头）：`.kind` 标记 survive start/clear、discard 删除；`Gate` 跑快检（命令、`gate.started` /
     `gate.result` 的 `kind`、脚本读到的 `AUTOME_GATE_KIND=quick`、标记超时 = `quick_timeout_minutes`）；完整门禁的运行带 `kind: full`
     且无标记的旧作业收成 `full`；MergeGate 不沿用同 head 上通过的快检（对照：完整结果仍沿用）；`main_check_reuse` 不沿用快检结果；
-    熔断不跨种类（对照：同种类照常累加、旧结果无 `kind` 照常累加）；模式切换按启动种类收结果（§7 第 2、3、4 行）；在跑时拿掉
+    熔断不跨 `quick` 与别的种类（对照：同种类照常累加、旧结果无 `kind` 照常累加；**没配 `quick` 的对照**：Bug `fix_gate` 上 `full` 失败两次后
+    切到 `repro` 再以相同指纹失败，第三次仍熔断，`repro → full` 同理，约束 1）；模式切换按启动种类收结果（§7 第 2、3、4 行）；在跑时拿掉
     `quick` 走跳过分支；巡检按标记超时终止快检。
   - end_to_end 3 个：`gate_quick_feature_two_milestones_run_quick_each_round_and_full_once`（到 `await_merge` 时快检计数文件两行 `gate quick`、
     完整门禁计数文件一行 `merge_gate full`；合并后完整门禁计数为 `merge_gate`、`main_check` 两行；`gate.started` 的 `kind` 依次为
@@ -430,9 +451,10 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
     `fix_gate quick`）、`gate_quick_bug_failing_quick_returns_to_fix_with_its_tail`。
 - **M-04**（覆盖：目标 5（简报、复核）、6；验收 5（金样）；约束 9、10。前置：M-03）。方案 §8、§9、§13 的 `PromptSpec` 补字段。新增用例：
   - automed lib 10 个：`gate_quick_prompt_` 开头 8 个（实现 / 修复轮快检句且其它角色不变、需求快检失败注入、Bug 快检失败注入、
-    复核说明随最后一次 FixGate、v3/v4 旧模板渲染无占位符且更正句只出现一次、命令里的 `{slug}` 原样、`eval_run` 填 `{fix_gate_note}`、
+    复核说明随最后一次 FixGate（含退出码；含两条在途切换路径：`quick` 启动后切 `each_round` 得到更正句恰好一次，`each_round` 的 `full` 启动后
+    切 `before_merge` + `quick` 得到「切换前已跑过复现命令和完整门禁」而非「只跑了复现命令」；没配 `quick` 时渲染逐字节不变）、v3/v4 旧模板渲染无占位符且更正句只出现一次、命令里的 `{slug}` 原样、`eval_run` 填 `{fix_gate_note}`、
     `eval` 只允许 `{fix_gate_note}` 在 `before_merge` 段内）；`gate_quick_brief_` 开头 2 个（快检文字含「本轮宿主只跑了快检」与退出码、
-    不含「这是实现轮之外的一次独立运行」，超时变体；`full` / 无 `kind` 结果与今天逐字节相同、快检生效且无当前结果时的新常量）。
+    不含「这是实现轮之外的一次独立运行」，超时变体，当前 `each_round` 时末句换成「已改为每轮运行完整门禁」；`full` / 无 `kind` 结果与今天逐字节相同、快检生效且无当前结果时的新常量）。
   - prompt_rendering 3 个（`gate_quick_` 开头）与金样 4 份：`golden/prompts/impl-before-merge-quick.md`、`fix-before-merge-quick.md`、
     `fix-review-before-merge-quick.md`、`golden/briefs/audit-before-merge-quick.md`。现有金样一份不改。
   - 协议 v5：§9 三处文本、`CHANGELOG.md` 两个块。
@@ -482,5 +504,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 
 - B-01 `each_round` 下写了 `quick` 时，在 `project.get` / `config.get` 的 `violations` 之外给一句「快检只在 before_merge 下生效」的说明（任务卡「不强求」，本任务不做）。
 - B-02 桌面路由图（`routing.js`）在 `before_merge` + `quick` 下把实现轮后的门禁节点标成「快检」。
+- B-03 Bug FixGate 以 `each_round` 启动、运行中切到 `before_merge` 时，T-61 的既有记账会把 `gate.result.command` 记成复现命令（`kind` 仍是 `full`）；约束 1 要求保持，本任务不改（评审 N1）。
+- B-04 §12 的快检耗时实测若记为「未取证」，M-05 的实现轮要在证据里写明原因，审计与复盘把它列为未关闭项，由用户在合并前或合并后补测；不据此阻塞里程碑（评审 N2）。
 
 ## 争议项
