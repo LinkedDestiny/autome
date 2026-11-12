@@ -1,7 +1,7 @@
 # 复核、审计、复盘轮缺少本任务文档目录范围检查
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end review_scope_ -- --test-threads=1
 根因: reap_session 未校验会话提交的全量文件范围；Bug 分支绕过 apply_guards，需求守卫只检查本任务设计文档，复核字段报错又缺少目标文档路径。
 复核: 待复核
@@ -41,9 +41,19 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮：仅新增端到端回归测试和本记录；未修产品代码。修复轮上限 3，本轮为 0/3。
+修复第 1/3 轮：
+
+- 在复核、审计、复盘会话启动前记录各工作仓库的 HEAD；兜底提交后、读取结果及手动/终态复盘提前返回之前，统一检查相对该基线的全部变更路径。仅文档仓库的本任务目录允许写入，越界时报告允许目录和实际路径，不接纳本轮结果。缺失基线时明确拒绝检查通过。
+- Git diff 使用 NUL 分隔并关闭重命名识别，检查重命名两端；目录前缀带末尾斜线，避免同名前缀目录被放行。定位、修复不受此守卫限制。
+- 本任务复核字段仍为待复核时，错误包含「本轮没有更新」和准确 Bug 文档路径；越界错误优先于字段错误。
+- 原定位轮端到端回归测试未改动。另在调度器测试中补充目录内重命名合法对照、跨目录重命名、相似目录前缀以及手动复盘未提交产品修改的拒绝用例。
+- 原复现命令修复前为 1 通过、5 失败；修复后为 6 通过、0 失败、0 忽略。日志分别为 `.autome/output/fix-1-before.log`、`.autome/output/fix-1-after.log`。
+- 新增边界测试 `cargo test --offline -p automed --lib session_scope_ -- --test-threads=1`：2 通过、0 失败、0 忽略，日志 `.autome/output/fix-1-boundaries.log`。`cargo fmt --all -- --check`、`git diff --check` 通过。
+- 已执行配置门禁 `sh scripts/ci-local.sh`，815 秒后退出码 1，**整体门禁未通过**。Format、Clippy、Rust 全套测试（含 650 个 automed 单元测试、112 个端到端测试）、Contract、Web lint/typecheck/build 通过。日志 `.autome/output/fix-1-gate.log`。
+- Desktop 为 104 通过、1 失败、0 跳过：真实 Electron DOM harness 退出状态为 null。单独重跑同样失败；直接启动探针记录 `signal: SIGABRT`、stdout/stderr 为空。该测试不启动 Rust 内核，桌面源码未改动；具体启动崩溃原因未查明。日志 `.autome/output/fix-1-desktop-recheck.log`、`.autome/output/fix-1-electron-probe.log`。
+- Web test 为 271 通过、11 失败、19 跳过（测试初始化失败导致），4 个测试文件失败。错误包括 `listen EPERM: operation not permitted 127.0.0.1` 与 `EMFILE: too many open files, watch`；当前执行环境无法完成这些验收，未修改或跳过测试。需由 Autome 宿主在允许本地监听、Electron 启动的环境重跑完整门禁。
+- 多仓库范围限制已按文档仓库身份与逐仓库基线实现，但本轮未新增多仓库越界专项验收；不能以既有多仓库流程通过代替该专项验证。
 
 ## 复核意见
 
 待复核。后续复核需保留失败用例及合法对照，不以删除、跳过或弱化断言换取通过。
-
