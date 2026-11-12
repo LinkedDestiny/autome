@@ -1,7 +1,7 @@
 # 状态块围栏导致误导性缺字段错误
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
 复核: 待复核
@@ -39,7 +39,21 @@ fix-round: 0/3
 
 ## 修复说明
 
-待修复轮处理。本轮仅新增回归测试与定位报告，未修改产品代码、提示词、协议或版本。后续需明确选择任务卡的接受或拒绝方案，并同步 intake、plan、locate 的状态块说明、协议版本与 CHANGELOG；本轮不创建需求设计或里程碑文档。
+第 1/3 修复轮采用方案 (b)：继续拒绝围栏状态块，保持现有协议和示例隔离行为，仅修正诊断。解析器记录头部围栏内字段及围栏起始行；必填字段在围栏外缺失、但在头部围栏内存在时，返回「状态字段不能放在代码围栏里（第 N 行）」并提示移出围栏。围栏外真实字段优先，正文示例不参与缺字段诊断，真正缺失字段仍报原错误。
+
+同步 intake、plan、locate 提示词与 loop 协议的放置说明，强调不要复制样例围栏。协议按 CHANGELOG 规则递增为 `protocol/v5`，记为对既有规则的 `clarify`；本任务固定的 protocol 副本保持不变。提示词快照只增加对应说明，没有修改或弱化定位轮回归测试。
+
+验证结果：
+
+- 原复现命令 `cargo test --offline -p autome-domain --test fenced_status_regression`：修复前 2 passed、2 failed，修复后 4 passed、0 failed。
+- `cargo test --offline -p autome-domain --lib status_block::tests::`：52 passed，包含既有 50 项及新增的波浪号围栏中部分字段、正文围栏不能掩盖真实缺字段两个用例。
+- `cargo test --offline -p automed --test end_to_end an_intake_fenced_status_block_reports_the_fence_location`：1 passed。真实调度器执行替身整理会话，写入围栏头部后以协议失败结束，原因包含「代码围栏」「第 2 行」，不再包含缺字段文案，且不重试。
+- `cargo test --offline -p automed --test end_to_end a_design_document_without_a_status_block_fails_the_task_once`：1 passed，真正缺状态块仍被拒绝。
+- `cargo test --offline -p automed --test prompt_rendering`：更新并检查对应快照后 28 passed。intake-card 快照不支持自动更新，手动同步同一句说明后通过；测试逻辑未改动。
+- `cargo run --offline -p automed -- protocol eval protocol/`：8 项通过、0 项失败、1 项条文来源警告（43 行缺 CHANGELOG 归因）；新增措辞曾触及正文大小限制，精简后静态门通过。
+- 改动 Rust 文件的 rustfmt 检查、`git diff --check` 通过；定位轮回归测试文件无差异。
+
+原始验证输出位于 `.autome/output/fix-*.log`，不提交。未运行全量门禁 `sh scripts/ci-local.sh`，由宿主合并前统一执行；未运行付费模型行为 eval 或真实模型整理会话，以上 e2e 使用项目现有替身会话机制。
 
 ## 复核意见
 

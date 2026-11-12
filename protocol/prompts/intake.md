@@ -20,6 +20,8 @@
    `{doc_dir}/protocol/session-protocol.md`。」
 3. 生成设计文档 {doc_dir}/{slug}.md 的骨架，头部写完整的状态块：
 
+状态块直接写在设计文档标题下一行、首个二级标题之前，不要用代码围栏；以下围栏仅用于展示样例，不要复制围栏标记。
+
 ```text
 status: 设计中
 design-round: 0/{design_rounds}
