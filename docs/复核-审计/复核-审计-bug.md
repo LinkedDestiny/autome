@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end review_scope_ -- --test-threads=1
 根因: reap_session 未校验会话提交的全量文件范围；Bug 分支绕过 apply_guards，需求守卫只检查本任务设计文档，复核字段报错又缺少目标文档路径。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -56,4 +56,11 @@ fix-round: 1/3
 
 ## 复核意见
 
-待复核。后续复核需保留失败用例及合法对照，不以删除、跳过或弱化断言换取通过。
+复核: 通过（第 1/3 轮，独立复核）。
+
+- 复现命令独立重跑：`cargo test --offline -p automed --test end_to_end review_scope_ -- --test-threads=1` 退出码 0，6 通过、0 失败、0 忽略（日志 `.autome/output/review-1-repro.log`）。
+- 回归测试未被弱化：定位提交 1b0aa28 到修复提交 8890a20 的差异只涉及 `crates/automed/src/scheduler.rs` 与本 Bug 文档，`end_to_end.rs` 未改动；修复轮仅新增 2 个边界单测（重命名两端/相似目录前缀、手动复盘未提交产品修改），`session_scope_` 2 通过。
+- 根因成立：`reap_session` 原先对 Bug 会话和复盘提前返回，没有按会话起始 HEAD 检查全量路径；修复在 `launch_session` 记录 `scope_heads`，`guard_session_scope` 用 `--no-renames -z` 检查两端路径并以带斜线的目录前缀比较，且先于读取结果执行，所以越界不会被正确的复核字段掩盖；字段未更新时报错含 Bug 文档路径。缺失基线时拒绝通过。范围限定在 Audit/Retro 角色，定位与修复不受影响。
+- 范围最小：只改调度器一处与测试，无无关改动。
+- 其他门禁：`cargo test --offline -p automed` 650 单元 + 112 端到端等全部通过；`cargo fmt --check`、`git diff --check`、`clippy -D warnings` 通过。
+- 未覆盖：修复轮报告的整体 `ci-local.sh` 失败来自 Desktop Electron 启动 SIGABRT 与 Web 的 `listen EPERM`/`EMFILE`，涉及未改动的桌面/Web 代码，属沙箱环境限制，需宿主在完整环境确认。多仓库越界仍无专项验收，仅有按仓库基线的实现，属残余风险，不阻塞本次通过。
