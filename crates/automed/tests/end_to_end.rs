@@ -2675,11 +2675,24 @@ fn a_failing_gate_sends_the_work_back_and_a_passing_one_lets_it_merge() {
     let result = w
         .ctx
         .store
-        .last_event(&task_id, "gate.result")
+        .last_event(&task_id, "gate.reused")
         .unwrap()
         .unwrap();
     assert_eq!(result["node"], json!("main_check"));
-    assert_eq!(result["ok"], json!(true));
+    assert_eq!(
+        result["sha"],
+        w.ctx
+            .store
+            .get_task(&task_id)
+            .unwrap()
+            .merge_commit
+            .unwrap()
+    );
+    assert!(
+        !gate_trace(&w, &task_id)
+            .iter()
+            .any(|e| e == "gate.started:main_check")
+    );
     assert!(w.ctx.store.open_alerts().unwrap().is_empty());
     assert!(
         !w.repo
@@ -2702,8 +2715,7 @@ fn main_failing_its_gate_after_a_merge_raises_an_alert_the_user_can_dismiss() {
     assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
     std::fs::write(w.root.join("main-should-fail"), "").unwrap();
 
-    w.call("task.merge", json!({ "task_id": task_id }));
-    w.settle();
+    merge_after_a_late_branch_commit(&mut w, &task_id);
     // The merge stands: the alert is about main, not a reason to undo it.
     assert_eq!(w.state(&task_id), "done");
     let alerts = w.ctx.store.open_alerts().unwrap();
@@ -5978,8 +5990,7 @@ fn setup_runs_in_the_merge_commit_checkout_before_the_main_check() {
     let (id, _) = setup_gate_task(&mut w, "setup verify", "", false);
     // The gate genuinely requires preparation in the fresh checkout.
     std::fs::write(w.root.join("gate.sh"), "test -f deps/stamp\n").unwrap();
-    w.call("task.merge", json!({"task_id": id}));
-    w.settle();
+    merge_after_a_late_branch_commit(&mut w, &id);
     assert_eq!(w.state(&id), "done");
     let results = setup_events(&w, &id, "setup.result");
     let verify = results
@@ -6018,8 +6029,7 @@ fn setup_failure_in_the_merge_commit_checkout_raises_an_alert_and_skips_the_main
         "case \"$PWD\" in *_verify-*) exit 5 ;; esac",
         false,
     );
-    w.call("task.merge", json!({"task_id": id}));
-    w.settle();
+    merge_after_a_late_branch_commit(&mut w, &id);
     assert_eq!(w.state(&id), "done");
     let alerts = w.ctx.store.open_alerts().unwrap();
     assert_eq!(alerts.len(), 1);
@@ -6525,4 +6535,114 @@ fn main_check_reuse_switched_off_matches_today_event_by_event() {
     );
     assert_gate_calls(&w, 1);
     assert_no_verify_checkout(&w);
+}
+
+fn merge_after_a_late_branch_commit(w: &mut World, id: &str) {
+    automed::scheduler::apply_trigger(&mut w.ctx, id, &autome_domain::task::Trigger::Merge)
+        .unwrap();
+    assert_eq!(w.node(id).as_deref(), Some("merging"));
+    let task = w.ctx.store.get_task(id).unwrap();
+    let wt = w.repo.join(format!(".worktree/{}", task.slug));
+    std::fs::write(wt.join("late.txt"), "late change\n").unwrap();
+    automed::git::commit_paths(&wt, &["late.txt"], "late change").unwrap();
+    w.settle();
+}
+
+#[test]
+fn main_check_reuse_skips_the_run_when_the_merge_commit_has_the_merge_gate_tree() {
+    needs_git!();
+    let mut w = World::new("reuse-on");
+    let id = run_gated_task_with(&mut w, "reuse default", true, None);
+    advance_main_and_merge(&mut w, &id);
+    let reused = setup_events(&w, &id, "gate.reused");
+    let main: Vec<_> = reused
+        .iter()
+        .filter(|(_, p)| p["node"] == "main_check")
+        .collect();
+    assert_eq!(main.len(), 1);
+    let commit = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    let passed = w
+        .ctx
+        .store
+        .last_event_in(&id, &["gate.result"], "node", "merge_gate")
+        .unwrap()
+        .unwrap()
+        .2;
+    assert_eq!(
+        main[0].1,
+        json!({"node": "main_check", "sha": commit, "from_sha": passed["sha"], "tree": automed::git::tree_id(&w.repo, &commit).unwrap()})
+    );
+    assert_eq!(
+        passed["sha"],
+        automed::git::second_parent(&w.repo, &commit).unwrap()
+    );
+    let rebased = w
+        .ctx
+        .store
+        .last_event(&id, "merge.rebased")
+        .unwrap()
+        .unwrap();
+    assert_eq!(passed["sha"], rebased["repos"][0]["head"]);
+    for kind in [
+        "gate.started",
+        "gate.result",
+        "setup.started",
+        "setup.result",
+        "setup.skipped",
+    ] {
+        assert!(
+            setup_events(&w, &id, kind)
+                .iter()
+                .all(|(_, p)| p["node"] != "main_check")
+        );
+    }
+    assert_gate_calls(&w, 0);
+    assert_no_verify_checkout(&w);
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+}
+
+#[test]
+fn main_check_reuse_runs_when_the_merge_commit_tree_differs() {
+    needs_git!();
+    let mut w = World::new("reuse-different");
+    let id = run_gated_task_with(&mut w, "late branch", true, None);
+    merge_after_a_late_branch_commit(&mut w, &id);
+    assert_eq!(w.state(&id), "done");
+    let commit = w.ctx.store.get_task(&id).unwrap().merge_commit.unwrap();
+    assert!(w.repo.join("late.txt").exists());
+    let passed = w
+        .ctx
+        .store
+        .last_event_in(&id, &["gate.result"], "node", "merge_gate")
+        .unwrap()
+        .unwrap()
+        .2;
+    assert_ne!(
+        passed["sha"],
+        automed::git::second_parent(&w.repo, &commit).unwrap()
+    );
+    assert_ne!(
+        automed::git::tree_id(&w.repo, passed["sha"].as_str().unwrap()).unwrap(),
+        automed::git::tree_id(&w.repo, &commit).unwrap()
+    );
+    assert!(
+        setup_events(&w, &id, "gate.reused")
+            .iter()
+            .all(|(_, p)| p["node"] != "main_check")
+    );
+    for kind in ["gate.started", "gate.result"] {
+        let events = setup_events(&w, &id, kind);
+        let main: Vec<_> = events
+            .iter()
+            .filter(|(_, p)| p["node"] == "main_check")
+            .collect();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].1["sha"], commit);
+        if kind == "gate.result" {
+            assert_eq!(main[0].1["ok"], true);
+        }
+    }
+    let calls = std::fs::read_to_string(w.root.join("gate-calls")).unwrap();
+    assert_eq!(calls.lines().filter(|s| *s == "main_check").count(), 1);
+    assert_setup_verify_removed(&w, &id);
 }

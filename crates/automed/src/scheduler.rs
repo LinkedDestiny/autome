@@ -3127,6 +3127,77 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
 /// the task's own head (every checkout's, for a workspace); a run whose commit
 /// moved underneath it is thrown away and started again. After the merge it is
 /// the merge commit, checked out on its own beside the user's checkout.
+/// Reuse only a proven run on the merged head, with the command actually started.
+fn main_check_reuse(
+    store: &crate::store::Store,
+    task_id: &str,
+    repo: &Path,
+    commit: &str,
+    command: &str,
+    bug: bool,
+) -> Result<Option<Value>> {
+    let Some((seq, kind, passed)) = store.last_event_in(
+        task_id,
+        &["gate.result", "gate.reused"],
+        "node",
+        "merge_gate",
+    )?
+    else {
+        return Ok(None);
+    };
+    let (seq, result) = if kind == "gate.reused" {
+        let Some(sha) = passed["sha"].as_str() else {
+            return Ok(None);
+        };
+        let Some((seq, _, result)) = store.last_event_in(task_id, &["gate.result"], "sha", sha)?
+        else {
+            return Ok(None);
+        };
+        (seq, result)
+    } else {
+        (seq, passed)
+    };
+    if result["ok"] != true {
+        return Ok(None);
+    }
+    let Some(from_sha) = result["sha"].as_str() else {
+        return Ok(None);
+    };
+    if git::second_parent(repo, commit).ok().as_deref() != Some(from_sha) {
+        return Ok(None);
+    }
+    let expected = if bug {
+        let Some(reproduced) = store.last_event(task_id, "bug.reproduced")? else {
+            return Ok(None);
+        };
+        let Some(repro) = reproduced["command"].as_str() else {
+            return Ok(None);
+        };
+        format!("( {repro} ) && ( {command} )")
+    } else {
+        command.to_owned()
+    };
+    let Some(started) = store.last_event_before(task_id, "gate.started", seq)? else {
+        return Ok(None);
+    };
+    if started["node"] != result["node"]
+        || started["sha"] != result["sha"]
+        || started["command"].as_str() != Some(expected.as_str())
+    {
+        return Ok(None);
+    }
+    let (Ok(tree), Ok(from_tree)) = (git::tree_id(repo, commit), git::tree_id(repo, from_sha))
+    else {
+        return Ok(None);
+    };
+    if tree != from_tree {
+        return Ok(None);
+    }
+    Ok(Some(
+        json!({"node": "main_check", "sha": commit, "from_sha": from_sha, "tree": tree}),
+    ))
+}
+
 fn run_gate(
     ctx: &mut Ctx,
     task: &TaskRecord,
@@ -3194,6 +3265,21 @@ fn run_gate(
                 }
             };
             let rel = verify_dir(&commit);
+            let job = crate::gate::Job::at(
+                &repo,
+                &task.id,
+                "main_check",
+                &commit[..commit.len().min(12)],
+            );
+            if resolved.gate_reuse_for_main_check
+                && !repo.join(&rel).exists()
+                && !job.exists()
+                && let Some(reused) =
+                    main_check_reuse(&ctx.store, &task.id, &repo, &commit, &gate.command, bug)?
+            {
+                ctx.store.append_event("gate.reused", &task.id, reused)?;
+                return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+            }
             if !repo.join(&rel).exists() {
                 git::worktree_prune(&repo)?;
                 git::worktree_add_detached(&repo, &rel, &commit)?;
@@ -7556,6 +7642,412 @@ mod tests {
                 std::fs::read(wt.join("boundary/card/card-card.md")).unwrap(),
                 max.as_bytes()
             );
+        }
+    }
+    fn reuse_git(repo: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=test", "-c", "user.email=test@test"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn reuse_fixture(tag: &str) -> (World, TaskRecord, Project, TaskLayout, String) {
+        let mut w = World::new(tag);
+        let mut task = w.add_task("T-1", "reuse");
+        task.state = TaskState::Active {
+            node: Node::MergeGate,
+        };
+        w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("feature"), "feature\n").unwrap();
+        git::commit_paths(&wt, &["feature"], "feature").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::of(&project, &task.slug, &[]);
+        (w, task, project, layout, head)
+    }
+
+    fn reuse_merge(w: &mut World, task: &mut TaskRecord) -> String {
+        reuse_git(
+            &w.repo,
+            &["merge", "--no-ff", &task.branch(), "-m", "merge"],
+        );
+        let commit = git::head_sha(&w.repo).unwrap();
+        task.merge_commit = Some(commit.clone());
+        task.state = TaskState::Active {
+            node: Node::MainCheck,
+        };
+        w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+        commit
+    }
+
+    fn reuse_config(w: &World, command: &str, enabled: bool) {
+        let path = config_io::project_config_path(&w.repo);
+        let original = std::fs::read_to_string(&path).unwrap_or_default();
+        let base = original.split("\n[gate]").next().unwrap();
+        std::fs::write(
+            path,
+            format!(
+                "{base}\n[gate]\ncommand = '{}'\nreuse_for_main_check = {enabled}\n",
+                command.replace('\'', "")
+            ),
+        )
+        .unwrap();
+    }
+
+    fn reuse_collect(
+        w: &mut World,
+        task: &TaskRecord,
+        project: &Project,
+        layout: &TaskLayout,
+        node: Node,
+    ) {
+        let before = w.ctx.store.count_events(&task.id, "gate.result").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while w.ctx.store.count_events(&task.id, "gate.result").unwrap() == before {
+            assert!(std::time::Instant::now() < deadline, "gate did not finish");
+            run_gate(&mut w.ctx, task, project, layout, node).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn main_check_reuse_decision_table() {
+        needs_git!();
+        for case in [
+            "S1",
+            "S2",
+            "S3",
+            "S4",
+            "S5",
+            "S6",
+            "S6-repro-only",
+            "S6-other-repro",
+            "S6-missing",
+            "S7a",
+            "S7b",
+            "S7c",
+            "S8",
+            "S9-missing",
+            "S9-failed",
+            "S10",
+            "S11-missing",
+            "S11-node",
+            "S11-sha",
+            "empty-sha",
+            "missing-merge",
+            "plain-commit",
+            "missing-repo",
+            "missing-tree",
+        ] {
+            let (mut w, mut task, _, layout, head) = reuse_fixture(case);
+            if case == "S7a" {
+                std::fs::write(layout.cwd.join("late"), "late").unwrap();
+                git::commit_paths(&layout.cwd, &["late"], "late").unwrap();
+            }
+            if case == "S7b" {
+                std::fs::write(w.repo.join("main-moved"), "moved").unwrap();
+                git::commit_paths(&w.repo, &["main-moved"], "main moved").unwrap();
+            }
+            if case == "S7c" {
+                reuse_git(&w.repo, &["commit", "--allow-empty", "-m", "empty main"]);
+                reuse_git(&layout.cwd, &["rebase", "main"]);
+                assert_ne!(head, git::head_sha(&layout.cwd).unwrap());
+                assert_eq!(
+                    git::tree_id(&w.repo, &head).unwrap(),
+                    git::tree_id(&layout.cwd, "HEAD").unwrap()
+                );
+            }
+            let commit = reuse_merge(&mut w, &mut task);
+            let store = &w.ctx.store;
+            let reused = case == "S2" || case.starts_with("S9");
+            let node = if reused { "gate" } else { "merge_gate" };
+            let sha = match case {
+                "S8" => "0000000000000000000000000000000000000000",
+                "empty-sha" => "",
+                _ => &head,
+            };
+            let bug = case.starts_with("S6");
+            if bug && case != "S6-missing" {
+                store
+                    .append_event("bug.reproduced", &task.id, json!({"command": "repro"}))
+                    .unwrap();
+            }
+            let command = match case {
+                "S5" | "S10" => "old gate",
+                "S6" | "S6-missing" => "( repro ) && ( gate )",
+                "S6-repro-only" => "repro",
+                "S6-other-repro" => "( other ) && ( gate )",
+                _ => "gate",
+            };
+            if case != "S4" && case != "S9-missing" {
+                if case != "S11-missing" {
+                    store.append_event("gate.started", &task.id, json!({"node": if case == "S11-node" {"fix_gate"} else {node}, "sha": if case == "S11-sha" {"wrong"} else {sha}, "command": command})).unwrap();
+                }
+                store.append_event("gate.result", &task.id, json!({"node": node, "sha": sha, "command": "gate", "ok": case != "S9-failed"})).unwrap();
+            }
+            if reused {
+                store
+                    .append_event(
+                        "gate.reused",
+                        &task.id,
+                        json!({"node": "merge_gate", "sha": sha}),
+                    )
+                    .unwrap();
+            }
+            if case == "S3" {
+                store
+                    .append_event(
+                        "gate.result",
+                        &task.id,
+                        json!({"node": "merge_gate", "sha": sha, "ok": false}),
+                    )
+                    .unwrap();
+            }
+            // A later start and another task must not change the run paired with R.
+            store
+                .append_event(
+                    "gate.started",
+                    &task.id,
+                    json!({"node": "unrelated", "sha": "later", "command": "other"}),
+                )
+                .unwrap();
+            store
+                .append_event(
+                    "gate.result",
+                    "other-task",
+                    json!({"node": "merge_gate", "sha": sha, "ok": false}),
+                )
+                .unwrap();
+            if case == "missing-tree" {
+                // The merge still names its parent, but that parent's tree cannot be read.
+                std::fs::remove_file(
+                    w.repo
+                        .join(".git/objects")
+                        .join(&head[..2])
+                        .join(&head[2..]),
+                )
+                .unwrap();
+            }
+            let checked_commit = match case {
+                "missing-merge" => "bad-commit",
+                "plain-commit" => &head,
+                _ => &commit,
+            };
+            let missing = w.root.join("absent");
+            let repo = if case == "missing-repo" {
+                &missing
+            } else {
+                &w.repo
+            };
+            let before = store.events_since(0, u32::MAX).unwrap();
+            let result =
+                main_check_reuse(store, &task.id, repo, checked_commit, "gate", bug).unwrap();
+            let expected = matches!(case, "S1" | "S2" | "S6");
+            assert_eq!(result.is_some(), expected, "{case}");
+            if expected {
+                assert_eq!(
+                    result.unwrap(),
+                    json!({"node": "main_check", "sha": commit, "from_sha": head, "tree": git::tree_id(&w.repo, &commit).unwrap()}),
+                    "{case}"
+                );
+            }
+            assert_eq!(
+                before,
+                store.events_since(0, u32::MAX).unwrap(),
+                "read-only: {case}"
+            );
+        }
+        let w = World::new("reuse-store-error");
+        let path = w.root.join("broken.sqlite");
+        let store = crate::store::Store::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("DROP TABLE events", [])
+            .unwrap();
+        assert!(main_check_reuse(&store, "T-1", &w.repo, "HEAD", "gate", false).is_err());
+    }
+
+    #[test]
+    fn main_check_reuse_only_on_first_entry() {
+        needs_git!();
+        for mode in ["fresh", "checkout", "job", "disabled"] {
+            let (mut w, mut task, project, layout, head) = reuse_fixture(mode);
+            reuse_config(&w, "true", mode != "disabled");
+            reuse_collect(&mut w, &task, &project, &layout, Node::MergeGate);
+            let commit = reuse_merge(&mut w, &mut task);
+            assert_eq!(git::second_parent(&w.repo, &commit).unwrap(), head);
+            assert!(
+                main_check_reuse(&w.ctx.store, &task.id, &w.repo, &commit, "true", false)
+                    .unwrap()
+                    .is_some()
+            );
+            let job = crate::gate::Job::at(&w.repo, &task.id, "main_check", &commit[..12]);
+            if mode == "checkout" {
+                git::worktree_add_detached(&w.repo, &verify_dir(&commit), &commit).unwrap();
+            }
+            if mode == "job" {
+                std::fs::create_dir_all(job.started.parent().unwrap()).unwrap();
+                std::fs::write(&job.started, "1").unwrap();
+                std::fs::write(
+                    &job.exit,
+                    "exit_code=0\nended_at=2026-01-01T00:00:00Z\nmarker_end\n",
+                )
+                .unwrap();
+            }
+            if mode == "fresh" {
+                run_gate(&mut w.ctx, &task, &project, &layout, Node::MainCheck).unwrap();
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                    1
+                );
+                assert!(!w.repo.join(verify_dir(&commit)).exists());
+                assert!(!job.exists());
+            } else {
+                reuse_collect(&mut w, &task, &project, &layout, Node::MainCheck);
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                    0
+                );
+                assert!(!w.repo.join(verify_dir(&commit)).exists());
+            }
+            assert!(matches!(
+                w.state(&task.id),
+                TaskState::Active {
+                    node: Node::Cleanup
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn main_check_reuse_when_main_advanced_after_the_check_runs_the_main_check() {
+        needs_git!();
+        let (mut w, mut task, project, layout, head) = reuse_fixture("main-advanced");
+        let script = w.root.join("gate.sh");
+        let calls = w.root.join("calls");
+        std::fs::write(
+            &script,
+            format!("echo \"$AUTOME_GATE_NODE\" >> {}\n", calls.display()),
+        )
+        .unwrap();
+        reuse_config(&w, &format!("sh {}", script.display()), true);
+        reuse_collect(&mut w, &task, &project, &layout, Node::MergeGate);
+        std::fs::write(w.repo.join("main-late"), "late\n").unwrap();
+        git::commit_paths(&w.repo, &["main-late"], "advance main after check").unwrap();
+        let commit = reuse_merge(&mut w, &mut task);
+        assert_eq!(git::second_parent(&w.repo, &commit).unwrap(), head);
+        assert_ne!(
+            git::tree_id(&w.repo, &commit).unwrap(),
+            git::tree_id(&w.repo, &head).unwrap()
+        );
+        reuse_collect(&mut w, &task, &project, &layout, Node::MainCheck);
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+            0
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "gate.started")
+                .unwrap()
+                .unwrap()["node"],
+            "main_check"
+        );
+        assert_eq!(
+            std::fs::read_to_string(calls).unwrap(),
+            "merge_gate\nmain_check\n"
+        );
+        assert!(matches!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Cleanup
+            }
+        ));
+    }
+
+    #[test]
+    fn main_check_reuse_ignores_a_result_whose_command_changed_mid_run() {
+        needs_git!();
+        for changed in [false, true] {
+            let (mut w, mut task, project, layout, _) = reuse_fixture("command-change");
+            let script = w.root.join("gate-a.sh");
+            let release = w.root.join("release");
+            std::fs::write(
+                &script,
+                format!(
+                    "while [ ! -f {} ]; do sleep 0.01; done\nexit 0\n",
+                    release.display()
+                ),
+            )
+            .unwrap();
+            let command_a = format!("sh {}", script.display());
+            reuse_config(&w, &command_a, true);
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::MergeGate).unwrap();
+            if changed {
+                reuse_config(&w, "false", true);
+            }
+            std::fs::write(release, "go").unwrap();
+            reuse_collect(&mut w, &task, &project, &layout, Node::MergeGate);
+            let start = w
+                .ctx
+                .store
+                .last_event(&task.id, "gate.started")
+                .unwrap()
+                .unwrap();
+            let result = w
+                .ctx
+                .store
+                .last_event(&task.id, "gate.result")
+                .unwrap()
+                .unwrap();
+            assert_eq!(start["command"], command_a);
+            assert_eq!(
+                result["command"],
+                if changed { "false" } else { &command_a }
+            );
+            assert_eq!(result["ok"], true);
+            reuse_merge(&mut w, &mut task);
+            if changed {
+                reuse_collect(&mut w, &task, &project, &layout, Node::MainCheck);
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                    0
+                );
+                assert_eq!(
+                    w.ctx
+                        .store
+                        .last_event(&task.id, "gate.result")
+                        .unwrap()
+                        .unwrap()["ok"],
+                    false
+                );
+                assert_eq!(
+                    w.ctx.store.open_alerts().unwrap()[0].kind,
+                    "main_gate_failed"
+                );
+            } else {
+                run_gate(&mut w.ctx, &task, &project, &layout, Node::MainCheck).unwrap();
+                assert_eq!(
+                    w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                    1
+                );
+                assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+            }
+            assert!(matches!(
+                w.state(&task.id),
+                TaskState::Active {
+                    node: Node::Cleanup
+                }
+            ));
         }
     }
 }
