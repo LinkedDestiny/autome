@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -86,6 +86,13 @@ fix-round: 3/3
 原始验证输出位于 `.autome/output/fix-*.log`，不提交。未运行全量门禁 `sh scripts/ci-local.sh`，由宿主合并前统一执行；未运行付费模型行为 eval 或真实模型整理会话，以上 e2e 使用项目现有替身会话机制。
 
 ## 复核意见
+
+通过（第 3/3 轮复核）。
+
+- 复现命令独立复跑：4 passed；定位提交 3a26e64 起 `fenced_status_regression.rs` 无差异，回归测试未被删除、跳过或弱化。
+- 第 3 轮差异 7eee424 仅改 `protocol/loop-protocol.md` 一行（精简措辞，保留“标题下一行、首个二级标题前写状态块；不得复制展示用围栏”），不碰解析器、预算上限或测试，范围最小。
+- 相关子集复验：`protocol::eval::tests::` 28 passed；`protocol::` 全部 67 passed；`prompt_rendering` 28 passed。
+- 根因与前两轮结论不变；未跑全量门禁，由宿主合并前运行。
 
 通过（第 2/3 轮复核）。
 
