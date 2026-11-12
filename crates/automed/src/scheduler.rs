@@ -1088,9 +1088,17 @@ fn added_test_blocks(diff: &str, section_line: usize) -> Vec<String> {
 
 /// Every block still present, verbatim and in the original order.
 fn blocks_kept_in_order(text: &str, blocks: &[String]) -> bool {
-    // Compared without whitespace: the gate's formatter may rewrap the added
-    // tests, and that is not an edit. Changing what they assert still is.
-    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Compared without whitespace or trailing commas: the gate's formatter may
+    // rewrap the added tests, and that is not an edit. Changing what they
+    // assert still is.
+    let squash = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .replace(",)", ")")
+            .replace(",]", "]")
+            .replace(",}", "}")
+    };
     let text = squash(text);
     let mut from = 0;
     blocks
@@ -6342,7 +6350,7 @@ mod regression_blocks {
         // The gate runs `cargo fmt --check`; the fix round must be able to
         // rewrap an unformatted regression test without it counting as edited.
         let blocks = vec!["        assert!(\n            report.errors.iter().any(|e| e.contains(&name)),\n            \"must name it\"\n        );".to_string()];
-        let rewrapped = "fixed\n        assert!(\n            report\n                .errors\n                .iter()\n                .any(|e| e.contains(&name)),\n            \"must name it\"\n        );\n";
+        let rewrapped = "fixed\n        assert!(\n            report\n                .errors\n                .iter()\n                .any(|e| e.contains(&name)),\n            \"must name it\",\n        );\n";
         assert!(blocks_kept_in_order(rewrapped, &blocks));
         let loosened = "fixed\n        assert!(\n            report\n                .errors\n                .iter()\n                .any(|e| e.contains(&other)),\n            \"must name it\"\n        );\n";
         assert!(!blocks_kept_in_order(loosened, &blocks));
