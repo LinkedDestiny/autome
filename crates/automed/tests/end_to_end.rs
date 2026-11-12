@@ -7661,7 +7661,8 @@ fn merge_after_runs_in_the_main_checkout_after_the_main_check_and_before_cleanup
     needs_git!();
     let mut w = World::new("merge-after-ok");
     configure_merge_after(&w, 0);
-    let id = run_gated_task(&mut w, "hook success");
+    // This case verifies a fresh MainCheck, not reuse of the pre-merge verdict.
+    let id = run_gated_task_with(&mut w, "hook success", false, Some(false));
     let task = w.ctx.store.get_task(&id).unwrap();
     std::fs::write(w.root.join("hook-slug"), &task.slug).unwrap();
     w.call("task.merge", json!({"task_id": id}));
@@ -7779,7 +7780,8 @@ fn merge_after_is_skipped_when_the_main_check_failed() {
     needs_git!();
     let mut w = World::new("hook-main-fail");
     configure_merge_after(&w, 0);
-    let id = run_gated_task(&mut w, "hook main fail");
+    // This case verifies a fresh MainCheck, not reuse of the pre-merge verdict.
+    let id = run_gated_task_with(&mut w, "hook main fail", false, Some(false));
     std::fs::write(w.root.join("main-should-fail"), "").unwrap();
     ok(&w.call("task.merge", json!({"task_id": id})));
     w.settle();

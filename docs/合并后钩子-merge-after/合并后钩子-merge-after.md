@@ -1,12 +1,12 @@
 # 合并后钩子 [merge] after：宿主在主检出上执行，失败只报警
 
-status: 已完成
+status: 实现中
 design-round: 1/15
-implementation-round: 5/20
-current-milestone: 无
+implementation-round: 6/20
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 在允许本机监听与 Electron 启动的环境复验 M-04 全量 CI，核对门禁队列用例后取证待审
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -207,7 +207,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 | M-01 | 已完成 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
 | M-02 | 已完成 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
 | M-03 | 已完成 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
-| M-04 | 已完成 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
+| M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
 
 ## 验收契约
 
@@ -228,7 +228,7 @@ automed lib `config_io.rs`：C1 `merge_after_section_is_read_with_command_and_ti
 最新证据：docs/合并后钩子-merge-after/evidence/M-02-r3-audit.md · 通过 · 审计 #2
 
 覆盖范围 2、3、4（结果、警报、打印），验收 1、2、3，约束 1、2、3、4、5、7，问题 2、6；前置：M-01。新增用例：
-end_to_end：E1 `merge_after_runs_in_the_main_checkout_after_the_main_check_and_before_cleanup`（沿用 `run_gated_task` 配 `[gate]`，再配 `[merge] after = "sh <hook.sh>"`；`task.merge` 后 settle：任务 `done`；主检出有 `hook-out/stamp`；`hook-runs` 恰 1 行，`$PWD` 等于主检出的规范路径、`AUTOME_TASK` 等于任务 id、`AUTOME_MERGE_COMMIT` 等于 `task.merge_commit`、`wt=present`；序号 `gate.result{node:"main_check",ok:true}` < `merge.after_started` < `merge.after{ok:true,exit_code:0}` < state 为 Done 的 `task.updated`；`merge.after.log` 文件存在且 `tail` 含脚本输出；主检出 `git::is_clean`；无警报）、E2 `merge_after_failure_raises_one_alert_and_the_task_is_still_done`（钩子 `exit 6`：任务 `done`，任务 worktree 与分支已删；打开的警报恰 1 条、kind `after_merge_failed`、detail 含命令、「退出码 6」与 `after_merge-` 日志路径；`merge.after{ok:false,exit_code:6}` 恰 1 条）、E3 `merge_after_events_are_absent_when_no_merge_after_is_configured`（两种夹具都跑到 `done`：不写 `[merge]`；写 `[merge]\nafter = "  "`。`merge.after_started` / `merge.after` / `merge.after_skipped` 计数均为 0，没有 `after_merge_failed` 警报，`.autome/output/gates/<task>/` 下没有 `after_merge-*` 文件）。
+end_to_end：E1 `merge_after_runs_in_the_main_checkout_after_the_main_check_and_before_cleanup`（沿用 `run_gated_task_with(..., false, Some(false))` 配 `[gate] reuse_for_main_check = false`，确保实际重跑 MainCheck，再配 `[merge] after = "sh <hook.sh>"`；`task.merge` 后 settle：任务 `done`；主检出有 `hook-out/stamp`；`hook-runs` 恰 1 行，`$PWD` 等于主检出的规范路径、`AUTOME_TASK` 等于任务 id、`AUTOME_MERGE_COMMIT` 等于 `task.merge_commit`、`wt=present`；序号 `gate.result{node:"main_check",ok:true}` < `merge.after_started` < `merge.after{ok:true,exit_code:0}` < state 为 Done 的 `task.updated`；`merge.after.log` 文件存在且 `tail` 含脚本输出；主检出 `git::is_clean`；无警报）、E2 `merge_after_failure_raises_one_alert_and_the_task_is_still_done`（钩子 `exit 6`：任务 `done`，任务 worktree 与分支已删；打开的警报恰 1 条、kind `after_merge_failed`、detail 含命令、「退出码 6」与 `after_merge-` 日志路径；`merge.after{ok:false,exit_code:6}` 恰 1 条）、E3 `merge_after_events_are_absent_when_no_merge_after_is_configured`（两种夹具都跑到 `done`：不写 `[merge]`；写 `[merge]\nafter = "  "`。`merge.after_started` / `merge.after` / `merge.after_skipped` 计数均为 0，没有 `after_merge_failed` 警报，`.autome/output/gates/<task>/` 下没有 `after_merge-*` 文件）。
 automed lib `scheduler.rs` 测试（沿用 `setup_in_the_main_checkout_waits_while_another_tasks_main_setup_is_running` 的 World、Cleanup 任务与直接调 `run_core_step` 的做法）：L1 `merge_after_past_its_timeout_is_killed_with_124_and_reported_as_a_failure`（`after = 'sleep 30'`、`after_timeout_minutes = 1`；看到 pid 后把 `.started` 改写为 `1`，循环 `run_core_step` 直到 Done：`merge.after{ok:false,exit_code:124}`、警报 1 条且 detail 含「超时」、日志含「合并后命令运行超过 1 分钟」、`sleep` 进程已不存活）、L2 `merge_after_in_flight_is_waited_for_collected_once_and_never_rerun`（`after = 'sleep 1; echo hook-done'`：第一次调用后 `merge.after_started` 1 条、任务仍在 Cleanup、worktree 仍在；作业未完时再调，仍在 Cleanup、`merge.after_started` 仍 1 条——同一 tick 重入即 core 重启后的接上路径；循环到 Done 后 `merge.after` 1 条；再把任务状态改回 `Active{Cleanup}`（模拟结论已写、推进前崩溃）调一次：任务 Done、`merge.after_started` 与 `merge.after` 仍各 1 条、无警报）、S1 `merge_after_failure_alert_and_result_event_are_written_in_one_transaction`（`store.rs` 测试：调 `conclude_merge_after` 失败路径，`project_alerts` 恰 1 条 `after_merge_failed`、`project.alert` 与 `merge.after` 各 1 条；再在 `events` 表装一个只拦 `merge.after` 的 `BEFORE INSERT` 触发器（沿用 `reject_brief` 的做法）重试：返回错误，且 `project_alerts` 与 `project.alert` 没有新增——证明不会留下「警报在、结果缺」或相反）、L4 `merge_after_started_event_is_backfilled_when_the_job_exists_without_one`（直接对 Cleanup 任务 `gate::start` 一个 `after_merge-<sha12>` 作业、不写任何事件，模拟 `start` 后崩溃；调 `run_core_step`：`merge.after_started` 恰 1 条且 command / commit / log 正确，进程只有一个——没有重新启动；循环到 Done 后 `merge.after` 1 条）。
 autome-cli `render.rs`：R1 `merge_after_events_are_printed_by_autome_run`（开始、通过、未通过、跳过四行；含命令、退出码、日志路径与跳过原因）。
 
@@ -241,7 +241,7 @@ autome-cli `render.rs`：R1 `merge_after_events_are_printed_by_autome_run`（开
 最新证据：docs/合并后钩子-merge-after/evidence/M-03-r4-audit.md · 通过 · 审计 #3
 
 覆盖范围 5，问题 1、3、4、5、7、8，约束 3、7；前置：M-02。新增用例：
-end_to_end：E4 `merge_after_is_skipped_when_the_main_check_failed`（`run_gated_task` + 合并前在沙箱放 `main-should-fail`，沿用 `write_gate_script` 的 `_verify` 失败分支：任务 `done`；`main_gate_failed` 警报 1 条、`after_merge_failed` 0 条；`merge.after_skipped{reason:"验证 main 未通过"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E5 `merge_after_runs_after_the_main_checkout_setup_and_even_when_it_failed`（沿用 `setup_fixture` 配 `[setup]` 与 `[merge] after`，钩子脚本先 `sleep 1` 以确保至少一次 Pending 重入，并把主检出有没有 `deps/stamp` 记进 `hook-runs`。两段：a 准备成功——`setup.result{checkout:"main"}` 序号 < `merge.after_started`，钩子记录 `stamp=yes`；b 准备在主检出 `exit 4`——`setup_failed` 警报恰 1 条、`merge.after{ok:true}` 1 条、`setup-runs` 里主检出路径的行恰 1 行）、E6 `merge_after_is_skipped_in_a_workspace_with_one_event_per_task`（沿用 `Workspace` 夹具配 `[merge] after`：任务 `done`；`merge.after_skipped{reason:"工作区项目不支持合并后命令"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E7 `merge_after_runs_for_a_bug_task_too`（沿用 `bug_loop_a_bug_runs_from_creation_to_a_merge_commit` 的步骤配 `[merge] after`，`task.merge` 后：任务 `done`、`merge.after{ok:true}` 1 条、`hook-runs` 1 行含该任务 id）、E8 `merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume`（钩子先把自己的 pid 写进沙箱，沙箱有 `slow` 时 `sleep 30`；看到 `merge.after_started` 后 `task.stop`：该 pid 不再存活、`gates/<task>/after_merge-*` 无文件、任务 `stopped`；删 `slow`、`task.resume` 后 settle：`merge.after_started` 2 条、`merge.after{ok:true}` 1 条、无警报、任务 `done`）。
+end_to_end：E4 `merge_after_is_skipped_when_the_main_check_failed`（`run_gated_task_with(..., false, Some(false))` 显式关闭 MainCheck 复用 + 合并前在沙箱放 `main-should-fail`，沿用 `write_gate_script` 的 `_verify` 失败分支：任务 `done`；`main_gate_failed` 警报 1 条、`after_merge_failed` 0 条；`merge.after_skipped{reason:"验证 main 未通过"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E5 `merge_after_runs_after_the_main_checkout_setup_and_even_when_it_failed`（沿用 `setup_fixture` 配 `[setup]` 与 `[merge] after`，钩子脚本先 `sleep 1` 以确保至少一次 Pending 重入，并把主检出有没有 `deps/stamp` 记进 `hook-runs`。两段：a 准备成功——`setup.result{checkout:"main"}` 序号 < `merge.after_started`，钩子记录 `stamp=yes`；b 准备在主检出 `exit 4`——`setup_failed` 警报恰 1 条、`merge.after{ok:true}` 1 条、`setup-runs` 里主检出路径的行恰 1 行）、E6 `merge_after_is_skipped_in_a_workspace_with_one_event_per_task`（沿用 `Workspace` 夹具配 `[merge] after`：任务 `done`；`merge.after_skipped{reason:"工作区项目不支持合并后命令"}` 恰 1 条；`merge.after_started` 0 条；`hook-runs` 不存在）、E7 `merge_after_runs_for_a_bug_task_too`（沿用 `bug_loop_a_bug_runs_from_creation_to_a_merge_commit` 的步骤配 `[merge] after`，`task.merge` 后：任务 `done`、`merge.after{ok:true}` 1 条、`hook-runs` 1 行含该任务 id）、E8 `merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume`（钩子先把自己的 pid 写进沙箱，沙箱有 `slow` 时 `sleep 30`；看到 `merge.after_started` 后 `task.stop`：该 pid 不再存活、`gates/<task>/after_merge-*` 无文件、任务 `stopped`；删 `slow`、`task.resume` 后 settle：`merge.after_started` 2 条、`merge.after{ok:true}` 1 条、无警报、任务 `done`）。
 automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_main_setup_is_running`（对两种「别人的作业」各跑三段，均对本任务调一次 `run_core_step(Cleanup)`：①另一任务 `T-2` 目录下只有刚写下的 `after_merge-<x>.started`（或 `setup-main.started`）、没有 pid——仍在 Cleanup、没有 `merge.after_started`；② pid 指向存活 `sleep`——同样等待；③杀掉并写 `.exit` 标记——本任务写 `merge.after_started`）、L5 `merge_after_waiting_for_another_hook_does_not_rerun_a_failed_main_setup`（D1-P01：T-1 在 Cleanup，配 `[setup]`（命令把一行追加进 `setup-runs` 后 `exit 4`）与 `[merge] after`；T-2 目录下有存活 `sleep` 的 `after_merge-<x>` 作业。连续对 T-1 调 `run_core_step(Cleanup)` 四次：每次都仍在 Cleanup；`setup-runs` 里主检出行恰 1 行，`setup_failed` 警报恰 1 条，`gates/<task>/after_merge.prepared` 存在，没有 `merge.after_started`。再杀掉 T-2 的 sleep 并写 `.exit`：下一次调用写 `merge.after_started`，循环到 Done 后 `merge.after{ok:true}` 1 条，`setup-runs` 与 `setup_failed` 仍各 1）。
 
 - 验收命令：`cargo test -p automed --test end_to_end > .autome/output/m03-e2e.txt 2>&1; tail -3 .autome/output/m03-e2e.txt; cargo test -p automed --lib > .autome/output/m03-lib.txt 2>&1; tail -3 .autome/output/m03-lib.txt; cargo test -p automed --test end_to_end merge_after 2>&1 | grep 'test result'; cargo test -p automed --lib merge_after 2>&1 | grep 'test result'`
@@ -250,7 +250,7 @@ automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_m
 
 ### M-04 验收契约
 
-最新证据：docs/合并后钩子-merge-after/evidence/M-04-r5-audit.md · 通过 · 审计 #4
+最新证据：docs/合并后钩子-merge-after/evidence/M-04-r6-impl.md · rebase 完成，集成复验受阻，保持开放 · 实现 #6
 
 覆盖范围 6、7，验收 4、5、6，约束 8、9，问题 10；前置：M-03。改动：README 的 `[gate]` 配置示例块加 `[merge]` 两行，其下条目列表在 **Preparation** 之后加一条 **After merge**（时机、主检出、环境变量、超时缺省 10、失败只报警、MainCheck 未通过与工作区跳过、钩子只应写被 gitignore 的产物、停止后恢复会重跑）；`docs/development/technical-design.md` §3.3 配置示例加 `[merge]`、§8.1 加钩子作业与 Cleanup 前置子阶段、§9 加解析规则。不新增用例。
 
