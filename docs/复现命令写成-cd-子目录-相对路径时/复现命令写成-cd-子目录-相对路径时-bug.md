@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_cd_repro_ -- --nocapture
 根因: regression_protection 仅在命令原文匹配仓库相对路径，未解析 cd 改变的目录；定位阶段无条件保存空保护快照，直到修复阶段才检查为空。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -47,7 +47,10 @@ fix-round: 2/3
 - 空保护集只记录所属定位会话，不保存空快照；宿主命令有效复现后才将其判为 `Locate` 协议失败，仍不启动修复、不消耗修复轮次。命令成功、不可执行或超时继续走原有复现未命中流程；按会话 ID 匹配，避免旧空集记录污染新定位。旧空快照在修复阶段的拒绝保持不变。
 - 本轮未修改任何测试。原复现命令通过（5 通过、0 失败、0 忽略）；automed Clippy（`cargo clippy --offline -p automed --all-targets -- -D warnings`）通过。日志位于 `.autome/output/fix2-repro.log`、`.autome/output/fix2-clippy-final.log`；修复前日志为 `fix2-clippy-before.log`、`fix2-bug-before.log`。
 - 直接相关子集 `cargo test --offline -p automed --test end_to_end bug_ -- --nocapture` 41 通过、0 失败、0 忽略，包含修复前失败的两个复现未命中用例及全部回归保护用例；`cargo test --offline -p automed --lib repro_` 5 通过、0 失败、0 忽略。日志：`.autome/output/fix2-bug-after.log`、`.autome/output/fix2-unit.log`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。
-- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前统一执行；本轮等待独立复核。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前统一执行；本轮等第 2/3 轮复核：通过。
+- 复现命令独立重跑：`bug_cd_repro_` 5 个用例通过；`cargo test --offline --test end_to_end bug_` 41 通过、0 失败、0 忽略；`--lib repro_` 5 通过。未跑全量门禁。
+- 提交 159410e 仅改 `scheduler.rs`，未触碰任何测试：定位阶段不再无条件拒绝，改为记录带会话 ID 的 `bug.regression_empty`，待宿主确认真实复现（非 0、非 126/127、未超时）后才判 `Locate` 协议失败；命令成功/不可执行/超时仍走原复现未命中流程，修复了上轮拒绝过早破坏该流程的两个用例。空集仍不启动修复、不耗修复轮次。
+- 根因仍成立，回归测试未删除/跳过/弱化，改动范围最小（另含 clippy 的 collapsible_if 等价改写）。
 
 第 1/3 轮修复：
 
