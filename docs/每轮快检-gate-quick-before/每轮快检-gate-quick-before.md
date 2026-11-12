@@ -1,12 +1,12 @@
 # 每轮快检（`[gate] quick`）：`before_merge` 下实现轮 / 修复轮之后由宿主跑一条静态检查
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 5/25
-current-milestone: M-05
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05 的 CLI 与桌面标签、文档验收及快检耗时证据
+next-action: 无
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -417,7 +417,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 | M-02 | 已完成 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 已完成 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 已完成 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
-| M-05 | 待审 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
+| M-05 | 已完成 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
 
 ## 里程碑说明
 
@@ -466,7 +466,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
   - prompt_rendering 3 个（`gate_quick_` 开头）与金样 4 份：`golden/prompts/impl-before-merge-quick.md`、`fix-before-merge-quick.md`、
     `fix-review-before-merge-quick.md`、`golden/briefs/audit-before-merge-quick.md`。现有金样一份不改。
   - 协议 v5：§9 三处文本、`CHANGELOG.md` 两个块。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-05-r5-impl.md · 验收通过，待审 · 实现 #5
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-05-r5-audit.md · 通过 · 审计 #5
 
 - **M-05**（覆盖：目标 5（人读）、7、8；验收 5（渲染单测）；约束 9、13、15。前置：M-02、M-03）。方案 §10、§11、§12。新增用例：
   autome-cli 2 个（`render::tests::gate_quick_run_lines_name_the_quick_run`、`render::tests::gate_quick_status_line_names_the_kind`，

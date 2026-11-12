@@ -1,6 +1,6 @@
 # 实现审计
 
-## M-04 · 审计 #4 · 通过
+## M-05 · 审计 #5 · 通过
 
-验收命令（lib 25、prompt_rendering 31、protocol eval 退出码 0）通过；三条负向对照均令对应用例/金样变红并已还原；fmt、clippy 通过；旧金样未改。无缺陷、无验证缺口。
-证据：docs/每轮快检-gate-quick-before/evidence/M-04-r4-audit.md
+验收命令（render::tests::gate_ 11、桌面标签 3、文档 grep 退出码 0）通过；三条负向对照均令对应用例/验收变红并已还原；fmt、clippy、autome-cli 全 crate 测试通过。无缺陷、无验证缺口。
+证据：docs/每轮快检-gate-quick-before/evidence/M-05-r5-audit.md
