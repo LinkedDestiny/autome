@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 3/15
 implementation-round: 5/40
-current-milestone: M-05
+current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 等待 M-05 独立审计；通过后推进 M-06 的五份模板分段、金样与协议 v3 eval 用例
+next-action: 推进 M-06：五份模板的 before_merge 段、金样与协议 v3 eval 用例
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -625,7 +625,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-02 | 已完成 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
 | M-03 | 已完成 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 已完成 | 审计简报的宿主门禁证据与金样 | 0 | |
-| M-05 | 待审 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
+| M-05 | 已完成 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
 | M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
 | M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
@@ -751,7 +751,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-05 验收契约
 
-最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-05-r5-impl.md · 验收通过，待审 · 实现 #5
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-05-r5-audit.md · 通过 · 审计 #5
 
 - 验收命令：`cargo test -p autome-domain before_merge_prompt && cargo test -p automed --lib launcher && cargo test -p automed --lib protocol:: && cargo test -p automed --test prompt_rendering && cargo test -p automed --test end_to_end prompt_before_merge && git diff --quiet HEAD -- protocol/prompts crates/automed/tests/golden/prompts && test -z "$(git log --format=%h $(git merge-base HEAD main)..HEAD -- protocol/prompts crates/automed/tests/golden/prompts)"`
 - 预期：autome-domain 过滤 `before_merge_prompt` 4 个通过；automed lib 过滤 `launcher` 63 个通过（基线 57 + 6）、过滤 `protocol::` 66 个通过（基线 61 + 5）；prompt_rendering 17 个全部通过、金样文件一字未改；e2e 过滤 `prompt_before_merge` 2 个通过；最后两条 git 检查无输出、退出码 0（本分支至此没有改过任何模板与 prompt 金样）。
