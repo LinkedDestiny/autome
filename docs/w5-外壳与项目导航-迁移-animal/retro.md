@@ -25,3 +25,4 @@
 实现 #10 | M-05 | 门禁修复候选，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r10-impl.md | 本地监听 EPERM，提交后由 Autome 复验
 审计 #7 | 无 | 通过（无待审项，表不变；宿主门禁 5b394e1 全绿） | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r10-audit.md | 无
 复盘 #2 | M-01..M-05（已完成） | 教训 6 条（新增 L-05 门禁误派、L-06 分阶段诊断） | docs/w5-外壳与项目导航-迁移-animal/lessons.md | 无
+实现 #11 | M-05 | 门禁定位，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r11-impl.md | 内核 PID 发布竞态；任务禁止改 crates，未修复
