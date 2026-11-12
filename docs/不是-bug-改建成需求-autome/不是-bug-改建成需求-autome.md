@@ -1,6 +1,5 @@
 # 「不是 Bug」改建成需求：`task.convert` RPC 与 `autome task convert`
 
-```text
 status: 设计中
 design-round: 0/15
 implementation-round: 0/0
@@ -8,7 +7,6 @@ current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
 next-action: 无
-```
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
