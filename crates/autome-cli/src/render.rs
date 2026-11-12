@@ -6,6 +6,37 @@
 
 use serde_json::Value;
 
+/// Convert a raw runtime line without discarding machine-only events.
+pub fn stream_event(
+    bytes: &[u8],
+    line: usize,
+    runtime: autome_domain::role::Runtime,
+) -> Option<Value> {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_end();
+    if text.is_empty() {
+        return None;
+    }
+    let event = serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
+    let rendered = match runtime {
+        autome_domain::role::Runtime::Claude => automed::stream_render::render_line(text),
+        autome_domain::role::Runtime::Codex => automed::stream_render::render_codex_line(text),
+    };
+    Some(serde_json::json!({
+        "line": line, "type": event.get("type").and_then(Value::as_str),
+        "text": rendered, "event": event
+    }))
+}
+
+/// Running streams expose only complete lines; ended streams expose the tail.
+pub fn stream_complete_bytes(bytes: &[u8], ended: bool) -> usize {
+    if ended {
+        bytes.len()
+    } else {
+        bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
+    }
+}
+
 pub fn node_label(node: &str) -> &str {
     match node {
         "locate" => "定位",
@@ -837,5 +868,56 @@ fn setup_checkout_label(checkout: &str) -> &str {
         "verify" => "合并提交检出",
         "main" => "主检出",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use autome_domain::role::Runtime::{Claude, Codex};
+
+    #[test]
+    fn stream_claude() {
+        let raw =
+            br#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}"#;
+        let got = stream_event(raw, 2, Claude).unwrap();
+        assert_eq!(got["line"], 2);
+        assert_eq!(got["type"], "assistant");
+        assert_eq!(got["text"], "hi there");
+        assert_eq!(got["event"], serde_json::from_slice::<Value>(raw).unwrap());
+        assert!(stream_event(br#"{"type":"system","subtype":"hook_started"}"#, 3, Claude).unwrap()["text"].is_null());
+    }
+
+    #[test]
+    fn stream_codex() {
+        let raw = br#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Hello!"}}"#;
+        assert_eq!(stream_event(raw, 1, Codex).unwrap()["text"], "Hello!");
+        assert!(stream_event(br#"{"type":"turn.started"}"#, 2, Codex).unwrap()["text"].is_null());
+    }
+
+    #[test]
+    fn stream_text_and_input_boundaries() {
+        let got = stream_event(b"warning\r\n", 1, Claude).unwrap();
+        assert_eq!(
+            got,
+            serde_json::json!({"line":1,"type":null,"text":"warning","event":null})
+        );
+        assert!(stream_event(b" \r\n", 2, Claude).is_none());
+        assert!(stream_event(b"", 3, Codex).is_none());
+        assert_eq!(stream_event(b"\xff", 4, Codex).unwrap()["text"], "\u{fffd}");
+        for raw in ["null", "42", "[]", "{\"type\":3}"] {
+            assert!(stream_event(raw.as_bytes(), 5, Claude).unwrap()["type"].is_null());
+        }
+    }
+
+    #[test]
+    fn stream_line_boundaries() {
+        let raw = b"one\ntwo\nthree";
+        assert_eq!(stream_complete_bytes(raw, false), 8);
+        assert_eq!(stream_complete_bytes(&raw[8..], false), 0);
+        assert_eq!(stream_complete_bytes(&raw[8..], true), 5);
+        assert_eq!(stream_complete_bytes(b"", true), 0);
+        assert_eq!(stream_complete_bytes(b"\n", false), 1);
+        assert_eq!(stream_complete_bytes(b"\xc3", false), 0);
     }
 }
