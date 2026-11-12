@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 0/0
+implementation-round: 1/20
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：动代码前先 `cargo build -p automed`、`cd apps/web && npm ci`、`npm test --prefix apps/web`，把基线用例总数 B 写进 M-01 的实现证据，再改写网关与测试
+next-action: M-01：在允许本地监听的环境重跑验收命令，核对指定 57 例及全量 312 例；HTTP 证据通过后再标待审
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -351,6 +351,8 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 新增用例（2）：`gateway-task-lifecycle.test.ts` 0→2。
 
 ### M-01 验收契约
+
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-01-r1-impl.md · 未通过（监听 EPERM，保持开放） · 实现 #1
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/write-gate.test.ts test/gateway.test.ts test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：指定三个文件共 57 个用例全部通过（write-gate 35→43、gateway 11→12、gateway-task-card 0→2）；全量 `npm test` 0 失败、用例总数 = B + 11（B 为本里程碑第一实现轮改代码前实测的基线，写进实现证据）；lint 0 警告、typecheck 通过。
