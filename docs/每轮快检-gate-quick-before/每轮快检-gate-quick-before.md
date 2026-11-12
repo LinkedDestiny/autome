@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 5/25
+implementation-round: 6/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 由 Autome 重跑合并前完整门禁，按结果继续调度
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -371,6 +371,8 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 - `crates/automed/tests/prompt_rendering.rs` 的 `PromptSpec` 构造函数、`crates/automed/src/launcher.rs` 测试模块的 `PromptSpec` 构造函数：
   各加 `gate_quick: None, last_gate: None` 两行。理由是结构体多了字段导致编译不过；不改任何断言。
 - `scheduler.rs` 的 `start_onboarding` 里的 `PromptSpec`（产品代码）同样补两个 `None`。
+- 协议版本固定断言随 §9 的协议 v5 升级：`protocol::tests::the_version_in_force_is_the_newest_changelog_heading_over_the_seed` 与 e2e `every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task` 的 v4 预期更新为 v5，保留哈希与冻结断言；这是版本发布元数据更新，不改变无 quick 的行为契约。
+- `scheduler::Route::Rerouted` 用 `Box<ResolvedConfig>` 承载增大的配置，避免 `large_enum_variant`，路由判断不变。
 - 其余现有单测、金样、e2e 一行不改。给 `gate.started` / `gate.result` 加 `kind` 是任务卡要求的可见变化，已核对：现有测试对这两种事件
   只断言单个字段或计数，没有按整份载荷相等比较的（按整份比较的是 `main_check` 的 `gate.reused`，它不加 `kind`）；读者见 §10。
 - 若实现中发现某条现有测试必须改，实现轮在证据里逐条列出并说明理由，理由不能是「新行为与旧断言不符」。
@@ -455,7 +457,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
   - end_to_end 2 个：`gate_quick_bug_fix_gate_runs_repro_and_quick_and_merge_gate_runs_repro_and_full`（FixGate 的 `gate.started.command`
     含复现命令与快检脚本、不含完整门禁脚本，`kind: quick`；MergeGate 的含复现命令与完整门禁脚本，`kind: full`；快检脚本记录 1 次
     `fix_gate quick`）、`gate_quick_bug_failing_quick_returns_to_fix_with_its_tail`。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-04-r4-audit.md · 通过 · 审计 #4
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-04-r6-impl.md · 门禁缺陷修复，相关子集通过 · 实现 #6
 
 - **M-04**（覆盖：目标 5（简报、复核）、6；验收 5（金样）；约束 9、10。前置：M-03）。方案 §8、§9、§13 的 `PromptSpec` 补字段。新增用例：
   - automed lib 10 个：`gate_quick_prompt_` 开头 8 个（实现 / 修复轮快检句且其它角色不变、需求快检失败注入、Bug 快检失败注入、

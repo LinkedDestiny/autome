@@ -2616,7 +2616,7 @@ fn start_session(
 
 enum Route {
     Launch,
-    Rerouted(ResolvedConfig),
+    Rerouted(Box<ResolvedConfig>),
     Deferred,
 }
 
@@ -2697,7 +2697,7 @@ fn cooldown_route(
                     "cooling_until": until,
                 }),
             )?;
-            return Ok(Route::Rerouted(alt));
+            return Ok(Route::Rerouted(Box::new(alt)));
         }
     }
 
