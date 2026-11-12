@@ -126,6 +126,9 @@ backoff_seconds = 60       # doubles each time: 1, 2, 4 minutes
 command = "npm ci --prefix apps/web"
 watch = ["apps/web/package-lock.json"]
 timeout_minutes = 30       # optional; preparation timeout
+
+[bug]
+fix_rounds = 3            # the default; an integer from 1–20
 ```
 
 - **Host job queue.** Global `~/.autome/config.toml` accepts `[gate] concurrency = 1`
@@ -186,6 +189,13 @@ timeout_minutes = 30       # optional; preparation timeout
   Prefer commands such as `npm ci` that preserve lock files: a command that
   changes tracked files in the main checkout leaves it dirty and can block
   the next merge.
+- **Bug fix rounds.** Each fix session counts toward the budget, including
+  rework after a failed gate, a rejected review or a rebase conflict. Automatic
+  transitions check the budget before opening the next fix round; when it is
+  exhausted, the task stops. Use `autome extend <task> <n>` to add fix rounds.
+  Manual `autome rerun <task> fix` counts as a round but bypasses that budget
+  check. Both `fix_gate` and `merge_gate` run the reproduction command; when
+  `[gate]` is configured, they run `( reproduction command ) && ( gate command )`.
 - **Retries.** A session that crashes — non-zero exit, process gone — is
   started again after a backoff instead of failing the task. A session that
   wrote nonsense is not retried; that is a protocol problem, not bad luck.
@@ -241,6 +251,36 @@ refused or something failed, 2 for a mistake on the command line.
 `autome help` lists the rest: reject with feedback, pause, resume, stop,
 cancel, turn a not-a-bug task into a feature, rerun from a node, extend the budget, decide Backlog items and
 disputes, follow a session's log, dismiss alerts.
+
+Use `--kind bug` for a Bug Loop task; the default kind is `feature`. The Bug
+Loop goes through locate → reproduce → fix → fix gate → review → rebase →
+merge gate → merge, and requires the audit role to be enabled.
+
+`--brief <file>` reads a UTF-8 task card; `--brief -` reads it from standard
+input. With no request argument, the first `# ` heading supplies the title
+(or the first non-empty line with leading whitespace and `#` removed if there
+is no heading). Empty cards and cards larger than 65,536 bytes are rejected.
+`--draft` saves the task without starting it or taking a slot; the text output
+prints an `autome task start` hint. With `--json`, creation returns the raw
+result containing `task`, `started` and `queue_position`; a draft has
+`started: false` and `queue_position: null`.
+
+```sh
+autome task new --kind bug --brief - --draft --json < card.md
+autome task start <task>
+autome reply <task> "Additional reproduction details"
+autome extend <task> <n>
+autome rerun <task> <node>
+```
+
+`autome task start` accepts only drafts. For Bug Loop tasks, `autome reply`
+accepts non-empty information at `await_info` or `not_a_bug` and returns to
+`locate`; other nodes reject it. For feature tasks it is equivalent to
+`reject`, using the information as rejection feedback. `autome extend` adds
+a positive integer number of rounds to an exhausted budget (fix rounds for
+Bug Loop tasks). `autome rerun` restarts a failed or stopped task from a node;
+Bug Loop tasks accept `locate`, `fix`, `fix_review` or `rebase`, plus the same
+gate node after a repeated-failure trip.
 
 ## The protocol
 

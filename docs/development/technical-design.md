@@ -137,6 +137,8 @@ Paused(resume_node) · Stopped(node) · Failed(reason) · Cancelled
 
 界面上的节点线对应 Intake…Done；Queued、Paused、Stopped、Failed 以芯片叠加显示。Gate、MergeGate、MainCheck 只在项目配置了 `[gate]` 时经过（§8.1），节点线上不单占一格，显示在它所检查的那一步（实现、rebase、合并）上。
 
+`Draft`（待开始）没有节点，不占槽位、不算等待用户，也不是终态。`task.start` 施加 `Start`，只有 Draft 接受并转为 `Queued`；其它状态拒绝「只有待开始的任务可以开始」。Draft 可直接取消；暂停拒绝「任务尚未开始」，会话、门禁等其它触发也被拒绝。出处：`crates/autome-domain/src/task.rs` 的 `draft_holds_no_slot_does_not_await_the_user_and_is_not_terminal`、`start_moves_a_draft_to_queued_without_an_action`、`start_is_refused_for_every_state_that_is_not_a_draft`、`a_draft_can_be_cancelled_directly`、`a_draft_refuses_every_other_trigger`。
+
 ### 5.2 角色与会话 prompt
 
 **不沿用 1.x 的入口语句。** 1.x 用「execute 任务文件 additional task 3」这样的句子派发轮次，任务文件里对应有编号小节——那层间接存在是因为 Agent 要自己判断轮次并接力。2.0 由内核调度，内核知道这是哪一轮，直接说出来即可。
@@ -204,6 +206,59 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 - d 由裁决轮加一，k 由实现轮加一，均以状态块为准，automed 只校验单调性。
 - N 在首次进入 Implement 时计算：`budget_factor × 初始里程碑数`，写入 Task。追加轮次与纳入 Backlog 修改 Task.budget_n，不改配置。
 
+### 5.6 Bug Loop（kind = bug）
+
+任务类型 `kind` 为 `feature`（默认）或 `bug`。只有 kind 为 bug，且已记过 `bug.loop_started` 或仍处于 `Draft` / `Queued` 的任务走 Bug Loop；需求任务和已经停在需求节点、尚无该事件的旧 bug 任务继续走 §5.3。Bug 任务在 `Start` 或分到槽位时要求审计角色开启，否则拒绝「Bug 任务需要独立复核，请启用审计角色后启动」。出处：`crates/autome-domain/src/task.rs` 的 `TaskKind`；`crates/autome-domain/src/bug_loop.rs` 的 `uses_bug_loop`、`apply_for`、`bug_loop_legacy_bug_tasks_already_in_feature_nodes_keep_the_feature_table`。
+
+| 节点 | 线上名 | 界面标签 | 执行方 | 占槽位 |
+|---|---|---|---|---|
+| Locate | `locate` | 定位 | 实现角色会话 | 是 |
+| ReproCheck | `repro_check` | 复现检查 | 内核门禁 | 是 |
+| Fix | `fix` | 修复 | 实现角色会话 | 是 |
+| FixGate | `fix_gate` | 修复门禁 | 内核门禁 | 是 |
+| FixReview | `fix_review` | 复核 | 审计角色会话 | 是 |
+| AwaitInfo | `await_info` | 等你补充信息 | 等用户 | 否 |
+| NotABug | `not_a_bug` | 等你决定（不是 Bug） | 等用户 | 否 |
+
+节点表出处：`crates/autome-domain/src/task.rs` 的 `Node`；`crates/autome-cli/src/render.rs` 的 `node_label`；`crates/autome-domain/src/bug_loop.rs` 的 `bug_loop_nodes_have_wire_names_roles_and_flags`。
+
+下表中自动开 `fix` 均先检查修复轮预算；会话结束行以文档校验通过为前提。转换出处：每行末尾的符号均位于 `crates/autome-domain/src/bug_loop.rs`。
+
+| 当前 | 触发 | 条件 | 下一 |
+|---|---|---|---|
+| Queued | 分到槽位 | 审计开启 | locate；出处：`apply_for` |
+| locate | 会话结束 | status = 已定位 | repro_check；出处：`apply_for` |
+| locate | 会话结束 | status = 无法复现 | await_info；出处：`apply_for` |
+| locate | 会话结束 | status = 不是 Bug | not_a_bug；出处：`apply_for` |
+| locate / fix / fix_review | 会话结束 | 非定位轮 status 不是已定位；或 fix_review 的复核为待复核、其它轮的复核不是待复核 | Failed(Protocol)；出处：`apply_for` |
+| locate / fix / fix_review | 会话结束 | 崩溃 / 文档不可解析 / 缺文件 / 守卫失败 | 与需求会话相同：崩溃为 Failed(SessionCrashed)，其余 Failed(Protocol)；出处：`bug_loop_session_errors_fail_like_feature_sessions` |
+| repro_check | 复现检查结束 | 成功复现 | fix；出处：`apply_for` |
+| repro_check | 复现检查结束 | 第一次未复现 | locate，注入命令、退出码、原因与日志尾；出处：`apply_for` |
+| repro_check | 复现检查结束 | 连续第二次未复现 | await_info；出处：`apply_for` |
+| fix | 会话结束 | 无论是否配置项目门禁 | fix_gate；出处：`bug_loop_fix_always_runs_the_fix_gate` |
+| fix_gate | 门禁结果 | 通过 / 失败 | fix_review / fix（注入门禁命令与日志尾）；出处：`apply_for` |
+| fix_review | 会话结束 | 复核通过 / 打回 | Rebase（不经 Retro）/ fix（注入打回）；出处：`apply_for` |
+| Rebase | 内核结果 | 成功 / 冲突 | MergeGate / fix（注入冲突文件）；出处：`apply_for` |
+| MergeGate | 门禁结果 | 失败 / 通过 | fix / 共用需求任务 AwaitMerge 以后的尾段；出处：`bug_loop_merge_tail_is_shared_with_the_feature_loop`、`apply_for` |
+| await_info / not_a_bug | reply | 非空补充信息 | locate；空白文本拒绝「补充信息不能为空」，其它节点拒绝 reply；出处：`bug_loop_reply_is_refused_when_empty_or_not_waiting`、`apply_for` |
+| await_info / not_a_bug | 用户操作 | 取消 / 暂停、停止、追加轮次 | Cancelled / 拒绝；出处：`bug_loop_waiting_nodes_allow_cancel_but_not_pause_stop_or_extend` |
+| Failed(FixBudget) | 追加 n 轮 | n > 0（合法追加） | 上限加 n，直接开 fix；出处：`apply_for` |
+| Failed / Stopped | rerun | locate、fix、fix_review、rebase | 从指定节点重跑；其它节点拒绝「Bug 任务只能从定位、修复、复核或 rebase 重跑」（同门禁熔断例外见下行）；出处：`apply_for` |
+| fix_gate / MergeGate | 同因失败熔断 | 当前节点匹配 | Failed(GateSameFailure)；从同门禁 rerun 或追加轮次均丢弃旧门禁结果再跑，追加同时提高修复轮上限；出处：`same_failure_bug_rerun_and_extend`、`apply_for` |
+| Stopped(repro_check / fix_gate) | Resume | — | Requeued，丢弃被杀的门禁结果，分到槽位后重新执行；出处：`bug_loop_stopped_bug_gates_discard_runs_and_requeued_bug_nodes_reenter` |
+
+Queued 首次进入定位时记录 `bug.loop_started`。出处：`crates/automed/src/scheduler.rs` 的 `advance`。
+
+**复现检查的退出码。** `repro_check` 只跑 `bug.located` 事件中的复现命令；超时使用 `[gate] timeout_minutes`，未配置门禁时为 30 分钟。命令非零退出、不是 `126` / `127` 且未超时，才算复现成功。所谓「126/127 不算失败」指它们不能证明 Bug 已复现：退出码 0、126、127 或超时都算未复现，原因分别为 `exited_zero`、`not_runnable`、`timed_out`；宿主门禁超时退出码为 `124`，判定同时看超时标志。出处：`crates/automed/src/scheduler.rs` 的 `run_gate`；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、`bug_loop_timeout_and_unrunnable_commands_do_not_count_as_reproduced`；`crates/automed/src/gate.rs` 的 `TIMED_OUT`；`crates/autome-domain/src/config.rs` 的 `DEFAULT_GATE_TIMEOUT_MINUTES`。
+
+**连续两次未复现。** 「连续两次复现检查失败」指未复现：第一次回定位，第二次进入「等你补充信息」。计数取最近一次 `task.replied` 之后的 `bug.repro_missed` 事件数，因此 reply 后重新计数。出处：`crates/autome-domain/src/bug_loop.rs` 的 `bug_loop_second_consecutive_miss_waits_for_info`；`crates/automed/src/scheduler.rs` 的 `bug_progress`。
+
+**合并前门禁总带复现命令。** `fix_gate` 和 `MergeGate` 选取 `bug.reproduced` 事件中的复现命令；配置了项目 `[gate]` 时组合为 `( 复现命令 ) && ( 门禁命令 )`，否则只跑复现命令。`MainCheck` 只选择项目门禁。出处：`crates/automed/src/scheduler.rs` 的 `run_gate`。
+
+**修复轮预算。** 每开一个 fix 会话（含手动重跑）记一条 `bug.fix_round_started`。上限取任务预算，未设时取 `[bug] fix_rounds`；首次复现成功和门禁失败、复核打回、rebase 冲突、合并门禁失败等自动转换，均在开下一轮前检查，已开轮数达到上限即 `Failed(FixBudget)`。追加轮次增加上限并恢复 fix。手动 `rerun … fix` 直接启动会话，不经这个预算检查，即使已因 FixBudget 失败也能重跑，只计入已开轮数。出处：`crates/automed/src/scheduler.rs` 的 `bug_progress`、`perform`；`crates/autome-domain/src/bug_loop.rs` 的 `start_fix`、`apply_for`、`bug_loop_extend_resumes_fix_with_a_larger_limit`。
+
+Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-round`、`复现命令`、`根因`、`复核`（待复核 / 通过 / 打回）。会话模板为 `protocol/prompts/locate.md`、`protocol/prompts/fix.md`、`protocol/prompts/fix-review.md`，规则为 `protocol/bug-protocol.md`，编译进 automed。出处：`crates/autome-domain/src/bug_doc.rs` 的 `parse`；`crates/automed/src/protocol/mod.rs` 的 `SEED`。
+
 ## 6. Git 工作区操作
 
 所有 Git 命令由 automed 以固定二进制、净化环境执行，禁用 credential helper，不触碰远端。
@@ -263,6 +318,20 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 
 **表态租约。** 用户对 Backlog 与争议项的表态，不再在会话启动前就记为已消费。启动带 `Decisions` 注入的会话时，把「已表态、未消费、未被别的会话带走」的条目标上 `carried_by = 会话`，prompt 与简报只列这批。会话正常结束才写 `consumed_by`；崩溃、守卫失败或被叫停，就清掉 `carried_by`，下一个会话重新带上。复盘关闭时的忽略项等没有会话可携带的路径，照旧直接消费。
 
+### 8.2 任务卡正文、附件与待开始（Draft）
+
+`task.create` 的 `kind` 缺省为 `feature`，只接受 `feature` / `bug`，其它值拒绝。可选的 `brief` 是任务卡正文，必须是字符串，去空白为空或超过 65536 字节均拒绝（分别报「任务卡正文必须是字符串」「任务卡正文不能为空」「任务卡正文超过 64KB」）。出处：`crates/automed/src/dispatch.rs` 的 `task_create`。
+
+提供 `brief` 而没有 `request` 时，从正文第一个 `# ` 行取标题；没有这样的行则取第一非空行并去掉前导 `#` 与空白，结果仍为空时报「任务卡正文缺少标题：第一行写 `# 标题`」。两者都提供时由 `request` 命名任务，正文原样保留。出处：`crates/automed/src/dispatch.rs` 的 `task_create`、测试 `a_brief_without_a_request_takes_its_request_from_the_first_heading`、`with_both_the_request_names_the_task_and_the_brief_is_kept_verbatim`。
+
+正文原样存入 SQLite 的 `task_briefs` 表；`task.get` 返回 `brief`，没有正文时显式为 `null`，任务列表不带正文。附件 `attachments` 在建卡时逐个检查是否为文件，否则报「附件不存在：<路径>」。出处：`crates/automed/src/store.rs` 的 `create_task`、`task_brief`；`crates/automed/src/dispatch.rs` 的 `task_create`、测试 `archived_brief_remains_readable_and_lists_omit_it`、`missing_brief_is_explicit_null`。
+
+`draft: true` 创建 `Draft`（待开始），不触发调度、不建 worktree，返回 `started: false`、`queue_position: null`。非草稿 Bug 任务建卡时即检查审计角色是否开启；草稿到开始时再检查（§5.6）。出处：`crates/automed/src/dispatch.rs` 的 `create`、测试 `a_draft_is_created_without_starting_or_a_queue_position_and_is_not_on_the_dashboard`；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`。
+
+`autome task start <任务>` 对应 `task.start`：施加 `Start`，只有 `Draft` 可转为 `Queued`，其它状态拒绝「只有待开始的任务可以开始」；记 `task.started` 后调度一次，返回 `task`、`started`、`queue_position`。草稿也可直接取消、归档，全程无需建立 worktree。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、测试 `task_start_refuses_a_task_that_is_not_a_draft`、`a_draft_is_cancelled_and_archived_without_a_worktree`；`crates/autome-domain/src/task.rs` 的 `apply`；`crates/autome-cli/src/main.rs` 的 `USAGE`。
+
+任务检出建好后、首个会话前，`write_task_inputs` 把正文写成 `<doc_dir>/<slug>-card.md`（已有文件不覆盖），附件仅首次复制到 `<doc_dir>/attachments/`；这些输入以一条 `chore(autome): <任务 id> inputs` 提交进任务分支。出处：`crates/automed/src/scheduler.rs` 的 `write_task_inputs` 及其会话启动调用处。
+
 ## 9. 配置解析
 
 项目级 `[setup]` 使用 `command`、`watch`、`timeout_minutes`：必须是表，command 必须是字符串，去空白为空等于未配置（不再校验其余字段）。watch 缺省空列表，否则必须是字符串数组，每项去空白后非空、非绝对路径、不含 `..` 路径段；相对检出根目录。timeout_minutes 缺省 30，必须是正整数。保存其它配置时原样保留该表；生效配置从项目复制，不从全局继承。
@@ -271,6 +340,8 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 - 保存前校验：runtime 合法；review ≠ plan、audit ≠ impl（比较 `runtime:model` 字面值）；每个绑定技能对该角色 runtime 可见；parallel 1..5。任一失败返回结构化原因，界面据此标红。
 - automed 监听两份配置文件变化，新会话启动时读取最新生效值。运行中会话不受影响。
 - 界面保存只写文件，不执行 git 提交。
+
+项目级 `[bug] fix_rounds` 缺省为 3，必须是 1 到 20 的整数，否则报「[bug] fix_rounds 必须是 1 到 20 的整数」；`[bug]` 只在项目配置中提供，不从全局继承。出处：`crates/automed/src/config_io.rs` 的 `parse_project`；`crates/autome-domain/src/config.rs` 的 `DEFAULT_FIX_ROUNDS`、`resolve`。
 
 ## 10. Onboarding 与初始化
 
@@ -308,6 +379,10 @@ SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog
 沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。
 
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
+
+补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。
+
+`task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
 
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
 
