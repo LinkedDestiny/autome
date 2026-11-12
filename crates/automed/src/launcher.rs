@@ -2439,7 +2439,17 @@ mod tests {
     }
     #[test]
     fn before_merge_prompt_legacy_bug_review_gets_one_note() {
-        let tpl = templates();
+        let mut tpl = templates();
+        // Freeze the unsegmented templates that older tasks retain.
+        for role in ["locate", "fix", "fix-review"] {
+            let path = format!("prompts/{role}.md");
+            let old = autome_domain::protocol::select_gate_run(
+                tpl.get(&path).unwrap(),
+                autome_domain::config::GateRun::EachRound,
+            )
+            .unwrap();
+            tpl.insert(&path, old);
+        }
         for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
             let mut s = spec(SessionKind::Bug { step }, &[], None, &tpl);
             s.budget = Some(BudgetLine { round: 1, limit: 3 });

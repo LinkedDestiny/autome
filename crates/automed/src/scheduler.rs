@@ -4636,7 +4636,7 @@ mod tests {
             ),
             ("exit 124", "未通过（退出码 124）"),
         ] {
-            let line = brief::gate_line_of_result(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
+            let line = crate::brief::gate_line_of_result(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
             assert!(line.contains(expected));
             assert!(line.contains("/log"));
         }

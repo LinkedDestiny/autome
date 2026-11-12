@@ -249,13 +249,7 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 
 ### 8.1 驱动锁、门禁、重试与冷却、表态租约
 
-<<<<<<< HEAD
 **宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。准备命令与门禁共用 `[gate] concurrency` 名额，任务检出、verify 检出、主检出均计入；指纹未变、未配置或工作区跳过准备时不排队。门禁前准备与随后的门禁在持续占位、期间无 task.updated 且退出标记未过占位期限时连占同一名额，否则后续进程重新准入。会话前准备排队不计崩溃重试或 Bug Loop 修复轮次，Fix 轮次到真正启动会话才记录。主检出准备先检查指纹和其它任务的主检出准备互斥，再申请名额，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
-=======
-本节宿主门禁的逐轮行为以缺省 `run = "each_round"` 为准，合并前门禁模式的差异见下文。
-
-**宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。主检出准备按其它任务的作业存活状态互斥，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
->>>>>>> b0a360a (docs: explain before-merge gate tradeoffs)
 
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 

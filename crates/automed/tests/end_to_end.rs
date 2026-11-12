@@ -2569,7 +2569,7 @@ fn feature_before_merge_two_milestones_run_the_gate_once_before_the_merge() {
     let mut w = World::new("before-merge-two");
     let calls = w.root.join("calls");
     w.configure(&format!(
-        "[gate]\nrun = \"before_merge\"\ncommand = \"echo $AUTOME_GATE_NODE >> {}\"\n",
+        "[gate]\nreuse_for_main_check = false\nrun = \"before_merge\"\ncommand = \"echo $AUTOME_GATE_NODE >> {}\"\n",
         calls.display()
     ));
     let request = "two milestones before merge";
