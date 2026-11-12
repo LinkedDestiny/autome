@@ -114,6 +114,8 @@ cooperate. Configure commands and retry policy in the project's `.autome/config.
 command = "make check"     # run with sh -c in the task's worktree
 concurrency = 1            # optional project limit, capped by the global limit
 run = "each_round"          # the default; "before_merge" runs the full gate only once, before the merge
+quick = "make lint"         # optional; only active with before_merge
+quick_timeout_minutes = 5  # optional quick timeout (positive minutes); FixGate uses timeout_minutes
 timeout_minutes = 30       # the default; a gate that runs longer has failed
 same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
 reuse_for_main_check = true # the default; false always runs the post-merge gate
@@ -180,9 +182,20 @@ fix_rounds = 3            # the default; an integer from 1–20
   back for another implementation round before retrying MergeGate. In this mode,
   sessions do not run the full gate themselves: implementation, audit, fix and
   fix-review sessions run milestone acceptance or reproduction commands and
-  tests directly related to the changes. Bug fix rounds run only the repro command;
+  tests directly related to the changes. Bug fix rounds run the repro command, plus `quick` when configured;
   Bug MergeGate still runs both the repro command and the project gate.
   The post-merge MainCheck described above remains unchanged.
+
+- **Two-level gate.** With `run = "before_merge"` and `quick`, the host runs
+  quick checks after each implementation round, and reproduction plus quick checks
+  after each Bug fix round. The full gate still runs before merging; quick results
+  never replace it. Put formatting, lint and type checks in quick, aim for under
+  one minute, and leave tests to the full gate. Autome does not append quick to
+  the full command: projects decide whether the full gate includes those checks.
+  `each_round` ignores quick. Quick requires a project gate `command`; these
+  options are not global settings. Scripts receive `AUTOME_GATE_KIND` as
+  `quick`, `full` or `repro`. Quick shares the gate concurrency queue, so it
+  may wait behind another task's full gate.
 
 - **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
   sessions and gates, in the merge verification checkout, and in the main

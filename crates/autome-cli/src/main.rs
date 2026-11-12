@@ -724,15 +724,8 @@ fn task_detail(got: &Value) {
             println!("  里程碑    {}", ms.join(" · "));
         }
     }
-    if let Some(g) = got["gate"].as_object() {
-        println!(
-            "  门禁      {} 在 {} 上{}（{}）  日志 {}",
-            render::node_label(g.get("node").and_then(Value::as_str).unwrap_or("?")),
-            render::short(g.get("sha").and_then(Value::as_str).unwrap_or("")),
-            render::gate_verdict(&got["gate"]),
-            g.get("command").and_then(Value::as_str).unwrap_or(""),
-            g.get("log").and_then(Value::as_str).unwrap_or("")
-        );
+    if got["gate"].is_object() {
+        println!("{}", render::gate_status_line(&got["gate"]));
     }
     if let Some(r) = got["retry"].as_object() {
         // Rate limits are not counted, so a round only waiting out a cooldown
