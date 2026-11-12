@@ -1,12 +1,12 @@
 # 「不是 Bug」改建成需求：`task.convert` RPC 与 `autome task convert`
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 3/15
-current-milestone: M-03
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许本地监听的宿主环境完成 M-03 全量验收与基线计数，通过后标待审
+next-action: 无
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -190,7 +190,7 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 |---|---|---|---|---|
 | M-01 | 已完成 | 内核 task.convert（预检、单事务改建与取消、清理、事件）与端到端用例 | 0 | convert-core |
 | M-02 | 已完成 | CLI autome task convert、帮助与 not_a_bug 提示 | 0 | convert-cli |
-| M-03 | 开放 | 网页写网关放行 task.convert 与全量回归 | 0 | convert-web |
+| M-03 | 已完成 | 网页写网关放行 task.convert 与全量回归 | 0 | convert-web |
 
 ## 验收契约
 
@@ -282,7 +282,7 @@ M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程
 
 ### M-03 验收契约
 
-最新证据：docs/不是-bug-改建成需求-autome/evidence/M-03-r3-impl.md · 网关 36/36 通过，全量验收受阻，保持开放 · 实现 #3
+最新证据：docs/不是-bug-改建成需求-autome/evidence/M-03-r3-audit.md · 通过 · 审计 #3
 
 - 验收命令：`npm ci --prefix apps/web && npm test --prefix apps/web -- test/write-gate.test.ts && npm test --prefix apps/web && cargo test --workspace`
 - 预期：
