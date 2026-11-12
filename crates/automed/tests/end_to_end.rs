@@ -4870,6 +4870,73 @@ fn bug_regression_guard_protects_only_the_test_section_of_an_inline_test_file() 
 }
 
 #[test]
+fn bug_regression_guard_protects_only_the_added_tests_of_an_existing_test_file() {
+    needs_git!();
+    // The bug can live in the test suite's own helpers. A regression test
+    // added to that suite must not freeze the helper the fix has to change.
+    let located = "function settle() { return early; }\\ntest(\"old\", () => settle());\\ntest(\"regression\", () => settle());\\n";
+    for (fix, allowed) in [
+        (
+            "function settle() { return late; }\\ntest(\"old\", () => settle());\\ntest(\"regression\", () => settle());\\n",
+            true,
+        ),
+        (
+            "function settle() { return late; }\\ntest(\"old\", () => settle());\\n",
+            false,
+        ),
+        (
+            "function settle() { return late; }\\ntest(\"old\", () => settle());\\ntest(\"regression\", () => {});\\n",
+            false,
+        ),
+    ] {
+        let mut w = World::new("regression-suite");
+        let slug = slug_for("suite helper");
+        std::fs::create_dir_all(w.repo.join("tests")).unwrap();
+        std::fs::write(
+            w.repo.join("tests/suite.js"),
+            "function settle() { return early; }\ntest(\"old\", () => settle());\n",
+        )
+        .unwrap();
+        automed::git::commit_paths(&w.repo, &["tests/suite.js"], "existing suite").unwrap();
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_LOCATE}\nprintf '{located}' > tests/suite.js"),
+        );
+        bug_step(
+            &w,
+            2,
+            &slug,
+            &bug_doc("待复核"),
+            &format!("{BUG_FIX}\nprintf '{fix}' > tests/suite.js"),
+        );
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, "suite helper");
+        w.settle();
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        let suite = snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == "tests/suite.js")
+            .expect("tests/suite.js is protected");
+        assert_eq!(suite["protect"], "blocks");
+        if allowed {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        } else {
+            assert_regression_rejected(&w, &id, "tests/suite.js");
+        }
+    }
+}
+
+#[test]
 fn bug_regression_guard_leaves_the_bug_doc_and_prose_alone() {
     needs_git!();
     // A Bug doc that quotes `#[test]` is still the protocol's own file: the

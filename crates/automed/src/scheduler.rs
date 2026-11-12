@@ -1113,6 +1113,10 @@ enum Protection {
     /// Product source with inline tests (Rust's `mod tests`): the fix may edit
     /// the product code above the tests, but not the test section itself.
     Section,
+    /// An existing test file the locate round added tests to: the fix may edit
+    /// the rest of it (the suite's own helpers can be where the bug is), but
+    /// every block the locate round added must survive verbatim and in order.
+    Blocks,
 }
 
 impl Protection {
@@ -1120,6 +1124,7 @@ impl Protection {
         match self {
             Protection::File => "file",
             Protection::Section => "section",
+            Protection::Blocks => "blocks",
         }
     }
 }
@@ -1166,8 +1171,10 @@ fn regression_protection(
             let boundary = |c: char| c.is_whitespace() || "\"';&|()".contains(c);
             before.is_none_or(|c| boundary(c) || c == '/') && after.is_none_or(boundary)
         });
-    if named || script {
+    if script || (named && (!code || previous.is_empty())) {
         Some(Protection::File)
+    } else if named {
+        Some(Protection::Blocks)
     } else if inline {
         Some(Protection::Section)
     } else {
@@ -1240,17 +1247,18 @@ fn guard_bug_regression(
                 };
 
                 let contents = git::run_ok(&slot.worktree, &["show", &format!("{head}:{path}")])?;
-                if let Some(protection) =
+                if let Some(mut protection) =
                     regression_protection(path, &contents.stdout, &previous, &doc.repro_command)
                 {
                     let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", &head, "--", path])?;
-                    let mut file = json!({
-                        "repo": repo, "path": path, "tree": tree.stdout, "head": head,
-                        "protect": protection.as_str(),
-                    });
-                    if protection == Protection::Section {
-                        let start = test_section_start(&contents.stdout).unwrap_or(0);
-                        let section_line = contents.stdout[..start].matches('\n').count() + 1;
+                    let mut blocks = None;
+                    if protection != Protection::File {
+                        let section_line = if protection == Protection::Section {
+                            let start = test_section_start(&contents.stdout).unwrap_or(0);
+                            contents.stdout[..start].matches('\n').count() + 1
+                        } else {
+                            1
+                        };
                         let diff = git::run_ok(
                             &slot.worktree,
                             &[
@@ -1264,7 +1272,21 @@ fn guard_bug_regression(
                                 path,
                             ],
                         )?;
-                        file["blocks"] = json!(added_test_blocks(&diff.stdout, section_line));
+                        let added = added_test_blocks(&diff.stdout, section_line);
+                        // A test file the locate round only trimmed has no
+                        // added tests to hold on to; protect all of it.
+                        if added.is_empty() && protection == Protection::Blocks {
+                            protection = Protection::File;
+                        } else {
+                            blocks = Some(added);
+                        }
+                    }
+                    let mut file = json!({
+                        "repo": repo, "path": path, "tree": tree.stdout, "head": head,
+                        "protect": protection.as_str(),
+                    });
+                    if let Some(blocks) = blocks {
+                        file["blocks"] = json!(blocks);
                     }
                     files.push(file);
                 }
