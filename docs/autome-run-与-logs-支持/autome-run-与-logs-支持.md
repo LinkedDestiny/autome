@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/10
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-01；通过后下一实现轮推进 M-02 的 logs --json 与 --follow
+next-action: 实现 M-02 的 logs --json 与 --follow
 
 任务文件：`docs/autome-run-与-logs-支持/autome-run-与-logs-支持-task.md`
 
@@ -144,7 +144,7 @@ next-action: 独立审计 M-01；通过后下一实现轮推进 M-02 的 logs --
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | events.since 补事件时间，run --json 逐行输出事件、错误与收尾行 | 0 | cli-run |
+| M-01 | 已完成 | events.since 补事件时间，run --json 逐行输出事件、错误与收尾行 | 0 | cli-run |
 | M-02 | 开放 | logs --json [--follow] 逐行输出会话原始流的结构化事件 | 0 | cli-logs |
 
 ## 里程碑范围
@@ -161,7 +161,7 @@ next-action: 独立审计 M-01；通过后下一实现轮推进 M-02 的 logs --
 
 ### M-01 验收契约
 
-最新证据：docs/autome-run-与-logs-支持/evidence/M-01-r1-impl.md · 验收通过，宿主门禁见证据 · 实现 #1
+最新证据：docs/autome-run-与-logs-支持/evidence/M-01-r1-audit.md · 通过 · 审计 #1
 
 - 验收命令：`cargo test -p automed --lib events_since && cargo test -p autome-cli`
 - 预期：`automed` 过滤后 4 个用例通过（基线 3 + `events_since_carries_when_each_event_happened`：断言 `events.since` 每个事件有 `at` 且等于表里的值）；`autome-cli` 单元 28 个通过（基线 25 + 3：主体是任务时 `task_id` 等于主体、主体是项目时 `task_id` 为 `null` 且 `subject` 保留、`time` 取 `at`），集成 17 个通过（基线 14 + 断管/驱动占用、tick 错误/SIGINT 两条异常路径用例 + `run_json_prints_every_event_as_one_json_line`：在任务建好、**尚未被驱动推进**时先用 `autome rpc events.since` 记起点 seq，再由受测的 `run --json --until-idle --interval 0.05` 把它推进到等设计批准（起点必须在受测驱动之前取，否则驱动从最新 seq 起步、事件列表为空）；断言 stdout 事件行非空且含 `task.head`，每行可解析为 JSON；除最后一行外每行的 `seq` 列表与事后 `rpc events.since {after_seq: 起点}` 返回的 `seq` 列表完全相等、`time` 等于对应事件的 `at`、主体为该任务的事件 `task_id` 等于任务 id；最后一行 `idle` 为 `true` 且 `tasks` 里该任务的 `state` 等于 `status <任务> --json` 的 `.task.state`、`node` 为 `await_design_approval`；stderr 不含「驱动 Loop 中」）。
