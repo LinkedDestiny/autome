@@ -1,10 +1,10 @@
 # 状态块围栏导致误导性缺字段错误
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -38,6 +38,21 @@ fix-round: 1/3
 无围栏对照成功排除了字段值和标题位置导致失败的假设；仅添加围栏就稳定失败，与跳过逻辑吻合。修复不能简单读取全文所有围栏，否则会破坏示例隔离；需限定真实头部或提供带行号的明确拒绝。
 
 ## 修复说明
+
+第 2/3 修复轮：上一轮将协议递增为 `protocol/v5`，但协议版本单测与任务冻结协议的 e2e 仍硬编码期望 `protocol/v4`。本轮分别实跑两个用例，均因实际 v5 与期望 v4 不符而失败（不是围栏解析再次失败）。宿主提供的末尾日志没有具体失败用例，因此这里只确认本地复现的两处失败，不声称已排除全量门禁中的其它问题。
+
+最小修复仅将 `crates/automed/src/protocol/mod.rs` 和 `crates/automed/tests/end_to_end.rs` 中两处既有版本期望同步为 v5，仍严格校验明确版本；保留协议哈希、冻结引用及其它全部断言。没有修改定位轮的 `fenced_status_regression.rs`，没有更改解析器、协议正文或本任务固定的协议副本。
+
+本轮验证结果：
+
+- 原复现命令 `cargo test --offline -p autome-domain --test fenced_status_regression`：4 passed。
+- `cargo test --offline -p autome-domain --lib status_block::tests::`：52 passed。
+- `cargo test --offline -p automed --lib protocol::tests::`：11 passed；其中版本用例修复前 1 failed。
+- `cargo test --offline -p automed --test end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task`：修复前 1 failed，修复后 1 passed。
+- `cargo test --offline -p automed --test end_to_end an_intake_fenced_status_block_reports_the_fence_location`：1 passed。
+- 两个改动 Rust 文件的 rustfmt 检查及 `git diff --check` 通过。
+
+原始输出保存于 `.autome/output/round2-*.log`，不提交。未运行全量门禁 `sh scripts/ci-local.sh`，留给宿主合并前执行。本轮复核重置为待复核，下方第 1/3 轮复核意见仅为历史记录。
 
 第 1/3 修复轮采用方案 (b)：继续拒绝围栏状态块，保持现有协议和示例隔离行为，仅修正诊断。解析器记录头部围栏内字段及围栏起始行；必填字段在围栏外缺失、但在头部围栏内存在时，返回「状态字段不能放在代码围栏里（第 N 行）」并提示移出围栏。围栏外真实字段优先，正文示例不参与缺字段诊断，真正缺失字段仍报原错误。
 
