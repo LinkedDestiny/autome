@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 4/4
 复现命令: cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture
 根因: fill_slots 在逐项目循环中用 resolve_config(ctx, &project)? 读取上限，单项目配置错误提前返回整个函数，tick 仅记录错误而不继续处理后续项目。
-复核: 待复核
+复核: 通过
 repos: crates/automed
 
 ## 现象
@@ -82,4 +82,10 @@ Format 再次失败，全部差异位于定位轮回归测试，均为 rustfmt �
 
 ## 复核意见
 
-待独立复核。第 4/4 轮原复现命令及 Rust Test 通过，Format 阻塞已消除；项目门禁仍受 Web test 环境错误阻塞，详见修复说明。
+复核: 通过（第 4/4 轮，独立复核，未修改代码）。
+
+- 复现命令独立复跑：`scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects` 1 passed、0 failed。`cargo fmt --check` 通过，此前 Format 阻塞已消除。
+- 根因成立：`fill_slots` 循环内 `resolve_config(...)?` 让单项目配置错误提前返回整个函数，tick 只记录错误，后续项目不补位。
+- 产品改动最小：`git diff ac73f69 bd5953b -- crates` 只改 `scheduler.rs`。循环内改为 match，失败时把「项目显示名: 错误」写入 `report.errors` 并 `continue`；另加仅测试用的 `fill_slots` 包装，保持测试入口不变。没有无关改动。
+- 回归测试未被削弱：定位轮 `ac73f69` 到现在，测试只经 `9b4e081` 做 rustfmt 换行调整（逐行核对，只有换行和收尾逗号变化，断言内容不变）。测试走真实 `tick` 路径，先跑正常配置对照组，再用非法 TOML，断言健康项目启动、第二个任务仍排队、坏项目无会话、错误含项目名，有实际意义。
+- 门禁：修复说明记录除 Web test 外全部通过。Web test 的失败是 `listen EPERM` 与 `EMFILE`，来自沙箱不允许本地监听，和调度器改动无关，属环境问题，不是弱化测试。合并前仍需由宿主在有监听权限的环境复验 Web test。
