@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 3/15
-implementation-round: 9/40
+implementation-round: 10/40
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 由 Autome 在本轮提交上重跑项目门禁
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -775,7 +775,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-08 验收契约
 
-最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r9-impl.md · rebase 集成验证 · 实现 #9
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r10-impl.md · Clippy 修复验证 · 实现 #10
 
 - 验收命令：`for p in 'run = "each_round"' before_merge 'once per task' 'not until the merge' 'sessions do not run the full gate themselves' 'only the repro command'; do grep -qF "$p" README.md || { echo "README 缺: $p"; exit 1; }; done; for p in before_merge 每个任务一次 合并前才暴露 多退回一次实现轮 会话不再各自兜底 只跑复现命令; do grep -qF "$p" docs/development/technical-design.md || { echo "技术设计缺: $p"; exit 1; }; done; cargo fmt --all -- --check`
 - 预期：两组 grep 全部命中、无输出；`cargo fmt --all -- --check` 退出码 0。本里程碑不新增用例；全量（autome-domain 394 + 1、automed lib 675、end_to_end 123、prompt_rendering 20，以及 clippy `-D warnings`、桌面端与 Web 测试）由宿主门禁 `sh scripts/ci-local.sh` 在本轮 head 上跑，审计轮以简报「## 宿主门禁」那一行（本轮 head 上「通过」）为任务验收 6 的证据，不自己再跑。

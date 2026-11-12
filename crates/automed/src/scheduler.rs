@@ -2668,7 +2668,7 @@ fn launch_session(
     // which is the thing the brief exists to make optional.
     let gate_evidence = if kind.role() == Some(Role::Audit) {
         crate::brief::gate_evidence(
-            &resolved,
+            resolved,
             ctx.store.last_event(&task.id, "gate.result")?.as_ref(),
             gate_head(&layout).ok().as_deref(),
         )
