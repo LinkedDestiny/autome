@@ -5,7 +5,7 @@
 {budget_line}
 先读 `{doc_dir}/protocol/bug-protocol.md` 和 `{doc_dir}/{slug}-bug.md`。
 
-<!-- gate-run: each_round -->
+{inputs}<!-- gate-run: each_round -->
 独立复验复现命令与项目门禁，并检查定位到修复的提交差异：根因是否站得住、回归测试是否有意义、改动范围是否最小。
 <!-- /gate-run -->
 <!-- gate-run: before_merge -->

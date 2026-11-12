@@ -3,7 +3,7 @@
 {budget_line}
 先读 `{doc_dir}/protocol/bug-protocol.md` 和 `{doc_dir}/{slug}-bug.md`，如有补充信息也读 `{doc_dir}/{slug}-replies.md`。
 
-<!-- gate-run: each_round -->
+{inputs}<!-- gate-run: each_round -->
 以最小改动修复根因，让定位时的同一个复现命令通过，再运行配置的项目门禁。不得修改、删除、跳过或弱化定位轮的回归测试。
 <!-- /gate-run -->
 <!-- gate-run: before_merge -->

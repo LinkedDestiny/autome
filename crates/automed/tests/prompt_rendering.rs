@@ -380,6 +380,7 @@ fn bug_loop_bug_prompts_leave_no_placeholder() {
                 "{request}",
                 "{budget_line}",
                 "{brief_path}",
+                "{inputs}",
             ] {
                 assert!(!got.contains(placeholder), "{got}");
             }
@@ -529,5 +530,43 @@ fn before_merge_leaves_the_other_prompts_byte_identical() {
     assert_eq!(
         before_merge_rendered(SessionKind::Role { role: Role::Retro }, false),
         rendered(SessionKind::Role { role: Role::Retro })
+    );
+}
+
+fn check_bug_inputs_golden(name: &str, step: autome_domain::session::BugStep) {
+    let templates = automed::protocol::seed();
+    let mut s = spec(SessionKind::Bug { step }, templates);
+    s.budget = Some(automed::launcher::BudgetLine { round: 2, limit: 3 });
+    let attachments = [
+        "/tmp/autome-golden/crash.log".into(),
+        "/tmp/autome-golden/screen.png".into(),
+    ];
+    let refs = ["docs/notes.md".into()];
+    s.attachments = &attachments;
+    s.doc_refs = &refs;
+    let got = build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}");
+    if maybe_update_golden(name, &got) {
+        return;
+    }
+    assert_eq!(got, golden(name));
+}
+
+#[test]
+fn bug_loop_locate_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden("locate-inputs", autome_domain::session::BugStep::Locate);
+}
+#[test]
+fn bug_loop_fix_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden("fix-inputs", autome_domain::session::BugStep::Fix);
+}
+#[test]
+fn bug_loop_fix_review_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden(
+        "fix-review-inputs",
+        autome_domain::session::BugStep::FixReview,
     );
 }

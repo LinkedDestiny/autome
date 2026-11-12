@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
+implementation-round: 1/10
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在 launcher.rs 抽出共用的 render_inputs（接收已定好的附件显示名；整理轮传存储原值保持基线，Bug 侧传副本文件名），bug_prompt 填 {inputs}，三个 Bug 模板加占位符，补单测与 3 份新金样，协议升到 protocol/v3
+next-action: M-01 待独立审计；通过后推进 M-02，新增真实绝对路径附件 e2e 并执行全量门禁
 
 任务文件：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-task.md`（验收标准见它的第 5 节 A1–A8，硬性约束见第 6 节 C1–C9，待定问题见第 8 节 Q1–Q6）。
 任务卡正文：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-card.md`。
@@ -38,7 +38,7 @@ next-action: M-01：在 launcher.rs 抽出共用的 render_inputs（接收已定
    而整理轮是**先**把 `inputs` 替换进去**再**检查——参考文档写成 `docs/{x}.md` 时整理轮会拒绝启动。
 5. **静态门与 eval 已经认识 `{inputs}`（Q6）。** `protocol/eval.rs` 的 `KNOWN_PLACEHOLDERS`（390 行）已含 `inputs`；
    `eval_run.rs::render_prompt`（293–311 行）对任何模板都把 `{inputs}` 替换成空串，Bug 的 eval 用例照样能渲染。
-   两处都不用改。
+   两处生产逻辑都不用改。eval.rs 的测试夹具固定追加 v3，与真实新版本重名；夹具及对应查询改用测试专用 v999，保留断言。
 6. **版本号。** `protocol/CHANGELOG.md` 最新一节是 `## protocol/v2`。`protocol/mod.rs` 的单测
    `the_version_in_force_is_the_newest_changelog_heading_over_the_seed`（401 行）断言 `protocol/v2`；
    `version_page.rs` 与 `autome-domain/src/changelog.rs` 里出现的 `protocol/v2` 用的是测试自带的样例文档，与真实
@@ -168,6 +168,7 @@ fn render_inputs(doc_dir: &str, attachment_names: &[String], doc_refs: &[String]
 | `protocol/prompts/locate.md`、`fix.md`、`fix-review.md` | 各改一行，行首加 `{inputs}` |
 | `protocol/CHANGELOG.md` | 末尾加 `## protocol/v3`，三条 `clarify` |
 | `crates/automed/src/protocol/mod.rs` | 版本断言改 `protocol/v3` |
+| `crates/automed/src/protocol/eval.rs` | 仅测试夹具与对应查询改用 v999，避免与真实 v3 重名；生产逻辑不变 |
 | `crates/automed/tests/prompt_rendering.rs` | 新增 3 个带输入的金样用例；`bug_loop_bug_prompts_leave_no_placeholder` 的检查清单加 `{inputs}` |
 | `crates/automed/tests/golden/prompts/` | 新增 `locate-inputs.md`、`fix-inputs.md`、`fix-review-inputs.md`；已有 12 份不动 |
 | `crates/automed/tests/end_to_end.rs` | 新增 1 个 e2e；在既有 `bug_loop_a_bug_runs_from_creation_to_a_merge_commit` 里加「无附件段」断言 |
@@ -233,12 +234,14 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 共用输入渲染、三个 Bug 模板加 {inputs}、单测与金样、protocol/v3 | 0 | prompt |
+| M-01 | 待审 | 共用输入渲染、三个 Bug 模板加 {inputs}、单测与金样、protocol/v3 | 0 | prompt |
 | M-02 | 开放 | e2e 带附件与 --doc 的 Bug 任务、全量门禁与范围核对 | 0 | e2e |
 
 ## 验收契约
 
 ### M-01 验收契约
+
+最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
 
 覆盖 A1–A4、A6；前置：无。
 
