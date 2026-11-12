@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/10
+implementation-round: 2/10
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 待独立审计；通过后推进 M-02，新增真实绝对路径附件 e2e 并执行全量门禁
+next-action: Autome 在本轮提交上重跑门禁，确认版本断言修复及 Desktop/Web 环境阻塞；M-01 保持待审，本轮不推进 M-02
 
 任务文件：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-task.md`（验收标准见它的第 5 节 A1–A8，硬性约束见第 6 节 C1–C9，待定问题见第 8 节 Q1–Q6）。
 任务卡正文：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-card.md`。
@@ -241,7 +241,7 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 
 ### M-01 验收契约
 
-最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
+最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-01-r2-impl.md · 定向回归通过，完整门禁受阻，保持待审 · 实现 #2
 
 覆盖 A1–A4、A6；前置：无。
 
