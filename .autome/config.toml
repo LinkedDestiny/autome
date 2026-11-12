@@ -4,11 +4,12 @@
 [loop]
 parallel = 3
 
-# 2026-11-12 暂时关闭宿主门禁：一天 102 次、18.6 小时，并发互相抢占。
-# 等 T-61（只在合并前跑一次）、T-60（合并后不重复跑）、T-47（门禁排队）合并后再打开。
-# [gate]
-# command = "sh scripts/ci-local.sh"
-# timeout_minutes = 30
+# 2026-11-12 曾关闭宿主门禁（一天 102 次、18.6 小时，并发互相抢占）。
+# 2026-11-13 恢复：T-60（合并后不重复跑）、T-47（门禁排队）已合并；
+# T-61（只在合并前跑一次）合并并重装后，在这里加 run = "before_merge"。
+[gate]
+command = "sh scripts/ci-local.sh"
+timeout_minutes = 30
 
 [retry]
 attempts = 2
