@@ -1,8 +1,8 @@
 # `autome run` 与 `autome logs` 支持 `--json` 逐行 JSON 输出
 
-status: 实现中
+status: 已完成
 design-round: 1/15
-implementation-round: 2/10
+implementation-round: 3/10
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -169,7 +169,7 @@ next-action: 无
 
 ### M-02 验收契约
 
-最新证据：docs/autome-run-与-logs-支持/evidence/M-02-r2-audit.md · 通过 · 审计 #2
+最新证据：docs/autome-run-与-logs-支持/evidence/M-02-r3-impl.md · rebase 后 CLI 通过，宿主门禁环境受限 · 实现 #3
 
 - 验收命令：`cargo test -p autome-cli`
 - 预期：单元 32 个通过（M-01 后的 28 + 4：Claude 样例行的 `type`/`text`/`event`、Codex 样例行（`turn.started` 的 `text` 为 `null`）、非 JSON 行得到 `event: null, type: null, text: 原文` 且空行不输出、行边界函数对「两行半」的输入只吐两行且会话结束后补出第三行），集成 18 个通过（M-01 后的 17 + `logs_json_prints_the_session_stream_one_json_value_per_line`：第 3 个会话写 Codex 样例、第 4 个写 Claude 样例与一行 stderr 文本，跑到等设计批准后：`logs <任务> --json` 与 `logs <任务> --json -f` 的 stdout 每行可解析为 JSON，行数等于最后一个会话 `.jsonl` 的非空行数，`type` 依次为 `system`、`assistant`、`system`、`result`、`null`，`assistant` 行 `text` 含 `hi there`、`hook_started` 行 `text` 为 `null`；`logs <任务> --session <review 会话 id> --json` 的 `text` 含 `Hello!` 与 `in 36111`；把 stdout 接到读端已关闭的管道再跑 `logs <任务> --json`，退出码为 0 或 SIGPIPE 且 stderr 为空）。
