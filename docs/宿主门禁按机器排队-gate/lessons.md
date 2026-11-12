@@ -1,15 +1,15 @@
 # 教训 · 宿主门禁按机器排队（T-47）
 
-复盘轮 #1 写。依据：`retro.md`、`evidence/` 下 12 份证据、审计文件、裁决文件、设计文档状态块与 `## Backlog`，另外对照了其它任务的 `lessons.md`，同义的条目逐字沿用它们的 proposal，方便跨任务计数。
+复盘轮 #1 写了 L-01..L-05，复盘轮 #2 覆盖写。复盘 #2 新读了复盘 #1 之后的两轮：实现 #7（`evidence/M-06-r7-impl.md`）和审计 #7（只在 `retro.md` 写了一行，没有证据文件）。L-01..L-04 的证据没有变化，原样保留。L-05 按新的轮次数改了 symptom，proposal 没动。L-06 是新加的。
 
-**运行概况（取自状态块与证据）。** 设计 2 轮定稿（评审 #1 提出 5 项阻塞，评审 #2 提出 2 项，都被采纳）。实现 6 轮，M-01..M-06 每个都是一次审计就关闭，reopen 0，实现缺陷 0。验证缺口 1 个：审计 #1 发现 clippy `items_after_test_module`，当场修掉（L-01）。H-01 这条人工验收还没确认。
+**运行概况（取自状态块与证据）。** 设计 2 轮定稿（评审 #1 提出 5 项阻塞，评审 #2 提出 2 项，都被采纳）。实现 #1..#6 依次推进 M-01..M-06，每个里程碑都是一次审计就关闭，reopen 0，实现缺陷 0。验证缺口 1 个：审计 #1 发现 clippy `items_after_test_module`，当场修掉（L-01）。任务完成后又跑了实现 #7，按用户追加的要求 rebase 到 main，在 4 个源码文件里解决了冲突；接着跑审计 #7，结论是「无待审里程碑」（L-06）。状态块现在是 `status: 已完成`、`implementation-round: 7/30`。H-01 这条人工验收还没确认。
 
 **指标与实际不符的地方：**
-- 指标写「实现轮 2/30」，状态块是 `implementation-round: 6/30`，evidence 下也有 r1..r6 六份实现证据（L-05）。
+- 指标写「实现轮 2/30」，状态块是 `implementation-round: 7/30`，evidence 下有 r1..r7 七份实现证据。复盘 #1 时状态块是 6/30，指标同样写 2/30，到复盘 #2 指标也没有更新（L-05）。
 - 指标写「协议失败 2」，本任务所有文件里都找不到对应记录：状态块从没出现过 `协议失败`，`retro.md`、证据和 git log 里也都没有。写不出证据路径，所以不立条目。
 - `retro.md` 缺评审 #1、裁决 #1、裁决 #2 三行，也缺终止总结。这一条同样没有指标能衡量，不立条目。
 
-跨任务复用：L-03 的 proposal 与 `门禁连续因同一原因失败时熔断-停下等人` 的 L-06、`用户按合并时如果默认分支已经前进-任务自动` 的 L-04 相同；L-05 的 proposal 与 `在-apps-web-建-react` 的 L-05、`服务端每次-tick-后用-events` 的 L-07 相同。两条 proposal 都一字未改。L-01、L-02、L-04 是本任务新出现的。
+跨任务复用：L-03 的 proposal 与 `门禁连续因同一原因失败时熔断-停下等人` 的 L-06、`用户按合并时如果默认分支已经前进-任务自动` 的 L-04 相同；L-05 的 proposal 与 `在-apps-web-建-react` 的 L-05、`服务端每次-tick-后用-events` 的 L-07 相同。两条 proposal 都一字未改。L-01、L-02、L-04、L-06 是本任务新出现的。
 
 ```yaml
 - id: L-01
@@ -58,10 +58,21 @@
 ```yaml
 - id: L-05
   domain: tooling
-  symptom: '复盘 #1 收到的指标写「实现轮 2/30」。启动复盘时，设计文档状态块是 `implementation-round: 6/30`，`retro.md` 有实现 #1..#6 六行，evidence 下也有 M-01-r1-impl.md..M-06-r6-impl.md 六份实现证据。设计轮那一项（2/15）与状态块一致'
-  root_cause: '指标里的 impl_rounds_used 不取自状态块 implementation-round 的分子，或者在实现 #2 之后就没再刷新。具体是哪个环节，本轮只读文档，没有读 automed 源码确认'
+  symptom: '复盘 #1 和复盘 #2 收到的指标都写「实现轮 2/30」。复盘 #1 启动时状态块是 `implementation-round: 6/30`；复盘 #2 启动时状态块是 `implementation-round: 7/30`，`retro.md` 有实现 #1..#7 七行，evidence 下有 M-01-r1-impl.md..M-06-r7-impl.md 七份实现证据。实现轮多跑了一轮，指标没有跟着变。设计轮那一项（2/15）与状态块一致'
+  root_cause: '指标里的 impl_rounds_used 不取自状态块 implementation-round 的分子，在实现 #2 之后再也没刷新过（实现 #7 之后仍是 2）。具体是哪个环节，本轮只读文档，没有读 automed 源码确认'
   evidence: 'docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate.md'
   level: test
   proposal: 'Autome 增加一条测试：任务结束后，指标中的 design_rounds_used 与 impl_rounds_used 分别等于任务分支上设计文档状态块 `design-round`、`implementation-round` 的分子'
   predicted_impact: {metric: impl_rounds_used, direction: up, scope: task, horizon: 1}
+```
+
+```yaml
+- id: L-06
+  domain: process
+  symptom: '审计 #6 关闭全部里程碑以后，实现 #7 按用户追加的要求把 40 个提交 rebase 到 main，在 4 个产品文件里手工合并了冲突：config.rs 两组配置字段并存，config_io.rs 两个配置键分开解析，store.rs 的 last_event_before 和 last_event_of 两个方法都保留，end_to_end.rs 两边的用例都保留并各自闭合函数。改完后，实现 #7 自己跑了全量，用例从 1262 个增到 1289 个，然后在 retro.md 把结果写成「通过（rebase 兼容复验，沿用审计关闭）」，没有把任何里程碑标成待审。接着的审计 #7 简报写「没有待审的里程碑」，审计 #7 只写了一行「无待审里程碑」，没有证据文件，也没有复验这些冲突合并'
+  root_cause: '协议只有「实现轮标待审、审计轮复验待审」这一条路径。任务完成之后，再改产品代码（这里是解决 rebase 冲突）没有对应的里程碑状态可标，于是实现轮自己宣布通过（按协议，实现轮的结果只能是「待审」）。审计轮看到表里没有待审项，就把空转当成了结论。结果是合并进 main 之前，最后一次改动产品代码，从头到尾没有经过对手复验'
+  evidence: 'docs/宿主门禁按机器排队-gate/evidence/M-06-r7-impl.md'
+  level: protocol
+  proposal: '实现轮在已关闭的里程碑之后改动了产品源码（含解决 rebase 冲突）时，必须把受影响的里程碑重新标为 `待审`，并在证据里列出改动的文件；紧接着的审计轮必须对这些文件写出证据文件，不得以「无待审里程碑」结束'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 3}
 ```
