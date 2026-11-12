@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -23,19 +23,20 @@ function add(store: ReturnType<typeof openWebStore>, seq = 1, task: string | nul
   return store.commit({ cursor: { name: 'notifier', seq }, notification: input(seq, task) })!;
 }
 
-test('首次建库四表列名、WAL 与版本 1', () => {
+test('首次建库五表列名、WAL 与当前版本', () => {
   const { db, store } = setup();
-  const tables = { schema_version: ['version'], event_cursor: ['name', 'seq'], notifications: ['id', 'kind', 'project_id', 'task_id', 'title', 'body', 'event_seq', 'created_at', 'read_at'], preferences: ['key', 'value'] };
+  const tables = { schema_version: ['version'], event_cursor: ['name', 'seq'], notifications: ['id', 'kind', 'project_id', 'task_id', 'title', 'body', 'event_seq', 'created_at', 'read_at', 'source'], notifier_task_state: ['task_id', 'state', 'seq'], preferences: ['key', 'value'] };
   for (const [name, columns] of Object.entries(tables)) expect(db.prepare(`PRAGMA table_info(${name})`).all().map(r => r.name)).toEqual(columns);
   expect(db.prepare('PRAGMA journal_mode').get()?.journal_mode).toBe('wal');
-  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(1);
+  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(MIGRATIONS.length);
   expect(store.getCursor('missing')).toBeUndefined();
+  expect(store.getCursor('notifier_seed')).toBeUndefined();
   expect(store.list()).toEqual([]);
   const empty = new DatabaseSync(':memory:');
   try {
     empty.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
     migrate(empty);
-    expect(empty.prepare('SELECT version FROM schema_version').get()?.version).toBe(1);
+    expect(empty.prepare('SELECT version FROM schema_version').get()?.version).toBe(MIGRATIONS.length);
   } finally { empty.close(); }
 });
 test('重开不重建不丢数据', () => {
@@ -45,21 +46,21 @@ test('重开不重建不丢数据', () => {
 test('注入第二级只跑缺的那级', () => {
   const { db } = setup();
   migrate(db, [...MIGRATIONS, 'CREATE TABLE extra (value TEXT);']);
-  migrate(db, ['INVALID SQL', 'INVALID SQL']);
-  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(2);
+  migrate(db, Array(MIGRATIONS.length + 1).fill('INVALID SQL'));
+  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(MIGRATIONS.length + 1);
   expect(db.prepare('SELECT * FROM extra').all()).toEqual([]);
 });
 test('某级失败整级回滚且版本停在上一级', () => {
   const { db } = setup();
-  expect(() => migrate(db, [...MIGRATIONS, 'CREATE TABLE extra (v TEXT); INSERT INTO missing VALUES (1);'])).toThrow('面板库迁移到第 2 版失败');
-  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(1);
+  expect(() => migrate(db, [...MIGRATIONS, 'CREATE TABLE extra (v TEXT); INSERT INTO missing VALUES (1);'])).toThrow(`面板库迁移到第 ${MIGRATIONS.length + 1} 版失败`);
+  expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(MIGRATIONS.length);
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name='extra'").get()).toBeUndefined();
 });
 test('库比代码新时抛中文错误且库不变', () => {
   const { db, home, store } = setup(); add(store);
   db.exec('UPDATE schema_version SET version=9');
   const before = db.prepare('SELECT * FROM notifications').all();
-  expect(() => openWebStore(home)).toThrow(`面板库版本 9 比当前程序支持的 1 新，请升级 Autome，或移走 ${join(home, 'state/web.sqlite3')} 后重启`);
+  expect(() => openWebStore(home)).toThrow(`面板库版本 9 比当前程序支持的 ${MIGRATIONS.length} 新，请升级 Autome，或移走 ${join(home, 'state/web.sqlite3')} 后重启`);
   expect(db.prepare('SELECT version FROM schema_version').get()?.version).toBe(9);
   expect(db.prepare('SELECT * FROM notifications').all()).toEqual(before);
 });
@@ -116,4 +117,88 @@ test('unreadByTask 过滤 kind、已读、无任务与空集合', () => {
   store.commit({ cursor: { name: 'notifier', seq: 5 }, notification: { ...input(5), kind: 'done' } });
   store.markRead([a.id]); expect(store.unreadByTask([])).toEqual([]); expect(store.unreadByTask(['unknown'])).toEqual([]);
   expect(store.unreadByTask(['failed'])).toEqual([{ task_id: 'T-1', count: 1 }, { task_id: 'T-2', count: 1 }]);
+});
+
+test('v1 库升级到第 2 版：播种游标按 notifier 存在性创建，旧通知 source 为 event，list 仍是九列', () => {
+  for (const name of ['notifier', 'other']) {
+    const home = mkdtempSync(join(tmpdir(), 'web-store-v1-'));
+    cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+    mkdirSync(join(home, 'state'));
+    const db = new DatabaseSync(join(home, 'state/web.sqlite3'));
+    cleanup.push(() => db.close());
+    migrate(db, MIGRATIONS.slice(0, 1));
+    db.prepare('INSERT INTO event_cursor VALUES (?, 7)').run(name);
+    db.exec("INSERT INTO notifications VALUES ('old', 'failed', 'p', 'T-1', '旧通知', NULL, 7, 'now', NULL)");
+    const store = openWebStore(home); cleanup.push(() => store.close());
+    expect(store.getCursor('notifier_seed')).toBe(name === 'notifier' ? 7 : undefined);
+    expect(store.getCursor(name)).toBe(7);
+    expect(db.prepare('SELECT source FROM notifications').get()?.source).toBe('event');
+    expect(Object.keys(store.list()[0]).sort()).toEqual(['id', 'kind', 'project_id', 'task_id', 'title', 'body', 'event_seq', 'created_at', 'read_at'].sort());
+    expect(store.list()).toHaveLength(1);
+    const states = [{ task_id: 'T-1', state: { state: 'active', node: 'await_merge' }, seq: 7 }];
+    db.exec("CREATE TRIGGER fail_seed BEFORE DELETE ON event_cursor BEGIN SELECT RAISE(ABORT, '播种失败'); END");
+    if (name === 'notifier') {
+      expect(() => store.seedTaskStates(states)).toThrow('播种失败');
+      expect(store.getTaskState('T-1')).toBeUndefined();
+      expect(store.getCursor('notifier_seed')).toBe(7);
+    }
+    db.exec('DROP TRIGGER fail_seed');
+    store.seedTaskStates(states);
+    expect(store.getTaskState('T-1')).toEqual({ state: states[0].state, seq: 7 });
+    expect(store.getCursor('notifier_seed')).toBeUndefined();
+    store.seedTaskStates([]);
+    expect(store.list()).toHaveLength(1);
+  }
+});
+test('commit 在同一事务里写任务状态，游标写失败时状态随之回滚', () => {
+  const ctx = setup(); const { store, db } = ctx;
+  const taskState = { task_id: 'T-1', state: { state: 'active', node: 'await_merge' }, seq: 1 };
+  expect(store.getTaskState('T-1')).toBeUndefined();
+  store.commit({ cursor: { name: 'notifier', seq: 1 }, notification: input(), taskState });
+  const reopened = ctx.reopen();
+  expect(reopened.getTaskState('T-1')).toEqual({ state: taskState.state, seq: 1 });
+  db.exec("CREATE TRIGGER fail_state_cursor BEFORE UPDATE ON event_cursor BEGIN SELECT RAISE(ABORT, '状态游标失败'); END");
+  expect(() => reopened.commit({ cursor: { name: 'notifier', seq: 2 }, notification: input(2), taskState: { ...taskState, state: null, seq: 2 } })).toThrow('状态游标失败');
+  expect(reopened.getTaskState('T-1')).toEqual({ state: taskState.state, seq: 1 });
+  expect(reopened.getCursor('notifier')).toBe(1); expect(reopened.list()).toHaveLength(1);
+  db.exec('DROP TRIGGER fail_state_cursor');
+  expect(reopened.commit({ cursor: { name: 'notifier', seq: 2 }, notification: input(), taskState: { ...taskState, state: null, seq: 2 } })).toBeUndefined();
+  expect(reopened.getTaskState('T-1')).toEqual({ state: null, seq: 2 });
+  reopened.commit({ cursor: { name: 'notifier', seq: Number.MAX_SAFE_INTEGER }, taskState: { task_id: '', state: '', seq: Number.MAX_SAFE_INTEGER } });
+  expect(reopened.getTaskState('')).toEqual({ state: '', seq: Number.MAX_SAFE_INTEGER });
+});
+test('backfill 多条通知、状态、游标一个事务，游标失败全部回滚，成功 source 为 backfill', () => {
+  const { store, db } = setup();
+  const batch = { cursor: { name: 'notifier', seq: 0 }, notifications: [input(0), input(0, 'T-2')], taskStates: ['T-1', 'T-2'].map(task_id => ({ task_id, state: { state: 'failed' }, seq: 0 })) };
+  db.exec("CREATE TRIGGER fail_backfill BEFORE INSERT ON event_cursor BEGIN SELECT RAISE(ABORT, '补发失败'); END");
+  expect(() => store.backfill(batch)).toThrow('补发失败');
+  expect(store.list()).toEqual([]); expect(store.getCursor('notifier')).toBeUndefined();
+  for (const { task_id } of batch.taskStates) expect(store.getTaskState(task_id)).toBeUndefined();
+  db.exec('DROP TRIGGER fail_backfill');
+  const rows = store.backfill(batch); expect(rows).toHaveLength(2);
+  expect(store.list()).toEqual([...rows].reverse());
+  expect(db.prepare('SELECT source FROM notifications').all().map(r => r.source)).toEqual(['backfill', 'backfill']);
+  for (const { task_id, state, seq } of batch.taskStates) expect(store.getTaskState(task_id)).toEqual({ state, seq });
+  expect(store.backfill(batch)).toEqual([]); expect(store.list()).toHaveLength(2);
+  expect(store.backfill({ cursor: { name: 'notifier', seq: 1 }, notifications: [], taskStates: [] })).toEqual([]);
+  expect(store.getCursor('notifier')).toBe(1);
+});
+test('resetLedger 清空任务状态与播种游标，可带补发且原子', () => {
+  const { store, db } = setup(); const old = add(store); store.markRead([old.id]); store.setPreference('keep', 'yes');
+  store.seedTaskStates([{ task_id: 'old', state: 'old', seq: 1 }]);
+  store.commit({ cursor: { name: 'notifier_seed', seq: 1 } });
+  const batch = { notifications: [input()], taskStates: [{ task_id: 'T-1', state: 'new', seq: 1 }] };
+  db.exec("CREATE TRIGGER fail_reset BEFORE UPDATE ON event_cursor BEGIN SELECT RAISE(ABORT, '重置失败'); END");
+  expect(() => store.resetLedger('notifier', 1, batch)).toThrow('重置失败');
+  expect(store.list()).toHaveLength(1); expect(store.list()[0].event_seq).toBe(1);
+  expect(store.getTaskState('old')).toEqual({ state: 'old', seq: 1 }); expect(store.getTaskState('T-1')).toBeUndefined();
+  expect(store.getCursor('notifier_seed')).toBe(1);
+  db.exec('DROP TRIGGER fail_reset');
+  const rows = store.resetLedger('notifier', 1, batch); expect(rows).toHaveLength(1);
+  expect(store.getTaskState('old')).toBeUndefined(); expect(store.getTaskState('T-1')).toEqual({ state: 'new', seq: 1 });
+  expect(store.getCursor('notifier_seed')).toBeUndefined(); expect(store.getCursor('notifier')).toBe(1);
+  expect(store.list()[1]).toMatchObject({ id: old.id, event_seq: null }); expect(store.list()[1].read_at).not.toBeNull();
+  expect(db.prepare('SELECT source FROM notifications WHERE id=?').get(rows[0].id)?.source).toBe('backfill');
+  expect(store.resetLedger('notifier', 0)).toEqual([]); expect(store.getTaskState('T-1')).toBeUndefined();
+  expect(store.getPreference('keep')).toBe('yes'); expect(store.getCursor('notifier')).toBe(0);
 });
