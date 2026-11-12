@@ -670,6 +670,14 @@ pub fn skill_bindings(
     by_skill
 }
 
+fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
+    value
+        .as_integer()
+        .filter(|n| (1..=10).contains(n))
+        .map(|n| n as u32)
+        .ok_or_else(|| "[gate] concurrency 必须是 1 到 10 的整数".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1503,12 +1511,4 @@ effort = ""
             PathBuf::from("/tmp/somewhere/config.toml")
         );
     }
-}
-
-fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
-    value
-        .as_integer()
-        .filter(|n| (1..=10).contains(n))
-        .map(|n| n as u32)
-        .ok_or_else(|| "[gate] concurrency 必须是 1 到 10 的整数".to_string())
 }
