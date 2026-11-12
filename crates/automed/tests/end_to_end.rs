@@ -5291,8 +5291,6 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         "protocol_ref",
         "metrics",
         "doc_dir",
-        "cost_usd",
-        "cost_sessions_without_cost",
     ];
     baseline.sort();
     assert_eq!(keys[0], baseline);
