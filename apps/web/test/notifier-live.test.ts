@@ -42,7 +42,25 @@ test('带 Origin 已读跨连接广播，无 Origin 403 且库不变', async () 
   expect((await list()).unread).toBe(0);
 });
 test('停服期间新增失败，重启只补一条且保留旧已读', async () => {
-  const first = (await list()).items[0]; for (const c of clients) c.ws.terminate(); await running!.close(); running = undefined;
-  await fail('second fail'); await start(); await until(async () => (await list()).items.length === 2);
+  // Keep the original deadline and assertions; identify the stalled phase in host gate logs.
+  async function step<T>(name: string, action: () => Promise<T>): Promise<T> {
+    const started = performance.now();
+    process.stdout.write(`[notifier restart] ${name}: started\n`);
+    try {
+      const result = await action();
+      process.stdout.write(`[notifier restart] ${name}: passed (${Math.ceil(performance.now() - started)} ms)\n`);
+      return result;
+    } catch (error) {
+      process.stdout.write(`[notifier restart] ${name}: failed (${Math.ceil(performance.now() - started)} ms)\n`);
+      throw error;
+    }
+  }
+  const first = (await step('read existing notification', list)).items[0];
+  for (const c of clients) c.ws.terminate();
+  await step('close server', () => running!.close()); running = undefined;
+  await step('create offline task', () => cli('task', 'new', 'second fail', '-p', repo));
+  await step('run offline task', () => cli('run', '--until-idle', '--interval', '0.2'));
+  await step('restart server', start);
+  await step('replay notification', () => until(async () => (await list()).items.length === 2));
   const result = await list(); expect(result.unread).toBe(1); expect(result.items[1]).toEqual(first); expect(result.items[0].title).toBe('T-2 停在失败上：会话异常退出（会话退出码 3）');
 }, 30000);
