@@ -1,9 +1,9 @@
 # `autome run` 与 `autome logs` 支持 `--json` 逐行 JSON 输出
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
 next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返回补 at 字段，再给 run 加 --json 分支与集成用例
@@ -162,7 +162,7 @@ next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返�
 ### M-01 验收契约
 
 - 验收命令：`cargo test -p automed --lib events_since && cargo test -p autome-cli`
-- 预期：`automed` 过滤后 4 个用例通过（基线 3 + `events_since_carries_when_each_event_happened`：断言 `events.since` 每个事件有 `at` 且等于表里的值）；`autome-cli` 单元 28 个通过（基线 25 + 3：主体是任务时 `task_id` 等于主体、主体是项目时 `task_id` 为 `null` 且 `subject` 保留、`time` 取 `at`），集成 15 个通过（基线 14 + `run_json_prints_every_event_as_one_json_line`：沙箱跑到等设计批准，先用 `autome rpc events.since` 记起点 seq，再跑 `run --json --until-idle --interval 0.05`；断言 stdout 每行可解析为 JSON；除最后一行外每行的 `seq` 列表与事后 `rpc events.since {after_seq: 起点}` 返回的 `seq` 列表完全相等、`time` 等于对应事件的 `at`、主体为该任务的事件 `task_id` 等于任务 id；最后一行 `idle` 为 `true` 且 `tasks` 里该任务的 `state` 等于 `status <任务> --json` 的 `.task.state`、`node` 为 `await_design_approval`；stderr 不含「驱动 Loop 中」）。
+- 预期：`automed` 过滤后 4 个用例通过（基线 3 + `events_since_carries_when_each_event_happened`：断言 `events.since` 每个事件有 `at` 且等于表里的值）；`autome-cli` 单元 28 个通过（基线 25 + 3：主体是任务时 `task_id` 等于主体、主体是项目时 `task_id` 为 `null` 且 `subject` 保留、`time` 取 `at`），集成 15 个通过（基线 14 + `run_json_prints_every_event_as_one_json_line`：在任务建好、**尚未被驱动推进**时先用 `autome rpc events.since` 记起点 seq，再由受测的 `run --json --until-idle --interval 0.05` 把它推进到等设计批准（起点必须在受测驱动之前取，否则驱动从最新 seq 起步、事件列表为空）；断言 stdout 事件行非空且含 `task.head`，每行可解析为 JSON；除最后一行外每行的 `seq` 列表与事后 `rpc events.since {after_seq: 起点}` 返回的 `seq` 列表完全相等、`time` 等于对应事件的 `at`、主体为该任务的事件 `task_id` 等于任务 id；最后一行 `idle` 为 `true` 且 `tasks` 里该任务的 `state` 等于 `status <任务> --json` 的 `.task.state`、`node` 为 `await_design_approval`；stderr 不含「驱动 Loop 中」）。
 - 负向对照：JSON 分支用 `print_json`（美化多行）时第一行 `{` 解析失败，集成用例红；沿用 `render::event_line` 过滤时每个会话收尾的 `task.head` 被丢掉，`seq` 列表相等断言红；`task_id` 直接取 `subject` 时项目主体那条单元用例红；`time` 用 `clock()` 时 `time == at` 断言红（`clock()` 输出本地 `HH:MM`，与 `at` 的 `YYYY-MM-DDTHH:MM:SSZ` 不同）。
 
 ### M-02 验收契约
@@ -192,5 +192,6 @@ next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返�
 - B-01 `run --json` 在 `scheduler.tick` 报告 `skipped`（另一个驱动在推进）时输出一行结构化提示，例如 `{"skipped": true}`；任务卡没要求，本任务不做。
 - B-02 `logs --json` 在会话结束后补一行 `{"ended": true, "exit": N}`，取自退出标记；任务卡没要求，本任务不做。
 - B-03 `logs --json --follow` 从上次偏移按 `seek` 增量读文件，而不是每 500ms 整读一次；当前文件规模下不影响正确性。
+- B-04 为运行中的 `logs --json --follow` 增加自动化端到端取证（有界握手让会话分段追加原始流，检查换行前无输出、补齐后输出、会话结束后退出）；行边界单元测试与人工验收清单已覆盖意图，来源评审 R1-N02，本任务不做。
 
 ## 争议项
