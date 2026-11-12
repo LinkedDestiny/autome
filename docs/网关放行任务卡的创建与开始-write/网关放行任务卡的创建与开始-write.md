@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 4/20
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 复验 M-03：正文逐字节用例已加入，在允许监听的环境执行验收契约；通过并完成自审后标待审（上一轮基线 318，本轮预期 319）
+next-action: 推进 M-04：task.start、task.reply 经网关成功使用，替身 CLI 夹具取证（D-10；基线 319）
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -296,7 +296,7 @@ sidecar 以 `{ ...process.env, ...env }` 启动内核；仓库已有同法夹具
 |---|---|---|---|---|
 | M-01 | 已完成 | 写网关放行 task.start、task.reply 与任务卡字段，经真实内核取证 | 0 | write-gate |
 | M-02 | 已完成 | 读网关放行 project.probe 与 config.validate，反向检查，经真实内核取证 | 0 | read-gate |
-| M-03 | 开放 | 经网关建的任务卡读回内核保存的正文，逐字节相等 | 0 | card-verbatim |
+| M-03 | 已完成 | 经网关建的任务卡读回内核保存的正文，逐字节相等 | 0 | card-verbatim |
 | M-04 | 开放 | task.start、task.reply 经网关成功使用，替身 CLI 夹具取证 | 0 | task-lifecycle |
 
 ## 里程碑说明与验收契约
@@ -368,7 +368,7 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 
 ### M-03 验收契约
 
-最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-impl.md · 未通过（监听 EPERM，保持开放） · 实现 #4
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-audit.md · 通过 · 审计 #3
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：`gateway-task-card.test.ts` 4 个用例全部通过（3→4）；全量 `npm test` 0 失败、用例总数 = B + 18；lint 0 警告、typecheck 通过。

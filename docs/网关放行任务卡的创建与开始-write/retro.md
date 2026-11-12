@@ -10,3 +10,4 @@
 实现 #3 | M-02 | 退回 + 环境阻塞（保持开放） | docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-impl.md | 本地监听 EPERM，宿主原失败未复现
 审计 #2 | M-02 | 通过 | docs/网关放行任务卡的创建与开始-write/evidence/M-02-r3-audit.md | 无
 实现 #4 | M-03 | 退回 + 环境阻塞（保持开放） | docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-impl.md | 监听 EPERM，正文保存未取证
+审计 #3 | M-03 | 通过 | docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-audit.md | 无
