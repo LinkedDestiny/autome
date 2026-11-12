@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/25
-current-milestone: M-02
+implementation-round: 3/25
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03 labels.ts 阶段表与唯一归列函数
+next-action: 审计 M-03；通过后推进 M-04 项目栏计数与首页总览
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -322,7 +322,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 |---|---|---|---|---|
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
-| M-03 | 开放 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
+| M-03 | 待审 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
@@ -390,6 +390,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 - 负向对照：在 `bell.tsx` 按钮上恢复 `style={{ background: '#fff' }}`，第 4、9 条变红；把 `.shell` 的 `overflow: hidden` 改成 `overflow: auto`，或者删掉 `.project-list` 的 `min-height: 0`，第 10 条变红；`writeGate` 在 `core` 为 `undefined` 时返回 `allowed: true`，`live-status` 第 3、4 条变红（`shell` 第 4 条验证 connecting 首屏，保持禁用）；`needsKernelReload` 恒返回 `false`（或 `App` 不调用 `useKernelRecovery`），`live-status` 第 6 条变红；删掉 `tokens.css` 中的 `--tile-peach` 声明，第 1 条变红。
 
 ### M-03 labels.ts 与唯一归列函数
+
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r3-impl.md · 定点通过，全量环境受阻待复验 · 实现 #3
 
 - 覆盖：R-04，以及 R-01 的口径部分。前置：无，但必须在 M-04 之前完成。
 - 结果：新增 `app/lib/labels.ts`，内容见「方案 · R-04」；新增 `app/components/task-columns.ts`，内容见「方案 · R-01」。新增 `test/fixtures/w5-project-get.json`：用真实内核和命令行造出至少包含 `draft`、`queued`、`active`（普通节点和一个等人节点）、`stopped`、`failed` 的项目，逐字保存 `autome rpc project.get` 的原始输出，采集命令写进证据。

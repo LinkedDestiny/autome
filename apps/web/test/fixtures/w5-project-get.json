@@ -1,0 +1,296 @@
+{
+  "config": {
+    "bug": {
+      "fix_rounds": 3
+    },
+    "gate": {
+      "command": "sh /Users/dannie/project/autome-v2/.worktree/w5-外壳与项目导航-迁移-animal/.autome/output/m03-fixture3/gate.sh",
+      "timeout_minutes": 5
+    },
+    "loop_defaults": {
+      "budget_factor": 5,
+      "design_rounds": 15,
+      "parallel": 3
+    },
+    "retry": {
+      "attempts": 0,
+      "backoff_seconds": 0
+    },
+    "roles": [
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "plan"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "review"
+      },
+      {
+        "config": {
+          "effort": null,
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "adjudicate"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "impl"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "audit"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "retro"
+      }
+    ]
+  },
+  "counts": {
+    "awaiting_user": 1,
+    "draft": 1,
+    "failed": 1,
+    "queued": 1,
+    "running": 3,
+    "stopped": 1
+  },
+  "project": {
+    "added_at": "2026-11-12T03:52:36Z",
+    "default_branch": "main",
+    "display_name": "repo",
+    "disposition": "adopted_existing",
+    "docs_repo": null,
+    "id": "prj-ec4c924d55224a21ae0ea57fc1e02dcc",
+    "kind": "repo",
+    "members": [],
+    "onboarding": {
+      "onboarding": "skipped"
+    },
+    "parallel_limit": 3,
+    "path": "/Users/dannie/project/autome-v2/.worktree/w5-外壳与项目导航-迁移-animal/.autome/output/m03-fixture3/repo",
+    "removed_at": null
+  },
+  "rules": [
+    "AGENTS.md",
+    ".autome/rules/README.md"
+  ],
+  "tasks": [
+    {
+      "archived": false,
+      "branch": "autome/waiting",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:37Z",
+      "doc_dir": "docs/waiting",
+      "id": "T-1",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "waiting",
+      "slug": "waiting",
+      "state": {
+        "node": "await_design_approval",
+        "state": "active"
+      },
+      "title": "waiting"
+    },
+    {
+      "archived": false,
+      "branch": "autome/failed",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:40Z",
+      "doc_dir": "docs/failed",
+      "id": "T-2",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": {
+        "budget_n": 0,
+        "closed_then_contradicted": 0,
+        "design_rounds_limit": 0,
+        "design_rounds_used": 0,
+        "impl_defects": 0,
+        "impl_rounds_used": 0,
+        "manual_items_open": 0,
+        "milestones": 0,
+        "protocol_failures": 0,
+        "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+        "reopen_total": 0,
+        "total_tokens": 0,
+        "total_turns": 0,
+        "verification_gaps": 0
+      },
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "failed",
+      "slug": "failed",
+      "state": {
+        "at": "intake",
+        "reason": {
+          "detail": "会话退出码 3",
+          "kind": "session_crashed"
+        },
+        "state": "failed"
+      },
+      "title": "failed"
+    },
+    {
+      "archived": false,
+      "branch": "autome/stopped",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:45Z",
+      "doc_dir": "docs/stopped",
+      "id": "T-3",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "stopped",
+      "slug": "stopped",
+      "state": {
+        "at": "intake",
+        "state": "stopped"
+      },
+      "title": "stopped"
+    },
+    {
+      "archived": false,
+      "branch": "autome/active",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:48Z",
+      "doc_dir": "docs/active",
+      "id": "T-4",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "active",
+      "slug": "active",
+      "state": {
+        "node": "intake",
+        "state": "active"
+      },
+      "title": "active"
+    },
+    {
+      "archived": false,
+      "branch": "autome/active-two",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:49Z",
+      "doc_dir": "docs/active-two",
+      "id": "T-5",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "active-two",
+      "slug": "active-two",
+      "state": {
+        "node": "intake",
+        "state": "active"
+      },
+      "title": "active-two"
+    },
+    {
+      "archived": false,
+      "branch": "autome/active-three",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:50Z",
+      "doc_dir": "docs/active-three",
+      "id": "T-6",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": "protocol/v2@cef5118151d79c38ea49e3305de0daa0c24b3d7c9a2b5de7a11933ec705181ef",
+      "request": "active-three",
+      "slug": "active-three",
+      "state": {
+        "node": "intake",
+        "state": "active"
+      },
+      "title": "active-three"
+    },
+    {
+      "archived": false,
+      "branch": "autome/queued",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:51Z",
+      "doc_dir": "docs/queued",
+      "id": "T-7",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": null,
+      "request": "queued",
+      "slug": "queued",
+      "state": {
+        "state": "queued"
+      },
+      "title": "queued"
+    },
+    {
+      "archived": false,
+      "branch": "autome/draft",
+      "budget_n": null,
+      "completed_at": null,
+      "created_at": "2026-11-12T03:52:51Z",
+      "doc_dir": "docs/draft",
+      "id": "T-8",
+      "kind": "feature",
+      "merge_commit": null,
+      "metrics": null,
+      "protocol_ref": null,
+      "request": "draft",
+      "slug": "draft",
+      "state": {
+        "state": "draft"
+      },
+      "title": "draft"
+    }
+  ],
+  "violations": []
+}
