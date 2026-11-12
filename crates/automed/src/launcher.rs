@@ -358,7 +358,7 @@ pub struct PromptSpec<'a> {
     pub skills: &'a [String],
     pub inject: Option<&'a Inject>,
     /// Decided-but-unconsumed Backlog items and disputes, when the transition
-    /// asked for `Inject::Decisions`.
+    /// asked for `Inject::Decisions` or `Inject::DesignFeedback`.
     pub decisions: &'a [DecisionRecord],
     pub attachments: &'a [String],
     pub doc_refs: &'a [String],
@@ -513,6 +513,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                 "\n用户驳回了上一版设计，意见如下（原文，不要改写）：\n\n{feedback}\n\n\
                  请按这条意见修改设计文档，然后照常结束会话。\n"
             ));
+            p.push_str(&render_decisions(spec.decisions));
         }
         Some(Inject::RebaseConflict { files }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
             p.push_str(&format!(

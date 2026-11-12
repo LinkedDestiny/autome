@@ -1,7 +1,7 @@
 # 驳回设计未携带已做的 Backlog 表态
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end rejecting_design_carries_pending_decisions_and_approval_starts_implementation -- --exact --nocapture
 根因: Reject 只注入 DesignFeedback，调度器仅为 Inject::Decisions 取得表态租约，导致驳回轮既不送达也不消费表态，随后 Approve 检测到未消费表态而再次启动设计。
 复核: 待复核
@@ -43,7 +43,14 @@ missing decision text in rejection prompt: ["B-01", "B-02", "B-03"]; unconsumed 
 
 ## 修复说明
 
-定位轮未修改产品代码。仅新增失败回归测试和本文档；修复及修复后通过验证留待 Autome 后续节点。
+第 1/3 轮修复：
+
+- `scheduler.rs` 将 `Inject::DesignFeedback` 纳入携带表态的会话判断，并在启动驳回设计会话前调用现有 `carry_decisions`。继续复用启动失败释放、会话正常结束消费、异常结束释放的租约机制，不提前消费未送达的表态。
+- `launcher.rs` 在原文驳回意见之后调用现有 `render_decisions`，同时送达表态编号、正文和方向；没有表态时不追加内容。未修改领域转换或注入序列化结构。
+- 定位轮回归测试保持原样。修复前执行原复现命令，退出码 101，仍报告三条表态缺失、未消费及批准后进入 design；修复后相同命令通过（1 passed）。日志为 `.autome/output/fix-round-1-before.log` 和 `.autome/output/fix-round-1-repro.log`。
+- 直接相关子集全部通过：`cargo test --offline -p automed --lib decision`（7 passed）；`cargo test --offline -p automed --lib rejecting`（2 passed）；`cargo test --offline -p automed --lib design_feedback_is_injected_verbatim`（1 passed）；`cargo test --offline -p automed --test end_to_end rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim -- --exact`（1 passed）。日志分别为 `.autome/output/fix-round-1-{decisions,rejecting,feedback,control}.log`。
+- `git diff --check` 和修改源码的 `rustfmt --edition 2024 --check crates/automed/src/launcher.rs crates/automed/src/scheduler.rs` 通过。`cargo fmt --all -- --check` 未通过，仅报告定位轮回归测试 `end_to_end.rs:2631` 已有格式差异；遵照不得修改回归测试的要求保留原样，详情见 `.autome/output/fix-round-1-fmt.log`。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，留由宿主合并前执行；待独立复核。
 
 ## 复核意见
 
