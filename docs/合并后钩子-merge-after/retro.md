@@ -16,3 +16,4 @@
 复盘 #2 | 无 | 覆盖写 lessons.md 为 6 条（L-01..L-06；L-02/L-03 补入实现 #6 与审计 #5 的复现，新增 L-05 夹具依赖缺省配置、L-06 非本任务失败用例的干净 main 对照）；本任务无 Autome 指标，未引用数值 | docs/合并后钩子-merge-after/lessons.md | 无
 
 实现 #7 | M-04 | 退回 + 验证环境 | docs/合并后钩子-merge-after/evidence/M-04-r7-impl.md | rebase 完成；Electron SIGABRT，Web EPERM/EMFILE
+审计 #6 | M-04 | 通过 | docs/合并后钩子-merge-after/evidence/M-04-r7-audit.md | 无
