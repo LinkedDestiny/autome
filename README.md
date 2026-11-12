@@ -106,7 +106,7 @@ repository by repository.
 
 ### Host gate, retries and cooldowns
 
-Three things the core does on its own, none of which needs a prompt to
+Things the core does on its own, none of which needs a prompt to
 cooperate. Configure commands and retry policy in the project's `.autome/config.toml`:
 
 ```toml
@@ -117,6 +117,10 @@ run = "each_round"          # the default; "before_merge" runs the full gate onl
 timeout_minutes = 30       # the default; a gate that runs longer has failed
 same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
 reuse_for_main_check = true # the default; false always runs the post-merge gate
+
+[merge]
+after = "sh scripts/install-cli.sh" # optional; sh -c in the main checkout
+after_timeout_minutes = 10          # optional; the default
 
 [retry]
 attempts = 2               # the default; 0 restores "a crash fails the task"
@@ -189,6 +193,22 @@ fix_rounds = 3            # the default; an integer from 1–20
   Prefer commands such as `npm ci` that preserve lock files: a command that
   changes tracked files in the main checkout leaves it dirty and can block
   the next merge.
+- **After merge.** Optional `[merge] after` runs on the host in the main
+  checkout after merging, after MainCheck passes (when configured), and after
+  main-checkout preparation, before removing the task worktree and branch.
+  Preparation failure still allows the hook to run. The command receives
+  `AUTOME_TASK` and `AUTOME_MERGE_COMMIT` (this task's full merge commit SHA);
+  the checkout may already include later merges. A blank command disables it.
+  The default timeout is 10 minutes. A non-zero exit or timeout raises one
+  `after_merge_failed` project alert; the task still finishes as Done and the
+  merge is not rolled back. Failed or skipped MainCheck and workspace projects
+  skip the hook with a `merge.after_skipped` event.
+  Jobs run in the background and reconnect after a core restart. `autome run`
+  prints the start and result, or the skip reason; logs live at
+  `.autome/output/gates/<task>/after_merge-<sha12>.log`.
+  Write only gitignored outputs (or outside the checkout): changing tracked
+  files can block the next merge. Stopping a task kills its hook; resuming
+  runs it again, so commands should tolerate repeated execution.
 - **Bug fix rounds.** Each fix session counts toward the budget, including
   rework after a failed gate, a rejected review or a rebase conflict. Automatic
   transitions check the budget before opening the next fix round; when it is

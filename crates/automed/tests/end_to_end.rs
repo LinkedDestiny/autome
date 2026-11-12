@@ -7631,3 +7631,354 @@ fn bug_loop_not_a_bug_task_convert_rebuilds_it_as_a_feature_with_its_attachments
         ReplyOutcome::Error { .. }
     ));
 }
+
+fn configure_merge_after(w: &World, exit_code: i32) {
+    let script = w.root.join("hook.sh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"wt=absent
+if [ -d ".worktree/$(cat '{root}/hook-slug')" ]; then wt=present; fi
+printf '%s|%s|%s|wt=%s\n' "$PWD" "$AUTOME_TASK" "$AUTOME_MERGE_COMMIT" "$wt" >> '{root}/hook-runs'
+mkdir -p hook-out
+echo stamp > hook-out/stamp
+echo hook-output
+exit {exit_code}
+"#,
+            root = w.root.display()
+        ),
+    )
+    .unwrap();
+    let ignore = w.repo.join(".gitignore");
+    let text = std::fs::read_to_string(&ignore).unwrap();
+    std::fs::write(ignore, format!("{text}\nhook-out/\n")).unwrap();
+    automed::git::commit_paths(&w.repo, &[".gitignore"], "ignore hook output").unwrap();
+    w.configure(&format!("[merge]\nafter = 'sh {}'\n", script.display()));
+}
+
+#[test]
+fn merge_after_runs_in_the_main_checkout_after_the_main_check_and_before_cleanup() {
+    needs_git!();
+    let mut w = World::new("merge-after-ok");
+    configure_merge_after(&w, 0);
+    // This case verifies a fresh MainCheck, not reuse of the pre-merge verdict.
+    let id = run_gated_task_with(&mut w, "hook success", false, Some(false));
+    let task = w.ctx.store.get_task(&id).unwrap();
+    std::fs::write(w.root.join("hook-slug"), &task.slug).unwrap();
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let task = w.ctx.store.get_task(&id).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(w.root.join("hook-runs")).unwrap(),
+        format!(
+            "{}|{}|{}|wt=present\n",
+            w.repo.canonicalize().unwrap().display(),
+            id,
+            task.merge_commit.unwrap()
+        )
+    );
+    assert!(w.repo.join("hook-out/stamp").exists());
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let seq = |kind: &str| {
+        events
+            .iter()
+            .find(|(_, k, s, _)| k == kind && s == &id)
+            .unwrap()
+            .0
+    };
+    let main = events
+        .iter()
+        .find(|(_, k, s, p)| {
+            k == "gate.result" && s == &id && p["node"] == "main_check" && p["ok"] == true
+        })
+        .unwrap()
+        .0;
+    let done = events
+        .iter()
+        .find(|(_, k, s, p)| k == "task.updated" && s == &id && p["state"]["state"] == "done")
+        .unwrap()
+        .0;
+    assert!(main < seq("merge.after_started"));
+    assert!(seq("merge.after_started") < seq("merge.after"));
+    assert!(seq("merge.after") < done);
+    let result = w.ctx.store.last_event(&id, "merge.after").unwrap().unwrap();
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["exit_code"], 0);
+    assert!(std::path::Path::new(result["log"].as_str().unwrap()).exists());
+    assert!(result["tail"].as_str().unwrap().contains("hook-output"));
+    assert!(automed::git::is_clean(&w.repo).unwrap());
+    assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+}
+
+#[test]
+fn merge_after_failure_raises_one_alert_and_the_task_is_still_done() {
+    needs_git!();
+    let mut w = World::new("merge-after-fail");
+    configure_merge_after(&w, 6);
+    let id = run_gated_task(&mut w, "hook failure");
+    let task = w.ctx.store.get_task(&id).unwrap();
+    std::fs::write(w.root.join("hook-slug"), &task.slug).unwrap();
+    w.call("task.merge", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert!(!w.repo.join(".worktree").join(&task.slug).exists());
+    assert!(
+        !std::process::Command::new("git")
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{}", task.branch())
+            ])
+            .current_dir(&w.repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "after_merge_failed");
+    for text in ["hook.sh", "退出码 6", "after_merge-"] {
+        assert!(alerts[0].detail.contains(text));
+    }
+    assert_eq!(w.ctx.store.count_events(&id, "merge.after").unwrap(), 1);
+    let result = w.ctx.store.last_event(&id, "merge.after").unwrap().unwrap();
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["exit_code"], 6);
+}
+
+#[test]
+fn merge_after_events_are_absent_when_no_merge_after_is_configured() {
+    needs_git!();
+    for blank in [false, true] {
+        let mut w = World::new("merge-after-none");
+        if blank {
+            w.configure("[merge]\nafter = '  '\n");
+        }
+        let id = run_gated_task(&mut w, "no hook");
+        w.call("task.merge", json!({"task_id": id}));
+        w.settle();
+        assert_eq!(w.state(&id), "done");
+        for kind in ["merge.after_started", "merge.after", "merge.after_skipped"] {
+            assert_eq!(w.ctx.store.count_events(&id, kind).unwrap(), 0);
+        }
+        assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+        let dir = automed::gate::dir_for(&w.repo, &id);
+        assert!(!std::fs::read_dir(dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("after_merge")
+        }));
+    }
+}
+
+#[test]
+fn merge_after_is_skipped_when_the_main_check_failed() {
+    needs_git!();
+    let mut w = World::new("hook-main-fail");
+    configure_merge_after(&w, 0);
+    // This case verifies a fresh MainCheck, not reuse of the pre-merge verdict.
+    let id = run_gated_task_with(&mut w, "hook main fail", false, Some(false));
+    std::fs::write(w.root.join("main-should-fail"), "").unwrap();
+    ok(&w.call("task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let alerts = w.ctx.store.open_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "main_gate_failed");
+    let skipped = setup_events(&w, &id, "merge.after_skipped");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].1["reason"], "验证 main 未通过");
+    assert!(setup_events(&w, &id, "merge.after_started").is_empty());
+    assert!(!w.root.join("hook-runs").exists());
+}
+
+#[test]
+fn merge_after_runs_after_the_main_checkout_setup_and_even_when_it_failed() {
+    needs_git!();
+    for fail in [false, true] {
+        let mut w = World::new("hook-setup");
+        configure_merge_after(&w, 0);
+        let body = if fail {
+            format!(
+                "if [ \"$PWD\" = '{}' ]; then exit 4; fi",
+                w.repo.canonicalize().unwrap().display()
+            )
+        } else {
+            String::new()
+        };
+        let (id, _) = setup_gate_task(&mut w, "hook setup", &body, false);
+        std::fs::write(w.root.join("hook.sh"), format!(
+            "sleep 1\nstamp=no; [ ! -f deps/stamp ] || stamp=yes\necho stamp=$stamp >> '{}/hook-runs'\n", w.root.display()
+        )).unwrap();
+        ok(&w.call("task.merge", json!({"task_id": id})));
+        w.settle();
+        assert_eq!(w.state(&id), "done");
+        let main = setup_events(&w, &id, "setup.result")
+            .into_iter()
+            .filter(|(_, e)| e["checkout"] == "main")
+            .collect::<Vec<_>>();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].1["ok"], !fail);
+        assert!(main[0].0 < setup_events(&w, &id, "merge.after_started")[0].0);
+        assert_eq!(
+            std::fs::read_to_string(w.root.join("hook-runs")).unwrap(),
+            if fail { "stamp=no\n" } else { "stamp=yes\n" }
+        );
+        let results = setup_events(&w, &id, "merge.after");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1["ok"], true);
+        let main_path = w.repo.canonicalize().unwrap();
+        assert_eq!(
+            setup_runs(&w)
+                .iter()
+                .filter(|line| line.starts_with(&format!("{} ", main_path.display())))
+                .count(),
+            1
+        );
+        let alerts = w.ctx.store.open_alerts().unwrap();
+        assert_eq!(alerts.len(), usize::from(fail));
+        if fail {
+            assert_eq!(alerts[0].kind, "setup_failed");
+        }
+    }
+}
+
+#[test]
+fn merge_after_is_skipped_in_a_workspace_with_one_event_per_task() {
+    needs_git!();
+    let mut w = Workspace::new("hook-workspace", &["docs", "backend"]);
+    let config = w.ws().join(".autome/config.toml");
+    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    std::fs::write(
+        config,
+        format!(
+            "{text}\n[merge]\nafter = 'touch {}/hook-runs'\n",
+            w.root.display()
+        ),
+    )
+    .unwrap();
+    let (id, _) = workspace_waiting_to_merge(&mut w);
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Done
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "merge.after_skipped")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(&id, "merge.after_skipped")
+            .unwrap()
+            .unwrap()["reason"],
+        "工作区项目不支持合并后命令"
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "merge.after_started")
+            .unwrap(),
+        0
+    );
+    assert!(!w.root.join("hook-runs").exists());
+}
+
+#[test]
+fn merge_after_runs_for_a_bug_task_too() {
+    needs_git!();
+    let mut w = World::new("hook-bug");
+    configure_merge_after(&w, 0);
+    let slug = slug_for("hook bug");
+    std::fs::write(w.root.join("hook-slug"), &slug).unwrap();
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "hook bug");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    ok(&w.call("task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let result = setup_events(&w, &id, "merge.after");
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].1["ok"], true);
+    let runs = std::fs::read_to_string(w.root.join("hook-runs")).unwrap();
+    assert_eq!(runs.lines().count(), 1);
+    assert!(runs.contains(&format!("|{id}|")));
+}
+
+#[test]
+fn merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume() {
+    needs_git!();
+    // Exercise all user lifecycle actions through the real dispatcher.
+    for action in ["stop", "pause", "cancel"] {
+        let mut w = World::new("hook-lifecycle");
+        configure_merge_after(&w, 0);
+        let id = run_gated_task(&mut w, "hook lifecycle");
+        std::fs::write(w.root.join("slow"), "").unwrap();
+        std::fs::write(w.root.join("hook.sh"), format!(
+            "echo $$ > '{root}/hook-pid'\nwhile [ -f '{root}/slow' ]; do sleep 0.05; done\necho done\n", root = w.root.display()
+        )).unwrap();
+        ok(&w.call("task.merge", json!({"task_id": id})));
+        resume_wait(&mut w, |w| {
+            std::fs::read_to_string(w.root.join("hook-pid"))
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .is_some()
+        });
+        let pid: i32 = std::fs::read_to_string(w.root.join("hook-pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(setup_events(&w, &id, "merge.after_started").len(), 1);
+        ok(&w.call(&format!("task.{action}"), json!({"task_id": id})));
+        let dir = automed::gate::dir_for(&w.repo, &id);
+        if action == "pause" {
+            assert!(automed::launcher::pid_alive(pid));
+            assert_eq!(w.state(&id), "paused");
+        } else {
+            resume_wait(&mut w, |_| !automed::launcher::pid_alive(pid));
+            assert!(std::fs::read_dir(&dir).unwrap().all(|e| {
+                !e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("after_merge-")
+            }));
+            assert_eq!(
+                w.state(&id),
+                if action == "stop" {
+                    "stopped"
+                } else {
+                    "cancelled"
+                }
+            );
+        }
+        assert!(dir.join("after_merge.prepared").exists());
+        assert!(setup_events(&w, &id, "merge.after").is_empty());
+        std::fs::remove_file(w.root.join("slow")).unwrap();
+        if action != "cancel" {
+            ok(&w.call("task.resume", json!({"task_id": id})));
+            w.settle();
+            assert_eq!(w.state(&id), "done");
+            assert_eq!(
+                setup_events(&w, &id, "merge.after_started").len(),
+                if action == "stop" { 2 } else { 1 }
+            );
+            let results = setup_events(&w, &id, "merge.after");
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].1["ok"], true);
+        }
+        assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+    }
+}
