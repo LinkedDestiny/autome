@@ -1,7 +1,7 @@
 # 审计角色关闭时 Bug Loop 静默跳过复核
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_review_policy -- --nocapture
 根因: Bug Loop 在审计关闭时将 FixGate 成功直接转到 Rebase；启动入口没有 Bug 专用审计必需检查，通用 SAME-MODEL 校验又豁免关闭的角色，且跳过分支不记录告警。
 复核: 待复核
@@ -46,7 +46,15 @@ fix-round: 0/3
 
 ## 修复说明
 
-尚未进入修复轮。
+第 1/3 轮采用启动拒绝方案：直接创建并启动 Bug 时，在持久化任务前检查项目与全局合并配置；审计关闭则提示“Bug 任务需要独立复核，请启用审计角色后启动”。草稿仍允许保存，在 Start 和 SlotAvailable 转移时重新检查当前审计开关，覆盖草稿创建后以及排队期间的配置变化。Feature 任务规则不变。
+
+FixGate 成功后统一进入 FixReview，不再按审计开关跳到 Rebase；运行途中关闭审计会通过既有角色检查停在 FixReview 配置失败状态。同步修正原有领域单元测试中允许跳过复核的预期，明确断言配置失败且没有启动动作。定位轮的 `end_to_end.rs` 回归测试未修改、删除、跳过或弱化。
+
+验证：原复现命令修复前为 1 通过、2 失败，修复后为 3 通过、0 失败。日志分别为 `.autome/output/fix-1-before.log` 和 `.autome/output/fix-1-after.log`。
+
+配置门禁 `sh scripts/ci-local.sh` 已完整运行，耗时 1026 秒，退出码 1，未全绿。Format、Clippy、Rust 全仓测试（含 106 条端到端测试）、Contract、Web lint/typecheck/build 均通过；Rust 另有 1 条既有 ignored。Desktop 为 104 通过、1 失败：`test/dom.test.js:30` 的 Electron DOM harness 返回空退出码，stderr 为空，未进一步定位原因。Web 为 271 通过、11 失败、19 跳过，4 个测试文件失败；日志记录本地监听 `listen EPERM: operation not permitted 127.0.0.1`、文件监听 `EMFILE` 以及 server 钩子超时，部分用例因初始化失败未执行，不能视为通过。未改动或弱化这些检查，需宿主在具备本地监听与 Electron 运行条件的环境重新验收。完整日志为 `.autome/output/fix-1-gate.log`。
+
+`git diff --check` 通过。本轮不启动后续会话，不推送、不合并，独立复核仍待 Autome 调度。
 
 ## 复核意见
 

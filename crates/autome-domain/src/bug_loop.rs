@@ -69,6 +69,11 @@ pub fn apply_for(
     if kind == TaskKind::Feature {
         return apply_with_merge_request(state, trigger, ctx, merge_requested);
     }
+    if matches!(trigger, Trigger::Start | Trigger::SlotAvailable)
+        && !ctx.config.is_enabled(Role::Audit)
+    {
+        return Err(rejected("Bug 任务需要独立复核，请启用审计角色后启动"));
+    }
     match (state, trigger) {
         (
             _,
@@ -293,11 +298,7 @@ pub fn apply_for(
                 progress,
             )),
             GateOutcome::Passed if *node == Node::FixGate => {
-                Ok(if ctx.config.is_enabled(Role::Audit) {
-                    session(BugStep::FixReview, None, ctx)
-                } else {
-                    core(Node::Rebase)
-                })
+                Ok(session(BugStep::FixReview, None, ctx))
             }
             _ => apply_with_merge_request(state, trigger, ctx, merge_requested),
         },
@@ -1116,7 +1117,7 @@ mod tests {
         );
     }
     #[test]
-    fn bug_loop_passed_fix_gate_goes_to_review_or_to_rebase_when_audit_is_off() {
+    fn bug_loop_passed_fix_gate_requires_review_even_when_audit_is_off() {
         let mut cfg = config();
         assert_eq!(
             at(Node::FixGate, gate(Node::FixGate, true)).next,
@@ -1131,7 +1132,12 @@ mod tests {
                 BugProgress::default()
             )
             .unwrap(),
-            core(Node::Rebase)
+            Transition::fail(
+                Node::FixReview,
+                FailureReason::Config {
+                    detail: "该角色当前已关闭".into(),
+                },
+            )
         );
     }
     #[test]
