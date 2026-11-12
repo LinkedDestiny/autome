@@ -1,2 +1,3 @@
 设计 #1 | 无 | 设计初稿（M-01..M-04，基线 1196 用例，计划新增 20） | 无证据文件（设计轮） | 无
 评审 #1 | M-01 | 退回 + 子阶段与恢复设计 | docs/合并后钩子-merge-after/合并后钩子-merge-after-review.md | D1-P01、D1-P02
+裁决 #1 | M-01 | 采纳 D1-P01、D1-P02（prepared 标记、事务写警报+结果、补开始事件）；设计定稿 → 实现中 | docs/合并后钩子-merge-after/合并后钩子-merge-after-adjudication.md | 无
