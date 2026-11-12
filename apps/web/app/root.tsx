@@ -1,3 +1,4 @@
+import { loadShell } from './components/shell-data.ts';
 import { servicesContext } from './load-context.ts';
 import { byKind, liveShouldRevalidate } from './lib/live-routes.ts';
 import { Shell } from './components/shell.tsx';
@@ -6,11 +7,7 @@ import { LiveBanner, useLiveEvents, writeGate, WriteGateProvider, useKernelRecov
 import { Links, Link, Meta, Outlet, isRouteErrorResponse, useRouteError, Scripts, ScrollRestoration, useLoaderData, type LoaderFunctionArgs } from "react-router";
 export async function loader({ context }: LoaderFunctionArgs) {
   const { gateway } = context.get(servicesContext);
-  if (!gateway) return { kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [] };
-  const result = await gateway.read({ method: 'project.list', params: {} });
-  if (!result.body.ok) return { kernel: { ok: false, error: result.body.error }, projects: [], tasks: [] };
-  const payload = result.body.payload as { projects: { project: { id: string; display_name: string } }[] };
-  return { kernel: { ok: true }, projects: payload.projects.map(({ project }) => ({ id: project.id, name: project.display_name })), tasks: [] };
+  return loadShell(gateway);
 }
 export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.'));
 

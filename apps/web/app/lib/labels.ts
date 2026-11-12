@@ -35,3 +35,9 @@ export function stageOf(kind: string, state: TaskState): { label: string; index:
   const index = state.state === 'done' ? stages.length - 1 : stages.findIndex(stage => stage.nodes.includes(node!));
   return { label: index < 0 ? node! : stages[index].label, index, total: stages.length };
 }
+export function taskStatusLine(state: TaskState): string {
+  const node = state.state === 'active' ? state.node : state.state === 'paused' ? state.resume : state.at;
+  if (state.state === 'active') return node && Object.hasOwn(AWAIT_PHRASES, node) ? AWAIT_PHRASES[node as keyof typeof AWAIT_PHRASES] : nodeLabel(node ?? '');
+  const label = Object.hasOwn(STATE_LABELS, state.state) ? STATE_LABELS[state.state as keyof typeof STATE_LABELS] : state.state;
+  return node ? `${label} · ${nodeLabel(node)}` : label;
+}

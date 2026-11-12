@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/25
+implementation-round: 5/25
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-04 项目栏计数与首页总览，事件驱动实时更新
+next-action: 审计复验 M-04 的计数、总览及实时更新；通过后实现 M-05 跳转面板
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -261,6 +261,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | `bell-view.test.ts`「固定定位与内部 60vh 滚动」 | 改为「顶栏内定位与内部 60vh 滚动」：断言列表元素带 `bell-panel` 类，并且 `app.css` 的 `.bell-panel` 规则含 `max-height: 60vh` 和 `overflow-y: auto` | R-07 要求去掉内联样式；任务范围要求铃铛收进顶栏，不再 `fixed` |
 | `bell-view.test.ts`「root 同时渲染铃铛与子路由」 | `createRoutesStub` 的根路由加 `id: 'root'`、`loader`，并通过 `hydrationData` 给出 `ShellData` | 根组件开始读 loader 数据；断言内容（铃铛、子路由、`useLiveEvents()` 只出现一次）不变 |
 | `live-banner.test.ts` 两条 | `top:0` 改为断言 `class="live-banner"`；新签名下补传 `core`/`kernelError` 参数 | 横幅从 sticky 内联样式改为外壳网格中单独的一行，样式移进 CSS |
+| `load-context.test.ts` 根 loader 与开发/生产 SSR | 假网关区分列表与详情；调用断言为一次 project.list 和每项目一次 project.get；项目结果补 counts | 根 loader 已实现完整 loadShell，仍严格验证白名单 read 和上下文接线；用例数不变 |
 | `server.test.ts`「dev 首页 SSR…」「prod 首页…」 | `面板骨架已就绪` 改为首页标题 `总览` | 占位页 `home.tsx` 按范围删除。断言不依赖内核此时是否在线：离线时总览照样渲染 |
 
 ### R-08 一屏布局
@@ -323,7 +324,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 已完成 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
-| M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
+| M-04 | 待审 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
 ## 验收说明
@@ -339,7 +340,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 - 新测试 `test/load-context.test.ts`，共 9 条：
   1. `createLoadContext` 每次请求都新建一个 `RouterContextProvider`，能取回传入的 services；gateway 为 `null` 时取回 `null`。
   2. 用不同查询串把 `app/load-context.ts` 加载两次，得到的是同一个 `servicesContext` 对象。
-  3. 根 loader 只通过 `gateway.read({method:'project.list', params:{}})` 取数。假 gateway 只有 `read`/`write`，调用记录里恰好有 1 次读请求。
+  3. 根 loader 只通过 `gateway.read` 取数。假 gateway 只有 `read`/`write`，完整 loadShell 对单项目调用恰好一次 project.list 和一次 project.get；空列表不读取详情。
   4. gateway 为 `null` 时，根 loader 返回 `kernel.ok === false`，文案含「内核未连接」，不抛错。
   5. `gateway.read` 返回 503、504、409 时，根 loader 把 `body.error` 原样放进 `kernel.error`。
   6. 开发模式：Vite 用 `middlewareMode`，不监听端口，关掉 HMR 和 watcher；用 `ssrLoadModule('virtual:react-router/server-build')` 得到 build，交给 `react-router` 的 `createRequestHandler`，再把 `createLoadContext({gateway: 假网关})()` 作为上下文传入。请求 `GET /` 得到 200，HTML 含假项目名「演示项目甲」。
@@ -419,6 +420,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-04 项目栏计数与首页总览，实时更新
 
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-impl.md · 非监听验收通过，监听与全门禁受阻待复验 · 实现 #5
+
 - 覆盖：R-01、R-02。前置：M-01、M-02、M-03。
 - 结果：新增 `shell-data.ts`，`loadShell` 按完整形态实现，根 loader 改为调用它。新增 `project-list.tsx`（项目栏，带计数）、`overview-card.tsx`、`nav-links.ts`、`routes/_index.tsx`。`routes.ts` 的 index 改指向 `routes/_index.tsx`，删除 `routes/home.tsx`。按表修改 `server.test.ts` 的两条。
 - 新测试 `test/shell-data.test.ts`，共 6 条：
@@ -443,7 +446,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-04 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/shell-data.test.ts test/overview.test.ts test/shell-live.test.ts test/server.test.ts test/live-routes.test.ts`（前置命令 `cargo build -p automed -p autome-cli`；之后分段跑 lint、typecheck、Web 全量测试、build、desktop 测试，各自报退出码）
-- 预期：点名的 5 个文件共 30 个用例通过（shell-data 6、overview 5、shell-live 3、server 9、live-routes 7）；Web 全量 343 个用例（329 + 14），`skipped` 为 0。实现轮如果被 `listen EPERM` 拦住，单独列出被拦的用例名单（`shell-live` 第 3 条和 `server.test` 中需要监听的用例），以及不依赖监听的那部分结果，交给审计轮复验。
+- 预期：点名的 5 个文件共 30 个用例通过（shell-data 6、overview 5、shell-live 3、server 9、live-routes 7）；Web 静态枚举 343 个用例（329 + 14），运行时参数化展开后 357 个（上一轮运行基线 343 + 14），`skipped` 为 0。实现轮如果被 `listen EPERM` 拦住，单独列出被拦的用例名单（`shell-live` 第 3 条和 `server.test` 中需要监听的用例），以及不依赖监听的那部分结果，交给审计轮复验。
 - 负向对照：项目栏的「等你处理」改成直接读 `counts.awaiting_user`、不经 `columnOf`，`shell-live` 第 1、2 条和 `shell-data` 第 2 条变红；根 `shouldRevalidate` 去掉 `'task.'`，`shell-live` 第 2 条（匹配器未命中）和 `load-context` 第 9 条变红；`taskHref` 不做编码，`overview` 第 5 条变红。
 
 ### M-05 ⌘K 跳转面板与新建任务卡入口

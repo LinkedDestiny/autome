@@ -11,7 +11,7 @@ import { revalidateForEvents } from '../app/lib/live-routes.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 function gateway(): KernelGateway {
-  return { read: vi.fn(async () => ({ status: 200, body: { ok: true, payload: { projects: [{ project: { id: 'P-1', display_name: '演示项目甲' } }] } } })), write: vi.fn() };
+  return { read: vi.fn(async (request: unknown) => ({ status: 200, body: { ok: true, payload: (request as { method: string }).method === 'project.list' ? { projects: [{ project: { id: 'P-1', display_name: '演示项目甲' } }] } : { tasks: [] } } })), write: vi.fn() };
 }
 const args = (g: KernelGateway | null) => ({ context: createLoadContext({ gateway: g })(), request: new Request('http://localhost/'), params: {}, url: new URL('http://localhost/'), pattern: '/' }) satisfies LoaderFunctionArgs;
 it('每个请求有独立 provider，services 和 null 原样交付', () => {
@@ -28,11 +28,13 @@ it('不同查询串加载共用同一上下文键', async () => {
   expect(a.servicesContext).toBe(b.servicesContext);
   expect(a.servicesContext).toBe(servicesContext);
 });
-it('根 loader 仅一次白名单 read，空列表和单项目都有效', async () => {
+it('根 loader 白名单读取项目列表和详情，空列表和单项目都有效', async () => {
   const g = gateway(); const result = await loader(args(g));
-  expect(g.read).toHaveBeenCalledExactlyOnceWith({ method: 'project.list', params: {} });
+  expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
+  expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
+  expect(g.read).toHaveBeenCalledTimes(2);
   expect(g.write).not.toHaveBeenCalled();
-  expect(result.projects).toEqual([{ id: 'P-1', name: '演示项目甲' }]);
+  expect(result.projects).toEqual([{ id: 'P-1', name: '演示项目甲', counts: { running: 0, needs_you: 0 } }]);
   vi.mocked(g.read).mockResolvedValue({ status: 200, body: { ok: true, payload: { projects: [] } } });
   expect((await loader(args(g))).projects).toEqual([]);
 });
@@ -49,7 +51,9 @@ async function checkSSR(build: ServerBuild, mode: string) {
   const g = gateway();
   const response = await createRequestHandler(build, mode)(new Request('http://localhost/'), createLoadContext({ gateway: g })());
   expect(response.status).toBe(200); expect(await response.text()).toContain('演示项目甲');
-  expect(g.read).toHaveBeenCalledExactlyOnceWith({ method: 'project.list', params: {} });
+  expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
+  expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
+  expect(g.read).toHaveBeenCalledTimes(2);
 }
 it('开发 Vite SSR 取得 Node 注入的网关，不监听端口', async () => {
   const vite = await createServer({ root, server: { middlewareMode: true, hmr: false, watch: null } });
