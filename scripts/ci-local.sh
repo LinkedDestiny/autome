@@ -77,14 +77,10 @@ run() {
 # warning that is allowed to accumulate stops being read.
 run 'Format' cargo fmt --all -- --check
 run 'Clippy' cargo clippy --all-targets -- -D warnings
-run 'Test' cargo test --workspace --all-targets
-# Separately from the unit suites so a failure here reads as "the loop broke"
-# rather than being buried in the unit output.
-run 'End to end' cargo test --test end_to_end -- --nocapture
-# The free half of the real-CLI gate: asks each installed CLI for its own
-# --help and checks every flag the adapter table passes appears in it. Skips
-# whichever CLI this machine does not have.
-run 'Adapter flags' cargo test --test real_cli every_adapter_flag -- --nocapture
+# --all-targets includes end_to_end and real_cli (including adapter flags).
+# Run each suite once: repeating the real-Git integration suite can push the
+# host gate past its deadline. Keep uncaptured output for integration failures.
+run 'Test (unit, end to end, adapter flags)' cargo test --workspace --all-targets -- --nocapture
 
 # --- job: desktop ----------------------------------------------------------
 # ci.yml does `npm ci || npm install` on a bare runner. Here node_modules is

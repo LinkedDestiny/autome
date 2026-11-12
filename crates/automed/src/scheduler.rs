@@ -1535,7 +1535,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     } else {
         BugProgress::default()
     };
-    let transition = match bug_loop::apply_for(
+    let mut transition = match bug_loop::apply_for(
         if bug {
             TaskKind::Bug
         } else {
@@ -1550,6 +1550,70 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         Ok(t) => t,
         Err(rejected) => return Err(err(rejected.reason)),
     };
+
+    // Conflict repair consumes the same implementation budget as ordinary
+    // work. Keep the streak in the ledger so daemon restarts cannot reset it.
+    if let Trigger::CoreStepDone {
+        node: Node::Rebase,
+        result,
+    } = trigger
+    {
+        if let CoreStepResult::Conflict { files, .. } = result {
+            let mut files = files.clone();
+            files.sort();
+            files.dedup();
+            let previous = ctx.store.last_event(task_id, "rebase.conflicts")?;
+            let count = previous
+                .filter(|p| p["files"] == json!(files))
+                .and_then(|p| p["count"].as_u64())
+                .unwrap_or(0)
+                + 1;
+            ctx.store.append_event(
+                "rebase.conflicts",
+                task_id,
+                json!({"files": files, "count": count}),
+            )?;
+            if matches!(
+                transition.action,
+                Action::StartRole {
+                    role: Role::Impl,
+                    ..
+                }
+            ) {
+                let next = ctx
+                    .store
+                    .next_round(task_id, &SessionKind::Role { role: Role::Impl })?;
+                let reason = if let Some(limit) = task.budget_n.filter(|limit| next > *limit) {
+                    Some(FailureReason::ImplBudget { limit })
+                } else if count >= 3 {
+                    Some(FailureReason::RebaseConflict {
+                        detail: format!(
+                            "rebase 连续 {count} 次出现相同冲突文件集：{}；请检查后重跑",
+                            files.join(", ")
+                        ),
+                    })
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    transition.next = TaskState::Failed {
+                        at: Node::Rebase,
+                        reason,
+                    };
+                    transition.action = Action::None;
+                }
+            }
+        } else {
+            ctx.store
+                .append_event("rebase.conflicts", task_id, json!({"count": 0}))?;
+        }
+    } else if matches!(
+        trigger,
+        Trigger::RerunFrom { .. } | Trigger::ExtendBudget { .. }
+    ) {
+        ctx.store
+            .append_event("rebase.conflicts", task_id, json!({"count": 0}))?;
+    }
 
     if let Trigger::Reply { info } = trigger {
         let n = ctx.store.count_events(task_id, "task.replied")? + 1;
@@ -5761,6 +5825,259 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(wt.join("README.md")).unwrap(),
             "branch\n"
+        );
+    }
+
+    // Regression for T-27: use real Git conflicts and the production scheduler,
+    // with dry launches and successful no-op session results (no external CLI).
+    fn rebase_retry_fixture(tag: &str, budget: u32) -> (World, TaskRecord, PathBuf) {
+        assert!(git_available(), "this regression requires Git");
+        let mut w = World::new(tag);
+        let task = w.add_task("T-1", "a");
+        let wt = w.with_worktree(&task);
+        w.ctx.store.set_task_budget(&task.id, budget).unwrap();
+        w.write_design(&task, &rebase_retry_doc(0, budget));
+        std::fs::write(wt.join("README.md"), "branch\n").unwrap();
+        git::commit_paths(&wt, &["README.md", &task.design_doc()], "branch edit").unwrap();
+        std::fs::write(w.repo.join("README.md"), "main\n").unwrap();
+        git::commit_paths(&w.repo, &["README.md"], "main edit").unwrap();
+        w.set_state(&task.id, TaskState::Active { node: Node::Rebase });
+        (w, task, wt)
+    }
+
+    fn rebase_retry_doc(round: u32, budget: u32) -> String {
+        design_doc("已完成", &[("M-01", MilestoneState::Done)], "").replace(
+            "implementation-round: 1/25",
+            &format!("implementation-round: {round}/{budget}"),
+        )
+    }
+
+    fn finish_rebase_retry_round(w: &mut World, task: &TaskRecord, round: u32, budget: u32) {
+        let doc = rebase_retry_doc(round, budget);
+        w.write_design(task, &doc);
+        let wt = w.with_worktree(task);
+        git::commit_paths(&wt, &[&task.design_doc()], "record no-op round").unwrap();
+        // Drive the actual successor states rather than resetting to Rebase;
+        // a future early conflict check may legitimately skip audit/retro.
+        for _ in 0..3 {
+            match w.state(&task.id) {
+                TaskState::Failed { .. } | TaskState::Active { node: Node::Rebase } => return,
+                TaskState::Active {
+                    node: Node::Implement | Node::Audit | Node::Retro,
+                } => {}
+                state => panic!("unexpected retry state: {state:?}"),
+            }
+            let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+            w.ctx
+                .store
+                .finish_session(
+                    &session.id,
+                    &SessionLifecycle::Exited { exit_code: 0 },
+                    &now_iso(),
+                )
+                .unwrap();
+            advance(&mut w.ctx, &task.id, &ended_ok(&doc)).unwrap();
+        }
+        assert!(matches!(
+            w.state(&task.id),
+            TaskState::Failed { .. } | TaskState::Active { node: Node::Rebase }
+        ));
+    }
+
+    #[test]
+    fn rebase_retry_regression_exhausted_budget_stops_new_implementation() {
+        let (mut w, task, _) = rebase_retry_fixture("rebase-budget-regression", 1);
+        run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        finish_rebase_retry_round(&mut w, &task, 1, 1);
+        if matches!(w.state(&task.id), TaskState::Active { node: Node::Rebase }) {
+            let current = w.ctx.store.get_task(&task.id).unwrap();
+            run_core_step(&mut w.ctx, &current, Node::Rebase).unwrap();
+        }
+        assert!(
+            matches!(w.state(&task.id), TaskState::Failed { .. }),
+            "exhausted 1/1 rebase retry must stop, got {:?}",
+            w.state(&task.id)
+        );
+        assert_rebase_retry_stopped(&w, &task);
+        assert_eq!(
+            w.ctx
+                .store
+                .next_round(&task.id, &SessionKind::Role { role: Role::Impl })
+                .unwrap(),
+            2,
+            "must not launch an implementation round beyond the budget"
+        );
+    }
+
+    fn assert_rebase_retry_stopped(w: &World, task: &TaskRecord) {
+        let state = w.state(&task.id);
+        let TaskState::Failed { reason, .. } = &state else {
+            panic!("rebase retry must wait for user intervention: {state:?}");
+        };
+        assert!(
+            !matches!(
+                reason,
+                FailureReason::Config { .. } | FailureReason::Protocol { .. }
+            ),
+            "an unrelated environment/protocol error is not a conflict breaker: {state:?}"
+        );
+        let detail = serde_json::to_string(&state).unwrap().to_lowercase();
+        assert!(
+            detail.contains("rebase"),
+            "failure must identify the rebase conflict: {state:?}"
+        );
+        assert!(w.ctx.store.running_session(&task.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn rebase_retry_regression_same_conflict_stops_before_nineteen_retries() {
+        // High budget isolates the missing conflict breaker from budget exhaustion.
+        // N is not specified by the card; reject the observed 19-retry incident
+        // without fixing the implementation's eventual threshold at 3.
+        let (mut w, task, wt) = rebase_retry_fixture("rebase-breaker-regression", 100);
+        for round in 1..=19 {
+            let current = w.ctx.store.get_task(&task.id).unwrap();
+            run_core_step(&mut w.ctx, &current, Node::Rebase).unwrap();
+            if matches!(w.state(&task.id), TaskState::Failed { .. }) {
+                assert!(round > 1, "the first conflict must still allow repair");
+                assert_rebase_retry_stopped(&w, &task);
+                return;
+            }
+            let started = w
+                .ctx
+                .store
+                .last_event(&task.id, "session.started")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                started["inject"],
+                serde_json::to_value(Inject::RebaseConflict {
+                    files: vec!["README.md".into()],
+                })
+                .unwrap()
+            );
+            assert_eq!(
+                std::fs::read_to_string(wt.join("README.md")).unwrap(),
+                "branch\n",
+                "host aborts rebase; no conflict markers remain for the no-op session"
+            );
+            finish_rebase_retry_round(&mut w, &task, round, 100);
+            if matches!(w.state(&task.id), TaskState::Failed { .. }) {
+                assert_rebase_retry_stopped(&w, &task);
+                return;
+            }
+        }
+        panic!("same README.md conflict launched 19 no-op implementation rounds without stopping");
+    }
+
+    #[test]
+    fn rebase_conflict_streak_normalizes_files_and_resets_on_recovery() {
+        let (mut w, task, _) = rebase_retry_fixture("rebase-streak-reset", 0);
+        for (files, expected) in [
+            (vec!["b", "a"], 1),
+            (vec!["a", "b", "a"], 2),
+            (vec!["c"], 1),
+        ] {
+            w.set_state(&task.id, TaskState::Active { node: Node::Rebase });
+            advance(
+                &mut w.ctx,
+                &task.id,
+                &Trigger::CoreStepDone {
+                    node: Node::Rebase,
+                    result: CoreStepResult::Conflict {
+                        files: files.into_iter().map(str::to_owned).collect(),
+                        detail: "conflict".into(),
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "rebase.conflicts")
+                    .unwrap()
+                    .unwrap()["count"],
+                expected
+            );
+            assert_rebase_retry_stopped(&w, &task);
+        }
+        advance(
+            &mut w.ctx,
+            &task.id,
+            &Trigger::RerunFrom { node: Node::Rebase },
+        )
+        .unwrap();
+        // Rerun resets the streak before the queued core step runs.
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "rebase.conflicts")
+                .unwrap()
+                .unwrap()["count"],
+            0
+        );
+        let current = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &current, Node::Rebase).unwrap();
+        // The actual repository still conflicts, but the old streak is gone.
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "rebase.conflicts")
+                .unwrap()
+                .unwrap()["count"],
+            1
+        );
+        advance(
+            &mut w.ctx,
+            &task.id,
+            &Trigger::ExtendBudget { extra_rounds: 1 },
+        )
+        .unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "rebase.conflicts")
+                .unwrap()
+                .unwrap()["count"],
+            0
+        );
+        finish_rebase_retry_round(&mut w, &task, 1, 1);
+        w.ctx
+            .store
+            .append_event(
+                "rebase.conflicts",
+                &task.id,
+                json!({"files": ["c"], "count": 2}),
+            )
+            .unwrap();
+        advance(
+            &mut w.ctx,
+            &task.id,
+            &Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Ok,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&task.id, "rebase.conflicts")
+                .unwrap()
+                .unwrap()["count"],
+            0
+        );
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::AwaitMerge
+            }
         );
     }
 
