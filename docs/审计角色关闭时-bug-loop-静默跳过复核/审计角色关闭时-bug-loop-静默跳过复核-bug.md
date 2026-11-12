@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_review_policy -- --nocapture
 根因: Bug Loop 在审计关闭时将 FixGate 成功直接转到 Rebase；启动入口没有 Bug 专用审计必需检查，通用 SAME-MODEL 校验又豁免关闭的角色，且跳过分支不记录告警。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -66,4 +66,11 @@ FixGate 成功后统一进入 FixReview，不再按审计开关跳到 Rebase；�
 
 ## 复核意见
 
-待独立复核。
+复核通过（第 2/3 轮，独立复验）。
+
+- 复现命令：实跑 3 通过、0 失败；全部 `bug_` 端到端用例 26 通过；`autome-domain` 单元测试 384 通过。
+- 差异 `688ac9b..8ebb304` 的 `crates/` 仅三处：`bug_loop.rs`（Start/SlotAvailable 在审计关闭时拒绝；FixGate 通过后无条件进入 FixReview）、`dispatch.rs`（非草稿 Bug 创建前检查合并后审计开关）、一条领域单元测试预期更新。Feature 路径在新检查之前已提前返回，不受影响。
+- 根因站得住：原先 FixGate 成功在审计关闭时直达 Rebase，且启动入口无 Bug 专用检查。修复同时堵住入口（创建、草稿启动、排队）与出口（运行中关闭审计会停在 FixReview 配置失败），不再依赖通用 SAME-MODEL 豁免。
+- 回归测试：`end_to_end.rs` 定位轮测试未被修改、删除、跳过或弱化（修复差异中该文件无改动）。唯一被改的是领域单元测试，原断言“关闭审计可跳到 Rebase”正是缺陷本身，改为断言配置失败且无启动动作，是合理更新而非弱化。
+- 范围最小；未采用告警方案，故无需展示验收。
+- 门禁：修复轮报告的失败（Web 监听 `EPERM`/`EMFILE`、Electron DOM harness 空退出码）出自沙箱限制，修复差异不涉及 Web 与 Desktop，判断与本修复无关；宿主上 notifier 超时与本差异无代码关联，需宿主环境确认，本轮未代为修改。
