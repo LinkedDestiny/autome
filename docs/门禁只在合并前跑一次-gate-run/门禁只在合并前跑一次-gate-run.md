@@ -107,8 +107,9 @@ next-action: M-01：在 autome-domain 加 GateRun 与实现轮结束后的转换
    「全量门禁（`<门禁命令原文>`）由宿主在合并前统一运行，本轮不要自己跑。」；MergeGate 失败后修复轮收到的注入文字不再要求它
    自己重跑整条门禁命令。
 7. `each_round` 与没配门禁时，所有 prompt、简报逐字节不变：现有 12 份金样不动，新增 `before_merge` 的金样（意见 5）。
-8. 协议升到 `protocol/v3`：五份模板（plan、impl、audit、fix、fix-review）加 `before_merge` 段，`bug-protocol.md` 第 40 行补
-   一句（Backlog B-02 纳入），CHANGELOG 新节、protocol eval 认得分段并校验它，五个行为用例（意见「范围」、B-02）。
+8. 协议升到 `protocol/v3`：五份模板（plan、impl、audit、fix、fix-review）加 `before_merge` 段，CHANGELOG 新节、protocol eval
+   认得分段并校验它，五个行为用例（意见「范围」）；`bug-protocol.md` 第 40 行补一句「`before_merge` 下修复门禁只跑复现命令」
+   （Backlog B-02，用户 2026-11-12 纳入，按协议单列为里程碑 M-07）。
 9. README 与技术设计 §8.1 写明取舍：门禁次数降到每个任务一次；门禁问题与回归到合并前才由宿主统一发现、会多退回一次实现轮，
    会话不再各自兜底；Bug 修复轮只跑复现命令（目标 5、约束 12、意见 6）。
 
@@ -415,11 +416,13 @@ pub fn gate_line(command: &str) -> String {
   `GATE_ONLY_BEFORE_MERGE` 是同一句（M-06 的 phrase 规则钉住）。这段文字不引用任何账本事件，所以不会把上一次 MergeGate 的失败
   当作本轮证据；`before_merge` 下复核轮之前宿主只跑过只含复现命令的 FixGate，这句话因此总是成立。
 
-- **`bug-protocol.md` 第 40 行**（Backlog B-02 纳入）：
+- **`bug-protocol.md` 第 40 行**（Backlog B-02，用户 2026-11-12 纳入；单列为 M-07，不在 M-06 里做）：
 
   > 宿主执行复现命令及配置的项目门禁，任一失败退回修复；项目 `[gate] run = "before_merge"` 时修复门禁只跑复现命令，项目门禁留到合并前门禁。预算耗尽由 Autome 停下，用户可追加轮次。
 
-  这份文件不进 prompt、不进简报、不计入大小上限，改它不影响任何渲染字节。
+  这份文件不进 prompt、不进简报、不计入大小上限，改它不影响任何渲染字节。同一里程碑在 `CHANGELOG.md` 的 `## protocol/v3` 节
+  （M-06 建立）追加 G-6 条目，并在 `phrases.rs` 的 `REQUIRED` 加一条：`bug-protocol.md` 必含「修复门禁只跑复现命令，项目门禁留到合并前门禁」
+  （`why` 引用 B-02 与目标 3），让这句话受 protocol eval 第 1 层保护。
 
 review、adjudicate、retro、locate、intake、onboarding 六份模板不改：前三者不跑测试；定位轮的任务是写一个稳定失败的回归测试，
 它的 prompt 本来就没有让它跑项目门禁。
@@ -489,7 +492,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### 7. 协议版本与 protocol eval（目标 8；M-06）
 
-- `CHANGELOG.md` 末尾新增 `## protocol/v3`，一句说明（「`[gate] run = "before_merge"` 下会话不再自己跑全量门禁」）与六个条目：
+- `CHANGELOG.md` 末尾新增 `## protocol/v3`，一句说明（「`[gate] run = "before_merge"` 下会话不再自己跑全量门禁」）与六个条目
+  （G-1..G-5 由 M-06 写入；G-6 是 B-02 那一句，由 M-07 追加到同一节）：
 
   | id | kind | clause | eval |
   |---|---|---|---|
@@ -520,11 +524,11 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | `task.get.gate` / `autome status` 门禁行 | 最后一条 `gate.result`；合并前没有结果时为 null，不打印 | 不改 |
 | `autome run` 事件输出 | 只少了 `node: gate` 的 `gate.started/result`；切换时多一条已有种类 `gate.skipped` | 不改 |
 | `project.get.config` / `config.get.resolved` | 多 `"gate_run": "before_merge"`；`each_round` 下无此键 | 不改（读者按键取值，不枚举键） |
-| 桌面端 `routing.js` 路由图 | 仍画「实现 → 门禁 → 审计」一个框（注释：一框代表三次运行） | 不改，Backlog B-01 |
+| 桌面端 `routing.js` 路由图 | 仍画「实现 → 门禁 → 审计」一个框（注释：一框代表三次运行） | 不改（B-01，用户 2026-11-12 不纳入） |
 | 桌面端 `task.js` 主机标签 | 读 `task.get.gate`，同第一行 | 不改 |
 | Web 面板 | 不读配置，只有节点名映射 | 不改 |
 | 会话（prompt） | 五份模板的 `before_merge` 段与 `gate_line` | 改（§6.5，M-06） |
-| `protocol/bug-protocol.md` 第 40 行 | 补 `before_merge` 一句 | 改（B-02 纳入，M-06） |
+| `protocol/bug-protocol.md` 第 40 行 | 补 `before_merge` 一句 | 改（B-02 纳入，M-07） |
 | 协议页（`version_page.rs`） | 新版本 `protocol/v3` 一组 | 不改（按 CHANGELOG 读，不枚举版本） |
 
 路由图不改的理由：它是配置编辑界面上的示意图，不是运行状态；它本来就把 MergeGate、MainCheck 画在同一个框里，框上的
@@ -542,7 +546,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - `docs/development/technical-design.md` §8.1「宿主门禁」段后补一段中文，含：`[gate] run`、门禁次数从「每轮一次」降到
   「每个任务一次」、门禁问题与回归到合并前才暴露、会多退回一次实现轮、会话不再各自兜底（五份模板的 `before_merge` 段与
   `gate_line`）、Bug 修复轮只跑复现命令、审计简报与复核 prompt 的文案、切换时的 `gate.skipped`。
-- Backlog B-03（「每个任务一次」的限定）不纳入；写作时照常描述 MergeGate 与 MainCheck，不额外承诺。
+- B-03（「每个任务一次」的限定）用户 2026-11-12 不纳入；写作时照常描述 MergeGate 与 MainCheck，不额外承诺。
 
 ### 10. 现有测试改动清单（约束 1）
 
@@ -608,7 +612,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - **验证顺序。** M-01 先把配置与纯状态机钉死（最便宜、其余全依赖它）；M-02 建需求 Loop 的完整端到端链路（任务卡验收 2
   的两个场景是本任务最大的不确定性：真实门禁作业 + 回路节点序列）；M-03 Bug；M-04 审计简报；M-05 先建分段渲染与静态校验，
   此时模板还没有分段，现有金样必须一字不差地通过——这一步单独证明「机制本身不改 `each_round` 的任何字节」；M-06 再改模板、升版本；
-  M-07 文档。
+  M-07 补 `bug-protocol.md` 那一句（B-02）；M-08 文档。
 - **本任务自己的验收命令只跑子集。** 本仓库仍是 `each_round`，宿主在每个实现轮之后跑 `sh scripts/ci-local.sh`（含 fmt、clippy、
   全部 Rust / 桌面端 / Web 测试）。所以下面各里程碑的验收命令只写能区分本里程碑对错的子集；「现有用例一行不改就通过」与任务验收 6
   （fmt / clippy / ci-local 全绿）由宿主门禁的结果证明——审计轮读简报「## 宿主门禁」一行，不自己再跑一遍。
@@ -623,7 +627,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-04 | 开放 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 开放 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
-| M-07 | 开放 | README 与技术设计写明取舍 | 0 | |
+| M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
+| M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
 
 ## 里程碑说明
 
@@ -694,8 +699,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
   - end_to_end 2 个——① `prompt_before_merge_feature_repair_round_runs_only_the_failing_part`：`before_merge` 下 MergeGate 失败后的修复实现轮
     prompt 含门禁尾部与 `gate_line`（门禁命令原文），不含「在同一命令下确认通过」；② `prompt_before_merge_bug_repair_round_runs_only_the_failing_part`：
     Bug 任务 MergeGate 失败后的修复轮 prompt 同理，不含「用同一命令确认通过」。
-- **M-06**（覆盖：目标 5、6、7、8；验收 5；意见 1–5、范围、B-02。前置：M-05）。§6.5、§6.9、§7：五份模板的分段、`bug-protocol.md` 一句、
-  `CHANGELOG.md` 的 `## protocol/v3`、五个行为用例目录、`phrases.rs` 的新条目、`protocol/README.md` 一句、5 份 `before_merge` prompt 金样与
+- **M-06**（覆盖：目标 5、6、7、8；验收 5；意见 1–5、范围。前置：M-05）。§6.5、§6.9、§7：五份模板的分段、
+  `CHANGELOG.md` 的 `## protocol/v3`（G-1..G-5）、五个行为用例目录、`phrases.rs` 的新条目、`protocol/README.md` 一句、5 份 `before_merge` prompt 金样与
   `golden/README.md` 一段、§10 第 2、3 条。新增：prompt_rendering 3 个（§6.9 那三个）；automed lib 1 个——
   `protocol::eval::tests::before_merge_prompt_seed_segments_render_in_both_modes`：种子的五份模板在两种模式下都能选段，`before_merge` 输出各含一次
   `{gate_line}`、`each_round` 输出不含任何标记；end_to_end 2 个——① `protocol_before_merge_feature_rounds_are_told_the_host_runs_the_full_suite`：
@@ -703,7 +708,12 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
   「不要把跑全量门禁写成任何里程碑的验收命令」，审计轮含「不要因为没跑全量而不给结论」且不含「项目测试体系全量跑一次即可」；②
   `protocol_before_merge_bug_rounds_are_told_the_host_runs_the_full_suite`：`before_merge` Bug 任务的修复轮 prompt 含该句与「再跑与本轮改动直接相关的
   测试子集」、不含「再运行配置的项目门禁」；复核轮 prompt 含「本项目门禁只在合并前运行，本轮没有宿主门禁结果」与该句、不含「独立复验复现命令与项目门禁」。
-- **M-07**（覆盖：目标 9；验收 6；约束 12、13；意见 6。前置：M-01..M-06）。README 与技术设计 §8.1 两段（§9）。不新增用例。
+- **M-07**（覆盖：目标 3、8；Backlog B-02（用户 2026-11-12 纳入）。前置：M-06）。§6.5 末条与 §7：`protocol/bug-protocol.md` 第 40 行改为
+  §6.5 给出的那句；`CHANGELOG.md` 的 `## protocol/v3` 节追加 G-6（`kind: clarify`、`clause: bug-protocol.md`、`eval: null`、
+  `predicted_impact.direction: flat`）；`phrases.rs` 的 `REQUIRED` 加 `bug-protocol.md` 一条。不改任何 prompt 模板、金样、
+  `loop-protocol.md` / `session-protocol.md`。不新增用例：新短语由现有 `protocol::eval::tests::the_seed_passes_the_static_and_parse_layers`
+  与 `running_against_the_seed_on_disk_is_clean` 校验，`every_requirement_carries_a_reason` 校验它的 `why`。
+- **M-08**（覆盖：目标 9；验收 6；约束 12、13；意见 6。前置：M-01..M-07）。README 与技术设计 §8.1 两段（§9）。不新增用例。
 
 ## 验收契约
 
@@ -745,6 +755,12 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-07 验收契约
 
+- 验收命令：`grep -qF '修复门禁只跑复现命令，项目门禁留到合并前门禁' protocol/bug-protocol.md && grep -qF 'id: G-6' protocol/CHANGELOG.md && cargo test -p automed --lib protocol:: && cargo run -q -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && git diff --quiet $(git merge-base HEAD main) -- protocol/loop-protocol.md protocol/session-protocol.md`
+- 预期：两条 grep 命中；automed lib 过滤 `protocol::` 67 个通过（与 M-06 相同，本里程碑不新增用例）；`protocol eval` 退出码 0、报告里没有「失败」项，「必含 / 禁含短语」条数比 M-06 完成时多 1；prompt_rendering 20 个通过（渲染字节不变）；最后一条 git 检查无输出、退出码 0（`loop-protocol.md` / `session-protocol.md` 未改）。
+- 负向对照：`bug-protocol.md` 只加了 `REQUIRED` 条目、没改第 40 行时，第一条 grep 以 1 退出，且 `the_seed_passes_the_static_and_parse_layers` 与 `protocol eval`（报 `bug-protocol.md` 缺必含短语）失败；G-6 写成 `kind: behavioral` 而 `eval: null` 时，`protocol eval` 的 CHANGELOG 条目门槛以 1 退出；新 `REQUIRED` 条目的 `why` 不足 20 字节时 `every_requirement_carries_a_reason` 失败。
+
+### M-08 验收契约
+
 - 验收命令：`for p in 'run = "each_round"' before_merge 'once per task' 'not until the merge' 'sessions do not run the full gate themselves' 'only the repro command'; do grep -qF "$p" README.md || { echo "README 缺: $p"; exit 1; }; done; for p in before_merge 每个任务一次 合并前才暴露 多退回一次实现轮 会话不再各自兜底 只跑复现命令; do grep -qF "$p" docs/development/technical-design.md || { echo "技术设计缺: $p"; exit 1; }; done; cargo fmt --all -- --check`
 - 预期：两组 grep 全部命中、无输出；`cargo fmt --all -- --check` 退出码 0。本里程碑不新增用例；全量（autome-domain 394 + 1、automed lib 675、end_to_end 123、prompt_rendering 20，以及 clippy `-D warnings`、桌面端与 Web 测试）由宿主门禁 `sh scripts/ci-local.sh` 在本轮 head 上跑，审计轮以简报「## 宿主门禁」那一行（本轮 head 上「通过」）为任务验收 6 的证据，不自己再跑。
 - 负向对照：README 少写「sessions do not run the full gate themselves」一句时 grep 循环打印「README 缺: sessions do not run the full gate themselves」并以 1 退出；技术设计少写「会话不再各自兜底」时打印「技术设计缺: 会话不再各自兜底」并以 1 退出；任一新代码没过 rustfmt 时 `--check` 以非 0 退出。
@@ -755,8 +771,5 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - H-02 合并前在本 worktree 跑 `cargo run -p automed -- protocol eval protocol/ --changed`（真实模型，要花钱）：新增的五个 `*-before-merge-*` 行为用例多数通过，三个基线用例不退步。
 
 ## Backlog
-
-- B-01 桌面端路由图在 `before_merge` 下仍把「门禁」框画在实现与审计之间；可按 `resolved.gate_run` 把框挪到 rebase 之后。不在本任务范围（`apps/desktop`），不影响任何运行状态显示。（用户 2026-11-12：不纳入）
-- B-03 README / 技术设计写「每个任务一次」时，紧邻注明它指正常通过路径上的合并前宿主门禁：MainCheck 仍在合并后运行，MergeGate 失败会退回实现轮后重试（评审 #1 N-01）。（用户 2026-11-12：不纳入）
 
 ## 争议项
