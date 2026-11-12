@@ -15,3 +15,4 @@
 复盘 #2 | 无 | 覆盖写 6 条教训：L-01..L-04 沿用（L-04 补实现 #6）；新增 L-05 发 v5 未搜旧 protocol/v4 字面量、L-06 门禁中断的测试目标修复后未完整跑；H-01、H-02 未确认 | docs/每轮快检-gate-quick-before/lessons.md | 无
 实现 #7 | M-05 | CLI 测试夹具竞态修复，相关子集通过 | docs/每轮快检-gate-quick-before/evidence/M-05-r7-impl.md | 无，完整门禁待 Autome 重跑
 审计 #7 | 无 | 通过（无待审里程碑，表未变；CLI 夹具修复复验 8/8） | docs/每轮快检-gate-quick-before/evidence/M-05-r7-audit.md | 无
+复盘 #3 | 无 | 覆盖写 7 条教训：L-01..L-05 沿用（L-04 补实现 #7）；L-06 第二次门禁再现补事实；新增 L-07 自 main 带入的不稳定 CLI 用例（未用草稿即强设状态）；H-01、H-02 未确认 | docs/每轮快检-gate-quick-before/lessons.md | 无

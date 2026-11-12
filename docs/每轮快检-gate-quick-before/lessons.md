@@ -1,25 +1,31 @@
 # 教训 · 每轮快检（`[gate] quick`，T-67）
 
-复盘轮 #2 覆盖写。依据：任务文件、`retro.md`、`evidence/` 下 12 份证据、评审与裁决记录、审计记录、任务分支 `git log` 与
-reflog，以及 `.autome/output/r6-host-failures.txt`（实现 #6 摘出的合并前门禁日志摘要，只读）。Autome 本任务没有记录到指标，
+复盘轮 #3 覆盖写。依据：任务文件、`retro.md`、`evidence/` 下 14 份证据、评审与裁决记录、审计记录、任务分支 `git log`，
+`.autome/output/r6-host-failures.txt`、`r7-host-failures.txt`（实现 #6、#7 摘出的门禁日志摘要），以及主检出
+`.autome/output/gates/T-67/merge_gate-2b8f011910da.log`（第二次合并前门禁的完整日志，只读）。Autome 本任务没有记录到指标，
 下文不引用任何指标数值；文中的数字都取自证据文件、门禁日志或 `git` 的实际输出。
 
 可核对的运行事实：
 
-- 设计 1 轮（评审 #1 提出 2 项阻塞意见 R1-01、R1-02，裁决 #1 全部采纳并定稿）。实现 6 轮、审计 6 轮；M-01..M-05 各一次审计
-  通过，没有 reopen，所有审计记录都没有实现缺陷或验证缺口。
-- 复盘 #1 之后，分支 rebase 到 main `bf399db`，合并前完整门禁在 `d4b93c2` 上失败，两步红：
-  - Clippy：`scheduler::Route::Rerouted(ResolvedConfig)` 触发 `large_enum_variant`（至少 224 字节）。`Route` 在分支基线
-    `042fd06` 上就有；5 个实现轮在 rebase 前都记了 clippy 退出码 0。main 在 `042fd06..bf399db` 之间给 `ResolvedConfig` 加了
-    `merge_after`，本分支加了 `gate_quick`，两者叠加才越过阈值——这是 rebase 产生的语义冲突，会话在 rebase 前无从发现，
-    所以不单列为教训。
-  - Test：automed lib 793 个用例 1 个失败（`protocol::tests::the_version_in_force_is_the_newest_changelog_heading_over_the_seed`，
-    预期 v4、实际 v5），耗时 111.56 秒；cargo 在这个二进制失败后停下，其后的 Rust 集成测试没有执行。
-- 实现 #6 把 `Route::Rerouted` 改为 `Box<ResolvedConfig>`，并把两处 `protocol/v4` 断言改为 v5（第二处在 e2e，靠 grep 找到）；
-  审计 #6 通过。复盘 #2 时合并前门禁还没有重跑，结果未知。
+- 设计 1 轮（评审 #1 提出 2 项阻塞意见 R1-01、R1-02，裁决 #1 全部采纳并定稿）。实现 7 轮、审计 7 轮；M-01..M-05 各一次审计
+  通过，没有 reopen，所有审计记录都没有实现缺陷或验证缺口。实现 #6、#7 都是合并前门禁失败后的修复轮。
+- 第一次合并前门禁（`d4b93c2`）失败：Clippy `large_enum_variant`（rebase 后 `ResolvedConfig` 两边各加字段叠加越过阈值，
+  会话在 rebase 前无从发现，不单列为教训）；Test 步 automed lib 793 个中 1 个失败（`protocol/v4` 字面量），cargo 随即停下。
+  实现 #6 修复，审计 #6 通过。
+- 第二次合并前门禁（`2b8f011`）失败：Format、Clippy 通过；Test 步只运行了 autome-cli 的 `src/main.rs`（47 通过）与
+  `tests/cli.rs`（23 个中 1 个失败：`run_json_tick_error_and_interrupt_have_no_idle_trailer`），cargo 随即停下。日志里没有任何
+  automed 或 autome-domain 测试二进制的 `Running` 行。Desktop、Contract、Web 四步通过。
+- 失败的用例由 T-46 的 `dd4b036` 引入，不在分支基线 `042fd06` 里，经 rebase 到 `bf399db` 带进来；main `bf399db` 上仍是原样。
+  第一次门禁按同一命令、同一顺序先跑 `tests/cli.rs` 再跑 automed lib，而 cargo 在第一个失败的二进制处停下，所以它在第一次门禁
+  里是通过的；两次门禁之间 `cli.rs` 没有改动。实现 #7 原样单跑：第一次通过、第二次失败——这是不稳定用例，不是回归。
+- 实现 #7 只改测试夹具（`--draft` 建任务、断言无运行会话），修后单用例重复 12/12 通过；审计 #7 复验 9 次全过。
+- 复盘 #3 时第三次合并前门禁还没有跑。automed lib、automed 全部集成测试（含本任务新增的 e2e 与金样）、autome-domain 在
+  rebase 后的分支上还没有任何一次完整运行（第一次门禁停在 automed lib，第二次停在 autome-cli，实现 #6、#7 与审计 #6、#7 只跑
+  了筛选子集）。
 - 人工验收 H-01、H-02 未确认。
 
-L-01..L-04 沿用复盘 #1，L-04 补了实现 #6 的同一现象。L-05、L-06 是合并前门禁失败带来的新教训。
+L-01..L-05 沿用复盘 #2（L-04 补实现 #7 的同一现象）。L-06 在本任务内第二次出现，补了第二次门禁的事实。L-07 是第二次门禁带来的
+新教训。
 
 ```yaml
 - id: L-01
@@ -57,9 +63,9 @@ L-01..L-04 沿用复盘 #1，L-04 补了实现 #6 的同一现象。L-05、L-06 
 ```yaml
 - id: L-04
   domain: verification
-  symptom: '实现 #2..#6 按协议报「用例总数与上一轮基线的差」，五轮都是跨里程碑或跨性质比较，五轮都得花一段解释差值不是丢用例：#2 写 -2、#3 写 -15、#4 写 +44、#5 写 -42，#6（门禁修复轮）写 +31 并另起一句「本轮没有增删测试，同范围净变化 0」。真正有用的是各轮另外自发实跑的同一验收命令改前基线（#5：CLI 9 → 11，桌面 0 → 3；#4：43 → 56）'
+  symptom: '实现 #2..#7 按协议报「用例总数与上一轮基线的差」，六轮都是跨里程碑或跨性质比较，六轮都得花一段解释差值不是丢用例：#2 写 -2、#3 写 -15、#4 写 +44、#5 写 -42，#6（门禁修复轮）写 +31 并另起一句「本轮没有增删测试，同范围净变化 0」，#7（门禁修复轮）写 -42 并另起一句「同范围修前修后仍为 3 个，净增减 0」。真正有用的是各轮另外自发实跑的同一验收命令改前基线（#5：CLI 9 → 11，桌面 0 → 3；#4：43 → 56；#7：3 → 3）'
   root_cause: 'loop-protocol「验收结果报什么」要求与「上一轮基线」比，而上一轮通常是另一个里程碑、另一组验收命令；两组命令的用例数之差既不能发现整层被跳过，也不能证明新增了多少，只有同一命令改前改后的差才能'
-  evidence: docs/每轮快检-gate-quick-before/evidence/M-04-r6-impl.md
+  evidence: docs/每轮快检-gate-quick-before/evidence/M-05-r7-impl.md
   level: protocol
   proposal: '实现轮报验收用例总数时，基线是同一条验收命令在本轮改动前实跑的结果（证据里写出该命令与改前、改后两个数）；与上一里程碑的用例总数比较不作要求'
   predicted_impact: {metric: verification_gaps, direction: down, scope: task, horizon: 3}
@@ -79,10 +85,21 @@ L-01..L-04 沿用复盘 #1，L-04 补了实现 #6 的同一现象。L-05、L-06 
 ```yaml
 - id: L-06
   domain: verification
-  symptom: '合并前门禁的 Test 步在 automed lib 的 1 个失败后停下（门禁日志：792 passed; 1 failed，其后 Rust 集成测试没有执行）。实现 #6 自己写明「后续集成测试没有执行，不能把它们视为通过」，但修复后只跑了 lib 筛选 12 个、end_to_end 2 个、prompt_rendering 31 个，「未运行 sh scripts/ci-local.sh 或全量 Rust 测试」；审计 #6 同样只跑了 protocol::tests 与 1 个 e2e。被门禁中断的那部分测试在复盘 #2 时仍没有任何一轮完整跑过'
-  root_cause: 'cargo test 默认在第一个失败的测试二进制后停止，门禁日志因而只暴露第一处失败，看不到被跳过的二进制里还有没有别的失败；修复轮按「修好日志里看到的那几处」验收，把未执行等同于未失败。下一次合并前门禁若在被跳过的部分再红，又是一整圈实现、审计、复盘与完整门禁'
-  evidence: docs/每轮快检-gate-quick-before/evidence/M-04-r6-impl.md
+  symptom: '两次合并前门禁的 Test 步都在第一个失败的测试二进制后停下：第一次停在 automed lib（792 passed; 1 failed），第二次停在 autome-cli tests/cli.rs（22 passed; 1 failed），第二次日志里没有任何 automed / autome-domain 测试二进制的 Running 行。两个修复轮都只验收「日志里看到的那一处」：实现 #6 写明「后续集成测试没有执行，不能把它们视为通过」，但只跑了 lib 筛选 12 个、end_to_end 2 个、prompt_rendering 31 个；实现 #7 只写「CLI 集成套件筛选外 20 个未运行」，没有列出被第二次门禁跳过的 automed lib 与全部 automed 集成测试。到复盘 #3，本任务新增的 e2e 与金样在 rebase 后的分支上还没有任何一次完整运行'
+  root_cause: 'cargo test 默认在第一个失败的测试二进制后停止，门禁日志因而只暴露第一处失败，看不到被跳过的二进制里还有没有别的失败；修复轮按「修好日志里看到的那几处」验收，把未执行等同于未失败。每多一处藏在被跳过部分的失败，就多一整圈实现、审计、复盘与完整门禁，本任务已经发生两圈'
+  evidence: docs/每轮快检-gate-quick-before/evidence/M-05-r7-impl.md
   level: rule
   proposal: '修复合并前门禁失败的实现轮，证据里必须列出门禁日志中因前序失败而未执行的每个测试目标，并给出它们在修复后完整运行（可用 cargo test --no-fail-fast 或逐个目标）的退出码；会话里跑不通的逐项写明原因'
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+```
+
+```yaml
+- id: L-07
+  domain: verification
+  symptom: '第二次合并前门禁（2b8f011）因 autome-cli 的 run_json_tick_error_and_interrupt_have_no_idle_trailer 失败：首条 JSON 错误是 ses-… 的会话回收错误，而断言要求它含任务 ID。该用例由 T-46 的 dd4b036 引入、经 rebase 带进本分支，在第一次门禁里通过、两次门禁之间未改；实现 #7 原样单跑第一次通过、第二次失败。本任务因此多花实现 #7、审计 #7、复盘 #3 和一次完整门禁；main bf399db 上该用例仍是原样'
+  root_cause: '用例用 task new（自动启动会话）建任务，随即 set_task_state 强设到 Gate，再断言第一条错误来自任务的核心步骤；scheduler.tick 先 reap_session 后 run_core_step，替身会话结束得早晚决定第一条错误是谁的。同文件与 end_to_end.rs 其余 set_task_state 用例都用 --draft 或 "draft": true 建任务，只有这一处没有'
+  evidence: docs/每轮快检-gate-quick-before/evidence/M-05-r7-impl.md
+  level: rule
+  proposal: '集成测试在用 set_task_state 强设任务状态之前，该任务必须以草稿创建（CLI --draft 或 task.create 的 "draft": true），或在强设前断言该任务没有运行中的会话；新增此类用例的实现轮证据须写明用的是哪一种'
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
 ```
