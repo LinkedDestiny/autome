@@ -13,3 +13,4 @@
 审计 #5 | M-05 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-05-r5-audit.md | 无
 实现 #6 | M-06 | 待审 | docs/宿主门禁按机器排队-gate/evidence/M-06-r6-impl.md | 无
 审计 #6 | M-06 | 通过 | docs/宿主门禁按机器排队-gate/evidence/M-06-r6-audit.md | 无
+复盘 #1 | 无 | 教训 5 条（clippy 进每个 Rust 里程碑、名额持有者释放表、无关失败进 Backlog、用例数口径、指标实现轮与状态块不符） | docs/宿主门禁按机器排队-gate/lessons.md | 无
