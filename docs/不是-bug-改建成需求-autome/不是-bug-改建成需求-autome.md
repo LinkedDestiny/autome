@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 4/15
+implementation-round: 5/15
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 宿主复验 Web 全量与 Electron DOM 门禁，合并前确认 H-01
+next-action: 宿主复验 Rust 门禁队列偶发失败、Web 全量与 Electron DOM 门禁，合并前确认 H-01
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -282,7 +282,7 @@ M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程
 
 ### M-03 验收契约
 
-最新证据：docs/不是-bug-改建成需求-autome/evidence/M-03-r4-impl.md · rebase 完成，回归见证据 · 实现 #4
+最新证据：docs/不是-bug-改建成需求-autome/evidence/M-03-r5-impl.md · rebase 完成，回归见证据 · 实现 #5
 
 - 验收命令：`npm ci --prefix apps/web && npm test --prefix apps/web -- test/write-gate.test.ts && npm test --prefix apps/web && cargo test --workspace`
 - 预期：

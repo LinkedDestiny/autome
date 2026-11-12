@@ -9,3 +9,4 @@
 审计 #3 | M-03 | 通过 | docs/不是-bug-改建成需求-autome/evidence/M-03-r3-audit.md | 无
 实现 #4 | M-03 | rebase 完成，保留审计关闭状态 | docs/不是-bug-改建成需求-autome/evidence/M-03-r4-impl.md | Web 监听 EPERM、Electron SIGABRT，需宿主复验
 审计 #4 | M-03 | 通过 | docs/不是-bug-改建成需求-autome/evidence/M-03-r4-audit.md | 无
+实现 #5 | M-03（已关闭，rebase 复验） | rebase 完成，专项通过 | evidence/M-03-r5-impl.md | Rust 单例首败重试通过；Web 全量中止，宿主补验
