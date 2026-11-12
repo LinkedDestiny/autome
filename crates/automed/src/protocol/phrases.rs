@@ -44,8 +44,8 @@ const EVERY_ROLE: &str = "*";
 const REQUIRED: &[(&str, &str, &str)] = &[
     (
         "bug-protocol.md",
-        "修复门禁只跑复现命令，项目门禁留到合并前门禁",
-        "B-02 与目标 3：before_merge 下修复门禁只验证复现命令，完整项目门禁由合并前门禁执行。",
+        "同时配了 `[gate] quick` 时跑复现命令和快检；项目完整门禁留到合并前门禁",
+        "T-67：before_merge 的修复门禁可加快检，完整项目门禁仍由合并前门禁执行。",
     ),
     (
         "prompts/plan.md",
@@ -74,7 +74,7 @@ const REQUIRED: &[(&str, &str, &str)] = &[
     ),
     (
         "prompts/fix-review.md",
-        "本项目门禁只在合并前运行，本轮没有宿主门禁结果",
+        "{fix_gate_note}",
         "用户意见 1–3：before_merge 会话只运行相关子集，缺少全量结果不能阻止本轮结论。",
     ),
     (

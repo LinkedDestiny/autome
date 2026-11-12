@@ -958,10 +958,13 @@ fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
         s.repo.to_str().unwrap(),
         "--skip-onboarding",
     ]);
-    let created = s.json(&["task", "new", "broken project"]);
+    // Start from a draft: an auto-started session can finish before the first
+    // tick and report a session-reaping error ahead of the core-step error.
+    let created = s.json(&["task", "new", "broken project", "--draft"]);
     let id = created["task"]["id"].as_str().unwrap();
     // An invalid project configuration makes its core step report an error.
     let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    assert!(store.all_running_sessions().unwrap().is_empty());
     store
         .set_task_state(
             id,
@@ -1014,9 +1017,12 @@ fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
     assert!(out.status.success());
     assert!(out.stderr.is_empty());
     assert!(
-        first["error"].as_str().is_some_and(|e| e.contains(id)),
+        first["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with(&format!("{id}:")) && e.contains("TOML parse error")),
         "{first}"
     );
+    assert!(first.get("idle").is_none());
     for line in rx.try_iter() {
         let value: Value = serde_json::from_str(&line).unwrap();
         assert!(value.get("idle").is_none());

@@ -49,6 +49,37 @@ rm -f "$AUTOME_GATE_PID"
 /// same number `timeout(1)` uses.
 pub const TIMED_OUT: i32 = 124;
 
+/// Launch facts. Quick runs retain their command and timeout across config edits.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Launch {
+    Quick {
+        command: String,
+        timeout_minutes: u32,
+    },
+    Full,
+    Repro,
+}
+
+impl Launch {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Quick { .. } => "quick",
+            Self::Full => "full",
+            Self::Repro => "repro",
+        }
+    }
+
+    pub fn timeout(&self, fallback: u32) -> u32 {
+        match self {
+            Self::Quick {
+                timeout_minutes, ..
+            } => *timeout_minutes,
+            _ => fallback,
+        }
+    }
+}
+
 /// The files one gate run owns.
 #[derive(Debug, Clone)]
 pub struct Job {
@@ -88,6 +119,18 @@ impl Job {
 
     pub fn repro_only(&self) -> bool {
         self.started.with_extension("repro-only").exists()
+    }
+
+    pub fn set_launch(&self, launch: &Launch) -> std::io::Result<()> {
+        std::fs::create_dir_all(self.started.parent().unwrap())?;
+        std::fs::write(
+            self.started.with_extension("kind"),
+            serde_json::to_vec(launch)?,
+        )
+    }
+
+    pub fn launch(&self) -> Option<Launch> {
+        serde_json::from_slice(&std::fs::read(self.started.with_extension("kind")).ok()?).ok()
     }
 
     /// Whether this job was ever started (and not cleared since).
@@ -293,6 +336,7 @@ fn discard_except(
             ".exit.tmp",
             ".exit.code",
             ".repro-only",
+            ".kind",
         ] {
             if let Some(stem) = name.strip_suffix(suffix) {
                 if keep.is_none_or(|key| stem != format!("{node}-{key}")) {
@@ -331,6 +375,7 @@ fn discard_except(
             "exit.tmp",
             "exit.code",
             "repro-only",
+            "kind",
         ] {
             match std::fs::remove_file(dir.join(format!("{stem}.{suffix}"))) {
                 Ok(()) => {}

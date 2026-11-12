@@ -53,6 +53,8 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
         kind,
         templates,
         gate_before_merge: None,
+        gate_quick: None,
+        last_gate: None,
         brief_path: BRIEF,
         slug: SLUG,
         doc_dir: DOC_DIR,
@@ -620,4 +622,86 @@ fn bug_inputs_and_gate_modes_preserve_user_data_independently() {
             }
         }
     }
+}
+
+fn quick_golden(name: &str, kind: SessionKind) {
+    let templates = automed::protocol::seed();
+    let result =
+        serde_json::json!({"kind":"quick","command":"( repro ) && ( make lint )","exit_code":0});
+    let mut s = spec(kind, templates);
+    s.gate_before_merge = Some("make check");
+    s.gate_quick = Some("make lint");
+    s.last_gate = Some(&result);
+    s.budget = Some(automed::launcher::BudgetLine {
+        round: 2,
+        limit: 40,
+    });
+    let got = build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}")
+        .replace(BRIEF, "{brief_path}");
+    if !maybe_update_golden(name, &got) {
+        assert_eq!(got, golden(name));
+    }
+}
+
+#[test]
+fn gate_quick_implementation_prompt_matches_golden() {
+    quick_golden(
+        "impl-before-merge-quick",
+        SessionKind::Role { role: Role::Impl },
+    );
+}
+
+#[test]
+fn gate_quick_bug_prompts_match_goldens() {
+    use autome_domain::session::BugStep;
+    quick_golden(
+        "fix-before-merge-quick",
+        SessionKind::Bug { step: BugStep::Fix },
+    );
+    quick_golden(
+        "fix-review-before-merge-quick",
+        SessionKind::Bug {
+            step: BugStep::FixReview,
+        },
+    );
+}
+
+#[test]
+fn gate_quick_audit_brief_matches_golden() {
+    use autome_domain::config::{
+        self, GateConfig, GateRun, GlobalConfig, ProjectConfig, QuickGate,
+    };
+    use automed::brief::{self, BriefMap, Inputs};
+    let mut config = config::resolve(&GlobalConfig::default(), &ProjectConfig::default());
+    config.gate = Some(GateConfig {
+        command: "make check".into(),
+        timeout_minutes: 30,
+    });
+    config.gate_run = GateRun::BeforeMerge;
+    config.gate_quick = Some(QuickGate {
+        command: "make lint".into(),
+        timeout_minutes: 5,
+    });
+    let result = serde_json::json!({"sha":"<head>","kind":"quick","command":"make lint","ok":true,"exit_code":0,"log":"gate.log"});
+    let got = brief::build(&Inputs {
+        role: Role::Audit,
+        slug: "example",
+        doc_dir: "docs/example",
+        round: 2,
+        status: None,
+        audit_doc: None,
+        evidence: &[],
+        loop_protocol: "",
+        session_protocol: "",
+        map: &BriefMap::default(),
+        budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
+        decisions: None,
+        gate: brief::gate_evidence(&config, Some(&result), Some("<head>")),
+    });
+    maybe_update_brief_golden("audit-before-merge-quick", &got);
+    assert_eq!(got, brief_golden("audit-before-merge-quick"));
 }

@@ -342,3 +342,11 @@ export function metricValue(key, value) {
   if (key === 'total_tokens' || key === 'mean_request_input') return tokens(Math.round(value));
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
+
+/** Label for the actual host run, including older results without a kind. */
+export function gateTagLabel(gate) {
+  const name = gate.kind === 'quick'
+    ? (gate.node === 'fix_gate' ? '修复门禁（复现 + 快检）' : '快检')
+    : nodeLabel(gate.node);
+  return name + (gate.ok ? '通过' : '未通过') + ' · ' + String(gate.sha || '').slice(0, 7);
+}

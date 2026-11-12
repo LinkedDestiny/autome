@@ -1745,7 +1745,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v4@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v5@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -2578,6 +2578,178 @@ fn an_included_backlog_item_reaches_the_next_prompt_and_survives_a_crash() {
 /// commit has a `gate-ok` file, and — when told to — fails on the checkout
 /// the core makes of the merge commit.
 #[test]
+fn gate_quick_feature_two_milestones_run_quick_each_round_and_full_once() {
+    needs_git!();
+    let mut w = World::new("quick-two");
+    let quick_calls = w.root.join("quick-calls");
+    let full_calls = w.root.join("full-calls");
+    let quick = w.root.join("quick.sh");
+    let full = w.root.join("full.sh");
+    std::fs::write(
+        &quick,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'",
+            quick_calls.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &full,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'",
+            full_calls.display()
+        ),
+    )
+    .unwrap();
+    w.configure(&format!("[gate]\nreuse_for_main_check = false\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\n",full.display(),quick.display()));
+    let request = "quick two milestones";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (
+            4,
+            doc("实现中", 2, 0, &[("M-01", "开放"), ("M-02", "开放")]),
+        ),
+        (
+            5,
+            doc("实现中", 2, 1, &[("M-01", "待审"), ("M-02", "开放")]),
+        ),
+        (
+            6,
+            doc("实现中", 2, 1, &[("M-01", "已完成"), ("M-02", "开放")]),
+        ),
+        (
+            7,
+            doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "待审")]),
+        ),
+        (
+            8,
+            doc("实现中", 2, 2, &[("M-01", "已完成"), ("M-02", "已完成")]),
+        ),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        std::fs::read_to_string(&quick_calls).unwrap(),
+        "gate quick\ngate quick\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&full_calls).unwrap(),
+        "merge_gate full\n"
+    );
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    for name in ["gate.started", "gate.result"] {
+        let kinds: Vec<_> = events
+            .iter()
+            .filter(|(_, k, s, _)| s == &id && k == name)
+            .map(|(_, _, _, p)| p["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["quick", "quick", "full"]);
+    }
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert_eq!(
+        std::fs::read_to_string(&full_calls).unwrap(),
+        "merge_gate full\nmain_check full\n"
+    );
+}
+
+#[test]
+fn gate_quick_feature_failing_quick_returns_to_implement_with_its_tail() {
+    needs_git!();
+    let mut w = World::new("quick-failure");
+    let quick_calls = w.root.join("quick-calls");
+    let full_calls = w.root.join("full-calls");
+    let quick = w.root.join("quick.sh");
+    let full = w.root.join("full.sh");
+    std::fs::write(
+        &quick,
+        format!(
+            "echo quick >> '{}'\ntest -f gate-ok || {{ echo quick-missing-marker; exit 1; }}",
+            quick_calls.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &full,
+        format!("echo $AUTOME_GATE_NODE >> '{}'", full_calls.display()),
+    )
+    .unwrap();
+    let command = format!("sh {}", quick.display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = '{command}'\n",
+        full.display()
+    ));
+    let request = "quick repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(6).contains("quick-missing-marker"));
+    assert!(w.prompt(6).contains(&command));
+    assert_eq!(
+        std::fs::read_to_string(quick_calls).unwrap(),
+        "quick\nquick\n"
+    );
+    assert_eq!(std::fs::read_to_string(full_calls).unwrap(), "merge_gate\n");
+}
+
+#[test]
+fn gate_quick_each_round_ignores_quick_event_for_event() {
+    needs_git!();
+    let mut sequences = Vec::new();
+    for enabled in [false, true] {
+        let mut w = World::new("quick-ignored");
+        let calls = w.root.join("quick-calls");
+        let extra = if enabled {
+            format!("quick = 'echo unexpected >> {}'\n", calls.display())
+        } else {
+            String::new()
+        };
+        w.configure(&format!("[gate]\ncommand = 'true'\n{extra}"));
+        let request = "quick ignored";
+        let slug = slug_for(request);
+        w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+        w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+        w.retro_step(7, &slug);
+        let id = resume_setup(&mut w, request);
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        ok(&w.call("task.merge", json!({"task_id":id})));
+        w.settle();
+        assert_eq!(w.state(&id), "done");
+        assert!(!calls.exists());
+        let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+        sequences.push(
+            events
+                .into_iter()
+                .filter(|(_, k, s, _)| s == &id && k.starts_with("gate."))
+                .map(|(_, k, _, p)| (k, p["node"].clone(), p["kind"].clone()))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(sequences[0], sequences[1]);
+}
+
+#[test]
 fn feature_before_merge_two_milestones_run_the_gate_once_before_the_merge() {
     needs_git!();
     let mut w = World::new("before-merge-two");
@@ -2808,6 +2980,92 @@ fn brief_before_merge_audit_brief_never_shows_a_stale_result() {
     ok(&w.call("task.merge", json!({"task_id":id})));
     w.settle();
     assert_eq!(w.state(&id), "done");
+}
+
+#[test]
+fn gate_quick_feature_removing_quick_while_running_paused_or_stopped() {
+    needs_git!();
+    for interrupt in [None, Some("task.pause"), Some("task.stop")] {
+        quick_feature_remove_pending(interrupt);
+    }
+}
+
+fn quick_feature_remove_pending(interrupt: Option<&str>) {
+    let mut w = World::new("before-merge-switch");
+    let script = w.root.join("gate.sh");
+    std::fs::write(&script, format!("if [ \"$AUTOME_GATE_NODE\" = gate ]; then\n touch '{}'\n while [ -d '{}' ]; do sleep 0.02; done\nfi\n", w.root.join("gate-ready").display(), w.root.display())).unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = \"before_merge\"\ncommand = \"true\"\nquick = \"sh {}\"\n",
+        script.display()
+    ));
+    let request = "switch pending gate";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成")]),
+        &format!(
+            "touch '{}'\nwhile [ ! -f '{}' ] && [ -d '{}' ]; do sleep 0.02; done",
+            w.root.join("audit-ready").display(),
+            w.root.join("audit-release").display(),
+            w.root.display()
+        ),
+    );
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("gate-ready").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("gate"));
+    let head = automed::git::head_sha(&w.repo.join(format!(".worktree/{slug}"))).unwrap();
+    let job = automed::gate::Job::at(&w.repo, &id, "gate", &head[..12]);
+    let pid: i32 = std::fs::read_to_string(&job.pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    if let Some(method) = interrupt {
+        ok(&w.call(method, json!({"task_id":id})));
+    }
+    let config = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("quick ="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(config, text).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "switch gate mode").unwrap();
+    if interrupt.is_some() {
+        ok(&w.call("task.resume", json!({"task_id":id})));
+    }
+    resume_wait(&mut w, |w| w.root.join("audit-ready").exists());
+    assert_eq!(w.node(&id).as_deref(), Some("audit"));
+    assert!(!automed::launcher::pid_alive(pid));
+    #[cfg(unix)]
+    assert_ne!(
+        unsafe { libc::kill(-pid, 0) },
+        0,
+        "gate process group survived"
+    );
+    assert!(!job.started.exists() && !job.pid.exists() && !job.exit.exists() && !job.log.exists());
+    let skipped = w
+        .ctx
+        .store
+        .last_event(&id, "gate.skipped")
+        .unwrap()
+        .unwrap();
+    assert_eq!(skipped["node"], "gate");
+    assert_eq!(skipped["reason"], "门禁只在合并前运行");
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 1);
+    assert_eq!(w.ctx.store.count_events(&id, "gate.result").unwrap(), 0);
+    std::fs::write(w.root.join("audit-release"), "go").unwrap();
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(w.ctx.store.count_events(&id, "gate.started").unwrap(), 2);
+    assert_eq!(
+        w.ctx.store.last_event(&id, "gate.result").unwrap().unwrap()["node"],
+        "merge_gate"
+    );
 }
 
 fn feature_before_merge_switch_gate(interrupt: Option<&str>) {
@@ -4537,6 +4795,98 @@ fn bug_review_policy_same_model_is_refused_for_bug_start() {
     assert!(message.contains("配置无效"), "{message}");
     assert_eq!(w.state(&id), "draft");
     assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn gate_quick_bug_fix_gate_runs_repro_and_quick_and_merge_gate_runs_repro_and_full() {
+    quick_bug_scenario(false);
+}
+
+#[test]
+fn gate_quick_bug_failing_quick_returns_to_fix_with_its_tail() {
+    quick_bug_scenario(true);
+}
+
+fn quick_bug_scenario(fail_first: bool) {
+    needs_git!();
+    let mut w = World::new("quick-bug");
+    let quick_count = w.root.join("quick-count");
+    let full_count = w.root.join("full-count");
+    let quick_script = w.root.join("quick.sh");
+    let full_script = w.root.join("full.sh");
+    std::fs::write(
+        &quick_script,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'\necho quick-bug-marker\n{}\n",
+            quick_count.display(),
+            if fail_first {
+                "test -f quick-ready"
+            } else {
+                "true"
+            }
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &full_script,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'\n",
+            full_count.display()
+        ),
+    )
+    .unwrap();
+    let quick = format!("sh {}", quick_script.display());
+    let full = format!("sh {}", full_script.display());
+    w.configure(&format!("[gate]\ncommand = '{full}'\nquick = '{quick}'\nrun = 'before_merge'\ntimeout_minutes = 1\nreuse_for_main_check = false\n"));
+    let request = "quick bug";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    let review_round = if fail_first {
+        bug_step(&w, 3, &slug, &bug_doc("待复核"), "touch quick-ready");
+        4
+    } else {
+        3
+    };
+    bug_step(&w, review_round, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let expected_quick = if fail_first { 2 } else { 1 };
+    assert_eq!(
+        std::fs::read_to_string(&quick_count).unwrap(),
+        "fix_gate quick\n".repeat(expected_quick)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&full_count).unwrap(),
+        "merge_gate full\n"
+    );
+    if fail_first {
+        assert!(w.prompt(3).contains("quick-bug-marker"));
+        assert!(w.prompt(3).contains(&quick));
+    }
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.started" && e.2 == id)
+        .collect();
+    assert_eq!(starts.len(), expected_quick + 2);
+    for e in starts {
+        let command = e.3["command"].as_str().unwrap();
+        match e.3["node"].as_str().unwrap() {
+            "fix_gate" => {
+                assert_eq!(command, format!("( sh regression.sh ) && ( {quick} )"));
+                assert_eq!(e.3["kind"], "quick");
+                assert!(!command.contains(&full));
+            }
+            "merge_gate" => {
+                assert_eq!(command, format!("( sh regression.sh ) && ( {full} )"));
+                assert_eq!(e.3["kind"], "full");
+            }
+            "repro_check" => assert_eq!(e.3["kind"], "repro"),
+            node => panic!("unexpected gate {node}"),
+        }
+    }
 }
 
 #[test]

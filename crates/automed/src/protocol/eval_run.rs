@@ -328,7 +328,12 @@ fn render_prompt(template: &str, slug: &str, gate_command: Option<&str>) -> Resu
     Ok(match gate_command {
         Some(command) => template
             .split("{gate_line}")
-            .map(render)
+            .map(|part| {
+                part.split("{fix_gate_note}")
+                    .map(render)
+                    .collect::<Vec<_>>()
+                    .join(crate::launcher::BUG_REVIEW_GATE_NOTE)
+            })
             .collect::<Vec<_>>()
             .join(&crate::launcher::gate_line(command)),
         None => render(&template),
@@ -741,5 +746,13 @@ mod tests {
             );
         }
         assert!(render_prompt("<!-- /gate-run -->", "demo", None).is_err());
+    }
+    #[test]
+    fn gate_quick_prompt_eval_run_fills_fix_gate_note_without_interpreting_data() {
+        let template = "<!-- gate-run: each_round -->\nold\n<!-- gate-run: before_merge -->\n{fix_gate_note}{gate_line}\n<!-- /gate-run -->";
+        assert_eq!(render_prompt(template, "demo", None).unwrap(), "old\n");
+        let got = render_prompt(template, "demo", Some("echo {slug} {fix_gate_note}")).unwrap();
+        assert!(got.contains(crate::launcher::BUG_REVIEW_GATE_NOTE));
+        assert!(got.contains("`echo {slug} {fix_gate_note}`"));
     }
 }

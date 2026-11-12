@@ -1149,7 +1149,7 @@ fn apply_inner(
                     }
                 }
                 Node::Implement => {
-                    if ctx.config.gates_each_round() {
+                    if ctx.config.gates_after_implement() {
                         return Ok(Transition::active(
                             Node::Gate,
                             Action::RunCoreStep { node: Node::Gate },
@@ -2168,6 +2168,142 @@ mod tests {
         let mut c = cfg_with_gate();
         c.gate_run = crate::config::GateRun::BeforeMerge;
         c
+    }
+
+    fn quick_config() -> ResolvedConfig {
+        let mut c = before_merge_config();
+        c.gate_quick = Some(crate::config::QuickGate {
+            command: "fmt".into(),
+            timeout_minutes: 5,
+        });
+        c
+    }
+    #[test]
+    fn gate_quick_implement_with_audit_enters_gate() {
+        let event = ended(block(DocStatus::Implementing, &[MilestoneState::Pending]));
+        let actual = apply(&active(Node::Implement), &event, &ctx(&quick_config())).unwrap();
+        assert_eq!(
+            actual,
+            apply(&active(Node::Implement), &event, &ctx(&cfg_with_gate())).unwrap()
+        );
+        assert_eq!(actual.next, active(Node::Gate));
+        assert_eq!(actual.action, Action::RunCoreStep { node: Node::Gate });
+    }
+    #[test]
+    fn gate_quick_implement_without_audit_enters_gate() {
+        for state in [MilestoneState::Open, MilestoneState::Done] {
+            let mut c = quick_config();
+            c.roles
+                .iter_mut()
+                .find(|r| r.role == Role::Audit)
+                .unwrap()
+                .config
+                .enabled = false;
+            let mut each = c.clone();
+            each.gate_run = crate::config::GateRun::EachRound;
+            let event = ended(block(DocStatus::Implementing, &[state]));
+            let actual = apply(&active(Node::Implement), &event, &ctx(&c)).unwrap();
+            assert_eq!(
+                actual,
+                apply(&active(Node::Implement), &event, &ctx(&each)).unwrap()
+            );
+            assert_eq!(actual.next, active(Node::Gate));
+        }
+    }
+    #[test]
+    fn gate_quick_gate_pass_and_fail_equal_each_round() {
+        for audit in [false, true] {
+            for round in [1, 25] {
+                for outcome in [GateOutcome::Passed, red()] {
+                    let mut c = quick_config();
+                    c.roles
+                        .iter_mut()
+                        .find(|r| r.role == Role::Audit)
+                        .unwrap()
+                        .config
+                        .enabled = audit;
+                    let mut each = c.clone();
+                    each.gate_run = crate::config::GateRun::EachRound;
+                    let mut status = block(DocStatus::Implementing, &[MilestoneState::Open]);
+                    status.impl_round = round;
+                    let event = gate_done(Node::Gate, outcome, Some(status));
+                    assert_eq!(
+                        apply(&active(Node::Gate), &event, &ctx(&c)).unwrap(),
+                        apply(&active(Node::Gate), &event, &ctx(&each)).unwrap()
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn gate_quick_inactive_under_each_round_or_without_gate() {
+        for mode in [
+            crate::config::GateRun::EachRound,
+            crate::config::GateRun::BeforeMerge,
+        ] {
+            for gate in [false, true] {
+                let mut c = quick_config();
+                c.gate_run = mode;
+                if !gate {
+                    c.gate = None;
+                }
+                assert_eq!(
+                    c.quick_gate().is_some(),
+                    gate && mode == crate::config::GateRun::BeforeMerge
+                );
+                assert_eq!(c.gates_after_implement(), gate);
+                if c.quick_gate().is_none() {
+                    let mut none = c.clone();
+                    none.gate_quick = None;
+                    let event = ended(block(DocStatus::Implementing, &[MilestoneState::Pending]));
+                    assert_eq!(
+                        apply(&active(Node::Implement), &event, &ctx(&c)).unwrap(),
+                        apply(&active(Node::Implement), &event, &ctx(&none)).unwrap()
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn gate_quick_resolved_json_is_unchanged_without_quick() {
+        let c = before_merge_config();
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("gate_quick"));
+        let old: ResolvedConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(old.gate_quick, None);
+        assert_eq!(serde_json::to_string(&old).unwrap(), json);
+        let quick = quick_config();
+        assert_eq!(
+            serde_json::from_str::<ResolvedConfig>(&serde_json::to_string(&quick).unwrap())
+                .unwrap(),
+            quick
+        );
+        let project = ProjectConfig {
+            gate_quick: quick.gate_quick.clone(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &project).gate_quick,
+            quick.gate_quick
+        );
+    }
+    #[test]
+    fn gate_quick_merge_and_main_check_nodes_unchanged() {
+        for (node, next) in [
+            (Node::Rebase, Node::MergeGate),
+            (Node::Merging, Node::MainCheck),
+        ] {
+            let event = Trigger::CoreStepDone {
+                node,
+                result: CoreStepResult::Ok,
+            };
+            let actual = apply(&active(node), &event, &ctx(&quick_config())).unwrap();
+            assert_eq!(
+                actual,
+                apply(&active(node), &event, &ctx(&cfg_with_gate())).unwrap()
+            );
+            assert_eq!(actual.next, active(next));
+        }
     }
 
     #[test]

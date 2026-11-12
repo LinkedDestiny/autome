@@ -394,9 +394,8 @@ function hostTags(data) {
   const tags = [];
   const gate = data && data.gate;
   if (gate) {
-    const sha = String(gate.sha || '').slice(0, 7);
     const t = tag(
-      `${labels.nodeLabel(gate.node)}${gate.ok ? '通过' : '未通过'} · ${sha}`,
+      labels.gateTagLabel(gate),
       gate.ok ? 'soft-green' : 'soft-red'
     );
     t.title = `${gate.command || ''}\n日志：${gate.log || ''}`;

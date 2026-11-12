@@ -267,11 +267,19 @@ fn layer_one(files: &ProtocolFiles, r: &mut Report) {
                 Err(e) => r.problems.push(Problem::fail(L1, format!("{file}: {e}"))),
                 Ok(selected)
                     if mode == autome_domain::config::GateRun::EachRound
-                        && selected.contains("{gate_line}") =>
+                        && (selected.contains("{gate_line}")
+                            || selected.contains("{fix_gate_note}")) =>
                 {
                     r.problems.push(Problem::fail(
                         L1,
-                        format!("{file}: {{gate_line}} 只能在 before_merge 段内"),
+                        format!(
+                            "{file}: {} 只能在 before_merge 段内",
+                            if selected.contains("{gate_line}") {
+                                "{gate_line}"
+                            } else {
+                                "{fix_gate_note}"
+                            }
+                        ),
                     ))
                 }
                 _ => {}
@@ -405,8 +413,9 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
 }
 
 /// Placeholders a template may use.
-const KNOWN_PLACEHOLDERS: [&str; 10] = [
+const KNOWN_PLACEHOLDERS: [&str; 11] = [
     "gate_line",
+    "fix_gate_note",
     "slug",
     // The task's document directory as the round sees it. Not the same string
     // for every project: a workspace session starts beside its member
@@ -1179,6 +1188,26 @@ mod tests {
                     assert!(!text.contains("{gate_line}"));
                 }
             }
+        }
+    }
+    #[test]
+    fn gate_quick_prompt_eval_fix_gate_note_is_before_merge_only() {
+        let files = seed().clone();
+        assert!(!check(&files).failed());
+        for prefix in ["", "<!-- gate-run: each_round -->\n"] {
+            let mut files = files.clone();
+            files.insert(
+                "prompts/fix-review.md",
+                format!(
+                    "{prefix}{{fix_gate_note}}\n{}",
+                    if prefix.is_empty() {
+                        ""
+                    } else {
+                        "<!-- /gate-run -->"
+                    }
+                ),
+            );
+            assert!(details(&check(&files)).contains("{fix_gate_note} 只能在 before_merge 段内"));
         }
     }
 }

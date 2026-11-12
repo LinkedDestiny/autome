@@ -398,6 +398,37 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                 _ => return Err("[gate] run 必须是 \"each_round\" 或 \"before_merge\"".into()),
             });
         }
+        let quick = t
+            .get("quick")
+            .map(|v| v.as_str().map(str::trim).ok_or("[gate] quick 必须是字符串"))
+            .transpose()?;
+        let quick_timeout = match t.get("quick_timeout_minutes") {
+            None => autome_domain::config::DEFAULT_GATE_QUICK_TIMEOUT_MINUTES,
+            Some(v) => {
+                if quick.is_none() {
+                    return Err("[gate] quick_timeout_minutes 需要和 quick 一起配置".into());
+                }
+                v.as_integer()
+                    .filter(|m| *m > 0)
+                    .ok_or("[gate] quick_timeout_minutes 必须是正整数")?
+                    .min(u32::MAX as i64) as u32
+            }
+        };
+        if let Some(quick) = quick.filter(|q| !q.is_empty()) {
+            if t.get("command")
+                .and_then(toml::Value::as_str)
+                .is_none_or(|c| c.trim().is_empty())
+            {
+                return Err(
+                    "[gate] 配了 quick 就需要 command（完整门禁），例如 command = \"make check\""
+                        .into(),
+                );
+            }
+            config.gate_quick = Some(autome_domain::config::QuickGate {
+                command: quick.to_string(),
+                timeout_minutes: quick_timeout,
+            });
+        }
         let command = t
             .get("command")
             .and_then(toml::Value::as_str)
@@ -1477,6 +1508,116 @@ mod tests {
         let p = project_config_path(repo);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn gate_quick_default_and_explicit_timeout() {
+        for (text, expected) in [
+            ("", 5),
+            ("quick_timeout_minutes = 1", 1),
+            ("quick_timeout_minutes = 4294967295", u32::MAX),
+            ("quick_timeout_minutes = 9223372036854775807", u32::MAX),
+        ] {
+            let p = parse_project(&format!(
+                "[gate]\ncommand = 'check'\nquick = ' fmt '\nrun = 'before_merge'\n{text}"
+            ))
+            .unwrap();
+            let c = autome_domain::config::resolve(&GlobalConfig::default(), &p);
+            assert_eq!(c.quick_gate().unwrap().command, "fmt");
+            assert_eq!(c.quick_gate().unwrap().timeout_minutes, expected);
+        }
+    }
+    #[test]
+    fn gate_quick_requires_full_command() {
+        for command in ["", "concurrency = 1", "command = ''", "command = '  '"] {
+            assert_eq!(
+                parse_project(&format!("[gate]\nquick = 'fmt'\n{command}")).unwrap_err(),
+                "[gate] 配了 quick 就需要 command（完整门禁），例如 command = \"make check\""
+            );
+        }
+    }
+    #[test]
+    fn gate_quick_timeout_bounds() {
+        for quick in ["fmt", ""] {
+            for value in ["0", "-1", "'5'", "1.5", "true", "[]"] {
+                assert_eq!(parse_project(&format!("[gate]\ncommand = 'check'\nquick = '{quick}'\nquick_timeout_minutes = {value}")).unwrap_err(),
+                    "[gate] quick_timeout_minutes 必须是正整数");
+            }
+        }
+    }
+    #[test]
+    fn gate_quick_type_and_whitespace() {
+        for value in ["1", "true", "['a']"] {
+            assert_eq!(
+                parse_project(&format!("[gate]\ncommand = 'check'\nquick = {value}")).unwrap_err(),
+                "[gate] quick 必须是字符串"
+            );
+        }
+        for command in ["", "check"] {
+            for quick in ["", "  "] {
+                let p = parse_project(&format!("[gate]\ncommand = '{command}'\nquick = '{quick}'"))
+                    .unwrap();
+                assert!(p.gate_quick.is_none());
+                assert_eq!(p.gate.is_some(), !command.is_empty());
+            }
+        }
+    }
+    #[test]
+    fn gate_quick_timeout_requires_quick() {
+        for value in ["5", "0"] {
+            assert_eq!(
+                parse_project(&format!(
+                    "[gate]\ncommand = 'check'\nquick_timeout_minutes = {value}"
+                ))
+                .unwrap_err(),
+                "[gate] quick_timeout_minutes 需要和 quick 一起配置"
+            );
+        }
+    }
+    #[test]
+    fn gate_quick_global_is_ignored() {
+        let dir = TempDir::new("quick-global");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[gate]\nquick = true\nquick_timeout_minutes = -1",
+        )
+        .unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), GlobalConfig::default());
+    }
+    #[test]
+    fn gate_quick_save_preserves_text_and_reload() {
+        let dir = TempDir::new("quick-save");
+        let gate = "[gate]\ncommand = 'check'\nrun = 'before_merge'\nquick = 'fmt' # quick comment\nquick_timeout_minutes = 7 # timeout comment\n";
+        write_project(dir.path(), gate);
+        let mut p = load_project(dir.path()).unwrap();
+        p.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        save_project(dir.path(), &p).unwrap();
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains(gate)
+        );
+        let reloaded = load_project(dir.path()).unwrap();
+        assert_eq!(reloaded.roles[&Role::Audit].enabled, Some(false));
+        let c = autome_domain::config::resolve(&GlobalConfig::default(), &reloaded);
+        assert_eq!(c.quick_gate().unwrap().command, "fmt");
+        assert_eq!(c.quick_gate().unwrap().timeout_minutes, 7);
+    }
+    #[test]
+    fn gate_quick_each_round_has_no_violations() {
+        use autome_domain::config::{NoSkills, resolve, validate};
+        let p =
+            parse_project("[gate]\ncommand = 'check'\nrun = 'each_round'\nquick = 'fmt'").unwrap();
+        let c = resolve(&GlobalConfig::default(), &p);
+        assert!(c.gate_quick.is_some());
+        assert!(c.quick_gate().is_none());
+        assert!(validate(&c, &NoSkills).is_empty());
     }
 
     #[test]

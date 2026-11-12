@@ -150,6 +150,38 @@ pub fn gate_verdict(p: &Value) -> String {
     )
 }
 
+fn gate_label<'a>(p: &'a Value, missing_node: &'a str) -> &'a str {
+    if p["kind"] == "quick" {
+        if p["node"] == "fix_gate" {
+            "修复门禁（复现 + 快检）"
+        } else {
+            "快检"
+        }
+    } else {
+        node_label(p["node"].as_str().unwrap_or(missing_node))
+    }
+}
+
+fn gate_kind_verdict(p: &Value) -> String {
+    let verdict = gate_verdict(p);
+    if p["kind"] == "quick" {
+        verdict.trim_start_matches("门禁").to_string()
+    } else {
+        verdict
+    }
+}
+
+pub fn gate_status_line(p: &Value) -> String {
+    format!(
+        "  门禁      {} 在 {} 上{}（{}）  日志 {}",
+        gate_label(p, "?"),
+        short(p["sha"].as_str().unwrap_or("")),
+        gate_kind_verdict(p),
+        p["command"].as_str().unwrap_or(""),
+        p["log"].as_str().unwrap_or("")
+    )
+}
+
 fn failure(reason: &Value) -> String {
     let detail = reason["detail"].as_str().unwrap_or("");
     match reason["kind"].as_str().unwrap_or("") {
@@ -422,14 +454,14 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         ),
         "gate.started" => format!(
             "{subject} {}开始：{} @ {}",
-            node_label(&s("node")),
+            gate_label(p, ""),
             s("command"),
             short(&s("sha"))
         ),
         "gate.result" => format!(
             "{subject} {}{}（退出码 {}）  日志：{}",
-            node_label(&s("node")),
-            gate_verdict(p),
+            gate_label(p, ""),
+            gate_kind_verdict(p),
             p["exit_code"],
             s("log")
         ),
@@ -497,6 +529,97 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_quick_run_lines_name_the_quick_run() {
+        for (node, old, quick) in [
+            ("gate", "门禁", "快检"),
+            ("fix_gate", "修复门禁", "修复门禁（复现 + 快检）"),
+        ] {
+            for kind in [
+                None,
+                Some("full"),
+                Some("repro"),
+                Some("unknown"),
+                Some("quick"),
+            ] {
+                for (ok, tail, verdict, code) in [
+                    (true, "", "通过", 0),
+                    (false, "exit 124", "未通过", 124),
+                    (
+                        false,
+                        "=== Autome：门禁运行超过 3 分钟，已终止 ===",
+                        "超时（运行超过 3 分钟，被内核终止）",
+                        124,
+                    ),
+                ] {
+                    let mut p = json!({"node":node,"sha":"123456789abcdef","command":"check","log":"/log","ok":ok,"tail":tail,"exit_code":code});
+                    if let Some(k) = kind {
+                        p["kind"] = json!(k);
+                    }
+                    let label = if kind == Some("quick") { quick } else { old };
+                    let result = if kind != Some("quick") && verdict.starts_with("超时") {
+                        format!("门禁{verdict}")
+                    } else {
+                        verdict.into()
+                    };
+                    assert_eq!(
+                        event_line("gate.started", "T", &p).unwrap(),
+                        format!("T {label}开始：check @ 123456789a")
+                    );
+                    assert_eq!(
+                        event_line("gate.result", "T", &p).unwrap(),
+                        format!("T {label}{result}（退出码 {code}）  日志：/log")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_status_line_names_the_kind() {
+        for (node, old, quick) in [
+            ("gate", "门禁", "快检"),
+            ("fix_gate", "修复门禁", "修复门禁（复现 + 快检）"),
+        ] {
+            for kind in [
+                None,
+                Some("full"),
+                Some("repro"),
+                Some("unknown"),
+                Some("quick"),
+            ] {
+                for (ok, tail, verdict) in [
+                    (true, "", "通过"),
+                    (false, "", "未通过"),
+                    (
+                        false,
+                        "=== Autome：门禁运行超过 3 分钟，已终止 ===",
+                        "超时（运行超过 3 分钟，被内核终止）",
+                    ),
+                ] {
+                    let mut p = json!({"node":node,"sha":"123456789abcdef","command":"check","log":"/log","ok":ok,"tail":tail});
+                    if let Some(k) = kind {
+                        p["kind"] = json!(k);
+                    }
+                    let label = if kind == Some("quick") { quick } else { old };
+                    let result = if kind != Some("quick") && verdict.starts_with("超时") {
+                        format!("门禁{verdict}")
+                    } else {
+                        verdict.into()
+                    };
+                    assert_eq!(
+                        gate_status_line(&p),
+                        format!("  门禁      {label} 在 123456789a 上{result}（check）  日志 /log")
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            gate_status_line(&json!({"kind":"quick"})),
+            "  门禁      快检 在  上未通过（）  日志 "
+        );
+    }
+
     #[test]
     fn gate_queue_line_counts_only_waiters_ahead() {
         for (position, ahead) in [(1, 0), (2, 1), (u64::MAX, u64::MAX - 1), (0, 0)] {

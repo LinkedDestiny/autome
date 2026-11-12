@@ -31,14 +31,23 @@ pub fn gate_evidence(
     head: Option<&str>,
 ) -> Option<String> {
     if config.gate.is_none() || config.gate_run == GateRun::EachRound {
-        return last.and_then(gate_line_of_result);
+        return last.and_then(|result| {
+            gate_line_for_mode(result, config.gate_run == GateRun::BeforeMerge)
+        });
     }
     if let (Some(result), Some(head)) = (last, head)
         && result.get("sha").and_then(Value::as_str) == Some(head)
     {
         return gate_line_of_result(result);
     }
-    Some(GATE_ONLY_BEFORE_MERGE.to_owned())
+    Some(
+        if config.quick_gate().is_some() {
+            "本项目全量门禁只在合并前运行；本轮的提交上还没有宿主快检结果。\n"
+        } else {
+            GATE_ONLY_BEFORE_MERGE
+        }
+        .to_owned(),
+    )
 }
 
 use autome_domain::role::Role;
@@ -47,6 +56,10 @@ use autome_domain::status_block::{Milestone, MilestoneState, StatusBlock};
 /// One line for the audit round's brief: what the core's own run of the gate
 /// found, on which commit, and where the full output is.
 pub fn gate_line_of_result(result: &Value) -> Option<String> {
+    gate_line_for_mode(result, true)
+}
+
+fn gate_line_for_mode(result: &Value, before_merge: bool) -> Option<String> {
     let sha = result.get("sha")?.as_str()?;
     let command = result.get("command")?.as_str()?;
     let ok = result.get("ok")?.as_bool()?;
@@ -56,6 +69,29 @@ pub fn gate_line_of_result(result: &Value) -> Option<String> {
         .unwrap_or(-1);
     let log = result.get("log").and_then(Value::as_str).unwrap_or("");
     let short = &sha[..sha.len().min(10)];
+    if result["kind"].as_str() == Some("quick") {
+        let policy = if before_merge {
+            "全量门禁只在合并前运行。"
+        } else {
+            "当前配置已改为每轮运行完整门禁，这条结果是切换前的快检。"
+        };
+        let verdict =
+            autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
+                .filter(|_| !ok)
+                .map_or_else(
+                    || {
+                        if ok {
+                            "通过".to_owned()
+                        } else {
+                            "未通过".to_owned()
+                        }
+                    },
+                    |n| format!("快检超时（运行超过 {n} 分钟，被内核终止）"),
+                );
+        return Some(format!(
+            "本轮宿主只跑了快检：`{command}`，在提交 `{short}` 上{verdict}，退出码 {code}。完整输出：`{log}`。\n快检不是全量门禁：它只说明这条命令里的检查是否通过，不能当作全量回归的证据；{policy}复验时可以引用它，但它不替代你自己的负向对照。\n"
+        ));
+    }
     let verdict =
         autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
             .filter(|_| !ok)
@@ -847,5 +883,59 @@ session-protocol = []
             path("docs/checkout", Role::Impl, 7),
             "docs/checkout/brief/impl-7.md"
         );
+    }
+    #[test]
+    fn gate_quick_brief_actual_result_and_timeout_in_both_modes() {
+        for (ok, code, tail) in [
+            (true, 0, ""),
+            (false, 1, "failure"),
+            (false, 124, "=== Autome：门禁运行超过 5 分钟，已终止 ==="),
+        ] {
+            let result = serde_json::json!({"sha":"0123456789abcdef", "kind":"quick", "command":"echo {slug}","ok":ok,"exit_code":code,"tail":tail,"log":"gate.log"});
+            for mode in [GateRun::BeforeMerge, GateRun::EachRound] {
+                let mut config = before_merge_config();
+                config.gate_run = mode;
+                let line = gate_evidence(&config, Some(&result), Some("0123456789abcdef")).unwrap();
+                assert!(line.contains("本轮宿主只跑了快检：`echo {slug}`"));
+                assert!(line.contains(&format!("退出码 {code}")));
+                assert!(line.contains("不能当作全量回归的证据"));
+                assert!(!line.contains("这是实现轮之外的一次独立运行"));
+                assert_eq!(
+                    line.contains("当前配置已改为每轮运行完整门禁"),
+                    mode == GateRun::EachRound
+                );
+                if code == 124 {
+                    assert!(line.contains("快检超时（运行超过 5 分钟"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_brief_stale_missing_and_legacy_results() {
+        let mut config = before_merge_config();
+        config.gate_quick = Some(autome_domain::config::QuickGate {
+            command: "quick".into(),
+            timeout_minutes: 5,
+        });
+        let old = serde_json::json!({"sha":"old","kind":"quick","command":"quick","ok":true,"exit_code":0});
+        for last in [None, Some(&old)] {
+            for head in [None, Some("new"), Some("")] {
+                assert_eq!(
+                    gate_evidence(&config, last, head).unwrap(),
+                    "本项目全量门禁只在合并前运行；本轮的提交上还没有宿主快检结果。\n"
+                );
+            }
+        }
+        let original = serde_json::json!({"sha":"a","command":"full","ok":true,"exit_code":0});
+        for kind in ["full", "repro"] {
+            let mut result = original.clone();
+            result["kind"] = kind.into();
+            assert_eq!(
+                gate_evidence(&config, Some(&result), Some("a")),
+                gate_line_of_result(&original)
+            );
+        }
+        assert!(gate_line_of_result(&serde_json::Value::Null).is_none());
     }
 }

@@ -2616,7 +2616,7 @@ fn start_session(
 
 enum Route {
     Launch,
-    Rerouted(ResolvedConfig),
+    Rerouted(Box<ResolvedConfig>),
     Deferred,
 }
 
@@ -2697,7 +2697,7 @@ fn cooldown_route(
                     "cooling_until": until,
                 }),
             )?;
-            return Ok(Route::Rerouted(alt));
+            return Ok(Route::Rerouted(Box::new(alt)));
         }
     }
 
@@ -2848,10 +2848,11 @@ fn launch_session(
     // Written before the prompt that points at it. A round told to read a
     // brief that is not there would go and read the design document instead,
     // which is the thing the brief exists to make optional.
+    let last_gate = ctx.store.last_event(&task.id, "gate.result")?;
     let gate_evidence = if kind.role() == Some(Role::Audit) {
         crate::brief::gate_evidence(
             resolved,
-            ctx.store.last_event(&task.id, "gate.result")?.as_ref(),
+            last_gate.as_ref(),
             gate_head(&layout).ok().as_deref(),
         )
     } else {
@@ -2910,6 +2911,8 @@ fn launch_session(
         kind,
         templates: &protocol,
         gate_before_merge: resolved.gate_before_merge(),
+        gate_quick: resolved.quick_gate().map(|q| q.command.as_str()),
+        last_gate: last_gate.as_ref(),
         brief_path: &brief_path,
         slug: &task.slug,
         doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
@@ -3394,7 +3397,7 @@ fn main_check_reuse(
     } else {
         (seq, passed)
     };
-    if result["ok"] != true {
+    if result["ok"] != true || result["kind"] == "quick" {
         return Ok(None);
     }
     let Some(from_sha) = result["sha"].as_str() else {
@@ -3452,6 +3455,7 @@ fn run_gate(
         && node == Node::Gate
         && resolved.gate.is_some()
         && resolved.gate_run == config::GateRun::BeforeMerge
+        && resolved.quick_gate().is_none()
     {
         crate::gate::discard_node(&repo, &task.id, "gate").map_err(|e| err(e.to_string()))?;
         ctx.store.append_event(
@@ -3499,11 +3503,40 @@ fn run_gate(
     } else {
         resolved.gate.clone()
     };
-    let Some(gate) = selected_gate else {
+    let Some(mut gate) = selected_gate else {
         // The gate was removed from the configuration while the task sat
         // here. Nothing to run means nothing to stop for.
         return finish_gate(ctx, task, project, node, GateOutcome::Passed);
     };
+
+    let legacy_gate = gate.clone();
+    let legacy_kind = if bug_gate
+        && (node == Node::ReproCheck
+            || resolved.gate.is_none()
+            || (node == Node::FixGate && resolved.gate_run == config::GateRun::BeforeMerge))
+    {
+        crate::gate::Launch::Repro
+    } else {
+        crate::gate::Launch::Full
+    };
+    let mut launch = legacy_kind.clone();
+    if ((!bug && node == Node::Gate) || (bug && node == Node::FixGate))
+        && let Some(quick) = resolved.quick_gate()
+    {
+        if bug {
+            let repro = repro_command
+                .as_ref()
+                .expect("Bug FixGate has a reproduction command");
+            gate.command = format!("( {repro} ) && ( {} )", quick.command);
+        } else {
+            gate.command = quick.command.clone();
+            gate.timeout_minutes = quick.timeout_minutes;
+        }
+        launch = crate::gate::Launch::Quick {
+            command: gate.command.clone(),
+            timeout_minutes: gate.timeout_minutes,
+        };
+    }
 
     let (cwd, head) = match node {
         Node::MainCheck => {
@@ -3560,6 +3593,7 @@ fn run_gate(
         // already gated, when the rebase had nothing to move: no second run.
         if node == Node::MergeGate
             && let Some(last) = ctx.store.last_event(&task.id, "gate.result")?
+            && last["kind"] != "quick"
             && last.get("ok").and_then(Value::as_bool) == Some(true)
             && last.get("sha").and_then(Value::as_str) == Some(head.as_str())
             && (!bug || last.get("command").and_then(Value::as_str) == Some(gate.command.as_str()))
@@ -3656,10 +3690,14 @@ fn run_gate(
         }
         if bug && node == Node::FixGate {
             job.set_repro_only(
-                resolved.gate.is_some() && resolved.gate_run == config::GateRun::BeforeMerge,
+                resolved.gate.is_some()
+                    && resolved.gate_run == config::GateRun::BeforeMerge
+                    && resolved.quick_gate().is_none(),
             )
             .map_err(|e| err(format!("无法记录修复门禁模式：{e}")))?;
         }
+        job.set_launch(&launch)
+            .map_err(|e| err(format!("无法记录门禁种类：{e}")))?;
         crate::gate::start(
             &job,
             &cwd,
@@ -3668,6 +3706,7 @@ fn run_gate(
                 ("AUTOME_TASK", task.id.as_str()),
                 ("AUTOME_HEAD", head.as_str()),
                 ("AUTOME_GATE_NODE", node.as_str()),
+                ("AUTOME_GATE_KIND", launch.kind()),
             ],
         )
         .map_err(|e| err(format!("无法启动门禁：{e}")))?;
@@ -3678,13 +3717,21 @@ fn run_gate(
                 "node": node.as_str(),
                 "sha": head,
                 "command": gate.command,
+                "kind": launch.kind(),
                 "log": job.log.to_string_lossy(),
             }),
         )?;
         return Ok(());
     }
 
-    let exit_code = match crate::gate::poll(&job, gate.timeout_minutes) {
+    let launch = job.launch().unwrap_or_else(|| {
+        if job.repro_only() {
+            crate::gate::Launch::Repro
+        } else {
+            legacy_kind
+        }
+    });
+    let exit_code = match crate::gate::poll(&job, launch.timeout(legacy_gate.timeout_minutes)) {
         crate::gate::Poll::Running => return Ok(()),
         crate::gate::Poll::Vanished => {
             // Nothing is known about the code, so nothing is concluded: the
@@ -3699,10 +3746,12 @@ fn run_gate(
         return Ok(());
     }
 
-    let command = if bug && node == Node::FixGate && job.repro_only() {
+    let command = if let crate::gate::Launch::Quick { command, .. } = &launch {
+        command.clone()
+    } else if bug && node == Node::FixGate && job.repro_only() {
         repro_command.expect("Bug FixGate has a recorded reproduction command")
     } else {
-        gate.command.clone()
+        legacy_gate.command.clone()
     };
     let ok = exit_code == 0;
     let tail = crate::gate::tail(&job.log, 60);
@@ -3711,6 +3760,7 @@ fn run_gate(
         "sha": head,
         "ok": ok,
         "exit_code": exit_code,
+        "kind": launch.kind(),
         "command": command,
         "log": job.log.to_string_lossy(),
         "tail": tail,
@@ -3808,6 +3858,11 @@ fn record_gate_result(
             "node",
             node.as_str(),
         )?;
+        let previous = previous.filter(|(_, _, prev)| {
+            let a = prev["kind"].as_str();
+            let b = result["kind"].as_str();
+            !(a.is_some() && b.is_some() && a != b && (a == Some("quick") || b == Some("quick")))
+        });
         if let Some((seq, kind, prev)) = &previous
             && kind == "gate.result"
             && prev["ok"] == false
@@ -4413,6 +4468,8 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         kind: SessionKind::Onboarding,
         templates: protocol,
         gate_before_merge: None,
+        gate_quick: None,
+        last_gate: None,
         brief_path: "",
         slug: "onboarding",
         // Onboarding writes the project profile and AGENTS.md at the
@@ -5096,6 +5153,566 @@ mod tests {
                 return;
             }
         };
+    }
+
+    fn quick_host_config(w: &World, mode: &str, quick: Option<&str>) {
+        let extra = quick
+            .map(|q| {
+                format!(
+                    "quick = {}\nquick_timeout_minutes = 1\n",
+                    serde_json::to_string(q).unwrap()
+                )
+            })
+            .unwrap_or_default();
+        std::fs::write(
+            config_io::project_config_path(&w.repo),
+            format!("[gate]\ncommand = 'echo full'\nrun = '{mode}'\ntimeout_minutes = 30\n{extra}"),
+        )
+        .unwrap();
+    }
+
+    fn quick_host_start(
+        w: &mut World,
+        task: &mut TaskRecord,
+        project: &Project,
+        layout: &TaskLayout,
+    ) -> crate::gate::Job {
+        task.state = TaskState::Active { node: Node::Gate };
+        w.ctx.store.set_task_state(&task.id, &task.state).unwrap();
+        run_gate(&mut w.ctx, task, project, layout, Node::Gate).unwrap();
+        let head = gate_head(layout).unwrap();
+        crate::gate::Job::at(&w.repo, &task.id, "gate", &head[..12])
+    }
+
+    fn quick_host_collect(
+        w: &mut World,
+        task: &TaskRecord,
+        project: &Project,
+        layout: &TaskLayout,
+        job: &crate::gate::Job,
+    ) -> Value {
+        std::fs::write(layout.cwd.join("released"), "").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !job.exit.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        run_gate(&mut w.ctx, task, project, layout, Node::Gate).unwrap();
+        w.ctx
+            .store
+            .last_event(&task.id, "gate.result")
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn gate_quick_host_launch_marker_lifecycle() {
+        let (w, task, _, _, head) = reuse_fixture("quick-marker");
+        let job = crate::gate::Job::at(&w.repo, &task.id, "gate", &head[..12]);
+        let launch = crate::gate::Launch::Quick {
+            command: "echo {slug}".into(),
+            timeout_minutes: u32::MAX,
+        };
+        assert_eq!(job.launch(), None);
+        job.set_launch(&launch).unwrap();
+        crate::gate::start(&job, &w.repo, "true", &[]).unwrap();
+        assert_eq!(job.launch(), Some(launch.clone()));
+        crate::gate::discard_node(&w.repo, &task.id, "gate").unwrap();
+        assert_eq!(job.launch(), None);
+        job.set_launch(&launch).unwrap();
+        job.clear();
+        assert_eq!(job.launch(), Some(launch));
+        crate::gate::discard_stale(&w.repo, &task.id, "gate", "different").unwrap();
+        assert_eq!(job.launch(), None);
+        std::fs::create_dir_all(job.started.with_extension("kind")).unwrap();
+        assert!(job.set_launch(&crate::gate::Launch::Full).is_err());
+    }
+
+    #[test]
+    fn gate_quick_host_runs_quick_and_records_failures() {
+        for code in [0, 9, 126, 127] {
+            let (mut w, mut task, project, layout, _) = reuse_fixture("quick-run");
+            let command = format!("echo $AUTOME_GATE_KIND; exit {code}");
+            quick_host_config(&w, "before_merge", Some(&command));
+            let job = quick_host_start(&mut w, &mut task, &project, &layout);
+            let started = w
+                .ctx
+                .store
+                .last_event(&task.id, "gate.started")
+                .unwrap()
+                .unwrap();
+            assert_eq!(started["kind"], "quick");
+            assert_eq!(started["command"], command);
+            assert_eq!(job.launch().unwrap().timeout(30), 1);
+            let result = quick_host_collect(&mut w, &task, &project, &layout, &job);
+            assert_eq!(result["kind"], "quick");
+            assert_eq!(result["command"], command);
+            assert_eq!(result["exit_code"], code);
+            assert_eq!(result["tail"].as_str().unwrap().trim(), "quick");
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_full_and_legacy_jobs_remain_full() {
+        for legacy in [false, true] {
+            let (mut w, mut task, project, layout, _) = reuse_fixture("quick-full");
+            quick_host_config(&w, "each_round", Some("exit 99"));
+            let job = quick_host_start(&mut w, &mut task, &project, &layout);
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "gate.started")
+                    .unwrap()
+                    .unwrap()["kind"],
+                "full"
+            );
+            if legacy {
+                std::fs::remove_file(job.started.with_extension("kind")).unwrap();
+            }
+            quick_host_config(&w, "before_merge", Some("exit 98"));
+            let result = quick_host_collect(&mut w, &task, &project, &layout, &job);
+            assert_eq!(result["kind"], "full");
+            assert_eq!(result["command"], "echo full");
+            assert_eq!(result["ok"], true);
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_merge_gate_never_reuses_a_quick_result() {
+        for kind in ["quick", "full"] {
+            let (mut w, task, project, layout, head) = reuse_fixture("quick-reuse");
+            quick_host_config(&w, "before_merge", Some("true"));
+            w.ctx
+                .store
+                .append_event(
+                    "gate.result",
+                    &task.id,
+                    json!({"node":"gate", "sha":head, "ok":true, "kind":kind}),
+                )
+                .unwrap();
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::MergeGate).unwrap();
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.reused").unwrap(),
+                if kind == "quick" { 0 } else { 1 }
+            );
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "gate.started").unwrap(),
+                if kind == "quick" { 1 } else { 0 }
+            );
+            crate::gate::discard_node(&w.repo, &task.id, "merge_gate").unwrap();
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_main_check_rejects_quick_results() {
+        for reused in [false, true] {
+            for kind in ["quick", "full"] {
+                let (mut w, mut task, _, _, head) = reuse_fixture("quick-main");
+                let commit = reuse_merge(&mut w, &mut task);
+                let node = if reused { "gate" } else { "merge_gate" };
+                w.ctx
+                    .store
+                    .append_event(
+                        "gate.started",
+                        &task.id,
+                        json!({"node":node,"sha":head,"command":"gate"}),
+                    )
+                    .unwrap();
+                w.ctx
+                    .store
+                    .append_event(
+                        "gate.result",
+                        &task.id,
+                        json!({"node":node,"sha":head,"ok":true,"kind":kind}),
+                    )
+                    .unwrap();
+                if reused {
+                    w.ctx
+                        .store
+                        .append_event(
+                            "gate.reused",
+                            &task.id,
+                            json!({"node":"merge_gate","sha":head}),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(
+                    main_check_reuse(&w.ctx.store, &task.id, &w.repo, &commit, "gate", false)
+                        .unwrap()
+                        .is_some(),
+                    kind == "full"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_failure_streak_kind_boundaries() {
+        for first in [None, Some("quick"), Some("full"), Some("repro")] {
+            for second in [None, Some("quick"), Some("full"), Some("repro")] {
+                let w = World::new("quick-streak");
+                let log = w.root.join("failure.log");
+                std::fs::write(&log, "same failure").unwrap();
+                for i in 1..=3 {
+                    w.ctx
+                        .store
+                        .append_event("gate.started", "T-1", json!({}))
+                        .unwrap();
+                    let mut result = json!({"node":"fix_gate","ok":false,"exit_code":1,"log":log});
+                    if let Some(kind) = if i == 3 { second } else { first } {
+                        result["kind"] = json!(kind);
+                    }
+                    let r = record_gate_result(&w.ctx.store, "T-1", Node::FixGate, &mut result, 3)
+                        .unwrap();
+                    let reset = first.is_some()
+                        && second.is_some()
+                        && first != second
+                        && (first == Some("quick") || second == Some("quick"));
+                    assert_eq!(r["same_failures"], if i == 3 && reset { 1 } else { i });
+                    assert_eq!(r["tripped"], i == 3 && !reset);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_mode_switch_collects_by_launch_kind() {
+        for mode in ["each_round", "before_merge"] {
+            let (mut w, mut task, project, layout, _) = reuse_fixture("quick-switch");
+            let command = "while ! test -f released; do sleep 0.01; done; echo original";
+            quick_host_config(&w, "before_merge", Some(command));
+            let job = quick_host_start(&mut w, &mut task, &project, &layout);
+            quick_host_config(&w, mode, Some("exit 99"));
+            let result = quick_host_collect(&mut w, &task, &project, &layout, &job);
+            assert_eq!(result["kind"], "quick");
+            assert_eq!(result["command"], command);
+            assert_eq!(result["ok"], true);
+        }
+    }
+
+    #[test]
+    fn gate_quick_host_removing_quick_discards_the_job() {
+        let (mut w, mut task, project, layout, _) = reuse_fixture("quick-remove");
+        quick_host_config(&w, "before_merge", Some("sleep 60"));
+        let job = quick_host_start(&mut w, &mut task, &project, &layout);
+        quick_host_config(&w, "before_merge", None);
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::Gate).unwrap();
+        assert!(!job.exists());
+        assert_eq!(job.launch(), None);
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.skipped").unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.result").unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn gate_quick_host_queue_reclaims_with_launch_timeout() {
+        let (mut w, mut task, project, layout, _) = reuse_fixture("quick-timeout");
+        quick_host_config(&w, "before_merge", Some("sleep 60"));
+        let job = quick_host_start(&mut w, &mut task, &project, &layout);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.pid.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(&job.started, (now - 61).to_string()).unwrap();
+        quick_host_config(&w, "each_round", Some("true"));
+        crate::gate_queue::reclaim(&w.ctx).unwrap();
+        assert_eq!(
+            crate::gate::poll(&job, 30),
+            crate::gate::Poll::Done { exit_code: 124 }
+        );
+        let result = quick_host_collect(&mut w, &task, &project, &layout, &job);
+        assert_eq!(result["kind"], "quick");
+        assert!(result["tail"].as_str().unwrap().contains("超过 1 分钟"));
+    }
+
+    #[test]
+    fn gate_quick_host_queued_jobs_select_current_config_and_head() {
+        for mode in ["each_round", "before_merge", "removed"] {
+            let mut w = queue_world("quick-queued");
+            let holder = queue_task(&mut w, "T-1");
+            let task = queue_task(&mut w, "T-2");
+            quick_host_config(&w, "before_merge", Some("echo old"));
+            let held = queue_job(&w, &holder, "gate", "held", None);
+            queue_run(&mut w, &task);
+            assert_eq!(queue_count(&w, &task, "gate.queued"), 1);
+            assert_eq!(queue_count(&w, &task, "gate.started"), 0);
+            held.clear();
+            w.set_state(&holder.id, TaskState::Done);
+            quick_host_config(
+                &w,
+                if mode == "removed" {
+                    "before_merge"
+                } else {
+                    mode
+                },
+                if mode == "removed" {
+                    None
+                } else {
+                    Some("echo new")
+                },
+            );
+            queue_run(&mut w, &task);
+            if mode == "removed" {
+                assert_eq!(queue_count(&w, &task, "gate.skipped"), 1);
+                assert_eq!(queue_count(&w, &task, "gate.started"), 0);
+            } else {
+                let start = w
+                    .ctx
+                    .store
+                    .last_event(&task.id, "gate.started")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    start["kind"],
+                    if mode == "each_round" {
+                        "full"
+                    } else {
+                        "quick"
+                    }
+                );
+                assert_eq!(
+                    start["command"],
+                    if mode == "each_round" {
+                        "echo full"
+                    } else {
+                        "echo new"
+                    }
+                );
+                crate::gate::discard_node(&w.repo, &task.id, "gate").unwrap();
+            }
+        }
+        let (mut w, mut task, project, layout, _) = reuse_fixture("quick-head");
+        quick_host_config(&w, "before_merge", Some("sleep 60"));
+        let old = quick_host_start(&mut w, &mut task, &project, &layout);
+        std::fs::write(layout.cwd.join("new-head"), "changed").unwrap();
+        git::commit_paths(&layout.cwd, &["new-head"], "new head").unwrap();
+        quick_host_config(&w, "before_merge", Some("echo new head"));
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::Gate).unwrap();
+        assert!(!old.exists());
+        assert_eq!(old.launch(), None);
+        assert_eq!(
+            w.ctx.store.count_events(&task.id, "gate.result").unwrap(),
+            0
+        );
+        let start = w
+            .ctx
+            .store
+            .last_event(&task.id, "gate.started")
+            .unwrap()
+            .unwrap();
+        assert_eq!(start["sha"], gate_head(&layout).unwrap());
+        assert_eq!(start["command"], "echo new head");
+        crate::gate::discard_node(&w.repo, &task.id, "gate").unwrap();
+    }
+
+    fn bug_quick_config(w: &World, mode: &str, quick: Option<&str>) {
+        let quick = quick
+            .map(|q| format!("quick = '{q}'\nquick_timeout_minutes = 5\n"))
+            .unwrap_or_default();
+        std::fs::write(
+            config_io::project_config_path(&w.repo),
+            format!("[gate]\ncommand = 'true'\nrun = '{mode}'\ntimeout_minutes = 1\n{quick}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn gate_quick_bug_fix_gate_runs_repro_and_quick_under_the_full_timeout() {
+        needs_git!();
+        for (repro_code, quick_code) in [(0, 0), (0, 9), (0, 126), (0, 127), (0, 124), (9, 0)] {
+            let (mut w, task, project, layout, job, repro) =
+                repro_gate_world("before_merge", repro_code);
+            let quick = format!("echo $AUTOME_GATE_KIND > quick-kind; exit {quick_code}");
+            bug_quick_config(&w, "before_merge", Some(&quick));
+            run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+            let command = format!("( {repro} ) && ( {quick} )");
+            assert!(!job.repro_only());
+            assert_eq!(
+                job.launch(),
+                Some(crate::gate::Launch::Quick {
+                    command: command.clone(),
+                    timeout_minutes: 1
+                })
+            );
+            let start = w
+                .ctx
+                .store
+                .last_event(&task.id, "gate.started")
+                .unwrap()
+                .unwrap();
+            assert_eq!(start["kind"], "quick");
+            assert_eq!(start["command"], command);
+            let result = complete_repro_gate(&mut w, &task, &project, &layout, &job);
+            assert_eq!(result["command"], command);
+            assert_eq!(result["kind"], "quick");
+            let code = if repro_code == 0 {
+                quick_code
+            } else {
+                repro_code
+            };
+            assert_eq!(result["exit_code"], code);
+            assert_eq!(
+                w.state(&task.id),
+                TaskState::Active {
+                    node: if code == 0 {
+                        Node::FixReview
+                    } else {
+                        Node::Fix
+                    }
+                }
+            );
+            if repro_code == 0 {
+                assert_eq!(
+                    std::fs::read_to_string(layout.cwd.join("quick-kind")).unwrap(),
+                    "quick\n"
+                );
+            } else {
+                assert!(!layout.cwd.join("quick-kind").exists());
+            }
+        }
+        // Age a real running job past the full timeout, but below quick's five minutes.
+        let (mut w, task, project, layout, job, _) = repro_gate_world("before_merge", 0);
+        bug_quick_config(&w, "before_merge", Some("true"));
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.pid.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(&job.started, (now - 61).to_string()).unwrap();
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+        let result = w
+            .ctx
+            .store
+            .last_event(&task.id, "gate.result")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["exit_code"], 124);
+        assert_eq!(result["kind"], "quick");
+        assert!(result["tail"].as_str().unwrap().contains("超过 1 分钟"));
+        assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Fix });
+    }
+
+    #[test]
+    fn gate_quick_bug_fix_gate_result_never_stands_in_for_the_merge_gate() {
+        needs_git!();
+        let (mut w, task, project, layout, job, _) = repro_gate_world("before_merge", 0);
+        bug_quick_config(&w, "before_merge", Some("true"));
+        run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+        assert_eq!(
+            complete_repro_gate(&mut w, &task, &project, &layout, &job)["kind"],
+            "quick"
+        );
+        assert_repro_not_reused(&mut w, &task, &project, &layout);
+    }
+
+    #[test]
+    fn gate_quick_bug_mode_switch_collects_by_launch_kind() {
+        needs_git!();
+        for (start_mode, start_quick, end_mode, end_quick, kind) in [
+            ("before_merge", Some("true"), "before_merge", None, "quick"),
+            (
+                "before_merge",
+                Some("true"),
+                "each_round",
+                Some("false"),
+                "quick",
+            ),
+            (
+                "before_merge",
+                Some("true"),
+                "before_merge",
+                Some("false"),
+                "quick",
+            ),
+            (
+                "each_round",
+                Some("false"),
+                "before_merge",
+                Some("false"),
+                "full",
+            ),
+            ("before_merge", None, "before_merge", Some("false"), "repro"),
+        ] {
+            for code in [0, 9] {
+                let (mut w, task, project, layout, job, repro) = repro_gate_world(start_mode, code);
+                bug_quick_config(&w, start_mode, start_quick);
+                run_gate(&mut w.ctx, &task, &project, &layout, Node::FixGate).unwrap();
+                bug_quick_config(&w, end_mode, end_quick);
+                let result = complete_repro_gate(&mut w, &task, &project, &layout, &job);
+                assert_eq!(result["kind"], kind);
+                assert_eq!(result["exit_code"], code);
+                assert_eq!(
+                    result["command"],
+                    if kind == "quick" {
+                        format!("( {repro} ) && ( true )")
+                    } else {
+                        repro
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_bug_repro_nodes_export_repro_kind() {
+        needs_git!();
+        for node in [Node::ReproCheck, Node::FixGate, Node::MergeGate] {
+            let (mut w, task, project, layout, _, _) = repro_gate_world("before_merge", 0);
+            if node == Node::MergeGate {
+                repro_gate_config(&w, "before_merge", "");
+            }
+            let repro = "echo $AUTOME_GATE_KIND > repro-kind; exit 9";
+            w.ctx
+                .store
+                .append_event(
+                    if node == Node::ReproCheck {
+                        "bug.located"
+                    } else {
+                        "bug.reproduced"
+                    },
+                    &task.id,
+                    json!({"command":repro}),
+                )
+                .unwrap();
+            w.set_state(&task.id, TaskState::Active { node });
+            let task = w.ctx.store.get_task(&task.id).unwrap();
+            run_gate(&mut w.ctx, &task, &project, &layout, node).unwrap();
+            let head = gate_head(&layout).unwrap();
+            let job = crate::gate::Job::at(&w.repo, &task.id, node.as_str(), &head[..12]);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !job.exit.exists() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            run_gate(&mut w.ctx, &task, &project, &layout, node).unwrap();
+            let result = w
+                .ctx
+                .store
+                .last_event(&task.id, "gate.result")
+                .unwrap()
+                .unwrap();
+            assert_eq!(result["kind"], "repro");
+            assert_eq!(result["command"], repro);
+            assert_eq!(
+                std::fs::read_to_string(layout.cwd.join("repro-kind")).unwrap(),
+                "repro\n"
+            );
+        }
     }
 
     fn repro_gate_world(
