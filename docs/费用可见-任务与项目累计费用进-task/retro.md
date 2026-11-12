@@ -18,3 +18,4 @@
 审计 #7 | 无 | 通过（无待审，变基后全量测试全绿） | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r8-audit.md | 无
 复盘 #2 | 无 | 写 6 条教训（L-01..L-06，新增 L-05 门禁队列用例依赖 10 秒墙钟、L-06 审计未回应实现点名的失败） | docs/费用可见-任务与项目累计费用进-task/lessons.md | 无
 实现 #9 | M-05 | rebase 完成，保留审计关闭状态 | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r9-impl.md | Desktop SIGABRT；Web EPERM/EMFILE；H-01–H-03 未取证
+审计 #8 | 无 | 通过（无待审，无变更） | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r9-audit.md | 无
