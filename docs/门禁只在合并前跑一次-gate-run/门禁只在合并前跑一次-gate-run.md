@@ -59,7 +59,7 @@ next-action: M-01：在 autome-domain 加 GateRun 与实现轮结束后的转换
   `scheduler` 87、`brief::tests` 20）；end_to_end 112；prompt_rendering 16。现有用例名里没有含 `before_merge` 的——下文
   新增用例名一律含 `before_merge`，并按里程碑用不重叠的前缀：M-01 的 automed 用例在 `config_io::tests::before_merge_*`，
   M-02 的 e2e 叫 `feature_before_merge_*`，M-03 的 e2e 叫 `bug_loop_before_merge_*`、单测在
-  `scheduler::tests::before_merge_*`，M-04 的 e2e 叫 `brief_before_merge_*`、单测在 `brief::tests::before_merge_*`。
+  `scheduler::tests::before_merge_*` 与 `gate::tests::before_merge_*`，M-04 的 e2e 叫 `brief_before_merge_*`、单测在 `brief::tests::before_merge_*`。
   autome-domain 只有 M-01 加用例。各契约里的「共 N 个」是该里程碑完成时的总数，后续里程碑会再往上加。
 
 ## 目标与非目标
