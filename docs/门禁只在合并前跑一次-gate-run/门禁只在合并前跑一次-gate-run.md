@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/40
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在 autome-domain 加 GateRun 与实现轮结束后的转换，在 config_io 解析与校验 [gate] run
+next-action: 审计 M-01；通过后推进 M-02 的 Gate 节点切换与需求端到端验收
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -621,7 +621,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | [gate] run 配置解析与需求状态机转换 | 0 | |
+| M-01 | 待审 | [gate] run 配置解析与需求状态机转换 | 0 | |
 | M-02 | 开放 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
 | M-03 | 开放 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 开放 | 审计简报的宿主门禁证据与金样 | 0 | |
@@ -719,8 +719,10 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-01 验收契约
 
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-01-r1-impl.md · 待审 · 实现 #1
+
 - 验收命令：`cargo test -p autome-domain before_merge && cargo test -p autome-domain && cargo test -p automed --lib config_io`
-- 预期：autome-domain 过滤 `before_merge` 6 个通过；autome-domain 单测共 390 个通过（基线 384 + 6）、集成 1 个通过；automed lib 过滤 `config_io` 45 个通过（基线 40 + 5，其中名字含 `before_merge` 的 5 个）；其余现有用例由宿主门禁在本轮 head 上的结果证明通过。
+- 预期：autome-domain 过滤 `before_merge` 6 个通过；autome-domain 单测共 390 个通过（基线 384 + 6）；集成共 1 个、默认忽略 1 个（t14_gate_logs 需原始 T-14 日志，非本轮新增忽略）；automed lib 过滤 `config_io` 45 个通过（基线 40 + 5，其中名字含 `before_merge` 的 5 个）；其余现有用例由宿主门禁在本轮 head 上的结果证明通过。
 - 负向对照：`task.rs` 实现轮结束处仍写 `ctx.config.gate.is_some()` 时，task ①② 两个用例失败（转换去了 `Gate`）；解析对未知字符串不报错时，「`"sometimes"` 报错」用例失败。
 
 ### M-02 验收契约

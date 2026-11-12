@@ -1149,7 +1149,7 @@ fn apply_inner(
                     }
                 }
                 Node::Implement => {
-                    if ctx.config.gate.is_some() {
+                    if ctx.config.gates_each_round() {
                         return Ok(Transition::active(
                             Node::Gate,
                             Action::RunCoreStep { node: Node::Gate },
@@ -2162,6 +2162,129 @@ mod tests {
             command: "make check".into(),
             tail: "1 failed".into(),
         }
+    }
+
+    fn before_merge_config() -> ResolvedConfig {
+        let mut c = cfg_with_gate();
+        c.gate_run = crate::config::GateRun::BeforeMerge;
+        c
+    }
+
+    #[test]
+    fn before_merge_implement_with_audit_equals_no_gate() {
+        let c = before_merge_config();
+        let mut none = c.clone();
+        none.gate = None;
+        let event = ended(block(DocStatus::Implementing, &[MilestoneState::Pending]));
+        let actual = apply(&active(Node::Implement), &event, &ctx(&c)).unwrap();
+        assert_eq!(
+            actual,
+            apply(&active(Node::Implement), &event, &ctx(&none)).unwrap()
+        );
+        assert_eq!(actual.next, active(Node::Audit));
+    }
+
+    #[test]
+    fn before_merge_implement_without_audit_equals_no_gate() {
+        // Open, finished with/without retro, budget exhausted, included decision.
+        for (open, retro, round, included) in [
+            (true, true, 1, 0),
+            (false, true, 1, 0),
+            (false, false, 1, 0),
+            (true, true, 25, 0),
+            (true, true, 1, 2),
+        ] {
+            let mut c = cfg_without(Role::Audit);
+            c.gate = cfg_with_gate().gate;
+            c.gate_run = crate::config::GateRun::BeforeMerge;
+            c.roles
+                .iter_mut()
+                .find(|r| r.role == Role::Retro)
+                .unwrap()
+                .config
+                .enabled = retro;
+            let mut none = c.clone();
+            none.gate = None;
+            let mut status = block(
+                DocStatus::Implementing,
+                &[if open {
+                    MilestoneState::Open
+                } else {
+                    MilestoneState::Done
+                }],
+            );
+            status.impl_round = round;
+            let event = ended(status);
+            let actual = apply(
+                &active(Node::Implement),
+                &event,
+                &with_included(&c, included, 25),
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                apply(
+                    &active(Node::Implement),
+                    &event,
+                    &with_included(&none, included, 25)
+                )
+                .unwrap()
+            );
+            if included > 0 {
+                assert!(actual.consumes_decisions);
+                assert_eq!(actual.budget_n, Some(35));
+            }
+        }
+    }
+
+    #[test]
+    fn before_merge_rebase_and_merge_keep_full_gate_nodes() {
+        let c = before_merge_config();
+        for (node, next) in [
+            (Node::Rebase, Node::MergeGate),
+            (Node::Merging, Node::MainCheck),
+        ] {
+            let event = Trigger::CoreStepDone {
+                node,
+                result: CoreStepResult::Ok,
+            };
+            let actual = apply(&active(node), &event, &ctx(&c)).unwrap();
+            assert_eq!(actual.next, active(next));
+            assert_eq!(actual.action, Action::RunCoreStep { node: next });
+        }
+    }
+
+    #[test]
+    fn before_merge_merge_gate_outcomes_equal_each_round() {
+        let c = before_merge_config();
+        for requested in [false, true] {
+            for outcome in [GateOutcome::Passed, red()] {
+                let event = gate_done(Node::MergeGate, outcome, None);
+                assert_eq!(
+                    apply_with_merge_request(&active(Node::MergeGate), &event, &ctx(&c), requested)
+                        .unwrap(),
+                    apply_with_merge_request(
+                        &active(Node::MergeGate),
+                        &event,
+                        &ctx(&cfg_with_gate()),
+                        requested
+                    )
+                    .unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn before_merge_existing_gate_pass_still_uses_after_gate() {
+        let c = before_merge_config();
+        let event = gate_done(Node::Gate, GateOutcome::Passed, None);
+        let actual = apply(&active(Node::Gate), &event, &ctx(&c)).unwrap();
+        assert_eq!(
+            actual,
+            apply(&active(Node::Gate), &event, &ctx(&cfg_with_gate())).unwrap()
+        );
+        assert_eq!(actual.next, active(Node::Audit));
     }
 
     // ---- the gate --------------------------------------------------------

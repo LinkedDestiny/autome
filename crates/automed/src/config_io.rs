@@ -334,6 +334,13 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                     as u32,
             );
         }
+        if let Some(v) = t.get("run") {
+            config.gate_run = Some(match v.as_str() {
+                Some("each_round") => autome_domain::config::GateRun::EachRound,
+                Some("before_merge") => autome_domain::config::GateRun::BeforeMerge,
+                _ => return Err("[gate] run 必须是 \"each_round\" 或 \"before_merge\"".into()),
+            });
+        }
         let command = t
             .get("command")
             .and_then(toml::Value::as_str)
@@ -1134,6 +1141,95 @@ mod tests {
         let p = project_config_path(repo);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn before_merge_parse_default_and_explicit_modes() {
+        use autome_domain::config::{GateRun, resolve};
+        let default = parse_project("[gate]\ncommand = 'check'").unwrap();
+        assert_eq!(default.gate_run, None);
+        let each = parse_project("[gate]\ncommand = 'check'\nrun = 'each_round'").unwrap();
+        assert_eq!(each.gate_run, Some(GateRun::EachRound));
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &default),
+            resolve(&GlobalConfig::default(), &each)
+        );
+        let before = parse_project("[gate]\ncommand = 'check'\nrun = 'before_merge'").unwrap();
+        assert_eq!(before.gate_run, Some(GateRun::BeforeMerge));
+    }
+
+    #[test]
+    fn before_merge_invalid_run_is_rejected() {
+        for value in [
+            "'sometimes'",
+            "1",
+            "true",
+            "''",
+            "'Before_Merge'",
+            "' before_merge '",
+            "[]",
+            "{}",
+        ] {
+            assert_eq!(
+                parse_project(&format!("[gate]\ncommand = 'check'\nrun = {value}")).unwrap_err(),
+                "[gate] run 必须是 \"each_round\" 或 \"before_merge\""
+            );
+        }
+    }
+
+    #[test]
+    fn before_merge_save_role_preserves_gate_text_and_reload() {
+        let dir = TempDir::new("before-merge-save");
+        let gate = "[gate]\ncommand = 'check'\nrun = \"before_merge\" # keep this\n";
+        write_project(dir.path(), gate);
+        let mut project = load_project(dir.path()).unwrap();
+        project.roles.insert(
+            Role::Audit,
+            RoleOverrides {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        save_project(dir.path(), &project).unwrap();
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains(gate)
+        );
+        let reloaded = load_project(dir.path()).unwrap();
+        assert_eq!(
+            reloaded.gate_run,
+            Some(autome_domain::config::GateRun::BeforeMerge)
+        );
+        assert_eq!(reloaded.roles[&Role::Audit].enabled, Some(false));
+    }
+
+    #[test]
+    fn before_merge_empty_command_still_validates_run() {
+        for command in ["", "  "] {
+            for run in ["each_round", "before_merge"] {
+                let p = parse_project(&format!("[gate]\ncommand = '{command}'\nrun = '{run}'"))
+                    .unwrap();
+                assert!(p.gate.is_none());
+                assert!(p.gate_run.is_some());
+                assert!(
+                    !autome_domain::config::resolve(&GlobalConfig::default(), &p)
+                        .gates_each_round()
+                );
+            }
+            assert_eq!(
+                parse_project(&format!("[gate]\ncommand = '{command}'\nrun = 'sometimes'"))
+                    .unwrap_err(),
+                "[gate] run 必须是 \"each_round\" 或 \"before_merge\""
+            );
+        }
+    }
+
+    #[test]
+    fn before_merge_global_gate_run_remains_ignored() {
+        let dir = TempDir::new("before-merge-global");
+        std::fs::write(global_config_path(dir.path()), "[gate]\nrun = 'sometimes'").unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), GlobalConfig::default());
     }
 
     // ---- project parsing ------------------------------------------------
