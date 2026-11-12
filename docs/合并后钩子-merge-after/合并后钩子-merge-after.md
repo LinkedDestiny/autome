@@ -1,12 +1,12 @@
 # 合并后钩子 [merge] after：宿主在主检出上执行，失败只报警
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 6/20
-current-milestone: M-04
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许本机监听与 Electron 启动的环境复验 M-04 全量 CI，核对门禁队列用例后取证待审
+next-action: 无
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
