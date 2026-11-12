@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 4/10
+implementation-round: 5/10
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 全部里程碑已完成，等待合并前确认人工验收清单
+next-action: 由 Autome 重跑合并前全量门禁，并确认人工验收清单；若仍失败按实际日志修复
 
 任务文件：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-task.md`（验收标准见它的第 5 节 A1–A8，硬性约束见第 6 节 C1–C9，待定问题见第 8 节 Q1–Q6）。
 任务卡正文：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-card.md`。
@@ -270,7 +270,7 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 
 ### M-03 验收契约
 
-最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-audit.md · 通过 · 审计 #3
+最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-03-r5-impl.md · 门禁失败用例修复，子集验证，待宿主全量门禁 · 实现 #5
 
 覆盖用户追加的 rebase 要求、A1–A4、A6；M-01、M-02 的关闭结论保留。
 当前集成基线为 main 的 9626bc1；前述 83c80e9 的数量与范围契约保留为原里程碑基线，

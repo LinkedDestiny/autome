@@ -9,3 +9,4 @@
 实现 #4 | M-03 | 待审 | docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-impl.md | 无
 审计 #3 | M-03 | 通过 | docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-audit.md | 无
 复盘 #2 | 全部 | 覆盖写 5 条教训（L-01..L-05，新增 L-02 测试级、L-05）；无指标 | docs/bug-loop-的定位-修复-复核/lessons.md | HEAD 上 end_to_end every_round_is_handed_a_brief… 断言 protocol/v3@、实际 v4，复跑退出 101，合并前门禁将报红
+实现 #5 | M-03 | 门禁版本断言修复，114 个子集用例通过 | docs/bug-loop-的定位-修复-复核/evidence/M-03-r5-impl.md | 待 Autome 全量门禁；B-06 未解决
