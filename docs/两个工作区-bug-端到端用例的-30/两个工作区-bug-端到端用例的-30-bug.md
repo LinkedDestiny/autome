@@ -1,10 +1,10 @@
 # 两个工作区 Bug 端到端用例等待误报定位
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cd crates/automed && cargo test --offline -p automed --test end_to_end waiting_regression -- --nocapture
 根因: 测试基础设施把未到期重试排除在未完成工作之外，并在多处条件等待中独立使用短截止时间，导致提前返回或正常推进时超时报错。
-复核: 通过
+复核: 待复核
 repos: autome-v2
 
 ## 现象
@@ -37,6 +37,19 @@ repos: autome-v2
 4. 本轮证据支持测试等待逻辑问题，没有证据证明产品 scheduler 卡死。现有业务状态、会话数、文件内容和错误断言应全部保留。修复 future-retry 判定后，原来用 settle 等待“已安排但未到期重试”的脚本需改为明确等待重试状态，避免等待未来很久的重试。
 
 ## 修复说明
+
+修复第 3/3 轮：执行 `git rebase main`，将本分支 rebase 到本地默认分支 `9b5750b07fe9692111ea86fcb1fa8a30f73a84fb`，解决 `crates/automed/tests/end_to_end.rs` 两处冲突后执行 `git add` 与 `git rebase --continue`，rebase 已完成，未使用 merge。冲突来自 main 将两个工作区用例的局部等待改为 90 秒；解决时保留本任务共用 `scheduling_wait` 的 90 秒预算、调度错误检查及原业务状态判断。main 的新增测试全部保留。rebase 前后文件差异仅为 main 新增的三个连续门禁失败处理用例及辅助函数；两项 waiting_regression 定位测试逐字一致，未修改、删除、跳过或弱化。祖先关系检查确认上述 main 提交已包含在本分支。
+
+本轮原复现命令退出码 0：2 passed、0 failed（2.50 秒），日志 `.autome/output/fix3-regression.log`。
+
+本轮配置门禁 `sh scripts/ci-local.sh` 已完整执行，退出码 1，用时 660 秒，日志 `.autome/output/fix3-gate.log`。Format、Clippy、Test、End to end、Adapter flags、Contract、Web lint、Web typecheck、Web build 通过；两遍端到端均为 103 passed、0 failed（122.46 秒、175.63 秒）。失败项如下：
+
+- Desktop：104 passed、1 failed、0 skipped。`test/dom.test.js:71` 的 Electron DOM harness 报 `dom-harness.js exited null`，stderr 为空，断言 `null !== 0`；退出原因未确认，不将其宣称为已证明的环境故障。
+- Web test：4 个文件失败，11 failed、271 passed、19 skipped。日志报告 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`，本机监听被拒且文件监听资源不足。
+
+未修改、删除、跳过或弱化任何测试，未修改 Desktop/Web 无关代码。完整门禁未通过，需宿主复跑并确认 Electron harness 退出原因及 Web 环境限制。未额外运行 package 或历史满载压力测试；本轮验证绑定上述 rebase 目标，不代表未来 main 的合并后验证。
+
+以下为第 2/3 轮历史记录：
 
 修复第 2/3 轮：将本分支 rebase 到本地默认分支 main（`a0edb2569552abc0eed3ac18bdbcfc6596a3fde6`），逐个解决 `end_to_end.rs` 冲突并完成 rebase，未使用 merge。保留 main 新增的 setup 测试与 legacy 实现会话释放信号，同时保留本任务的共用调度等待、重试判定和定位回归测试。两项 waiting_regression 测试与 rebase 前逐字比对一致；main 已通过祖先关系检查。
 
