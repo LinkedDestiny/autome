@@ -452,10 +452,7 @@ fn explain_nested_repository(mut e: GitError) -> GitError {
 
 /// Stages the given paths and commits them under Autome's identity.
 ///
-/// Used for exactly two things: the init commit (requirement C-03) and the
-/// task's input commit on its own branch. Both are narrow by construction —
-/// the caller names the paths, so a stray file in the user's tree is never
-/// swept in.
+/// Paths limit staging, but the commit consumes the entire index.
 pub fn commit_paths(repo: &Path, paths: &[&str], message: &str) -> Result<Option<String>> {
     if paths.is_empty() {
         return Ok(None);
@@ -469,6 +466,35 @@ pub fn commit_paths(repo: &Path, paths: &[&str], message: &str) -> Result<Option
     let staged = run(repo, &["diff", "--cached", "--quiet"])?;
     if staged.ok() {
         return Ok(None);
+    }
+
+    let deleted = run_ok(
+        repo,
+        &[
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--diff-filter=D",
+        ],
+    )?;
+    let deleted: Vec<_> = deleted
+        .stdout
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .collect();
+    if deleted.len() > 50 {
+        return Err(GitError {
+            argv: vec!["commit".into()],
+            code: None,
+            stderr: String::new(),
+            detail: format!(
+                "本轮会删除 {} 个文件，超过 50 个，拒绝提交；路径示例：{:?}",
+                deleted.len(),
+                &deleted[..5]
+            ),
+        });
     }
 
     let out = run_with_extra_env(
@@ -490,6 +516,30 @@ pub fn commit_paths(repo: &Path, paths: &[&str], message: &str) -> Result<Option
         });
     }
     Ok(Some(head_sha(repo)?))
+}
+
+/// Newly tracked paths from the actual sweep commit, including root commits.
+pub fn added_paths(repo: &Path, sha: &str) -> Result<Vec<String>> {
+    let out = run_ok(
+        repo,
+        &[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--diff-filter=A",
+            sha,
+        ],
+    )?;
+    Ok(out
+        .stdout
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1220,29 @@ mod tests {
             dirty_paths(repo.path()).unwrap(),
             vec!["new.txt".to_string()]
         );
+    }
+
+    #[test]
+    fn commit_safety_narrow_commit_rejects_pre_staged_deletions() {
+        assert!(git_available(), "this regression requires git");
+        let repo = repo_with_commit("commit-safety");
+        for i in 0..60 {
+            write(repo.path(), &format!("tracked-{i:03}.txt"), "tracked\n");
+        }
+        commit_paths(repo.path(), &["."], "fixture baseline").unwrap();
+        let before = head_sha(repo.path()).unwrap();
+        // Narrow inputs/replies commits still consume the existing whole index.
+        run_ok(repo.path(), &["rm", "--cached", "--", "tracked-*.txt"]).unwrap();
+        write(repo.path(), "reply.md", "new user input\n");
+        let result = commit_paths(repo.path(), &["reply.md"], "chore(autome): inputs");
+        assert!(
+            result.is_err(),
+            "应拒绝已暂存的 60 个删除，实际: {result:?}"
+        );
+        assert_eq!(head_sha(repo.path()).unwrap(), before);
+        let detail = result.unwrap_err().to_string();
+        assert!(detail.contains("本轮会删除 60 个文件"), "{detail}");
+        assert!(detail.contains("tracked-000.txt"), "{detail}");
     }
 
     #[test]
