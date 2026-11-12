@@ -591,3 +591,92 @@ fn bug_loop_status_shows_the_bug_nodes_and_what_to_do_next() {
         "{status}"
     );
 }
+
+#[test]
+fn broken_pipe_status_exits_quietly() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+
+    let s = Sandbox::new("broken-pipe");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "pipe regression", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let normal = s.autome(&["status", id]);
+    assert!(normal.status.success());
+    assert!(normal.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&normal.stdout).lines().count() > 1);
+
+    // Close the only reader BEFORE starting autome: unlike `| head -1`,
+    // this cannot race with the producer finishing its small output.
+    let mut fds = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    drop(reader);
+    let out = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["status", id])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .env("RUST_BACKTRACE", "1")
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(
+        out.stderr.is_empty(),
+        "closed stdout must be quiet; status={:?}, stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success()
+            || out.status.code() == Some(141)
+            || out.status.signal() == Some(libc::SIGPIPE),
+        "{:?}",
+        out.status
+    );
+}
+
+#[test]
+fn broken_pipe_sigpipe_remains_ignored_in_cli_process() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["render-stream", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let message = b"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"pipe-probe\"}]}}\n";
+    input.write_all(message).unwrap();
+    let mut line = String::new();
+    assert!(output.read_line(&mut line).unwrap() > 0);
+    assert!(line.contains("pipe-probe"), "{line}");
+    // The output handshake proves the real CLI has passed main/startup.
+    // SIG_DFL would kill it here, even though stdout is healthy.
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGPIPE) },
+        0
+    );
+    let write = input.write_all(message);
+    drop(input);
+    let mut rest = String::new();
+    use std::io::Read;
+    output.read_to_string(&mut rest).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "SIGPIPE killed CLI: {:?}", out.status);
+    write.unwrap();
+    assert!(rest.contains("pipe-probe"), "{rest}");
+    assert!(out.stderr.is_empty(), "{:?}", out.stderr);
+}
