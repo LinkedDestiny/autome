@@ -4798,6 +4798,98 @@ fn bug_review_policy_same_model_is_refused_for_bug_start() {
 }
 
 #[test]
+fn gate_quick_bug_fix_gate_runs_repro_and_quick_and_merge_gate_runs_repro_and_full() {
+    quick_bug_scenario(false);
+}
+
+#[test]
+fn gate_quick_bug_failing_quick_returns_to_fix_with_its_tail() {
+    quick_bug_scenario(true);
+}
+
+fn quick_bug_scenario(fail_first: bool) {
+    needs_git!();
+    let mut w = World::new("quick-bug");
+    let quick_count = w.root.join("quick-count");
+    let full_count = w.root.join("full-count");
+    let quick_script = w.root.join("quick.sh");
+    let full_script = w.root.join("full.sh");
+    std::fs::write(
+        &quick_script,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'\necho quick-bug-marker\n{}\n",
+            quick_count.display(),
+            if fail_first {
+                "test -f quick-ready"
+            } else {
+                "true"
+            }
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &full_script,
+        format!(
+            "echo \"$AUTOME_GATE_NODE $AUTOME_GATE_KIND\" >> '{}'\n",
+            full_count.display()
+        ),
+    )
+    .unwrap();
+    let quick = format!("sh {}", quick_script.display());
+    let full = format!("sh {}", full_script.display());
+    w.configure(&format!("[gate]\ncommand = '{full}'\nquick = '{quick}'\nrun = 'before_merge'\ntimeout_minutes = 1\nreuse_for_main_check = false\n"));
+    let request = "quick bug";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    let review_round = if fail_first {
+        bug_step(&w, 3, &slug, &bug_doc("待复核"), "touch quick-ready");
+        4
+    } else {
+        3
+    };
+    bug_step(&w, review_round, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let expected_quick = if fail_first { 2 } else { 1 };
+    assert_eq!(
+        std::fs::read_to_string(&quick_count).unwrap(),
+        "fix_gate quick\n".repeat(expected_quick)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&full_count).unwrap(),
+        "merge_gate full\n"
+    );
+    if fail_first {
+        assert!(w.prompt(3).contains("quick-bug-marker"));
+        assert!(w.prompt(3).contains(&quick));
+    }
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.started" && e.2 == id)
+        .collect();
+    assert_eq!(starts.len(), expected_quick + 2);
+    for e in starts {
+        let command = e.3["command"].as_str().unwrap();
+        match e.3["node"].as_str().unwrap() {
+            "fix_gate" => {
+                assert_eq!(command, format!("( sh regression.sh ) && ( {quick} )"));
+                assert_eq!(e.3["kind"], "quick");
+                assert!(!command.contains(&full));
+            }
+            "merge_gate" => {
+                assert_eq!(command, format!("( sh regression.sh ) && ( {full} )"));
+                assert_eq!(e.3["kind"], "full");
+            }
+            "repro_check" => assert_eq!(e.3["kind"], "repro"),
+            node => panic!("unexpected gate {node}"),
+        }
+    }
+}
+
+#[test]
 fn bug_loop_before_merge_fix_gate_runs_only_the_repro_and_merge_gate_runs_both() {
     needs_git!();
     let mut w = World::new("bug-before-merge");
