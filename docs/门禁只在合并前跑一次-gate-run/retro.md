@@ -7,3 +7,4 @@
 评审 #3 | 无 | 通过：无六类阻塞问题，2 条非阻塞建议；状态块与 8 个验收契约结构通过 | 门禁只在合并前跑一次-gate-run-review.md | 无
 裁决 #3 | 无 | 无六类问题；N3-01 订正两处章节引用，N3-02 作为 M-06 实施提醒；设计保持定稿，status 保持 实现中，design-round 3/15 | 门禁只在合并前跑一次-gate-run-adjudication.md | 无
 实现 #1 | M-01 | 待审 | docs/门禁只在合并前跑一次-gate-run/evidence/M-01-r1-impl.md | 无；原有 T-14 日志测试默认忽略
+审计 #1 | M-01 | 通过 | docs/门禁只在合并前跑一次-gate-run/evidence/M-01-r1-audit.md | 无
