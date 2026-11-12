@@ -134,7 +134,7 @@ pub fn next_step(task: &Value) -> Option<String> {
             "autome reply {id} \"补充信息\"    或    autome cancel {id}"
         )),
         ("active", "not_a_bug") => Some(format!(
-            "autome cancel {id}    或    autome task new --kind feature --brief <卡片>；确认是 Bug：autome reply {id} \"理由\""
+            "autome task convert {id} [--start]    或    autome cancel {id}；确认是 Bug：autome reply {id} \"理由\""
         )),
         ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
             Some(format!("autome extend {id} 1"))
@@ -457,6 +457,18 @@ mod tests {
                 format!("运行中 · {label}")
             );
         }
+    }
+
+    #[test]
+    fn task_convert_is_the_next_step_for_not_a_bug() {
+        let task = serde_json::json!({
+            "id": "T-42", "state": {"state": "active", "node": "not_a_bug"}
+        });
+        let next = super::next_step(&task).unwrap();
+        assert!(next.contains("autome task convert T-42 [--start]"));
+        assert!(next.contains("autome cancel T-42"));
+        assert!(next.contains("autome reply T-42"));
+        assert!(!next.contains("task new --kind feature --brief"));
     }
 
     #[test]

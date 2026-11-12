@@ -52,6 +52,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   task new [需求] [--kind feature|bug] [--brief <文件|->] [--draft] [-p 项目] [--attach 文件]... [--doc 路径]...
 
   task start <任务>              开始待开始任务
+  task convert <任务> [--start]  把判定为「不是 Bug」的任务改建成需求（原任务取消）
 
 推进
   run [--once | --until-idle] [--interval 秒]
@@ -145,6 +146,7 @@ fn run(argv: &[String]) -> Result<()> {
             "--kind",
             "--brief",
             "--draft",
+            "--start",
         ],
         "run" => &["--once", "--until-idle", "--interval", "--verbose"],
         "logs" => &["--session", "--follow"],
@@ -466,6 +468,33 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                         "已存为待开始。用 `autome task start {}` 开始。",
                         t["id"].as_str().unwrap_or_default()
                     );
+                } else {
+                    println!("Loop 由 `autome run` 或打开的桌面端推进。");
+                }
+            }
+            Ok(())
+        }
+        Some("convert") => {
+            let id = c.resolve_task(a.need(2, "任务")?)?;
+            let mut params = json!({ "task_id": id, "kind": "feature" });
+            if a.has("--start") {
+                params["start"] = json!(true);
+            }
+            let out = c.call("task.convert", params)?;
+            if a.has("--json") {
+                print_json(&out);
+            } else {
+                let t = &out["task"];
+                let new_id = t["id"].as_str().unwrap_or_default();
+                println!(
+                    "{}  {}  {}",
+                    new_id,
+                    t["slug"].as_str().unwrap_or_default(),
+                    render::state_line(&t["state"])
+                );
+                println!("由 {id} 改建，{id} 已取消。");
+                if t["state"]["state"] == "draft" {
+                    println!("已存为待开始。用 `autome task start {new_id}` 开始。");
                 } else {
                     println!("Loop 由 `autome run` 或打开的桌面端推进。");
                 }

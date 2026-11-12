@@ -551,6 +551,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
     'open.path': { kind: 'log', session_id: 's1' }, 'config.set_theme': { theme: 'system' },
     'env.install': { component: 'git' }, 'env.login': { component: 'codex' },
     'task.decide': { kind: 'dispute', disposition: 'ruled' },
+    'task.convert': { task_id: 'T-1', kind: 'feature' },
     'project.onboarding.save': { path: 'AGENTS.md', content: '' },
     'config.set_role': { role: 'impl' }, 'config.reset_role': { role: 'audit' },
   };
@@ -658,4 +659,29 @@ test('brief 上限与超限消息解析内核源码核对', () => {
   const result = gate.validateWriteRequest({ op: 'task.create', params: { brief: 'a'.repeat(bytes) } });
   assert.equal(result.ok, false);
   assert.equal(result.message, match[2].replace('{}', String(bytes)));
+});
+
+test('task.convert 只接受需求方向、非空任务编号与可选布尔 start', async () => {
+  const valid = { task_id: 'T-1', kind: 'feature' };
+  for (const params of [valid, { ...valid, start: true }, { ...valid, start: false },
+    { ...valid, task_id: 'x'.repeat(512) }, { ...valid, task_id: 'x' }]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.convert', params }).ok, true, JSON.stringify(params));
+  }
+  for (const [params, message] of [
+    [{ kind: 'feature' }, 'task_id 必须是非空字符串'],
+    [{ ...valid, task_id: '' }, 'task_id 必须是非空字符串'],
+    [{ ...valid, task_id: 1 }, 'task_id 必须是非空字符串'],
+    [{ task_id: 'T-1' }, 'kind 只能是 feature'],
+    [{ ...valid, kind: 'bug' }, 'kind 只能是 feature'],
+    [{ ...valid, start: 'yes' }, 'start 必须是布尔值'],
+    [{ ...valid, start: 1 }, 'start 必须是布尔值'],
+    [{ ...valid, task_id: 'x'.repeat(513) }, 'task_id 超过 512 字符上限'],
+    [{ ...valid, start: null }, 'start 必须是布尔值'],
+  ] as const) {
+    const result = gate.validateWriteRequest({ op: 'task.convert', params });
+    assert.equal(result.ok, false, JSON.stringify(params));
+    assert.equal(result.message, message);
+  }
+  const read = await import('../server/gates/read-gate.ts');
+  assert.equal(read.validateReadRequest({ method: 'task.convert', params: valid }).ok, false);
 });

@@ -991,6 +991,45 @@ impl Store {
         Ok(())
     }
 
+    /// Publish the replacement and cancellation together, including their events.
+    pub fn convert_task(
+        &self,
+        from: &str,
+        task: &TaskRecord,
+        brief: Option<&str>,
+    ) -> Result<[u64; 3]> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.insert_task(task)?;
+        if matches!(task.state, TaskState::Queued) {
+            self.mark_queued(&task.id)?;
+        }
+        if let Some(body) = brief {
+            tx.execute(
+                "INSERT INTO task_briefs (task_id, body, created_at) VALUES (?1, ?2, ?3)",
+                params![task.id, body, task.created_at],
+            )?;
+        }
+        self.set_task_state(from, &TaskState::Cancelled)?;
+        self.set_task_archived(from, true)?;
+        let created = self.append_event(
+            "task.created",
+            &task.id,
+            serde_json::json!({"project_id": task.project_id, "converted_from": from}),
+        )?;
+        let converted = self.append_event(
+            "task.converted",
+            from,
+            serde_json::json!({"from": from, "to": task.id}),
+        )?;
+        let updated = self.append_event(
+            "task.updated",
+            from,
+            serde_json::json!({"state": TaskState::Cancelled, "trigger": "cancel"}),
+        )?;
+        tx.commit()?;
+        Ok([created, converted, updated])
+    }
+
     pub fn task_brief(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -3172,5 +3211,54 @@ mod tests {
             t.state = TaskState::Draft;
             assert_eq!(task_counts(&[t]), BTreeMap::from([("draft", 1)]));
         }
+    }
+    #[test]
+    fn task_convert_commits_both_tasks_or_neither_across_connections() {
+        let path = std::env::temp_dir().join(format!("convert-{}.sqlite", new_id("test")));
+        let s = Store::open(&path).unwrap();
+        s.insert_project(&project("p", "/a")).unwrap();
+        let mut old = task("old", "p", "old");
+        old.kind = TaskKind::Bug;
+        old.state = TaskState::Active {
+            node: autome_domain::task::Node::NotABug,
+        };
+        s.create_task(&old, Some("原文  \n")).unwrap();
+        let observer = Store::open(&path).unwrap();
+        let mut new = task("new", "p", "new");
+        new.state = TaskState::Draft;
+        assert!(observer.get_task("new").is_err());
+        assert!(!observer.get_task("old").unwrap().is_archived());
+        let before = observer.events_since_with_subject(0, 100).unwrap();
+        s.conn.execute_batch("CREATE TRIGGER fail_last BEFORE INSERT ON events WHEN NEW.kind='task.updated' BEGIN SELECT RAISE(ABORT,'last event'); END;").unwrap();
+        assert!(s.convert_task("old", &new, Some("原文  \n")).is_err());
+        assert!(observer.get_task("new").is_err());
+        assert_eq!(observer.task_brief("new").unwrap(), None);
+        assert_eq!(observer.get_task("old").unwrap().state, old.state);
+        assert!(!observer.get_task("old").unwrap().is_archived());
+        assert_eq!(observer.events_since_with_subject(0, 100).unwrap(), before);
+        s.conn.execute_batch("DROP TRIGGER fail_last").unwrap();
+        // The archive flag must already be part of the event-producing transaction,
+        // not a follow-up write after commit (which an after-return read would miss).
+        s.conn.execute_batch("CREATE TRIGGER require_archive BEFORE INSERT ON events WHEN NEW.kind='task.created' BEGIN SELECT CASE WHEN (SELECT archived_at FROM tasks WHERE id='old') IS NULL THEN RAISE(ABORT,'archive not in transaction') END; END;").unwrap();
+
+        s.convert_task("old", &new, Some("原文  \n")).unwrap();
+        assert_eq!(observer.get_task("new").unwrap().state, TaskState::Draft);
+        assert_eq!(
+            observer.task_brief("new").unwrap().as_deref(),
+            Some("原文  \n")
+        );
+        assert_eq!(
+            observer.get_task("old").unwrap().state,
+            TaskState::Cancelled
+        );
+        assert!(observer.get_task("old").unwrap().is_archived());
+        let events = observer.events_since_with_subject(0, 100).unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.1.as_str()).collect::<Vec<_>>(),
+            vec!["task.created", "task.converted", "task.updated"]
+        );
+        drop(observer);
+        drop(s);
+        let _ = std::fs::remove_file(path);
     }
 }

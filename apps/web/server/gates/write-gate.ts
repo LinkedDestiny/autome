@@ -16,6 +16,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'task.resume',
   'task.stop',
   'task.cancel',
+  'task.convert',
   'task.decide',
   'task.extend_budget',
   'task.rerun_from',
@@ -220,6 +221,17 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
     }
     if ((typeof params.disposition !== 'string' || !['none', 'include', 'ignore', 'ruled'].includes(params.disposition))) {
       return { ok: false, message: '未知的 disposition' };
+    }
+  }
+  if (op === 'task.convert') {
+    if (typeof params.task_id !== 'string' || !params.task_id) {
+      return { ok: false, message: 'task_id 必须是非空字符串' };
+    }
+    if (params.kind !== 'feature') {
+      return { ok: false, message: 'kind 只能是 feature' };
+    }
+    if (params.start !== undefined && typeof params.start !== 'boolean') {
+      return { ok: false, message: 'start 必须是布尔值' };
     }
   }
   if (op === 'project.onboarding.save') {
