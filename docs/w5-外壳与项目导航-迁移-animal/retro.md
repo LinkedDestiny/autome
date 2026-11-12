@@ -13,3 +13,5 @@
 
 实现 #5 | M-04 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-impl.md | 监听 EPERM；Rust 端到端一次失败后单跑通过；Desktop harness 失败
 审计 #5 | M-04 | 通过 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-audit.md | 无
+
+实现 #6 | M-05 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-impl.md | 监听 EPERM/EMFILE；Electron SIGABRT

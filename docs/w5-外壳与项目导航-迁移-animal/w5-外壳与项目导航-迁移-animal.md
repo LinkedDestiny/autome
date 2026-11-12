@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/25
+implementation-round: 6/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-05 ⌘K 跳转面板与新建任务卡入口
+next-action: 独立审计 M-05，复验定向测试及受环境阻塞的全量检查
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -325,7 +325,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 已完成 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 已完成 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
-| M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
+| M-05 | 待审 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
 ## 验收说明
 
@@ -450,6 +450,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 - 负向对照：项目栏的「等你处理」改成直接读 `counts.awaiting_user`、不经 `columnOf`，`shell-live` 第 1、2 条和 `shell-data` 第 2 条变红；根 `shouldRevalidate` 去掉 `'task.'`，`shell-live` 第 2 条（匹配器未命中）和 `load-context` 第 9 条变红；`taskHref` 不做编码，`overview` 第 5 条变红。
 
 ### M-05 ⌘K 跳转面板与新建任务卡入口
+
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-impl.md · 定向通过，全量环境受阻待复验 · 实现 #6
 
 - 覆盖：R-03，以及 R-05 中受写判定约束的入口。前置：M-04。
 - 结果：新增 `palette-model.ts` 和 `command-palette.tsx`。顶栏的「搜索或跳转」按钮和「新建任务卡」按钮接到面板。`App` 里挂上 `attachPaletteShortcut(window, …)`。

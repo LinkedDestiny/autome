@@ -58,3 +58,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .overview-card p { margin: 8px 0; }
 .task-stage { font-weight: 800; }
 .task-status { color: var(--animal-text-muted); font-size: 14px; }
+.palette-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 24px 24px; background: color-mix(in srgb, var(--animal-text) 25%, transparent); }
+.palette { width: min(640px, 100%); max-height: 76vh; display: flex; flex-direction: column; padding: 24px; gap: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius-lg); background: var(--animal-bg); box-shadow: var(--animal-shadow-lg); }
+.palette-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-weight: 800; }
+.palette input { width: 100%; font: inherit; padding: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); background: var(--animal-bg-input); color: var(--animal-text); }
+.palette-option { padding: 16px; border-radius: var(--animal-radius); cursor: pointer; overflow-wrap: anywhere; }
+.palette-option strong, .palette-option span { display: block; }
+.palette-option span, .palette-hint { margin-top: 6px; font-size: 13px; color: var(--animal-text-muted); }
+.palette-option[aria-selected="true"], .palette-option:hover { background: var(--animal-primary-bg); }
+.palette-option[aria-disabled="true"] { color: var(--animal-text-muted); background: var(--animal-bg-disabled); cursor: not-allowed; }
