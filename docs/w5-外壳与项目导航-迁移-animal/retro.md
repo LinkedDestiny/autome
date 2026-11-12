@@ -17,3 +17,4 @@
 实现 #6 | M-05 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-impl.md | 监听 EPERM/EMFILE；Electron SIGABRT
 审计 #6 | M-05 | 通过 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-audit.md | 无
 复盘 #1 | M-01..M-05（已完成） | 教训 4 条 | docs/w5-外壳与项目导航-迁移-animal/lessons.md | 无
+实现 #7 | M-05 | 门禁调查未闭合，原状态保留 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r7-impl.md | 原 CLI 超时未复现；Rust 偶发断言失败
