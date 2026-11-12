@@ -1,0 +1,11 @@
+name: plan-before-merge-keeps-the-full-gate-out-of-milestones
+role: plan
+prompt: plan
+description: 不运行全量门禁且完成本轮职责
+gate_command: sh full-gate.sh
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md

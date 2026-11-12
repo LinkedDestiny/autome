@@ -7471,3 +7471,52 @@ fn prompt_before_merge_bug_repair_round_runs_only_the_failing_part() {
         && p["node"] == "merge_gate"
         && p["ok"] == false));
 }
+
+#[test]
+fn protocol_before_merge_feature_rounds_are_told_the_host_runs_the_full_suite() {
+    needs_git!();
+    let mut w = World::new("protocol-before-merge-feature");
+    w.configure("[gate]\nrun = 'before_merge'\ncommand = 'true'\n");
+    let request = "protocol feature prompts";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    for n in [2, 5, 6] {
+        assert!(w.prompt(n).contains(&automed::launcher::gate_line("true")));
+    }
+    assert!(
+        w.prompt(2)
+            .contains("不要把跑全量门禁写成任何里程碑的验收命令")
+    );
+    assert!(w.prompt(6).contains("不要因为没跑全量而不给结论"));
+    assert!(!w.prompt(6).contains("项目测试体系全量跑一次即可"));
+}
+
+#[test]
+fn protocol_before_merge_bug_rounds_are_told_the_host_runs_the_full_suite() {
+    needs_git!();
+    let mut w = World::new("protocol-before-merge-bug");
+    w.configure("[gate]\nrun = 'before_merge'\ncommand = 'true'\n");
+    let request = "protocol bug prompts";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    for n in [2, 3] {
+        assert!(w.prompt(n).contains(&automed::launcher::gate_line("true")));
+    }
+    assert!(w.prompt(2).contains("再跑与本轮改动直接相关的测试子集"));
+    assert!(!w.prompt(2).contains("再运行配置的项目门禁"));
+    assert!(
+        w.prompt(3)
+            .contains("本项目门禁只在合并前运行，本轮没有宿主门禁结果")
+    );
+    assert!(!w.prompt(3).contains("独立复验复现命令与项目门禁"));
+}

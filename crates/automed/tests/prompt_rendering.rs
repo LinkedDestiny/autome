@@ -155,7 +155,14 @@ fn every_role_prompt_renders_exactly_what_the_constants_did() {
         // The baseline for a role is the template itself: the frame lives in
         // it too, so a rendered prompt with no budget differs from the
         // template by exactly the one placeholder.
-        if maybe_update_golden(name, automed::protocol::seed().prompt(name).unwrap()) {
+        if maybe_update_golden(
+            name,
+            &autome_domain::protocol::select_gate_run(
+                automed::protocol::seed().prompt(name).unwrap(),
+                autome_domain::config::GateRun::EachRound,
+            )
+            .unwrap(),
+        ) {
             continue;
         }
         let got = rendered(SessionKind::Role { role }).replace("{budget_line}", "");
@@ -448,4 +455,79 @@ fn before_merge_audit_brief_matches_its_golden() {
     });
     maybe_update_brief_golden("audit-before-merge", &got);
     assert_eq!(got, brief_golden("audit-before-merge"));
+}
+
+fn before_merge_rendered(kind: SessionKind, card: bool) -> String {
+    let mut s = spec(kind, automed::protocol::seed());
+    s.gate_before_merge = Some("make check");
+    if matches!(s.kind, SessionKind::Bug { .. }) {
+        s.budget = Some(automed::launcher::BudgetLine { round: 2, limit: 3 });
+    }
+    let path = format!("{DOC_DIR}/{SLUG}-card.md");
+    if card {
+        s.card_path = Some(&path);
+    }
+    build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}")
+        .replace(BRIEF, "{brief_path}")
+}
+
+#[test]
+fn before_merge_role_prompts_match_their_goldens() {
+    for role in [Role::Plan, Role::Impl, Role::Audit] {
+        let name = format!("{}-before-merge", role.as_str());
+        let got = before_merge_rendered(SessionKind::Role { role }, false);
+        if !maybe_update_golden(&name, &got) {
+            assert_eq!(got, golden(&name));
+        }
+    }
+}
+
+#[test]
+fn before_merge_bug_prompts_match_their_goldens() {
+    use autome_domain::session::BugStep;
+    for (name, step) in [("fix", BugStep::Fix), ("fix-review", BugStep::FixReview)] {
+        let name = format!("{name}-before-merge");
+        let got = before_merge_rendered(SessionKind::Bug { step }, false);
+        if !maybe_update_golden(&name, &got) {
+            assert_eq!(got, golden(&name));
+        }
+    }
+}
+
+#[test]
+fn before_merge_leaves_the_other_prompts_byte_identical() {
+    use autome_domain::session::BugStep;
+    for role in [Role::Review, Role::Adjudicate] {
+        assert_eq!(
+            before_merge_rendered(SessionKind::Role { role }, false),
+            golden(role.as_str()).replace("{budget_line}", "")
+        );
+    }
+    for card in [false, true] {
+        assert_eq!(
+            before_merge_rendered(
+                SessionKind::Bug {
+                    step: BugStep::Locate
+                },
+                card
+            ),
+            golden(if card { "locate-card" } else { "locate" })
+        );
+        assert_eq!(
+            before_merge_rendered(SessionKind::Intake, card),
+            golden(if card { "intake-card" } else { "intake" })
+        );
+    }
+    assert_eq!(
+        before_merge_rendered(SessionKind::Onboarding, false),
+        golden("onboarding")
+    );
+    assert_eq!(
+        before_merge_rendered(SessionKind::Role { role: Role::Retro }, false),
+        rendered(SessionKind::Role { role: Role::Retro })
+    );
 }

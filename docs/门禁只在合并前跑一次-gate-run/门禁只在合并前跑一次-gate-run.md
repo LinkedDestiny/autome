@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 5/40
+implementation-round: 6/40
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-06：五份模板的 before_merge 段、金样与协议 v3 eval 用例
+next-action: 独立审计 M-06；通过后推进 M-07 的 bug-protocol 说明、G-6 与短语约束
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -626,7 +626,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-03 | 已完成 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 已完成 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 已完成 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
-| M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
+| M-06 | 待审 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
 | M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
 | M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
 
@@ -758,6 +758,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：`select_gate_run` 删标记行时漏掉换行符，domain ② 的逐字节比对失败；`role_prompt` 忽略 `gate_before_merge`（永远按 `each_round` 选段）时，launcher ① 与 e2e ① 失败（没有 `gate_line`）；调度器给 `PromptSpec` 传 `None` 时，e2e ①② 失败；`GateFailed` 的 `before_merge` 文字仍写「在同一命令下确认通过」时，launcher ③ 与 e2e ① 失败；第 1 层不检查 `{gate_line}` 的位置时，eval「写在段外被拒绝」用例失败；把 `gate_line(cmd)` 先拼进模板再做占位符替换与检查时，launcher ①② 用 `${ci_script}` 的渲染报「不认识的占位符」、用 `{slug}` 的命令被改写而失败；旧模板的 Bug 复核不追加 `BUG_REVIEW_GATE_NOTE` 时，launcher ⑥ 失败，含标记的新模板里该句出现两次时 ⑥ 同样失败。
 
 ### M-06 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-06-r6-impl.md · 待审 · 实现 #6
 
 - 验收命令：`cargo test -p automed --test prompt_rendering && cargo test -p automed --lib protocol:: && cargo test -p automed --test end_to_end protocol_before_merge && cargo test -p automed --test end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task && cargo run -q -p automed -- protocol eval protocol/ && for f in adjudicate audit fix-review fix impl intake-card intake locate-card locate onboarding plan review; do git diff --quiet $(git merge-base HEAD main) -- crates/automed/tests/golden/prompts/$f.md || { echo "现有金样被改: $f"; exit 1; }; done`
 - 预期：prompt_rendering 共 20 个通过（17 + 3 个 `before_merge_*`），其中现有 16 个比对的 12 份金样相对分支起点一字未改（for 循环无输出）；automed lib 过滤 `protocol::` 67 个通过（66 + 1）；e2e 过滤 `protocol_before_merge` 2 个通过、`every_round_is_handed_a_brief…`（版本断言改为 `protocol/v3`）1 个通过；`protocol eval` 退出码 0，报告里没有「失败」项，且列出 eval 用例 19 个（基线 14 + 5）、CHANGELOG 条目门槛齐全。

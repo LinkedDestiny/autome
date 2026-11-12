@@ -22,3 +22,5 @@ AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering
 `briefs/` 保存固定输入生成的整份简报金样；`audit-before-merge.md` 验证
 `before_merge` 审计简报不会沿用旧提交的门禁结果。更新时使用
 `AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering before_merge_audit_brief_matches_its_golden`。
+
+五份 `prompts/*-before-merge.md` 是 before_merge 模式的渲染结果，固定门禁命令为 `make check`；原有 each_round 金样保持不变。

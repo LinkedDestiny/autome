@@ -1,0 +1,11 @@
+name: fix-before-merge-runs-only-the-repro-and-related-tests
+role: impl
+prompt: fix
+description: 不运行全量门禁且完成本轮职责
+gate_command: sh full-gate.sh
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md
