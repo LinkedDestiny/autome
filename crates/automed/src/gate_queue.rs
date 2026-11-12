@@ -242,6 +242,11 @@ pub fn reclaim(ctx: &Ctx) -> Result<Vec<String>> {
                     .map(|g| g.timeout_minutes)
                     .unwrap_or(config::DEFAULT_GATE_TIMEOUT_MINUTES)
             };
+            let timeout = if setup {
+                timeout
+            } else {
+                job.launch().map(|l| l.timeout(timeout)).unwrap_or(timeout)
+            };
             gate::poll_as(&job, timeout, if setup { "准备命令" } else { "门禁" });
         }
     }

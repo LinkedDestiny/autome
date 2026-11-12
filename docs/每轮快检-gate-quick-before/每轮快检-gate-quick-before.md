@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02 宿主快检执行、启动记录与结果沿用隔离
+next-action: 独立复验 M-02；通过后推进 M-03 Bug FixGate 复现命令加快检
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -414,7 +414,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
-| M-02 | 开放 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
+| M-02 | 待审 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 开放 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 开放 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
 | M-05 | 开放 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
@@ -430,20 +430,22 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
     `gate_quick_merge_and_main_check_nodes_unchanged`。
   - automed lib `config_io` 8 个（`gate_quick_` 开头）：默认与显式超时、只有 `quick` 报错（有无 `concurrency`、`command = ''`）、超时越界、
     非字符串与空白、只有超时、全局忽略、`save_project` 保留文本与注释并重载生效、`each_round` + `quick` 的 `violations` 为空。
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-02-r2-impl.md · 验收通过，待审 · 实现 #2
+
 - **M-02**（覆盖：目标 2、3、4、5（事件）；验收 2、4（`each_round` 不跑快检）；约束 1、5、6、7、8、11。前置：M-01）。方案 §3、§5、§6、§7
   的需求部分，以及 `gate.rs` 标记、`gate_queue.rs` 巡检超时。新增用例：
-  - automed lib 9 个（`gate_quick_host_` 开头）：`.kind` 标记 survive start/clear、discard 删除；`Gate` 跑快检（命令、`gate.started` /
+  - automed lib 10 个（`gate_quick_host_` 开头）：`.kind` 标记 survive start/clear、discard 删除；`Gate` 跑快检（命令、`gate.started` /
     `gate.result` 的 `kind`、脚本读到的 `AUTOME_GATE_KIND=quick`、标记超时 = `quick_timeout_minutes`）；完整门禁的运行带 `kind: full`
     且无标记的旧作业收成 `full`；MergeGate 不沿用同 head 上通过的快检（对照：完整结果仍沿用）；`main_check_reuse` 不沿用快检结果；
     熔断不跨 `quick` 与别的种类（对照：同种类照常累加、旧结果无 `kind` 照常累加；**没配 `quick` 的对照**：Bug `fix_gate` 上 `full` 失败两次后
     切到 `repro` 再以相同指纹失败，第三次仍熔断，`repro → full` 同理，约束 1）；模式切换按启动种类收结果（§7 第 2、3、4 行）；在跑时拿掉
-    `quick` 走跳过分支；巡检按标记超时终止快检。
-  - end_to_end 3 个：`gate_quick_feature_two_milestones_run_quick_each_round_and_full_once`（到 `await_merge` 时快检计数文件两行 `gate quick`、
+    `quick` 走跳过分支；巡检按标记超时终止快检；排队后按当前配置启动以及 head 变化清理旧作业。
+  - end_to_end 4 个：`gate_quick_feature_two_milestones_run_quick_each_round_and_full_once`（到 `await_merge` 时快检计数文件两行 `gate quick`、
     完整门禁计数文件一行 `merge_gate full`；合并后完整门禁计数为 `merge_gate`、`main_check` 两行；`gate.started` 的 `kind` 依次为
     `quick, quick, full`）、`gate_quick_feature_failing_quick_returns_to_implement_with_its_tail`（一个里程碑；快检第一次失败并打印一个标记串
     → 回 `implement`，该轮 prompt 含标记串与快检命令（只断言这两样，措辞归 M-04）→ 再次快检通过 → 合并前完整门禁 1 次；快检计数 2）、
     `gate_quick_each_round_ignores_quick_event_for_event`（同一剧本跑两遍，一遍多写 `quick`：快检脚本 0 次，门禁事件的
-    `(事件种类, node, kind)` 序列两遍相同）。
+    `(事件种类, node, kind)` 序列两遍相同）；`gate_quick_feature_removing_quick_while_running_paused_or_stopped`（在跑、暂停、停止后移除 quick，恢复后跳过并清理进程组）。
 - **M-03**（覆盖：目标 2（Bug）、4；验收 3；约束 4、5、6、8、11。前置：M-02）。方案 §3 的 Bug 部分、§4、§5 的 Bug 边角。新增用例：
   - automed lib 4 个（`gate_quick_bug_` 开头）：FixGate 跑 `( 复现 ) && ( quick )`、`kind: quick`、没有 `.repro-only`、标记超时 =
     `timeout_minutes`；FixGate 的快检结果在 `quick` 与 `command` 文本相同时也不被 MergeGate 沿用；FixGate 中途切换按启动种类收结果
@@ -476,7 +478,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 ### M-02 验收契约
 
 - 验收命令：`cargo test -p automed --lib -- gate_quick_host before_merge_fix_gate before_merge_unconfigured before_merge_repro_marker main_check_reuse` 与 `cargo test -p automed --test end_to_end -- gate_quick_feature gate_quick_each_round feature_before_merge`
-- 预期：第一条 18 个通过（新增 9 + 现有 9：`before_merge_fix_gate` 3、`before_merge_unconfigured` 1、`before_merge_repro_marker` 1、`main_check_reuse` 4）；第二条 7 个通过（新增 3 + T-61 的 `feature_before_merge` 4）。
+- 预期：第一条 19 个通过（新增 10 + 现有 9：`before_merge_fix_gate` 3、`before_merge_unconfigured` 1、`before_merge_repro_marker` 1、`main_check_reuse` 4）；第二条 8 个通过（新增 4 + T-61 的 `feature_before_merge` 4）。
 - 负向对照：MergeGate 沿用不看 `kind` 时，`gate_quick_host_merge_gate_never_reuses_a_quick_result` 失败（出现 `gate.reused`、没有 `merge_gate` 的 `gate.started`）；收结果按当前配置而不按 `.kind` 标记时，`gate_quick_host_mode_switch_collects_by_launch_kind` 失败（`kind` / `command` 记成切换后的）；开头的跳过条件没加 `quick_gate().is_none()` 时，两个 `gate_quick_feature_` e2e 的快检计数为 0 而失败。
 
 ### M-03 验收契约
