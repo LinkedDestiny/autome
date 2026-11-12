@@ -1,12 +1,12 @@
 # 面板外壳与项目导航（W5）：animal-island token、项目栏计数、首页总览、⌘K、中文标签表与 getLoadContext
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 6/25
-current-milestone: M-05
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05，复验定向测试及受环境阻塞的全量检查
+next-action: 无
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -325,7 +325,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 已完成 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 已完成 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
-| M-05 | 待审 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
+| M-05 | 已完成 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
 ## 验收说明
 
@@ -451,7 +451,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-05 ⌘K 跳转面板与新建任务卡入口
 
-最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-impl.md · 定向通过，全量环境受阻待复验 · 实现 #6
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-audit.md · 通过 · 审计 #6
 
 - 覆盖：R-03，以及 R-05 中受写判定约束的入口。前置：M-04。
 - 结果：新增 `palette-model.ts` 和 `command-palette.tsx`。顶栏的「搜索或跳转」按钮和「新建任务卡」按钮接到面板。`App` 里挂上 `attachPaletteShortcut(window, …)`。
@@ -486,6 +486,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 - B-02 暗色调色板（desktop `[data-theme="dark"]`）和跟随系统主题，与主题切换界面一起做。
 - B-03 卡片上的「已完成 3 / 5」里程碑进度和「修复第 n / 上限 轮」，归 W6/W7 的完整任务卡。Bug 修复轮的数据已有：`task_json.budget_n`、`fix_round`，上限的解析见 `bug_loop.rs` 与 `project.get` 的 `config.bug.fix_rounds`；需求里程碑进度的数据来源要在 W6/W7 设计时先核实。
 - B-04 ⌘K 支持拼音首字母和模糊匹配，并记住最近访问过的条目。
+- B-06 `filterCandidates` 还匹配副标题（含状态名、「项目」字样），比 R-03 多一个匹配字段；如嫌噪声可收窄。
 - B-05 外壳一屏无滚动的浏览器自动验收（Playwright，1512×944），归 W12。
 
 ## 争议项

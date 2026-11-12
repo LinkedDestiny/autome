@@ -15,3 +15,4 @@
 审计 #5 | M-04 | 通过 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-04-r5-audit.md | 无
 
 实现 #6 | M-05 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-impl.md | 监听 EPERM/EMFILE；Electron SIGABRT
+审计 #6 | M-05 | 通过 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-05-r6-audit.md | 无
