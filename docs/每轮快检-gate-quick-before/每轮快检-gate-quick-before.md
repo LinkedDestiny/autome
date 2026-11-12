@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/25
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：config.rs 加 QuickGate 旁挂字段与 quick_gate()/gates_after_implement()，task.rs 实现轮结束改用 gates_after_implement()，config_io.rs 解析两个新键
+next-action: 独立审计 M-01；通过后推进 M-02 宿主快检执行、启动记录与结果沿用隔离
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -413,13 +413,15 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
+| M-01 | 待审 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
 | M-02 | 开放 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 开放 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 开放 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
 | M-05 | 开放 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
 
 ## 里程碑说明
+
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-01-r1-impl.md · 待审 · 实现 #1
 
 - **M-01**（覆盖：目标 1、3；验收 1、4（解析与保存）；约束 2、3、4、12。前置：无）。方案 §1、§2。新增用例：
   - autome-domain 6 个（名字以 `gate_quick_` 开头）：`gate_quick_implement_with_audit_enters_gate`（转换与 `each_round` 下逐字段相等）、

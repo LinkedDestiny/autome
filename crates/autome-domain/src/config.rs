@@ -269,6 +269,8 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_quick: Option<QuickGate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_run: Option<GateRun>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
@@ -329,6 +331,15 @@ impl GateRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateConfig {
     /// Run with `sh -c` in the task's working directory.
+    pub command: String,
+    pub timeout_minutes: u32,
+}
+
+pub const DEFAULT_GATE_QUICK_TIMEOUT_MINUTES: u32 = 5;
+
+/// Project-only quick check used between implementation and audit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuickGate {
     pub command: String,
     pub timeout_minutes: u32,
 }
@@ -417,6 +428,8 @@ pub struct ResolvedConfig {
     /// The project's gate, if it has one (see `ProjectConfig::gate`).
     pub gate: Option<GateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_quick: Option<QuickGate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "GateRun::is_each_round")]
     pub gate_run: GateRun,
@@ -434,6 +447,16 @@ impl ResolvedConfig {
             .as_ref()
             .filter(|_| self.gate_run == GateRun::BeforeMerge)
             .map(|gate| gate.command.as_str())
+    }
+
+    pub fn quick_gate(&self) -> Option<&QuickGate> {
+        self.gate_quick
+            .as_ref()
+            .filter(|_| self.gate.is_some() && self.gate_run == GateRun::BeforeMerge)
+    }
+
+    pub fn gates_after_implement(&self) -> bool {
+        self.gates_each_round() || self.quick_gate().is_some()
     }
 
     pub fn gates_each_round(&self) -> bool {
@@ -506,6 +529,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             .unwrap_or(global.gate.concurrency)
             .min(global.gate.concurrency),
         gate_run: project.gate_run.unwrap_or_default(),
+        gate_quick: project.gate_quick.clone(),
         setup: project.setup.clone(),
         merge_after: project.merge_after.clone(),
         gate_same_failure_limit: project
