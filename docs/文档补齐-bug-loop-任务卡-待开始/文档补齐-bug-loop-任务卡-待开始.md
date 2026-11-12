@@ -1,7 +1,7 @@
 # 文档补齐：Bug Loop、任务卡与待开始、reply 及 [bug]/[setup]/same_failure_limit 配置
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -59,7 +59,7 @@ next-action: M-01：按 D2 与 D4 在 technical-design §5.1 末尾追加 Draft 
 
 ### D3 写法要点
 
-- **§5.6 的结构。** 依次：适用范围（T-04..T-06、T-10）→ 节点表（节点、线上名、界面标签、谁来跑、是否占槽位；T-07..T-09）→ 转换表（与 §5.3 同列：当前 · 触发 · 条件 · 下一；T-11..T-33）→ 「三点」各一段加粗小标题，逐字包含 `126`、`127`、`124`、`连续两次`、`等你补充信息`、`( 复现命令 ) && ( 门禁命令 )`、`MergeGate`（T-15..T-21）→ 修复轮预算（T-26、T-27）→ Bug 文档字段与 prompt 模板（T-34、T-35）。
+- **§5.6 的结构。** 依次：适用范围（T-04..T-06、T-10）→ 节点表（节点、线上名、界面标签、谁来跑、是否占槽位；T-07..T-09）→ 转换表（与 §5.3 同列：当前 · 触发 · 条件 · 下一；T-11..T-33）→ 「三点」各一段加粗小标题，逐字包含 `126`、`127`、`124`、`连续两次`、`等你补充信息`、`( 复现命令 ) && ( 门禁命令 )`、`MergeGate`（T-15..T-21）→ 修复轮预算（T-27、T-28、T-36）→ Bug 文档字段与 prompt 模板（T-34、T-35）。
 - **「失败」一词的口径。** 任务卡写「复现命令退出码 126/127 不算失败」「连续两次复现检查失败」。代码里复现检查要的是命令**失败**（退出码非零）才算复现成功，所以文档要把两个口径说清：126/127 与超时、退出码 0 一样**不算复现成功**（`why` 分别是 `not_runnable`、`timed_out`、`exited_zero`）；「连续两次复现检查失败」指连续两次未复现。
 - **reply 的两种语义**（任务 §8 待定 5）：Bug Loop 任务停在 `await_info` / `not_a_bug` 时，`reply` 以非空补充信息回到定位；其它节点的 Bug 任务被拒；需求任务的 `reply` 在派发层被换成 `task.reject`（意见原样）。README 与 §14 都按此写。
 - **README 的 Bug Loop 介绍只写一段**，放在命令行一节里 `--kind bug` 的说明处（不改 `## The Loop`）：一句话流程 locate → reproduce → fix → fix gate → review → rebase → merge gate → merge，以及需要开启 audit 角色。
@@ -96,7 +96,7 @@ next-action: M-01：按 D2 与 D4 在 technical-design §5.1 末尾追加 Draft 
 | T-24 | §5.6 转换 | `fix_review` 复核通过 → `Rebase`（不经 `Retro`）；打回 → `fix`，注入打回 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_review_pass_goes_to_rebase_without_retro` |
 | T-25 | §5.6 转换 | `Rebase` 成功总进 `MergeGate`；冲突 → `fix`，注入冲突文件 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_rebase_always_runs_the_merge_gate` |
 | T-26 | §5.6 转换 | `MergeGate` 失败 → `fix`；通过后与需求任务共用 `AwaitMerge` 以后的尾段 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_merge_tail_is_shared_with_the_feature_loop` |
-| T-27 | §5.6 预算 | 每开一个 `fix` 会话记一条 `bug.fix_round_started`；上限 = 任务的预算，未设时取 `[bug] fix_rounds`；已开轮数达到上限时下一次要开修复轮即 `Failed(FixBudget)` | crates/autome-domain/src/bug_loop.rs | `let limit = ctx.budget_n.unwrap_or(ctx.config.bug.fix_rounds);` |
+| T-27 | §5.6 预算 | 每开一个 `fix` 会话（含手动重跑）记一条 `bug.fix_round_started`；上限 = 任务的预算，未设时取 `[bug] fix_rounds`；正常自动转换（门禁失败、复核打回、rebase 冲突、合并门禁失败、定位完成后首次开修复）在开下一修复轮前检查，已开轮数达到上限即 `Failed(FixBudget)` | crates/autome-domain/src/bug_loop.rs | `let limit = ctx.budget_n.unwrap_or(ctx.config.bug.fix_rounds);` |
 | T-28 | §5.6 预算 | 预算失败后追加 n 轮（n > 0）：上限加 n，直接开 `fix` | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_extend_resumes_fix_with_a_larger_limit` |
 | T-29 | §5.6 转换 | 停在 `await_info` / `not_a_bug` 时收到非空补充信息 → `locate`；空文本拒「补充信息不能为空」；不在这两个节点时拒绝 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_reply_is_refused_when_empty_or_not_waiting` |
 | T-30 | §5.6 转换 | 两个等待节点可以取消，不能暂停、停止或追加轮次 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_waiting_nodes_allow_cancel_but_not_pause_stop_or_extend` |
@@ -105,6 +105,7 @@ next-action: M-01：按 D2 与 D4 在 technical-design §5.1 末尾追加 Draft 
 | T-33 | §5.6 转换 | 停在 `repro_check` / `fix_gate` 的任务恢复后重新排队，丢弃被杀的门禁结果；会话崩溃、文档不可解析、缺文件、守卫失败的处理与需求会话相同 | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_stopped_bug_gates_discard_runs_and_requeued_bug_nodes_reenter` |
 | T-34 | §5.6 文档 | Bug 文档字段：status（已定位 / 无法复现 / 不是 Bug）、fix-round、复现命令、根因、复核（待复核 / 通过 / 打回） | crates/autome-domain/src/bug_doc.rs | `"不是 Bug" => BugStatus::NotABug,` |
 | T-35 | §5.6 文档 | Bug 会话的 prompt 模板是 `protocol/prompts/locate.md`、`fix.md`、`fix-review.md`，规则在 `protocol/bug-protocol.md`，编译进 `automed` | crates/automed/src/protocol/mod.rs | `prompts/locate.md` |
+| T-36 | §5.6 预算 | 手动 `rerun … fix` 不经上述预算检查：任务因 `FixBudget` 失败后重跑 `fix` 仍直接开修复会话，只计入已开轮数，不再触发 `Failed(FixBudget)`（上限仍是 T-28 追加后的值） | crates/autome-domain/src/bug_loop.rs | `fn bug_loop_rerun_from_accepts_locate_fix_review_and_rebase_only` |
 | T-40 | §8.2 | `task.create` 的 `kind`：缺省 `feature`，只收 `feature` / `bug`，其它值拒 | crates/automed/src/dispatch.rs | `只能是 feature 或 bug` |
 | T-41 | §8.2 | `brief`（任务卡正文）必须是字符串；去空白为空拒；超过 65536 字节拒 | crates/automed/src/dispatch.rs | `任务卡正文超过 64KB` |
 | T-42 | §8.2 | 有 `brief` 没 `request` 时，标题取正文第一个 `# ` 行，没有则取第一非空行去掉前导 `#`；仍为空拒「任务卡正文缺少标题」；两者都给时 `request` 命名任务，正文原样保留 | crates/automed/src/dispatch.rs | `任务卡正文缺少标题：第一行写` |
@@ -139,7 +140,7 @@ next-action: M-01：按 D2 与 D4 在 technical-design §5.1 末尾追加 Draft 
 | R-10 | command line | `autome extend <task> <n>`：给预算用完的任务追加 n 轮，n 为正整数；Bug 任务追加的是修复轮 | crates/autome-cli/src/main.rs | `轮数必须是正整数` |
 | R-11 | command line | 程序化建卡的示例：`autome task new --kind bug --brief - --draft --json < card.md` | crates/autome-cli/src/main.rs | `std::io::stdin()` |
 | R-12 | config | `[bug] fix_rounds = 3`：默认 3，1–20，写在项目 `.autome/config.toml` | crates/automed/src/config_io.rs | `[bug] fix_rounds 必须是 1 到 20 的整数` |
-| R-13 | config | 每开一个修复轮计一次（含门禁失败、复核打回、rebase 冲突后的返工）；用完任务停下，`autome extend` 追加 | crates/autome-domain/src/bug_loop.rs | `Transition::fail(at, FailureReason::FixBudget { limit })` |
+| R-13 | config | 每开一个修复轮计一次（含门禁失败、复核打回、rebase 冲突后的返工）；自动返工在开下一轮前检查，用完任务停下，`autome extend` 追加；手动 `autome rerun <task> fix` 不经该检查，只计入已开轮数 | crates/autome-domain/src/bug_loop.rs | `Transition::fail(at, FailureReason::FixBudget { limit })` |
 | R-14 | config | Bug 任务的 fix_gate 与 merge_gate 跑复现命令，配置了 `[gate]` 时与它串联 | crates/automed/src/scheduler.rs | `format!("( {repro} ) && ( {} )", gate.command)` |
 
 ### D6 已有内容核对（只核对，不重写）
@@ -236,13 +237,13 @@ fi
 if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1; fi
 ~~~
 
-**检查条数**（锚点行 D4 52 + D5 14 + D6 6 = 72 条）：
+**检查条数**（锚点行 D4 53 + D5 14 + D6 6 = 73 条）：
 
-- M-01：结构 5（删除行、标题、范围、出处路径、5.6 位置）+ 锚点 72 + §5 关键词 25 = **102**。
-- M-02：M-01 的 102 + 8.2 位置 1 + §8 关键词 17 + §9 关键词 4 + §14 关键词 6 = **130**。
-- M-03：M-02 的 130 + README 命令行 15 + Host gate 9 = **154**。
+- M-01：结构 5（删除行、标题、范围、出处路径、5.6 位置）+ 锚点 73 + §5 关键词 25 = **103**。
+- M-02：M-01 的 103 + 8.2 位置 1 + §8 关键词 17 + §9 关键词 4 + §14 关键词 6 = **131**。
+- M-03：M-02 的 131 + README 命令行 15 + Host gate 9 = **155**。
 
-设计轮已在基线上跑过三个参数：锚点 72 条全部解析，删除行、标题、范围三项通过；`M-01 FAIL 76/102`（失败的是出处路径、5.6 位置与 §5 的 25 个关键词里的 24 个，`MergeGate` 基线已在 §5.1）、`M-02 FAIL 76/130`、`M-03 FAIL 83/154`（README 命令行区间缺 14 个、Host gate 区间缺 `[bug]`、`fix_rounds = 3`、`1–20`）。三个都在基线上红，说明检查有鉴别力。
+设计轮已在基线上跑过三个参数：锚点 73 条全部解析，删除行、标题、范围三项通过；`M-01 FAIL 77/103`（失败的是出处路径、5.6 位置与 §5 的 25 个关键词里的 24 个，`MergeGate` 基线已在 §5.1）、`M-02 FAIL 77/131`、`M-03 FAIL 84/155`（README 命令行区间缺 14 个、Host gate 区间缺 `[bug]`、`fix_rounds = 3`、`1–20`）。三个都在基线上红，说明检查有鉴别力。
 
 ### D8 关键词与验收 1 的对应
 
@@ -266,19 +267,19 @@ if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1
 ### M-01 验收契约
 
 - 验收命令：`sed -n '/^~~~sh check-docs$/,/^~~~$/p' docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始.md | sed '1d;$d' | sh -s M-01`
-- 预期：输出 `M-01 PASS 102/102`，退出码 0；基线上同一命令为 `M-01 FAIL 76/102`。
+- 预期：输出 `M-01 PASS 103/103`，退出码 0；基线上同一命令为 `M-01 FAIL 77/103`。
 - 负向对照：把 Bug Loop 写成 `### 5.3.1` 或插到 §5.3 之前 → 「5.6 不在 5.5 与 6 之间」与「多出的标题行」失败；漏写退出码一点 → `缺 126`、`缺 127`；就地改写 §5.1 的状态列表行而不是追加段落 → 「删除或改写了 1 行」。
 
 ### M-02 验收契约
 
 - 验收命令：`sed -n '/^~~~sh check-docs$/,/^~~~$/p' docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始.md | sed '1d;$d' | sh -s M-02`
-- 预期：输出 `M-02 PASS 130/130`，退出码 0（含 M-01 的 102 项）；基线上为 `M-02 FAIL 76/130`。
+- 预期：输出 `M-02 PASS 131/131`，退出码 0（含 M-01 的 103 项）；基线上为 `M-02 FAIL 77/131`。
 - 负向对照：把任务卡内容写进 §5 而不是 §8 → §8 区间 `缺 task_briefs`、`缺 -card.md`；把 `task.start, task.reply` 塞进 §14 原有的「命令：」行 → 「删除或改写了 1 行」；把 `[bug]` 规则写进 §8.1 而不是 §9 → §9 区间 `缺 1 到 20`。
 
 ### M-03 验收契约
 
 - 验收命令：`sed -n '/^~~~sh check-docs$/,/^~~~$/p' docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始.md | sed '1d;$d' | sh -s M-03 && sh scripts/ci-local.sh > .autome/output/ci-local.txt 2>&1; echo "ci-local exit $?"; tail -25 .autome/output/ci-local.txt`
-- 预期：输出 `M-03 PASS 154/154`（基线上为 `M-03 FAIL 83/154`）；`ci-local exit 0`，各步骤 ok；`cargo test`、`npm test`（desktop）、`apps/web` 测试的用例总数与基线相同（文档改动不增减用例），证据里写出这三个数和基线数。
+- 预期：输出 `M-03 PASS 155/155`（基线上为 `M-03 FAIL 84/155`）；`ci-local exit 0`，各步骤 ok；`cargo test`、`npm test`（desktop）、`apps/web` 测试的用例总数与基线相同（文档改动不增减用例），证据里写出这三个数和基线数。
 - 负向对照：只在 Host gate 一节提 `autome rerun` / `autome extend`（即基线现状）→ 命令行区间 `缺 autome rerun`、`缺 autome extend`；在新代码块里写以 `#` 开头的注释行 → 「多出的标题行」；把 TOML 示例的 `same_failure_limit = 3` 改写 → 「删除或改写了 1 行」。
 
 ## 里程碑
@@ -301,5 +302,8 @@ if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1
 - B-04 CLI `USAGE` 末行只说门禁与重试在 `[gate]` / `[retry]` 里配置，没有提 `[setup]`、`[bug]`（代码，本任务不改）。
 - B-05 README `## The Loop` 的流程图只画需求 Loop，没有 Bug Loop。
 - B-06 README Host gate 一节开头说 "Three things the core does on its own"，其下已有四个条目（本任务再加一个），计数早已不符。
+- B-07 手动 `autome rerun <task> fix` 不经修复轮预算检查（`bug_loop.rs` 的 `apply_for` 重跑分支直接 `session(BugStep::Fix…)`，不走 `start_fix`），超预算后仍能无限重跑；可能是代码缺陷，本任务按实际行为写文档（T-36、R-13），不修代码。来源 D1-P01。
+- B-08 README R-04 只提第一个 `# ` 标题；T-42 已记录没有 `#` 标题时取第一非空行的回退，实现 M-03 时 README 可加一句回退说明。来源评审 S-01。
+- B-09 M-03 验收命令里 `echo`/`tail` 在 `&&` 链之后，整条命令退出码可能来自 `tail`；实现轮应单独保存并核对检查与 CI 的退出码，以 `M-03 PASS 155/155` 与 `ci-local exit 0` 两行输出为准。来源评审 S-02。
 
 ## 争议项
