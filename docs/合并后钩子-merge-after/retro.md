@@ -8,3 +8,4 @@
 审计 #2 | M-02 | 通过 | docs/合并后钩子-merge-after/evidence/M-02-r3-audit.md | 无
 实现 #4 | M-03 | 待审 | docs/合并后钩子-merge-after/evidence/M-03-r4-impl.md | 无
 审计 #3 | M-03 | 通过 | docs/合并后钩子-merge-after/evidence/M-03-r4-audit.md | 无
+实现 #5 | M-04 | 开放（环境阻塞） | docs/合并后钩子-merge-after/evidence/M-04-r5-impl.md | Electron SIGABRT；Web listen EPERM/EMFILE

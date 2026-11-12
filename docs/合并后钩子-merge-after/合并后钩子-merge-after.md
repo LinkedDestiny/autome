@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/20
+implementation-round: 5/20
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-04：补齐 README 与技术设计说明，并运行全量回归
+next-action: 在允许 Electron 启动与本机监听的环境重跑 M-04 全量 CI，Desktop/Web 通过后标待审
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -24,7 +24,7 @@ next-action: 推进 M-04：补齐 README 与技术设计说明，并运行全量
 - `cleanup(&layout)`（3572 行）删任务 worktree 与分支，不动 `.autome/output/gates/`，所以作业日志在任务 Done 后仍在。
 - 进入 Cleanup 时 `advance` 写一条 `task.updated{state: Active cleanup}`；Cleanup 结束写 `task.updated{state: done}`。**没有名为 `cleanup` 的事件**。
 - 界面：桌面端警报标题 `ALERT_TITLES[alert.kind] || alert.kind`（`apps/desktop/renderer/screens/dashboard.js:114`），web 通知器对非 `main_gate_failed` 的 kind 显示「项目告警：<kind>」（`apps/web/server/notifier-rules.ts:31`）；`apps/` 下没有任何代码按事件 kind 穷举 `setup.*` / `gate.*`（grep 为空）。新警报 kind 与新事件不会让界面坏。
-- 基线用例数（`cargo test --workspace --all-targets -- --list`，本轮实测）：autome-cli bin 25、autome-cli tests/cli 13、autome-domain 384、automed tests/t14_gate_logs 1、automed lib 647、automed bin 0、end_to_end 103、prompt_rendering 16、real_cli 7，共 **1196**。现有用例名中含 `merge_after` 的为 0 个，所以本任务新增用例一律以 `merge_after` 入名，过滤 `merge_after` 即得新增数。
+- 基线用例数（`cargo test --workspace --all-targets -- --list`，本轮实测）：autome-cli bin 25、autome-cli tests/cli 13、autome-domain 384、autome-domain tests/t14_gate_logs 1（默认忽略，需原始 T-14 日志）、automed lib 647、automed bin 0、end_to_end 103、prompt_rendering 16、real_cli 7，共 **1196**。现有用例名中含 `merge_after` 的为 0 个，所以本任务新增用例一律以 `merge_after` 入名，过滤 `merge_after` 即得新增数。
 
 ## 目标与非目标
 
@@ -250,10 +250,12 @@ automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_m
 
 ### M-04 验收契约
 
+最新证据：docs/合并后钩子-merge-after/evidence/M-04-r5-impl.md · 环境阻塞，保持开放 · 实现 #5
+
 覆盖范围 6、7，验收 4、5、6，约束 8、9，问题 10；前置：M-03。改动：README 的 `[gate]` 配置示例块加 `[merge]` 两行，其下条目列表在 **Preparation** 之后加一条 **After merge**（时机、主检出、环境变量、超时缺省 10、失败只报警、MainCheck 未通过与工作区跳过、钩子只应写被 gitignore 的产物、停止后恢复会重跑）；`docs/development/technical-design.md` §3.3 配置示例加 `[merge]`、§8.1 加钩子作业与 Cleanup 前置子阶段、§9 加解析规则。不新增用例。
 
 - 验收命令：`grep -c '\[merge\]' README.md docs/development/technical-design.md; grep -c 'AUTOME_MERGE_COMMIT' README.md; git diff --exit-code $(git merge-base HEAD main) -- .autome/ && echo AUTOME-DIR-UNCHANGED; cargo test --workspace --all-targets > .autome/output/m04-all.txt 2>&1; echo "test exit $?"; grep 'test result' .autome/output/m04-all.txt; sh scripts/ci-local.sh > .autome/output/m04-ci.txt 2>&1; echo "ci exit $?"; tail -20 .autome/output/m04-ci.txt`
-- 预期：README 与技术设计文档里 `[merge]` 各至少 1 处，README 里 `AUTOME_MERGE_COMMIT` 至少 1 处；打印 `AUTOME-DIR-UNCHANGED`；`test exit 0`，各目标通过数之和为 1219（基线 1196 + 本任务 23：domain 4、automed lib 10、e2e 8、cli 1；rebase 带进的 main 用例另计并在证据中列出）；`ci exit 0`，ci-local 的 Format、Clippy、Rust 测试、Desktop、Web 各步全部通过。
+- 预期：README 与技术设计文档里 `[merge]` 各至少 1 处，README 里 `AUTOME_MERGE_COMMIT` 至少 1 处；打印 `AUTOME-DIR-UNCHANGED`；`test exit 0`，各目标用例总数为 1219，其中 1218 通过、1 忽略（t14_gate_logs 原有可选检查，需 AUTOME_T14_GATE_DIR 指向原始 T-14 日志；基线 1196 + 本任务 23：domain 4、automed lib 10、e2e 8、cli 1；rebase 带进的 main 用例另计并在证据中列出）；`ci exit 0`，ci-local 的 Format、Clippy、Rust 测试、Desktop、Web 各步全部通过。
 - 负向对照：README 只改了说明条目、没改示例块（或反之）→ `[merge]` 或 `AUTOME_MERGE_COMMIT` 计数为 0；会话改了本仓库 `.autome/config.toml` 去试钩子 → `git diff --exit-code` 非零、不打印 `AUTOME-DIR-UNCHANGED`；新代码有未格式化或 clippy 告警 → ci-local 的 Format / Clippy 步失败、`ci exit` 非零。
 
 ## 人工验收清单

@@ -93,6 +93,11 @@ effort = "high"
 [roles.adjudicate]
 [roles.impl]
 [roles.audit]
+
+# 仅项目级：合并后由宿主在主检出执行
+[merge]
+after = "sh scripts/install-cli.sh"
+after_timeout_minutes = 10  # 可省，缺省 10 分钟
 ```
 
 ## 4. 领域模型
@@ -306,6 +311,10 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 
 **宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。准备命令与门禁共用 `[gate] concurrency` 名额，任务检出、verify 检出、主检出均计入；指纹未变、未配置或工作区跳过准备时不排队。门禁前准备与随后的门禁在持续占位、期间无 task.updated 且退出标记未过占位期限时连占同一名额，否则后续进程重新准入。会话前准备排队不计崩溃重试或 Bug Loop 修复轮次，Fix 轮次到真正启动会话才记录。主检出准备先检查指纹和其它任务的主检出准备互斥，再申请名额，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
 
+**合并后命令。** 项目 `[merge] after` 是 Cleanup 的前置子阶段，不新增节点：合并成功、MainCheck（若配置）通过、主检出准备处理完后，在清理任务 worktree / 分支之前，由宿主在 `project.path` 用 `sh -c` 执行；准备失败仍运行钩子。命令获得 `AUTOME_TASK` 与 `AUTOME_MERGE_COMMIT`（本任务完整合并 SHA），主检出可能已有后续合并。工作区、无单一合并提交、MainCheck 失败或跳过时只写一次 `merge.after_skipped`；Bug Loop 同样适用。
+
+复用 `gate::Job` 独立进程组，文件为 `.autome/output/gates/<task>/after_merge-<sha12>.{log,pid,exit,started}`，tick 只轮询，core 重启接续；启动前等待其它任务在途的钩子或主检出准备（含尚无 pid 的启动空窗）。`after_merge.prepared` 标记准备段已处理，钩子等待或重入不重复准备；不改变 setup 自己的互斥规则。写 `merge.after_started {command, commit, log}` 与 `merge.after {ok, exit_code, command, commit, log, tail}`，CLI 打印开始、结果或跳过原因。非零退出或超时（缺省 10 分钟，杀进程组、退出码 124）仅报 `after_merge_failed`，失败警报与结果事件同事务写入；已有结果则不再执行，照常清理并进入 Done，不撤销合并。作业存在但开始事件缺失时补事件，不重启；作业消失则清文件、下次 tick 重试。暂停后恢复接同一作业；停止/取消杀进程并删作业文件，停止后恢复重新运行，取消不报失败。停留期间删除配置则直接清理，在途命令后台结束且不收结果。命令应可重复执行，只写 gitignore 产物或检出之外，避免弄脏主检出阻塞后续合并。
+
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 
 **宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同则沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。默认 `[gate] reuse_for_main_check = true`：合并提交与最近通过 MergeGate 的提交树相同，且被合并的 head 与实际启动命令均匹配时，沿用该结果并写 `gate.reused`，不创建验证检出、不启动 MainCheck 作业；设为 `false` 则始终照常运行。无法确认通过记录、命令或树时也照常运行。同一任务同一 `gate` / `merge_gate` / `fix_gate` 节点连续相同失败指纹达到 `[gate] same_failure_limit`（默认 3，整数 1–10）时熔断，任务失败并附原因摘要与最近日志路径；同节点通过或指纹变化打断连续计数，修复环境后可用 `rerun` / `extend` 重跑，熔断后的新运行从零计数；`repro_check` 与 `main_check` 不参与熔断。每次实际执行的门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
@@ -333,6 +342,8 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 任务检出建好后、首个会话前，`write_task_inputs` 把正文写成 `<doc_dir>/<slug>-card.md`（已有文件不覆盖），附件仅首次复制到 `<doc_dir>/attachments/`；这些输入以一条 `chore(autome): <任务 id> inputs` 提交进任务分支。出处：`crates/automed/src/scheduler.rs` 的 `write_task_inputs` 及其会话启动调用处。
 
 ## 9. 配置解析
+
+项目级 `[merge]` 必须是表；`after` 缺省或去首尾空白后为空等于未配置，此时不校验超时；非字符串报错。非空命令的 `after_timeout_minutes` 缺省 10，必须是正整数，上限截到 `u32::MAX`，未知键忽略。领域类型为 `MergeAfterConfig { command, timeout_minutes }`，`ProjectConfig` / `ResolvedConfig` 的 `merge_after` 为可选值，只从项目复制、不从全局继承；保存其它配置时原样保留该表。未配置时不新增事件、作业或节点停留。
 
 项目级 `[setup]` 使用 `command`、`watch`、`timeout_minutes`：必须是表，command 必须是字符串，去空白为空等于未配置（不再校验其余字段）。watch 缺省空列表，否则必须是字符串数组，每项去空白后非空、非绝对路径、不含 `..` 路径段；相对检出根目录。timeout_minutes 缺省 30，必须是正整数。保存其它配置时原样保留该表；生效配置从项目复制，不从全局继承。
 
