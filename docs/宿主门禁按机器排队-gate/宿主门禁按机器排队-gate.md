@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 5/30
+implementation-round: 6/30
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-06 文档与全量回归（README concurrency、technical-design §8.1、全量测试/clippy/fmt/桌面端）
+next-action: 独立审计 M-06 文档与全量回归，复验本轮验收证据；H-01 留待用户合并前确认
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -401,7 +401,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | M-03 | 已完成 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 已完成 | 门禁超时文案 | 0 | |
 | M-05 | 已完成 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
-| M-06 | 开放 | 文档与全量回归 | 0 | |
+| M-06 | 待审 | 文档与全量回归 | 0 | |
 
 ## 里程碑说明
 
@@ -511,6 +511,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
   「排队期间无作业文件」与 T3 的「B 以 0 结束」都失败；按全局固定路径或全机进程计数时 T4 失败；排队顺序只放内存时 T6 失败。
 
 ### M-06 验收契约
+
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-06-r6-impl.md · 验收通过，待审 · 实现 #6
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && npm test --prefix apps/desktop && grep -n "concurrency" README.md && grep -n "concurrency" docs/development/technical-design.md`
 - 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1262 个用例（基线 1201 + 本任务新增 61：

@@ -6742,7 +6742,10 @@ fn queue_assert_waiting(w: &mut World, id: &str, position: u64) {
     assert!(ok(&out)["queue_position"].is_null());
     assert!(setup_events(w, id, "gate.started").is_empty());
     assert_eq!(setup_events(w, id, "gate.queued").len(), 1);
-    assert_eq!(setup_events(w, id, "gate.queued")[0].1["position"], position);
+    assert_eq!(
+        setup_events(w, id, "gate.queued")[0].1["position"],
+        position
+    );
     assert_eq!(
         std::fs::read_dir(automed::gate::dir_for(&w.repo, id))
             .into_iter()
@@ -6928,7 +6931,7 @@ fn gate_queue_order_survives_a_core_restart() {
     queue_assert_waiting(&mut w, &b, 1);
     queue_assert_waiting(&mut w, &c, 2);
     let store = std::mem::replace(&mut w.ctx.store, Store::open_in_memory().unwrap());
-    w.ctx = Ctx::new(store, &w.root.join("autome-home"), &w.root.join("home")).headless();
+    w.ctx = Ctx::new(store, w.root.join("autome-home"), w.root.join("home")).headless();
     automed::scheduler::recover(&mut w.ctx);
     queue_tick(&mut w);
     queue_assert_waiting(&mut w, &b, 1);

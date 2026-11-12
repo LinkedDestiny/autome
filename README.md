@@ -107,12 +107,12 @@ repository by repository.
 ### Host gate, retries and cooldowns
 
 Three things the core does on its own, none of which needs a prompt to
-cooperate. All of them are off or harmless until configured, and configured in
-the project's `.autome/config.toml`:
+cooperate. Configure commands and retry policy in the project's `.autome/config.toml`:
 
 ```toml
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
+concurrency = 1            # optional project limit, capped by the global limit
 timeout_minutes = 30       # the default; a gate that runs longer has failed
 same_failure_limit = 3     # the default, 1–10: consecutive identical failures stop the task
 reuse_for_main_check = true # the default; false always runs the post-merge gate
@@ -127,7 +127,23 @@ watch = ["apps/web/package-lock.json"]
 timeout_minutes = 30       # optional; preparation timeout
 ```
 
-- **The gate.** With `[gate]` set, Autome runs the command itself after every
+- **Host job queue.** Global `~/.autome/config.toml` accepts `[gate] concurrency = 1`
+  (default 1, integers 1–10). Gate, MergeGate, MainCheck, ReproCheck, FixGate and
+  preparation commands share this limit across projects in one Autome ledger/core;
+  separate homes/ledgers are independent. A project may lower the limit; a larger
+  value is clamped to the global value. Its effective limit applies to the total
+  running host jobs at admission, not just that project's jobs; it does not
+  reserve exclusive capacity after a job starts. A project can set only
+  `concurrency` without enabling a gate command. Jobs wait in strict FIFO order,
+  with no MergeGate/MainCheck priority. Waiting leaves the task at its current node
+  and consumes no rounds, failure counts or crash retries; timeout starts only
+  when the job actually starts. `autome status` shows “排队等门禁（前面还有 k 个）”.
+  `task.get` and `dashboard.get` expose the live, one-based `gate_queue_position`
+  (null when not queued), separate from the project-slot `queue_position`.
+  `autome run` reports `gate.queued` with the position at enqueue time. Ledger
+  events restore FIFO order after a core restart. This does not limit commands
+  launched inside agent sessions, such as their own `cargo test`.
+- **The gate.** With `[gate] command` set, Autome runs the command itself after every
   implementation round, on the commit that round produced, and only an exit
   code of 0 lets the round reach audit. A failure goes straight back to
   implementation with the command and the log's tail in the prompt. After
