@@ -1,7 +1,7 @@
 # 门禁只在合并前跑一次（`[gate] run = "before_merge"`）
 
-status: 设计中
-design-round: 1/15
+status: 实现中
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -249,11 +249,17 @@ _ => repro.to_owned(),
   两步不原子，daemon 在两步之间退出就没有事件；同 node/head 的旧作业被丢弃后重启时，按 node/sha 取事件还会拿到上一次运行的命令。
   改为：
   1. `gate.rs` 的 `Job` 加一个旁路文件 `<node>-<head12>.repro-only`（目录与其它作业文件相同，作业路径与现有文件名都不变），
-     提供 `set_repro_only(bool)`（写入或删除）和 `repro_only() -> bool`；`Job::clear` 与 `discard_node` 的两处后缀清单各加这一项。
-  2. `run_gate` 在 `!job.exists()` 分支里、`gate::start` **之前**调用 `job.set_repro_only(x)`，其中
+     提供 `set_repro_only(bool)`（写入或删除，必要时先建目录）和 `repro_only() -> bool`。**`Job::clear` 的清单不加这一项**：
+     `gate::start` 在写 `.started` 之前会调用 `job.clear()`（`gate.rs::start`：建目录 → `job.clear()` → 写 `.started` → 起进程），
+     标记若在 `clear` 的清单里，`run_gate` 先写的标记就会被 `start` 自己删掉（评审 #2 R2-P01 的反例）。标记的生命周期因此只有两个
+     操作者：`run_gate` 在每次启动前确定性地写或删；`discard_node` 的后缀清单加 `.repro-only`（丢弃整个节点的作业时一并清掉，
+     不留孤儿）。`Job::clear`（`start` 内部、`Vanished`、head 移动三处调用）与 `start / poll` 的行为都不变。
+  2. `run_gate` 在 `!job.exists()` 分支里、`gate::start` **之前**调用 `job.set_repro_only(x)`（它排在 `.started` 与进程之前，
+     且 `start` 不碰它，所以任何存在 `.started` 的 `before_merge` 作业都带着标记），其中
      `x = bug && node == FixGate && resolved.gate.is_some() && resolved.gate_run == BeforeMerge`（即「这一次 FixGate 只拼了复现命令
-     是因为新模式」）。无项目门禁的 Bug 任务本来就只跑复现命令，`x = false`，不写标记。标记是确定性地写或删，所以前一个作业留下的旧标记、
-     或「写了标记但没来得及启动」的残留，都会在下一次启动前被覆盖。
+     是因为新模式」）。无项目门禁的 Bug 任务本来就只跑复现命令，`x = false`，不写标记。标记是确定性地写或删，所以前一个作业留下的旧标记
+     （`Vanished` / head 移动后 `clear` 不删标记）、或「写了标记但没来得及启动」的残留，都会在下一次启动前被覆盖；没有 `.started`
+     的残留标记没有读者（记账只在作业存在时读标记）。
   3. 作业结束记账时，若 `node == FixGate` 且 `job.repro_only()`：`result.command` 与 `GateOutcome::Failed.command` 取**复现命令本身**
      （它是这个作业实际跑过的命令）；否则取本 tick 配置拼出的命令，**与今天完全相同**。
   4. 因为标记总是先于作业文件出现，任何以 `before_merge` 启动的 FixGate 作业都带标记，不存在「作业在、标记不在」的崩溃窗口；
@@ -341,9 +347,17 @@ pub fn gate_line(command: &str) -> String {
   任务因此不受影响（§6.8）。
 
 `launcher` 的 `role_prompt` 与 `bug_prompt` 在做任何替换之前先调用它：`gate_before_merge` 为 `Some` 用 `BeforeMerge`，否则用
-`EachRound`；`bug_prompt` 在按 `{request}` 切分之前调用（用户原文里的字符不会被当成标记）。`BeforeMerge` 时再把 `{gate_line}`
-替换成 `gate_line(cmd)`；`EachRound` 时 `before_merge` 段已被删掉，模板若在段外写了 `{gate_line}`，`check_no_placeholders_left`
-照旧报错。intake 与 onboarding 不经过这一步（它们不认 `gate_before_merge`）。
+`EachRound`；`bug_prompt` 在按 `{request}` 切分之前调用（用户原文里的字符不会被当成标记）。
+
+**门禁命令是数据，不是模板（评审 #2 R2-P02）。** 命令原文可以含花括号（如 `ci_script=scripts/ci-local.sh; sh "${ci_script}"`，或字面的
+`{slug}`），`config_io` 只要求它非空。所以 `gate_line(cmd)` 的结果**不能**参与 `{doc_dir}` / `{slug}` 等替换，也不能进
+`check_no_placeholders_left`——与 `bug_prompt` 对用户 `{request}` 的做法同源：**先切分、逐段验证、最后拼入**。实现为把模板在数据槽
+（`{request}`，仅 Bug；`{gate_line}`，仅 `BeforeMerge`）处切开，每一段单独做已知占位符替换并 `check_no_placeholders_left`，再用对应数据
+（用户需求原文 / `gate_line(cmd)`）把各段按原顺序拼回；拼回的数据不再被扫描或替换。`role_prompt` 同样改为「按 `{gate_line}` 切分 → 逐段
+替换并验证 → 拼入」（它没有 `{request}` 槽）。`EachRound` 时 `before_merge` 段已被删掉、`{gate_line}` 不是数据槽，模板若在段外写了
+`{gate_line}`，它留在某一段里，`check_no_placeholders_left` 照旧报错——真正的未知占位符仍然被拒绝。`eval_run::render_prompt` 同样：
+先替换模板里的已知占位符，最后才把 `gate_line(cmd)` 拼入。`Inject::GateFailed` 与技能行本来就在模板渲染之后由代码追加（§6.7），
+命令原文照抄，不受影响。intake 与 onboarding 不经过这一步（它们不认 `gate_before_merge`）。
 
 于是 `each_round` / 没配门禁时的输出 = 删掉所有 `before_merge` 段与标记行之后的模板，与今天的模板逐字节相同——这正是现有 12 份
 金样一份不改就能通过的原因（§6.9）。
@@ -397,7 +411,7 @@ pub fn gate_line(command: &str) -> String {
   > 本项目门禁只在合并前运行，本轮没有宿主门禁结果；修复门禁只跑了复现命令，它通过不等于项目门禁通过。{gate_line}独立复验复现命令和与本轮改动直接相关的测试子集，不要因为没跑全量而不给结论；并检查定位到修复的提交差异：根因是否站得住、回归测试是否有意义、改动范围是否最小。
 
   这取代上一版 §6.3 的「宿主在复核 prompt 末尾追加说明」：同一口径，去掉了「请你自己复验项目门禁」；不再需要
-  `PromptSpec.gate_note` 与 `brief::bug_review_gate_note`。「本项目门禁只在合并前运行，本轮没有宿主门禁结果」与审计简报的
+  `PromptSpec.gate_note` 与 `brief::bug_review_gate_note`。固定在旧版本、模板里没有这一段的任务，由 §6.8 的一条宿主兜底补同一件事实。「本项目门禁只在合并前运行，本轮没有宿主门禁结果」与审计简报的
   `GATE_ONLY_BEFORE_MERGE` 是同一句（M-06 的 phrase 规则钉住）。这段文字不引用任何账本事件，所以不会把上一次 MergeGate 的失败
   当作本轮证据；`before_merge` 下复核轮之前宿主只跑过只含复现命令的 FixGate，这句话因此总是成立。
 
@@ -441,9 +455,21 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 #### 6.8 固定在旧版本的任务
 
 协议「共同原则」第 6 条：本次运行始终使用任务里那一份规则。固定在 `protocol/v2` 的任务没有分段标记，`select_gate_run` 原样返回，
-它的会话规则保持 v2 的样子（会话自己全量跑——多花机器时间，但不会做错事）。宿主一侧的四件事——不进 `Gate`（§2）、FixGate 只跑
-复现命令（§4）、审计简报的门禁证据（§6.2）、修复轮注入（§6.7）——不看协议版本，对它们同样生效。用户在本任务合并后才给本仓库加
+它的会话规则保持 v2 的样子（会话自己全量跑——多花机器时间，但不会做错事）。宿主一侧的五件事——不进 `Gate`（§2）、FixGate 只跑
+复现命令（§4）、审计简报的门禁证据（§6.2）、修复轮注入（§6.7）、下面的旧 Bug 复核说明——不看协议版本，对它们同样生效。用户在本任务合并后才给本仓库加
 `run = "before_merge"`，之后新建的任务固定 `v3`。
+
+**旧 Bug 任务的复核说明（评审 #2 R2-P03）。** 宿主让 FixGate 只跑复现命令，对固定在 v2 的 Bug 任务同样生效；v2 的 `fix-review.md` 没有
+缺证说明，`FixGate` 通过后的复核轮也没有失败注入（`bug_loop.rs` 以 `None` 启动），约束 8「复核没有本轮门禁结果时必须写明」会因此漏掉这类任务。
+兜底做在 `launcher::bug_prompt`，不新增 `PromptSpec` 字段（`gate_before_merge` 已经在手）：`step == FixReview`、
+`spec.gate_before_merge` 为 `Some`、且**模板原文不含 `<!-- gate-run: before_merge -->`**（即新版模板已经自带 §6.5 的说明，不再重复）
+时，在渲染结果之后追加一行 `BUG_REVIEW_GATE_NOTE`：
+
+> 本项目门禁只在合并前运行，本轮没有宿主门禁结果；修复门禁只跑了复现命令，它通过不等于项目门禁通过。
+
+这行只陈述事实，不要求复核轮改变自己的复验范围（v2 模板仍让它自己复验项目门禁，规则按协议冻结不变）；它与 §6.5 `fix-review.md` 的
+`before_merge` 段前半句同文。`gate_before_merge` 为 `None`（`each_round`、没有门禁）时不追加，输出逐字节不变。新版（v3）模板含该标记，
+渲染不变。
 
 #### 6.9 金样
 
@@ -623,18 +649,19 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
   `await_merge`；④ `feature_before_merge_switching_while_stopped_at_the_gate_skips_it_on_resume`：同 ③ 但先 `task.stop`，改配置后
   `task.resume` → 进 `audit`。
 - **M-03**（覆盖：目标 3、4；验收 3；约束 1、4、6、7、10。前置：M-01）。`run_gate` 的 Bug 命令 `match`、`gate.rs` 的 `.repro-only`
-  标记（`Job::set_repro_only / repro_only`，`clear` 与 `discard_node` 的清单）与 FixGate 结果的命令取值（§4、§5）。新增：end_to_end 2 个——
+  标记（`Job::set_repro_only / repro_only`；`discard_node` 的清单加 `.repro-only`，`Job::clear` 不加，见 §5 第 1 点）与 FixGate 结果的命令取值（§4、§5）。新增：end_to_end 2 个——
   ① `bug_loop_before_merge_fix_gate_runs_only_the_repro_and_merge_gate_runs_both`：项目门禁 + `before_merge`，FixGate 的
   `gate.started.command` 等于复现命令（不含 `&&`），MergeGate 的含 `( sh regression.sh ) && (` 与项目门禁命令；项目门禁第一次在
   MergeGate 失败 → 回修复且 prompt 含项目门禁输出 → 修好后 MergeGate 通过到 `await_merge`；②
   `bug_loop_before_merge_an_ineffective_fix_fails_the_fix_gate`：修复没生效 → FixGate 失败回修复，prompt 含 `regression-output` 与 `2/3`。
-  automed lib（`scheduler`）4 个——③ FixGate 作业按 `before_merge` 启动、结束前配置改成 `each_round`：`gate.result.command` 是复现命令，
+  automed lib（`scheduler`）4 个——③ FixGate 作业按 `before_merge` 启动（走真实的 `run_gate → gate::start` 路径）：启动后、切换前作业目录里 `.repro-only` 存在且 `.started`
+  存在（R2-P01：`start` 内部的 `clear` 没有删掉它）；结束前配置改成 `each_round`：`gate.result.command` 是复现命令，
   失败时 `GateOutcome::Failed.command` 同；④ 接着在同一 head 上跑 MergeGate：没有 `gate.reused`，有一条 `merge_gate` 的 `gate.started`；
   ⑤ 崩溃窗口（D1-P01）：`before_merge` 下启动 FixGate 后删掉账本里的 `gate.started`（模拟标记已写、事件未写），再切 `each_round`、作业
   结束：`gate.result.command` 仍是复现命令，随后同 head 的 MergeGate 不沿用；同一 node/head 先留一个 `each_round` 的完整命令旧事件、再以
   `before_merge` 重启并删去新事件，结果同样记复现命令；⑥ 约束 1 边界（D1-P03）：从未写过 `run`，FixGate 以项目门禁 A 启动、结束前改成 B：
   `gate.result.command` 与今天一样是 `( repro ) && ( B )`，且该作业目录里从未出现 `.repro-only` 文件。gate.rs 另有 1 个单测放在
-  `gate::tests::before_merge_*`：`set_repro_only(true/false)` 往返、`Job::clear` 与 `discard_node` 都会删掉它。
+  `gate::tests::before_merge_*`：`set_repro_only(true/false)` 往返、`gate::start` 之后标记仍在、`Job::clear` 不删它、`discard_node` 会删掉它。
 - **M-04**（覆盖：目标 5；验收 5；约束 8。前置：M-02、M-03）。§6.1、§6.2、§6.9 的审计简报金样：`brief.rs` 的 `gate_line_of_result` /
   `gate_evidence` / `GATE_ONLY_BEFORE_MERGE`，调度器的审计简报调用处，`golden/briefs/audit-before-merge.md` 与 `golden/README.md` 的
   `briefs/` 说明。新增：automed lib（`brief::tests::before_merge_*`）3 个——无结果与旧 sha 结果都出常量文案；同 sha 结果出
@@ -642,7 +669,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
   （`before_merge_audit_brief_matches_its_golden`）。end_to_end 1 个——`brief_before_merge_audit_brief_never_shows_a_stale_result`：
   M-02 ② 的场景里，第一轮审计与 MergeGate 失败修好后那一轮审计的简报都含「本项目门禁只在合并前运行，本轮没有宿主门禁结果」，
   后者不含失败那次的 sha 前 10 位。
-- **M-05**（覆盖：目标 6、7；意见 1、3、5；约束 1、11。前置：M-01）。§6.3、§6.4、§6.7：`autome-domain` 的
+- **M-05**（覆盖：目标 5、6、7；意见 1、3、5；约束 1、8、11。前置：M-01）。§6.3、§6.4、§6.7、§6.8 的旧 Bug 复核说明：`autome-domain` 的
   `protocol::select_gate_run` 与 `ResolvedConfig::gate_before_merge()`；`launcher` 的 `gate_line()`、`PromptSpec.gate_before_merge`、
   `role_prompt` / `bug_prompt` 先选段再替换、`GateFailed` 两段 `before_merge` 文字；调度器 `start_session` 传值；§10 第 1 条的 4 处
   字面量；protocol eval 第 1 层的两项新检查与 `KNOWN_PLACEHOLDERS`；`case.yaml` 的 `gate_command` 与 `eval_run::render_prompt`。
@@ -651,15 +678,19 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
     的输出逐字节等于手写期望（含段前段后的空行、标记行连同换行一起删）；③ 不成对、嵌套、未知模式三种写法都 `Err` 且带行号。
     `config::tests` 1 个——`gate_before_merge()` 只在「有门禁 + before_merge」时为 `Some(command)`，没有门禁 + before_merge、each_round
     都为 `None`。
-  - automed lib `launcher::tests` 5 个——① 用带两种段的合成模板起一个角色会话：`Some("make check")` 时输出 `before_merge` 段且含
-    「全量门禁（`make check`）由宿主在合并前统一运行，本轮不要自己跑。」，`None` 时输出 `each_round` 段、没有任何标记行；② 同 ① 但走
-    `bug_prompt`，且用户需求原文里写着 `<!-- gate-run: before_merge -->` 时原样保留；③ 需求 `GateFailed` 在 `Some` 下含尾部、`gate_line`，
+  - automed lib `launcher::tests` 6 个——① 用带两种段的合成模板起一个角色会话：`Some("make check")` 时输出 `before_merge` 段且含
+    「全量门禁（`make check`）由宿主在合并前统一运行，本轮不要自己跑。」，`None` 时输出 `each_round` 段、没有任何标记行；另用门禁命令
+    `ci_script=scripts/ci-local.sh; sh "${ci_script}"` 和 `echo {slug}` 各渲染一次（R2-P02）：渲染成功、命令原文逐字出现、`{slug}` 没有被替换成
+    任务名；模板段外写了 `{gate_line}` 或别的未知占位符时仍报错；② 同 ① 但走
+    `bug_prompt`（含同样两条带花括号的命令），且用户需求原文里写着 `<!-- gate-run: before_merge -->` 时原样保留；③ 需求 `GateFailed` 在 `Some` 下含尾部、`gate_line`，
     不含「在同一命令下确认通过」；在 `None` 下与今天逐字节相同；④ Bug `GateFailed` 同 ③（不含「用同一命令确认通过」）；⑤ intake、
-    onboarding 在 `Some` 与 `None` 下输出相同。
+    onboarding 在 `Some` 与 `None` 下输出相同；⑥ 旧 Bug 复核说明（R2-P03）：不含 `<!-- gate-run: before_merge -->` 的 `fix-review` 模板在 `Some` 下
+    渲染结果末尾追加 `BUG_REVIEW_GATE_NOTE` 一行、`None` 下与今天逐字节相同；含该标记的模板在 `Some` 下该句只出现模板自带的一次；Fix、Locate 步骤
+    不追加。
   - automed lib `protocol::` 5 个——`eval::tests` 3 个：不成对的标记被第 1 层拒绝并报文件与行号；`{gate_line}` 写在段外被拒绝；写在
     `before_merge` 段里的 `{gate_line}` 通过占位符检查。`case::tests` 1 个：`gate_command` 被读到，缺省为 `None`，其它未知字段仍报错。
     `eval_run::tests` 1 个：带 `gate_command` 的用例渲染出 `before_merge` 段与 `gate_line`，不带的渲染出 `each_round` 段，两种都没有标记行、
-    没有残留占位符。
+    没有残留占位符；`gate_command` 含 `{slug}` 时原文保留。
   - end_to_end 2 个——① `prompt_before_merge_feature_repair_round_runs_only_the_failing_part`：`before_merge` 下 MergeGate 失败后的修复实现轮
     prompt 含门禁尾部与 `gate_line`（门禁命令原文），不含「在同一命令下确认通过」；② `prompt_before_merge_bug_repair_round_runs_only_the_failing_part`：
     Bug 任务 MergeGate 失败后的修复轮 prompt 同理，不含「用同一命令确认通过」。
@@ -692,7 +723,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 - 验收命令：`cargo test -p automed --test end_to_end bug_loop && cargo test -p automed --lib scheduler && cargo test -p automed --lib gate::`
 - 预期：end_to_end 过滤 `bug_loop` 16 个通过（基线 14 + 2 个 `bug_loop_before_merge_*`）；automed lib 过滤 `scheduler` 91 个通过（基线 87 + 4 个 `scheduler::tests::before_merge_*`）；过滤 `gate::` 12 个通过（基线 11 + 1）。
-- 负向对照：Bug 命令 `match` 不看 `gate_run`（FixGate 照旧拼两者）时，① 的 FixGate 命令断言失败、且因 `gate-ready` 缺失 FixGate 先失败使节点序列不符；FixGate 结果仍取当前配置的命令（不看 `.repro-only`）时，③ ⑤ 的 `command` 断言失败、④ 出现 `gate.reused` 而失败；无条件改用 `gate.started` 事件的命令时，⑥ 的 `command` 断言失败；`.repro-only` 对所有 FixGate 都写时，⑥ 的「从未出现标记文件」断言失败。
+- 负向对照：Bug 命令 `match` 不看 `gate_run`（FixGate 照旧拼两者）时，① 的 FixGate 命令断言失败、且因 `gate-ready` 缺失 FixGate 先失败使节点序列不符；FixGate 结果仍取当前配置的命令（不看 `.repro-only`）时，③ ⑤ 的 `command` 断言失败、④ 出现 `gate.reused` 而失败；无条件改用 `gate.started` 事件的命令时，⑥ 的 `command` 断言失败；把 `.repro-only` 放进 `Job::clear` 的清单（`start` 内部会删掉它）时，③ 的「启动后标记存在」断言与 gate 单测「`gate::start` 之后标记仍在」失败；`.repro-only` 对所有 FixGate 都写时，⑥ 的「从未出现标记文件」断言失败。
 
 ### M-04 验收契约
 
@@ -703,8 +734,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 ### M-05 验收契约
 
 - 验收命令：`cargo test -p autome-domain before_merge_prompt && cargo test -p automed --lib launcher && cargo test -p automed --lib protocol:: && cargo test -p automed --test prompt_rendering && cargo test -p automed --test end_to_end prompt_before_merge && git diff --quiet HEAD -- protocol/prompts crates/automed/tests/golden/prompts && test -z "$(git log --format=%h $(git merge-base HEAD main)..HEAD -- protocol/prompts crates/automed/tests/golden/prompts)"`
-- 预期：autome-domain 过滤 `before_merge_prompt` 4 个通过；automed lib 过滤 `launcher` 62 个通过（基线 57 + 5）、过滤 `protocol::` 66 个通过（基线 61 + 5）；prompt_rendering 17 个全部通过、金样文件一字未改；e2e 过滤 `prompt_before_merge` 2 个通过；最后两条 git 检查无输出、退出码 0（本分支至此没有改过任何模板与 prompt 金样）。
-- 负向对照：`select_gate_run` 删标记行时漏掉换行符，domain ② 的逐字节比对失败；`role_prompt` 忽略 `gate_before_merge`（永远按 `each_round` 选段）时，launcher ① 与 e2e ① 失败（没有 `gate_line`）；调度器给 `PromptSpec` 传 `None` 时，e2e ①② 失败；`GateFailed` 的 `before_merge` 文字仍写「在同一命令下确认通过」时，launcher ③ 与 e2e ① 失败；第 1 层不检查 `{gate_line}` 的位置时，eval「写在段外被拒绝」用例失败。
+- 预期：autome-domain 过滤 `before_merge_prompt` 4 个通过；automed lib 过滤 `launcher` 63 个通过（基线 57 + 6）、过滤 `protocol::` 66 个通过（基线 61 + 5）；prompt_rendering 17 个全部通过、金样文件一字未改；e2e 过滤 `prompt_before_merge` 2 个通过；最后两条 git 检查无输出、退出码 0（本分支至此没有改过任何模板与 prompt 金样）。
+- 负向对照：`select_gate_run` 删标记行时漏掉换行符，domain ② 的逐字节比对失败；`role_prompt` 忽略 `gate_before_merge`（永远按 `each_round` 选段）时，launcher ① 与 e2e ① 失败（没有 `gate_line`）；调度器给 `PromptSpec` 传 `None` 时，e2e ①② 失败；`GateFailed` 的 `before_merge` 文字仍写「在同一命令下确认通过」时，launcher ③ 与 e2e ① 失败；第 1 层不检查 `{gate_line}` 的位置时，eval「写在段外被拒绝」用例失败；把 `gate_line(cmd)` 先拼进模板再做占位符替换与检查时，launcher ①② 用 `${ci_script}` 的渲染报「不认识的占位符」、用 `{slug}` 的命令被改写而失败；旧模板的 Bug 复核不追加 `BUG_REVIEW_GATE_NOTE` 时，launcher ⑥ 失败，含标记的新模板里该句出现两次时 ⑥ 同样失败。
 
 ### M-06 验收契约
 
@@ -715,7 +746,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 ### M-07 验收契约
 
 - 验收命令：`for p in 'run = "each_round"' before_merge 'once per task' 'not until the merge' 'sessions do not run the full gate themselves' 'only the repro command'; do grep -qF "$p" README.md || { echo "README 缺: $p"; exit 1; }; done; for p in before_merge 每个任务一次 合并前才暴露 多退回一次实现轮 会话不再各自兜底 只跑复现命令; do grep -qF "$p" docs/development/technical-design.md || { echo "技术设计缺: $p"; exit 1; }; done; cargo fmt --all -- --check`
-- 预期：两组 grep 全部命中、无输出；`cargo fmt --all -- --check` 退出码 0。本里程碑不新增用例；全量（autome-domain 394 + 1、automed lib 674、end_to_end 123、prompt_rendering 20，以及 clippy `-D warnings`、桌面端与 Web 测试）由宿主门禁 `sh scripts/ci-local.sh` 在本轮 head 上跑，审计轮以简报「## 宿主门禁」那一行（本轮 head 上「通过」）为任务验收 6 的证据，不自己再跑。
+- 预期：两组 grep 全部命中、无输出；`cargo fmt --all -- --check` 退出码 0。本里程碑不新增用例；全量（autome-domain 394 + 1、automed lib 675、end_to_end 123、prompt_rendering 20，以及 clippy `-D warnings`、桌面端与 Web 测试）由宿主门禁 `sh scripts/ci-local.sh` 在本轮 head 上跑，审计轮以简报「## 宿主门禁」那一行（本轮 head 上「通过」）为任务验收 6 的证据，不自己再跑。
 - 负向对照：README 少写「sessions do not run the full gate themselves」一句时 grep 循环打印「README 缺: sessions do not run the full gate themselves」并以 1 退出；技术设计少写「会话不再各自兜底」时打印「技术设计缺: 会话不再各自兜底」并以 1 退出；任一新代码没过 rustfmt 时 `--check` 以非 0 退出。
 
 ## 人工验收清单

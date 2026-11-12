@@ -67,3 +67,71 @@
 里程碑可执行性（用例数与前置依赖已重算）、重大风险（崩溃窗口由「先标记后启动」消除）——没有剩余的六类问题。`status` 改为 `实现中`，`design-round` 为 1/15。
 
 本轮改动在会话结束前提交到当前分支；若提交被拒，由 Autome 兜底。
+
+## 裁决 #2（design-round 1 → 2）
+
+评审依据：`门禁只在合并前跑一次-gate-run-review.md` 评审 #2（基线 `51593f7`）。本轮逐条核对了评审引用的源码
+（`gate.rs::start / Job::clear / discard_node`、`launcher.rs::check_no_placeholders_left / bug_prompt / role_prompt`、`bug_loop.rs` 的
+FixReview 启动），三条主张的事实都成立。
+
+评审结论：3 条六类范围内的问题，**全部采纳**（P03 采用比评审建议更小的做法）；此前没有对这三条的裁决，复提计数均为 0。
+设计已修改，本轮认为没有剩余的六类问题，`status` 转 `实现中`，`design-round` 为 2/15，里程碑表不变（7 行，均 `开放`）。
+
+### D2-P01 · 启动函数会删除刚写入的 `.repro-only` 标记
+
+- 主张摘要：§5 要把标记加进 `Job::clear`，并在 `gate::start` 之前写；但 `start` 内部先 `job.clear()` 再写 `.started`，
+  标记被自己删掉，作业存在时标记不在，`before_merge → each_round` 切换后仍会把复现通过记成完整命令，MergeGate 沿用。
+- 设计位置：§5 第 1、2 点（`Job::clear` 清单）；M-03。
+- 裁决：**采纳**。
+- 证据：`gate.rs::start`：`create_dir_all` → `job.clear()` → `write(.started)`；`Job::clear` 当前清 log/pid/exit/started 四个文件。
+  标记在清单里，则正常启动必删标记，评审的五步反例成立。与 D1-P01 不是复提：D1-P01 的修法（旁路标记）保留，本条指出的是该修法
+  与既有调用顺序的冲突，是新证据。
+- 修改落点：§5 第 1 点——`Job::clear` 的清单**不加**标记，`start / poll / clear` 行为不变；标记只有两个操作者：`run_gate` 启动前
+  确定性地写或删（早于 `.started` 与进程，`start` 不碰它），`discard_node` 的后缀清单加 `.repro-only`。§5 第 2 点补残留标记的说明
+  （`Vanished` / head 移动后的 `clear` 不删标记，下一次启动前被覆盖；无 `.started` 的标记没有读者）。M-03：③ 走真实 `run_gate → start`
+  路径并断言启动后标记存在，gate 单测改为「`start` 之后标记仍在、`clear` 不删、`discard_node` 删」，负向对照加「标记放进 `Job::clear`」。
+  D1-P01 的崩溃窗口论证不变：标记先于 `.started` 出现且不被 `start` 删除。D1-P03 的边界不变（`each_round` 从不写标记）。
+- 复提计数：0。
+
+### D2-P02 · 门禁命令原文进入占位符校验，含花括号的合法命令阻断会话启动
+
+- 主张摘要：§6.4 把 `gate_line(cmd)` 先替换进模板再跑 `check_no_placeholders_left`；命令里的 `${ci_script}` 会被判为未知占位符，
+  `{slug}` 会被改写成任务名。
+- 设计位置：§6.3、§6.4 渲染顺序；M-05。
+- 裁决：**采纳**。
+- 证据：`config_io.rs` 只要求命令非空；`launcher.rs::check_no_placeholders_left` 对任何 `{lower_snake}`（长度 < 40）报错；
+  `bug_prompt` 对 `{request}` 已经是「切分 → 逐段验证 → 拼入」，新命令通道没有同样的隔离。反例（`sh "${ci_script}"`）成立。
+- 修改落点：§6.4 新增「门禁命令是数据，不是模板」一段——模板在数据槽（`{request}`、`{gate_line}`）处切开，逐段替换已知占位符并验证，
+  最后拼入数据，拼入的数据不再扫描或替换；`role_prompt`、`bug_prompt`、`eval_run::render_prompt` 同一规则；段外写 `{gate_line}` 或任何
+  真正的未知占位符仍被拒绝。M-05：launcher ①② 用 `${ci_script}` 与 `{slug}` 两种命令验证，eval_run 用例同；负向对照加「先拼后检查」。
+  用例总数不变（并入已有用例）。
+- 复提计数：0。
+
+### D2-P03 · 固定在 v2 的 Bug 任务，复核轮收不到「没有宿主门禁结果」
+
+- 主张摘要：宿主 FixGate 只跑复现命令对固定在 v2 的 Bug 任务同样生效，但缺证说明只在 v3 `fix-review` 模板里；v2 任务在 FixGate 通过后进
+  FixReview（`inject = None`），完全收不到说明，约束 8 漏掉这类任务。
+- 设计位置：§6.5 取消宿主追加；§6.8；M-06。
+- 裁决：**采纳**（做法比评审的字面建议更小）。
+- 证据：`bug_loop.rs:301` 以 `None` 启动 FixReview；旧 `fix-review.md` 无缺证文案；§6.8 把四件宿主行为列为对旧任务生效，而这一项被排除。
+  与 D1-P02 不是复提：D1-P02 采纳的宿主追加通道在设计 #2 里被删，锚定内容已变。需要说明的是：v2 模板仍让复核轮自己复验项目门禁，所以
+  它不会被误导成「宿主已验过」，缺口是「约束 8 要求写明」而不是误放行——因此只补一句事实，不改变旧协议的复验范围。
+- 修改落点：§6.8 新增「旧 Bug 任务的复核说明」——`launcher::bug_prompt` 在 `step == FixReview`、`gate_before_merge` 为 `Some`、
+  且模板原文不含 `<!-- gate-run: before_merge -->` 时，渲染结果末尾追加常量 `BUG_REVIEW_GATE_NOTE`（与 v3 模板段前半句同文）；不新增
+  `PromptSpec` 字段（复用 `gate_before_merge`），不恢复 `gate_note` / `bug_review_gate_note`；`None` 时逐字节不变，v3 模板不重复。
+  M-05：launcher::tests 5 → 6（⑥），launcher 过滤 62 → 63，M-07 全量 automed lib 674 → 675，M-05 覆盖加目标 5/约束 8，负向对照加两条。
+- 复提计数：0。
+
+### Backlog 处置
+
+无新增。评审无非阻塞建议；B-01、B-03 保持用户「不纳入」。
+
+### 设计定稿判断
+
+三条改动局限在 §5 第 1、2 点、§6.4、§6.8 与 M-03 / M-05 / M-07 的用例描述和数字，没有触及配置类型、状态机、MergeGate 回路、模板正文和协议版本。
+逐类自检：关键事实（`start` 内部 `clear` 的调用顺序已纳入设计；占位符检查的数据流已隔离）、内部逻辑（标记存续在真实启动路径上有用例；`${…}`
+命令可渲染）、项目规则（`gate.rs` 仍只加旁路文件，`launcher` 沿用 `{request}` 的既有模式）、任务目标（约束 1、6、8、10 各有对应用例，旧 Bug
+任务不再漏说明）、里程碑可执行性（用例数、过滤器命中数与依赖已重算，M-03 / M-05 / M-07 的预期同步）、重大风险（无需提前验证的新风险）——
+没有剩余的六类问题。`status` 改为 `实现中`，`design-round` 为 2/15。
+
+本轮改动在会话结束前提交到当前分支；若提交被拒，由 Autome 兜底。
