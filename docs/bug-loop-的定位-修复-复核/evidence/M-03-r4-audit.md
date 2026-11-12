@@ -13,4 +13,7 @@
 - `protocol eval protocol/`：8 通过 / 0 不通过 / 1 警告
 - `cargo fmt --check`：通过；插件 evals 5/5
 - 对 main 的金样差异：只新增 3 份 `*-inputs.md`，既有金样与需求 Loop 金样无改动；protocol 仅 CHANGELOG 与三模板。
-- `cargo test --workspace` 见 audit.md 备注。
+- `cargo test --workspace`:唯一失败为与本任务无关的时序不稳定用例，见下方补记。
+
+## cargo test --workspace 补记
+全量结果：仅 `scheduler::tests::gate_queue_upgrade_collects_two_old_jobs_without_killing_them` 失败，其余全过。单独重跑 3 次：2 败 1 过（断言位置不同，属时序不稳定）。该测试与 scheduler.rs 相对 main 均无改动，本任务只动 launcher / protocol / 测试文件，与它无因果关系；记 Backlog B-06，不退回里程碑。
