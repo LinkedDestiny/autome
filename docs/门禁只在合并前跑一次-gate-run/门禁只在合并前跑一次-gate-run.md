@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 1/40
+implementation-round: 2/40
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02 的 Gate 节点切换（run_gate 加 §3 那一段）与需求端到端验收
+next-action: 独立审计 M-02 的需求端到端与 Gate 配置切换证据；通过后推进 M-03
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -622,7 +622,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | [gate] run 配置解析与需求状态机转换 | 0 | |
-| M-02 | 开放 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
+| M-02 | 待审 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
 | M-03 | 开放 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 开放 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 开放 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
@@ -727,9 +727,11 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-02 验收契约
 
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-02-r2-impl.md · 待审 · 实现 #2
+
 - 验收命令：`cargo test -p automed --test end_to_end gate`
 - 预期：过滤 `gate` 共 15 个通过（基线 11 个现有门禁 e2e，含 `a_gate_failing_after_the_automatic_rebase…` 与 `stopped_gate_resumes_at_gate…`，加 4 个 `feature_before_merge_*`），现有 11 个一行不改。
-- 负向对照：撤掉 M-01 的 `task.rs` 改动时，① 的计数文件出现 `gate` 行、② 的节点序列含 `gate`，两例失败；不加 §3 那一段时，③ ④ 的任务停在 `gate`（阻塞脚本不退出），断言节点为 `audit` 失败。
+- 负向对照：撤掉 M-01 的 `task.rs` 改动时，①② 的 `task.updated` 节点序列含 `gate`，两例失败（§3 跳过逻辑会阻止脚本执行，不能仅靠计数文件识别错误进入 Gate）；不加 §3 那一段时，③ ④ 的任务停在 `gate`（阻塞脚本不退出），断言节点为 `audit` 失败。
 
 ### M-03 验收契约
 

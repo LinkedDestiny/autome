@@ -3262,6 +3262,19 @@ fn run_gate(
     }
     let repo = PathBuf::from(&project.path);
     let bug = uses_bug_loop(ctx, task)?;
+    if !bug
+        && node == Node::Gate
+        && resolved.gate.is_some()
+        && resolved.gate_run == config::GateRun::BeforeMerge
+    {
+        crate::gate::discard_node(&repo, &task.id, "gate").map_err(|e| err(e.to_string()))?;
+        ctx.store.append_event(
+            "gate.skipped",
+            &task.id,
+            json!({ "node": "gate", "reason": "门禁只在合并前运行" }),
+        )?;
+        return finish_gate(ctx, task, project, node, GateOutcome::Passed);
+    }
     let bug_gate = bug && matches!(node, Node::ReproCheck | Node::FixGate | Node::MergeGate);
     let selected_gate = if bug_gate {
         let event = ctx
