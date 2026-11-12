@@ -1,10 +1,7 @@
-# 审计结论（审计 #3，M-03）
+# 审计 #4
 
-**通过。** M-03 标为已完成。
+本轮没有 `待审` 里程碑：M-01、M-02、M-03 均为 `已完成`，里程碑表无需改动（没有可审对象，也没有可退回的缺陷）。
 
-- 负向对照有效：附件用存储原值、或某个门禁分支漏掉 `{inputs}`，验收命令都会失败（后者由交叉用例拦下）。已还原。
-- 验收命令全部通过：launcher 70、prompt_rendering 28、protocol:: 67、bug_loop e2e 18、静态门 0 不通过、fmt、插件 5/5。
-- 既有金样（含需求 Loop）相对 main 无差异，空输入渲染不变。
-- 无产品缺陷;全量 workspace 仅 1 个无关的时序不稳定用例失败(Backlog B-06)。
+唯一的复验：复盘 #2 指出的 `end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task`（原断言 v3、实际 v4）。实现 #5 修复后本轮单跑：通过（1 passed，原始输出 `.autome/output/audit4-e2e.txt`）。
 
-详见 `evidence/M-03-r4-audit.md`。
+未解决：全量合并前门禁仍待 Autome 运行；人工验收清单见设计文档。
