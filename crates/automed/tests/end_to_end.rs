@@ -346,6 +346,20 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
         );
     }
 
+    fn doc_step_with_cost(&self, n: u32, slug: &str, body: &str, cost: f64) {
+        let usage = Self::FAKE_USAGE.replace(
+            "\"total_cost_usd\":0.25",
+            &format!("\"total_cost_usd\":{cost}"),
+        );
+        self.step(
+            n,
+            &format!(
+                "{}cat <<'AUTOME_USAGE'\n{usage}\nAUTOME_USAGE\n",
+                Self::doc_script(slug, n, body, "")
+            ),
+        );
+    }
+
     /// What the retro round does: write `docs/<slug>/lessons.md` and leave
     /// the design document alone.
     fn retro_step(&self, n: u32, slug: &str) {
@@ -7981,4 +7995,66 @@ fn merge_after_stopped_by_the_user_is_killed_and_runs_again_on_resume() {
         }
         assert!(w.ctx.store.open_alerts().unwrap().is_empty());
     }
+}
+
+#[test]
+fn cost_rollup_task_get_sums_two_sessions_and_counts_missing_cost() {
+    needs_git!();
+    let mut w = World::new("cost-rollup");
+    let request = "show task costs";
+    let slug = slug_for(request);
+    w.doc_step_with_cost(1, &slug, &doc("设计中", 1, 0, &[]), 1.25);
+    w.doc_step_with_cost(2, &slug, &doc("设计中", 1, 0, &[]), 99.0);
+    w.doc_step_with_cost(3, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]), 2.5);
+    let created = w.call(
+        "task.create",
+        json!({
+            "project_id": w.project_id, "request": request,
+            "brief": "# Task\nShow cumulative reported costs.", "draft": true
+        }),
+    );
+    let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_owned();
+    // Start at design so the measured scenario consists of precisely the
+    // plan/review/adjudicate sessions, without an unrelated intake session.
+    w.ctx
+        .store
+        .set_task_state(
+            &task_id,
+            &autome_domain::task::TaskState::Requeued {
+                resume: autome_domain::task::Node::Design,
+            },
+        )
+        .unwrap();
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert_eq!(sessions.len(), 3);
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|s| (s.kind.cost_key(), s.metrics.cost_usd))
+            .collect::<Vec<_>>(),
+        vec![
+            ("adjudicate", Some(2.5)),
+            ("review", None),
+            ("plan", Some(1.25))
+        ]
+    );
+    let response = w.call("task.get", json!({"task_id": task_id}));
+    let cost = &ok(&response)["cost"];
+    assert_eq!(cost["usd_total"], 3.75);
+    assert_eq!(cost["sessions"], 3);
+    assert_eq!(cost["sessions_without_cost"], 1);
+    assert_eq!(cost["by_role"]["plan"]["usd_total"], 1.25);
+    assert_eq!(
+        cost["by_role"]["review"],
+        json!({"usd_total": 0.0, "sessions": 1, "sessions_without_cost": 1})
+    );
+    assert_eq!(
+        cost["usd_total"].as_f64().unwrap(),
+        sessions
+            .iter()
+            .filter_map(|s| s.metrics.cost_usd)
+            .sum::<f64>()
+    );
 }

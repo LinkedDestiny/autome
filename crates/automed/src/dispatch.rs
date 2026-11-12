@@ -1640,6 +1640,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "status_error": doc.error().is_some(),
             "status_error_detail": doc.error(),
             "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
+            "cost": autome_domain::metrics::CostSummary::of(&sessions),
             "decisions": decisions
                 .iter()
                 .map(|d| decision_json(d, status))
@@ -1758,6 +1759,8 @@ fn session_json(s: &autome_domain::session::Session) -> Value {
 }
 
 /// What a task has spent so far, summed across its finished sessions.
+/// This legacy measured-only view is preserved; `cost` uses the task's
+/// missing-price-as-zero convention and separately counts missing prices.
 ///
 /// Cost is `null` unless at least one session reported one. A task run
 /// entirely on Codex has an unknown cost, not a zero one — Codex reports no

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
+implementation-round: 1/25
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在 autome-domain metrics.rs 新增 CostSummary 纯聚合（缺失费用计 0、单列 sessions_without_cost、跳过运行中会话、按会话种类拆分），task.get 返回 cost，补 4 个 cost_summary_ 单测与 1 个 cost_rollup_ e2e
+next-action: M-01 待独立审计；通过后下一实现轮推进 M-02 项目与看板费用字段及 3 个 cost_rollup_ 单测
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -294,7 +294,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 任务费用纯聚合与 task.get.cost | 0 | |
+| M-01 | 待审 | 任务费用纯聚合与 task.get.cost | 0 | |
 | M-02 | 开放 | 项目与看板费用字段 | 0 | |
 | M-03 | 开放 | [budget] 配置读写 | 0 | |
 | M-04 | 开放 | 超限告警与读者文案 | 0 | |
@@ -304,6 +304,8 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 - **M-01** 覆盖验收 1、2，G1 的 `task.get` 部分。前置：无。结果：`CostSummary` 与 `SessionKind::cost_key`；
   `task.get.cost`；`running_totals` 注释。新增测试见契约。
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
+
 - **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`（子查询，非 JOIN）；`task_json` 的 `cost_usd` /
   `cost_sessions_without_cost`；`project.get` / `project.list` 的 `cost_usd_total` 与 `cost_sessions_without_cost`；
   `dashboard.get` 任务卡因 `task_json` 带上费用。
@@ -329,7 +331,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
   `cost_summary_splits_by_role_with_bug_steps_and_intake_as_their_own_keys`（`plan`、`review`、`fix_review`、
   `intake` 各自成键，每键三数正确，未出现的角色无键）、
   `cost_summary_of_no_sessions_is_zero_not_absent`（空集合 → `0.0 / 0 / 0`，`by_role` 为空）；
-  end_to_end 1 个：`cost_rollup_task_get_sums_two_sessions_and_counts_codex_as_without_cost`（plan 会话报 1.25、
+  end_to_end 1 个：`cost_rollup_task_get_sums_two_sessions_and_counts_missing_cost`（plan 会话报 1.25、
   review 会话（Codex）、adjudicate 会话报 2.5，任务停在 `await_design_approval` 时 `task.get.cost.usd_total == 3.75`、
   `sessions == 3`、`sessions_without_cost == 1`、`by_role.plan.usd_total == 1.25`，且 `usd_total` 等于
   `list_sessions` 各会话 `cost_usd` 之和；需要在 e2e 里新增一个可指定金额的 `doc_step_with_cost` 辅助）。
