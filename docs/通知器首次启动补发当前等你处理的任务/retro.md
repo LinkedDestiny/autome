@@ -7,3 +7,5 @@
 
 实现 #2 | M-02 | 待审 | docs/通知器首次启动补发当前等你处理的任务/evidence/M-02-r2-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/通知器首次启动补发当前等你处理的任务/evidence/M-02-r2-audit.md | 无
+
+实现 #3 | M-03 | 开放，真实账本通过 | docs/通知器首次启动补发当前等你处理的任务/evidence/M-03-r3-impl.md | 沙箱监听 EPERM，全量未通过
