@@ -1,12 +1,12 @@
 # 合并后钩子 [merge] after：宿主在主检出上执行，失败只报警
 
-status: 已完成
+status: 实现中
 design-round: 1/15
-implementation-round: 6/20
-current-milestone: 无
+implementation-round: 7/20
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 复验 M-04 完整 CI，处理 Electron DOM 启动失败及 Web 测试阻塞，取得通过证据后标待审
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -207,7 +207,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 | M-01 | 已完成 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
 | M-02 | 已完成 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
 | M-03 | 已完成 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
-| M-04 | 已完成 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
+| M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
 
 ## 验收契约
 
@@ -250,7 +250,7 @@ automed lib `scheduler.rs`：L3 `merge_after_waits_while_another_tasks_hook_or_m
 
 ### M-04 验收契约
 
-最新证据：docs/合并后钩子-merge-after/evidence/M-04-r6-audit.md · 通过 · 审计 #5
+最新证据：docs/合并后钩子-merge-after/evidence/M-04-r7-impl.md · rebase 完成，CI 验证阻塞 · 实现 #7
 
 覆盖范围 6、7，验收 4、5、6，约束 8、9，问题 10；前置：M-03。改动：README 的 `[gate]` 配置示例块加 `[merge]` 两行，其下条目列表在 **Preparation** 之后加一条 **After merge**（时机、主检出、环境变量、超时缺省 10、失败只报警、MainCheck 未通过与工作区跳过、钩子只应写被 gitignore 的产物、停止后恢复会重跑）；`docs/development/technical-design.md` §3.3 配置示例加 `[merge]`、§8.1 加钩子作业与 Cleanup 前置子阶段、§9 加解析规则。不新增用例。
 
