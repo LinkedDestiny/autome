@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd apps/web && node --test scripts/notifier-live-regression.mjs
 根因: notifier-live 的命令期限仅 15000ms，重启用例总期限仅 30000ms，健康但较慢的串行命令会被提前终止或被用例总期限截断。
-复核: 待复核
+复核: 通过
 repos: apps/web
 
 ## 现象
@@ -53,4 +53,10 @@ repos: apps/web
 
 ## 复核意见
 
-待独立复核。
+复核: 通过（第 1/3 轮复核）。
+
+- 复验：在 apps/web 执行状态块复现命令，退出 0，2/2 通过、0 跳过（修复前按修复说明与定位日志为失败）。
+- 差异（定位提交 7f19a56 → 修复提交 0a8adde）：产品代码零改动；`scripts/notifier-live-regression.mjs` 未被触碰；仅 `apps/web/test/notifier-live.test.ts` 中命令期限 15000→60000、三处用例/hook 期限放大，外加注释措辞调整。断言、按条件等待、分阶段日志、错误传播均保留，无删除、跳过或弱化。范围最小。
+- 回归测试有意义：加载真实源码并从真实 command / 用例注册读取期限，不复制常量，定位轮已有正对照。
+- 根因站得住：结论只限于测试期限缺陷，并已明确声明不证明历史 null/null 错误来自超时，措辞诚实。
+- 保留事项（不影响本判定，供合并前门禁关注）：Web 的 `tsc --noEmit` 因定位提交的回归脚本有 14 条隐式 any 报错（tsconfig 含 scripts 且 checkJs）而失败。该文件修复轮不得改，需在合并前由允许改测试的环节补类型标注。Web test 与 Desktop 失败日志为 listen EPERM / EMFILE / Electron SIGABRT，属本机沙箱环境限制，与此 diff 无关；notifier-live 真实链路本轮未能在本机验证。
