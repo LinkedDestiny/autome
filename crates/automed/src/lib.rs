@@ -52,6 +52,7 @@ pub mod driver_lock;
 pub mod entry;
 pub mod env_probe;
 pub mod gate;
+pub mod gate_queue;
 pub mod git;
 pub mod guards;
 pub mod init;

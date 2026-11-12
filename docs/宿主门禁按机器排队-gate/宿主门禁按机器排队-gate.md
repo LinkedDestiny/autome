@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 1/30
+implementation-round: 2/30
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02：名额探测、事件恢复与三处启动点接入
+next-action: 独立复验 M-02；通过后推进 M-03：排队状态读者与 CLI 展示
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -226,7 +226,8 @@ position(waiters, task_id) -> Option<usize>   // 1 起
     则视为名额一直在手，直接起下一个进程，不判准入；
   - 否则走 §4 的准入，「等」就返回（`ensure` 返回 `Pending`，`run_gate` `return Ok(())`），任务停在原节点。
   **接续资格**：被收的准备作业必须是**持续占着名额**的——任务是 `Active`，且任务账本里最后一条 `setup.started` 之后没有任何
-  `task.updated`（暂停 / 恢复 / 停止 / 追加轮次都会写 `task.updated`）。这是一个保守的判据：暂停期间作业若已退出，名额
+  `task.updated`（暂停 / 恢复 / 停止 / 追加轮次都会写 `task.updated`），且退出标记未过 §2(b) 的占位期限；
+  已过期的准备作业名额已释放，恢复收取时同样必须重新准入。这是一个保守的判据：暂停期间作业若已退出，名额
   已被 §2 释放，别人可能已经占了；恢复后哪怕作业文件还在，也**不得**据此启动后续作业，必须重新判准入、排到队尾。
   暂停期间作业仍存活的情形没有问题：它按 (a) 一直占着名额，恢复后的 `ensure` 看到作业存活只返回 `Pending`，不起新进程，
   不判准入；它退出之后被收那一次，因为 `task.updated` 已存在而失去接续资格，要重新判准入——代价是多等一次队，
@@ -396,7 +397,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 排队判定纯函数与 concurrency 配置 | 0 | |
-| M-02 | 开放 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
+| M-02 | 待审 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
 | M-03 | 开放 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 开放 | 门禁超时文案 | 0 | |
 | M-05 | 开放 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
@@ -443,6 +444,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
   「保留手写值」失败。
 
 ### M-02 验收契约
+
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-02-r2-impl.md · 待审 · 实现 #2
 
 - 验收命令：`cargo test -p automed --lib`（新增用例单独复跑：`cargo test -p automed --lib scheduler::tests::gate_queue_`）
 - 预期：`automed --lib` 共 676 个用例全部通过（M-01 完成时 655 + 新增 21）；21 个新用例都在 `scheduler::tests` 里、名字以

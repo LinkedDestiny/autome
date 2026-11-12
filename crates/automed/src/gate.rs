@@ -234,6 +234,24 @@ pub fn stop_all(repo: &Path, task_id: &str) {
 
 /// Remove only this node's jobs, after stopping any surviving wrapper.
 pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<()> {
+    discard_except(repo, task_id, node, None)
+}
+
+pub fn discard_stale(
+    repo: &Path,
+    task_id: &str,
+    node: &str,
+    keep_key: &str,
+) -> std::io::Result<()> {
+    discard_except(repo, task_id, node, Some(keep_key))
+}
+
+fn discard_except(
+    repo: &Path,
+    task_id: &str,
+    node: &str,
+    keep: Option<&str>,
+) -> std::io::Result<()> {
     let dir = dir_for(repo, task_id);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -257,7 +275,9 @@ pub fn discard_node(repo: &Path, task_id: &str, node: &str) -> std::io::Result<(
             ".exit.code",
         ] {
             if let Some(stem) = name.strip_suffix(suffix) {
-                stems.insert(stem.to_string());
+                if keep.is_none_or(|key| stem != format!("{node}-{key}")) {
+                    stems.insert(stem.to_string());
+                }
                 break;
             }
         }

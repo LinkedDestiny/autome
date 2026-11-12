@@ -56,6 +56,8 @@ pub struct Ctx {
     /// the app was closed, bringing the scaffold up to `SCAFFOLD_VERSION` —
     /// never ran outside the tests.
     pub recovered: bool,
+    /// Start of the last tick that completed core steps; bounds uncollected jobs.
+    pub gate_prev_tick: Option<std::time::SystemTime>,
     /// The driver lock while this context holds it (see `driver_lock`).
     /// Held for one tick or one write command, so the desktop app and the
     /// `autome` command can drive the same ledger without both starting the
@@ -80,6 +82,7 @@ impl Ctx {
             environment: EnvCache::default(),
             launch_mode: crate::launcher::LaunchMode::Headless,
             recovered: false,
+            gate_prev_tick: None,
             driver_lock: None,
             driver_lock_notice: None,
         }

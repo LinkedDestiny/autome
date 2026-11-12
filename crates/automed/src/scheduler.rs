@@ -153,7 +153,12 @@ pub fn tick(ctx: &mut Ctx) -> TickReport {
 }
 
 fn tick_locked(ctx: &mut Ctx) -> TickReport {
+    let tick_started = std::time::SystemTime::now();
     let mut report = TickReport::default();
+    match crate::gate_queue::reclaim(ctx) {
+        Ok(errors) => report.errors.extend(errors),
+        Err(e) => report.errors.push(e.to_string()),
+    }
 
     // The first tick of a process recovers first. Doing it here rather than
     // asking the shell to call `scheduler.recover` is deliberate: the shell
@@ -203,10 +208,19 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
         {
             match run_core_step(ctx, task, *node) {
                 Ok(()) => report.tasks_advanced.push(task.id.clone()),
-                Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+                Err(e) => {
+                    if let Err(drop_error) =
+                        crate::gate_queue::drop_on_error(ctx, task, &e.to_string())
+                    {
+                        report.errors.push(drop_error.to_string());
+                    }
+                    report.errors.push(format!("{}: {e}", task.id));
+                }
             }
         }
     }
+
+    ctx.gate_prev_tick = Some(tick_started);
 
     // 3. Fill free slots from each project's queue.
     match fill_slots_reporting_errors(ctx, &mut report.errors) {
@@ -624,7 +638,14 @@ fn start_due_retries(ctx: &mut Ctx, report: &mut TickReport) {
         }
         match redispatch_with(ctx, &task.id, node, inject.as_ref()) {
             Ok(()) => report.tasks_started.push(task.id.clone()),
-            Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+            Err(e) => {
+                if let Err(drop_error) =
+                    crate::gate_queue::drop_on_error(ctx, &task, &e.to_string())
+                {
+                    report.errors.push(drop_error.to_string());
+                }
+                report.errors.push(format!("{}: {e}", task.id));
+            }
         }
     }
 }
@@ -2133,7 +2154,7 @@ fn perform(
         Action::StartBugSession { step, inject } => {
             if *step == BugStep::Fix {
                 ctx.store.append_event(
-                    "bug.fix_round_started",
+                    "bug.fix_round_requested",
                     &task.id,
                     json!({"round": bug_progress(ctx, task)?.fix_round + 1,
                         "limit": task.budget_n.unwrap_or(resolved.bug.fix_rounds)}),
@@ -2375,6 +2396,23 @@ fn start_session(
                 return Ok(());
             }
         }
+    }
+
+    if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
+        && ctx
+            .store
+            .last_event_of(
+                &task.id,
+                &["bug.fix_round_requested", "bug.fix_round_started"],
+            )?
+            .is_some_and(|(_, kind, _)| kind == "bug.fix_round_requested")
+    {
+        ctx.store.append_event(
+            "bug.fix_round_started",
+            &task.id,
+            json!({"round": bug_progress(ctx, task)?.fix_round + 1,
+                "limit": task.budget_n.unwrap_or(resolved.bug.fix_rounds)}),
+        )?;
     }
 
     // The session's id is fixed before anything else: a round carrying the
@@ -3293,6 +3331,10 @@ fn run_gate(
         _ => (layout.cwd.clone(), gate_head(layout)?),
     };
     let key = &head[..head.len().min(12)];
+    if node != Node::MainCheck {
+        crate::gate::discard_stale(&repo, &task.id, node.as_str(), key)
+            .map_err(|e| err(e.to_string()))?;
+    }
     let job = crate::gate::Job::at(&repo, &task.id, node.as_str(), key);
 
     if !job.exists() {
@@ -3311,6 +3353,7 @@ fn run_gate(
             )?;
             return finish_gate(ctx, task, project, node, GateOutcome::Passed);
         }
+        let mut held = false;
         if let Some(setup) = &resolved.setup
             && !project.is_workspace()
         {
@@ -3320,7 +3363,7 @@ fn run_gate(
             } else {
                 crate::setup::worktree_record(&repo, &task.id)
             };
-            match crate::setup::ensure(
+            match crate::setup::ensure_with_hold(
                 ctx,
                 task,
                 project,
@@ -3338,14 +3381,17 @@ fn run_gate(
             )
             .map_err(|e| err(e.to_string()))?
             {
-                crate::setup::Ready::Pending => return Ok(()),
-                crate::setup::Ready::Ready => {}
-                crate::setup::Ready::Failed {
-                    command,
-                    exit_code,
-                    log,
-                    tail,
-                } => {
+                (crate::setup::Ready::Pending, _) => return Ok(()),
+                (crate::setup::Ready::Ready, continuation) => held = continuation,
+                (
+                    crate::setup::Ready::Failed {
+                        command,
+                        exit_code,
+                        log,
+                        tail,
+                    },
+                    _,
+                ) => {
                     if !verify {
                         advance(
                             ctx,
@@ -3383,6 +3429,12 @@ fn run_gate(
                     return finish_gate(ctx, task, project, node, GateOutcome::Passed);
                 }
             }
+        }
+        if !held
+            && !crate::gate_queue::admit(ctx, task, project, node, "gate", None)
+                .map_err(|e| err(e.to_string()))?
+        {
+            return Ok(());
         }
         crate::gate::start(
             &job,
@@ -4547,6 +4599,8 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    include!("scheduler_gate_queue_tests.rs");
 
     /// A real repository, a real store, and a fake CLI that writes whatever
     /// design document the test wants. This is as close to the production path

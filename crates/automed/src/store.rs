@@ -579,6 +579,25 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    /// Latest of a set of event kinds, without a payload-field restriction.
+    pub fn last_event_of(
+        &self,
+        subject: &str,
+        kinds: &[&str],
+    ) -> Result<Option<(u64, String, Value)>> {
+        let raw: Option<(u64, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT seq, kind, payload FROM events WHERE subject_id = ?1
+             AND kind IN (SELECT value FROM json_each(?2)) ORDER BY seq DESC LIMIT 1",
+                params![subject, serde_json::to_string(kinds)?],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        raw.map(|(seq, kind, payload)| Ok((seq, kind, serde_json::from_str(&payload)?)))
+            .transpose()
+    }
+
     pub fn last_event_in(
         &self,
         subject_id: &str,
