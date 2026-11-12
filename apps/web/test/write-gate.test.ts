@@ -343,18 +343,18 @@ test('a role config may omit the runtime, which means "leave it alone"', () => {
 
 test('an oversized payload is refused', () => {
   const result = gate.validateWriteRequest({
-    op: 'task.create',
-    params: { project_id: 'p', request: 'r', attachments: new Array(200).fill('x'.repeat(1000)) },
+    op: 'config.set_role',
+    params: { role: 'impl', skills: new Array(200).fill('x'.repeat(1000)) },
   });
   assert.equal(result.ok, false);
   assert.match(result.message, /上限/);
 });
 
-test('only the Onboarding save gets document-sized headroom', () => {
-  // Every other op is capped far lower, so a buggy renderer cannot wedge a
-  // large payload into the sidecar pipe.
+test('only the Onboarding save and task.create get headroom', () => {
+  // Only these two operations carry large documents.
   assert.ok(gate.payloadLimitFor('project.onboarding.save') > gate.MAX_DOCUMENT_LENGTH);
-  for (const op of ['task.create', 'task.approve', 'config.set_role']) {
+  assert.equal(gate.payloadLimitFor('task.create'), gate.MAX_TASK_CREATE_PAYLOAD_LENGTH);
+  for (const op of gate.ALLOWED_WRITE_OPS.filter(op => !['project.onboarding.save', 'task.create'].includes(op))) {
     assert.equal(gate.payloadLimitFor(op), gate.MAX_PAYLOAD_JSON_LENGTH);
   }
 
@@ -515,6 +515,8 @@ test('两份门禁互不 import，也不 import desktop', () => {
 });
 
 test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
+  assert.equal(gate.MAX_BRIEF_BYTES, 65536);
+  assert.equal(gate.MAX_TASK_CREATE_PAYLOAD_LENGTH, 524288);
   assert.equal(gate.MAX_PROSE_LENGTH, 8000);
   assert.equal(gate.MAX_DOCUMENT_LENGTH, 262144);
   assert.equal(gate.MAX_PAYLOAD_JSON_LENGTH, 32768);
@@ -522,6 +524,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
   const check = (op: string, params: object) => gate.validateWriteRequest({ op, params }).ok;
   for (const [op, key, limit, extra] of [
     ['task.create', 'request', 8000, {}],
+    ['task.reply', 'info', 8000, { task_id: 't1' }],
     ['task.approve', 'task_id', 512, {}],
     ['project.onboarding.save', 'content', 262144, { path: 'AGENTS.md' }],
   ] as const) {
@@ -544,6 +547,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
     assert.equal(check('task.approve', params), length === 32768);
   }
   const specific: Record<string, object> = {
+    'task.start': { task_id: 't1' }, 'task.reply': { task_id: 't1', info: '' },
     'open.path': { kind: 'log', session_id: 's1' }, 'config.set_theme': { theme: 'system' },
     'env.install': { component: 'git' }, 'env.login': { component: 'codex' },
     'task.decide': { kind: 'dispute', disposition: 'ruled' },
@@ -559,4 +563,99 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
     for (const component of gate.COMPONENTS) assert.equal(check(op, { component }), true);
     assert.equal(check(op, { component: 'bash' }), false);
   }
+});
+
+test('task.start 要求非空字符串 task_id', () => {
+  for (const task_id of [undefined, null, '', 7, true, [], {}]) {
+    const result = gate.validateWriteRequest({ op: 'task.start', params: { task_id } });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /[\u4e00-\u9fff]/);
+  }
+  assert.equal(gate.validateWriteRequest({ op: 'task.start', params: { task_id: 't1' } }).ok, true);
+});
+
+test('task.reply 必填、类型、散文与 8000 字符边界', () => {
+  for (const task_id of [undefined, null, '', 7, true, [], {}]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.reply', params: { task_id, info: '补充' } }).ok, false);
+  }
+  for (const info of [undefined, null, 7, true, [], {}, 'x'.repeat(8001), 'a\0b']) {
+    const result = gate.validateWriteRequest({ op: 'task.reply', params: { task_id: 't1', info } });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /[\u4e00-\u9fff]/);
+  }
+  for (const info of ['', ' \n\t', '中'.repeat(8000), '路径 /a/b 与换行\n补充']) {
+    const params = { task_id: 't1', info };
+    const result = gate.validateWriteRequest({ op: 'task.reply', params });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.params, params);
+  }
+});
+
+test('task.create kind 枚举、缺省与 null', () => {
+  for (const kind of [undefined, null, 'feature', 'bug']) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { kind } }).ok, true);
+  }
+  for (const kind of ['', 'BUG', 'other', 7, true, [], {}]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { kind } }).ok, false);
+  }
+});
+
+test('task.create draft 只接受布尔与缺省', () => {
+  for (const draft of [undefined, true, false]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { draft } }).ok, true);
+  }
+  for (const draft of [null, '', 'true', 0, 1, [], {}]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { draft } }).ok, false);
+  }
+});
+
+test('brief 以 UTF-8 字节计边界，空白语义留给内核', () => {
+  for (const brief of ['', ' ', 'a', 'x'.repeat(65536), '中'.repeat(21845) + 'a', '😀'.repeat(16384)]) {
+    assert.equal(gate.utf8ByteLength(brief), Buffer.byteLength(brief));
+    assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { brief } }).ok, true);
+  }
+  for (const brief of ['x'.repeat(65537), '中'.repeat(21845) + 'aa', '😀'.repeat(16384) + 'a', '中'.repeat(21846)]) {
+    const result = gate.validateWriteRequest({ op: 'task.create', params: { brief } });
+    assert.equal(result.ok, false);
+    assert.equal(result.message, `任务卡正文超过 64KB（${Buffer.byteLength(brief)} 字节，上限 65536 字节）`);
+  }
+  assert.equal(gate.validateWriteRequest({ op: 'task.create', params: { brief: 'a\0b' } }).ok, false);
+});
+
+test('brief 非字符串被拒', () => {
+  for (const brief of [null, 7, true, [], {}]) {
+    const result = gate.validateWriteRequest({ op: 'task.create', params: { brief } });
+    assert.equal(result.ok, false);
+    assert.match(result.message!, /[\u4e00-\u9fff]/);
+  }
+});
+
+test('task.create 最大合法组合及序列化载荷边界', () => {
+  const params: Record<string, unknown> = {
+    brief: '\u0001'.repeat(65536), request: '\u0001'.repeat(8000), project_id: '\u0001'.repeat(512),
+    attachments: Array(256).fill('00000000-0000-0000-0000-000000000001'), kind: 'bug', draft: true,
+  };
+  assert.equal(gate.validateWriteRequest({ op: 'task.create', params }).ok, true);
+  // Fill with individually legal fields to isolate the overall payload boundary.
+  for (let i = 0; JSON.stringify(params).length + 530 < 524288; i++) params[`k${i}`] = 'x'.repeat(512);
+  params.tail = '';
+  params.tail = 'x'.repeat(524288 - JSON.stringify(params).length);
+  assert.equal(JSON.stringify(params).length, 524288);
+  assert.equal(gate.validateWriteRequest({ op: 'task.create', params }).ok, true);
+  params.tail += 'x';
+  const result = gate.validateWriteRequest({ op: 'task.create', params });
+  assert.equal(result.ok, false);
+  assert.equal(result.message, 'params 超过 524288 字符上限');
+  assert.match(gate.validateWriteRequest({ op: 'task.create', params: { brief: 'x'.repeat(524288) } }).message!, /上限/);
+});
+
+test('brief 上限与超限消息解析内核源码核对', () => {
+  const source = fs.readFileSync(path.resolve(import.meta.dirname, '../../../crates/automed/src/dispatch.rs'), 'utf8');
+  const match = source.match(/if body\.len\(\) > (\d+) \{\s*return Err\(bad_params\(format!\(\s*"([^"]+)"/);
+  assert.ok(match, '必须解析到内核正文长度检查，不能空匹配假绿');
+  assert.equal(gate.MAX_BRIEF_BYTES, Number(match[1]));
+  const bytes = Number(match[1]) + 1;
+  const result = gate.validateWriteRequest({ op: 'task.create', params: { brief: 'a'.repeat(bytes) } });
+  assert.equal(result.ok, false);
+  assert.equal(result.message, match[2].replace('{}', String(bytes)));
 });

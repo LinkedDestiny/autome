@@ -97,3 +97,33 @@ test('home 环境解析与内核默认值一致，保留空串', () => {
   expect(resolveAutomeHome({ HOME: '/tmp/user' })).toBe('/tmp/user/.autome');
   expect(resolveAutomeHome({})).toBe('/tmp/.autome');
 });
+
+test('任务卡字段、开始与补充原样转发', async () => {
+  const { core, gateway } = setup();
+  const params = { kind: 'bug', brief: '# 缺陷\n  正文\r\n', draft: true };
+  expect((await gateway.write({ op: 'task.create', params })).status).toBe(200);
+  expect(core.call).toHaveBeenLastCalledWith('task.create', { ...params, attachments: [] });
+  for (const [op, params] of [
+    ['task.start', { task_id: 't1' }],
+    ['task.reply', { task_id: 't1', info: '  补充\n原文  ' }],
+    ['task.reply', { task_id: 't1', info: '' }],
+  ] as const) {
+    expect((await gateway.write({ op, params })).status).toBe(200);
+    expect(core.call).toHaveBeenLastCalledWith(op, params);
+  }
+  core.call.mockClear();
+  for (const [op, params] of [
+    ['task.start', {}], ['task.reply', { task_id: 't1', info: 7 }],
+    ['task.create', { brief: '中'.repeat(21846) }],
+  ] as const) expect((await gateway.write({ op, params })).status).toBe(400);
+  expect(core.call).not.toHaveBeenCalled();
+});
+
+test('project.probe 只转发家目录路径，拒绝时不调用内核', async () => {
+  const { core, gateway } = setup();
+  expect((await gateway.read({ method: 'project.probe', params: { path: '~/x' } })).status).toBe(200);
+  expect(core.call).toHaveBeenCalledExactlyOnceWith('project.probe', { path: '~/x' });
+  core.call.mockClear();
+  expect((await gateway.read({ method: 'project.probe', params: { path: '/etc' } })).status).toBe(400);
+  expect(core.call).not.toHaveBeenCalled();
+});

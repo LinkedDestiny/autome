@@ -7,6 +7,8 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'project.onboarding.save',
   'project.alert.dismiss',
   'task.create',
+  'task.start',
+  'task.reply',
   'task.approve',
   'task.reject',
   'task.merge',
@@ -43,6 +45,7 @@ const ROLES = Object.freeze(['plan', 'review', 'adjudicate', 'impl', 'audit', 'r
 
 const PROSE_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'task.create': ['request'],
+  'task.reply': ['info'],
   'task.reject': ['feedback'],
   'task.decide': ['ruling'],
   // A whole project profile or AGENTS.md, edited in the wizard.
@@ -50,6 +53,14 @@ const PROSE_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze(
 });
 const MAX_PROSE_LENGTH = 8000;
 const MAX_DOCUMENT_LENGTH = 256 * 1024;
+const MAX_BRIEF_BYTES = 65536;
+const BYTE_LIMITED_FIELDS: Readonly<Record<string, Readonly<Record<string, number>>>> = Object.freeze({
+  'task.create': { brief: MAX_BRIEF_BYTES },
+});
+
+function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
 
 const ARRAY_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'task.create': ['attachments', 'doc_refs'],
@@ -60,7 +71,9 @@ const MAX_ARRAY_ITEM_LENGTH = 1024;
 const NAME_ONLY_ARRAYS = Object.freeze(['skills']);
 
 const MAX_PAYLOAD_JSON_LENGTH = 32 * 1024;
+const MAX_TASK_CREATE_PAYLOAD_LENGTH = 512 * 1024;
 const PAYLOAD_LIMITS: Readonly<Record<string, number>> = Object.freeze({
+  'task.create': MAX_TASK_CREATE_PAYLOAD_LENGTH,
   'project.onboarding.save': MAX_DOCUMENT_LENGTH + 4096,
 });
 
@@ -121,13 +134,21 @@ function validateShape(op: string, params: unknown): { ok: true } | { ok: false;
       continue;
     }
     if (typeof value === 'string') {
-      const limit = proseFields.includes(key)
-        ? op === 'project.onboarding.save'
-          ? MAX_DOCUMENT_LENGTH
-          : MAX_PROSE_LENGTH
-        : 512;
-      if (value.length > limit) {
-        return { ok: false, message: `${key} 超过 ${limit} 字符上限` };
+      const byteLimit = BYTE_LIMITED_FIELDS[op]?.[key];
+      if (byteLimit !== undefined) {
+        const bytes = utf8ByteLength(value);
+        if (bytes > byteLimit) {
+          return { ok: false, message: `任务卡正文超过 64KB（${bytes} 字节，上限 ${MAX_BRIEF_BYTES} 字节）` };
+        }
+      } else {
+        const limit = proseFields.includes(key)
+          ? op === 'project.onboarding.save'
+            ? MAX_DOCUMENT_LENGTH
+            : MAX_PROSE_LENGTH
+          : 512;
+        if (value.length > limit) {
+          return { ok: false, message: `${key} 超过 ${limit} 字符上限` };
+        }
       }
       if (value.includes('\u0000')) {
         return { ok: false, message: `${key} 不能含空字符` };
@@ -143,6 +164,15 @@ function validateShape(op: string, params: unknown): { ok: true } | { ok: false;
 
 function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: true } | { ok: false; message: string } {
   if (op === 'task.create') {
+    if (params.kind !== undefined && params.kind !== null && params.kind !== 'feature' && params.kind !== 'bug') {
+      return { ok: false, message: 'kind 必须是 feature 或 bug' };
+    }
+    if (params.draft !== undefined && typeof params.draft !== 'boolean') {
+      return { ok: false, message: 'draft 必须是布尔值' };
+    }
+    if (params.brief !== undefined && typeof params.brief !== 'string') {
+      return { ok: false, message: '任务卡正文必须是字符串' };
+    }
     if (params.doc_refs !== undefined && (!Array.isArray(params.doc_refs) || params.doc_refs.length !== 0)) {
       return { ok: false, message: '网页端暂不支持指定参考文档' };
     }
@@ -151,6 +181,14 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
     ))) {
       return { ok: false, message: '附件必须是上传编号（小写 UUID）' };
     }
+  }
+  if (op === 'task.start' || op === 'task.reply') {
+    if (typeof params.task_id !== 'string' || params.task_id.length === 0) {
+      return { ok: false, message: 'task_id 必须是非空字符串' };
+    }
+  }
+  if (op === 'task.reply' && typeof params.info !== 'string') {
+    return { ok: false, message: 'info 必须是字符串' };
   }
   if (op === 'open.path') {
     // The renderer names *which* thing to open by id, never by path — Main
@@ -234,6 +272,9 @@ export {
   MAX_PAYLOAD_JSON_LENGTH,
   MAX_PROSE_LENGTH,
   MAX_DOCUMENT_LENGTH,
+  MAX_BRIEF_BYTES,
+  MAX_TASK_CREATE_PAYLOAD_LENGTH,
+  utf8ByteLength,
   payloadLimitFor,
   looksLikeAPath,
   validateWriteRequest,

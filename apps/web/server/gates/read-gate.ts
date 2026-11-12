@@ -10,6 +10,7 @@ function looksLikeAPath(value: string) {
 
 const ALLOWED_READ_METHODS = Object.freeze([
   'project.list',
+  'project.probe',
   'project.get',
   'project.onboarding.artefacts',
   'task.get',
@@ -17,12 +18,24 @@ const ALLOWED_READ_METHODS = Object.freeze([
   'session.log',
   'dashboard.get',
   'config.get',
+  'config.validate',
   'env.get',
   'env.install_recipe',
   'skills.list',
   'protocol.get',
   'protocol.versions',
 ]);
+
+const WITHHELD_READ_METHODS = Object.freeze([
+  'events.since', // 浏览器经 WebSocket 收事件，账本拉取留给服务端。
+  'env.detect', // 有副作用，保留显式写入口及其 Origin 检查。
+]);
+const HOME_PATH_PARAMS: Record<string, string> = { 'project.probe': 'path' };
+
+function isHomeRelativePath(value: string) {
+  return value === '~' || (value.startsWith('~/') && !value.includes('\\') &&
+    !value.includes('\u0000') && !value.split('/').includes('..'));
+}
 
 const MAX_PAYLOAD_JSON_LENGTH = 4096;
 
@@ -55,7 +68,15 @@ function validateReadRequest(request: unknown): { ok: false; message: string; me
   if (serialized.length > MAX_PAYLOAD_JSON_LENGTH) {
     return { ok: false, message: `params 超过 ${MAX_PAYLOAD_JSON_LENGTH} 字符上限` };
   }
-  for (const value of Object.values(effectiveParams)) {
+  const homePathKey = HOME_PATH_PARAMS[method];
+  if (homePathKey) {
+    const value = (effectiveParams as Record<string, unknown>)[homePathKey];
+    if (typeof value !== 'string' || !isHomeRelativePath(value)) {
+      return { ok: false, message: 'project.probe 的 path 只能是 ~ 或 ~/ 开头的家目录路径' };
+    }
+  }
+  for (const [key, value] of Object.entries(effectiveParams)) {
+    if (key === homePathKey) continue;
     if (typeof value === 'string' && looksLikeAPath(value)) {
       return { ok: false, message: 'params 不能包含路径' };
     }
@@ -68,6 +89,8 @@ function validateReadRequest(request: unknown): { ok: false; message: string; me
 
 export {
   ALLOWED_READ_METHODS,
+  WITHHELD_READ_METHODS,
+  isHomeRelativePath,
   MAX_PAYLOAD_JSON_LENGTH,
   validateReadRequest,
 };
