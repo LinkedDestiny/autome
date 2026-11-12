@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 6/30
+implementation-round: 7/30
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -512,10 +512,10 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 
 ### M-06 验收契约
 
-最新证据：docs/宿主门禁按机器排队-gate/evidence/M-06-r6-audit.md · 通过 · 审计 #6
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-06-r7-impl.md · rebase 后全量复验 · 实现 #7（关闭结论沿用审计 #6）
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && npm test --prefix apps/desktop && grep -n "concurrency" README.md && grep -n "concurrency" docs/development/technical-design.md`
-- 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1262 个用例（基线 1201 + 本任务新增 61：
+- 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1289 个用例（rebase 后基线 1228 + 本任务新增 61：
   domain 12、automed lib 36、autome-cli 7、end_to_end 6）；clippy、fmt 无输出；桌面端 105 个用例、104 通过 1 跳过（与基线
   相同）；两条 `grep` 分别在 README 的「Host gate, retries and cooldowns」一节与 `technical-design.md` §8.1 的「宿主门禁」
   「宿主准备」段落各至少命中一行（基线两个文件都是 0 处）。
