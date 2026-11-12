@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 6/40
+implementation-round: 7/40
 current-milestone: M-07
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-07 的 bug-protocol 说明、G-6 与短语约束
+next-action: 独立审计 M-07 的协议说明、G-6 与短语约束；通过后推进 M-08 文档
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -627,7 +627,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-04 | 已完成 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 已完成 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 已完成 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
-| M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
+| M-07 | 待审 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
 | M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
 
 ## 里程碑说明
@@ -766,6 +766,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：把 `audit.md` 的 `each_round` 段改一个字时，现有 `every_role_prompt_renders_exactly_what_the_constants_did` 失败；`fix-review.md` 的 `before_merge` 段仍写「独立复验复现命令与项目门禁」时，`fix-review-before-merge.md` 金样比对与 e2e ② 失败；某份模板的 `before_merge` 段漏写 `{gate_line}` 时，`before_merge_prompt_seed_segments_render_in_both_modes` 与对应金样失败；CHANGELOG 没加 `## protocol/v3` 时，`every_round_is_handed_a_brief…` 的版本断言失败；某个 behavioral 条目的 `eval` 目录不存在或 grader 没有阳性对照时，`protocol eval` 以 1 退出。
 
 ### M-07 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-07-r7-impl.md · 待审 · 实现 #7
 
 - 验收命令：`grep -qF '修复门禁只跑复现命令，项目门禁留到合并前门禁' protocol/bug-protocol.md && grep -qF 'id: G-6' protocol/CHANGELOG.md && cargo test -p automed --lib protocol:: && cargo run -q -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && git diff --quiet $(git merge-base HEAD main) -- protocol/loop-protocol.md protocol/session-protocol.md`
 - 预期：两条 grep 命中；automed lib 过滤 `protocol::` 67 个通过（与 M-06 相同，本里程碑不新增用例）；`protocol eval` 退出码 0、报告里没有「失败」项，「必含 / 禁含短语」条数比 M-06 完成时多 1；prompt_rendering 20 个通过（渲染字节不变）；最后一条 git 检查无输出、退出码 0（`loop-protocol.md` / `session-protocol.md` 未改）。

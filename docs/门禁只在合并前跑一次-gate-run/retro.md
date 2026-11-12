@@ -18,3 +18,4 @@
 审计 #5 | M-05 | 通过 | docs/门禁只在合并前跑一次-gate-run/evidence/M-05-r5-audit.md | 无
 实现 #6 | M-06 | 待审 | docs/门禁只在合并前跑一次-gate-run/evidence/M-06-r6-impl.md | 无
 审计 #6 | M-06 | 通过 | docs/门禁只在合并前跑一次-gate-run/evidence/M-06-r6-audit.md | 无
+实现 #7 | M-07 | 待审 | docs/门禁只在合并前跑一次-gate-run/evidence/M-07-r7-impl.md | 无

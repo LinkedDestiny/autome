@@ -158,3 +158,13 @@ Bug Loop 的独立协议、定位、修复与复核模板。
   eval: evals/fix-review-before-merge-concludes-without-the-full-gate/
   realized_impact: null
 ```
+
+```yaml
+- id: G-6
+  kind: clarify
+  clause: bug-protocol.md
+  evidence: [T-35 一个任务过了 16 次门禁, T-37 过了 8 次, 2026-11-12 用户驳回 门禁只在合并前跑一次-gate-run 设计]
+  predicted_impact: {metric: total_turns, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
