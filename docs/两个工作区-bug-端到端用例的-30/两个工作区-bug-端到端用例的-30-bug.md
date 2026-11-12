@@ -1,10 +1,10 @@
 # 两个工作区 Bug 端到端用例等待误报定位
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cd crates/automed && cargo test --offline -p automed --test end_to_end waiting_regression -- --nocapture
 根因: 测试基础设施把未到期重试排除在未完成工作之外，并在多处条件等待中独立使用短截止时间，导致提前返回或正常推进时超时报错。
-复核: 通过
+复核: 待复核
 repos: autome-v2
 
 ## 现象
@@ -37,6 +37,14 @@ repos: autome-v2
 4. 本轮证据支持测试等待逻辑问题，没有证据证明产品 scheduler 卡死。现有业务状态、会话数、文件内容和错误断言应全部保留。修复 future-retry 判定后，原来用 settle 等待“已安排但未到期重试”的脚本需改为明确等待重试状态，避免等待未来很久的重试。
 
 ## 修复说明
+
+修复第 2/3 轮：将本分支 rebase 到本地默认分支 main（`a0edb2569552abc0eed3ac18bdbcfc6596a3fde6`），逐个解决 `end_to_end.rs` 冲突并完成 rebase，未使用 merge。保留 main 新增的 setup 测试与 legacy 实现会话释放信号，同时保留本任务的共用调度等待、重试判定和定位回归测试。两项 waiting_regression 测试与 rebase 前逐字比对一致；main 已通过祖先关系检查。
+
+本轮原复现命令退出码 0：2 passed、0 failed（6.72 秒），日志 `.autome/output/fix2-regression.log`。本轮运行配置门禁 `sh scripts/ci-local.sh`，退出码 1，用时 1451 秒，日志 `.autome/output/fix2-gate.log`。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过；两遍端到端均为 100 passed、0 failed（225.05 秒、245.69 秒）。唯一失败项为 Web test：4 个文件失败，11 failed、271 passed、19 skipped；日志出现 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`。未修改、删除、跳过或弱化测试，完整门禁未通过，仍需宿主在允许本机监听且文件监听资源充足的环境重跑。未额外运行 package 或历史负载压力测试。
+
+提交前再次检查发现本地 main 已推进到 `9b5750b`。本轮 rebase 与门禁绑定开始时的 `a0edb2569552abc0eed3ac18bdbcfc6596a3fde6`，该提交仍是本分支祖先；不能作为新 main 的合并后验证证明，后续由 Autome 继续调度 rebase 和合并前门禁。
+
+以下为第 1/3 轮历史记录：
 
 修复第 1/3 轮，仅调整 `crates/automed/tests/end_to_end.rs` 的测试基础设施及相关等待调用，未修改产品 scheduler。
 
