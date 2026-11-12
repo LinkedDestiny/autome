@@ -1,12 +1,12 @@
 # 合并队列：合并前门禁出队时才 rebase，通过后在同一段临界区里合并
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
-current-milestone: 无
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 设计待评审；定稿后从 M-01 开始：新增 autome-domain/src/merge_queue.rs 与 automed/src/merge_queue.rs，读 `[merge] auto`，在 run_gate 的 MergeGate 分支加出队对齐与项目合并临界区
+next-action: 从 M-01 开始：新增 autome-domain/src/merge_queue.rs（authorization / holds / releases / turn）与 automed/src/merge_queue.rs，读 `[merge] auto`，在 run_gate 的 MergeGate 分支开头按 D1 第 1 步取资格并拿锁，再加出队对齐；Merging 加等锁
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -53,7 +53,7 @@ next-action: 设计待评审；定稿后从 M-01 开始：新增 autome-domain/s
 
 ### 总览
 
-一句话：**保留 `Rebase` 节点不变，在 `MergeGate` 真正开跑前再对齐一次；已授权的任务在对齐那一刻拿项目合并锁，拿锁到
+一句话：**保留 `Rebase` 节点不变，在 `MergeGate` 真正开跑前再对齐一次；已授权的任务一进入 `MergeGate` 按进队先后取得资格并拿项目合并锁（早于准备、准入与对齐），拿锁到
 `Merging` 结束之间，本项目别的合并前门禁不开跑、别的 `Merging` 不执行。** 授权改成只由用户（以及 T-10 的落后路径）改变的
 账本记录，再加项目级开关。所有状态都由账本事件 + 任务状态推导，不新增表。
 
@@ -72,24 +72,33 @@ next-action: 设计待评审；定稿后从 M-01 开始：新增 autome-domain/s
 
 `run_gate` 在 `node == MergeGate` 且作业不存在时，新顺序如下（其余门禁节点不变）：
 
-1. **临界区检查**：本项目有**别的**任务持锁（D3）→ 不沿用、不准备、不准入，见 D4 的「等锁」处理，返回。
+1. **合并资格**（纯函数 `merge_queue::turn`，输入：本项目持锁者、已授权者里 seq 更早的「排队者」、本任务是否已授权、本任务的 seq）：
+   - 本项目有**别的**任务持锁（D3）→ 等锁：不沿用、不准备、不准入，见 D4，返回。未授权任务只受这一条约束。
+   - 本任务已授权，且本项目还有**别的**已授权任务排在它前面——「排队者」指停在 `MergeGate`、不持锁、最后一条队列事件是
+     `gate.queued` 的已授权任务，前面指 seq 更小；本任务还没有 seq 时，任何排队者都在它前面——→ 同样等（等的是排在前面
+     的那个），返回。这一条让已授权任务按进入合并队列的先后（G6）拿锁，沿用路径也不例外。
+   - 本任务已授权，没有持锁者也没有排在前面的排队者 → **立刻拿锁**：写 `merge.locked { node: "merge_gate" }`（已持锁则不
+     重复写），然后继续。拿锁发生在沿用判断、`[setup]` 准备、宿主准入、出队 rebase **之前**，所以准备命令的异步等待和 rebase
+     之后的重跑都在锁内进行，后来的任务拿不到锁。
 2. **沿用判断**（`gate.reused`）：在原条件上**加一条「任务分支不落后」**（每个检出 `behind_count == 0`）。落后时不沿用，走下面
-   的对齐与重跑。已授权的任务沿用通过时，先拿锁（写 `merge.locked`）再 `finish_gate`，这样它进 `Merging` 时同样持锁。
+   的对齐与重跑。沿用通过时已授权任务早已持锁（第 1 步），`finish_gate` 后带着锁进 `Merging`。
 3. `[setup]` 准备（`ensure_with_hold`，不变）。
 4. 准入（`gate_queue::admit`，不变）：不放行就照旧写一次 `gate.queued` 并返回。**这一刻之前不 rebase**——排队期间 main 再怎么
-   动都不碰工作树。
+   动都不碰工作树。持锁者也在宿主队列里按 seq 排队，锁不让它插队。
 5. **出队对齐**：任一检出落后于自己的 base（`git rev-list --count <head>..<base>` > 0）→ `rebase_all(layout)`：
    - 冲突 → `advance(CoreStepDone { node: MergeGate, result: Conflict { files, detail } })`，见 D6；返回。没启动作业、没写
-     `gate.started`，转换写下的 `task.updated` 让它的排队条目失效，名额当场让给下一个。
+     `gate.started`，转换写下的 `task.updated` 让它的排队条目失效，名额当场让给下一个；转换离开临界区，锁随 `advance` 释放（D3）。
    - 干净 → 写 `merge.rebased { at: "dequeue", repos: [{repo, onto, base_sha, head}] }`；以新 head 重算 `(cwd, head, job)`，
-     **从第 2 步再走一遍（至多一次）**：rebase 改了 `[setup].watch` 里的文件时，第 3 步的指纹比对会重跑准备命令（它同一 tick 内
-     仍是队首，准备作业照常拿名额，随后靠 `continuation` 连占给门禁）；没改就直接到第 6 步。
+     **从第 1 步再走一遍（至多一次）**：rebase 改了 `[setup].watch` 里的文件时，第 3 步的指纹比对会重跑准备命令（它同一 tick 内
+     仍是队首，准备作业照常拿名额，随后靠 `continuation` 连占给门禁）；没改就直接到第 6 步。重走时已授权任务是持锁者，第 1 步
+     放行；准备作业异步返回（`Ready::Pending`）期间锁一直在它手里，下一次进入时第 5 步会重新检查是否落后。
    - 不落后 → 不写任何事件。
-6. 已授权（D2）→ 拿锁：写 `merge.locked { node: "merge_gate" }`（已持锁则不重复写）。
-7. `gate::start` + `gate.started`（不变）。
+6. `gate::start` + `gate.started`（不变）。
 
-「门禁开始跑的那个提交一定基于当时最新的默认分支」由第 5 步与第 7 步在同一次 `run_gate` 调用里、中间不执行任何别的任务的步骤
-保证；从第 7 步到合并之间 main 不被本项目合并推进，由 D3 的锁保证。作业结束时的「head 已变 → 作废重跑」逻辑不变。
+「门禁开始跑的那个提交一定基于当时最新的默认分支」由第 5 步与第 6 步在同一次 `run_gate` 调用里、中间不执行任何别的任务的步骤
+保证；rebase 之后若准备命令异步返回，调用在第 3 步结束，下一次进入重新从第 1 步走到第 5 步，仍然是「对齐之后同一次调用里开跑」。
+从第 1 步拿锁到合并之间 main 不被本项目合并推进，由 D3 的锁保证（已授权任务）；未授权任务没有锁，它的门禁结果可能在 AwaitMerge
+时过期，由 G5 的显示告知。作业结束时的「head 已变 → 作废重跑」逻辑不变。
 
 `(cwd, head)` 与 `discard_stale` 在第 5 步改 head 后按新 head 重算，旧 key 的作业文件本来就不存在（第 5 步只在作业不存在时到达）。
 
@@ -139,7 +148,18 @@ next-action: 设计待评审；定稿后从 M-01 开始：新增 autome-domain/s
 | `Done` / `Cancelled` | 拒绝「任务已终结」 |
 | 其余全部（`Draft`、`Queued`、`Requeued`、`Paused`、`Stopped`、其它 `Active` 节点含设计批准卡点与 Bug 等人节点） | 预先授权：已授权则不重复写，返回「已预先同意」；否则写 `{active: true, by: "user"}` |
 
-`task.merge {cancel: true}`：有效授权为真 → 写 `{active: false, by: "user"}`；否则拒绝「没有可撤销的合并授权」。不改节点，所以
+`task.merge {cancel: true}`（纯函数 `merge_queue::cancel_press(state)`，与 `merge_press` 同处）按状态限定边界：
+
+| 任务状态 | 结果 |
+|---|---|
+| `Active { Merging \| MainCheck \| Cleanup }` | 拒绝「合并已经开始，无法撤销」（授权记录不动，不返回 `revoked`） |
+| `Done` / `Cancelled` | 拒绝「任务已终结」 |
+| 其余全部（含 `Active { AwaitMerge \| MergeGate \| …}`、`Failed`、`Paused`、`Stopped`） | 有效授权为真 → 写 `{active: false, by: "user"}`；否则拒绝「没有可撤销的合并授权」 |
+
+撤销时若该任务正持锁（停在 `MergeGate`），同一次调用里追加 `merge.unlocked { reason: "cancel" }`：它不会再自动合并，不该继续挡住
+别人。已在跑的门禁照常跑完，通过后因无授权停在 `AwaitMerge`（D3 表）。授权在 `MergeGate` 通过的那次转换里读取并决定去向：通过时
+有授权 → `Merging`，之后撤销一律被上表拒绝；通过前撤销 → 停在卡点。所以「返回已撤销」与「随后仍被自动合并」在任何交错下都不会同时
+出现（派发层写完后 `tick` 时，任务不可能是 `Merging` 且授权为假）。撤销不改节点，所以
 不经过转换表——它和 `pending_decisions` 一样是账本上的用户意图记录；节点转换仍只由 `advance` 做。派发层在写完后照常 `tick`，
 返回值是 `task_get` 的 payload 加 `"merge_request": "merging" | "authorized" | "already_authorized" | "revoked"`。不新增 RPC 方法，
 两份写方法白名单不动。CLI：`autome merge <任务> [--cancel]`，帮助文本改为「合并到默认分支；未到合并卡点时记为预先同意，
@@ -159,7 +179,8 @@ next-action: 设计待评审；定稿后从 M-01 开始：新增 autome-domain/s
 
 回答开放问题 2、3、9。
 
-**范围。** 起点：已授权任务在 `MergeGate` 出队对齐之后、开跑之前拿锁（D1 第 6 步；授权沿用时在第 2 步）。终点：离开
+**范围。** 起点：已授权任务在 `MergeGate` 里取得合并资格的那一刻拿锁（D1 第 1 步，早于沿用、准备、准入与出队 rebase，所以准备命令的
+异步重跑和 rebase 之间不会有别的任务插进来）。终点：离开
 `{Active MergeGate, Active Merging}` 的那次转换——正常情况就是 `Merging` 成功转到 `MainCheck` / `Cleanup`，此时 main 已经前进
 完毕。MainCheck、Cleanup、`[merge] after` 不在临界区内：它们不再改 main，不必挡住别人。
 
@@ -178,7 +199,8 @@ T 未终结、T 最后一条 `merge.locked` / `merge.unlocked` 是 `merge.locked
 | 持锁者遇到 | 去向 | 锁 |
 |---|---|---|
 | 门禁失败 / 熔断 / 准备命令失败 | `Implement`（Bug 修复轮）/ `Failed` | 释放 |
-| 出队 rebase 冲突 | 不会发生：冲突在拿锁之前（D1 第 5 步早于第 6 步） | — |
+| 出队 rebase 冲突 | `Implement`（Bug 修复轮）/ `Failed` | 释放（锁在 D1 第 1 步已拿，转换离开临界区） |
+| 用户撤销授权（持锁时） | 仍在 `MergeGate` | 释放（`cancel` 同次写 `merge.unlocked`）；门禁通过后无授权 → `AwaitMerge` |
 | 暂停 / 停止 / 取消 | `Paused` / `Stopped` / `Cancelled` | 释放 |
 | 作业消失（`Poll::Vanished`）、head 变了作废 | 仍在 `MergeGate`，下一 tick 重新准入、对齐、开跑 | 保留（自己不等自己） |
 | 门禁通过、仍有授权 | `Merging` | 保留到合并结束 |
@@ -190,18 +212,23 @@ T 未终结、T 最后一条 `merge.locked` / `merge.unlocked` 是 `merge.locked
 | `Merging` → `Failed` | `Failed` | 释放 |
 | 驱动重启 | 账本与任务状态原样，下一 tick 按上面规则继续 | 从账本推导 |
 
-**不死锁。** ① 拿锁只发生在「本项目没有别的持锁者」时（D1 第 1 步先查），所以任何时刻每个项目至多一个持锁者，不存在两个
-持锁者互等；② 持锁者自己从不等锁（第 1 步与 D4 都排除自己）；③ 持锁者的进展只依赖它自己的门禁作业（有超时，`reclaim`
-在暂停时也会收）与一次同步的 `merge_all`；作业消失时它要重新准入，而等锁的任务都被移出了宿主队列（D4），不会挡在它前面；
-④ 等锁的任务不占宿主名额。中途被授权的任务（门禁已在未持锁状态下开跑）不会补拿锁——它通过后进 `Merging`，服从别人的锁，
-这保住了①。
+**不死锁。** ① 拿锁只发生在「本项目没有别的持锁者、也没有排在前面的已授权排队者」时（D1 第 1 步），判定与写 `merge.locked` 在同一次
+调用里，所以任何时刻每个项目至多一个持锁者，不存在两个持锁者互等；② 持锁者自己从不等锁（第 1 步与 D4 都排除自己）；
+③ 持锁者的进展只依赖它自己的准备作业、门禁作业（有超时，`reclaim` 在暂停时也会收）、宿主名额与一次同步的 `merge_all`：它在宿主
+队列里按 seq 排队，挡在前面的只有别的项目（或本项目未授权任务）的作业，它们都会结束；作业消失时它要重新准入，而等锁的任务都被
+移出了宿主队列（D4），不会挡在它前面；④ 等锁的任务不占宿主名额。⑤ 排在前面的排队者不可能卡住后面的：它在自己下一次被访问时，
+只要没有持锁者就拿到锁；它若暂停、停止、失败、被撤销授权，就不再是排队者。中途被授权的任务（门禁已在未持锁状态下开跑）不补拿锁——
+它通过后进 `Merging`，服从别人的锁（若作业消失重新进入 `MergeGate`，则按第 1 步正常取资格），这保住了①。
 
 ### D4 等锁：合并前门禁不开跑、`Merging` 不执行，且不堵宿主队列
 
-- **`MergeGate` 等锁**（D1 第 1 步）：若它最后一条队列事件不是 `gate.queued`，补写一条 `gate.queued`（占住 FIFO 位置，
-  seq 就是它进入合并队列的时刻）；若它最后一条 `merge.waiting` 不晚于最后一条 `task.updated`，写
-  `merge.waiting { node: "merge_gate", holder }`（每段停留只写一次）。它仍占项目并行槽位（与今天排队等门禁相同）。
-- **宿主队列排除等锁者**：`gate_queue::waiters` 跳过「停在 `MergeGate`、作业不存在、本项目有别的持锁者」的任务。否则它排在
+- **`MergeGate` 等锁**（D1 第 1 步，两种情形：别人持锁、或已授权而前面还有更早的排队者）：若它最后一条队列事件不是 `gate.queued`，
+  补写一条 `gate.queued`（占住 FIFO 位置，seq 就是它进入合并队列的时刻）；若它最后一条 `merge.waiting` 不晚于最后一条
+  `task.updated`，写 `merge.waiting { node: "merge_gate", holder }`（`holder` 是持锁者，没有持锁者时是排在前面的那个任务；每段
+  停留只写一次）。它仍占项目并行槽位（与今天排队等门禁相同）。第 1 步取资格用 seq 而不是 tick 内处理顺序，所以创建顺序与入队顺序
+  相反、锁刚释放的 tick 里先处理到后入队者，都不会让它越过更早的排队者。
+- **宿主队列排除等锁者**：`gate_queue::waiters` 跳过「停在 `MergeGate`、作业不存在、`merge_queue::turn` 结果为等」的任务（与
+  第 1 步共用同一个判定）。否则它排在
   队首会让别的项目（以及 `concurrency > 1` 时同项目的别的门禁种类）全部等着——那就改了 `concurrency` 的语义。锁释放后它带着
   原来的 seq 回到队列，于是按进队先后（G6）轮到它。`gate_queue_position` 对等锁者为 `null`，界面改看 `merge.waiting_for`（D7）。
 - **`Merging` 等锁**：`run_core_step(Merging)` 在 `merge_all` 之前查 `holder`；有别的持锁者 → 写一次
@@ -216,8 +243,9 @@ T 未终结、T 最后一条 `merge.locked` / `merge.unlocked` 是 `merge.locked
 任务等锁；未授权任务的门禁可以在别人持锁之前开跑（第 1 步只拦开跑，不拦已在跑的），它通过后停在 `AwaitMerge`，结果是否过期由
 G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 等锁 + 每个项目至多一个持锁者）。
 
-**T-53**：调研时未合并（`git log --oneline main | grep "merge(autome): T-5[13] "` 为空）。本设计只用 `waiters` 的 seq 排序，
-T-53 若改的是 `waiters` 的排序口径，本设计自动沿用；每个实现轮开头重新核对。
+**T-53 / T-51**：T-53（排队任务调整顺序）调研时未合并；T-51（`bf399db`，approve/merge/rerun 直接启动会话不看并行上限）已合并，
+它改的是 `scheduler.rs` 里会话启动的并行名额与 `scheduler_gate_queue_tests.rs`，不改 `run_gate` 与 `waiters` 的排序。本设计只用
+`waiters` 的 seq 排序，T-53 若改的是它的排序口径，本设计自动沿用；每个实现轮开头重新核对这两项在主线上的状态。
 
 ### D5 事件与 `autome run` 输出
 
@@ -309,7 +337,8 @@ T-53 若改的是 `waiters` 的排序口径，本设计自动沿用；每个实�
 - R1 同 tick 顺序：锁的正确性依赖「转 `Merging` 后锁仍在」与「对齐和开跑在同一次调用里」，不依赖 tick 内任务的处理顺序。
   M-01 的 e2e 用「X 先建、同 tick 收走 X 再处理 Y」的顺序做负向对照（去掉锁检查必红）。
 - R2 准备命令：出队 rebase 改了 `watch` 文件时要重跑准备命令。准备命令由别的任务连占名额的边角（准备跑完前 main 又被外部推进
-  且改了 `watch`）会让它重新排到队尾——可接受，记 Backlog B-03。M-01 有专门用例钉住常见路径。
+  且改了 `watch`）会让它重新排到队尾——可接受，记 Backlog B-03。已授权任务从取资格起持锁，本项目的合并不会在这段间隙里推进 main；
+  未授权任务没有锁，仍按 G5 显示过期。M-01 有专门用例钉住常见路径。
 - R3 暂停后恢复的持锁者不会补拿锁：恢复后作业已存在，收结果时不持锁；若期间 main 前进，走 T-10 回退。可接受（D8 兜底），记 B-02。
 - R4 读路径调 git：`task.list` 对每个停在合并卡点的任务一次 `rev-list --count`；失败降级为 `null`。
 - R5 `apps/web` / `apps/desktop` 对任务 JSON 或事件种类的穷举：新增字段 / 事件若使其测试变红，实现轮最小修补；合并前门禁
@@ -385,7 +414,7 @@ T-53 若改的是 `waiters` 的排序口径，本设计自动沿用；每个实�
   任务等持锁者，持锁者门禁失败后它继续；重启后照旧。
 - 覆盖：G1、G2、G4（读取与缺省）、G6；验收 1（auto 变体）、5、6（解析与缺省）、7。
 - 前置：无。
-- 内容：D1 全部（出队冲突在 M-01 期间走转换表现有的通用分支、任务以 rebase 冲突失败；M-03 改成回实现 / 修复轮，M-01 的用例
+- 内容：D1 全部（含第 1 步的合并资格 `merge_queue::turn`；出队冲突在 M-01 期间走转换表现有的通用分支、任务以 rebase 冲突失败；M-03 改成回实现 / 修复轮，M-01 的用例
   不制造冲突）；D2 中的有效授权读取与 `[merge] auto` 解析（寿命改造留 M-02）；D3、D4；D5 的事件写入（渲染留 M-04）；D8 的兜底不变。
   注：M-01 期间 `advance` 的自动清除仍在，但它的「原来有授权」只看账本记录、不看项目开关（否则 `auto = true` 的项目每次转换都会
   写一条 `active: false`）；它写的不带 `by` 的 `active: false` 按 D2 回落到项目开关，与 `[merge] auto` 变体不冲突。M-02 删掉它。
@@ -425,14 +454,17 @@ T-53 若改的是 `waiters` 的排序口径，本设计自动沿用；每个实�
 ### M-01 验收契约
 
 - 验收命令：`cargo test -p autome-domain merge_queue_ && cargo test -p automed --lib merge_queue_ && cargo test -p automed --test end_to_end merge_queue_`
-- 预期：共 16 个用例通过（domain 3：`merge_queue_effective_authorization_follows_the_ledger_then_the_project`、`merge_queue_holder_needs_a_lock_and_a_section_node`、`merge_queue_leaving_the_section_releases_the_lock`；automed lib 9：`merge_queue_auto_is_read_and_defaults_false`、`merge_queue_auto_rejects_non_booleans`、`merge_queue_a_dequeued_gate_rebases_onto_the_moved_main_first`、`merge_queue_an_up_to_date_branch_is_not_rebased_at_dequeue`、`merge_queue_reuse_requires_an_up_to_date_branch`、`merge_queue_a_dequeue_rebase_that_changes_setup_inputs_reruns_setup_first`、`merge_queue_a_second_merge_gate_waits_outside_the_host_queue_while_the_section_is_held`、`merge_queue_a_merge_waits_while_another_task_holds_the_section`、`merge_queue_every_exit_releases_the_section`；e2e 4：`merge_queue_three_auto_merging_tasks_run_the_gate_exactly_three_times`、`merge_queue_a_press_during_the_section_waits_and_continues_after_a_gate_failure`、`merge_queue_the_section_and_the_order_survive_a_core_restart`、`merge_queue_with_two_gate_slots_one_project_still_merges_one_at_a_time`）；三任务用例里记录文件恰好 3 行且每行 main 是 HEAD 的祖先，`merge.auto` 事件 0 条。
-- 负向对照：去掉 D1 第 1 步的锁检查（只留出队对齐）时，`merge_queue_three_auto_merging_tasks_run_the_gate_exactly_three_times` 失败——Y 在 X 转 `Merging` 的同一 tick 开跑，门禁调用多于 3 次且出现 `merge.auto { by: "behind" }`；去掉出队对齐（只留锁）时同一用例的祖先断言失败；去掉 `Merging` 等锁时 `merge_queue_a_press_during_the_section_waits_and_continues_after_a_gate_failure` 失败（A 门禁未结束 main 就前进了）。
+- 预期：共 19 个用例通过（domain 4：`merge_queue_effective_authorization_follows_the_ledger_then_the_project`、`merge_queue_holder_needs_a_lock_and_a_section_node`、`merge_queue_leaving_the_section_releases_the_lock`、`merge_queue_turn_follows_the_holder_then_the_queue_order`；automed lib 11：`merge_queue_auto_is_read_and_defaults_false`、`merge_queue_auto_rejects_non_booleans`、`merge_queue_a_dequeued_gate_rebases_onto_the_moved_main_first`、`merge_queue_an_up_to_date_branch_is_not_rebased_at_dequeue`、`merge_queue_reuse_requires_an_up_to_date_branch`、`merge_queue_a_dequeue_rebase_that_changes_setup_inputs_reruns_setup_first`（断言重跑期间本任务持锁）、`merge_queue_a_second_merge_gate_waits_outside_the_host_queue_while_the_section_is_held`、`merge_queue_a_merge_waits_while_another_task_holds_the_section`、`merge_queue_every_exit_releases_the_section`、`merge_queue_a_pending_setup_after_the_dequeue_rebase_keeps_the_section`、`merge_queue_a_reusable_gate_does_not_jump_an_earlier_queued_task`；e2e 4：`merge_queue_three_auto_merging_tasks_run_the_gate_exactly_three_times`、`merge_queue_a_press_during_the_section_waits_and_continues_after_a_gate_failure`、`merge_queue_the_section_and_the_order_survive_a_core_restart`、`merge_queue_with_two_gate_slots_one_project_still_merges_one_at_a_time`）；三任务用例里记录文件恰好 3 行且每行 main 是 HEAD 的祖先，`merge.auto` 事件 0 条。
+  新增的两个 lib 用例：`..._a_pending_setup_...` 让 B 出队 rebase 后的准备作业受控阻塞、C 已就绪，断言 B 全程持锁、C 在 B 合并前没有拿锁、
+  `gate.started` 与合并的先后是 B 先 C 后；`..._a_reusable_gate_...` 安排「创建顺序与入队顺序相反、持锁者门禁失败、后入队者可沿用」，
+  断言先入队的 B 先拿锁，C 的 `gate.reused` 与 `merge.locked` 都晚于 B 的 `merge.locked`。
+- 负向对照：去掉 D1 第 1 步的锁检查（只留出队对齐）时，`merge_queue_three_auto_merging_tasks_run_the_gate_exactly_three_times` 失败——Y 在 X 转 `Merging` 的同一 tick 开跑，门禁调用多于 3 次或出现 `Merging → Behind` 回退（`auto = true` 变体里授权本来就有效，不会再写 `merge.auto`，所以不以该事件为证据）；去掉出队对齐（只留锁）时同一用例的祖先断言失败；去掉 `Merging` 等锁时 `merge_queue_a_press_during_the_section_waits_and_continues_after_a_gate_failure` 失败（A 门禁未结束 main 就前进了）；把拿锁推迟到出队 rebase 之后（旧顺序）时 `..._a_pending_setup_...` 失败；沿用路径绕过 `turn` 的 seq 检查时 `..._a_reusable_gate_...` 失败。
 
 ### M-02 验收契约
 
 - 验收命令：`cargo test -p autome-domain merge_auth_ && cargo test -p automed --lib merge_auth_ && cargo test -p autome-cli merge_auth_ && cargo test -p automed --test end_to_end merge_auth_`
-- 预期：共 16 个用例通过（domain 6：`merge_auth_merge_press_by_state`、`merge_auth_only_a_behind_merge_grants_a_request`、`merge_auth_a_request_reaches_the_merge_after_a_stop_and_a_conflict`、`merge_auth_config_warns_when_auto_has_no_gate`、`merge_auth_a_conflicting_requested_rebase_goes_back_to_implement`、`merge_auth_a_failed_merge_gate_on_a_requested_merge_goes_back_to_implement`；automed lib 5：`merge_auth_auto_and_after_survive_save_project`、`merge_auth_a_conflicting_requested_rebase_keeps_the_request`、`merge_auth_leaving_the_merge_tail_writes_no_revocation`、`merge_auth_cancel_overrides_the_project_switch`、`merge_auth_task_merge_rejects_failed_and_finished_tasks`；autome-cli 1：`merge_auth_merge_cancel_is_parsed`；e2e 4：`merge_auth_a_preauthorized_task_merges_without_stopping_and_a_cancelled_one_stops`、`merge_auth_preauthorizing_before_design_approval_does_not_skip_it`、`merge_auth_three_preauthorized_tasks_run_the_gate_exactly_three_times`、`merge_auth_a_gate_failing_after_the_automatic_rebase_keeps_the_request_and_merges_after_the_repair`）。
-- 负向对照：保留 `advance` 里离开尾段的自动清除时，`merge_auth_a_gate_failing_after_the_automatic_rebase_keeps_the_request_and_merges_after_the_repair` 停在 `await_merge` 而失败，`merge_auth_leaving_the_merge_tail_writes_no_revocation` 也失败；把预先同意实现成对 `AwaitDesignApproval` 应用 `Approve` 时 `merge_auth_preauthorizing_before_design_approval_does_not_skip_it` 失败；`merge_press` 接受 `Failed` 时 `merge_auth_merge_press_by_state` 与 `merge_auth_task_merge_rejects_failed_and_finished_tasks` 失败。
+- 预期：共 17 个用例通过（domain 6：`merge_auth_merge_press_by_state`（同时覆盖 `cancel_press`）、`merge_auth_only_a_behind_merge_grants_a_request`、`merge_auth_a_request_reaches_the_merge_after_a_stop_and_a_conflict`、`merge_auth_config_warns_when_auto_has_no_gate`、`merge_auth_a_conflicting_requested_rebase_goes_back_to_implement`、`merge_auth_a_failed_merge_gate_on_a_requested_merge_goes_back_to_implement`；automed lib 6：`merge_auth_cancel_is_rejected_once_the_merge_has_started`（`Merging` 带授权时 `cancel` 被拒、授权记录不动、随后照常合并；`MergeGate` 持锁时 `cancel` 写 `merge.unlocked`）、`merge_auth_auto_and_after_survive_save_project`、`merge_auth_a_conflicting_requested_rebase_keeps_the_request`、`merge_auth_leaving_the_merge_tail_writes_no_revocation`、`merge_auth_cancel_overrides_the_project_switch`、`merge_auth_task_merge_rejects_failed_and_finished_tasks`；autome-cli 1：`merge_auth_merge_cancel_is_parsed`；e2e 4：`merge_auth_a_preauthorized_task_merges_without_stopping_and_a_cancelled_one_stops`、`merge_auth_preauthorizing_before_design_approval_does_not_skip_it`、`merge_auth_three_preauthorized_tasks_run_the_gate_exactly_three_times`、`merge_auth_a_gate_failing_after_the_automatic_rebase_keeps_the_request_and_merges_after_the_repair`）。
+- 负向对照：保留 `advance` 里离开尾段的自动清除时，`merge_auth_a_gate_failing_after_the_automatic_rebase_keeps_the_request_and_merges_after_the_repair` 停在 `await_merge` 而失败，`merge_auth_leaving_the_merge_tail_writes_no_revocation` 也失败；把预先同意实现成对 `AwaitDesignApproval` 应用 `Approve` 时 `merge_auth_preauthorizing_before_design_approval_does_not_skip_it` 失败；`cancel_press` 接受 `Merging` 时 `merge_auth_cancel_is_rejected_once_the_merge_has_started` 与 `merge_auth_merge_press_by_state` 失败；`merge_press` 接受 `Failed` 时 `merge_auth_merge_press_by_state` 与 `merge_auth_task_merge_rejects_failed_and_finished_tasks` 失败。
 
 ### M-03 验收契约
 
@@ -462,6 +494,7 @@ T-53 若改的是 `waiters` 的排序口径，本设计自动沿用；每个实�
 - B-01 合并列车：把队列里几个已授权任务叠在一起只跑一次门禁、失败再二分（任务卡明确不做）。
 - B-02 暂停后恢复的持锁者不补拿锁（R3）；需要时可在收结果时检查是否落后、落后则作废重跑。
 - B-03 准备命令跑完前 main 被外部推进且改了 `watch` 文件时，任务重新排到队尾（R2）。
+- B-05 持锁者在宿主队列里等名额、或等自己的准备作业时，同项目其它已授权任务都在等锁（D1 第 1 步的取舍：保证 FIFO 且不让对齐被插队）；若实测等待过长，可改为只在准入通过后拿锁并让准备命令在锁外重跑。
 - B-04 界面（Web / 桌面）展示「已预先同意合并」「等 T-y 合并」与撤销按钮。
 
 ## 争议项
