@@ -6295,3 +6295,126 @@ fn waiting_regression_tick_waits_do_not_own_deadlines() {
         "scheduling waits must share the 90s hang detector instead of owning deadlines: {local_deadlines:?}"
     );
 }
+
+// Regression: a successful reviewer process must not admit edits to another task.
+const REVIEW_SCOPE_OTHER: &str = "docs/other-task/other-task-bug.md";
+
+fn review_scope_seed(w: &World) {
+    std::fs::create_dir_all(w.repo.join("docs/other-task")).unwrap();
+    std::fs::write(w.repo.join(REVIEW_SCOPE_OTHER), bug_doc("待复核")).unwrap();
+    automed::git::commit_paths(&w.repo, &[REVIEW_SCOPE_OTHER], "seed merged task").unwrap();
+}
+
+fn review_scope_assert_failure(w: &World, id: &str, slug: &str) {
+    assert_eq!(w.state(id), "failed", "out-of-scope edit was admitted");
+    let detail = failure_detail(w, id);
+    assert!(detail.contains("只能修改"), "{detail}");
+    assert!(detail.contains(&format!("docs/{slug}/")), "{detail}");
+    assert!(detail.contains(REVIEW_SCOPE_OTHER), "{detail}");
+}
+
+#[test]
+fn review_scope_wrong_bug_document_reports_the_offending_path() {
+    needs_git!();
+    let mut w = World::new("review-scope-wrong-doc");
+    review_scope_seed(&w);
+    let request = "review scope wrong doc";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, "other-task", &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    review_scope_assert_failure(&w, &id, &slug);
+}
+
+#[test]
+fn review_scope_valid_verdict_does_not_hide_an_outside_edit() {
+    needs_git!();
+    let mut w = World::new("review-scope-valid-verdict");
+    review_scope_seed(&w);
+    let request = "review scope valid verdict";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &bug_doc("通过"),
+        &format!("printf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}"),
+    );
+    let id = create_bug(&mut w, request);
+    w.settle();
+    review_scope_assert_failure(&w, &id, &slug);
+}
+
+#[test]
+fn review_scope_own_document_only_is_allowed() {
+    needs_git!();
+    let mut w = World::new("review-scope-control");
+    review_scope_seed(&w);
+    let request = "review scope control";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+}
+
+#[test]
+fn review_scope_pending_verdict_names_the_expected_bug_document() {
+    needs_git!();
+    let mut w = World::new("review-scope-pending");
+    let request = "review scope pending";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    w.step(3, "exit 0\n");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    let detail = failure_detail(&w, &id);
+    assert!(detail.contains("本轮没有更新"), "{detail}");
+    assert!(
+        detail.contains(&format!("docs/{slug}/{slug}-bug.md")),
+        "{detail}"
+    );
+}
+
+#[test]
+fn review_scope_feature_audit_rejects_other_task_edits() {
+    review_scope_feature_round(false);
+}
+
+#[test]
+fn review_scope_feature_retro_rejects_other_task_edits() {
+    review_scope_feature_round(true);
+}
+
+fn review_scope_feature_round(retro: bool) {
+    needs_git!();
+    let mut w = World::new("review-scope-feature");
+    review_scope_seed(&w);
+    let request = "review scope feature";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let n = if retro { 7 } else { 6 };
+    let script_path = w.repo.join(format!(".autome/fake/{n}.sh"));
+    let mut script = std::fs::read_to_string(&script_path).unwrap();
+    script.push_str(&format!("\nprintf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}\ngit add {REVIEW_SCOPE_OTHER}\ngit -c user.name=fake -c user.email=f@f commit -qm 'out of scope review'\n"));
+    w.step(n, &script);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    review_scope_assert_failure(&w, &id, &slug);
+}
