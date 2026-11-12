@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -57,4 +57,11 @@ fix-round: 1/3
 
 ## 复核意见
 
-待复核。
+通过（第 1/3 轮复核）。
+
+- 复现命令独立复跑：4 passed、0 failed；定位提交 3a26e64 的测试文件在 aa19642 中无改动，未删除、跳过或弱化。
+- 相关子集：`status_block::tests::` 52 passed；e2e `an_intake_fenced_status_block_reports_the_fence_location` 1 passed；`prompt_rendering` 28 passed。
+- 根因成立：解析器丢弃围栏内字段与位置，导致合法字段被误报缺失。修复只在缺字段时回查头部围栏内同名字段并报行号，围栏外字段优先，正文围栏示例不参与，隔离行为不变。
+- 回归测试有意义：既有对照的无围栏版本，加上围栏版本的诊断断言，另有真缺失与正文示例两个保护用例，新增单测覆盖波浪号与正文围栏。
+- 范围：产品改动集中于 status_block.rs，其余为提示词说明、快照与 CHANGELOG，符合任务要求，无无关改动。
+- 未跑全量门禁，由宿主合并前运行。
