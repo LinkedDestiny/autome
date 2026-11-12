@@ -5369,6 +5369,150 @@ fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_th
     }
 }
 
+// Use sh so this path-resolution regression needs neither Node nor a network.
+// The script has no test/spec naming marker and must be recognized by command.
+fn assert_cd_repro_script_protected(command: &str) {
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("cd-repro-script");
+    let slug = slug_for("cd repro script");
+    let doc = bug_doc("待复核").replace("sh regression.sh", command);
+    let path = "apps/web/scripts/x-regression.sh";
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &doc,
+        "mkdir -p apps/web/scripts\necho broken > apps/web/product.txt\ncat > apps/web/scripts/x-regression.sh <<'SCRIPT'\ntest \"$(cat \"$(dirname \"$0\")/../product.txt\")\" = fixed\nSCRIPT",
+    );
+    bug_step(&w, 2, &slug, &doc, "echo fixed > apps/web/product.txt");
+    bug_step(&w, 3, &slug, &doc.replace("复核: 待复核", "复核: 通过"), "");
+    let id = create_bug(&mut w, "cd repro script");
+    w.settle();
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap();
+    let task = w.ctx.store.get_task(&id).unwrap();
+    assert_eq!(
+        snapshot
+            .as_ref()
+            .and_then(|s| s["files"].as_array())
+            .map(|files| files.len()),
+        Some(1),
+        "command={command}; snapshot={snapshot:?}; state={:?}",
+        task.state
+    );
+    let file = &snapshot.as_ref().unwrap()["files"][0];
+    assert_eq!(file["path"], path);
+    assert_eq!(file["protect"], "file");
+    assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 1);
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{:?}",
+        task.state
+    );
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let head = file["head"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(wt.join(path)).unwrap(),
+        automed::git::run_ok(&wt, &["show", &format!("{head}:{path}")])
+            .unwrap()
+            .stdout
+    );
+}
+
+#[test]
+fn bug_cd_repro_root_relative_control() {
+    assert_cd_repro_script_protected("sh apps/web/scripts/x-regression.sh");
+}
+
+#[test]
+fn bug_cd_repro_relative_script_is_protected() {
+    assert_cd_repro_script_protected("cd apps/web && sh scripts/x-regression.sh");
+}
+
+#[test]
+fn bug_cd_repro_parenthesized_relative_script_is_protected() {
+    assert_cd_repro_script_protected("( cd apps/web && sh scripts/x-regression.sh )");
+}
+
+#[test]
+fn bug_cd_repro_empty_protection_fails_at_locate_without_spending_fix_round() {
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("cd-repro-empty");
+    let slug = slug_for("cd repro empty");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "test -f fixed.txt");
+    bug_step(&w, 1, &slug, &doc, "echo broken > product.txt");
+    bug_step(&w, 2, &slug, &doc, "touch fixed.txt");
+    let id = create_bug(&mut w, "cd repro empty");
+    w.settle();
+    let task = w.ctx.store.get_task(&id).unwrap();
+    assert!(
+        matches!(&task.state, autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Locate,
+            reason: autome_domain::task::FailureReason::Protocol { detail }, ..
+        } if detail.contains("定位") && detail.contains("保护集为空")
+            && detail.contains("test") && detail.contains("spec")
+            && detail.contains("复现") && detail.contains("路径")),
+        "empty protection must fail at locate: {:?}",
+        task.state
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.regression_snapshot")
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn bug_cd_repro_legacy_empty_snapshot_still_fails_at_fix() {
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("cd-repro-legacy");
+    let slug = slug_for("cd repro legacy");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    let id = create_bug(&mut w, "cd repro legacy");
+    resume_wait(&mut w, |w| {
+        w.ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .is_some()
+    });
+    let mut snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    snapshot["files"] = json!([]);
+    w.ctx
+        .store
+        .append_event("bug.regression_snapshot", &id, snapshot)
+        .unwrap();
+    w.settle();
+    let task = w.ctx.store.get_task(&id).unwrap();
+    assert!(
+        matches!(&task.state, autome_domain::task::TaskState::Failed {
+        at: autome_domain::task::Node::Fix,
+        reason: autome_domain::task::FailureReason::Protocol { detail }, ..
+    } if detail == "回归测试保护集为空：定位轮必须新增或修改测试文件"),
+        "{:?}",
+        task.state
+    );
+}
+
 fn assert_regression_rejected(w: &World, id: &str, path: &str) {
     let task = w.ctx.store.get_task(id).unwrap();
     assert!(
@@ -5447,7 +5591,13 @@ fn bug_regression_guard_rejects_modified_or_deleted_tests() {
     bug_step(&w, 2, &slug, &doc, BUG_FIX);
     let id = create_bug(&mut w, "guard empty");
     w.settle();
-    assert_regression_rejected(&w, &id, "保护集为空");
+    assert!(matches!(
+        w.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Locate,
+            reason: autome_domain::task::FailureReason::Protocol { detail }, ..
+        } if detail.contains("保护集为空")
+    ));
 
     // Existing tests modified in locate, inline tests, names and directories.
     for path in [
