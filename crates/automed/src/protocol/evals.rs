@@ -5,7 +5,7 @@
 //! than walked at build time so that a case which stops being embedded fails
 //! here rather than on a user's machine.
 
-pub const SEED: [(&str, &str); 92] = [
+pub const SEED: [(&str, &str); 95] = [
     (
         "evals/audit-manual-only-milestone-goes-to-checklist/case.yaml",
         include_str!(
@@ -496,6 +496,20 @@ pub const SEED: [(&str, &str); 92] = [
         "evals/locate-proves-the-bug-with-a-failing-test/scaffold.sh",
         include_str!(
             "../../../../protocol/evals/locate-proves-the-bug-with-a-failing-test/scaffold.sh"
+        ),
+    ),
+    (
+        "evals/audit-keeps-project-files-unchanged/case.yaml",
+        include_str!("../../../../protocol/evals/audit-keeps-project-files-unchanged/case.yaml"),
+    ),
+    (
+        "evals/audit-keeps-project-files-unchanged/scaffold.sh",
+        include_str!("../../../../protocol/evals/audit-keeps-project-files-unchanged/scaffold.sh"),
+    ),
+    (
+        "evals/audit-keeps-project-files-unchanged/graders/boundary.md",
+        include_str!(
+            "../../../../protocol/evals/audit-keeps-project-files-unchanged/graders/boundary.md"
         ),
     ),
 ];

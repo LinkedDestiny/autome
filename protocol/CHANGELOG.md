@@ -71,3 +71,37 @@ Bug Loop 的独立协议、定位、修复与复核模板。
   eval: evals/locate-proves-the-bug-with-a-failing-test/
   realized_impact: null
 ```
+
+## protocol/v3
+
+审计、复盘、复核模板声明文档写入边界；验证缺口仅补文档验收命令或不入库临时检查，项目门禁失败交回实现轮。
+
+```yaml
+- id: S-1
+  kind: behavioral
+  clause: prompts/audit.md
+  evidence: [审计-prompt Bug 定位回归, T-47 审计越界事故线索]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: evals/audit-keeps-project-files-unchanged/
+  realized_impact: null
+```
+
+```yaml
+- id: S-2
+  kind: clarify
+  clause: prompts/retro.md
+  evidence: [审计-prompt Bug 定位回归, T-48 会话范围守卫]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: S-3
+  kind: clarify
+  clause: prompts/fix-review.md
+  evidence: [审计-prompt Bug 定位回归, T-48 会话范围守卫]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```

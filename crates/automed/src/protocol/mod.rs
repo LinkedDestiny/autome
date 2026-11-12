@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn the_version_in_force_is_the_newest_changelog_heading_over_the_seed() {
         let (r, files) = current();
-        assert_eq!(r.tag, "protocol/v2");
+        assert_eq!(r.tag, "protocol/v3");
         assert_eq!(r.hash, seed().hash());
         assert_eq!(files.hash(), seed().hash());
     }

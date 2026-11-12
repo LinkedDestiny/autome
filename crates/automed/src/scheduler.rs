@@ -418,12 +418,14 @@ fn guard_session_scope(ctx: &Ctx, s: &Session, project: &Project, task: &TaskRec
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
     let allowed = format!("{}/", task.doc_dir());
     let mut outside = Vec::new();
+    let mut baselines = Vec::new();
     for slot in &layout.repos {
         let base = heads
             .iter()
             .find(|v| v["repo"].as_str() == Some(slot.name.as_str()))
             .and_then(|v| v["head"].as_str())
             .ok_or_else(|| err(format!("缺少仓库 {} 的会话提交基线", slot.name)))?;
+        baselines.push(format!("{}: {base}", slot.worktree.display()));
         // No rename detection: both the deleted source and added destination
         // must satisfy the boundary. NUL delimiters preserve unusual filenames.
         let diff = git::run_ok(
@@ -450,10 +452,11 @@ fn guard_session_scope(ctx: &Ctx, s: &Session, project: &Project, task: &TaskRec
     }
     if !outside.is_empty() {
         return Err(err(format!(
-            "{}轮只能修改 {}/ 下的文件，本轮改了：{}",
+            "{}轮只能修改 {}/ 下的文件，本轮改了：{}。会话开始基线：{}。重跑前先保存需要交回实现/修复轮的改动，将越界文件恢复到对应基线并提交；确认基线到 HEAD 的差异仅含允许目录后再 rerun。不要重置整个分支或丢弃其他改动。",
             s.kind.label(),
             layout.doc_dir_from_cwd(&task.doc_dir()),
-            outside.join("、")
+            outside.join("、"),
+            baselines.join("；")
         )));
     }
     Ok(())
@@ -6561,6 +6564,8 @@ mod tests {
             assert_eq!(result.is_ok(), allowed, "{from} -> {to}: {result:?}");
             if !allowed {
                 let detail = result.unwrap_err().to_string();
+                assert!(detail.contains(&head), "{detail}");
+                assert!(detail.contains("恢复到对应基线并提交"), "{detail}");
                 assert!(
                     detail.contains(if from == "README.md" { from } else { to }),
                     "{detail}"
