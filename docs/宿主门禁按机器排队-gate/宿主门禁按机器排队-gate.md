@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 4/30
+implementation-round: 5/30
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-05 端到端验收：end_to_end.rs 新增 6 个 gate_queue_ 用例（T1–T6）
+next-action: 审计 M-05 端到端验收；通过后推进 M-06 文档与全量回归
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -400,7 +400,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | M-02 | 已完成 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
 | M-03 | 已完成 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 已完成 | 门禁超时文案 | 0 | |
-| M-05 | 开放 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
+| M-05 | 待审 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
 | M-06 | 开放 | 文档与全量回归 | 0 | |
 
 ## 里程碑说明
@@ -500,6 +500,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 - 负向对照：判据写成「退出码 == 124」时 domain 第 3 个用例失败；`gate.rs` 的终止行文案与判据不一致时 automed 第 1 个用例失败。
 
 ### M-05 验收契约
+
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-05-r5-impl.md · 待审 · 实现 #5
 
 - 验收命令：`cargo test -p automed --test end_to_end`（新增用例单独复跑：`cargo test -p automed --test end_to_end gate_queue_`）
 - 预期：`end_to_end` 共 112 个用例全部通过（基线 106 + 新增 6，即 T1–T6，见「测试与验证」）；基线中的门禁 e2e

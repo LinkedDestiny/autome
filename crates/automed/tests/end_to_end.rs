@@ -6646,3 +6646,301 @@ fn main_check_reuse_runs_when_the_merge_commit_tree_differs() {
     assert_eq!(calls.lines().filter(|s| *s == "main_check").count(), 1);
     assert_setup_verify_removed(&w, &id);
 }
+
+// Queue acceptance uses real sessions and jobs; release files are the only clock.
+fn queued_gate_world(tag: &str) -> World {
+    let w = World::new(tag);
+    w.configure("[loop]\nparallel = 3\n");
+    let script = w.root.join("queued-gate.sh");
+    std::fs::write(&script, format!(
+        "touch '{0}/ready-'\"$AUTOME_TASK\"\nwhile [ -d '{0}' ] && [ ! -f '{0}/release-'\"$AUTOME_TASK\" ]; do sleep 0.02; done\n",
+        w.root.display()
+    )).unwrap();
+    w.configure(&format!(
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 1\n",
+        script.display()
+    ));
+    w
+}
+
+fn queue_tick(w: &mut World) {
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let mut running = 0;
+    for task in w.ctx.store.list_unfinished().unwrap() {
+        let dir = automed::gate::dir_for(&w.repo, &task.id);
+        for entry in std::fs::read_dir(dir).into_iter().flatten() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "started") {
+                let job = automed::gate::Job {
+                    log: path.with_extension("log"),
+                    pid: path.with_extension("pid"),
+                    exit: path.with_extension("exit"),
+                    started: path,
+                };
+                running += usize::from(automed::gate::running(&job));
+            }
+        }
+    }
+    assert!(running <= 1, "{running} live jobs in one ledger");
+}
+
+fn queue_wait(w: &mut World, mut ready: impl FnMut(&World) -> bool) {
+    scheduling_wait(
+        w,
+        |w| {
+            queue_tick(w);
+            ready(w)
+        },
+        |w| format!("{:?}", w.task_states()),
+    );
+}
+
+fn queue_task(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    let id = create_task(w, request);
+    queue_wait(w, |w| {
+        w.node(&id).as_deref() == Some("await_design_approval")
+    });
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    queue_wait(w, |w| {
+        !setup_events(w, &id, "gate.started").is_empty()
+            || !setup_events(w, &id, "gate.queued").is_empty()
+    });
+    id
+}
+
+fn queue_release(w: &World, id: &str) {
+    std::fs::write(w.root.join(format!("release-{id}")), "go").unwrap();
+}
+
+fn queue_snapshot(w: &mut World, id: &str) -> Value {
+    let out = w.call("task.get", json!({"task_id": id}));
+    let v = ok(&out);
+    json!({"budget": v["task"]["budget_n"], "fix": v["task"]["fix_round"],
+        "impl": v["status_block"]["impl_round"], "design": v["status_block"]["design_round"],
+        "retry": v["retry"], "usage": v["so_far"], "sessions": v["sessions"].as_array().unwrap().len(),
+        "started": setup_events(w,id,"session.started").len(),
+        "results": setup_events(w,id,"gate.result"),
+        "fix_started": setup_events(w,id,"bug.fix_round_started").len(),
+        "attempts": w.ctx.store.retry_attempts(id).unwrap()})
+}
+
+fn queue_assert_waiting(w: &mut World, id: &str, position: u64) {
+    let out = w.call("task.get", json!({"task_id": id}));
+    assert_eq!(ok(&out)["gate_queue_position"], position);
+    assert!(ok(&out)["queue_position"].is_null());
+    assert!(setup_events(w, id, "gate.started").is_empty());
+    assert_eq!(setup_events(w, id, "gate.queued").len(), 1);
+    assert_eq!(setup_events(w, id, "gate.queued")[0].1["position"], position);
+    assert_eq!(
+        std::fs::read_dir(automed::gate::dir_for(&w.repo, id))
+            .into_iter()
+            .flatten()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn gate_queue_second_task_starts_its_gate_only_after_the_first_one_ends() {
+    needs_git!();
+    let mut w = queued_gate_world("queue-fifo");
+    let a = queue_task(&mut w, "queue first");
+    let b = queue_task(&mut w, "queue second");
+    queue_assert_waiting(&mut w, &b, 1);
+    assert_eq!(w.state(&b), "active");
+    assert_eq!(w.node(&b).as_deref(), Some("gate"));
+    let out = w.call("dashboard.get", json!({}));
+    assert!(
+        ok(&out)["running"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["task"]["id"] == b && t["gate_queue_position"] == 1)
+    );
+    let before = queue_snapshot(&mut w, &b);
+    assert_eq!(before["impl"], 1);
+    assert_eq!(before["design"], 2);
+    for _ in 0..3 {
+        queue_tick(&mut w);
+    }
+    assert_eq!(before, queue_snapshot(&mut w, &b));
+    for _ in 0..3 {
+        queue_tick(&mut w);
+    }
+    assert_eq!(before, queue_snapshot(&mut w, &b));
+    queue_assert_waiting(&mut w, &b, 1);
+    queue_release(&w, &a);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+    assert!(setup_events(&w, &a, "gate.result")[0].0 < setup_events(&w, &b, "gate.started")[0].0);
+    queue_release(&w, &b);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.result").is_empty());
+    assert_eq!(setup_events(&w, &b, "gate.result")[0].1["exit_code"], 0);
+}
+
+#[test]
+fn gate_queue_bug_loop_repro_check_waits_without_spending_a_fix_round() {
+    needs_git!();
+    let mut w = queued_gate_world("queue-bug");
+    let a = queue_task(&mut w, "queue regular");
+    let slug = slug_for("queue bug");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    let b = create_bug(&mut w, "queue bug");
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.queued").is_empty());
+    assert_eq!(w.node(&b).as_deref(), Some("repro_check"));
+    queue_assert_waiting(&mut w, &b, 1);
+    let before = queue_snapshot(&mut w, &b);
+    assert_eq!(before["fix"], 0);
+    for _ in 0..3 {
+        queue_tick(&mut w);
+    }
+    assert_eq!(before, queue_snapshot(&mut w, &b));
+    for _ in 0..3 {
+        queue_tick(&mut w);
+    }
+    assert_eq!(before, queue_snapshot(&mut w, &b));
+    queue_release(&w, &a);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+    assert!(setup_events(&w, &a, "gate.result")[0].0 < setup_events(&w, &b, "gate.started")[0].0);
+}
+
+#[test]
+fn gate_queue_time_does_not_count_toward_the_gate_timeout() {
+    needs_git!();
+    let mut w = queued_gate_world("queue-timeout");
+    // A disk-backed test ledger lets us age B's actual queue event, not just
+    // A's running clock. All scheduling still uses the production Store.
+    let db = w.root.join("timeout-ledger.sqlite");
+    w.ctx.store = Store::open(&db).unwrap();
+    let added = w.call("project.add", json!({"path": w.repo}));
+    w.project_id = ok(&added)["project"]["id"].as_str().unwrap().to_owned();
+    ok(&w.call(
+        "project.onboarding.skip",
+        json!({"project_id": w.project_id}),
+    ));
+    let a = queue_task(&mut w, "timeout first");
+    let b = queue_task(&mut w, "timeout second");
+    queue_assert_waiting(&mut w, &b, 1);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(conn.execute(
+        "UPDATE events SET at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-120 seconds') WHERE kind = 'gate.queued' AND subject_id = ?1",
+        [&b],
+    ).unwrap(), 1);
+    // Backdate real job clocks, never wait a minute in the suite.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (id, age) in [(&a, 61), (&b, 120)] {
+        for entry in std::fs::read_dir(automed::gate::dir_for(&w.repo, id))
+            .into_iter()
+            .flatten()
+        {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "started") {
+                std::fs::write(path, (now - age).to_string()).unwrap();
+            }
+        }
+    }
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+    let result = &setup_events(&w, &a, "gate.result")[0].1;
+    assert_eq!(result["exit_code"], 124);
+    assert!(result["tail"].as_str().unwrap().contains("已终止"));
+    let started = setup_events(&w, &b, "gate.started")[0].1["log"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result_at: u64 = conn.query_row(
+        "SELECT CAST(strftime('%s',at) AS INTEGER) FROM events WHERE kind = 'gate.result' AND subject_id = ?1 ORDER BY seq LIMIT 1",
+        [&a], |row| row.get(0),
+    ).unwrap();
+    assert!(
+        std::fs::read_to_string(PathBuf::from(started).with_extension("started"))
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap()
+            >= result_at
+    );
+    queue_release(&w, &b);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.result").is_empty());
+    assert_eq!(setup_events(&w, &b, "gate.result")[0].1["exit_code"], 0);
+    let prompt = w.repo.join(format!(
+        ".autome/fake/{}/6.prompt",
+        slug_for("timeout first")
+    ));
+    queue_wait(&mut w, |_| {
+        std::fs::read_to_string(&prompt).is_ok_and(|s| s.contains("门禁超时"))
+    });
+}
+
+#[test]
+fn gate_queue_counts_per_ledger_not_per_machine() {
+    needs_git!();
+    let mut a = queued_gate_world("queue-ledger-a");
+    let mut b = queued_gate_world("queue-ledger-b");
+    let x = queue_task(&mut a, "ledger first");
+    let y = queue_task(&mut b, "ledger second");
+    for (w, id) in [(&mut a, &x), (&mut b, &y)] {
+        assert_eq!(setup_events(w, id, "gate.started").len(), 1);
+        assert!(setup_events(w, id, "gate.queued").is_empty());
+        queue_release(w, id);
+    }
+}
+
+#[test]
+fn gate_queue_holds_a_setup_command_behind_another_tasks_gate() {
+    needs_git!();
+    let mut w = queued_gate_world("queue-setup");
+    let a = queue_task(&mut w, "setup blocker");
+    setup_fixture(&w, "setup waiter", "true");
+    let b = create_task(&mut w, "setup waiter");
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.queued").is_empty());
+    let queued = &setup_events(&w, &b, "gate.queued")[0].1;
+    assert_eq!(queued["job"], "setup");
+    assert_eq!(queued["checkout"], "worktree");
+    assert!(setup_events(&w, &b, "setup.started").is_empty());
+    assert_eq!(w.ctx.store.retry_attempts(&b).unwrap(), 0);
+    queue_release(&w, &a);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "setup.started").is_empty());
+    assert!(setup_events(&w, &a, "gate.result")[0].0 < setup_events(&w, &b, "setup.started")[0].0);
+}
+
+#[test]
+fn gate_queue_order_survives_a_core_restart() {
+    needs_git!();
+    let mut w = queued_gate_world("queue-restart");
+    let a = queue_task(&mut w, "restart first");
+    let b = queue_task(&mut w, "restart second");
+    let c = queue_task(&mut w, "restart third");
+    queue_assert_waiting(&mut w, &b, 1);
+    queue_assert_waiting(&mut w, &c, 2);
+    let store = std::mem::replace(&mut w.ctx.store, Store::open_in_memory().unwrap());
+    w.ctx = Ctx::new(store, &w.root.join("autome-home"), &w.root.join("home")).headless();
+    automed::scheduler::recover(&mut w.ctx);
+    queue_tick(&mut w);
+    queue_assert_waiting(&mut w, &b, 1);
+    queue_assert_waiting(&mut w, &c, 2);
+    assert_eq!(setup_events(&w, &a, "gate.started").len(), 1);
+    assert!(setup_events(&w, &a, "gate.result").is_empty());
+    queue_release(&w, &a);
+    queue_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+    assert!(setup_events(&w, &c, "gate.started").is_empty());
+    queue_release(&w, &b);
+    queue_wait(&mut w, |w| !setup_events(w, &c, "gate.started").is_empty());
+    assert!(setup_events(&w, &b, "gate.started")[0].0 < setup_events(&w, &c, "gate.started")[0].0);
+    queue_release(&w, &c);
+    queue_wait(&mut w, |w| !setup_events(w, &c, "gate.result").is_empty());
+}
