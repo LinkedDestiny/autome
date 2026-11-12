@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --test prompt_rendering scope_contract_
 根因: 审计模板允许未限定落点的加强验收，审计、复盘和复核模板未告知文档目录写入边界，而调度器按会话提交差异强制执行该边界。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -53,4 +53,10 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。
+第 1/3 轮复核：通过。
+
+- 复现命令：修复后 `cargo test --offline -p automed --test prompt_rendering scope_contract_` 通过；全部 prompt_rendering 20 passed。
+- 回归测试：`git diff 273489c 5b83de2 -- crates/automed/tests/prompt_rendering.rs` 为空，定位轮的四项测试未被删除、跳过或弱化。
+- 门禁：`cargo fmt --check` 无差异；protocol 相关 lib 测试 73 passed；`end_to_end` 112 passed（含修复轮提到的 v3 版本断言）。修复轮报告的 Desktop SIGABRT / Web 类型与 EPERM 失败位于未触及文件，本轮未复验，不属于此修复。
+- 根因：三份模板缺写入边界、审计验证缺口落点未限定，与 `guard_session_scope` 冲突，由差异直接印证；守卫判定保持不变，仅在错误中补会话基线与恢复步骤并加断言。
+- 范围：改动限于 audit/retro/fix-review 模板、golden、协议 v3 版本与 CHANGELOG、一条行为 eval、守卫错误文案；均为协议变更流程所需。已知未验证项：付费行为 eval 未跑，修复轮已如实声明。
