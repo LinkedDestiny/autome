@@ -7520,3 +7520,64 @@ fn protocol_before_merge_bug_rounds_are_told_the_host_runs_the_full_suite() {
     );
     assert!(!w.prompt(3).contains("独立复验复现命令与项目门禁"));
 }
+
+#[test]
+fn bug_loop_not_a_bug_task_convert_rebuilds_it_as_a_feature_with_its_attachments() {
+    needs_git!();
+    let mut w = World::new("convert-attachment");
+    let slug = slug_for("convert attachment");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "不是 Bug"),
+        "",
+    );
+    let attachment = w.repo.parent().unwrap().join("attachment.txt");
+    std::fs::write(&attachment, "附件内容\n").unwrap();
+    let brief = "# 原始卡片\n保留 {request}  \n";
+    let out=w.call("task.create",json!({"project_id":w.project_id,"request":"convert attachment","kind":"bug","brief":brief,"attachments":[attachment]}));
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(w.node(&id).as_deref(), Some("locate"));
+    assert!(matches!(
+        w.call("task.convert", json!({"task_id":id,"kind":"feature"}))
+            .reply
+            .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("not_a_bug"));
+    let out = w.call(
+        "task.convert",
+        json!({"task_id":id,"kind":"feature","start":true}),
+    );
+    let new_id = ok(&out)["task"]["id"].as_str().unwrap();
+    let new = w.ctx.store.get_task(new_id).unwrap();
+    assert_eq!(new.kind, autome_domain::task::TaskKind::Feature);
+    let get = w.call("task.get", json!({"task_id":new_id}));
+    assert_eq!(ok(&get)["brief"], brief);
+    assert!(
+        new.attachments
+            .iter()
+            .all(|p| std::path::Path::new(p).is_file())
+    );
+    let copy = w
+        .repo
+        .join(".worktree")
+        .join(&new.slug)
+        .join(new.doc_dir())
+        .join("attachments/attachment.txt");
+    assert_eq!(
+        std::fs::read(copy).unwrap(),
+        std::fs::read(attachment).unwrap()
+    );
+    assert_eq!(w.state(&id), "cancelled");
+    assert!(w.ctx.store.get_task(&id).unwrap().is_archived());
+    assert!(!w.repo.join(".worktree").join(slug).exists());
+    assert!(matches!(
+        w.call("task.convert", json!({"task_id":id,"kind":"feature"}))
+            .reply
+            .outcome,
+        ReplyOutcome::Error { .. }
+    ));
+}

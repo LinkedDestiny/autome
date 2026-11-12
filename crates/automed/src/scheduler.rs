@@ -1981,7 +1981,7 @@ fn record_failed_action(
 }
 
 /// Folds a finished task into `TaskMetrics` and stores it.
-fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+pub(crate) fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let worktree = task_docs_root(&project, &task.slug);
@@ -3878,6 +3878,34 @@ fn cleanup(layout: &TaskLayout) -> Result<()> {
 /// the branch first would destroy them (design §6). Copying them to
 /// `docs/.archive/` in the main worktree keeps the record of what was tried.
 fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
+    discard_checkout(ctx, task, project);
+    ctx.store.set_task_archived(&task.id, true)?;
+    Ok(())
+}
+
+pub(crate) fn check_convert_cancel(ctx: &Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
+    let resolved = resolve_config(ctx, project)?;
+    let context = task::Context {
+        config: &resolved,
+        budget_n: task.budget_n,
+        decisions: ctx.store.pending_decisions(&task.id)?,
+    };
+    let transition = bug_loop::apply_for(
+        TaskKind::Bug,
+        &task.state,
+        &Trigger::Cancel,
+        &context,
+        BugProgress::default(),
+        false,
+    )
+    .map_err(|e| err(e.reason))?;
+    if transition.next != TaskState::Cancelled || transition.action != Action::RunCancel {
+        return Err(err("改建取消转换不符合预期"));
+    }
+    Ok(())
+}
+
+pub(crate) fn discard_checkout(_ctx: &mut Ctx, task: &TaskRecord, project: &Project) {
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
 
     // The documents first, while the branch that holds them still exists.
@@ -3916,8 +3944,6 @@ fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()
     if layout.cwd.exists() {
         let _ = std::fs::remove_dir(&layout.cwd);
     }
-    ctx.store.set_task_archived(&task.id, true)?;
-    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {

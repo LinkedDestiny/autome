@@ -423,6 +423,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "task.pause" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Pause),
         "task.resume" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Resume),
         "task.stop" => task_stop(ctx, str_param(p, "task_id")?),
+        "task.convert" => task_convert(ctx, p),
         "task.cancel" => task_cancel(ctx, str_param(p, "task_id")?),
         "task.extend_budget" => task_trigger(
             ctx,
@@ -1438,15 +1439,15 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     )
 }
 
-fn create(
-    ctx: &mut Ctx,
+fn prepare_task(
+    ctx: &Ctx,
     project_id: &str,
     request: &str,
     attachments: Vec<String>,
     doc_refs: Vec<String>,
-    card: (autome_domain::task::TaskKind, Option<&str>, bool),
-) -> DispatchResult {
-    let (kind, brief, draft) = card;
+    card: (TaskKind, bool),
+) -> Result<crate::store::TaskRecord, DispatchError> {
+    let (kind, draft) = card;
     let project = ctx.store.get_project(project_id)?;
     let project_config = config_io::load_project(std::path::Path::new(&project.path))?;
     if kind == TaskKind::Bug && !draft {
@@ -1501,6 +1502,27 @@ fn create(
         // halfway through must not split them across two directories.
         doc_root: Some(doc_root),
     };
+    Ok(task)
+}
+
+fn create(
+    ctx: &mut Ctx,
+    project_id: &str,
+    request: &str,
+    attachments: Vec<String>,
+    doc_refs: Vec<String>,
+    card: (autome_domain::task::TaskKind, Option<&str>, bool),
+) -> DispatchResult {
+    let (kind, brief, draft) = card;
+    let task = prepare_task(
+        ctx,
+        project_id,
+        request,
+        attachments,
+        doc_refs,
+        (kind, draft),
+    )?;
+    let id = task.id.clone();
     ctx.store.create_task(&task, brief)?;
     let seq = ctx
         .store
@@ -1882,6 +1904,99 @@ fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResul
     Ok((
         payload,
         vec![event(seq, "task.updated", task_id, json!({}))],
+    ))
+}
+
+fn task_convert(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    let id = str_param(params, "task_id")?;
+    match params.get("kind") {
+        None => return Err(bad_params("缺少 kind：目前只能改建成需求（feature）")),
+        Some(v) if v == "feature" => {}
+        _ => return Err(bad_params("只能改建成需求任务：kind 必须是 feature")),
+    }
+    let start = params
+        .get("start")
+        .map(|v| v.as_bool().ok_or_else(|| bad_params("start 必须是布尔值")))
+        .transpose()?
+        .unwrap_or(false);
+    let source = ctx.store.get_task(id)?;
+    if source.kind != TaskKind::Bug {
+        return Err(rejected(format!(
+            "只有 Bug 任务可以改建成需求：{id} 是需求任务"
+        )));
+    }
+    if source.state
+        != (TaskState::Active {
+            node: Node::NotABug,
+        })
+        || source.is_archived()
+    {
+        return Err(rejected(format!(
+            "只有停在『不是 Bug』等你决定的任务可以改建：{id} 现在是 {}",
+            serde_json::to_string(&source.state).map_err(|e| internal(e.to_string()))?
+        )));
+    }
+    let project = ctx.store.get_project(&source.project_id)?;
+    if !project.is_active() {
+        return Err(rejected("项目已移除"));
+    }
+    for attachment in &source.attachments {
+        let path = std::path::Path::new(attachment);
+        if !path.is_file() {
+            let copy = crate::layout::TaskLayout::of(&project, &source.slug, &[])
+                .docs_root
+                .join(source.doc_dir())
+                .join("attachments")
+                .join(path.file_name().unwrap_or_default());
+            let hint = if copy.is_file() {
+                format!("；原任务里的副本在 {}，放回原处后重试", copy.display())
+            } else {
+                String::new()
+            };
+            return Err(rejected(format!("附件不存在：{attachment}{hint}")));
+        }
+    }
+    let brief = ctx.store.task_brief(id)?;
+    let mut task = prepare_task(
+        ctx,
+        &source.project_id,
+        &source.request,
+        source.attachments.clone(),
+        source.doc_refs.clone(),
+        (TaskKind::Feature, !start),
+    )?;
+    task.title.clone_from(&source.title);
+    scheduler::check_convert_cancel(ctx, &source, &project)?;
+    stop_running_session(ctx, id)?;
+    let seqs = ctx.store.convert_task(id, &task, brief.as_deref())?;
+    if let Err(e) = scheduler::write_task_metrics(ctx, id) {
+        tracing::warn!("改建后写指标失败：{e}");
+    }
+    scheduler::discard_checkout(ctx, &source, &project);
+    let report = scheduler::tick(ctx);
+    let task = ctx.store.get_task(&task.id)?;
+    Ok((
+        json!({"task": task_json(ctx, &task)?, "started": report.tasks_started.contains(&task.id), "queue_position": queue_position(ctx, &task)?, "converted_from": id}),
+        vec![
+            event(
+                seqs[0],
+                "task.created",
+                &task.id,
+                json!({"project_id": task.project_id, "converted_from": id}),
+            ),
+            event(
+                seqs[1],
+                "task.converted",
+                id,
+                json!({"from": id, "to": task.id}),
+            ),
+            event(
+                seqs[2],
+                "task.updated",
+                id,
+                json!({"state": TaskState::Cancelled, "trigger": "cancel"}),
+            ),
+        ],
     ))
 }
 
@@ -4702,6 +4817,383 @@ mod tests {
             );
             assert!(err_message(&out).contains("任务还没开始"));
             assert!(!READ_METHODS.contains(&"task.start"));
+        }
+    }
+    mod conversion {
+        use super::*;
+        fn rejection_message(out: &Outcome) -> &str {
+            assert!(matches!(
+                out.reply.outcome,
+                ReplyOutcome::Error {
+                    code: ReplyErrorCode::TransitionRejected,
+                    ..
+                }
+            ));
+            err_message(out)
+        }
+        const BRIEF: &str = "# 中文卡片\n保留 {request}  \n";
+        fn setup() -> (Sandbox, String, String) {
+            let mut sb = Sandbox::new("convert");
+            sb.ctx.store = Store::open(sb.path("ledger.sqlite")).unwrap();
+            let project = sb.add_project("repo");
+            let attachment = sb.path("input.txt");
+            std::fs::write(&attachment, "附件字节").unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({"project_id": project, "request":"original", "brief":BRIEF,"kind":"bug","draft":true,"attachments":[attachment],"doc_refs":["README.md"]}),
+                ),
+            );
+            let id = ok_payload(&out)["task"]["id"].as_str().unwrap().to_string();
+            sb.ctx
+                .store
+                .set_task_state(
+                    &id,
+                    &TaskState::Active {
+                        node: Node::NotABug,
+                    },
+                )
+                .unwrap();
+            let task = sb.ctx.store.get_task(&id).unwrap();
+            let repo = sb.path("repo");
+            std::fs::write(repo.join("README.md"), "initial").unwrap();
+            git::commit_paths(&repo, &["README.md"], "initial").unwrap();
+            git::worktree_add(
+                &repo,
+                &format!(".worktree/{}", task.slug),
+                &format!("autome/{}", task.slug),
+                "HEAD",
+            )
+            .unwrap();
+            let docs = repo.join(".worktree").join(&task.slug).join(task.doc_dir());
+            std::fs::create_dir_all(docs.join("attachments")).unwrap();
+            std::fs::write(docs.join("record.md"), "archive me").unwrap();
+            std::fs::copy(&attachment, docs.join("attachments/input.txt")).unwrap();
+            (sb, project, id)
+        }
+        fn convert(sb: &mut Sandbox, id: &str, start: bool) -> Outcome {
+            handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.convert",
+                    json!({"task_id":id,"kind":"feature","start":start}),
+                ),
+            )
+        }
+        fn snapshot(sb: &Sandbox) -> (i64, i64, i64, String, Option<String>) {
+            let c = rusqlite::Connection::open(sb.ctx.store.path()).unwrap();
+            (
+                c.query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+                    .unwrap(),
+                c.query_row("SELECT count(*) FROM task_briefs", [], |r| r.get(0))
+                    .unwrap(),
+                c.query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+                    .unwrap(),
+                c.query_row("SELECT state FROM tasks ORDER BY id LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+                c.query_row(
+                    "SELECT archived_at FROM tasks ORDER BY id LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+            )
+        }
+        #[test]
+        fn task_convert_rebuilds_a_not_a_bug_task_as_a_draft_feature() {
+            let (mut sb, project, id) = setup();
+            let old = sb.ctx.store.get_task(&id).unwrap();
+            let before = sb
+                .ctx
+                .store
+                .events_since_with_subject(0, 1000)
+                .unwrap()
+                .last()
+                .unwrap()
+                .0;
+            let out = convert(&mut sb, &id, false);
+            let value = ok_payload(&out);
+            let new_id = value["task"]["id"].as_str().unwrap();
+            let new = sb.ctx.store.get_task(new_id).unwrap();
+            assert_eq!(new.kind, TaskKind::Feature);
+            assert_eq!(new.state, TaskState::Draft);
+            assert_eq!(new.request, old.request);
+            assert_eq!(new.title, old.title);
+            assert_eq!(new.attachments, old.attachments);
+            assert_eq!(new.doc_refs, old.doc_refs);
+            assert_ne!(new.slug, old.slug);
+            assert_eq!(
+                sb.ctx.store.task_brief(new_id).unwrap().as_deref(),
+                Some(BRIEF)
+            );
+            let old = sb.ctx.store.get_task(&id).unwrap();
+            assert_eq!(old.state, TaskState::Cancelled);
+            assert!(old.is_archived());
+            assert!(!sb.path("repo").join(".worktree").join(&old.slug).exists());
+            assert!(!git::branch_exists(
+                &sb.path("repo"),
+                &format!("autome/{}", old.slug)
+            ));
+            assert_eq!(
+                std::fs::read_to_string(sb.path("repo").join(old.archive_dir()).join("record.md"))
+                    .unwrap(),
+                "archive me"
+            );
+            assert_eq!(value["converted_from"], id);
+            assert_eq!(value["started"], false);
+            assert!(value.get("queue_position").is_some());
+            assert!(!READ_METHODS.contains(&"task.convert"));
+            let events = sb.ctx.store.events_since_with_subject(before, 100).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .take(3)
+                    .map(|e| e.1.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["task.created", "task.converted", "task.updated"]
+            );
+            assert_eq!(events[0].2, new_id);
+            assert_eq!(
+                events[0].3,
+                json!({"project_id":project,"converted_from":id})
+            );
+            assert_eq!(events[1].2, id);
+            assert_eq!(events[1].3, json!({"from":id,"to":new_id}));
+            assert_eq!(events[2].2, id);
+            assert_eq!(
+                events[2].3,
+                json!({"state":TaskState::Cancelled,"trigger":"cancel"})
+            );
+            // Legacy absent/empty briefs and the create limit must survive byte-for-byte.
+            for brief in [None, Some(String::new()), Some("x".repeat(65536))] {
+                let (mut sb, _, id) = setup();
+                let c = rusqlite::Connection::open(sb.ctx.store.path()).unwrap();
+                c.execute("DELETE FROM task_briefs WHERE task_id=?1", [&id])
+                    .unwrap();
+                if let Some(body) = &brief {
+                    c.execute(
+                        "INSERT INTO task_briefs(task_id,body,created_at) VALUES(?1,?2,'now')",
+                        rusqlite::params![id, body],
+                    )
+                    .unwrap();
+                }
+                let out = handle_command(
+                    sb.ctx(),
+                    &cmd("task.convert", json!({"task_id":id,"kind":"feature"})),
+                );
+                let new_id = ok_payload(&out)["task"]["id"].as_str().unwrap();
+                assert_eq!(
+                    sb.ctx.store.get_task(new_id).unwrap().state,
+                    TaskState::Draft
+                );
+                assert_eq!(sb.ctx.store.task_brief(new_id).unwrap(), brief);
+            }
+        }
+        #[test]
+        fn task_convert_with_start_queues_the_new_task() {
+            for occupied in [false, true] {
+                let (mut sb, project, id) = setup();
+                if occupied {
+                    let mut blocker = prepare_task(
+                        &sb.ctx,
+                        &project,
+                        "occupant",
+                        vec![],
+                        vec![],
+                        (TaskKind::Feature, true),
+                    )
+                    .unwrap_or_else(|_| panic!("prepare blocker failed"));
+                    blocker.state = TaskState::Active { node: Node::Intake };
+                    sb.ctx.store.create_task(&blocker, None).unwrap();
+                    ok_payload(&handle_command(
+                        sb.ctx(),
+                        &cmd(
+                            "config.set_loop",
+                            json!({"project_id":project,"parallel":1}),
+                        ),
+                    ));
+                }
+
+                let out = convert(&mut sb, &id, true);
+                let v = ok_payload(&out);
+                let new_id = v["task"]["id"].as_str().unwrap();
+                let state = sb.ctx.store.get_task(new_id).unwrap().state;
+                assert!(matches!(
+                    state,
+                    TaskState::Queued | TaskState::Active { .. }
+                ));
+                assert_eq!(v["started"], !occupied);
+                assert_eq!(matches!(state, TaskState::Queued), occupied);
+                assert_eq!(
+                    sb.ctx.store.count_events(new_id, "task.created").unwrap(),
+                    1
+                );
+                assert_eq!(
+                    sb.ctx.store.count_events(new_id, "task.started").unwrap(),
+                    0
+                );
+            }
+        }
+        #[test]
+        fn task_convert_rejects_every_state_other_than_not_a_bug() {
+            let (mut sb, _, id) = setup();
+            for state in [
+                TaskState::Draft,
+                TaskState::Queued,
+                TaskState::Active { node: Node::Locate },
+                TaskState::Active {
+                    node: Node::AwaitInfo,
+                },
+                TaskState::Paused {
+                    resume: Node::Locate,
+                },
+                TaskState::Stopped { at: Node::Locate },
+                TaskState::Requeued {
+                    resume: Node::Locate,
+                },
+                TaskState::Failed {
+                    at: Node::Locate,
+                    reason: autome_domain::task::FailureReason::DesignBudget { limit: 1 },
+                },
+                TaskState::Cancelled,
+                TaskState::Done,
+            ] {
+                sb.ctx.store.set_task_state(&id, &state).unwrap();
+                let before = snapshot(&sb);
+                let out = convert(&mut sb, &id, false);
+                assert!(rejection_message(&out).contains(&serde_json::to_string(&state).unwrap()));
+                assert_eq!(snapshot(&sb), before);
+            }
+            sb.ctx.store.set_task_archived(&id, true).unwrap();
+            let before = snapshot(&sb);
+            assert!(rejection_message(&convert(&mut sb, &id, false)).contains("不是 Bug"));
+            assert_eq!(snapshot(&sb), before);
+            sb.ctx.store.set_task_archived(&id, false).unwrap();
+            sb.ctx
+                .store
+                .set_task_state(
+                    &id,
+                    &TaskState::Active {
+                        node: Node::NotABug,
+                    },
+                )
+                .unwrap();
+            let project = sb.ctx.store.get_task(&id).unwrap().project_id;
+            sb.ctx.store.remove_project(&project).unwrap();
+            let before = snapshot(&sb);
+            assert!(rejection_message(&convert(&mut sb, &id, false)).contains("项目已移除"));
+            assert_eq!(snapshot(&sb), before);
+        }
+        #[test]
+        fn task_convert_rejects_a_feature_task() {
+            let (mut sb, project, _) = setup();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({"project_id":project,"request":"feature","draft":true}),
+                ),
+            );
+            let id = ok_payload(&out)["task"]["id"].as_str().unwrap();
+            let before = snapshot(&sb);
+            assert!(rejection_message(&convert(&mut sb, id, false)).contains("只有 Bug"));
+            assert_eq!(snapshot(&sb), before);
+        }
+        #[test]
+        fn task_convert_rejects_bad_params() {
+            let (mut sb, _, id) = setup();
+            for p in [
+                json!({"kind":"feature"}),
+                json!({"task_id":id}),
+                json!({"task_id":id,"kind":"bug"}),
+                json!({"task_id":id,"kind":"feature","start":"yes"}),
+                json!({"task_id":id,"kind":null}),
+                json!({"task_id":id,"kind":"feature","start":1}),
+                json!({"task_id":id,"kind":"feature","start":null}),
+                json!({"task_id":123,"kind":"feature"}),
+            ] {
+                let before = snapshot(&sb);
+                let out = handle_command(sb.ctx(), &cmd("task.convert", p));
+                assert!(matches!(
+                    out.reply.outcome,
+                    ReplyOutcome::Error {
+                        code: ReplyErrorCode::InvalidParams,
+                        ..
+                    }
+                ));
+                assert_eq!(snapshot(&sb), before);
+            }
+            for id in ["missing", ""] {
+                let out = convert(&mut sb, id, false);
+                assert!(matches!(
+                    out.reply.outcome,
+                    ReplyOutcome::Error {
+                        code: ReplyErrorCode::NotFound,
+                        ..
+                    }
+                ));
+            }
+        }
+        #[test]
+        fn task_convert_rejects_a_missing_attachment_without_touching_either_task() {
+            let (mut sb, _, id) = setup();
+            std::fs::remove_file(sb.path("input.txt")).unwrap();
+            let before = snapshot(&sb);
+            assert!(rejection_message(&convert(&mut sb, &id, false)).contains("原任务里的副本在"));
+            assert_eq!(snapshot(&sb), before);
+            let old = sb.ctx.store.get_task(&id).unwrap();
+            std::fs::remove_file(
+                sb.path("repo")
+                    .join(".worktree")
+                    .join(old.slug.clone())
+                    .join(old.doc_dir())
+                    .join("attachments/input.txt"),
+            )
+            .unwrap();
+            let out = convert(&mut sb, &id, false);
+            assert!(rejection_message(&out).contains("附件不存在"));
+            assert!(!rejection_message(&out).contains("副本"));
+            assert_eq!(snapshot(&sb), before);
+        }
+        #[test]
+        fn task_convert_leaves_nothing_behind_when_a_commit_step_fails() {
+            for trigger in [
+                "BEFORE INSERT ON events WHEN NEW.kind='task.converted'".to_string(),
+                "BEFORE INSERT ON task_briefs".into(),
+                "BEFORE UPDATE ON tasks".into(),
+            ] {
+                let (mut sb, _, id) = setup();
+                let old = sb.ctx.store.get_task(&id).unwrap();
+                let before = snapshot(&sb);
+                let c = rusqlite::Connection::open(sb.ctx.store.path()).unwrap();
+                c.execute_batch(&format!("CREATE TRIGGER fail_convert {trigger} BEGIN SELECT RAISE(ABORT,'injected'); END;")).unwrap();
+                let out = convert(&mut sb, &id, false);
+                assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+                assert_eq!(snapshot(&sb), before);
+                assert!(sb.path("repo").join(".worktree").join(&old.slug).exists());
+                assert!(git::branch_exists(
+                    &sb.path("repo"),
+                    &format!("autome/{}", old.slug)
+                ));
+                c.execute_batch("DROP TRIGGER fail_convert").unwrap();
+                ok_payload(&convert(&mut sb, &id, false));
+            }
+        }
+        #[test]
+        fn task_convert_writes_nothing_when_stopping_the_session_fails() {
+            let (mut sb, _, id) = setup();
+            let path = crate::gate::dir_for(&sb.path("repo"), &id);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "not directory").unwrap();
+            let before = snapshot(&sb);
+            let out = convert(&mut sb, &id, false);
+            assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+            assert_eq!(snapshot(&sb), before);
+            std::fs::remove_file(path).unwrap();
+            ok_payload(&convert(&mut sb, &id, false));
         }
     }
 }
