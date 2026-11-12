@@ -1022,3 +1022,139 @@ fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
         assert!(value.get("idle").is_none());
     }
 }
+
+#[test]
+fn logs_json_prints_the_session_stream_one_json_value_per_line() {
+    let s = Sandbox::new("logs-json");
+    let request = "json logs";
+    let slug = autome_domain::project::slugify(request);
+    for n in 1..=3 {
+        s.step(n, &slug, &doc("设计中", if n == 1 { 0 } else { 1 }, 0, &[]));
+    }
+    s.step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let codex = r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Hello!"}}
+{"type":"turn.completed","usage":{"input_tokens":36111,"cached_input_tokens":12928,"cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":128}}"#;
+    let claude = r#"{"type":"system","subtype":"init","model":"claude-opus-5","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}
+{"type":"system","subtype":"hook_started"}
+{"type":"result","subtype":"success","num_turns":7,"duration_ms":91500}"#;
+    for (n, raw) in [(3, codex), (4, claude)] {
+        let path = s.repo.join(format!(".autome/fake/{n}.sh"));
+        let mut script = std::fs::read_to_string(&path).unwrap();
+        script.push_str(&format!("\nprintf '%s\\n' '{raw}'\n"));
+        if n == 4 {
+            script.push_str("printf 'warning\\n' >&2\n");
+        }
+        std::fs::write(path, script).unwrap();
+    }
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", request]);
+    let id = created["task"]["id"].as_str().unwrap();
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    let status = s.json(&[
+        "rpc",
+        "task.get",
+        &serde_json::json!({"task_id":id}).to_string(),
+    ]);
+    let sessions = status["sessions"].as_array().unwrap();
+    let last = sessions.first().unwrap();
+    let path = Path::new(last["log_path"].as_str().unwrap()).with_extension("jsonl");
+    let parse = |out: String| -> Vec<Value> {
+        out.lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let rows = parse(s.ok(&["logs", id, "--json"]));
+    assert_eq!(
+        rows.len(),
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+    );
+    assert_eq!(
+        rows.iter().map(|r| r["type"].clone()).collect::<Vec<_>>(),
+        serde_json::json!(["system", "assistant", "system", "result", null])
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(rows[1]["text"], "hi there");
+    assert!(rows[2]["text"].is_null());
+    assert_eq!(rows, parse(s.ok(&["logs", id, "--json", "-f"])));
+    let review = sessions[1]["id"].as_str().unwrap();
+    let review_rows = parse(s.ok(&["logs", id, "--session", review, "--json"]));
+    assert_eq!(review_rows[0]["text"], "Hello!");
+    assert!(
+        review_rows[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("in 36111")
+    );
+
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::{Command, Stdio};
+    let mut fds = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    drop(reader);
+    let out = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["logs", id, "--json"])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(out.stderr.is_empty());
+
+    std::fs::write(&path, b"\nwarning").unwrap();
+    let tail = parse(s.ok(&["logs", id, "--json"]));
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0]["line"], 2);
+    assert_eq!(tail[0]["text"], "warning");
+    std::fs::remove_file(&path).unwrap();
+    let missing = s.autome(&["logs", id, "--json"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(missing.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("没有原始流"));
+    std::fs::create_dir(&path).unwrap();
+    let unreadable = s.autome(&["logs", id, "--json"]);
+    assert_eq!(unreadable.status.code(), Some(1));
+    assert!(unreadable.stdout.is_empty());
+
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    let mut live = store.list_sessions(id).unwrap().pop().unwrap();
+    live.id = "live-stream".into();
+    live.lifecycle = autome_domain::session::SessionLifecycle::Running;
+    live.ended_at = None;
+    live.log_path = s.root.join("live.log").to_str().unwrap().into();
+    store.insert_session(&live).unwrap();
+    let live_args = ["logs", id, "--session", "live-", "--json"];
+    assert!(s.ok(&live_args).is_empty()); // Not created yet.
+    let live_path = Path::new(&live.log_path).with_extension("jsonl");
+    std::fs::write(&live_path, b"one\ntwo").unwrap();
+    let running = parse(s.ok(&live_args));
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0]["text"], "one");
+    std::fs::write(&live_path, b"one\ntwo\n").unwrap();
+    assert_eq!(parse(s.ok(&live_args)).len(), 2);
+    std::fs::write(&live_path, b"one\ntwo").unwrap();
+    store
+        .finish_session(
+            &live.id,
+            &autome_domain::session::SessionLifecycle::Exited { exit_code: 0 },
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+    assert_eq!(parse(s.ok(&live_args)).len(), 2);
+}

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/10
+implementation-round: 2/10
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-02 的 logs --json 与 --follow
+next-action: 独立审计 M-02 的 logs --json 与 --follow 及本轮证据
 
 任务文件：`docs/autome-run-与-logs-支持/autome-run-与-logs-支持-task.md`
 
@@ -122,7 +122,7 @@ next-action: 实现 M-02 的 logs --json 与 --follow
   会话已不在运行（与现有 `--follow` 判定相同：`list_sessions` 里该会话 `is_running()` 为假）时，读尽文件后把末尾没有换行的那一段
   当作最后一行处理。所以：不带 `--follow` 且会话还在跑时，只输出完整行；带 `--follow` 时持续输出、跟到会话结束且字节读尽才退出；
   任何时候都不输出半行。Ctrl-C 照旧停止跟随。
-- **会话选择**沿用现有 `--session` 前缀 / 取最后一个。`runtime` 取会话记录的 `runtime` 字段，`Runtime::parse` 不认识时 `CliError::Failed`。
+- **会话选择**沿用现有 `--session` 前缀；JSON 模式默认取最新会话（列表按 `started_at DESC` 返回，取 `first()`）。人类模式保留原有 `last()` 行为。`runtime` 取会话记录的 `runtime` 字段，`Runtime::parse` 不认识时 `CliError::Failed`。
 - **`.jsonl` 不存在**：会话仍在运行时视为空文件（包装脚本启动时才建，可能还没来得及建）；会话已结束仍不存在（渲染器不可用的老会话）→
   `CliError::Failed("会话 <id> 没有原始流 <路径>；不带 --json 的 `autome logs` 可以看渲染日志")`，退出码 1，stdout 为空。
 - 写出一律走 `println!`，管道关闭即 `exit(0)`（任务 §6-7）。
@@ -145,7 +145,7 @@ next-action: 实现 M-02 的 logs --json 与 --follow
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | events.since 补事件时间，run --json 逐行输出事件、错误与收尾行 | 0 | cli-run |
-| M-02 | 开放 | logs --json [--follow] 逐行输出会话原始流的结构化事件 | 0 | cli-logs |
+| M-02 | 待审 | logs --json [--follow] 逐行输出会话原始流的结构化事件 | 0 | cli-logs |
 
 ## 里程碑范围
 
@@ -168,6 +168,8 @@ next-action: 实现 M-02 的 logs --json 与 --follow
 - 负向对照：JSON 分支用 `print_json`（美化多行）时第一行 `{` 解析失败，集成用例红；沿用 `render::event_line` 过滤时每个会话收尾的 `task.head` 被丢掉，`seq` 列表相等断言红；`task_id` 直接取 `subject` 时项目主体那条单元用例红；`time` 用 `clock()` 时 `time == at` 断言红（`clock()` 输出本地 `HH:MM`，与 `at` 的 `YYYY-MM-DDTHH:MM:SSZ` 不同）。
 
 ### M-02 验收契约
+
+最新证据：docs/autome-run-与-logs-支持/evidence/M-02-r2-impl.md · 验收通过，待审 · 实现 #2
 
 - 验收命令：`cargo test -p autome-cli`
 - 预期：单元 32 个通过（M-01 后的 28 + 4：Claude 样例行的 `type`/`text`/`event`、Codex 样例行（`turn.started` 的 `text` 为 `null`）、非 JSON 行得到 `event: null, type: null, text: 原文` 且空行不输出、行边界函数对「两行半」的输入只吐两行且会话结束后补出第三行），集成 18 个通过（M-01 后的 17 + `logs_json_prints_the_session_stream_one_json_value_per_line`：第 3 个会话写 Codex 样例、第 4 个写 Claude 样例与一行 stderr 文本，跑到等设计批准后：`logs <任务> --json` 与 `logs <任务> --json -f` 的 stdout 每行可解析为 JSON，行数等于最后一个会话 `.jsonl` 的非空行数，`type` 依次为 `system`、`assistant`、`system`、`result`、`null`，`assistant` 行 `text` 含 `hi there`、`hook_started` 行 `text` 为 `null`；`logs <任务> --session <review 会话 id> --json` 的 `text` 含 `Hello!` 与 `in 36111`；把 stdout 接到读端已关闭的管道再跑 `logs <任务> --json`，退出码为 0 或 SIGPIPE 且 stderr 为空）。

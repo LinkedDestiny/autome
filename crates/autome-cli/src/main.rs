@@ -59,7 +59,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
                                  驱动 Loop；Ctrl-C 只停驱动，会话照常跑完
   status [任务]                  不带任务：等你决定 / 运行中 / 报警；带任务：详情
   ls                             所有任务（含已完成）
-  logs <任务> [--session 会话] [-f]
+  logs <任务> [--session 会话] [-f] [--json]
 
 卡点与控制
   approve <任务>                 批准设计
@@ -155,7 +155,7 @@ fn run(argv: &[String]) -> Result<()> {
             "--verbose",
             "--json",
         ],
-        "logs" => &["--session", "--follow"],
+        "logs" => &["--session", "--follow", "--json"],
         other => return Err(CliError::Usage(format!("未知命令 `{other}`"))),
     };
     if let Some(flag) = a.unknown(allowed) {
@@ -938,6 +938,54 @@ fn clock() -> String {
 // logs
 // ---------------------------------------------------------------------------
 
+fn logs_json(c: &mut Client, a: &Args, id: &str, session: &Value, log_path: &str) -> Result<()> {
+    let runtime =
+        autome_domain::role::Runtime::parse(session["runtime"].as_str().unwrap_or_default())
+            .ok_or_else(|| CliError::Failed("不认识的会话 runtime".into()))?;
+    let path = std::path::Path::new(log_path).with_extension("jsonl");
+    let sid = session["id"].as_str().unwrap_or_default();
+    let mut shown = 0;
+    let mut line = 0;
+    catch_sigint();
+    loop {
+        // Check lifecycle before reading so an ended session's final write is included.
+        let running = c
+            .ctx
+            .store
+            .list_sessions(id)
+            .map_err(|e| CliError::Failed(e.to_string()))?
+            .iter()
+            .any(|s| s.id == sid && s.is_running());
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && running => Vec::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CliError::Failed(format!(
+                    "会话 {sid} 没有原始流 {}；不带 --json 的 `autome logs` 可以看渲染日志",
+                    path.display()
+                )));
+            }
+            Err(e) => return Err(CliError::Failed(format!("读取 {}：{e}", path.display()))),
+        };
+        if bytes.len() > shown {
+            let end = shown + render::stream_complete_bytes(&bytes[shown..], !running);
+            for raw in bytes[shown..end].split_inclusive(|b| *b == b'\n') {
+                line += 1;
+                if let Some(event) = render::stream_event(raw, line, runtime) {
+                    println!("{event}");
+                }
+            }
+            shown = end;
+            let _ = std::io::stdout().flush();
+        }
+        if !a.has("--follow") || !running || INTERRUPTED.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Ok(())
+}
+
 fn logs(c: &mut Client, a: &Args) -> Result<()> {
     let id = c.resolve_task(a.need(1, "任务")?)?;
     let got = c.call("task.get", json!({ "task_id": id }))?;
@@ -948,12 +996,19 @@ fn logs(c: &mut Client, a: &Args) -> Result<()> {
             .find(|x| x["id"].as_str().is_some_and(|i| i.starts_with(s)))
             .cloned()
             .ok_or_else(|| CliError::Failed(format!("任务 {id} 没有会话 `{s}`")))?,
+        None if a.has("--json") => sessions
+            .first()
+            .cloned()
+            .ok_or_else(|| CliError::Failed(format!("任务 {id} 还没有会话")))?,
         None => sessions
             .last()
             .cloned()
             .ok_or_else(|| CliError::Failed(format!("任务 {id} 还没有会话")))?,
     };
     let path = session["log_path"].as_str().unwrap_or_default().to_string();
+    if a.has("--json") {
+        return logs_json(c, a, &id, &session, &path);
+    }
     let mut shown = 0usize;
     catch_sigint();
     loop {
