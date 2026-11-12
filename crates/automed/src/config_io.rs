@@ -241,9 +241,41 @@ fn read_skills(role: Role, v: &toml::Value) -> std::result::Result<Vec<String>, 
 }
 
 /// Parses a project document. Every field is optional; absence means inherit.
+const BUDGET_AMOUNT_ERROR: &str =
+    "[budget] per_task_usd 必须是 0.01 到 1000000 之间、最多两位小数的美元金额";
+
+fn parse_budget(
+    doc: &toml::Value,
+) -> std::result::Result<Option<autome_domain::config::BudgetConfig>, String> {
+    let Some(table) = doc.get("budget") else {
+        return Ok(None);
+    };
+    let table = table.as_table().ok_or("[budget] 不是一个表")?;
+    let Some(amount) = table.get("per_task_usd") else {
+        return Ok(None);
+    };
+    let dollars = amount
+        .as_float()
+        .or_else(|| amount.as_integer().map(|v| v as f64))
+        .ok_or(BUDGET_AMOUNT_ERROR)?;
+    let cents = dollars * 100.0;
+    if !dollars.is_finite()
+        || !(0.01..=1_000_000.0).contains(&dollars)
+        || (cents.round() - cents).abs() >= 1e-6
+    {
+        return Err(BUDGET_AMOUNT_ERROR.into());
+    }
+    Ok(Some(autome_domain::config::BudgetConfig {
+        per_task_cents: cents.round() as u64,
+    }))
+}
+
 fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
     let doc: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
-    let mut config = ProjectConfig::default();
+    let mut config = ProjectConfig {
+        budget: parse_budget(&doc)?,
+        ..ProjectConfig::default()
+    };
 
     if let Some(t) = doc.get("loop").and_then(toml::Value::as_table) {
         config.loop_overrides = LoopOverrides {
@@ -605,6 +637,50 @@ pub fn save_project(repo: &Path, config: &ProjectConfig) -> Result<()> {
         doc.as_table_mut().remove("bug");
     }
 
+    match config.budget {
+        Some(budget) => {
+            if !(1..=100_000_000).contains(&budget.per_task_cents) {
+                return Err(ConfigError::Parse {
+                    path: path.display().to_string(),
+                    detail: BUDGET_AMOUNT_ERROR.into(),
+                });
+            }
+            let original: toml::Value =
+                toml::from_str(&existing).map_err(|e| ConfigError::Parse {
+                    path: path.display().to_string(),
+                    detail: e.to_string(),
+                })?;
+            if parse_budget(&original).ok().flatten() != Some(budget) {
+                if !doc.contains_key("budget") {
+                    doc["budget"] = Item::Table(Table::new());
+                }
+                let table =
+                    doc["budget"]
+                        .as_table_like_mut()
+                        .ok_or_else(|| ConfigError::Parse {
+                            path: path.display().to_string(),
+                            detail: "[budget] 不是一个表".into(),
+                        })?;
+                table.insert(
+                    "per_task_usd",
+                    if budget.per_task_cents % 100 == 0 {
+                        value((budget.per_task_cents / 100) as i64)
+                    } else {
+                        value(budget.per_task_cents as f64 / 100.0)
+                    },
+                );
+            }
+        }
+        None => {
+            if let Some(table) = doc.get_mut("budget").and_then(Item::as_table_like_mut)
+                && table.remove("per_task_usd").is_some()
+                && table.is_empty()
+            {
+                doc.as_table_mut().remove("budget");
+            }
+        }
+    }
+
     // An entirely empty `[loop]` table is noise in a committed file.
     if doc
         .get("loop")
@@ -952,6 +1028,162 @@ mod tests {
         write_project(dir.path(), "[gate]\nconcurrency = 7 # keep\n");
         save_project(dir.path(), &ProjectConfig::default()).unwrap();
         assert_eq!(load_project(dir.path()).unwrap().gate_concurrency, Some(7));
+    }
+
+    #[test]
+    fn budget_config_reads_integer_and_decimal_dollars() {
+        for (input, cents) in [
+            ("20", 2000),
+            ("12.5", 1250),
+            ("0.01", 1),
+            ("1000000", 100_000_000),
+            ("0.07", 7),
+            ("20.00", 2000),
+        ] {
+            assert_eq!(
+                parse_project(&format!("[budget]\nper_task_usd = {input}\n"))
+                    .unwrap()
+                    .budget
+                    .unwrap()
+                    .per_task_cents,
+                cents
+            );
+        }
+    }
+
+    #[test]
+    fn budget_config_rejects_out_of_range_sub_cent_and_non_numbers() {
+        for input in [
+            "0",
+            "-1",
+            "0.001",
+            "1000000.01",
+            "\"20\"",
+            "true",
+            "nan",
+            "inf",
+            "-inf",
+            "0.009",
+            "12.501",
+            "9223372036854775807",
+            "''",
+            "[]",
+        ] {
+            assert_eq!(
+                parse_project(&format!("[budget]\nper_task_usd = {input}\n")).unwrap_err(),
+                BUDGET_AMOUNT_ERROR,
+                "{input}"
+            );
+        }
+        assert_eq!(
+            parse_project("budget = 1").unwrap_err(),
+            "[budget] 不是一个表"
+        );
+        assert!(parse_project("[budget]\nper_task_usd = 020").is_err());
+        let dir = TempDir::new("budget-invalid-save");
+        write_project(dir.path(), "[budget]\nper_task_usd = 20\n");
+        let before = std::fs::read(project_config_path(dir.path())).unwrap();
+        for cents in [0, 100_000_001, u64::MAX] {
+            let mut config = load_project(dir.path()).unwrap();
+            config.budget = Some(autome_domain::config::BudgetConfig {
+                per_task_cents: cents,
+            });
+            assert!(save_project(dir.path(), &config).is_err());
+            assert_eq!(
+                std::fs::read(project_config_path(dir.path())).unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn budget_config_absent_or_empty_is_none_and_save_adds_nothing() {
+        for text in [
+            "",
+            "[budget]\n",
+            "[budget]\nfuture = true\n",
+            "[gate]\ncommand = 'false'\n[retry]\nattempts = 0\n",
+        ] {
+            let dir = TempDir::new("budget-absent");
+            write_project(dir.path(), text);
+            let config = load_project(dir.path()).unwrap();
+            assert_eq!(config.budget, None);
+            save_project(dir.path(), &config).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(project_config_path(dir.path())).unwrap(),
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn budget_config_save_keeps_the_users_line_and_writes_or_removes_on_change() {
+        let dir = TempDir::new("budget-save");
+        write_project(dir.path(), "[budget]\nper_task_usd = 20  # 注释\n");
+        let mut config = load_project(dir.path()).unwrap();
+        config.roles.entry(Role::Plan).or_default().enabled = Some(false);
+        save_project(dir.path(), &config).unwrap();
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains("per_task_usd = 20  # 注释\n")
+        );
+        config.budget = Some(autome_domain::config::BudgetConfig {
+            per_task_cents: 1250,
+        });
+        save_project(dir.path(), &config).unwrap();
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains("per_task_usd = 12.5\n")
+        );
+        assert_eq!(load_project(dir.path()).unwrap().budget, config.budget);
+        config.budget = None;
+        save_project(dir.path(), &config).unwrap();
+        assert!(
+            !std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains("[budget]")
+        );
+        write_project(dir.path(), "budget = { per_task_usd = 20 }\n");
+        config = load_project(dir.path()).unwrap();
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_config_path(dir.path())).unwrap(),
+            "budget = { per_task_usd = 20 }\n"
+        );
+        config.budget = Some(autome_domain::config::BudgetConfig {
+            per_task_cents: 1250,
+        });
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().budget, config.budget);
+        config.budget = None;
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().budget, None);
+        for cents in [2000, 1, 100_000_000] {
+            config.budget = Some(autome_domain::config::BudgetConfig {
+                per_task_cents: cents,
+            });
+            save_project(dir.path(), &config).unwrap();
+            assert_eq!(load_project(dir.path()).unwrap().budget, config.budget);
+        }
+        config.budget = Some(autome_domain::config::BudgetConfig {
+            per_task_cents: 2000,
+        });
+        save_project(dir.path(), &config).unwrap();
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains("per_task_usd = 20\n")
+        );
+        write_project(dir.path(), "[budget]\nper_task_usd = 20\nfuture = true\n");
+        config = load_project(dir.path()).unwrap();
+        config.budget = None;
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(project_config_path(dir.path())).unwrap(),
+            "[budget]\nfuture = true\n"
+        );
     }
 
     #[test]
