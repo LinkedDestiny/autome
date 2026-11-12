@@ -1,0 +1,45 @@
+# 两个工作区 Bug 端到端用例等待误报定位
+
+status: 已定位
+fix-round: 0/3
+复现命令: cd crates/automed && cargo test --offline -p automed --test end_to_end waiting_regression -- --nocapture
+根因: 测试基础设施把未到期重试排除在未完成工作之外，并在多处条件等待中独立使用短截止时间，导致提前返回或正常推进时超时报错。
+复核: 待复核
+repos: autome-v2
+
+## 现象
+
+任务卡描述 main `281a575` 的两个工作区用例在 30 秒处失败，main `fb13dbd` 的 legacy 用例在 15 秒处失败；另并入 T-34 的限流重试提前返回问题。本轮以任务卡全部补充后的范围为准。
+
+当前定位基线为 `664647a`。当前项目是单 Git 仓库 autome-v2，含 Cargo workspace；实际改动成员为 `crates/automed`。测试中的 a、b 是临时构造的成员仓库，不是本任务需修改的仓库。复现命令从本 worktree 根目录进入 Cargo 成员目录执行。
+
+任务卡所列历史 MainCheck 与重跑日志在本 worktree 中不存在，历史次数和耗时仅作为用户提供的证据，本轮未声称重新验证历史满载现场。
+
+## 复现
+
+新增两个测试，均位于 `crates/automed/tests/end_to_end.rs`，以 `waiting_regression` 过滤运行：
+
+- `waiting_regression_settle_keeps_future_retry_pending`：参考对象库 `3b07a52` 的定位测试，创建真实任务及 Store 状态。依次验证无重试为静止、已到期重试为未完成，再设置 9999 年的未到期重试，执行真实 scheduler tick，确认无错误、无运行会话、任务仍在 adjudicate 且重试未消失。最后验证清除重试后静止，并断言清除前应为未完成。当前实现最后一个断言失败。
+- `waiting_regression_tick_waits_do_not_own_deadlines`：源码契约回归，检查三个问题用例、旧快照等待用例和 resume_wait 不再各自声明 deadline，以锁定任务卡要求的共用等待入口。当前实现报告这些入口仍自持截止时间。它不是机器负载模拟或性能测试，不足以独立证明满载时的实际耗时；合并后仍需由修复轮验证共用辅助函数的 90 秒预算及所有调用点。
+
+测试不依赖网络、负载制造或临界时间竞争；未来时间固定到 9999 年。需要本地 Cargo 依赖缓存和 Git，缺少 Git 将显式失败而非跳过。
+
+本轮三次运行均得到两个断言失败，没有命令超时或编译错误。原始日志在 `.autome/output/locate-regression-1.log` 和 `.autome/output/locate-regression-2.log`；第一次耗时 0.26 秒。第二次补充了旧快照等待入口覆盖，耗时 0.40 秒；第三次按状态块的完整命令从成员目录执行，耗时 0.25 秒，退出码 101，日志为 `.autome/output/locate-regression-final.log`。失败文本分别为：
+
+- `settle must not return while an unfinished task has a future pending retry`
+- `scheduling waits must share the 90s hang detector instead of owning deadlines`
+
+## 根因分析
+
+1. `World::settle()` 每次 tick 后立即用 `!has_pending_work()` 判定退出。`has_pending_work()` 对 pending_retry 额外要求 `at <= now_iso()`。因此没有运行会话、节点为 adjudicate、重试尚未到期时，会把“暂时不能调度”当成“工作已结束”。回归使用真实 Store 和 scheduler 验证此谓词，未等待未来重试真正到期，也未让 settle 陷入 90 秒等待。
+2. 三个问题用例等待的都是业务状态（任务静止、等待用户或失败），并无耗时性能断言。它们使用 15/30/30 秒局部 deadline；`World::settle()` 已说明 90 秒是挂死探测预算。机器竞争会消耗墙钟时间，局部截止不能区分正常慢推进与挂死。
+3. 全文件等待点核对（行号为定位基线）：World::settle 358、WorkspaceWorld::settle 2146、resume_wait 2821、旧快照等待 4939 已使用 90 秒，但仍各有循环，修复轮应纳入统一入口。4132、4521、5115 为上述短截止调度循环。468 的 exit-marker 等待以及 2796/2808 的 PID 启动/退出等待不调用 tick，不属于手写 tick 循环，也没有明确的性能预算断言；尤其 exit-marker 等待有意不回收会话，不宜机械替换为会推进调度的函数。是否统一其非调度等待实现应保持原语义。
+4. 本轮证据支持测试等待逻辑问题，没有证据证明产品 scheduler 卡死。现有业务状态、会话数、文件内容和错误断言应全部保留。修复 future-retry 判定后，原来用 settle 等待“已安排但未到期重试”的脚本需改为明确等待重试状态，避免等待未来很久的重试。
+
+## 修复说明
+
+定位轮未修复。仅新增回归测试和本文档，既有辅助函数、用例和产品代码未修改。下一轮按任务卡统一 tick 条件等待入口并修正未到期重试判定，保持原断言强度。
+
+## 复核意见
+
+待独立复核。未执行全量门禁、满载并发验证或修复后验收；本轮预期交付为红色回归测试。

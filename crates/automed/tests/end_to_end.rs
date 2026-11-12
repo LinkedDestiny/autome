@@ -6109,3 +6109,96 @@ fn setup_is_skipped_in_a_workspace_with_one_event_per_task() {
     assert_eq!(w.ctx.store.count_events(&id, "setup.started").unwrap(), 0);
     assert!(!w.root.join("setup-runs").exists());
 }
+#[test]
+fn waiting_regression_settle_keeps_future_retry_pending() {
+    use autome_domain::task::{Node, TaskState};
+
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("settle-future-retry");
+    // A draft avoids launching a CLI while constructing the post-session
+    // state. Exercise settle's real exit predicate without a wall-clock race
+    // or waiting for its 90-second hang detector.
+    let created = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "future retry", "draft": true}),
+    );
+    let id = ok(&created)["task"]["id"].as_str().unwrap().to_owned();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &TaskState::Active {
+                node: Node::Adjudicate,
+            },
+        )
+        .unwrap();
+    assert!(
+        !w.has_pending_work(),
+        "control: no session or retry remains"
+    );
+
+    w.ctx
+        .store
+        .schedule_retry(
+            &id,
+            Node::Adjudicate,
+            "2000-01-01T00:00:00Z",
+            None,
+            "限流",
+            false,
+        )
+        .unwrap();
+    assert!(w.has_pending_work(), "control: a due retry is pending work");
+
+    let future = "9999-01-01T00:00:00Z";
+    w.ctx
+        .store
+        .schedule_retry(&id, Node::Adjudicate, future, None, "限流", false)
+        .unwrap();
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+    assert_eq!(w.node(&id).as_deref(), Some("adjudicate"));
+    assert_eq!(w.ctx.store.pending_retry(&id).unwrap().unwrap().1, future);
+    let pending = w.has_pending_work();
+
+    w.ctx.store.clear_retry(&id).unwrap();
+    assert!(
+        !w.has_pending_work(),
+        "control: clearing the retry makes it quiet"
+    );
+    assert!(
+        pending,
+        "settle must not return while an unfinished task has a future pending retry"
+    );
+}
+
+// This is a source-contract guard, not a load benchmark. Every scheduling
+// wait must use the shared hang detector: a local deadline can expire while
+// the task is still making progress. Inspect actual deadline declarations,
+// not comments or the non-ticking process/exit-marker waits.
+#[test]
+fn waiting_regression_tick_waits_do_not_own_deadlines() {
+    let source = include_str!("end_to_end.rs");
+    let cases = [
+        "bug_loop_a_legacy_bug_task_already_in_the_design_loop_keeps_running_it",
+        "bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_the_named_repos",
+        "bug_regression_guard_checks_each_workspace_member",
+        "bug_regression_guard_ignores_the_bug_doc_in_a_snapshot_from_an_older_build",
+        "resume_wait",
+    ];
+    let mut local_deadlines = Vec::new();
+    for name in cases {
+        let declaration = format!("fn {name}(");
+        let body = source.split_once(&declaration).expect("wait must exist").1;
+        // These are top-level functions, whose closing brace is unindented.
+        let body = body.split_once("\n}").expect("function must end").0;
+        if body.contains("let deadline =") {
+            local_deadlines.push(name);
+        }
+    }
+    assert!(
+        local_deadlines.is_empty(),
+        "scheduling waits must share the 90s hang detector instead of owning deadlines: {local_deadlines:?}"
+    );
+}
