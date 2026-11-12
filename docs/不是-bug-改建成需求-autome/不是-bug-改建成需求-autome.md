@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/15
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-01；通过后实现 M-02 的 CLI 命令、帮助与 not_a_bug 提示
+next-action: 实现 M-02 的 CLI 命令、帮助与 not_a_bug 提示
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -188,7 +188,7 @@ Outcome 里附带的事件只用现有类型：`task.created`（新任务）与 
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | 内核 task.convert（预检、单事务改建与取消、清理、事件）与端到端用例 | 0 | convert-core |
+| M-01 | 已完成 | 内核 task.convert（预检、单事务改建与取消、清理、事件）与端到端用例 | 0 | convert-core |
 | M-02 | 开放 | CLI autome task convert、帮助与 not_a_bug 提示 | 0 | convert-cli |
 | M-03 | 开放 | 网页写网关放行 task.convert 与全量回归 | 0 | convert-web |
 
@@ -198,7 +198,7 @@ M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程
 
 ### M-01 验收契约
 
-最新证据：docs/不是-bug-改建成需求-autome/evidence/M-01-r1-impl.md · 验收通过，宿主门禁有环境阻塞，待独立审计 · 实现 #1
+最新证据：docs/不是-bug-改建成需求-autome/evidence/M-01-r1-audit.md · 通过 · 审计 #1
 
 - 验收命令：`cargo test -p automed task_convert`
 - 预期：该过滤共 10 个用例通过，全是新增用例，基线上为 0 个。
