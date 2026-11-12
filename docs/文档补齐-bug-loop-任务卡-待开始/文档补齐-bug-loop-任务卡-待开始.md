@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/15
+implementation-round: 3/15
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现轮推进 M-03：README 命令行与配置补齐、全量门禁
+next-action: M-03 重跑全量门禁，核实 Electron SIGABRT 与本地监听 EPERM 环境阻塞解除并比对用例总数后报待审
 
 任务文件：`docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始-task.md`（目标、范围、硬性约束与验收标准以它为准；下文 `任务 §n` 指它的小节，`要求 n` 指任务 §3 的条目，`验收 n` 指任务 §4 的条目，`约束 n` 指任务 §5 的条目）。
 
@@ -281,6 +281,8 @@ if [ "$n" = "$t" ]; then echo "$m PASS $n/$t"; else echo "$m FAIL $n/$t"; exit 1
 - 负向对照：把任务卡内容写进 §5 而不是 §8 → §8 区间 `缺 task_briefs`、`缺 -card.md`；把 `task.start, task.reply` 塞进 §14 原有的「命令：」行 → 「删除或改写了 1 行」；把 `[bug]` 规则写进 §8.1 而不是 §9 → §9 区间 `缺 1 到 20`。
 
 ### M-03 验收契约
+
+最新证据：docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-03-r3-impl.md · 文档检查通过，全量门禁环境阻塞，保持开放 · 实现 #3
 
 - 验收命令：`sed -n '/^~~~sh check-docs$/,/^~~~$/p' docs/文档补齐-bug-loop-任务卡-待开始/文档补齐-bug-loop-任务卡-待开始.md | sed '1d;$d' | sh -s M-03 && sh scripts/ci-local.sh > .autome/output/ci-local.txt 2>&1; echo "ci-local exit $?"; tail -25 .autome/output/ci-local.txt`
 - 预期：输出 `M-03 PASS 155/155`（基线上为 `M-03 FAIL 84/155`）；`ci-local exit 0`，各步骤 ok；`cargo test`、`npm test`（desktop）、`apps/web` 测试的用例总数与基线相同（文档改动不增减用例），证据里写出这三个数和基线数。

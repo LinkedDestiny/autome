@@ -4,3 +4,4 @@
 审计 #1 | M-01 | 通过 | evidence/M-01-r1-audit.md | 无
 实现 #2 | M-02 | 待审 | docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-02-r2-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-02-r2-audit.md | 无
+实现 #3 | M-03 | 开放，文档检查通过 | docs/文档补齐-bug-loop-任务卡-待开始/evidence/M-03-r3-impl.md | Electron SIGABRT、Web 监听 EPERM
