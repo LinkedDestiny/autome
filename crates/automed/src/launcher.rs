@@ -361,6 +361,14 @@ pub struct PromptSpec<'a> {
     pub doc_refs: &'a [String],
 }
 
+/// Autome aborts a rebase that conflicts, so the session's worktree shows
+/// nothing to resolve. Without being told to redo the rebase itself, a session
+/// finds no conflict, changes nothing, and the next rebase fails the same way.
+const REBASE_YOURSELF: &str = "Autome 已中止那次 rebase，所以工作树里现在看不到冲突标记。\
+请你自己把本分支 rebase 到默认分支（`git rebase <默认分支>`，默认分支一般是 `main`），\
+逐个解决这些文件里的冲突，`git add` 后 `git rebase --continue`，直到 rebase 完成。\
+不要用 merge：Autome 下一次仍会 rebase，合并提交解决不了冲突。";
+
 /// Builds the prompt text a session is started with.
 ///
 /// The entry sentence is quoted verbatim from the task-file protocol (§5.2),
@@ -411,7 +419,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         }
         Some(Inject::RebaseConflict { files }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
             p.push_str(&format!(
-                "\nrebase 冲突：{}。解决并提交，按本轮预算更新 Bug 文档并重置复核为待复核。\n",
+                "\nrebase 冲突：{}。{REBASE_YOURSELF}按本轮预算更新 Bug 文档并重置复核为待复核。\n",
                 files.join("、")
             ));
         }
@@ -425,7 +433,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         Some(Inject::RebaseConflict { files }) => {
             p.push_str(&format!(
                 "\n本分支 rebase 到最新默认分支时发生冲突，涉及文件：\n{}\n\n\
-                 请解决这些冲突并提交，保持里程碑状态与设计文档一致，然后照常结束会话。\n",
+                 {REBASE_YOURSELF}保持里程碑状态与设计文档一致，然后照常结束会话。\n",
                 files
                     .iter()
                     .map(|f| format!("- {f}"))
@@ -1690,6 +1698,13 @@ mod tests {
         assert!(p.contains("- src/a.ts"), "{p}");
         assert!(p.contains("- src/b.ts"), "{p}");
         assert!(p.contains("冲突"), "{p}");
+        // Autome aborts its own rebase, so the worktree shows no conflict.
+        // A session told only to "resolve the conflicts" finds none, changes
+        // nothing, and the next rebase conflicts again (T-27: 19 rounds).
+        assert!(p.contains("已中止"), "{p}");
+        assert!(p.contains("git rebase"), "{p}");
+        assert!(p.contains("git rebase --continue"), "{p}");
+        assert!(p.contains("不要用 merge"), "{p}");
     }
 
     #[test]
@@ -2162,6 +2177,8 @@ mod tests {
         );
         assert!(conflict.contains("src/a.rs"));
         assert!(conflict.contains("待复核"));
+        assert!(conflict.contains("git rebase --continue"));
+        assert!(conflict.contains("已中止"));
         assert!(!conflict.contains("保持里程碑"));
     }
 }
