@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 6/25
+implementation-round: 7/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-05 CLI 费用展示与全量门禁，并修正 B-07 键集合基线
+next-action: 在支持 Electron 与本地监听的环境复跑 M-05 全量门禁，取得通过证据后标待审
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -321,6 +321,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-04-r6-audit.md · 通过 · 审计 #5
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
   `ls` 费用列与脚注、`status` 运行中行费用；`USAGE` 末尾说明配置节的那句加上 `[budget]`。
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-impl.md · 专项通过，全量环境阻塞，保持开放 · 实现 #7
 
 ## 验收契约
 
@@ -425,7 +426,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 - B-04 `stop_on_exceed`（任务卡点名的后续项）。
 - B-05 `autome status` 运行中行的 `$3.75*` 没有星号脚注（只有 `ls` 末尾有），可复用同一句释义（评审 N-01）。
 - B-06 `autome alerts`（`main.rs:983–991`）直接打印原始 `kind`，可与 B-02 的统一种类文案表一起做；`budget_exceeded` 的 detail 已是完整中文，含义可读（评审 N-02）。
-- B-07 `end_to_end.rs::bug_loop_task_get_reports_the_fix_round_for_bugs_only`（约 4650 行）的 task 键集合基线缺 `cost_usd` / `cost_sessions_without_cost`（M-02 起红；审计 #2 曾补过，被「还原审计轮越界改动」提交撤回）。M-05 的 `cargo test --workspace` 会因此红，须在 M-05 实现轮补上。
+- B-07 已修正：`end_to_end.rs::bug_loop_task_get_reports_the_fix_round_for_bugs_only` 的 task 键集合期望补齐 `cost_usd` / `cost_sessions_without_cost`，保留其余断言以兼容新增字段。
 
 ## 争议项
 

@@ -80,7 +80,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
 不写时取当前目录所在的已注册项目；<任务> 可以写 id 或 slug 前缀。
 
 状态在 $AUTOME_HOME（默认 ~/.autome），与桌面端共用。
-项目的门禁与重试在仓库的 .autome/config.toml 里配置（[gate] / [retry]）。
+项目的门禁、重试与预算在仓库的 .autome/config.toml 里配置（[gate] / [retry] / [budget]）。
 ";
 
 fn main() {
@@ -538,12 +538,19 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
     }
     for (p, t) in &tasks {
         println!(
-            "{}  {:<28} {:<16} {}",
+            "{}  {:<28} {:<16} {}  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"])
+            render::state_line(&t["state"]),
+            render::cost_cell(t)
         );
+    }
+    if tasks
+        .iter()
+        .any(|(_, t)| render::cost_cell(t).ends_with('*'))
+    {
+        println!("* 有会话没有计费数据（如 Codex），实际花费不低于所示金额");
     }
     Ok(())
 }
@@ -620,6 +627,10 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             t["slug"].as_str().unwrap_or_default(),
             render::state_line(&t["state"])
         );
+        let cost = render::cost_cell(t);
+        if !cost.is_empty() {
+            line.push_str(&format!("  · {cost}"));
+        }
         if let Some(s) = e["session"].as_object() {
             line.push_str(&format!(
                 "  · {} #{}",
@@ -664,6 +675,14 @@ fn task_detail(got: &Value) {
         t["title"].as_str().unwrap_or_default()
     );
     println!("  状态      {}", render::state_line(&t["state"]));
+    if let Some(cost) = got.get("cost") {
+        println!(
+            "  费用      {}（{} 个会话，其中 {} 个无计费数据）",
+            render::usd(cost["usd_total"].as_f64().unwrap_or(0.0)),
+            cost["sessions"].as_u64().unwrap_or(0),
+            cost["sessions_without_cost"].as_u64().unwrap_or(0)
+        );
+    }
     println!(
         "  项目      {}  分支 {}",
         got["project"]["name"].as_str().unwrap_or_default(),

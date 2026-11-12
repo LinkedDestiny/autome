@@ -5277,6 +5277,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
     assert_eq!(keys[0], keys[1]);
     let mut baseline = [
         "id",
+        "cost_usd",
+        "cost_sessions_without_cost",
         "kind",
         "slug",
         "title",

@@ -1158,3 +1158,165 @@ fn logs_json_prints_the_session_stream_one_json_value_per_line() {
         .unwrap();
     assert_eq!(parse(s.ok(&live_args)).len(), 2);
 }
+
+fn cost_fixture(tag: &str) -> (Sandbox, String) {
+    use autome_domain::role::{Role, Runtime};
+    use autome_domain::session::{Session, SessionKind, SessionLifecycle};
+    let s = Sandbox::new(tag);
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "cost fixture", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap().to_owned();
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    for (n, cost) in [Some(1.25), Some(2.5), None, Some(99.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let running = n == 3;
+        store
+            .insert_session(&Session {
+                id: format!("cost-{n}"),
+                task_id: id.clone(),
+                kind: SessionKind::Role { role: Role::Impl },
+                runtime: Runtime::Claude,
+                model: "fixture".into(),
+                effort: None,
+                skills: vec![],
+                round: n as u32 + 1,
+                started_at: format!("2026-01-0{}T00:00:00Z", n + 1),
+                ended_at: (!running).then(|| format!("2026-01-0{}T00:01:00Z", n + 1)),
+                lifecycle: if running {
+                    SessionLifecycle::Running
+                } else {
+                    SessionLifecycle::Exited { exit_code: 0 }
+                },
+                log_path: String::new(),
+                pid: None,
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: Default::default(),
+            })
+            .unwrap();
+        store
+            .set_session_metrics(
+                &format!("cost-{n}"),
+                &autome_domain::metrics::SessionMetrics {
+                    cost_usd: cost,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    (s, id)
+}
+
+#[test]
+fn cost_cli_status_task_prints_the_cost_line_under_state() {
+    let (s, id) = cost_fixture("cost-detail");
+    let output = s.ok(&["status", &id]);
+    let lines: Vec<_> = output.lines().collect();
+    let state = lines
+        .iter()
+        .position(|line| line.starts_with("  状态"))
+        .unwrap();
+    assert_eq!(
+        lines[state + 1],
+        "  费用      $3.75（3 个会话，其中 1 个无计费数据）"
+    );
+    let got = s.json(&["status", &id]);
+    assert_eq!(got["cost"]["usd_total"], 3.75);
+    assert_eq!(got["cost"]["sessions"], 3);
+    assert_eq!(got["cost"]["sessions_without_cost"], 1);
+    let empty = s.json(&["task", "new", "empty cost", "--draft"]);
+    let output = s.ok(&["status", empty["task"]["id"].as_str().unwrap()]);
+    assert!(
+        output
+            .lines()
+            .any(|line| line == "  费用      $0.00（0 个会话，其中 0 个无计费数据）")
+    );
+}
+
+#[test]
+fn cost_cli_ls_appends_cost_and_a_footnote() {
+    let (s, id) = cost_fixture("cost-list");
+    let empty = s.json(&["task", "new", "empty cost", "--draft"]);
+    let empty_id = empty["task"]["id"].as_str().unwrap();
+    let output = s.ok(&["ls"]);
+    assert!(
+        output
+            .lines()
+            .find(|line| line.starts_with(&format!("{id}  ")))
+            .unwrap()
+            .ends_with("  $3.75*")
+    );
+    assert!(
+        output
+            .lines()
+            .find(|line| line.starts_with(&format!("{empty_id}  ")))
+            .unwrap()
+            .ends_with("  $0.00")
+    );
+    assert_eq!(
+        output.lines().last().unwrap(),
+        "* 有会话没有计费数据（如 Codex），实际花费不低于所示金额"
+    );
+    let tasks = s.json(&["ls"]);
+    let task = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id)
+        .unwrap();
+    assert_eq!(task["cost_usd"], 3.75);
+    assert_eq!(task["cost_sessions_without_cost"], 1);
+    let projects = s.json(&["project", "ls"]);
+    assert_eq!(
+        projects["projects"][0]["cost_usd_total"],
+        serde_json::json!({"unfinished":3.75,"finished":0.0})
+    );
+    assert_eq!(projects["projects"][0]["cost_sessions_without_cost"], 1);
+    let clean = Sandbox::new("cost-list-no-star");
+    clean.ok(&[
+        "project",
+        "add",
+        clean.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    assert!(!clean.ok(&["ls"]).contains("*"));
+    clean.ok(&["task", "new", "no sessions", "--draft"]);
+    let output = clean.ok(&["ls"]);
+    assert!(!output.contains('*'));
+    assert!(output.trim_end().ends_with("  $0.00"));
+}
+
+#[test]
+fn cost_cli_running_row_shows_cost() {
+    use autome_domain::task::{Node, TaskState};
+    let (s, id) = cost_fixture("cost-running");
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    store
+        .set_task_state(
+            &id,
+            &TaskState::Active {
+                node: Node::Implement,
+            },
+        )
+        .unwrap();
+    let output = s.ok(&["status"]);
+    let row = output
+        .split("\n运行中\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .find(|line| line.contains(&id))
+        .unwrap();
+    assert!(
+        row.contains("运行中 · 实现  · $3.75*  · claude #4"),
+        "{row}"
+    );
+    assert_eq!(s.json(&["status"])["running"][0]["task"]["cost_usd"], 3.75);
+}

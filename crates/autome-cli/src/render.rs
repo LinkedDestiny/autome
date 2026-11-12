@@ -37,6 +37,42 @@ pub fn stream_complete_bytes(bytes: &[u8], ended: bool) -> usize {
     }
 }
 
+pub fn usd(v: f64) -> String {
+    format!("${v:.2}")
+}
+
+pub fn cost_cell(task: &Value) -> String {
+    let Some(cost) = task["cost_usd"].as_f64() else {
+        return String::new();
+    };
+    let mut cell = usd(cost);
+    if task["cost_sessions_without_cost"].as_u64().unwrap_or(0) > 0 {
+        cell.push('*');
+    }
+    cell
+}
+
+#[test]
+fn cost_cli_usd_has_two_decimals() {
+    assert_eq!(usd(3.75), "$3.75");
+    assert_eq!(usd(0.0), "$0.00");
+    assert_eq!(usd(1234.5), "$1234.50");
+}
+
+#[test]
+fn cost_cli_cell_marks_tasks_with_sessions_without_cost() {
+    use serde_json::json;
+    assert_eq!(
+        cost_cell(&json!({"cost_usd":3.75,"cost_sessions_without_cost":1})),
+        "$3.75*"
+    );
+    assert_eq!(
+        cost_cell(&json!({"cost_usd":0,"cost_sessions_without_cost":0})),
+        "$0.00"
+    );
+    assert_eq!(cost_cell(&json!({})), "");
+}
+
 pub fn node_label(node: &str) -> &str {
     match node {
         "locate" => "定位",
