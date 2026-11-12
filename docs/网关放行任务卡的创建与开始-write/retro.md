@@ -14,3 +14,4 @@
 实现 #5 | M-04 | 未通过，保持开放 | docs/网关放行任务卡的创建与开始-write/evidence/M-04-r5-impl.md | HTTP 监听 EPERM；全量 321 比基线增加 2
 
 实现 #6 | M-04 | 门禁修复未完成，保持开放 | docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-impl.md | 本地监听 EPERM，宿主原失败未复现
+审计 #4 | M-04 | 通过 | docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-audit.md | 无（notifier-live 不稳定用例入 Backlog B4-01）

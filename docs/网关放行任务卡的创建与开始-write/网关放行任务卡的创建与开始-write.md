@@ -1,12 +1,12 @@
 # 网关放行任务卡的创建与开始：写网关加 task.start / task.reply 与任务卡字段，读网关补齐并加反向检查
 
-status: 实现中
+status: 已完成
 design-round: 2/15
 implementation-round: 6/20
-current-milestone: M-04
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 先在允许本地监听的环境复现并修复 notifier-live 停服重启用例的宿主门禁失败，再复验 M-04；本轮受监听 EPERM 阻断
+next-action: 无
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -297,7 +297,7 @@ sidecar 以 `{ ...process.env, ...env }` 启动内核；仓库已有同法夹具
 | M-01 | 已完成 | 写网关放行 task.start、task.reply 与任务卡字段，经真实内核取证 | 0 | write-gate |
 | M-02 | 已完成 | 读网关放行 project.probe 与 config.validate，反向检查，经真实内核取证 | 0 | read-gate |
 | M-03 | 已完成 | 经网关建的任务卡读回内核保存的正文，逐字节相等 | 0 | card-verbatim |
-| M-04 | 开放 | task.start、task.reply 经网关成功使用，替身 CLI 夹具取证 | 0 | task-lifecycle |
+| M-04 | 已完成 | task.start、task.reply 经网关成功使用，替身 CLI 夹具取证 | 0 | task-lifecycle |
 
 ## 里程碑说明与验收契约
 
@@ -376,7 +376,7 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 
 ### M-04 验收契约
 
-最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-impl.md · 门禁修复未完成（监听 EPERM，保持开放） · 实现 #6
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-04-r6-audit.md · 通过 · 审计 #4
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/gateway-task-lifecycle.test.ts test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：指定两个文件共 6 个用例全部通过（gateway-task-lifecycle 0→2、gateway-task-card 4）；全量 `npm test` 0 失败、用例总数 = B + 20；lint 0 警告、typecheck 通过；替身 `history` 非空，证据里写明会话只落到替身 CLI。
@@ -441,3 +441,4 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 - B1-01 （用户决定：忽略，记入 retro，不做）（评审 P-01 的收紧选项，非阻塞）若用户日后要求「符号链接也不得越出家目录」，在 `gateway.ts` 的 `read()` 对 `project.probe` 把 `~` 展开后做 `realpath`，再与 `realpath($HOME)` 比较。代价：拒绝指向外置盘的合法家目录链接；存在 TOCTOU。需用户决定取舍后再立项。
 - B1-02 （用户决定：纳入 → M-03）（评审 S-02）A-01 真实内核用例可在可行时读取临时项目里实际保存的任务卡并与原始正文逐字比对；标题相符只能证明开头到达，实现证据里不要把它写成「正文完整」。
 - B1-03 （用户决定：纳入 → M-04）（评审 S-03）A-02 的真实请求 409 只证明越过门禁并进入内核对应分支，不是 `task.start`/`task.reply` 成功使用的证据；实现证据按此措辞写。如另有不会拉起 CLI 的隔离夹具再补成功结果，不得为取证启动真实 Agent 会话。
+- B4-01 （审计 #4，非阻塞）`apps/web/test/notifier-live.test.ts`「停服期间新增失败，重启只补一条且保留旧已读」不稳定：同一代码全量跑 30s 超时、单跑一次失败一次通过。本任务分支相对合并基点未改该文件及其被测代码，非本任务引入；宿主门禁在 64047b4 通过。建议单独立项排查超时（等待停服/重启的时序）。
