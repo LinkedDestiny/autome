@@ -4049,6 +4049,94 @@ fn create_bug(w: &mut World, request: &str) -> String {
 }
 
 #[test]
+fn bug_review_policy_disabled_audit_must_not_silently_skip_review() {
+    assert_disabled_bug_audit_is_explicit(false);
+}
+
+#[test]
+fn bug_review_policy_disabling_audit_before_start_must_not_silently_skip_review() {
+    assert_disabled_bug_audit_is_explicit(true);
+}
+
+fn assert_disabled_bug_audit_is_explicit(draft: bool) {
+    needs_git!();
+    let mut w = World::new("bug-disabled-audit");
+    let request = "disabled audit bug";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    if !draft {
+        w.configure("[roles.audit]\nenabled = false\n");
+    }
+    let created = w.call(
+        "task.create",
+        json!({
+            "project_id": w.project_id, "request": request,
+            "kind": "bug", "draft": draft, "brief": "# Bug card\nExpected fixed"
+        }),
+    );
+    // Both remedies in the task card are allowed: an actionable refusal,
+    // or an explicit review-skipped event when the loop proceeds.
+    if matches!(created.reply.outcome, ReplyOutcome::Error { .. }) {
+        let message = error_message(&created);
+        assert!(
+            message.contains("审计") && message.contains("启用"),
+            "{message}"
+        );
+        return;
+    }
+    let id = ok(&created)["task"]["id"].as_str().unwrap().to_owned();
+    if draft {
+        w.configure("[roles.audit]\nenabled = false\n");
+        let started = w.call("task.start", json!({"task_id": id}));
+        if matches!(started.reply.outcome, ReplyOutcome::Error { .. }) {
+            let message = error_message(&started);
+            assert!(
+                message.contains("审计") && message.contains("启用"),
+                "{message}"
+            );
+            assert!(w.ctx.store.list_sessions(&id).unwrap().is_empty());
+            return;
+        }
+    }
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    let steps: Vec<_> = sessions.iter().map(|s| s.kind).collect();
+    assert_eq!(steps.len(), 2);
+    for step in [
+        autome_domain::session::BugStep::Locate,
+        autome_domain::session::BugStep::Fix,
+    ] {
+        assert!(steps.contains(&autome_domain::session::SessionKind::Bug { step }));
+    }
+    assert!(
+        w.ctx.store.count_events(&id, "bug.review_skipped").unwrap() > 0,
+        "Bug reached await_merge without fix_review or bug.review_skipped (draft={draft}); sessions={steps:?}"
+    );
+}
+
+#[test]
+fn bug_review_policy_same_model_is_refused_for_bug_start() {
+    needs_git!();
+    let mut w = World::new("bug-same-model");
+    w.configure("[roles.impl]\nruntime = \"claude\"\nmodel = \"shared-model\"\n[roles.audit]\nruntime = \"claude\"\nmodel = \"shared-model\"\n");
+    let out = w.call(
+        "task.create",
+        json!({
+            "project_id": w.project_id, "request": "same model bug",
+            "kind": "bug", "draft": true, "brief": "# Bug card\nExpected independent review"
+        }),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    let started = w.call("task.start", json!({"task_id": id}));
+    let message = error_message(&started);
+    assert!(message.contains("配置无效"), "{message}");
+    assert_eq!(w.state(&id), "draft");
+    assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+}
+
+#[test]
 fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
     needs_git!();
     let mut w = World::new("bug-merge");
