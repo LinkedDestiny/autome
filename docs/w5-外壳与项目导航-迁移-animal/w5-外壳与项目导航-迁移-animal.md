@@ -6,7 +6,7 @@ implementation-round: 2/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-02 的定向验收与环境受阻全量；通过后推进 M-03 标签表与归列函数
+next-action: 推进 M-03 labels.ts 阶段表与唯一归列函数
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -321,7 +321,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
-| M-02 | 待审 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
+| M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 开放 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
@@ -355,7 +355,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-02 token、字体、外壳布局、铃铛入顶栏、离线横幅与写判定
 
-最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-02-r2-impl.md · 定向通过，全量环境受阻待复验 · 实现 #2
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 覆盖：R-07、R-08、R-05（横幅与写判定）。前置：M-01。
 - 结果：新增 `app/styles/` 下的 `tokens.css`、`app.css`、字体和许可文件。新增 `app/components/shell.tsx`，包括外壳网格、项目栏框架（暂时只有项目名）、顶栏（暂时只有一个禁用的「新建任务卡」按钮和铃铛）、横幅行。`root.tsx` 加上 `links`、`ErrorBoundary`、`WriteGateProvider`。`live.tsx` 加入 `liveBanner`、`writeGate`、`WriteGateProvider`、`useWriteGate`、`needsKernelReload`、`useKernelRecovery`，`LiveBanner` 改成新签名。`bell.tsx` 改用类名。按表修改 `bell-view` 的两条和 `live-banner` 的两条。
