@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 1/20
+implementation-round: 2/20
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-02：读网关放行 project.probe 与 config.validate，加反向检查与真实内核用例
+next-action: M-02：在允许本地监听的环境复验验收命令，取得真实内核 probe 与全量通过证据后标待审
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -359,6 +359,8 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 - 负向对照：`brief` 用 `value.length` 而不是 UTF-8 字节计时，`'中'.repeat(21846)` 被放行，brief 字节边界用例失败；不给 `task.create` 加载荷例外时，最大合法组合用例失败，且 A-01 真实内核用例的 60KB brief 收到「params 超过 32768 字符上限」400 而失败；网关丢掉 `brief` 时内核因缺 `request` 回 `invalid_params`，A-01 用例失败。
 
 ### M-02 验收契约
+
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-02-r2-impl.md · 未通过（监听 EPERM，保持开放） · 实现 #2
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/read-gate.test.ts test/write-gate.test.ts test/gateway.test.ts test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：指定四个文件共 74 个用例全部通过（read-gate 11→15、write-gate 43、gateway 12→13、gateway-task-card 2→3）；全量 `npm test` 0 失败、用例总数 = B + 17；lint 0 警告、typecheck 通过。

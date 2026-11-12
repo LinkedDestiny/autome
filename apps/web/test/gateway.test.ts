@@ -118,3 +118,12 @@ test('任务卡字段、开始与补充原样转发', async () => {
   ] as const) expect((await gateway.write({ op, params })).status).toBe(400);
   expect(core.call).not.toHaveBeenCalled();
 });
+
+test('project.probe 只转发家目录路径，拒绝时不调用内核', async () => {
+  const { core, gateway } = setup();
+  expect((await gateway.read({ method: 'project.probe', params: { path: '~/x' } })).status).toBe(200);
+  expect(core.call).toHaveBeenCalledExactlyOnceWith('project.probe', { path: '~/x' });
+  core.call.mockClear();
+  expect((await gateway.read({ method: 'project.probe', params: { path: '/etc' } })).status).toBe(400);
+  expect(core.call).not.toHaveBeenCalled();
+});

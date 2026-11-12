@@ -77,3 +77,24 @@ test('开始与补充越过 HTTP 门禁进入内核分支，缺参及类型错�
   expect(read.status).toBe(200);
   expect((await read.json()).payload.task.state.state).toBe('draft');
 });
+
+test('project.probe 经 HTTP 由真实内核展开家目录，越界路径被拒', async () => {
+  const previousHome = process.env.HOME;
+  const home = mkdtempSync(join(tmpdir(), 'gateway-probe-home-'));
+  cleanups.push(async () => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+  mkdirSync(join(home, 'repo'));
+  process.env.HOME = home;
+  const s = await setup();
+  const response = await s.post('read', { method: 'project.probe', params: { path: '~/repo' } });
+  expect(response.status).toBe(200);
+  expect((await response.json()).payload).toMatchObject({ path: join(home, 'repo'), exists: true });
+  for (const path of ['/etc', '~/../etc']) {
+    const refused = await s.post('read', { method: 'project.probe', params: { path } });
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error).toMatch(/[\u4e00-\u9fff]/);
+  }
+});
