@@ -2585,9 +2585,30 @@ exit 1
 /// Runs a task through a gate that fails once and passes after the fix.
 /// Returns the task id; the task is left at the merge stopping point.
 fn run_gated_task(w: &mut World, request: &str) -> String {
-    let script = write_gate_script(w);
+    run_gated_task_with(w, request, false, None)
+}
+
+fn run_gated_task_with(w: &mut World, request: &str, count: bool, reuse: Option<bool>) -> String {
+    let mut script = write_gate_script(w);
+    if count {
+        let wrapper = w.root.join("count-gate.sh");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "echo \"$AUTOME_GATE_NODE\" >> '{}'\nexec sh '{}'\n",
+                w.root.join("gate-calls").display(),
+                script.display()
+            ),
+        )
+        .unwrap();
+        script = wrapper;
+    }
+    let reuse = reuse
+        .map(|v| format!("reuse_for_main_check = {v}\n"))
+        .unwrap_or_default();
+
     w.configure(&format!(
-        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n",
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 5\n{reuse}",
         script.display()
     ));
     let slug = slug_for(request);
@@ -6417,4 +6438,91 @@ fn review_scope_feature_round(retro: bool) {
     ok(&w.call("task.approve", json!({"task_id": id})));
     w.settle();
     review_scope_assert_failure(&w, &id, &slug);
+}
+
+fn gate_trace(w: &World, id: &str) -> Vec<String> {
+    w.ctx
+        .store
+        .events_since_with_subject(0, u32::MAX)
+        .unwrap()
+        .into_iter()
+        .filter(|(_, kind, subject, _)| {
+            subject == id
+                && matches!(
+                    kind.as_str(),
+                    "gate.started"
+                        | "gate.result"
+                        | "gate.reused"
+                        | "gate.skipped"
+                        | "setup.started"
+                        | "setup.result"
+                        | "setup.skipped"
+                        | "merge.auto"
+                        | "merge.rebased"
+                        | "merge.repo"
+                )
+        })
+        .map(|(_, kind, _, p)| match p["node"].as_str() {
+            Some(node) => format!("{kind}:{node}"),
+            None => kind,
+        })
+        .collect()
+}
+
+fn advance_main_and_merge(w: &mut World, id: &str) {
+    std::fs::write(w.repo.join("main-moved"), "advance\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["main-moved"], "advance main").unwrap();
+    ok(&w.call("task.merge", json!({"task_id": id})));
+    w.settle();
+    assert_eq!(w.state(id), "done");
+}
+
+fn assert_gate_calls(w: &World, main: usize) {
+    let calls = std::fs::read_to_string(w.root.join("gate-calls")).unwrap();
+    assert_eq!(calls.lines().count(), 4 + main, "{calls}");
+    for (node, count) in [("gate", 2), ("merge_gate", 2), ("main_check", main)] {
+        assert_eq!(
+            calls.lines().filter(|line| *line == node).count(),
+            count,
+            "{calls}"
+        );
+    }
+}
+
+fn assert_no_verify_checkout(w: &World) {
+    assert!(
+        !std::fs::read_dir(w.repo.join(".worktree"))
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("_verify-"))
+    );
+}
+
+#[test]
+fn main_check_reuse_switched_off_matches_today_event_by_event() {
+    needs_git!();
+    let mut w = World::new("reuse-off");
+    let id = run_gated_task_with(&mut w, "reuse disabled", true, Some(false));
+    advance_main_and_merge(&mut w, &id);
+    assert_eq!(
+        gate_trace(&w, &id),
+        [
+            "gate.started:gate",
+            "gate.result:gate",
+            "gate.started:gate",
+            "gate.result:gate",
+            "gate.started:merge_gate",
+            "gate.result:merge_gate",
+            "merge.auto",
+            "merge.rebased",
+            "gate.started:merge_gate",
+            "gate.result:merge_gate",
+            "merge.auto",
+            "merge.repo",
+            "gate.started:main_check",
+            "gate.result:main_check"
+        ]
+    );
+    assert_gate_calls(&w, 1);
+    assert_no_verify_checkout(&w);
 }
