@@ -1,10 +1,10 @@
 # cd 子目录后的复现脚本漏入回归保护集
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_cd_repro_ -- --nocapture
 根因: regression_protection 仅在命令原文匹配仓库相对路径，未解析 cd 改变的目录；定位阶段无条件保存空保护快照，直到修复阶段才检查为空。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -39,6 +39,15 @@ fix-round: 1/3
 5. 既有 `bug_regression_guard_rejects_modified_or_deleted_tests` 中的空保护夹具明确期待修复阶段失败。修复轮需把该既有夹具调整为新定位契约，并保留本轮新增的旧空快照兼容测试；否则旧断言与任务卡期望冲突。常规 tests 目录用例走命名分支，未覆盖这次的路径条件。
 
 ## 修复说明
+
+第 2/3 轮修复：
+
+- 单跑 automed Clippy 重现 `scheduler.rs` 的 `collapsible_if`；合并子 shell 目录恢复的条件判断，不改变解析语义。
+- Bug 流程子集修复前 39 通过、2 失败：空保护集提前拒绝，覆盖了不可执行命令的复现未命中处理，也使第二次未修改脚本的定位无法累计复现未命中次数。
+- 空保护集只记录所属定位会话，不保存空快照；宿主命令有效复现后才将其判为 `Locate` 协议失败，仍不启动修复、不消耗修复轮次。命令成功、不可执行或超时继续走原有复现未命中流程；按会话 ID 匹配，避免旧空集记录污染新定位。旧空快照在修复阶段的拒绝保持不变。
+- 本轮未修改任何测试。原复现命令通过（5 通过、0 失败、0 忽略）；automed Clippy（`cargo clippy --offline -p automed --all-targets -- -D warnings`）通过。日志位于 `.autome/output/fix2-repro.log`、`.autome/output/fix2-clippy-final.log`；修复前日志为 `fix2-clippy-before.log`、`fix2-bug-before.log`。
+- 直接相关子集 `cargo test --offline -p automed --test end_to_end bug_ -- --nocapture` 41 通过、0 失败、0 忽略，包含修复前失败的两个复现未命中用例及全部回归保护用例；`cargo test --offline -p automed --lib repro_` 5 通过、0 失败、0 忽略。日志：`.autome/output/fix2-bug-after.log`、`.autome/output/fix2-unit.log`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前统一执行；本轮等待独立复核。
 
 第 1/3 轮修复：
 

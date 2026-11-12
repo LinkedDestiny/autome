@@ -1376,10 +1376,10 @@ fn repro_mentions_path(command: &str, path: &str) -> bool {
             words.clear();
             if c == '(' {
                 parents.push(cwd.clone());
-            } else if c == ')' {
-                if let Some(parent) = parents.pop() {
-                    cwd = parent;
-                }
+            } else if c == ')'
+                && let Some(parent) = parents.pop()
+            {
+                cwd = parent;
             }
         }
     }
@@ -1551,9 +1551,14 @@ fn guard_bug_regression(
             }
         }
         if files.is_empty() {
-            return Err(err(
-                "定位轮回归测试保护集为空：必须新增或修改 test/spec 测试文件，或在复现命令中引用回归脚本路径",
-            ));
+            // An invalid or passing command must still follow the repro-miss
+            // flow. Reject this locate result only after a genuine reproduction.
+            ctx.store.append_event(
+                "bug.regression_empty",
+                &task.id,
+                json!({"session_id": session.id}),
+            )?;
+            return Ok(());
         }
         ctx.store.append_event(
             "bug.regression_snapshot",
@@ -1913,6 +1918,24 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             "exited_zero"
         };
         let reproduced = !timed_out && *exit_code != 0 && ![126, 127].contains(exit_code);
+        if reproduced
+            && let Some(empty) = ctx.store.last_event(task_id, "bug.regression_empty")?
+            && let Some(started) = ctx.store.last_event(task_id, "session.started")?
+            && empty["session_id"] == started["session_id"]
+        {
+            transition = Transition {
+                next: TaskState::Failed {
+                    at: Node::Locate,
+                    reason: FailureReason::Protocol {
+                    detail: "定位轮回归测试保护集为空：必须新增或修改 test/spec 测试文件，或在复现命令中引用回归脚本路径".into(),
+                    },
+                },
+                action: Action::None,
+                budget_n: None,
+                consumes_decisions: false,
+                merge_requested: false,
+            };
+        }
         let payload = if reproduced {
             json!({"sha": head, "command": command, "exit_code": exit_code})
         } else {
