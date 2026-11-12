@@ -7,3 +7,4 @@
 审计 #2 | M-02 | 通过 | docs/不是-bug-改建成需求-autome/evidence/M-02-r2-audit.md | 无
 实现 #3 | M-03 | 开放，网关通过但全量验收受阻 | docs/不是-bug-改建成需求-autome/evidence/M-03-r3-impl.md | 沙箱禁止本地监听，全量未完成
 审计 #3 | M-03 | 通过 | docs/不是-bug-改建成需求-autome/evidence/M-03-r3-audit.md | 无
+实现 #4 | M-03 | rebase 完成，保留审计关闭状态 | docs/不是-bug-改建成需求-autome/evidence/M-03-r4-impl.md | Web 监听 EPERM、Electron SIGABRT，需宿主复验
