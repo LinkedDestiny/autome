@@ -24,3 +24,4 @@
 审计 #8 | M-08 | 通过 | docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r8-audit.md | 无
 复盘 #1 | 无 | 写 4 条教训；本任务无宿主门禁运行（账本无 gate 事件），验收 6 的 clippy / ci-local 无证据 | docs/门禁只在合并前跑一次-gate-run/lessons.md | 无
 实现 #9 | M-08 | rebase 集成验证，保留审计状态 | docs/门禁只在合并前跑一次-gate-run/evidence/M-08-r9-impl.md | 无
+审计 #9 | 无 | 无待审里程碑（M-01..M-08 均已完成），未改表 | 无 | 无
