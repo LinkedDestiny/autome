@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 4/30
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-04 门禁超时文案；通过后推进 M-05 端到端验收
+next-action: 推进 M-05 端到端验收：end_to_end.rs 新增 6 个 gate_queue_ 用例（T1–T6）
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -399,7 +399,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | M-01 | 已完成 | 排队判定纯函数与 concurrency 配置 | 0 | |
 | M-02 | 已完成 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
 | M-03 | 已完成 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
-| M-04 | 待审 | 门禁超时文案 | 0 | |
+| M-04 | 已完成 | 门禁超时文案 | 0 | |
 | M-05 | 开放 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
 | M-06 | 开放 | 文档与全量回归 | 0 | |
 
@@ -485,7 +485,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 
 ### M-04 验收契约
 
-最新证据：docs/宿主门禁按机器排队-gate/evidence/M-04-r4-impl.md · 验收通过，待审 · 实现 #4
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-04-r4-audit.md · 通过 · 审计 #4
 
 - 验收命令：`cargo test -p autome-domain && cargo test -p automed --lib && cargo test -p autome-cli && cargo test -p automed --test prompt_rendering`（新增用例单独复跑：三个 crate 各加过滤器 `gate_timeout_`）
 - 预期：`autome-domain` 共 397 个（394 + 3）、`automed --lib` 共 684 个（679 + 5）、`autome-cli` 共 46 个（42 + 4）、
