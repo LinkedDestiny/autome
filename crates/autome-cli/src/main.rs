@@ -155,6 +155,9 @@ fn run(argv: &[String]) -> Result<()> {
     }
 
     let mut c = Client::open()?;
+    if !a.has("--json") {
+        c.ctx.driver_lock_notice = Some(|| eprintln!("等待驱动释放状态库…"));
+    }
     match verb {
         "doctor" => doctor(&mut c, &a),
         "project" => project(&mut c, &a),

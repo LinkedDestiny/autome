@@ -256,6 +256,79 @@ fn head(repo: &Path) -> String {
 }
 
 #[test]
+fn write_command_waits_for_a_driver_lock_held_for_fifteen_seconds() {
+    use std::time::{Duration, Instant};
+
+    let s = Sandbox::new("long-driver-lock");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    // Draft creation is a real write through the same dispatch lock as
+    // merge/approve, without launching a model or requiring a full Loop.
+    s.ok(&["task", "new", "before contention", "--draft"]);
+    let db = s.root.join("home/ledger.sqlite3");
+    let held = automed::driver_lock::try_acquire(&db).unwrap().unwrap();
+    assert!(automed::driver_lock::try_acquire(&db).unwrap().is_none());
+
+    // Establish contention before launching the CLI; do not race two starts.
+    // Release only after the CLI has been spawned and fifteen seconds elapse.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["task", "new", "during contention", "--draft", "--json"])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", &db)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(15));
+        let released_at = Instant::now();
+        drop(held);
+        released_at
+    });
+    let deadline = Instant::now() + Duration::from_secs(130);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            release.join().unwrap();
+            panic!("CLI did not finish within 130 seconds; this is not the expected regression");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    let finished_at = Instant::now();
+    let released_at = release.join().unwrap();
+
+    // Verify release and the positive control before reporting the regression.
+    let reacquired = automed::driver_lock::try_acquire(&db).unwrap().unwrap();
+    drop(reacquired);
+    s.ok(&["task", "new", "after contention", "--draft"]);
+    assert!(
+        output.status.success(),
+        "write must succeed after a 15-second driver lock; exit={:?}\nstdout={}\nstderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        finished_at >= released_at,
+        "write must not bypass the held lock"
+    );
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = created["task"]["id"].as_str().unwrap();
+    assert_eq!(s.json(&["status", id])["task"]["id"], id);
+    assert!(
+        output.stderr.is_empty(),
+        "--json must not emit wait notices"
+    );
+}
+
+#[test]
 fn a_task_goes_from_one_line_to_a_merge_commit_one_command_at_a_time() {
     let s = Sandbox::new("happy");
     let request = "add cart checkout";

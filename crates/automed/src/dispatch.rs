@@ -63,6 +63,8 @@ pub struct Ctx {
     /// commands tick on their way out and the tick must see the lock is
     /// already ours.
     pub driver_lock: Option<crate::driver_lock::DriverLock>,
+    /// Optional frontend feedback for prolonged driver lock contention.
+    pub driver_lock_notice: Option<fn()>,
 }
 
 impl Ctx {
@@ -79,6 +81,7 @@ impl Ctx {
             launch_mode: crate::launcher::LaunchMode::Headless,
             recovered: false,
             driver_lock: None,
+            driver_lock_notice: None,
         }
     }
 
@@ -211,7 +214,7 @@ impl EnvCache {
 }
 
 /// How long a write command waits for another driver's tick to finish.
-const DRIVER_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+const DRIVER_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
     if command.protocol_version != PROTOCOL_VERSION {
@@ -233,7 +236,11 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
         && !READ_METHODS.contains(&command.method.as_str())
         && ctx.driver_lock.is_none()
     {
-        match crate::driver_lock::acquire(ctx.store.path(), DRIVER_LOCK_WAIT) {
+        match crate::driver_lock::acquire_with_notice(
+            ctx.store.path(),
+            DRIVER_LOCK_WAIT,
+            ctx.driver_lock_notice,
+        ) {
             Ok(Some(lock)) => {
                 ctx.driver_lock = Some(lock);
                 took_lock = true;
