@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/25
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: Autome 复跑提交后门禁；若 Rust Test 再失败保留具体用例与断言；门禁通过后审计 M-03
+next-action: 实现 M-04 项目栏计数与首页总览，事件驱动实时更新
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -322,7 +322,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 |---|---|---|---|---|
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 已完成 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
-| M-03 | 待审 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
+| M-03 | 已完成 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
 
@@ -391,7 +391,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-03 labels.ts 与唯一归列函数
 
-最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r4-impl.md · Rust 失败未复现，Web 监听受阻待复验 · 实现 #4
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r4-audit.md · 通过 · 审计 #4
 
 - 覆盖：R-04，以及 R-01 的口径部分。前置：无，但必须在 M-04 之前完成。
 - 结果：新增 `app/lib/labels.ts`，内容见「方案 · R-04」；新增 `app/components/task-columns.ts`，内容见「方案 · R-01」。新增 `test/fixtures/w5-project-get.json`：用真实内核和命令行造出至少包含 `draft`、`queued`、`active`（普通节点和一个等人节点）、`stopped`、`failed` 的项目，逐字保存 `autome rpc project.get` 的原始输出，采集命令写进证据。

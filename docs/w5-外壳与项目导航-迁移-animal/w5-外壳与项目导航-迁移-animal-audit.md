@@ -1,7 +1,6 @@
 # 实现审计（覆盖写）
 
-## 审计 #2 · M-02 · 通过
-
-- 6 组负向对照全部使验收变红并已还原；定点 30 通过；Web 全量 330/330、skipped 0；lint/typecheck/build 退出码 0；desktop 104（103 通过，1 skipped，0 失败）。
-- 无实现缺陷、无验证缺口。新造检查：即上述注入，通过后丢弃。
-- 详见 `evidence/M-02-r2-audit.md`。
+## M-03 · 审计 #4 · 通过
+- 4 条负向对照全部使验收变红，还原后树干净；验收 13/13，Web 全量 343/343（skipped 0），lint/typecheck/build 退出码 0，宿主门禁通过。
+- 证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r4-audit.md
+- 新造检查：无（现有负向对照即判别检查）。
