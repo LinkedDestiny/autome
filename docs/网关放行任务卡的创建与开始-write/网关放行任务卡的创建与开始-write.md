@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 3/20
+implementation-round: 4/20
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-03：在 gateway-task-card.test.ts 加经网关建卡后读回正文逐字节相等的用例（按 M-03 验收契约，基线为全量 318）
+next-action: 复验 M-03：正文逐字节用例已加入，在允许监听的环境执行验收契约；通过并完成自审后标待审（上一轮基线 318，本轮预期 319）
 
 任务文件：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-task.md`。
 任务卡正文：`docs/网关放行任务卡的创建与开始-write/网关放行任务卡的创建与开始-write-card.md`。
@@ -367,6 +367,8 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 - 负向对照：反向检查写成原来的单向检查（只查「放行 ⊆ 内核」）时，注入 `task.fake_read` 的用例拿到空差集而失败；`project.probe` 的例外放行任意路径形状时，`/etc`、`~/../etc` 拒绝用例失败；例外按值而不是按「方法+键」生效时，`project.get {project_id:'~/x'}` 不外溢用例失败；不把 `project.probe` 加进白名单时，A-03 真实内核用例收到 400 而失败。
 
 ### M-03 验收契约
+
+最新证据：docs/网关放行任务卡的创建与开始-write/evidence/M-03-r4-impl.md · 未通过（监听 EPERM，保持开放） · 实现 #4
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：`gateway-task-card.test.ts` 4 个用例全部通过（3→4）；全量 `npm test` 0 失败、用例总数 = B + 18；lint 0 警告、typecheck 通过。

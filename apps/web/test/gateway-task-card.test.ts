@@ -48,6 +48,29 @@ test('60KB Bug 正文开头经 HTTP 到达真实内核并创建草稿，超限�
   expect((await refused.json()).error).toBe('已拒绝：任务卡正文超过 64KB（65537 字节，上限 65536 字节）');
 });
 
+test('最大合法任务卡正文经 HTTP 创建后从真实内核逐字节读回', async () => {
+  const mixed = '# 逐字比对\nCRLF\r\n制表\t引号"反斜杠\\</script>'
+    + Array.from({ length: 31 }, (_, index) => String.fromCharCode(index + 1)).join('')
+    + '中文😀e\u0301';
+  const suffix = '  \n\n';
+  const brief = mixed + 'a'.repeat(65536 - Buffer.byteLength(mixed + suffix)) + suffix;
+  expect(Buffer.byteLength(brief)).toBe(65536);
+  expect(brief.length).toBeGreaterThan(60000);
+
+  const s = await setup();
+  const created = await s.createDraft(brief);
+  expect(created.status).toBe(200);
+  const task = (await created.json()).payload.task;
+  expect(task).toMatchObject({ kind: 'bug', state: { state: 'draft' } });
+  const read = await s.post('read', { method: 'task.get', params: { task_id: task.id } });
+  expect(read.status).toBe(200);
+  const { payload } = await read.json();
+  expect(payload.task).toMatchObject({ id: task.id, kind: 'bug', state: { state: 'draft' } });
+  expect(payload.brief).toBe(brief);
+  expect(Buffer.compare(Buffer.from(payload.brief), Buffer.from(brief))).toBe(0);
+  expect(Buffer.byteLength(payload.brief)).toBe(65536);
+});
+
 test('开始与补充越过 HTTP 门禁进入内核分支，缺参及类型错误在门禁拒绝', async () => {
   const s = await setup();
   const created = await s.createDraft('# 分支验证\n正文');
