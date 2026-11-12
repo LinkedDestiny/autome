@@ -70,3 +70,9 @@ repos: crates/automed, crates/autome-cli
 - 根因成立：`commit_paths` 在暂存后统计整个索引相对 HEAD 的删除（`--cached --no-renames -z --diff-filter=D`），超过 50 个拒绝，恰好 50 个放行，与合法对照用例一致；窄路径提交也受同一检查覆盖。`sweep_one` 错误改为向上传递并使任务 Failed；成功时用 `diff-tree --diff-filter=A` 读取新增路径写入 `task.swept` 事件，CLI 单行展示。
 - 范围：仅 git.rs、scheduler.rs、render.rs 与 bug 文档，改动最小。
 - 保留意见（不阻塞）：拒绝提交后被暂存的删除仍留在索引中；`ci-local.sh` 的 Web test 失败（11 项）为沙箱 `listen EPERM`/`EMFILE` 所致，与本修复无关，需宿主在可监听环境确认门禁。
+
+复核第 2/3 轮：通过。
+- 复现命令独立重跑：2 passed、0 failed；完整 end_to_end：100 passed、0 failed（219.8 秒），与修复轮结果一致。
+- 回归测试：两个 waiting_regression 测试函数在定位提交 185e8cd 与当前 HEAD 逐字一致（哈希相同），无 ignore/skip/cfg 弱化。
+- rebase：a0edb25 是当前 HEAD 祖先，历史为线性 rebase；改动仍只在 crates/automed/tests/end_to_end.rs，产品代码未动，根因与第 1 轮结论不变。
+- 备注：本地 main 已推进到 9b5750b，修复轮门禁绑定的是 a0edb25，需由 Autome 在后续 rebase 与合并前门禁中对新 main 重验；Web test 失败为沙箱 listen EPERM/EMFILE 环境限制，未改 Web，需宿主重跑。
