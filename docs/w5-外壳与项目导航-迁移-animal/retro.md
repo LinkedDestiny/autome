@@ -8,3 +8,4 @@
 实现 #2 | M-02 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-02-r2-impl.md | 监听 EPERM，Electron 缺失；需审计环境复验
 审计 #2 | M-02 | 通过 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-02-r2-audit.md | 无
 实现 #3 | M-03 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r3-impl.md | 全量监听环境受限，待审计复验
+实现 #4 | M-03 | 待审 | docs/w5-外壳与项目导航-迁移-animal/evidence/M-03-r4-impl.md | Rust 失败未复现；Web 监听 EPERM，待 Autome 复跑
