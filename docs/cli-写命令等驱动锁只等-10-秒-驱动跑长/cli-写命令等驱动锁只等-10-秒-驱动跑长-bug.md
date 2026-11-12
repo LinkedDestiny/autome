@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/autome-cli && cargo test --offline -p autome-cli --test cli write_command_waits_for_a_driver_lock_held_for_fifteen_seconds -- --exact --nocapture > ../../.autome/output/driver-lock-regression.log 2>&1
 根因: 写命令统一只等待驱动锁 10 秒，而 scheduler 在整个 tick（包括同步清理等长步骤）期间持锁，正常竞争超过预算即返回 Internal 并退出。
-复核: 待复核
+复核: 通过
 repos: crates/autome-cli, crates/automed, apps/web
 
 ## 现象
@@ -62,4 +62,10 @@ repos: crates/autome-cli, crates/automed, apps/web
 
 ## 复核意见
 
-待独立复核。
+结论：通过（第 1/3 轮复核）。
+
+- 复现命令独立复跑：`write_command_waits_for_a_driver_lock_held_for_fifteen_seconds` 1 passed，17.27 秒，退出 0（`.autome/output/review-repro.log`）。
+- 回归测试：定位提交 9ee0769 到修复提交 fc7feae 之间 `crates/autome-cli/tests/cli.rs` 无差异，未删除、跳过或弱化；该测试以 15 秒真实持锁驱动真实 CLI 子进程，断言成功、JSON 可解析、记录可读，有意义。
+- 根因站得住：`DRIVER_LOCK_WAIT` 固定 10 秒，而 tick 全程持锁（含同步清理），与现象一致；延长到 120 秒后同一测试由失败转通过。
+- 范围：产品改动仅为等待上限、可选提示回调（仅非 `--json` 的 CLI 启用）和 Web 调用超时 125 秒（需大于核心等锁预算，合理）。新增提示单元测试；`cargo test -p automed driver_lock` 5 项通过，Web `core-supervisor` 10 项通过，clippy `-D warnings` 无告警。
+- 说明：修复轮记录的完整门禁 Desktop/Web 失败来自 Electron、本地监听 EPERM 等沙箱环境限制，与本改动无关，本轮未重跑完整门禁；120 秒仍是上限，超出才返回原错误，属已声明的取舍。
