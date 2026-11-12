@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 2/30
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-02；通过后推进 M-03：排队状态读者与 CLI 展示
+next-action: 推进 M-03：排队状态读者与 CLI 展示（task.get / dashboard.get 的 gate_queue_position 与 CLI 显示）
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -397,7 +397,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 排队判定纯函数与 concurrency 配置 | 0 | |
-| M-02 | 待审 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
+| M-02 | 已完成 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
 | M-03 | 开放 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 开放 | 门禁超时文案 | 0 | |
 | M-05 | 开放 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
@@ -445,7 +445,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 
 ### M-02 验收契约
 
-最新证据：docs/宿主门禁按机器排队-gate/evidence/M-02-r2-impl.md · 待审 · 实现 #2
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`cargo test -p automed --lib`（新增用例单独复跑：`cargo test -p automed --lib scheduler::tests::gate_queue_`）
 - 预期：`automed --lib` 共 676 个用例全部通过（M-01 完成时 655 + 新增 21）；21 个新用例都在 `scheduler::tests` 里、名字以
