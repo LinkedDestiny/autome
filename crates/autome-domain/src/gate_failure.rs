@@ -168,10 +168,9 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
             .filter(|s| s.starts_with(char::is_whitespace))
             .map(str::trim)
             .filter(|s| !s.is_empty() && !s.starts_with('('))
+            && !steps.contains(&name)
         {
-            if !steps.contains(&name) {
-                steps.push(name);
-            }
+            steps.push(name);
         }
     }
     // ci-local runs successful steps after failures. Only use diagnostics from
