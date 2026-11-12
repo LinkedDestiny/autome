@@ -322,6 +322,8 @@ pub struct BudgetLine {
 /// Everything needed to write a session's prompt.
 pub struct PromptSpec<'a> {
     pub gate_before_merge: Option<&'a str>,
+    pub gate_quick: Option<&'a str>,
+    pub last_gate: Option<&'a serde_json::Value>,
     pub kind: SessionKind,
     /// The prompt templates of the protocol version this task is pinned to.
     /// Passed in rather than read here: two tasks in the same project can be
@@ -398,17 +400,62 @@ fn select_prompt(template: &str, command: Option<&str>) -> Result<String> {
 
 // Data slots are split before substitutions and validation. Inserted command
 // and request bytes are never interpreted as template syntax.
+fn round_gate_line(spec: &PromptSpec<'_>, command: &str) -> String {
+    let mut line = gate_line(command);
+    if let Some(quick) = spec.gate_quick {
+        match spec.kind {
+            SessionKind::Role { role: Role::Impl } => {
+                line.push_str(&format!("宿主会在本轮结束后跑快检 `{quick}`，失败会退回。"))
+            }
+            SessionKind::Bug { step: BugStep::Fix } => line.push_str(&format!(
+                "宿主会在本轮结束后跑复现命令和快检 `{quick}`，失败会退回。"
+            )),
+            _ => {}
+        }
+    }
+    line
+}
+
+fn last_gate_kind<'a>(spec: &PromptSpec<'a>) -> Option<&'a str> {
+    spec.last_gate.and_then(|v| v["kind"].as_str())
+}
+
+fn fix_gate_note(spec: &PromptSpec<'_>) -> String {
+    let command = spec
+        .last_gate
+        .and_then(|v| v["command"].as_str())
+        .unwrap_or("");
+    let code = spec
+        .last_gate
+        .and_then(|v| v["exit_code"].as_i64())
+        .unwrap_or(-1);
+    match last_gate_kind(spec) {
+        Some("quick") => format!(
+            "本项目全量门禁只在合并前运行，本轮没有全量门禁结果；修复门禁跑的是复现命令和快检（`{command}`，退出码 {code}），它通过不等于项目门禁通过。"
+        ),
+        Some("full") if spec.gate_quick.is_some() => format!(
+            "本项目全量门禁只在合并前运行；本轮修复门禁在切换配置前已跑过复现命令和完整门禁（`{command}`，退出码 {code}），不是只跑复现命令。"
+        ),
+        _ => BUG_REVIEW_GATE_NOTE.to_owned(),
+    }
+}
+
 fn render_gate_parts(
     template: &str,
-    command: Option<&str>,
+    spec: &PromptSpec<'_>,
     render: impl Fn(&str) -> Result<String>,
 ) -> Result<String> {
-    match command {
+    match spec.gate_before_merge {
         Some(command) => Ok(template
             .split("{gate_line}")
-            .map(render)
+            .map(|part| {
+                part.split("{fix_gate_note}")
+                    .map(&render)
+                    .collect::<Result<Vec<_>>>()
+                    .map(|parts| parts.join(&fix_gate_note(spec)))
+            })
             .collect::<Result<Vec<_>>>()?
-            .join(&gate_line(command))),
+            .join(&round_gate_line(spec, command))),
         None => render(template),
     }
 }
@@ -477,10 +524,36 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             head,
             command,
             tail,
+        }) if last_gate_kind(spec) == Some("quick") => {
+            let verdict = gate_failure_verdict(tail)
+                .replace("门禁超时", "快检超时")
+                .replace("测试失败", "检查失败");
+            let line = spec
+                .gate_before_merge
+                .map(|cmd| round_gate_line(spec, cmd))
+                .unwrap_or_default();
+            if matches!(spec.kind, SessionKind::Bug { .. }) {
+                p.push_str(&format!("\nAutome 在提交 `{head}` 上运行修复门禁（复现命令 + 快检）`{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和快检命令确认通过并提交；{line}不要修改回归测试。\n"));
+            } else {
+                let short = &head[..head.len().min(10)];
+                let ending = if spec.gate_quick.is_some() {
+                    "快检结果以 Autome 在你提交后重跑为准，不以你在证据里写的结论为准。"
+                } else if spec.gate_before_merge.is_some() {
+                    "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。"
+                } else {
+                    "门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。"
+                };
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{ending}\n"));
+            }
+        }
+        Some(Inject::GateFailed {
+            head,
+            command,
+            tail,
         }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
             let verdict = gate_failure_verdict(tail);
             if let Some(cmd) = spec.gate_before_merge {
-                p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", gate_line(cmd)));
+                p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", round_gate_line(spec, cmd)));
             } else {
                 p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
             }
@@ -510,7 +583,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             if let Some(cmd) = spec.gate_before_merge {
-                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。\n", gate_line(cmd)));
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{}\n", round_gate_line(spec, cmd), if spec.gate_quick.is_some() { "快检结果以 Autome 在你提交后重跑为准；全量门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" } else { "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" }));
             } else {
                 p.push_str(&format!(
                 "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n\
@@ -601,7 +674,7 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
             let slices = part
                 .split("{inputs}")
                 .map(|slice| {
-                    render_gate_parts(slice, spec.gate_before_merge, |slice| {
+                    render_gate_parts(slice, spec, |slice| {
                         let rendered = slice
                             .replace("{doc_dir}", spec.doc_dir)
                             .replace("{slug}", spec.slug)
@@ -616,7 +689,34 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
         .collect::<Result<Vec<_>>>()?;
     let mut rendered = parts.join(spec.request);
     if legacy_review {
-        rendered.push_str(&format!("\n{BUG_REVIEW_GATE_NOTE}\n"));
+        rendered.push_str(&format!("\n{}\n", fix_gate_note(spec)));
+    }
+    if step == BugStep::FixReview && !legacy_review && !template.contains("{fix_gate_note}") {
+        let command = spec
+            .last_gate
+            .and_then(|v| v["command"].as_str())
+            .unwrap_or("");
+        let code = spec
+            .last_gate
+            .and_then(|v| v["exit_code"].as_i64())
+            .unwrap_or(-1);
+        if last_gate_kind(spec) == Some("quick") {
+            let correction = if spec.gate_before_merge.is_some() {
+                format!(
+                    "更正：上面「修复门禁只跑了复现命令」不属实——修复门禁跑的是复现命令和快检（`{command}`，退出码 {code}），它通过仍不等于项目门禁通过。"
+                )
+            } else {
+                format!(
+                    "更正：本轮修复门禁跑的是复现命令和快检（`{command}`，退出码 {code}），不是完整门禁；它通过不等于项目门禁通过。"
+                )
+            };
+            rendered.push_str(&format!("\n{correction}\n"));
+        } else if last_gate_kind(spec) == Some("full")
+            && spec.gate_quick.is_some()
+            && spec.gate_before_merge.is_some()
+        {
+            rendered.push_str(&format!("\n更正：上面「修复门禁只跑了复现命令」不属实——本轮修复门禁在切换配置前已跑过复现命令和完整门禁（`{command}`，退出码 {code}）。\n"));
+        }
     }
     if step == BugStep::Locate
         && let Some(card_path) = spec.card_path
@@ -655,7 +755,7 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
         _ => String::new(),
     };
 
-    render_gate_parts(&template, spec.gate_before_merge, |part| {
+    render_gate_parts(&template, spec, |part| {
         let rendered = part
             .replace("{doc_dir}", spec.doc_dir)
             .replace("{slug}", spec.slug)
@@ -1280,6 +1380,8 @@ mod tests {
             kind,
             templates,
             gate_before_merge: None,
+            gate_quick: None,
+            last_gate: None,
             brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
             doc_dir: "docs/checkout-flow",
@@ -2607,5 +2709,229 @@ mod tests {
             build_prompt(&s).unwrap(),
             format!("{BUG_REVIEW_GATE_NOTE}\n")
         );
+    }
+    fn quick_spec<'a>(
+        kind: SessionKind,
+        tpl: &'a autome_domain::protocol::ProtocolFiles,
+    ) -> PromptSpec<'a> {
+        let mut s = spec(kind, &[], None, tpl);
+        s.gate_before_merge = Some("full-check");
+        s.gate_quick = Some("quick-check");
+        s.budget = Some(BudgetLine {
+            round: 2,
+            limit: 25,
+        });
+        s
+    }
+
+    #[test]
+    fn gate_quick_prompt_round_sentence_only_for_impl_and_fix() {
+        let tpl = crate::protocol::seed();
+        for role in [
+            Role::Impl,
+            Role::Audit,
+            Role::Plan,
+            Role::Review,
+            Role::Adjudicate,
+            Role::Retro,
+        ] {
+            let mut s = quick_spec(SessionKind::Role { role }, tpl);
+            let got = build_prompt(&s).unwrap();
+            assert_eq!(
+                got.contains("宿主会在本轮结束后跑快检 `quick-check`，失败会退回。"),
+                role == Role::Impl
+            );
+            if role != Role::Impl {
+                s.gate_quick = None;
+                assert_eq!(got, build_prompt(&s).unwrap());
+            }
+        }
+        for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            let s = quick_spec(SessionKind::Bug { step }, tpl);
+            assert_eq!(
+                build_prompt(&s)
+                    .unwrap()
+                    .contains("宿主会在本轮结束后跑复现命令和快检 `quick-check`"),
+                step == BugStep::Fix
+            );
+        }
+    }
+
+    #[test]
+    fn gate_quick_prompt_feature_failure_uses_actual_kind_and_current_policy() {
+        let tpl = crate::protocol::seed();
+        for tail in ["lint marker", "=== Autome：门禁运行超过 5 分钟，已终止 ==="] {
+            let inject = Inject::GateFailed {
+                head: "0123456789abcdef".into(),
+                command: "echo {slug}".into(),
+                tail: tail.into(),
+            };
+            for mode in [0, 1, 2] {
+                let result = serde_json::json!({"kind":"quick"});
+                let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
+                s.inject = Some(&inject);
+                s.last_gate = Some(&result);
+                if mode > 0 {
+                    s.gate_quick = None;
+                }
+                if mode == 2 {
+                    s.gate_before_merge = None;
+                }
+                let got = build_prompt(&s).unwrap();
+                assert!(got.contains("运行了快检 `echo {slug}`"));
+                assert!(got.contains(tail));
+                assert!(got.contains("用同一条快检命令确认通过后提交"));
+                assert!(got.contains("已是 `待审` 的里程碑保持 `待审`"));
+                assert!(got.contains(match mode {
+                    0 => "快检结果以 Autome 在你提交后重跑为准",
+                    1 => "门禁结果以 Autome 在合并前重跑为准",
+                    _ => "门禁结果以 Autome 在你提交后的那个提交上重跑为准",
+                }));
+                if tail.starts_with("===") {
+                    assert!(got.contains("快检超时（运行超过 5 分钟，被内核终止），不是检查失败"));
+                }
+            }
+        }
+        let result = serde_json::json!({"kind":"full"});
+        let inject = Inject::GateFailed {
+            head: "head".into(),
+            command: "full-check".into(),
+            tail: "failure".into(),
+        };
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
+        s.last_gate = Some(&result);
+        s.inject = Some(&inject);
+        let got = build_prompt(&s).unwrap();
+        assert!(got.contains("运行了项目门禁"));
+        assert!(got.contains("快检结果以 Autome 在你提交后重跑为准；全量门禁结果"));
+    }
+
+    #[test]
+    fn gate_quick_prompt_bug_failure_names_repro_and_quick() {
+        let tpl = crate::protocol::seed();
+        let result = serde_json::json!({"kind":"quick"});
+        for tail in [
+            "repro failed",
+            "quick failed",
+            "=== Autome：门禁运行超过 30 分钟，已终止 ===",
+        ] {
+            let inject = Inject::GateFailed {
+                head: "head".into(),
+                command: "( repro ) && ( quick )".into(),
+                tail: tail.into(),
+            };
+            let mut s = quick_spec(SessionKind::Bug { step: BugStep::Fix }, tpl);
+            s.last_gate = Some(&result);
+            s.inject = Some(&inject);
+            let got = build_prompt(&s).unwrap();
+            assert!(got.contains("修复门禁（复现命令 + 快检）`( repro ) && ( quick )`"));
+            assert!(got.contains("修复后用复现命令和快检命令确认通过并提交"));
+            assert!(got.contains("不要修改回归测试"));
+            assert!(got.contains(tail));
+            if tail.starts_with("===") {
+                assert!(got.contains("快检超时（运行超过 30 分钟"));
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_prompt_review_follows_result_across_mode_changes() {
+        let tpl = crate::protocol::seed();
+        for kind in ["quick", "full", "repro"] {
+            let result = serde_json::json!({"kind":kind,"command":"actual-command","exit_code":7});
+            let mut s = quick_spec(
+                SessionKind::Bug {
+                    step: BugStep::FixReview,
+                },
+                tpl,
+            );
+            s.last_gate = Some(&result);
+            let got = build_prompt(&s).unwrap();
+            match kind {
+                "quick" => assert!(
+                    got.contains("修复门禁跑的是复现命令和快检（`actual-command`，退出码 7）")
+                ),
+                "full" => {
+                    assert!(got.contains(
+                        "切换配置前已跑过复现命令和完整门禁（`actual-command`，退出码 7）"
+                    ))
+                }
+                _ => assert!(got.contains(BUG_REVIEW_GATE_NOTE)),
+            }
+            if kind == "quick" {
+                s.gate_quick = None;
+                assert_eq!(got, build_prompt(&s).unwrap());
+                s.gate_before_merge = None;
+                let got = build_prompt(&s).unwrap();
+                assert_eq!(got.matches("更正：").count(), 1);
+                assert!(got.contains("不是完整门禁"));
+                assert!(got.contains("`actual-command`，退出码 7"));
+            } else {
+                s.gate_quick = None;
+                let got = build_prompt(&s).unwrap();
+                s.last_gate = None;
+                assert_eq!(got, build_prompt(&s).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_prompt_legacy_templates_correct_once() {
+        for legacy in [true, false] {
+            let mut tpl = crate::protocol::seed().clone();
+            tpl.insert("prompts/fix-review.md", if legacy { "legacy review".to_owned() } else { format!("<!-- gate-run: before_merge -->\n{BUG_REVIEW_GATE_NOTE}\n<!-- /gate-run -->") });
+            for kind in ["quick", "full"] {
+                let result = serde_json::json!({"kind":kind,"command":"actual","exit_code":0});
+                let mut s = quick_spec(
+                    SessionKind::Bug {
+                        step: BugStep::FixReview,
+                    },
+                    &tpl,
+                );
+                s.last_gate = Some(&result);
+                let got = build_prompt(&s).unwrap();
+                assert_eq!(got.matches("更正：").count(), usize::from(!legacy));
+                assert!(got.contains(if kind == "quick" {
+                    "修复门禁跑的是复现命令和快检"
+                } else {
+                    "切换配置前已跑过复现命令和完整门禁"
+                }));
+                assert!(!got.contains("{fix_gate_note}"));
+            }
+        }
+    }
+
+    #[test]
+    fn gate_quick_prompt_commands_are_data_and_empty_results_are_compatible() {
+        let tpl = crate::protocol::seed();
+        for cmd in [
+            "",
+            "echo {slug} {fix_gate_note} {gate_line} {unknown}",
+            "sh \"${ci_script}\"",
+        ] {
+            for kind in [
+                SessionKind::Role { role: Role::Impl },
+                SessionKind::Bug { step: BugStep::Fix },
+                SessionKind::Bug {
+                    step: BugStep::FixReview,
+                },
+            ] {
+                let result = serde_json::json!({"kind":"quick","command":cmd,"exit_code":0});
+                let mut s = quick_spec(kind, tpl);
+                s.gate_quick = Some(cmd);
+                s.last_gate = Some(&result);
+                let got = build_prompt(&s).unwrap();
+                assert!(got.contains(&format!("`{cmd}`")));
+            }
+        }
+        let mut s = quick_spec(
+            SessionKind::Bug {
+                step: BugStep::FixReview,
+            },
+            tpl,
+        );
+        assert!(build_prompt(&s).unwrap().contains(BUG_REVIEW_GATE_NOTE));
+        s.last_gate = Some(&serde_json::Value::Null);
+        assert!(build_prompt(&s).unwrap().contains(BUG_REVIEW_GATE_NOTE));
     }
 }

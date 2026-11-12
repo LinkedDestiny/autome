@@ -2848,10 +2848,11 @@ fn launch_session(
     // Written before the prompt that points at it. A round told to read a
     // brief that is not there would go and read the design document instead,
     // which is the thing the brief exists to make optional.
+    let last_gate = ctx.store.last_event(&task.id, "gate.result")?;
     let gate_evidence = if kind.role() == Some(Role::Audit) {
         crate::brief::gate_evidence(
             resolved,
-            ctx.store.last_event(&task.id, "gate.result")?.as_ref(),
+            last_gate.as_ref(),
             gate_head(&layout).ok().as_deref(),
         )
     } else {
@@ -2910,6 +2911,8 @@ fn launch_session(
         kind,
         templates: &protocol,
         gate_before_merge: resolved.gate_before_merge(),
+        gate_quick: resolved.quick_gate().map(|q| q.command.as_str()),
+        last_gate: last_gate.as_ref(),
         brief_path: &brief_path,
         slug: &task.slug,
         doc_dir: &layout.doc_dir_seen_from(&session_cwd, &task.doc_dir()),
@@ -4465,6 +4468,8 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         kind: SessionKind::Onboarding,
         templates: protocol,
         gate_before_merge: None,
+        gate_quick: None,
+        last_gate: None,
         brief_path: "",
         slug: "onboarding",
         // Onboarding writes the project profile and AGENTS.md at the

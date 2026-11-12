@@ -202,3 +202,27 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
   eval: null
   realized_impact: null
 ```
+
+## protocol/v5
+
+复核说明按宿主实际运行的快检或完整门禁结果渲染。
+
+```yaml
+- id: Q-1
+  kind: clarify
+  clause: prompts/fix-review.md
+  evidence: [T-61 L-07, T-56, T-65]
+  predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: Q-2
+  kind: clarify
+  clause: bug-protocol.md
+  evidence: [T-61 L-07, T-56, T-65]
+  predicted_impact: {metric: total_turns, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
