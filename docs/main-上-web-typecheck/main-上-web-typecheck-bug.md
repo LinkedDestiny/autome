@@ -1,7 +1,7 @@
 # Web typecheck 被 notifier 回归脚本阻断
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd apps/web && node --test test/web-typecheck-regression.mjs
 根因: tsconfig 将 scripts 纳入 allowJs、checkJs、strict 检查，notifier-live-regression.mjs 的参数及 cases 集合缺少类型声明或可推断类型，产生 14 处隐式 any 诊断。
 复核: 待复核
@@ -40,9 +40,16 @@ repos: autome-v2
 
 ## 修复说明
 
-待修复轮填写。本轮仅新增回归测试与本文档，未修改产品代码、原有断言或 tsconfig。
+第 1/3 轮只为 `apps/web/scripts/notifier-live-regression.mjs` 补充 JSDoc：注册用例结构、execFile 模拟函数签名、注册参数、路径 rest 参数与 Promise 回调参数类型。模拟签名明确本场景传入的 timeout 为 number。运行逻辑、定时器、两条原有断言和 tsconfig 均未改变，定位轮的 `test/web-typecheck-regression.mjs` 保持原样。
 
-修复后应保持原 T-56 两条断言，运行状态块命令及 `npm run typecheck`、`npm run lint`、`npm test`、`npm run build`；不得降低 app/server/test 检查强度。本轮未运行完整 lint/test/build 或 ci-local。
+验证结果：
+
+- 修复前执行原复现命令：退出 1，仍报告定位记录中的隐式 any 错误。
+- 修复后执行同一个复现命令：退出 0；其中真实 `npm run typecheck` 通过。
+- `cd apps/web && node --test scripts/notifier-live-regression.mjs`：退出 0，2/2 通过，无跳过。
+- 完整 `sh scripts/ci-local.sh`：退出 1，耗时 479 秒。Format、Clippy、Rust 全量测试、Desktop install、Contract、Web lint、Web typecheck、Web build 通过。Desktop 为 104 通过、1 失败，Electron DOM harness 子进程以 SIGABRT 退出，无 stderr，具体崩溃原因未确定。Web 为 38 文件通过、7 文件失败；347 用例通过、18 失败、19 跳过（测试原有结果，本轮未改跳过条件）。失败日志包含 `listen EPERM: operation not permitted 127.0.0.1`、监听器 `EMFILE` 及相关启动等待超时；当前执行环境不能完成服务监听验收。门禁未全绿，需宿主后续在支持端口监听与 Electron 的环境复跑，不能以本轮静态检查代替。
+
+仓库 `.autome/config.toml` 中宿主 gate 配置已注释，全局配置未发现启用的 gate 段；本轮仍主动执行仓库现有完整门禁脚本。原始输出保存在 `.autome/output/fix-1-before.log`、`fix-1-reproduction.log`、`fix-1-notifier.log`、`fix-1-gate.log`，不纳入提交。
 
 ## 复核意见
 

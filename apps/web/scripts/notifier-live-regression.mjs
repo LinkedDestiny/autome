@@ -7,13 +7,22 @@ import { promisify } from 'node:util';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../test/notifier-live.test.ts', import.meta.url), 'utf8');
+/**
+ * @typedef {{ name: string, action: () => unknown, timeout?: number }} RegisteredCase
+ * @typedef {(file: string, args: string[], options: import('node:child_process').ExecFileOptions & { timeout: number },
+ *   callback: (error: Error | null, stdout: string, stderr: string) => void) => object} ExecFileMock
+ */
+/** @param {ExecFileMock} execFile */
 function load(execFile) {
+  /** @type {RegisteredCase[]} */
   const cases = [];
+  /** @param {string} name @param {() => unknown} action @param {number} [timeout] */
   const register = (name, action, timeout) => cases.push({ name, action, timeout });
   const context = vm.createContext({
     test: register, beforeAll() {}, afterAll() {},
     mkdtempSync: () => '/virtual/notifier', tmpdir: () => '/virtual',
-    join: (...parts) => parts.join('/'), resolve: (...parts) => parts.join('/'),
+    join: (/** @type {string[]} */ ...parts) => parts.join('/'),
+    resolve: (/** @type {string[]} */ ...parts) => parts.join('/'),
     process: { env: {} }, promisify, execFile,
   });
   // Evaluate the actual helper and registrations, not copied deadline constants.
@@ -45,7 +54,8 @@ test('notifier command accepts a successful reply after 20 virtual seconds', asy
     return {};
   });
   const outcome = command('slow-kernel', []).then(
-    reply => ({ reply }), error => ({ error }),
+    (/** @type {string} */ reply) => ({ reply }),
+    (/** @type {unknown} */ error) => ({ error }),
   );
   t.mock.timers.tick(20_000);
   const result = await outcome;
