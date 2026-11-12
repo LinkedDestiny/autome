@@ -1,10 +1,10 @@
 # rebase 冲突退回实现不受预算约束
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p automed --lib rebase_retry_regression -- --nocapture
 根因: Rebase 冲突分支无条件启动实现轮，未检查已用实现预算或累计同文件集冲突；已完成里程碑又使审计直接进入复盘和 rebase，形成无限回路。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -40,6 +40,16 @@ fix-round: 1/3
 可选的“冲突退回会话结束后、审计前提前检查”不作为本轮必要条件。未修改产品逻辑，未创建需求设计或里程碑文档；修复和独立复核由后续节点处理。
 
 ## 修复说明
+
+第 2/3 轮：针对宿主门禁超时，修正 `scripts/ci-local.sh` 重复运行集成测试的问题。`cargo test --workspace --all-targets` 已运行完整的 `end_to_end` 和 `real_cli`（含 adapter flags），脚本随后又分别运行相同用例。本轮保留 workspace 的全部 targets，加上 `--nocapture` 保留输出，移除后续重复调用；未修改任何测试文件、用例、断言或产品逻辑，也未降低超时后的失败要求。
+
+修改前原复现命令 2 passed / 0 failed（34.16 秒）。基线门禁用时 820 秒、退出码 1：workspace 中 98 个端到端用例通过（230.53 秒），随后重复的 98 个用例再次通过（254 秒），adapter flags 也重复运行。日志为 `.autome/output/fix2-gate-before.log`。除 Web test 外全部步骤通过；Web test 为 4 个文件失败、11 failed / 271 passed / 19 skipped，报告 `listen EPERM: operation not permitted 127.0.0.1` 和文件监听 `EMFILE`。这些 skipped 是启动钩子失败后的测试框架结果，未添加跳过条件。
+
+宿主原日志中的 workspace 阶段本身已耗时 2007 秒，因此去重能消除确定的重复开销，但不能单凭此承诺所有负载下都在 30 分钟内通过。本轮观测本机 load average 从约 74 升至 113；无权限查看进程列表，未将具体外部进程认定为根因或终止其它任务。
+
+最终版本按原组合命令 `( cargo test --offline -p automed --lib rebase_retry_regression -- --nocapture ) && ( sh scripts/ci-local.sh )` 实跑，日志 `.autome/output/fix2-gate-final.log`，退出码 1。原回归 2 passed / 0 failed（39.67 秒）；门禁 609 秒结束，Rust 全套通过（包含 635 个 automed 单元测试、98 个端到端测试及 7 个 real_cli 测试），未重复启动集成套件。Format、Clippy、Contract、Web lint/typecheck/build 通过。Desktop 为 103 passed / 1 failed：Electron DOM harness 退出码 null、stderr 为空；单独执行 `node --test apps/desktop/test/dom.test.js` 仍失败（`.autome/output/fix2-desktop-recheck.log`），具体退出原因未核实。Web test 仍为 11 failed / 271 passed / 19 skipped，错误为 EPERM/EMFILE。没有改动或跳过这些检查，也没有将组合门禁标为通过。
+
+`sh -n scripts/ci-local.sh`、`git diff --check` 通过；`git diff --quiet fe76a37 -- crates` 确认本轮未改产品及回归测试。当前沙箱禁止权限升级，尚需宿主在允许本地监听和 Electron 启动的环境复跑原组合命令；本轮无法满足“全门禁通过”的验收条件。未运行可选 package。
 
 第 1/3 轮：在 scheduler 的 rebase 结果转移入口读取账本中的下一实现轮次；超出任务预算时停止在 Rebase，以现有 ImplBudget 原因保留追加预算能力，不再启动实现会话。正常成功收尾路径不变。
 
