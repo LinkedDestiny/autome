@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 2/40
+implementation-round: 3/40
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03：Bug Loop FixGate 只跑复现命令且不被沿用骗过
+next-action: 独立审计 M-03 的 Bug FixGate 命令与沿用边界；通过后推进 M-04 审计简报
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -623,7 +623,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 |---|---|---|---|---|
 | M-01 | 已完成 | [gate] run 配置解析与需求状态机转换 | 0 | |
 | M-02 | 已完成 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
-| M-03 | 开放 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
+| M-03 | 待审 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
 | M-04 | 开放 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 开放 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
@@ -734,6 +734,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：撤掉 M-01 的 `task.rs` 改动时，①② 的 `task.updated` 节点序列含 `gate`，两例失败（§3 跳过逻辑会阻止脚本执行，不能仅靠计数文件识别错误进入 Gate）；不加 §3 那一段时，③ ④ 的任务停在 `gate`（阻塞脚本不退出），断言节点为 `audit` 失败。
 
 ### M-03 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
 
 - 验收命令：`cargo test -p automed --test end_to_end bug_loop && cargo test -p automed --lib scheduler && cargo test -p automed --lib gate::`
 - 预期：end_to_end 过滤 `bug_loop` 16 个通过（基线 14 + 2 个 `bug_loop_before_merge_*`）；automed lib 过滤 `scheduler` 91 个通过（基线 87 + 4 个 `scheduler::tests::before_merge_*`）；过滤 `gate::` 12 个通过（基线 11 + 1）。

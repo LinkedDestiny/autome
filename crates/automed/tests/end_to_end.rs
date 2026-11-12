@@ -4454,6 +4454,107 @@ fn bug_review_policy_same_model_is_refused_for_bug_start() {
 }
 
 #[test]
+fn bug_loop_before_merge_fix_gate_runs_only_the_repro_and_merge_gate_runs_both() {
+    needs_git!();
+    let mut w = World::new("bug-before-merge");
+    let gate = "echo project-gate-output; test -f gate-ready";
+    w.configure(&format!(
+        "[gate]\ncommand = '{gate}'\nrun = 'before_merge'\ntimeout_minutes = 1\n"
+    ));
+    let slug = slug_for("before merge bug");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "touch gate-ready");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "before merge bug");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(4).contains("project-gate-output"));
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "task.updated" && e.2 == id)
+        .filter_map(|e| e.3["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "locate",
+            "repro_check",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "fix",
+            "fix_gate",
+            "fix_review",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.started" && e.2 == id)
+        .collect();
+    for node in ["fix_gate", "merge_gate"] {
+        let commands: Vec<_> = starts
+            .iter()
+            .filter(|e| e.3["node"] == node)
+            .map(|e| e.3["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(commands.len(), 2);
+        let expected = if node == "fix_gate" {
+            "sh regression.sh".to_owned()
+        } else {
+            format!("( sh regression.sh ) && ( {gate} )")
+        };
+        assert!(commands.iter().all(|c| *c == expected));
+    }
+    let merge_results: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.result" && e.2 == id && e.3["node"] == "merge_gate")
+        .map(|e| e.3["ok"].as_bool().unwrap())
+        .collect();
+    assert_eq!(merge_results, [false, true]);
+    assert_eq!(w.ctx.store.count_events(&id, "gate.reused").unwrap(), 0);
+}
+
+#[test]
+fn bug_loop_before_merge_an_ineffective_fix_fails_the_fix_gate() {
+    needs_git!();
+    let mut w = World::new("bug-before-merge-ineffective");
+    w.configure("[gate]\ncommand = 'true'\nrun = 'before_merge'\n");
+    let slug = slug_for("ineffective fix");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "ineffective fix");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(3).contains("regression-output"));
+    assert!(w.prompt(3).contains("2/3"));
+    let events = w.ctx.store.events_since_with_subject(0, 1000).unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|e| e.1 == "gate.result" && e.2 == id && e.3["node"] == "fix_gate")
+        .map(|e| {
+            (
+                e.3["command"].as_str().unwrap(),
+                e.3["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [("sh regression.sh", false), ("sh regression.sh", true)]
+    );
+}
+
+#[test]
 fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
     needs_git!();
     let mut w = World::new("bug-merge");
