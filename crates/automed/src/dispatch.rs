@@ -1953,9 +1953,18 @@ fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResul
     {
         return Err(rejected("手动复盘轮还在跑，结束后再恢复"));
     }
+    let previous_session = ctx.store.running_session(task_id)?;
     scheduler::apply_trigger(ctx, task_id, &trigger)?;
-    // A trigger often unblocks a slot or leaves a core step to run.
-    scheduler::tick(ctx);
+    let current_session = ctx.store.running_session(task_id)?;
+    let started_session = current_session.as_ref().is_some_and(|current| {
+        previous_session.as_ref().map(|previous| &previous.id) != Some(&current.id)
+    });
+    // Return the node this command started, even if its session finishes
+    // immediately. The next scheduling pass will reap it. Other triggers
+    // still tick to fill a freed slot or run a pending core step.
+    if !started_session {
+        scheduler::tick(ctx);
+    }
     let seq = ctx.store.latest_seq()?;
     let (payload, _) = task_get(ctx, task_id)?;
     Ok((

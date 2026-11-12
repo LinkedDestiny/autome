@@ -1,9 +1,9 @@
 # 驳回设计未携带已做的 Backlog 表态
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p automed --test end_to_end rejecting_design_carries_pending_decisions_and_approval_starts_implementation -- --exact --nocapture
-根因: Reject 只注入 DesignFeedback，调度器仅为 Inject::Decisions 取得表态租约，导致驳回轮既不送达也不消费表态，随后 Approve 检测到未消费表态而再次启动设计。
+根因: Reject 原先未携带和租用表态，第 1 轮已修复；另有 task_trigger 在启动会话后立即 tick 的时序竞争，快速完成的实现会话会在批准命令返回前被收割并推进到 audit。
 复核: 待复核
 repos: .
 
@@ -38,10 +38,20 @@ missing decision text in rejection prompt: ["B-01", "B-02", "B-03"]; unconsumed 
 3. `crates/automed/src/launcher.rs:464` 的驳回分支只渲染反馈，`:499` 的表态分支才调用 `render_decisions`。测试确认反馈可达而表态全部缺失，排除了驳回命令本身未生效。
 4. 正常会话结束调用 `settle_decisions`（`scheduler.rs:370,404`），但 `crates/automed/src/store.rs:1748` 起的消费操作只更新绑定当前会话的记录。未取得租约的三条表态不会消费，属于未送达的后果，而非已送达后的消费失败。
 5. `task.rs:1202` 的批准分支检查 `ctx.decisions.any()`，发现仍有未消费表态后启动 `Inject::Decisions` 设计轮。因此仅把驳回意见里的业务文字写入方案不会改变账本状态，仍触发多余设计。当前判断已不限于任务卡所述的 `decisions.included > 0`。
+6. 第 2 轮确认另一个时序问题：表态消费后，领域批准转换正确进入 `Implement`；但 `dispatch.rs` 的 `task_trigger` 在 `apply_trigger` 启动实现会话后无条件调用 `scheduler::tick`。若实现会话此时已完成，`tick_locked` 会收割会话并推进到 `Audit`，因此命令返回时的节点受进程速度影响。宿主失败与本地修复前重复运行均出现表态检查通过、节点为 `audit` 的结果。
 
 任务卡引用的 `docs/plans/2026-10-11-decisions-take-effect-next-round.md` 在当前 checkout 不存在，未将其内容作为已核实证据。现有表态租约测试与当前生产实现足以支持以上因果链。
 
 ## 修复说明
+
+第 2/3 轮修复：
+
+- 仅调整 `dispatch.rs::task_trigger`：比较触发前后的运行会话 ID；本次命令启动新会话时，不立即追加调度收割，由下一次调度推进。没有启动新会话时保留原调度行为，继续处理释放槽位、暂停会话和待执行的核心步骤。
+- 保留第 1 轮表态送达及消费修复；定位轮回归测试未修改。
+- 修复前原命令先通过两次，第三次退出码 101，报告表态缺失和未消费列表均为空、批准节点为 `audit`，与宿主一致。日志为 `.autome/output/fix-round-2-before.log`、`fix-round-2-before-repeat-{1,2}.log`。
+- 修复后原复现命令通过，并额外连续重复三次全部通过（每次 1 passed），日志为 `.autome/output/fix-round-2-repro.log` 和 `fix-round-2-after-repeat-{1,2,3}.log`。
+- 直接相关子集全部通过：`cargo test --offline -p automed --lib approving`（3 passed）、`--lib rejecting`（2 passed）、`--lib decision`（7 passed）；端到端子集 `rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim -- --exact`（1 passed）、`paused_`（6 passed）、`the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion -- --exact`（1 passed），均使用 `cargo test --offline -p automed --test end_to_end`。日志为 `.autome/output/fix-round-2-{approving,rejecting,decisions,control,paused,slots}.log`。
+- `git diff --check`、`rustfmt --edition 2024 --check crates/automed/src/dispatch.rs` 通过；与定位提交 `d4a3f0f` 对比，回归测试文件无差异。未运行全量门禁 `sh scripts/ci-local.sh`，由宿主合并前执行。
 
 第 1/3 轮修复：
 
