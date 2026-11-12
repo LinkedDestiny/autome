@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 2/30
+implementation-round: 3/30
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03：排队状态读者与 CLI 展示（task.get / dashboard.get 的 gate_queue_position 与 CLI 显示）
+next-action: 独立审计 M-03；通过后推进 M-04 门禁超时文案
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -398,7 +398,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 |---|---|---|---|---|
 | M-01 | 已完成 | 排队判定纯函数与 concurrency 配置 | 0 | |
 | M-02 | 已完成 | 内核排队：名额探测、gate.queued 与三处启动点接入 | 0 | |
-| M-03 | 开放 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
+| M-03 | 待审 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 开放 | 门禁超时文案 | 0 | |
 | M-05 | 开放 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
 | M-06 | 开放 | 文档与全量回归 | 0 | |
@@ -472,6 +472,8 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
   时 Fix 轮次用例失败；不做全任务超时回收时挂死作业与业务路径不可达两个用例失败；(b) 不设期限时「无人收的已退出作业不占名额」失败；读取失败按 0 计时未知占用用例失败。
 
 ### M-03 验收契约
+
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
 
 - 验收命令：`cargo test -p automed --lib && cargo test -p autome-cli`（新增用例单独复跑：`cargo test -p automed --lib dispatch::tests::gate_queue_`、`cargo test -p autome-cli gate_queue_`）
 - 预期：`automed --lib` 共 679 个全部通过（676 + 新增 3，都在 `dispatch::tests`：`task.get` 对排队任务给出

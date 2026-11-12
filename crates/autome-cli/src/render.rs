@@ -34,6 +34,10 @@ pub fn node_label(node: &str) -> &str {
     }
 }
 
+pub fn gate_queue_line(position: u64) -> String {
+    format!("排队等门禁（前面还有 {} 个）", position.saturating_sub(1))
+}
+
 pub fn milestone_label(state: &str) -> &str {
     match state {
         "open" => "开放",
@@ -296,6 +300,11 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("log")
         ),
         "setup.skipped" => format!("{subject} 准备命令跳过：{}", s("reason")),
+        "gate.queued" => format!(
+            "{subject} 排队等门禁（{}，入队时前面还有 {} 个）",
+            node_label(&s("node")),
+            p["position"].as_u64().unwrap_or(1).saturating_sub(1)
+        ),
         "gate.started" => format!(
             "{subject} {}开始：{} @ {}",
             node_label(&s("node")),
@@ -368,6 +377,60 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_queue_line_counts_only_waiters_ahead() {
+        for (position, ahead) in [(1, 0), (2, 1), (u64::MAX, u64::MAX - 1), (0, 0)] {
+            assert_eq!(
+                gate_queue_line(position),
+                format!("排队等门禁（前面还有 {ahead} 个）")
+            );
+        }
+    }
+
+    #[test]
+    fn gate_queue_event_labels_the_node_and_snapshot() {
+        for (node, label) in [
+            ("gate", "门禁"),
+            ("merge_gate", "合并前门禁"),
+            ("main_check", "验证 main"),
+            ("repro_check", "复现检查"),
+            ("fix_gate", "修复门禁"),
+            ("implement", "实现"),
+            ("cleanup", "清理"),
+        ] {
+            for (position, ahead) in [(1, 0), (3, 2)] {
+                assert_eq!(
+                    event_line(
+                        "gate.queued",
+                        "T-1",
+                        &json!({"node":node,"position":position})
+                    ),
+                    Some(format!(
+                        "T-1 排队等门禁（{label}，入队时前面还有 {ahead} 个）"
+                    ))
+                );
+            }
+        }
+        assert!(event_line("gate.queue_dropped", "T-1", &json!({})).is_none());
+        assert!(event_line("bug.fix_round_requested", "T-1", &json!({})).is_none());
+    }
+
+    #[test]
+    fn gate_queue_state_line_keeps_the_original_node() {
+        for (node, label) in [
+            ("gate", "门禁"),
+            ("merge_gate", "合并前门禁"),
+            ("main_check", "验证 main"),
+            ("repro_check", "复现检查"),
+            ("fix_gate", "修复门禁"),
+        ] {
+            assert_eq!(
+                state_line(&json!({"state":"active","node":node})),
+                format!("运行中 · {label}")
+            );
+        }
+    }
+
     #[test]
     fn sweep_event_prints_count_and_escaped_paths_on_one_line() {
         let line = super::event_line(

@@ -598,6 +598,9 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
                 render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or(""))
             ));
         }
+        if let Some(position) = e["gate_queue_position"].as_u64() {
+            line.push_str(&format!("  · {}", render::gate_queue_line(position)));
+        }
         println!("{line}");
     }
     if !cooldowns.is_empty() {
@@ -631,6 +634,9 @@ fn task_detail(got: &Value) {
         got["project"]["name"].as_str().unwrap_or_default(),
         t["branch"].as_str().unwrap_or_default()
     );
+    if let Some(position) = got["gate_queue_position"].as_u64() {
+        println!("  门禁排队  {}", render::gate_queue_line(position));
+    }
     println!("  需求      {}", t["request"].as_str().unwrap_or_default());
     if let Some(sb) = got["status_block"].as_object() {
         let ms: Vec<String> = sb
