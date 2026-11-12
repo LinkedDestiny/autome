@@ -1,7 +1,7 @@
 # cd 子目录后的复现脚本漏入回归保护集
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline --test end_to_end bug_cd_repro_ -- --nocapture
 根因: regression_protection 仅在命令原文匹配仓库相对路径，未解析 cd 改变的目录；定位阶段无条件保存空保护快照，直到修复阶段才检查为空。
 复核: 待复核
@@ -40,7 +40,14 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮未修改产品代码。仅新增回归测试及本文，待后续修复轮处理。
+第 1/3 轮修复：
+
+- `scheduler.rs` 增加字面量复现路径解析，按 `cd` 累积工作目录，识别引号、相对路径及括号子 shell 的目录作用域；保留原有完整路径匹配。此处仅静态识别，不执行 shell 或展开变量。
+- 定位阶段在保存快照前拒绝空保护集，错误说明定位责任、test/spec 命名与复现脚本路径；保留修复阶段对旧空快照的兼容拒绝。
+- 仅更新既有空保护夹具的失败节点断言为 `Locate`；定位轮新增的 5 个回归用例未修改、删除、跳过或弱化。另增路径解析单测，覆盖连续 cd、引号、父目录、子 shell 恢复及路径不匹配。
+- 原复现命令修复前退出码 101（2 通过、3 失败），修复后退出码 0（5 通过、0 忽略）。路径解析单测 1 通过。日志：`.autome/output/fix1-before.log`、`.autome/output/fix1-after-final.log`、`.autome/output/fix1-unit.log`。
+- 直接相关测试 `cargo test --offline -p automed --test end_to_end bug_regression_guard_` 全部通过（8 通过、0 忽略），覆盖修改/删除/重命名/模式变更拒绝、内联及追加测试保护、多仓库、重试与旧快照兼容。日志：`.autome/output/fix1-guards.log`。`cargo fmt --all` 和 `git diff --check` 通过。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，由宿主在合并前执行；等待独立复核。
 
 ## 复核意见
 

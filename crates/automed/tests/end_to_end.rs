@@ -5591,7 +5591,13 @@ fn bug_regression_guard_rejects_modified_or_deleted_tests() {
     bug_step(&w, 2, &slug, &doc, BUG_FIX);
     let id = create_bug(&mut w, "guard empty");
     w.settle();
-    assert_regression_rejected(&w, &id, "保护集为空");
+    assert!(matches!(
+        w.ctx.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Locate,
+            reason: autome_domain::task::FailureReason::Protocol { detail }, ..
+        } if detail.contains("保护集为空")
+    ));
 
     // Existing tests modified in locate, inline tests, names and directories.
     for path in [

@@ -1303,6 +1303,89 @@ impl Protection {
     }
 }
 
+/// Resolve literal script arguments against literal `cd` commands. This is
+/// static protection discovery, not shell execution or expansion.
+fn repro_mentions_path(command: &str, path: &str) -> bool {
+    let mut cwd = std::path::PathBuf::new();
+    let mut parents = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for c in command.chars().chain(std::iter::once('\n')) {
+        if escaped {
+            word.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                word.push(c);
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            continue;
+        }
+        let separator = ";&|()\n".contains(c);
+        if c.is_whitespace() || separator {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(c);
+        }
+        if separator {
+            if words.first().is_some_and(|w| w == "cd") {
+                let args = &words[1..];
+                let dir = match args {
+                    [dir] => Some(dir),
+                    [flag, dir] if flag == "--" => Some(dir),
+                    _ => None,
+                };
+                if let Some(dir) = dir {
+                    cwd = cwd.join(dir);
+                }
+            } else {
+                for arg in &words {
+                    let joined = cwd.join(arg);
+                    let mut normalized = std::path::PathBuf::new();
+                    for part in joined.components() {
+                        match part {
+                            std::path::Component::CurDir => {}
+                            std::path::Component::ParentDir => {
+                                if !normalized.pop() {
+                                    normalized.push("..");
+                                }
+                            }
+                            _ => normalized.push(part.as_os_str()),
+                        }
+                    }
+                    if normalized == std::path::Path::new(path) {
+                        return true;
+                    }
+                }
+            }
+            words.clear();
+            if c == '(' {
+                parents.push(cwd.clone());
+            } else if c == ')' {
+                if let Some(parent) = parents.pop() {
+                    cwd = parent;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn regression_protection(
     path: &str,
     contents: &str,
@@ -1339,12 +1422,13 @@ fn regression_protection(
         || [".sh", ".bash", ".py", ".rb", ".js", ".ts", ".mjs", ".cjs"]
             .iter()
             .any(|ext| name.ends_with(ext)))
-        && command.match_indices(path).any(|(start, _)| {
-            let before = command[..start].chars().next_back();
-            let after = command[start + path.len()..].chars().next();
-            let boundary = |c: char| c.is_whitespace() || "\"';&|()".contains(c);
-            before.is_none_or(|c| boundary(c) || c == '/') && after.is_none_or(boundary)
-        });
+        && (repro_mentions_path(command, path)
+            || command.match_indices(path).any(|(start, _)| {
+                let before = command[..start].chars().next_back();
+                let after = command[start + path.len()..].chars().next();
+                let boundary = |c: char| c.is_whitespace() || "\"';&|()".contains(c);
+                before.is_none_or(|c| boundary(c) || c == '/') && after.is_none_or(boundary)
+            }));
     if script || (named && (!code || previous.is_empty())) {
         Some(Protection::File)
     } else if named {
@@ -1465,6 +1549,11 @@ fn guard_bug_regression(
                     files.push(file);
                 }
             }
+        }
+        if files.is_empty() {
+            return Err(err(
+                "定位轮回归测试保护集为空：必须新增或修改 test/spec 测试文件，或在复现命令中引用回归脚本路径",
+            ));
         }
         ctx.store.append_event(
             "bug.regression_snapshot",
@@ -4355,6 +4444,40 @@ pub fn next_role(state: &TaskState) -> Option<Role> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repro_paths_follow_literal_cd_and_subshell_scope() {
+        for command in [
+            "cd apps/web && sh scripts/check.sh",
+            "(cd apps/web && sh ./scripts/check.sh)",
+            "cd apps; cd web; sh scripts/check.sh",
+            "cd apps/web/../web && sh scripts/check.sh",
+            "cd -- 'apps/web' && sh \"scripts/check.sh\"",
+        ] {
+            assert!(
+                super::repro_mentions_path(command, "apps/web/scripts/check.sh"),
+                "{command}"
+            );
+        }
+        assert!(super::repro_mentions_path(
+            "(cd apps/web && true); sh check.sh",
+            "check.sh"
+        ));
+        assert!(super::repro_mentions_path(
+            "cd 'apps/web space' && sh 'check bug.sh'",
+            "apps/web space/check bug.sh"
+        ));
+        for command in [
+            "cd apps/web && sh scripts/check.sh.bak",
+            "cd apps/web && sh other/scripts/check.sh",
+            "(cd apps/web && true); sh scripts/check.sh",
+        ] {
+            assert!(
+                !super::repro_mentions_path(command, "apps/web/scripts/check.sh"),
+                "{command}"
+            );
+        }
+    }
+
     fn failure_result(node: Node, log: &Path) -> Value {
         json!({"node":node.as_str(),"sha":"abc","ok":false,"exit_code":1,
             "command":"false","log":log.to_string_lossy(),"tail":"original tail"})
