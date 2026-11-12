@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/15
+implementation-round: 3/15
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-03 网页写网关与全量回归
+next-action: 在允许本地监听的宿主环境完成 M-03 全量验收与基线计数，通过后标待审
 
 - 任务文件：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-task.md`
 - 任务卡正文：`docs/不是-bug-改建成需求-autome/不是-bug-改建成需求-autome-card.md`
@@ -281,6 +281,8 @@ M-01 覆盖 A-01、A-04（含硬性约束 4 的原子性），没有前置里程
   | `--json` 只打印 `.task` | `.converted_from` 断言失败 |
 
 ### M-03 验收契约
+
+最新证据：docs/不是-bug-改建成需求-autome/evidence/M-03-r3-impl.md · 网关 36/36 通过，全量验收受阻，保持开放 · 实现 #3
 
 - 验收命令：`npm ci --prefix apps/web && npm test --prefix apps/web -- test/write-gate.test.ts && npm test --prefix apps/web && cargo test --workspace`
 - 预期：
