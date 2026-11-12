@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/20
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：autome-domain 新增 MergeAfterConfig 与 merge_after::plan，config_io::parse_project 解析 [merge]
+next-action: 独立审计 M-01；通过后推进 M-02 的 Cleanup 前置钩子作业与事件
 
 任务文件：`docs/合并后钩子-merge-after/合并后钩子-merge-after-task.md`
 
@@ -204,7 +204,7 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
+| M-01 | 待审 | [merge] 配置解析、MergeAfterConfig 与跳过判定 plan（domain + config_io） | 0 | |
 | M-02 | 开放 | Cleanup 前置钩子作业：主检出执行、结果事件与警报、超时、重入与零差异、run 打印 | 0 | |
 | M-03 | 开放 | 跳过与协作：MainCheck 失败、与 [setup] 先后、工作区、Bug 任务、主检出互斥、停止与恢复 | 0 | |
 | M-04 | 开放 | README 与技术设计文档、.autome 未改核对、全量回归 | 0 | |
@@ -212,6 +212,8 @@ pub fn plan(workspace: bool, has_merge_commit: bool, main: MainVerdict) -> Plan
 ## 验收契约
 
 ### M-01 验收契约
+
+最新证据：docs/合并后钩子-merge-after/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
 
 覆盖范围 1，约束 6，问题 1、4 的纯判定部分；前置：无。新增用例（名字都含 `merge_after`）：
 autome-domain：D1 `merge_after_config_is_carried_into_the_resolved_config`（有与无两种）、D2 `merge_after_runs_when_the_main_check_passed_or_was_not_configured`（`NotRun`、`Passed` → `Run`）、D3 `merge_after_is_skipped_when_the_main_check_failed_or_was_skipped`（`Failed` → 「验证 main 未通过」，`Skipped` → 「验证 main 被跳过」）、D4 `merge_after_is_skipped_in_a_workspace_or_without_a_merge_commit`（工作区配四种 verdict 都是「工作区项目不支持合并后命令」；单仓无合并提交 + `Passed` → 「没有单一的合并提交」）。

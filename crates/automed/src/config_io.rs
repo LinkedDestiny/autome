@@ -315,6 +315,31 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
         }
     }
 
+    if let Some(t) = doc.get("merge") {
+        let t = t.as_table().ok_or("[merge] 不是一个表")?;
+        let command = match t.get("after") {
+            None => "",
+            Some(v) => v
+                .as_str()
+                .ok_or("[merge] after 必须是字符串，例如 after = \"make deploy\"")?,
+        }
+        .trim();
+        if !command.is_empty() {
+            let timeout_minutes = match t.get("after_timeout_minutes") {
+                None => autome_domain::config::DEFAULT_MERGE_AFTER_TIMEOUT_MINUTES,
+                Some(v) => v
+                    .as_integer()
+                    .filter(|m| *m > 0)
+                    .ok_or("[merge] after_timeout_minutes 必须是正整数")?
+                    .min(u32::MAX as i64) as u32,
+            };
+            config.merge_after = Some(autome_domain::config::MergeAfterConfig {
+                command: command.to_string(),
+                timeout_minutes,
+            });
+        }
+    }
+
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
         if let Some(v) = t.get("reuse_for_main_check") {
@@ -687,6 +712,85 @@ fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merge_after_section_is_read_with_command_and_timeout() {
+        for (value, expected) in [
+            (3_i64, 3_u32),
+            (1, 1),
+            (4294967295, u32::MAX),
+            (4294967296, u32::MAX),
+            (i64::MAX, u32::MAX),
+        ] {
+            let cfg = parse_project(&format!("[merge]\nafter = \"  make deploy  \"\nafter_timeout_minutes = {value}\nunknown = true")).unwrap().merge_after.unwrap();
+            assert_eq!(cfg.command, "make deploy");
+            assert_eq!(cfg.timeout_minutes, expected);
+        }
+    }
+
+    #[test]
+    fn merge_after_section_defaults_to_10_minutes_and_a_blank_or_missing_after_means_none() {
+        assert_eq!(
+            parse_project("[merge]\nafter = \"deploy\"")
+                .unwrap()
+                .merge_after
+                .unwrap()
+                .timeout_minutes,
+            10
+        );
+        for text in [
+            "",
+            "[merge]",
+            "[merge]\nafter_timeout_minutes = 0",
+            "[merge]\nafter = \"\"",
+            "[merge]\nafter = \"  \t  \"\nafter_timeout_minutes = 0",
+            "[merge]\nafter = \" \"\nafter_timeout_minutes = false",
+        ] {
+            assert_eq!(parse_project(text).unwrap().merge_after, None, "{text}");
+        }
+    }
+
+    #[test]
+    fn merge_after_section_refuses_a_non_table_a_non_string_after_or_a_bad_timeout() {
+        for value in ["1", "true", "[]", "\"x\""] {
+            assert_eq!(
+                parse_project(&format!("merge = {value}")).unwrap_err(),
+                "[merge] 不是一个表"
+            );
+        }
+        for value in ["3", "false", "[]", "{}"] {
+            assert_eq!(
+                parse_project(&format!("[merge]\nafter = {value}")).unwrap_err(),
+                "[merge] after 必须是字符串，例如 after = \"make deploy\""
+            );
+        }
+        for value in ["0", "-1", "\"10\"", "1.0", "true", "[]", "{}"] {
+            assert_eq!(
+                parse_project(&format!(
+                    "[merge]\nafter = \"deploy\"\nafter_timeout_minutes = {value}"
+                ))
+                .unwrap_err(),
+                "[merge] after_timeout_minutes 必须是正整数"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_after_section_survives_save_project() {
+        let dir = TempDir::new("merge-after");
+        let section = "[merge]\n# keep this command\nafter = \"  make deploy  \"\nafter_timeout_minutes = 3\nunknown = true\n";
+        write_project(dir.path(), section);
+        let mut project = load_project(dir.path()).unwrap();
+        let expected = project.merge_after.clone();
+        project.loop_overrides.parallel = Some(2);
+        save_project(dir.path(), &project).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().merge_after, expected);
+        assert!(
+            std::fs::read_to_string(project_config_path(dir.path()))
+                .unwrap()
+                .contains(section)
+        );
+    }
+
     #[test]
     fn gate_reuse_for_main_check_is_read_from_the_project_file() {
         for text in ["", "[gate]\ncommand = 'check'"] {

@@ -271,6 +271,8 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_after: Option<MergeAfterConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_same_failure_limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_reuse_for_main_check: Option<bool>,
@@ -280,6 +282,15 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
 }
+
+/// Host command run in the main checkout after a successful merge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeAfterConfig {
+    pub command: String,
+    pub timeout_minutes: u32,
+}
+
+pub const DEFAULT_MERGE_AFTER_TIMEOUT_MINUTES: u32 = 10;
 
 /// Host command that prepares dependencies in a checkout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +412,7 @@ pub struct ResolvedConfig {
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "GateRun::is_each_round")]
     pub gate_run: GateRun,
+    pub merge_after: Option<MergeAfterConfig>,
     pub gate_same_failure_limit: u32,
     pub gate_reuse_for_main_check: bool,
     #[serde(default = "default_gate_concurrency")]
@@ -487,6 +499,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             .min(global.gate.concurrency),
         gate_run: project.gate_run.unwrap_or_default(),
         setup: project.setup.clone(),
+        merge_after: project.merge_after.clone(),
         gate_same_failure_limit: project
             .gate_same_failure_limit
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
@@ -650,6 +663,30 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merge_after_config_is_carried_into_the_resolved_config() {
+        let mut project: ProjectConfig = serde_json::from_str("{}").unwrap();
+        assert!(
+            resolve(&GlobalConfig::default(), &project)
+                .merge_after
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(&project)
+                .unwrap()
+                .get("merge_after")
+                .is_none()
+        );
+        project.merge_after = Some(MergeAfterConfig {
+            command: "deploy".into(),
+            timeout_minutes: 3,
+        });
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &project).merge_after,
+            project.merge_after
+        );
+    }
+
     #[test]
     fn gate_reuse_for_main_check_defaults_true_and_project_overrides() {
         let project: ProjectConfig = serde_json::from_str("{}").unwrap();

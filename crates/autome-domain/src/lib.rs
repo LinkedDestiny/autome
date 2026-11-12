@@ -50,3 +50,5 @@ pub mod bug_doc;
 pub mod bug_loop;
 
 pub mod setup;
+
+pub mod merge_after;
