@@ -1,7 +1,7 @@
 # 网关放行任务卡的创建与开始：写网关加 task.start / task.reply 与任务卡字段，读网关补齐并加反向检查
 
 status: 实现中
-design-round: 1/15
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: M-01
 current-milestone-reopens: 0
@@ -236,7 +236,9 @@ W7（「补充信息」）、W9（确认前先 probe）都要经网页网关调�
     中文。**这条 409 不是成功使用的证据**，M-01 的证据按此措辞；成功路径见 M-04。
   - M-03 逐字到达（同一文件追加）：`brief` 恰好 65536 个 UTF-8 字节（上限本身），开头 `# 逐字比对\n`，
     正文混排 CRLF、制表符、`"`、`\`、`</script>`、`\u0001`..`\u001f`（不含空字符）、BMP 中文、代理对
-    emoji、组合字符，结尾保留空格与两个换行；经 `/api/write task.create {kind:'bug', draft:true}` 建卡后
+    emoji、组合字符，结尾保留空格与两个换行；**主体用 ASCII 补齐到 65536 字节**（混排元素只占小部分），
+    使 `brief.length`（UTF-16 码元）大于 60000，并在用例里先断言这一前置（否则「截到 60000 码元」的变异
+    对该样本是恒等变换，负向对照形同虚设）；经 `/api/write task.create {kind:'bug', draft:true}` 建卡后
     经 `/api/read task.get` 读回：`payload.brief === brief`，且 `Buffer.compare(Buffer.from(payload.brief),
     Buffer.from(brief)) === 0`、`Buffer.byteLength(payload.brief) === 65536`。`task.get` 的 `brief` 取自
     `ctx.store.task_brief`，就是内核实际保存的任务卡（内核测试 `brief_is_returned_byte_for_byte` 钉住
@@ -364,7 +366,7 @@ M-01 先做，因为它承担本任务最大的不确定性：真实内核端到
 
 - 验收命令：`cargo build -p automed && (cd apps/web && npm ci) && (cd apps/web && npx vitest run test/gateway-task-card.test.ts) && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web && npm test --prefix apps/web`
 - 预期：`gateway-task-card.test.ts` 4 个用例全部通过（3→4）；全量 `npm test` 0 失败、用例总数 = B + 18；lint 0 警告、typecheck 通过。
-- 负向对照：网关或门禁对 `brief` 做 `trim()` 或把 CRLF 规范成 LF 时，逐字比较失败（结尾空白与 `\r` 丢失）；字节上限误写成 `>=` 65536 时，恰好 65536 字节的建卡请求收到 400 而失败；把 `brief` 按码元截到 60000 再转发时，`Buffer.byteLength` 断言失败。
+- 负向对照：网关或门禁对 `brief` 做 `trim()` 或把 CRLF 规范成 LF 时，逐字比较失败（结尾空白与 `\r` 丢失）；字节上限误写成 `>=` 65536 时，恰好 65536 字节的建卡请求收到 400 而失败；把 `brief` 按码元截到 60000 再转发时，`Buffer.byteLength` 断言失败（样本的码元数大于 60000 由用例前置断言保证，截断才真的改变内容）。
 
 ### M-04 验收契约
 
