@@ -1,0 +1,41 @@
+/* Tokens from animal-island-ui (docs/design-system/css-variables.md), CC BY-NC 4.0.
+ * Migrated via apps/desktop/renderer/style.css Layer 1. */
+@import './tokens.css';
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--animal-font); color: var(--animal-text-body); background: var(--animal-bg); }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); padding: 10px 16px; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--animal-bg-secondary); }
+button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-disabled); cursor: not-allowed; }
+:focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
+.shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); height: 100dvh; overflow: hidden; }
+.shell-sidebar { grid-column: 1; grid-row: 1 / 4; display: flex; flex-direction: column; min-height: 0; padding: 28px 20px; gap: 20px; border-right: 1px solid var(--animal-border-light); }
+.shell-brand { font-size: 28px; font-weight: 900; color: var(--animal-text); }
+.shell-sidebar h2 { font-size: 14px; margin: 0; }
+.project-list { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.project-card { padding: 16px; border-radius: var(--animal-radius); background: var(--animal-bg-content); overflow-wrap: anywhere; }
+.shell-topbar { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 20px 28px; position: relative; z-index: 10; }
+.shell-topbar-title { margin-right: auto; font-weight: 800; }
+.btn-primary { background: var(--animal-primary); box-shadow: 0 4px 0 var(--animal-shadow-btn); font-weight: 800; }
+.shell-banner { grid-column: 2; grid-row: 2; }
+.live-banner { padding: 12px 28px; color: var(--animal-text); background: var(--tile-yellow); }
+.shell-main { grid-column: 2; grid-row: 3; min-height: 0; min-width: 0; overflow: hidden; padding: 24px 28px; }
+.overview-column-body { overflow-y: auto; min-height: 0; }
+.palette-list { overflow-y: auto; min-height: 0; }
+.error-card { margin: 32px; padding: 32px; border-radius: var(--animal-radius-lg); background: var(--animal-bg-content); }
+.error-card a { text-decoration: underline; }
+.bell { position: relative; color: var(--animal-text-body); }
+.bell-button { display: flex; align-items: center; }
+.bell-badge { margin-left: 6px; color: var(--animal-error-active); font-weight: 600; }
+.bell-panel { position: absolute; right: 0; margin-top: 8px; width: min(380px, calc(100vw - 40px)); max-height: 60vh; overflow-y: auto; min-height: 0; background: var(--animal-bg); border: 1px solid var(--animal-border); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); }
+.bell-header { display: flex; justify-content: space-between; align-items: center; padding: 16px; }
+.bell-request { margin: 0 16px 16px; }
+.bell-message { padding: 0 16px; }
+.bell-error { padding: 0 16px; color: var(--animal-error-active); }
+.bell-empty { padding: 0 16px 16px; }
+.bell-list { list-style: none; margin: 0; padding: 0; }
+.bell-item { padding: 16px; border-top: 1px solid var(--animal-border-light); overflow-wrap: anywhere; }
+.bell-unread { color: var(--animal-primary-active); margin-right: 6px; }
+.bell-body { margin: 8px 0; font-size: 14px; }
+.bell-note, .bell-time { color: var(--animal-text-muted); font-size: 12px; }
+.bell-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; }

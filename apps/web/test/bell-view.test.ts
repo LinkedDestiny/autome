@@ -14,7 +14,7 @@ function view(snapshot: BellSnapshot, targets = TARGETS) {
 it('徽标 0 隐藏，1、99、100 边界与中文 aria-label', () => {
   for (const unread of [0, 1, 99, 100]) {
     const html = view({ unread, items: [] }); expect(html).toContain(`aria-label="通知，${unread} 条未读"`);
-    if (unread === 0) expect(html).not.toContain('font-weight:600');
+    if (unread === 0) expect(html).not.toContain('bell-badge');
     else expect(html).toContain(`>${unread >= 100 ? '99+' : unread}</span>`);
   }
 });
@@ -40,12 +40,15 @@ it('空列表及加载失败文案', () => {
   expect(view({ unread: 0, items: [] })).toContain('还没有通知');
   expect(view({ unread: 0, items: [], error: '通知加载失败：网络不可达' })).toContain('通知加载失败：网络不可达');
 });
-it('固定定位与内部 60vh 滚动', () => {
+it('顶栏内定位与内部 60vh 滚动', () => {
   const html = view({ unread: 1, items: [item] });
   const closed = renderToString(createElement(MemoryRouter, null, createElement(BellView, { snapshot: { unread: 1, items: [item] }, open: false, onToggle: vi.fn(), onRead: async () => {}, onAll: async () => {} })));
   expect(closed).toContain('aria-expanded="false"'); expect(closed).not.toContain('通知列表');
   expect(html).toContain('aria-expanded="true"');
-  expect(html).toContain('position:fixed'); expect(html).toContain('max-height:60vh'); expect(html).toContain('overflow-y:auto');
+  expect(html).toContain('class="bell-panel"');
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.bell\s*\{[^}]*position: relative/);
+  expect(css).toMatch(/\.bell-panel\s*\{[^}]*max-height: 60vh;[^}]*overflow-y: auto/);
 });
 it('root 同时渲染铃铛与子路由，仍只由 useLiveEvents 建连接', () => {
   const Stub = createRoutesStub([{ id: 'root', path: '/', loader: () => null, Component: App, children: [{ index: true, Component: () => createElement('p', null, '子路由内容') }] }]);

@@ -16,35 +16,35 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
   onRead: (id: string) => Promise<void>; onAll: () => Promise<void>; targets?: typeof TARGETS;
   permission?: SystemPermission; onRequest?: () => void;
 }) {
-  return <div style={{ position: 'fixed', top: 16, right: 20, zIndex: 10, fontFamily: 'system-ui, sans-serif', color: '#1f2937' }}>
+  return <div className="bell">
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
-      style={{ padding: '8px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}>
+      className="bell-button">
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
-      {snapshot.unread > 0 && <span style={{ marginLeft: 6, color: '#b91c1c', fontWeight: 600 }}>{snapshot.unread >= 100 ? '99+' : snapshot.unread}</span>}
+      {snapshot.unread > 0 && <span className="bell-badge">{snapshot.unread >= 100 ? '99+' : snapshot.unread}</span>}
     </button>
-    {open && <section aria-label="通知列表" style={{ position: 'absolute', right: 0, marginTop: 8, width: 'min(380px, calc(100vw - 40px))', maxHeight: '60vh', overflowY: 'auto', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, boxShadow: '0 8px 24px #00000014' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 16 }}>
+    {open && <section aria-label="通知列表" className="bell-panel">
+      <header className="bell-header">
         <strong>通知</strong><button type="button" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
       </header>
-      {permission === 'default' && <button type="button" onClick={onRequest} style={{ margin: '0 16px 16px' }}>开启系统通知</button>}
-      {permission === 'denied' && <p style={{ padding: '0 16px' }}>系统通知已被浏览器拒绝，铃铛照常提醒</p>}
-      {snapshot.error && <p role="alert" style={{ padding: '0 16px', color: '#b91c1c' }}>{snapshot.error}</p>}
-      {!snapshot.items.length && <p style={{ padding: '0 16px 16px' }}>还没有通知</p>}
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+      {permission === 'default' && <button type="button" onClick={onRequest} className="bell-request">开启系统通知</button>}
+      {permission === 'denied' && <p className="bell-message">系统通知已被浏览器拒绝，铃铛照常提醒</p>}
+      {snapshot.error && <p role="alert" className="bell-error">{snapshot.error}</p>}
+      {!snapshot.items.length && <p className="bell-empty">还没有通知</p>}
+      <ul className="bell-list">
         {snapshot.items.map(item => {
           const target = resolveTarget(item, targets);
-          return <li key={item.id} style={{ padding: 16, borderTop: '1px solid #e5e7eb', overflowWrap: 'anywhere' }}>
-            {!item.read_at && <span aria-label="未读" style={{ color: '#2563eb', marginRight: 6 }}>●</span>}
+          return <li key={item.id} className="bell-item">
+            {!item.read_at && <span aria-label="未读" className="bell-unread">●</span>}
             {target.href ? <Link to={target.href} onClick={async event => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) { void onRead(item.id); return; }
               event.preventDefault();
               await onRead(item.id);
               window.location.assign(target.href!);
             }}>{item.title}</Link> : <span>{item.title}</span>}
-            {item.body && <p style={{ margin: '8px 0', fontSize: 14 }}>{item.body}</p>}
-            {target.note && <p style={{ color: '#6b7280', fontSize: 12 }}>{target.note}</p>}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 8 }}>
-              <time dateTime={item.created_at} style={{ color: '#6b7280', fontSize: 12 }}>{localTime(item.created_at)}</time>
+            {item.body && <p className="bell-body">{item.body}</p>}
+            {target.note && <p className="bell-note">{target.note}</p>}
+            <div className="bell-footer">
+              <time dateTime={item.created_at} className="bell-time">{localTime(item.created_at)}</time>
               {!item.read_at && <button type="button" onClick={() => { void onRead(item.id); }}>标为已读</button>}
             </div>
           </li>;

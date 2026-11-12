@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useRevalidator } from 'react-router';
 import type { CoreMessage } from '../../server/eventbus-protocol.ts';
 import { createLiveClient, publishLiveMessage, type ConnectionState } from './live-client.ts';
@@ -26,8 +26,37 @@ export function useLiveEvents() {
   return { connection, core };
 }
 
-export function LiveBanner({ connection }: { connection: ConnectionState }) {
-  return connection === 'reconnecting'
-    ? <div role="status" style={{ position: 'sticky', top: 0, zIndex: 1, padding: '8px 12px', color: '#713f12', background: '#fef3c7' }}>连接中断，正在重连</div>
-    : null;
+type LiveStatus = { connection: ConnectionState; core?: CoreMessage; kernelError?: string };
+export function liveBanner({ connection, core, kernelError }: LiveStatus) {
+  if (connection === 'reconnecting') return { tone: 'status' as const, text: '连接中断，正在重连' };
+  const error = core?.status === 'offline' ? (core.reason ?? '内核已离线') : !core ? kernelError : undefined;
+  return error === undefined ? null : { tone: 'alert' as const, text: `内核离线：${error}，写操作暂不可用` };
+}
+export function writeGate({ connection, core }: LiveStatus) {
+  if (connection === 'connecting') return { allowed: false, reason: '正在连接服务' };
+  if (connection === 'reconnecting') return { allowed: false, reason: '连接中断，正在重连' };
+  if (core?.status === 'connected') return { allowed: true, reason: '' };
+  return { allowed: false, reason: core ? `内核离线：${core.reason ?? '内核已离线'}` : '正在连接服务' };
+}
+const WriteGateContext = createContext(writeGate({ connection: 'connecting' }));
+export const WriteGateProvider = WriteGateContext.Provider;
+export function useWriteGate() { return useContext(WriteGateContext); }
+
+type RecoveryStatus = { core?: CoreMessage; kernelOk: boolean };
+export function needsKernelReload({ core, kernelOk }: RecoveryStatus) {
+  return core?.status === 'connected' && kernelOk === false;
+}
+export function useKernelRecovery(status: RecoveryStatus) {
+  const { revalidate } = useRevalidator();
+  const needed = needsKernelReload(status);
+  const previous = useRef(false);
+  useEffect(() => {
+    const rising = needed && !previous.current;
+    previous.current = needed;
+    if (rising) void revalidateAll(() => revalidate());
+  }, [needed, revalidate]);
+}
+export function LiveBanner(status: LiveStatus) {
+  const banner = liveBanner(status);
+  return banner ? <div role={banner.tone} className="live-banner">{banner.text}</div> : null;
 }

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-02：animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定
+next-action: 独立复验 M-02 的定向验收与环境受阻全量；通过后推进 M-03 标签表与归列函数
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -321,7 +321,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
-| M-02 | 开放 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
+| M-02 | 待审 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 开放 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
 | M-05 | 开放 | ⌘K 跳转面板与新建任务卡入口 | 0 | palette |
@@ -355,6 +355,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 ### M-02 token、字体、外壳布局、铃铛入顶栏、离线横幅与写判定
 
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-02-r2-impl.md · 定向通过，全量环境受阻待复验 · 实现 #2
+
 - 覆盖：R-07、R-08、R-05（横幅与写判定）。前置：M-01。
 - 结果：新增 `app/styles/` 下的 `tokens.css`、`app.css`、字体和许可文件。新增 `app/components/shell.tsx`，包括外壳网格、项目栏框架（暂时只有项目名）、顶栏（暂时只有一个禁用的「新建任务卡」按钮和铃铛）、横幅行。`root.tsx` 加上 `links`、`ErrorBoundary`、`WriteGateProvider`。`live.tsx` 加入 `liveBanner`、`writeGate`、`WriteGateProvider`、`useWriteGate`、`needsKernelReload`、`useKernelRecovery`，`LiveBanner` 改成新签名。`bell.tsx` 改用类名。按表修改 `bell-view` 的两条和 `live-banner` 的两条。
 - 新测试 `test/styles.test.ts`，共 10 条：
@@ -384,8 +386,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-02 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/styles.test.ts test/live-status.test.ts test/shell.test.ts test/bell-view.test.ts test/live-banner.test.ts`（之后分段跑 lint、typecheck、Web 全量测试、build、desktop 测试，各自报退出码）
-- 预期：点名的 5 个文件共 30 个用例通过（10 + 6 + 4 + 8 + 2）；Web 全量 316 个用例（296 + 20），`skipped` 为 0；desktop 104 个用例，数量不变；build 后的 `apps/web/build/client/assets/` 里有一个名字含 `Nunito` 的 `.ttf` 文件，用 `ls apps/web/build/client/assets | grep -c 'Nunito.*\.ttf'` 检查，输出 ≥ 1。
-- 负向对照：在 `bell.tsx` 按钮上恢复 `style={{ background: '#fff' }}`，第 4、9 条变红；把 `.shell` 的 `overflow: hidden` 改成 `overflow: auto`，或者删掉 `.project-list` 的 `min-height: 0`，第 10 条变红；`writeGate` 在 `core` 为 `undefined` 时返回 `allowed: true`，`live-status` 第 4 条和 `shell` 第 4 条变红；`needsKernelReload` 恒返回 `false`（或 `App` 不调用 `useKernelRecovery`），`live-status` 第 6 条变红；删掉 `tokens.css` 中的 `--tile-peach` 声明，第 1 条变红。
+- 预期：点名的 5 个文件共 30 个用例通过（10 + 6 + 4 + 8 + 2）；Web 静态枚举 316 个用例（296 + 20），运行时参数化展开后 330 个（上一轮运行基线 310 + 20），`skipped` 为 0；desktop 104 个用例，数量不变；build 后的 `apps/web/build/client/assets/` 里有一个名字含 `Nunito` 的 `.ttf` 文件，用 `ls apps/web/build/client/assets | grep -c 'Nunito.*\.ttf'` 检查，输出 ≥ 1。
+- 负向对照：在 `bell.tsx` 按钮上恢复 `style={{ background: '#fff' }}`，第 4、9 条变红；把 `.shell` 的 `overflow: hidden` 改成 `overflow: auto`，或者删掉 `.project-list` 的 `min-height: 0`，第 10 条变红；`writeGate` 在 `core` 为 `undefined` 时返回 `allowed: true`，`live-status` 第 3、4 条变红（`shell` 第 4 条验证 connecting 首屏，保持禁用）；`needsKernelReload` 恒返回 `false`（或 `App` 不调用 `useKernelRecovery`），`live-status` 第 6 条变红；删掉 `tokens.css` 中的 `--tile-peach` 声明，第 1 条变红。
 
 ### M-03 labels.ts 与唯一归列函数
 
