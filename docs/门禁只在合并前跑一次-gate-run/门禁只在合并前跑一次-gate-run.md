@@ -1,7 +1,7 @@
 # 门禁只在合并前跑一次（`[gate] run = "before_merge"`）
 
 status: 实现中
-design-round: 2/15
+design-round: 3/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -121,10 +121,10 @@ next-action: M-01：在 autome-domain 加 GateRun 与实现轮结束后的转换
 - 「不改 `protocol/`」——**按意见调整**：改 `protocol/prompts/` 五份模板、`bug-protocol.md` 一句、`CHANGELOG.md`、`README.md`
   一句与 `evals/` 新增五个用例；**不改** `loop-protocol.md` 与 `session-protocol.md`（理由见方案 §6.6）。
 - 不新增 JSON-RPC 方法、不改参数、不新增事件种类；账本 schema 不变。
-- 不改 `plugins/`、`apps/desktop`、`apps/web`。逐条理由见方案 §7。
+- 不改 `plugins/`、`apps/desktop`、`apps/web`。逐条理由见方案 §8。
 - 不给 Bug 复核轮新增简报文件；复核轮的口径写在它的 prompt 里（方案 §6.4）。
 - 已固定在 `protocol/v2` 及更早版本的任务，模板里的会话规则不变（协议「共同原则」第 6 条）；宿主一侧的行为（不进 `Gate`、
-  FixGate 只跑复现、审计简报的门禁证据、修复轮注入文字）对它们同样生效（方案 §6.7）。
+  FixGate 只跑复现、审计简报的门禁证据、修复轮注入文字）对它们同样生效（方案 §6.8）。
 
 ## 方案
 
@@ -703,7 +703,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
   `CHANGELOG.md` 的 `## protocol/v3`（G-1..G-5）、五个行为用例目录、`phrases.rs` 的新条目、`protocol/README.md` 一句、5 份 `before_merge` prompt 金样与
   `golden/README.md` 一段、§10 第 2、3 条。新增：prompt_rendering 3 个（§6.9 那三个）；automed lib 1 个——
   `protocol::eval::tests::before_merge_prompt_seed_segments_render_in_both_modes`：种子的五份模板在两种模式下都能选段，`before_merge` 输出各含一次
-  `{gate_line}`、`each_round` 输出不含任何标记；end_to_end 2 个——① `protocol_before_merge_feature_rounds_are_told_the_host_runs_the_full_suite`：
+  `{gate_line}`、`each_round` 输出不含任何标记；实施提醒（评审 #3 N3-02）：`protocol/eval.rs` 的 `with_behavioral_entry` 与 `a_changed_run_covers_the_new_cases_and_the_three_baselines` 用合成的 `protocol/v3` / C-90 标签，种子新增 `protocol/v3` 后会命中种子节而取不到用例，须把两处合成标签换成不与种子冲突的标签，保留用例内容与断言强度，并按 §10 在实现证据中列出该调整；end_to_end 2 个——① `protocol_before_merge_feature_rounds_are_told_the_host_runs_the_full_suite`：
   `before_merge` 需求任务的设计轮、实现轮、审计轮 prompt 都含「全量门禁（`<门禁命令>`）由宿主在合并前统一运行，本轮不要自己跑。」，设计轮含
   「不要把跑全量门禁写成任何里程碑的验收命令」，审计轮含「不要因为没跑全量而不给结论」且不含「项目测试体系全量跑一次即可」；②
   `protocol_before_merge_bug_rounds_are_told_the_host_runs_the_full_suite`：`before_merge` Bug 任务的修复轮 prompt 含该句与「再跑与本轮改动直接相关的
