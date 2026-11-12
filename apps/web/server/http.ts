@@ -1,3 +1,4 @@
+import { createLoadContext } from '../app/load-context.ts';
 import type { createNotificationApi } from './notifier-api.ts';
 import type { createGateway } from './gateway.ts';
 import express from 'express';
@@ -56,12 +57,13 @@ export async function createHttpServer({ mode, gateway, notifications }: { mode:
     app.use(createRequestHandler({
       build: () => vite.ssrLoadModule('virtual:react-router/server-build') as Promise<ServerBuild>,
       mode,
+      getLoadContext: createLoadContext({ gateway: gateway ?? null }),
     }));
   } else {
     app.use('/assets', express.static(resolve(root, 'build/client/assets'), { immutable: true, maxAge: '1y' }));
     app.use(express.static(resolve(root, 'build/client'), { maxAge: '1h' }));
     const build = await import(pathToFileURL(resolve(root, 'build/server/index.js')).href);
-    app.use(createRequestHandler({ build, mode }));
+    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null }) }));
   }
   const registerUpgrade = installUpgradeGuard(server, port);
   return { server, closeMiddleware, registerUpgrade };

@@ -48,8 +48,8 @@ it('固定定位与内部 60vh 滚动', () => {
   expect(html).toContain('position:fixed'); expect(html).toContain('max-height:60vh'); expect(html).toContain('overflow-y:auto');
 });
 it('root 同时渲染铃铛与子路由，仍只由 useLiveEvents 建连接', () => {
-  const Stub = createRoutesStub([{ path: '/', Component: App, children: [{ index: true, Component: () => createElement('p', null, '子路由内容') }] }]);
-  const html = renderToString(createElement(Stub));
+  const Stub = createRoutesStub([{ id: 'root', path: '/', loader: () => null, Component: App, children: [{ index: true, Component: () => createElement('p', null, '子路由内容') }] }]);
+  const html = renderToString(createElement(Stub, { hydrationData: { loaderData: { root: { kernel: { ok: true }, projects: [], tasks: [] } } } }));
   expect(html).toContain('aria-label="通知，0 条未读"'); expect(html).toContain('子路由内容');
   const root = readFileSync(new URL('../app/root.tsx', import.meta.url), 'utf8'); expect(root.match(/useLiveEvents\(\)/g)).toHaveLength(1);
   for (const name of readdirSync(new URL('../app/components/', import.meta.url)).filter(name => name.startsWith('bell'))) {

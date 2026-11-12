@@ -1,0 +1,22 @@
+import { createContext, RouterContextProvider, type RouterContext } from 'react-router';
+import type { GetLoadContextFunction } from '@react-router/express';
+import type { createGateway } from '../server/gateway.ts';
+
+export type KernelGateway = Pick<ReturnType<typeof createGateway>, 'read' | 'write'>;
+export type WebServices = {
+  gateway: KernelGateway | null;
+  // W6 can add store/notifications here when their first loader needs them.
+};
+
+// Node, Vite SSR and the production bundle must use the same object key.
+const key = Symbol.for('autome.web.services');
+const registry = globalThis as typeof globalThis & { [key]: RouterContext<WebServices> | undefined };
+export const servicesContext = registry[key] ??= createContext<WebServices>();
+
+export function createLoadContext(services: WebServices) {
+  return (() => {
+    const context = new RouterContextProvider();
+    context.set(servicesContext, services);
+    return context;
+  }) satisfies GetLoadContextFunction;
+}

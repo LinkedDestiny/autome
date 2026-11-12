@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
+implementation-round: 1/25
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：新建 apps/web/app/load-context.ts，在 server/http.ts 两处 createRequestHandler 加 getLoadContext，root.tsx 加根 loader 与 shouldRevalidate，跑「M-01 验收契约」
+next-action: 独立审计 M-01；复跑受监听限制的全量验收，通过后推进 M-02
 
 任务文件：`docs/w5-外壳与项目导航-迁移-animal/w5-外壳与项目导航-迁移-animal-task.md`。
 本任务的规则见 `docs/w5-外壳与项目导航-迁移-animal/protocol/loop-protocol.md` 与
@@ -320,7 +320,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
+| M-01 | 待审 | getLoadContext 端到端：共享上下文键、两种模式 SSR 取到网关 | 0 | load-context |
 | M-02 | 开放 | animal-island token、字体与外壳布局，铃铛入顶栏，离线横幅与写判定 | 0 | shell-style |
 | M-03 | 开放 | labels.ts 阶段表与唯一归列函数，交叉核对 task.rs | 0 | labels |
 | M-04 | 开放 | 项目栏计数与首页总览，事件驱动实时更新 | 0 | overview |
@@ -331,6 +331,8 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 里程碑共 5 个，不超过上限 6 个（硬性约束 7）。依赖关系是：M-01 → M-02 → M-04 → M-05；M-03 独立于 M-01 和 M-02，但必须在 M-04 之前完成。为了让编号与执行顺序一致，按编号依次推进。
 
 ### M-01 getLoadContext 端到端
+
+最新证据：docs/w5-外壳与项目导航-迁移-animal/evidence/M-01-r1-impl.md · 定向通过，全量环境受阻待复验 · 实现 #1
 
 - 覆盖：R-06。前置：无。
 - 结果：新增 `app/load-context.ts`。`server/http.ts` 两处都加上 `getLoadContext`。`root.tsx` 加上根 loader，暂时只调用 `project.list`，作为 `loadShell` 的最小形态，M-04 再补全；同时导出 `shouldRevalidate = liveShouldRevalidate(byKind('task.','project.','bug.','merge.'))`。根组件先用一个不加样式的 `<nav aria-label="项目">` 列出项目名，M-02 再加样式。按「需要随之修改的已有测试」表，改 `bell-view`「root 同时渲染…」一条。
@@ -348,7 +350,7 @@ useLiveEvents ─ 事件批次 ─▶ root.shouldRevalidate = liveShouldRevalida
 ### M-01 验收契约
 
 - 验收命令：`npm test --prefix apps/web -- test/load-context.test.ts test/bell-view.test.ts test/live-routes.test.ts`（之后分段跑 `npm run lint --prefix apps/web`、`npm run typecheck --prefix apps/web`、`npm test --prefix apps/web`、`npm run build --prefix apps/web`，各自报退出码）
-- 预期：点名的 3 个文件共 24 个用例通过（load-context 9 个、bell-view 8 个、live-routes 7 个）；Web 全量 296 个用例（基线 287 + 9），`skipped` 为 0；lint、typecheck、build 的退出码都是 0。
+- 预期：点名的 3 个文件共 24 个用例通过（load-context 9 个、bell-view 8 个、live-routes 7 个）；Web 静态枚举 296 个用例（基线 287 + 9），运行时参数化展开后 310 个（运行基线 301 + 9），`skipped` 为 0；lint、typecheck、build 的退出码都是 0。
 - 负向对照：把 `servicesContext` 改成模块顶层直接 `createContext<WebServices>()`、不经 `Symbol.for` 登记，第 2、6、7 条变红（第 6、7 条的 HTML 不含「演示项目甲」，或返回 500「No value found for context」）；删掉生产分支 `createRequestHandler` 里的 `getLoadContext`，第 8 条变红；把根 loader 改成 `gateway.core.call('project.list')`，`npm run typecheck` 失败（`KernelGateway` 上没有 `core`），第 3 条也变红。
 
 ### M-02 token、字体、外壳布局、铃铛入顶栏、离线横幅与写判定
