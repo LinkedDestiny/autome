@@ -1731,7 +1731,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v3@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v4@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -4641,6 +4641,10 @@ fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
     assert_eq!(sessions.len(), 3);
     for (n, phrase) in [(1, "定位轮"), (2, "修复轮"), (3, "复核轮")] {
         assert!(w.prompt(n).contains(phrase), "{}", w.prompt(n));
+        for absent in ["用户提供的附件", "用户指定的仓库内参考文档", "{inputs}"]
+        {
+            assert!(!w.prompt(n).contains(absent), "{}", w.prompt(n));
+        }
     }
     assert!(
         sessions
@@ -4692,6 +4696,52 @@ fn bug_loop_a_bug_runs_from_creation_to_a_merge_commit() {
             .stdout,
         "fixed\n"
     );
+}
+
+#[test]
+fn bug_loop_prompts_name_the_card_attachments_and_doc_refs() {
+    needs_git!();
+    let mut w = World::new("bug-inputs");
+    let slug = slug_for("bug inputs");
+    std::fs::write(w.root.join("crash.log"), "original crash evidence\n").unwrap();
+    let attachment = std::fs::canonicalize(w.root.join("crash.log")).unwrap();
+    std::fs::create_dir_all(w.repo.join("docs")).unwrap();
+    std::fs::write(w.repo.join("docs/notes.md"), "# Expected behavior\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["docs/notes.md"], "add reference").unwrap();
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let out = w.call(
+        "task.create",
+        json!({
+            "project_id": w.project_id,
+            "request": "bug inputs",
+            "kind": "bug",
+            "brief": "# Bug card\nExpected fixed",
+            "attachments": [attachment.to_str().unwrap()],
+            "doc_refs": ["docs/notes.md"]
+        }),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap().len(), 3);
+    let copied = format!("docs/{slug}/attachments/crash.log");
+    for n in 1..=3 {
+        let prompt = w.prompt(n);
+        assert!(prompt.contains(&format!("- {copied}\n")), "{prompt}");
+        assert!(prompt.contains("- docs/notes.md\n"), "{prompt}");
+        assert!(
+            !prompt.contains(attachment.parent().unwrap().to_str().unwrap()),
+            "{prompt}"
+        );
+    }
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    assert_eq!(
+        std::fs::read_to_string(wt.join(copied)).unwrap(),
+        "original crash evidence\n"
+    );
+    assert!(wt.join("docs/notes.md").is_file());
 }
 
 #[test]

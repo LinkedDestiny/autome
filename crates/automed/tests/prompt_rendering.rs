@@ -380,6 +380,7 @@ fn bug_loop_bug_prompts_leave_no_placeholder() {
                 "{request}",
                 "{budget_line}",
                 "{brief_path}",
+                "{inputs}",
             ] {
                 assert!(!got.contains(placeholder), "{got}");
             }
@@ -530,4 +531,93 @@ fn before_merge_leaves_the_other_prompts_byte_identical() {
         before_merge_rendered(SessionKind::Role { role: Role::Retro }, false),
         rendered(SessionKind::Role { role: Role::Retro })
     );
+}
+
+fn check_bug_inputs_golden(name: &str, step: autome_domain::session::BugStep) {
+    let templates = automed::protocol::seed();
+    let mut s = spec(SessionKind::Bug { step }, templates);
+    s.budget = Some(automed::launcher::BudgetLine { round: 2, limit: 3 });
+    let attachments = [
+        "/tmp/autome-golden/crash.log".into(),
+        "/tmp/autome-golden/screen.png".into(),
+    ];
+    let refs = ["docs/notes.md".into()];
+    s.attachments = &attachments;
+    s.doc_refs = &refs;
+    let got = build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}");
+    if maybe_update_golden(name, &got) {
+        return;
+    }
+    assert_eq!(got, golden(name));
+}
+
+#[test]
+fn bug_loop_locate_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden("locate-inputs", autome_domain::session::BugStep::Locate);
+}
+#[test]
+fn bug_loop_fix_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden("fix-inputs", autome_domain::session::BugStep::Fix);
+}
+#[test]
+fn bug_loop_fix_review_prompt_with_inputs_matches_its_golden() {
+    check_bug_inputs_golden(
+        "fix-review-inputs",
+        autome_domain::session::BugStep::FixReview,
+    );
+}
+
+#[test]
+fn bug_inputs_and_gate_modes_preserve_user_data_independently() {
+    use autome_domain::session::BugStep;
+    for gate in [None, Some("check {inputs} {slug} {unknown}")] {
+        for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            for (attachments, refs) in [
+                (vec![], vec![]),
+                (vec!["/tmp/source/screen {slug}.png".into()], vec![]),
+                (vec![], vec!["docs/{gate_line}.md".into()]),
+                (
+                    vec!["/tmp/source/screen {slug}.png".into()],
+                    vec!["docs/{gate_line}.md".into()],
+                ),
+            ] {
+                let mut s = spec(SessionKind::Bug { step }, automed::protocol::seed());
+                s.budget = Some(automed::launcher::BudgetLine { round: 2, limit: 3 });
+                s.gate_before_merge = gate;
+                s.attachments = &attachments;
+                s.doc_refs = &refs;
+                s.request = "request {inputs} {gate_line}";
+                let got = build_prompt(&s).unwrap();
+                assert_eq!(
+                    got.matches("用户提供的附件").count(),
+                    usize::from(!attachments.is_empty())
+                );
+                assert_eq!(
+                    got.matches("用户指定的仓库内参考文档").count(),
+                    usize::from(!refs.is_empty())
+                );
+                if !attachments.is_empty() {
+                    assert!(got.contains("attachments/screen {slug}.png"));
+                    assert!(!got.contains("/tmp/source"));
+                }
+                if !refs.is_empty() {
+                    assert!(got.contains("docs/{gate_line}.md"));
+                }
+                if step == BugStep::Locate {
+                    assert!(got.contains(s.request));
+                } else if let Some(command) = gate {
+                    assert!(got.contains(command));
+                    assert!(!got.contains("再运行配置的项目门禁"));
+                    assert!(!got.contains("独立复验复现命令与项目门禁"));
+                } else {
+                    assert!(!got.contains("本项目门禁只在合并前运行"));
+                }
+                assert!(!got.contains("<!-- gate-run:"));
+            }
+        }
+    }
 }

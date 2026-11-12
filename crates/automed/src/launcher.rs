@@ -528,6 +528,13 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
     Ok(p)
 }
 
+fn bug_attachment_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
 /// What a role session is told to do.
 ///
 /// 1.x dispatched each round with an entry sentence — "execute the task file,
@@ -581,19 +588,30 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
             budget.round, budget.limit
         ),
     };
-    // User prose may itself contain braces. Validate template parts before
-    // inserting it, just as the task-card intake path does.
+    let attachment_names: Vec<_> = spec
+        .attachments
+        .iter()
+        .map(|a| bug_attachment_name(a))
+        .collect();
+    let inputs = render_inputs(spec.doc_dir, &attachment_names, spec.doc_refs);
+    // Validate only template text; user prose and paths may contain braces.
     let parts = template
         .split("{request}")
         .map(|part| {
-            render_gate_parts(part, spec.gate_before_merge, |part| {
-                let rendered = part
-                    .replace("{doc_dir}", spec.doc_dir)
-                    .replace("{slug}", spec.slug)
-                    .replace("{budget_line}", &budget_line);
-                check_no_placeholders_left(&rendered, &format!("prompts/{name}.md"))?;
-                Ok(rendered)
-            })
+            let slices = part
+                .split("{inputs}")
+                .map(|slice| {
+                    render_gate_parts(slice, spec.gate_before_merge, |slice| {
+                        let rendered = slice
+                            .replace("{doc_dir}", spec.doc_dir)
+                            .replace("{slug}", spec.slug)
+                            .replace("{budget_line}", &budget_line);
+                        check_no_placeholders_left(&rendered, &format!("prompts/{name}.md"))?;
+                        Ok(rendered)
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(slices.join(&inputs))
         })
         .collect::<Result<Vec<_>>>()?;
     let mut rendered = parts.join(spec.request);
@@ -740,6 +758,32 @@ fn render_decisions(decisions: &[DecisionRecord]) -> String {
     out
 }
 
+fn render_inputs(doc_dir: &str, attachment_names: &[String], doc_refs: &[String]) -> String {
+    let mut inputs = String::new();
+    if !attachment_names.is_empty() {
+        inputs.push_str(&format!(
+            "用户提供的附件（已复制到任务目录）：\n{}\n\n",
+            attachment_names
+                .iter()
+                .map(|a| format!("- {doc_dir}/attachments/{a}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    if !doc_refs.is_empty() {
+        inputs.push_str(&format!(
+            "用户指定的仓库内参考文档：\n{}\n\n",
+            doc_refs
+                .iter()
+                .map(|d| format!("- {d}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    inputs
+}
+
 /// The intake session's prompt.
 ///
 /// Like the role prompts, the text lives in the protocol version
@@ -754,27 +798,7 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         .prompt("intake")
         .ok_or_else(|| err("协议版本里没有 prompts/intake.md，无法启动任务整理轮"))?;
 
-    let mut inputs = String::new();
-    if !spec.attachments.is_empty() {
-        inputs.push_str(&format!(
-            "用户提供的附件（已复制到任务目录）：\n{}\n\n",
-            spec.attachments
-                .iter()
-                .map(|a| format!("- {}/attachments/{a}", spec.doc_dir))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-    if !spec.doc_refs.is_empty() {
-        inputs.push_str(&format!(
-            "用户指定的仓库内参考文档：\n{}\n\n",
-            spec.doc_refs
-                .iter()
-                .map(|d| format!("- {d}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
+    let inputs = render_inputs(spec.doc_dir, spec.attachments, spec.doc_refs);
 
     if let Some(card_path) = spec.card_path {
         let parts = template
@@ -1954,6 +1978,103 @@ mod tests {
             "{p}"
         );
         assert!(p.contains("- docs/notes.md"), "{p}");
+    }
+
+    fn input_bug_prompts(attachments: &[String], refs: &[String], request: &str) -> Vec<String> {
+        let tpl = templates();
+        [BugStep::Locate, BugStep::Fix, BugStep::FixReview]
+            .into_iter()
+            .map(|step| {
+                let mut s = spec(SessionKind::Bug { step }, &[], None, &tpl);
+                s.budget = Some(BudgetLine { round: 1, limit: 3 });
+                s.attachments = attachments;
+                s.doc_refs = refs;
+                s.request = request;
+                build_prompt(&s).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bug_prompts_list_attachments_and_doc_refs_when_present() {
+        for p in input_bug_prompts(
+            &[
+                "/tmp/autome-src/crash.log".into(),
+                "/tmp/autome-src/screen shot.png".into(),
+            ],
+            &["docs/notes.md".into()],
+            "bug",
+        ) {
+            for expected in [
+                "用户提供的附件（已复制到任务目录）：",
+                "用户指定的仓库内参考文档：",
+                "- docs/checkout-flow/attachments/crash.log",
+                "- docs/checkout-flow/attachments/screen shot.png",
+                "- docs/notes.md",
+            ] {
+                assert!(p.contains(expected), "{p}");
+            }
+            assert!(!p.contains("/tmp/autome-src"), "{p}");
+        }
+    }
+
+    #[test]
+    fn bug_prompts_have_no_inputs_paragraph_when_there_are_none() {
+        for p in input_bug_prompts(&[], &[], "") {
+            for absent in [
+                "用户提供的附件",
+                "用户指定的仓库内参考文档",
+                "{inputs}",
+                "\n\n\n",
+            ] {
+                assert!(!p.contains(absent), "{p}");
+            }
+        }
+    }
+
+    #[test]
+    fn bug_prompts_render_only_the_inputs_section_they_have() {
+        for p in input_bug_prompts(&["/tmp/autome-src/crash.log".into()], &[], "bug") {
+            assert!(p.contains("用户提供的附件"));
+            assert!(p.contains("- docs/checkout-flow/attachments/crash.log"));
+            assert!(!p.contains("用户指定的仓库内参考文档"));
+        }
+        for p in input_bug_prompts(&[], &["docs/notes.md".into()], "bug") {
+            assert!(!p.contains("用户提供的附件"));
+            assert!(p.contains("用户指定的仓库内参考文档"));
+            assert!(p.contains("- docs/notes.md"));
+        }
+        assert_eq!(bug_attachment_name("/"), "/");
+        assert_eq!(bug_attachment_name(""), "");
+    }
+
+    #[test]
+    fn bug_prompts_keep_braces_in_doc_refs_and_file_names_literally() {
+        for p in input_bug_prompts(
+            &["/tmp/a/{slug}.log".into()],
+            &["docs/{unknown}.md".into()],
+            "需求含 {inputs}",
+        ) {
+            assert!(p.contains("attachments/{slug}.log"));
+            assert!(p.contains("docs/{unknown}.md"));
+            if p.contains("用户需求：") {
+                assert!(p.contains("需求含 {inputs}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_intake_prompt_keeps_rendering_stored_attachment_values_verbatim() {
+        let tpl = templates();
+        let mut s = spec(SessionKind::Intake, &[], None, &tpl);
+        let attachments = ["/tmp/autome-src/promo.csv".into()];
+        s.attachments = &attachments;
+        // B-05: preserve this existing defect; fixing intake requires separate authorization.
+        assert!(
+            build_prompt(&s)
+                .unwrap()
+                .contains("- docs/checkout-flow/attachments//tmp/autome-src/promo.csv")
+        );
     }
 
     #[test]

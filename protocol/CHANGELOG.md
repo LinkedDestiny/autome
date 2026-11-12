@@ -168,3 +168,37 @@ Bug Loop 的独立协议、定位、修复与复核模板。
   eval: null
   realized_impact: null
 ```
+
+## protocol/v4
+
+Bug 三个步骤列出任务附件副本与参考文档的位置。
+
+```yaml
+- id: I-1
+  kind: clarify
+  clause: prompts/locate.md
+  evidence: [web-dashboard-via-loop §3.1, T-41 任务卡]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: I-2
+  kind: clarify
+  clause: prompts/fix.md
+  evidence: [web-dashboard-via-loop §3.1, T-41 任务卡]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: I-3
+  kind: clarify
+  clause: prompts/fix-review.md
+  evidence: [web-dashboard-via-loop §3.1, T-41 任务卡]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
