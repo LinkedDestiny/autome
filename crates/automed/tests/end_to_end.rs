@@ -23,6 +23,79 @@ use automed::ipc::{Command, PROTOCOL_VERSION, ReplyOutcome};
 use automed::store::Store;
 use serde_json::{Value, json};
 
+/// Shared hang detector for scheduling waits, not a performance assertion.
+/// Each poll advances scheduling and checks its own observable condition.
+fn scheduling_wait<W>(
+    world: &mut W,
+    mut poll: impl FnMut(&mut W) -> bool,
+    diagnostic: impl Fn(&W) -> String,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        if poll(world) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scheduling wait did not finish within 90s: {}",
+            diagnostic(world)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn has_pending_work(ctx: &Ctx) -> bool {
+    if !ctx
+        .store
+        .all_running_sessions()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return true;
+    }
+    ctx
+            .store
+            .list_unfinished()
+            .unwrap_or_default()
+            .iter()
+            .any(|t| {
+                let v = serde_json::to_value(&t.state).unwrap();
+                let state = v.get("state").and_then(Value::as_str).unwrap_or("");
+                let node = v.get("node").and_then(Value::as_str).unwrap_or("");
+                // Queued tasks are waiting for a slot; core-step nodes are
+                // work the next tick performs. Both mean "not settled yet".
+                state == "queued"
+                    || matches!(
+                        node,
+                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check" | "repro_check" | "fix_gate"
+                    )
+                    // A scheduled retry remains work even before it is due.
+                    || matches!(
+                        ctx.store.pending_retry(&t.id),
+                        Ok(Some(_))
+                    )
+            })
+}
+
+/// Incomplete stand-in scripts deliberately stop at a retry, not at quiet.
+fn wait_for_retry(ctx: &mut Ctx, task_id: &str) {
+    scheduling_wait(
+        ctx,
+        |ctx| {
+            let report = automed::scheduler::tick(ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            ctx.store.pending_retry(task_id).unwrap().is_some()
+                && ctx.store.running_session(task_id).unwrap().is_none()
+        },
+        |ctx| {
+            format!(
+                "waiting for retry: {:?}",
+                ctx.store.get_task(task_id).unwrap()
+            )
+        },
+    );
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 // ---------------------------------------------------------------------------
@@ -347,63 +420,24 @@ git -c user.name=fake -c user.email=f@f commit -q -m "session {n}" >/dev/null 2>
     /// condition is that no session is running *and* no task is sitting on
     /// work the scheduler would pick up — a queued task or a core step.
     fn settle(&mut self) {
-        // A hang detector, not a performance budget. What it is here to catch
-        // is a loop that never reaches quiet — a livelock, a task waiting on a
-        // transition that never fires — and those never finish at any
-        // deadline. The number only has to be longer than a healthy settle on
-        // the slowest machine this runs on, and 20s was not: a second `cargo
-        // test` on the same box (the post-commit hook, or two terminals) is
-        // enough to push a healthy run past it, which turns a real suite into
-        // one that cries wolf.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            automed::scheduler::tick(&mut self.ctx);
-            if !self.has_pending_work() {
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "world did not settle within 90s; sessions run: {:?}, tasks: {:?}",
-                    self.sessions_run(),
-                    self.task_states()
-                );
-            }
-            std::thread::sleep(std::time::Duration::from_millis(40));
-        }
+        scheduling_wait(
+            self,
+            |w| {
+                automed::scheduler::tick(&mut w.ctx);
+                !w.has_pending_work()
+            },
+            |w| {
+                format!(
+                    "sessions: {:?}, tasks: {:?}",
+                    w.sessions_run(),
+                    w.task_states()
+                )
+            },
+        );
     }
 
     fn has_pending_work(&self) -> bool {
-        if !self
-            .ctx
-            .store
-            .all_running_sessions()
-            .unwrap_or_default()
-            .is_empty()
-        {
-            return true;
-        }
-        self.ctx
-            .store
-            .list_unfinished()
-            .unwrap_or_default()
-            .iter()
-            .any(|t| {
-                let v = serde_json::to_value(&t.state).unwrap();
-                let state = v.get("state").and_then(Value::as_str).unwrap_or("");
-                let node = v.get("node").and_then(Value::as_str).unwrap_or("");
-                // Queued tasks are waiting for a slot; core-step nodes are
-                // work the next tick performs. Both mean "not settled yet".
-                state == "queued"
-                    || matches!(
-                        node,
-                        "rebase" | "merging" | "cleanup" | "gate" | "merge_gate" | "main_check" | "repro_check" | "fix_gate"
-                    )
-                    // A crashed round whose retry is already due.
-                    || matches!(
-                        self.ctx.store.pending_retry(&t.id),
-                        Ok(Some((_, ref at, _))) if *at <= automed::store::now_iso()
-                    )
-            })
+        has_pending_work(&self.ctx)
     }
 
     /// Adds lines to the project's `.autome/config.toml` and commits them, so
@@ -879,7 +913,7 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
         "task.reject",
         json!({ "task_id": task_id, "feedback": "确认邮件只发登录用户" }),
     );
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     let prompt = std::fs::read_to_string(w.repo.join(".autome/fake/5.prompt")).unwrap();
     assert!(
@@ -1027,7 +1061,7 @@ fn cancelling_a_task_archives_its_documents_and_removes_the_worktree() {
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
     w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
     let task_id = create_task(&mut w, request);
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     w.call("task.cancel", json!({ "task_id": task_id }));
 
@@ -1056,7 +1090,7 @@ fn stopping_a_task_leaves_it_resumable() {
     let request = "stop me";
     w.doc_step(1, &slug_for(request), &doc("设计中", 0, 0, &[]));
     let task_id = create_task(&mut w, request);
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     // Whatever node it reached, stopping must park it.
     if w.ctx
@@ -1274,8 +1308,7 @@ fn a_freshly_added_project_has_a_clean_worktree_even_with_a_task_running() {
     let slug = slug_for(request);
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
     let task_id = create_task(&mut w, request);
-    let _ = task_id;
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     assert!(
         w.repo.join(format!(".worktree/{slug}")).exists(),
@@ -2143,32 +2176,14 @@ git -c user.name=fake -c user.email=f@f commit -q -m "docs {n}" >/dev/null 2>&1 
     /// a second one: a test that waits differently from every other test here
     /// is a test whose failures mean something different from theirs.
     fn settle(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            automed::scheduler::tick(&mut self.ctx);
-            let sessions = self.ctx.store.all_running_sessions().unwrap_or_default();
-            let pending = !sessions.is_empty()
-                || self
-                    .ctx
-                    .store
-                    .list_unfinished()
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|t| {
-                        let v = serde_json::to_value(&t.state).unwrap();
-                        let state = v.get("state").and_then(Value::as_str).unwrap_or("");
-                        let node = v.get("node").and_then(Value::as_str).unwrap_or("");
-                        state == "queued" || matches!(node, "rebase" | "merging" | "cleanup")
-                    });
-            if !pending {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the loop never reached quiet"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(30));
-        }
+        scheduling_wait(
+            self,
+            |w| {
+                automed::scheduler::tick(&mut w.ctx);
+                !has_pending_work(&w.ctx)
+            },
+            |w| format!("tasks: {:?}", w.ctx.store.list_unfinished().unwrap()),
+        );
     }
 
     /// Everything known about why a task is not where it should be.
@@ -2389,7 +2404,7 @@ fn a_round_that_forgets_the_repos_line_does_not_lose_the_repository() {
         json!({ "project_id": w.project_id, "request": request }),
     );
     let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     let dir = w.ws().join(".worktree").join(&slug);
     assert!(
@@ -2426,7 +2441,7 @@ fn cancelling_a_workspace_task_takes_every_checkout_and_branch_with_it() {
         json!({ "project_id": w.project_id, "request": request }),
     );
     let task_id = ok(&created)["task"]["id"].as_str().unwrap().to_string();
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
 
     let dir = w.ws().join(".worktree").join(&slug);
     assert!(dir.join("backend").exists(), "{}", w.why(&task_id));
@@ -2894,7 +2909,7 @@ fn a_rate_limited_round_moves_to_the_other_cli_when_that_keeps_roles_apart_and_w
     // Implementation is Claude and audit is Codex: moving implementation to
     // Codex would put the round and its auditor on one CLI. So it waits.
     w.call("task.approve", json!({ "task_id": task_id }));
-    w.settle();
+    wait_for_retry(&mut w.ctx, &task_id);
     assert_eq!(w.node(&task_id).as_deref(), Some("implement"));
     assert!(w.ctx.store.running_session(&task_id).unwrap().is_none());
     let deferred = w
@@ -2977,16 +2992,18 @@ fn stopping_a_task_kills_the_cli_the_wrapper_started() {
 
 // Stop/resume tests use observable file barriers, never timing a stop by sleep.
 fn resume_wait(w: &mut World, mut ready: impl FnMut(&World) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    while !ready(w) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "resume barrier timed out"
-        );
-        let report = automed::scheduler::tick(&mut w.ctx);
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    scheduling_wait(
+        w,
+        |w| {
+            if ready(w) {
+                return true;
+            }
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            ready(w)
+        },
+        |w| format!("resume barrier; tasks: {:?}", w.task_states()),
+    );
 }
 
 fn resume_block(w: &World, step: u32) {
@@ -4680,21 +4697,17 @@ fn bug_loop_a_workspace_bug_checks_out_every_member_to_locate_then_keeps_only_th
             json!({"project_id":w.project_id,"request":"workspace bug","kind":"bug"}),
         );
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
-        // Match Workspace::settle: detect a hang, not a slow but healthy
-        // locate → fix → review → merge-gate run under parallel CI load.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            let report = automed::scheduler::tick(&mut w.ctx);
-            assert!(report.errors.is_empty(), "{report:?}");
-            let state = w.ctx.store.get_task(&id).unwrap().state;
-            if state.node().is_some_and(|node| node.awaits_user())
-                || matches!(state, autome_domain::task::TaskState::Failed { .. })
-            {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        scheduling_wait(
+            &mut w,
+            |w| {
+                let report = automed::scheduler::tick(&mut w.ctx);
+                assert!(report.errors.is_empty(), "{report:?}");
+                let state = w.ctx.store.get_task(&id).unwrap().state;
+                state.node().is_some_and(|node| node.awaits_user())
+                    || matches!(state, autome_domain::task::TaskState::Failed { .. })
+            },
+            |w| w.why(&id),
+        );
         if repos == "repos: a" {
             assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
             assert_eq!(w.ctx.store.count_events(&id, "bug.reproduced").unwrap(), 1);
@@ -5167,24 +5180,19 @@ fn bug_regression_guard_ignores_the_bug_doc_in_a_snapshot_from_an_older_build() 
         "",
     );
     let id = create_bug(&mut w, "guard old snapshot");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-    let mut snapshot = loop {
-        automed::scheduler::tick(&mut w.ctx);
-        if let Some(s) = w
-            .ctx
+    resume_wait(&mut w, |w| {
+        w.ctx
             .store
             .last_event(&id, "bug.regression_snapshot")
             .unwrap()
-        {
-            break s;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{:?}",
-            w.ctx.store.get_task(&id).unwrap().state
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+            .is_some()
+    });
+    let mut snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
     snapshot["files"].as_array_mut().unwrap().push(json!({
         "repo": "",
         "path": format!("docs/{slug}/{slug}-bug.md"),
@@ -5343,20 +5351,17 @@ fn bug_regression_guard_checks_each_workspace_member() {
             json!({"project_id": w.project_id, "request":"guard workspace", "kind":"bug"}),
         );
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
-        // This traverses the same workspace loop as Workspace::settle.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        loop {
-            let report = automed::scheduler::tick(&mut w.ctx);
-            assert!(report.errors.is_empty(), "{report:?}");
-            let task = w.ctx.store.get_task(&id).unwrap();
-            if task.state.node().is_some_and(|n| n.awaits_user())
-                || matches!(task.state, autome_domain::task::TaskState::Failed { .. })
-            {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "{}", w.why(&id));
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        scheduling_wait(
+            &mut w,
+            |w| {
+                let report = automed::scheduler::tick(&mut w.ctx);
+                assert!(report.errors.is_empty(), "{report:?}");
+                let state = w.ctx.store.get_task(&id).unwrap().state;
+                state.node().is_some_and(|node| node.awaits_user())
+                    || matches!(state, autome_domain::task::TaskState::Failed { .. })
+            },
+            |w| w.why(&id),
+        );
         let task = w.ctx.store.get_task(&id).unwrap();
         if changed == "none" {
             assert_eq!(w.node(&id).as_deref(), Some("await_merge"));

@@ -1,7 +1,7 @@
 # 两个工作区 Bug 端到端用例等待误报定位
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline -p automed --test end_to_end waiting_regression -- --nocapture
 根因: 测试基础设施把未到期重试排除在未完成工作之外，并在多处条件等待中独立使用短截止时间，导致提前返回或正常推进时超时报错。
 复核: 待复核
@@ -38,8 +38,22 @@ repos: autome-v2
 
 ## 修复说明
 
-定位轮未修复。仅新增回归测试和本文档，既有辅助函数、用例和产品代码未修改。下一轮按任务卡统一 tick 条件等待入口并修正未到期重试判定，保持原断言强度。
+修复第 1/3 轮，仅调整 `crates/automed/tests/end_to_end.rs` 的测试基础设施及相关等待调用，未修改产品 scheduler。
+
+- 提取共用 `scheduling_wait`，统一调度条件等待的 90 秒挂死探测预算与 20 毫秒轮询间隔。World、WorkspaceWorld、resume_wait、legacy 用例、两个工作区用例及旧快照等待均使用该入口，保留原业务状态、错误、会话数和文件内容断言。
+- 单仓库及工作区共用 `has_pending_work`，未完成任务只要存在 pending_retry，即使尚未到期也属于未完成工作。
+- 限流用例改为明确等待“已安排重试且无运行会话”，保留重试日期、角色、节点、事件和会话历史断言，避免把安排到 2100 年的重试当作静止。
+- 首次全量门禁发现另 6 个旧用例的脚本故意不覆盖完整流程，原先也依赖未到期重试被误判为静止；清洁工作区、repos 保留、两类取消、停止恢复及拒绝设计反馈用例改用共用 `wait_for_retry` 等待，并保留原有业务断言。补齐后单独运行完整端到端测试：83 passed、0 failed，用时 77.63 秒，日志 `.autome/output/fix-e2e.log`。
+- exit-marker 与 PID 启动/退出等待不推进调度，保持原语义。定位轮新增的两个 `waiting_regression` 测试逐字比对未变，未删除、跳过或弱化。
+
+验证：
+
+- 修复前执行状态块原复现命令：两项测试均按预期断言失败，日志 `.autome/output/fix-before.log`。
+- 修复后执行同一命令：2 passed、0 failed，日志 `.autome/output/fix-after.log`。
+- 全文件等待点已核对：调度循环只由共用入口持有 90 秒 deadline，余下三个局部 deadline 均为非调度等待。
+- 首次项目门禁日志为 `.autome/output/fix-gate.log`，其端到端测试暴露上述 6 个旧调用点；补齐后重新执行 `sh scripts/ci-local.sh`，退出码 1、耗时 323 秒，日志 `.autome/output/fix-gate-final.log`。Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过；其中两次端到端均为 83 passed、0 failed。唯一失败项为 Web test：4 个文件失败，11 failed、271 passed、19 skipped；HTTP 监听被当前沙箱以 `listen EPERM: operation not permitted 127.0.0.1` 拒绝，另有 `EMFILE: too many open files, watch` 导致服务测试启动失败。未修改或跳过这些测试，完整门禁未通过，需宿主在允许本机监听且监听器资源充足的环境重跑。
+- 未做历史满载现场复现或额外负载压力测试；90 秒是挂死探测上限，不代表任意负载下都不会超时。
 
 ## 复核意见
 
-待独立复核。未执行全量门禁、满载并发验证或修复后验收；本轮预期交付为红色回归测试。
+待独立复核。
