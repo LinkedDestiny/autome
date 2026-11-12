@@ -74,7 +74,7 @@ test('dev 首页 SSR 与模块脚本', async () => {
   expect(response.status).toBe(200);
   const html = await response.text();
   expect(html).toContain('Autome 面板');
-  expect(html).toContain('面板骨架已就绪');
+  expect(html).toContain('总览');
   expect(html).toContain('<script type="module"');
 });
 test('prod /healthz 返回 200 与 ok', async () => {
@@ -86,7 +86,7 @@ test('prod 首页与引用的 JS 资源可访问', async () => {
   const response = await fetch(prod.url);
   expect(response.status).toBe(200);
   const html = await response.text();
-  expect(html).toContain('面板骨架已就绪');
+  expect(html).toContain('总览');
   const asset = html.match(/(?:src|href)="(\/assets\/[^"\s]+\.js)"/);
   expect(asset).not.toBeNull();
   const script = await fetch(new URL(asset![1], prod.url));

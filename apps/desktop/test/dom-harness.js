@@ -72,6 +72,7 @@ const consoleMessages = [];
 
 function check(name, pass, detail) {
   results.push({ name, pass: Boolean(pass), detail: detail === undefined ? null : detail });
+  process.stderr.write(`[dom harness] check ${results.length}: ${pass ? 'passed' : 'FAILED'} ${name}\n`);
 }
 
 async function run() {
@@ -109,15 +110,27 @@ async function run() {
     }
   });
 
+  win.webContents.on('render-process-gone', (_event, details) => {
+    process.stderr.write(`[dom harness] renderer gone: ${JSON.stringify(details)}\n`);
+  });
+  process.stderr.write('[dom harness] loading page\n');
   await win.loadURL('autome://app/index.html');
   await win.webContents.executeJavaScript(fixtureInjector());
+  process.stderr.write('[dom harness] page and fixtures ready\n');
 
   // `executeJavaScript` evaluates a classic script; an async IIFE gives the
   // body `await`, and dynamic `import()` reaches the page's module registry.
-  const evaluate = (fn, ...args) =>
-    win.webContents.executeJavaScript(
+  let evaluation = 0;
+  const evaluate = async (fn, ...args) => {
+    const id = ++evaluation;
+    const started = Date.now();
+    process.stderr.write(`[dom harness] evaluate ${id} started after ${results.length} checks; args=${JSON.stringify(args)}\n`);
+    const result = await win.webContents.executeJavaScript(
       `(async () => { const ARGS = ${JSON.stringify(args)}; return await (${fn.toString()})(...ARGS); })()`
     );
+    process.stderr.write(`[dom harness] evaluate ${id} finished in ${Date.now() - started}ms\n`);
+    return result;
+  };
 
   // ---- the shell renders at all -----------------------------------------
   const shell = await evaluate(() => ({
