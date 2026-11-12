@@ -260,12 +260,12 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     }
 
     // A retro run from the failure panel is not part of the Loop. The task is
-    // already terminal, it stays where it is, and the transition table would
+    // already terminal; a valid retro leaves it there. The transition table would
     // rightly reject a `SessionEnded` against a finished task. Handling it
     // here rather than adding a state to the machine is deliberate: "read the
     // run and write down what it taught us" changes nothing about where the
-    // task is, and a state that exists only to come back from is a state.
-    if is_manual_retro(ctx, s)?
+    // task is. Scope violations are still rejected below before accepting it.
+    let detached_retro = is_manual_retro(ctx, s)?
         || (s.kind.role() == Some(Role::Retro)
             && matches!(
                 task.state,
@@ -273,12 +273,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
                     | TaskState::Cancelled
                     | TaskState::Failed { .. }
                     | TaskState::Stopped { .. }
-            ))
-    {
-        sweep_commit(ctx, &project, &task, s)?;
-        check_lessons(ctx, &task, &project)?;
-        return Ok(true);
-    }
+            ));
 
     // Sweep up anything the session left uncommitted, before reading the
     // document (§6). A real run produced a correct README edit, a correct
@@ -302,8 +297,57 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         return Ok(true);
     }
 
+    let scope_error = guard_session_scope(ctx, s, &project, &task).err();
+    if detached_retro {
+        if let Some(error) = scope_error {
+            let detail = error.to_string();
+            let failed = TaskState::Failed {
+                at: Node::Retro,
+                reason: FailureReason::Protocol {
+                    detail: detail.clone(),
+                },
+            };
+            ctx.store.set_task_state(&task.id, &failed)?;
+            ctx.store.append_event(
+                "task.updated",
+                &task.id,
+                json!({"state": failed, "trigger": "scope_failed"}),
+            )?;
+            ctx.store.append_event(
+                "task.protocol_failure",
+                &task.id,
+                json!({"node": "retro", "detail": detail}),
+            )?;
+        } else {
+            check_lessons(ctx, &task, &project)?;
+        }
+        return Ok(true);
+    }
+
     if matches!(s.kind, SessionKind::Bug { .. }) {
-        let outcome = read_bug_outcome(&project, &task, &lifecycle);
+        let outcome = match scope_error {
+            Some(error) => BugSessionOutcome::GuardFailed {
+                detail: error.to_string(),
+            },
+            None => read_bug_outcome(&project, &task, &lifecycle),
+        };
+        let outcome = match outcome {
+            BugSessionOutcome::Ok { ref doc }
+                if s.kind
+                    == (SessionKind::Bug {
+                        step: BugStep::FixReview,
+                    })
+                    && doc.review == autome_domain::bug_doc::BugReview::Pending =>
+            {
+                BugSessionOutcome::GuardFailed {
+                    detail: format!(
+                        "复核 字段不符合当前轮次：本轮没有更新 {} 的复核字段",
+                        task.bug_doc()
+                    ),
+                }
+            }
+            other => other,
+        };
         if matches!(outcome, BugSessionOutcome::Ok { .. }) {
             ctx.store.settle_decisions(&s.id)?;
             ctx.store.clear_cooldown(s.runtime)?;
@@ -323,13 +367,19 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         deliver_bug_outcome(ctx, s, &project, &task, outcome)?;
         return Ok(true);
     }
-    let outcome = apply_guards(
-        ctx,
-        s,
-        &project,
-        &task,
-        read_outcome(&project, &task, &lifecycle),
-    )?;
+    let outcome = if let Some(error) = scope_error {
+        SessionOutcome::GuardFailed {
+            detail: error.to_string(),
+        }
+    } else {
+        apply_guards(
+            ctx,
+            s,
+            &project,
+            &task,
+            read_outcome(&project, &task, &lifecycle),
+        )?
+    };
     // Settled before the transition, which counts what is still pending: a
     // round that applied the user's decisions must not be handed them again.
     if matches!(outcome, SessionOutcome::Ok { .. }) {
@@ -353,6 +403,60 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     }
     deliver_outcome(ctx, s, &project, &task, outcome)?;
     Ok(true)
+}
+
+/// Audit (including Bug review) and retro may only write this task's docs.
+fn guard_session_scope(ctx: &Ctx, s: &Session, project: &Project, task: &TaskRecord) -> Result<()> {
+    if !matches!(s.kind.role(), Some(Role::Audit | Role::Retro)) {
+        return Ok(());
+    }
+    let started = ctx.store.session_started_event(&task.id, &s.id)?;
+    let heads = started
+        .as_ref()
+        .and_then(|v| v["scope_heads"].as_array())
+        .ok_or_else(|| err("缺少会话开始的提交基线，无法检查文档修改范围"))?;
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+    let allowed = format!("{}/", task.doc_dir());
+    let mut outside = Vec::new();
+    for slot in &layout.repos {
+        let base = heads
+            .iter()
+            .find(|v| v["repo"].as_str() == Some(slot.name.as_str()))
+            .and_then(|v| v["head"].as_str())
+            .ok_or_else(|| err(format!("缺少仓库 {} 的会话提交基线", slot.name)))?;
+        // No rename detection: both the deleted source and added destination
+        // must satisfy the boundary. NUL delimiters preserve unusual filenames.
+        let diff = git::run_ok(
+            &slot.worktree,
+            &[
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                base,
+                "HEAD",
+                "--",
+            ],
+        )?;
+        for path in diff.stdout.split('\0').filter(|p| !p.is_empty()) {
+            if !slot.is_docs || !path.starts_with(&allowed) {
+                outside.push(if slot.name.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{}/{path}", slot.name)
+                });
+            }
+        }
+    }
+    if !outside.is_empty() {
+        return Err(err(format!(
+            "{}轮只能修改 {}/ 下的文件，本轮改了：{}",
+            s.kind.label(),
+            layout.doc_dir_from_cwd(&task.doc_dir()),
+            outside.join("、")
+        )));
+    }
+    Ok(())
 }
 
 fn deliver_outcome(
@@ -2599,6 +2703,17 @@ fn launch_session(
     })?;
 
     // Capture before the process can edit a checkout, not after launch returns.
+    let scope_heads = if matches!(kind.role(), Some(Role::Audit | Role::Retro)) {
+        Some(
+            layout
+                .repos
+                .iter()
+                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
     let locate_heads = if kind
         == (SessionKind::Bug {
             step: BugStep::Locate,
@@ -2655,6 +2770,9 @@ fn launch_session(
     });
     if let Some(heads) = locate_heads {
         started["locate_heads"] = json!(heads);
+    }
+    if let Some(heads) = scope_heads {
+        started["scope_heads"] = json!(heads);
     }
     ctx.store
         .append_event("session.started", &task.id, started)?;
@@ -6409,6 +6527,64 @@ mod tests {
         )
         .unwrap();
         s
+    }
+
+    #[test]
+    fn session_scope_checks_both_rename_paths_and_directory_boundary() {
+        needs_git!();
+        for (from, to, allowed) in [
+            ("docs/a/old.md", "docs/a/new.md", true),
+            ("README.md", "docs/a/new.md", false),
+            ("docs/a/old.md", "docs/a-other/new.md", false),
+        ] {
+            let mut w = World::new("scope-rename");
+            let s = deferred_session(&mut w, Node::Audit);
+            let task = w.ctx.store.get_task("T-1").unwrap();
+            let project = w.ctx.store.get_project(&task.project_id).unwrap();
+            let wt = w.with_worktree(&task);
+            std::fs::create_dir_all(wt.join(from).parent().unwrap()).unwrap();
+            std::fs::write(wt.join(from), "rename source\n").unwrap();
+            git::commit_paths(&wt, &["."], "seed rename source").unwrap();
+            let head = git::head_sha(&wt).unwrap();
+            w.ctx
+                .store
+                .append_event(
+                    "session.started",
+                    &task.id,
+                    json!({"session_id": s.id, "scope_heads": [{"repo": "", "head": head}]}),
+                )
+                .unwrap();
+            std::fs::create_dir_all(wt.join(to).parent().unwrap()).unwrap();
+            std::fs::rename(wt.join(from), wt.join(to)).unwrap();
+            git::commit_paths(&wt, &["."], "rename").unwrap();
+            let result = guard_session_scope(&w.ctx, &s, &project, &task);
+            assert_eq!(result.is_ok(), allowed, "{from} -> {to}: {result:?}");
+            if !allowed {
+                let detail = result.unwrap_err().to_string();
+                assert!(
+                    detail.contains(if from == "README.md" { from } else { to }),
+                    "{detail}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn session_scope_manual_retro_rejects_swept_product_edit() {
+        needs_git!();
+        let mut w = World::new("scope-manual-retro");
+        let s = deferred_session(&mut w, Node::Retro);
+        w.ctx
+            .store
+            .append_event("session.manual_retro", "T-1", json!({"session_id": s.id}))
+            .unwrap();
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("README.md"), "outside task docs\n").unwrap();
+        assert!(reap_session(&mut w.ctx, &s).unwrap());
+        assert!(matches!(w.state("T-1"), TaskState::Failed {
+            at: Node::Retro, reason: FailureReason::Protocol { detail }
+        } if detail.contains("只能修改") && detail.contains("README.md")));
     }
 
     #[test]
