@@ -1,12 +1,12 @@
 # Bug Loop 三个步骤的 prompt 列出任务附件与 `--doc` 参考文档
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 4/10
-current-milestone: M-03
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-03 的 rebase 集成、双门禁模式与输入渲染
+next-action: 全部里程碑已完成，等待合并前确认人工验收清单
 
 任务文件：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-task.md`（验收标准见它的第 5 节 A1–A8，硬性约束见第 6 节 C1–C9，待定问题见第 8 节 Q1–Q6）。
 任务卡正文：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-card.md`。
@@ -236,7 +236,7 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 |---|---|---|---|---|
 | M-01 | 已完成 | 共用输入渲染、三个 Bug 模板加 {inputs}、单测与金样、protocol/v3 | 0 | prompt |
 | M-02 | 已完成 | e2e 带附件与 --doc 的 Bug 任务、全量门禁与范围核对 | 0 | e2e |
-| M-03 | 待审 | rebase main 后的门禁模式与任务输入集成验收 | 0 | integration |
+| M-03 | 已完成 | rebase main 后的门禁模式与任务输入集成验收 | 0 | integration |
 
 ## 验收契约
 
@@ -270,7 +270,7 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 
 ### M-03 验收契约
 
-最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-impl.md · 待审 · 实现 #4
+最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-audit.md · 通过 · 审计 #3
 
 覆盖用户追加的 rebase 要求、A1–A4、A6；M-01、M-02 的关闭结论保留。
 当前集成基线为 main 的 9626bc1；前述 83c80e9 的数量与范围契约保留为原里程碑基线，
