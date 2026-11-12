@@ -1,10 +1,10 @@
 # 状态块围栏导致误导性缺字段错误
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -38,6 +38,21 @@ fix-round: 2/3
 无围栏对照成功排除了字段值和标题位置导致失败的假设；仅添加围栏就稳定失败，与跳过逻辑吻合。修复不能简单读取全文所有围栏，否则会破坏示例隔离；需限定真实头部或提供带行号的明确拒绝。
 
 ## 修复说明
+
+第 3/3 修复轮：复现到 `protocol::eval::tests::a_code_sample_that_is_not_a_status_block_is_not_parsed` 失败。第 1 轮新增协议说明后，正文虽未超预算，但该既有测试追加 shell 示例后达到 24601 字节，超过 24576 字节上限 25 字节。复制协议并追加完全相同的示例执行静态 eval，确认示例解析通过，失败来自正文体积；不是状态解析器再次回归。
+
+最小修复仅精简 `protocol/loop-protocol.md` 中第 1 轮新增的一句说明，保留标题下一行、首个二级标题前、展示围栏不得复制的要求。正文缩至 24533 字节，追加测试示例后为 24571 字节。属于本任务尚未合并的 v5 措辞修正，沿用已有 clarify 记录，不再递增协议版本。不改解析器、预算上限、任何测试或任务固定的协议副本。
+
+本轮验证：
+
+- 原复现命令：4 passed；定位提交起 `fenced_status_regression.rs` 无差异。
+- `cargo test --offline -p automed --lib protocol::eval::tests::`：修复前目标用例 1 failed，修复后完整子集 28 passed。
+- `cargo test --offline -p autome-domain`：通过；`cargo test --offline -p automed --test prompt_rendering`：28 passed。
+- 静态协议 eval：8 项通过、0 项失败，条文归因警告仍存在。
+- 定位时启动的 `cargo test --offline -p automed --test end_to_end`：146 passed；`git diff --check` 通过。
+- 定位时扩展运行 automed lib：759 passed、2 failed；除上述已修复用例外，`gate_queue_upgrade_collects_two_old_jobs_without_killing_them` 的队列启动计数断言失败，单独原样复跑 1 passed。未修改该测试或队列代码，不能据此宣称全量门禁已通过。
+
+日志位于 `.autome/output/round3-*.log`，不提交。未运行 `sh scripts/ci-local.sh`，留给宿主。复核已重置为待复核；下方前两轮复核意见仅为历史记录。
 
 第 2/3 修复轮：上一轮将协议递增为 `protocol/v5`，但协议版本单测与任务冻结协议的 e2e 仍硬编码期望 `protocol/v4`。本轮分别实跑两个用例，均因实际 v5 与期望 v4 不符而失败（不是围栏解析再次失败）。宿主提供的末尾日志没有具体失败用例，因此这里只确认本地复现的两处失败，不声称已排除全量门禁中的其它问题。
 
