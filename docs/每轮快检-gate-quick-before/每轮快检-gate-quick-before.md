@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/25
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-04 的会话文字、协议 v5 与金样；通过后推进 M-05
+next-action: 推进 M-05：autome run/status 渲染与桌面标签、README 与技术设计、快检耗时实测
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -416,7 +416,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 | M-01 | 已完成 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
 | M-02 | 已完成 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 已完成 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
-| M-04 | 待审 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
+| M-04 | 已完成 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
 | M-05 | 开放 | autome run/status 与桌面标签、README 与技术设计、快检耗时实测 | 0 | |
 
 ## 里程碑说明
@@ -455,7 +455,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
   - end_to_end 2 个：`gate_quick_bug_fix_gate_runs_repro_and_quick_and_merge_gate_runs_repro_and_full`（FixGate 的 `gate.started.command`
     含复现命令与快检脚本、不含完整门禁脚本，`kind: quick`；MergeGate 的含复现命令与完整门禁脚本，`kind: full`；快检脚本记录 1 次
     `fix_gate quick`）、`gate_quick_bug_failing_quick_returns_to_fix_with_its_tail`。
-最新证据：docs/每轮快检-gate-quick-before/evidence/M-04-r4-impl.md · 验收通过，待审 · 实现 #4
+最新证据：docs/每轮快检-gate-quick-before/evidence/M-04-r4-audit.md · 通过 · 审计 #4
 
 - **M-04**（覆盖：目标 5（简报、复核）、6；验收 5（金样）；约束 9、10。前置：M-03）。方案 §8、§9、§13 的 `PromptSpec` 补字段。新增用例：
   - automed lib 10 个：`gate_quick_prompt_` 开头 8 个（实现 / 修复轮快检句且其它角色不变、需求快检失败注入、Bug 快检失败注入、
