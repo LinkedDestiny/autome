@@ -1,12 +1,12 @@
 # Bug Loop 三个步骤的 prompt 列出任务附件与 `--doc` 参考文档
 
-status: 已完成
+status: 实现中
 design-round: 1/15
-implementation-round: 3/10
-current-milestone: 无
+implementation-round: 4/10
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 独立复验 M-03 的 rebase 集成、双门禁模式与输入渲染
 
 任务文件：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-task.md`（验收标准见它的第 5 节 A1–A8，硬性约束见第 6 节 C1–C9，待定问题见第 8 节 Q1–Q6）。
 任务卡正文：`docs/bug-loop-的定位-修复-复核/bug-loop-的定位-修复-复核-card.md`。
@@ -236,6 +236,7 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
 |---|---|---|---|---|
 | M-01 | 已完成 | 共用输入渲染、三个 Bug 模板加 {inputs}、单测与金样、protocol/v3 | 0 | prompt |
 | M-02 | 已完成 | e2e 带附件与 --doc 的 Bug 任务、全量门禁与范围核对 | 0 | e2e |
+| M-03 | 待审 | rebase main 后的门禁模式与任务输入集成验收 | 0 | integration |
 
 ## 验收契约
 
@@ -267,7 +268,35 @@ M-02 跑项目门禁 `sh scripts/ci-local.sh`（含 fmt、clippy、`cargo test -
   渲染用存储原值时新 e2e 因 prompt 含源文件绝对路径、不含 `docs/<slug>/attachments/crash.log` 失败；e2e 若把附件写成裸文件名，
   就测不出上述错误——这正是 C9 要求用绝对路径的原因，审计轮按此核对测试取值。
 
+### M-03 验收契约
+
+最新证据：docs/bug-loop-的定位-修复-复核/evidence/M-03-r4-impl.md · 待审 · 实现 #4
+
+覆盖用户追加的 rebase 要求、A1–A4、A6；M-01、M-02 的关闭结论保留。
+当前集成基线为 main 的 9626bc1；前述 83c80e9 的数量与范围契约保留为原里程碑基线，
+不用于要求删除 main 的合法变更。此次只以 main 为基准核对任务净差异。
+
+- 当前协议版本为 protocol/v4：main 已占用 v3，I-1～I-3 顺延至 v4，保留 main 所有条目；
+  上文方案中的 v3 是原计划版本，集成版本以本契约为准。
+- 三个 Bug 步骤在 each_round / before_merge 下都渲染附件及参考；fix / fix-review 的两个
+  gate-run 分支各在正文开头放置 {inputs}，门禁标记仍独占行。空输入保持 main 原有金样。
+- 渲染先选择门禁分支，再分离 request、inputs、gate_line 数据槽，用户输入与门禁命令不参与占位符解释。
+- 复核轮保留 main 新增的写入边界；只同步 fix-review-inputs 金样，不改变需求 Loop 金样。
+- 验收命令：`git merge-base --is-ancestor main HEAD`；
+  `cargo test -p automed --lib launcher`；
+  `cargo test -p automed --test prompt_rendering`；
+  `cargo test -p automed --lib protocol::`；
+  `cargo test -p automed --test end_to_end bug_loop`；
+  `cargo run -p automed -- protocol eval protocol/`；
+  `cargo fmt --all -- --check`；
+  `sh plugins/autome/tests/run.sh evals`。
+- 预期分别为祖先检查成功、70 / 28 / 67 / 18 个用例通过、静态门 0 不通过、格式通过、插件 5/5。
+  交叉用例覆盖 2 门禁模式 × 3 步骤 × 4 输入组合共 24 组，含空输入、绝对路径、空格及花括号。
+- 失败分支复验门禁标记格式错误被拒绝及旧版协议兼容；
+  本里程碑不改预算、状态机、附件存储与授权逻辑。全量门禁由合并前宿主执行，不采信旧 SHA 的结果。
+
 ## 人工验收清单
+
 
 - 确认整理轮对绝对路径附件拼出不存在路径的既有缺陷（B-05）是否另开任务修复；本任务不动它。
 - 确认 protocol/v3 的三条改动归为 `clarify`、不带 eval 用例（方案 4）可以接受。
