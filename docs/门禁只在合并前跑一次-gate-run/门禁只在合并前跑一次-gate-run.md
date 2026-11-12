@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 3/15
 implementation-round: 7/40
-current-milestone: M-07
+current-milestone: M-08
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-07 的协议说明、G-6 与短语约束；通过后推进 M-08 文档
+next-action: 实现 M-08（README 与技术设计文档）
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -627,7 +627,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-04 | 已完成 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 已完成 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 已完成 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
-| M-07 | 待审 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
+| M-07 | 已完成 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
 | M-08 | 开放 | README 与技术设计写明取舍 | 0 | |
 
 ## 里程碑说明
@@ -767,7 +767,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 
 ### M-07 验收契约
 
-最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-07-r7-impl.md · 待审 · 实现 #7
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-07-r7-audit.md · 已完成 · 审计 #7
 
 - 验收命令：`grep -qF '修复门禁只跑复现命令，项目门禁留到合并前门禁' protocol/bug-protocol.md && grep -qF 'id: G-6' protocol/CHANGELOG.md && cargo test -p automed --lib protocol:: && cargo run -q -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && git diff --quiet $(git merge-base HEAD main) -- protocol/loop-protocol.md protocol/session-protocol.md`
 - 预期：两条 grep 命中；automed lib 过滤 `protocol::` 67 个通过（与 M-06 相同，本里程碑不新增用例）；`protocol eval` 退出码 0、报告里没有「失败」项，「必含 / 禁含短语」条数比 M-06 完成时多 1；prompt_rendering 20 个通过（渲染字节不变）；最后一条 git 检查无输出、退出码 0（`loop-protocol.md` / `session-protocol.md` 未改）。
