@@ -18,3 +18,7 @@ AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering
 把基准更新成新的，和协议改动放在同一个提交里，提交信息写清改了什么、为什么。
 
 不要在没看 diff 的情况下直接刷新。这个测试的价值全在「看一眼」上。
+
+`briefs/` 保存固定输入生成的整份简报金样；`audit-before-merge.md` 验证
+`before_merge` 审计简报不会沿用旧提交的门禁结果。更新时使用
+`AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering before_merge_audit_brief_matches_its_golden`。

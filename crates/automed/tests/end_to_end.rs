@@ -2724,6 +2724,78 @@ fn feature_before_merge_a_failing_merge_gate_returns_to_implement_and_merges_aft
     assert_eq!(w.state(&id), "done");
 }
 
+#[test]
+fn brief_before_merge_audit_brief_never_shows_a_stale_result() {
+    needs_git!();
+    let mut w = World::new("brief-before-merge");
+    let script = write_gate_script(&w);
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = \"before_merge\"\ncommand = \"{command}\"\n"
+    ));
+    let request = "before merge repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(8).contains("gate says no: gate-ok is missing"));
+    assert!(w.prompt(8).contains(&command));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let failed = events
+        .iter()
+        .find(|(_, k, s, p)| s == &id && k == "gate.result" && p["ok"] == false)
+        .unwrap();
+    assert_eq!(failed.3["node"], "merge_gate");
+    let failed_sha = failed.3["sha"].as_str().unwrap();
+    let brief_dir = w.repo.join(format!(".worktree/{slug}/docs/{slug}/brief"));
+    for round in [1, 2] {
+        let text = std::fs::read_to_string(brief_dir.join(format!("audit-{round}.md"))).unwrap();
+        assert!(text.contains("## 宿主门禁"), "{text}");
+        assert!(
+            text.contains(automed::brief::GATE_ONLY_BEFORE_MERGE),
+            "{text}"
+        );
+        assert!(!text.contains(&failed_sha[..10]), "{text}");
+        assert!(!text.contains("：未通过"), "{text}");
+    }
+
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|(seq, k, s, _)| *seq > failed.0 && s == &id && k == "task.updated")
+        .filter_map(|(_, _, _, p)| p["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "implement",
+            "audit",
+            "retro",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|(_, k, s, p)| s == &id && k == "gate.started" && p["node"] == "gate")
+    );
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+
 fn feature_before_merge_switch_gate(interrupt: Option<&str>) {
     let mut w = World::new("before-merge-switch");
     let script = w.root.join("gate.sh");

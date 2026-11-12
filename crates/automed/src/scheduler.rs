@@ -2087,30 +2087,6 @@ fn main_gate_timeout_note(tail: &str) -> String {
     })
 }
 
-fn render_gate_line(result: &Value) -> Option<String> {
-    let sha = result.get("sha")?.as_str()?;
-    let command = result.get("command")?.as_str()?;
-    let ok = result.get("ok")?.as_bool()?;
-    let code = result
-        .get("exit_code")
-        .and_then(Value::as_i64)
-        .unwrap_or(-1);
-    let log = result.get("log").and_then(Value::as_str).unwrap_or("");
-    let short = &sha[..sha.len().min(10)];
-    let verdict =
-        autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
-            .filter(|_| !ok)
-            .map_or_else(
-                || format!("{}（退出码 {code}）", if ok { "通过" } else { "未通过" }),
-                |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
-            );
-
-    Some(format!(
-        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}。完整输出：`{log}`。\n\
-         这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
-    ))
-}
-
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
         Trigger::BugSessionEnded { .. } => "bug_session_ended",
@@ -2690,6 +2666,15 @@ fn launch_session(
     // Written before the prompt that points at it. A round told to read a
     // brief that is not there would go and read the design document instead,
     // which is the thing the brief exists to make optional.
+    let gate_evidence = if kind.role() == Some(Role::Audit) {
+        crate::brief::gate_evidence(
+            &resolved,
+            ctx.store.last_event(&task.id, "gate.result")?.as_ref(),
+            gate_head(&layout).ok().as_deref(),
+        )
+    } else {
+        None
+    };
     let brief_path = match kind
         .role()
         .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
@@ -2706,6 +2691,7 @@ fn launch_session(
             round,
             budget.as_ref(),
             decisions,
+            gate_evidence,
         )?,
         None => String::new(),
     };
@@ -2924,6 +2910,7 @@ fn write_brief(
     round: u32,
     budget: Option<&launcher::BudgetLine>,
     decisions: &[crate::store::DecisionRecord],
+    gate: Option<String>,
 ) -> Result<String> {
     let rel = crate::brief::path(&task.doc_dir(), role, round);
     // What the prompt names: the same file, from where the session stands.
@@ -2973,14 +2960,7 @@ fn write_brief(
             }
             s
         }),
-        gate: match role {
-            Role::Audit => ctx
-                .store
-                .last_event(&task.id, "gate.result")?
-                .as_ref()
-                .and_then(render_gate_line),
-            _ => None,
-        },
+        gate,
     });
 
     let full = worktree.join(&rel);
@@ -4654,7 +4634,7 @@ mod tests {
             ),
             ("exit 124", "未通过（退出码 124）"),
         ] {
-            let line = render_gate_line(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
+            let line = brief::gate_line_of_result(&json!({"sha":"abc", "command":"check", "ok":false, "exit_code":124, "tail":tail, "log":"/log"})).unwrap();
             assert!(line.contains(expected));
             assert!(line.contains("/log"));
         }

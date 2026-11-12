@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 3/15
-implementation-round: 3/40
+implementation-round: 4/40
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-04：审计简报的宿主门禁证据与金样
+next-action: 独立审计 M-04；通过后推进 M-05：prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入
 
 任务文件：`docs/门禁只在合并前跑一次-gate-run/门禁只在合并前跑一次-gate-run-task.md`
 
@@ -624,7 +624,7 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 | M-01 | 已完成 | [gate] run 配置解析与需求状态机转换 | 0 | |
 | M-02 | 已完成 | 需求 Loop 端到端：只在合并前跑门禁与停在 Gate 的任务 | 0 | |
 | M-03 | 已完成 | Bug Loop：FixGate 只跑复现命令且不被沿用骗过 | 0 | |
-| M-04 | 开放 | 审计简报的宿主门禁证据与金样 | 0 | |
+| M-04 | 待审 | 审计简报的宿主门禁证据与金样 | 0 | |
 | M-05 | 开放 | prompt 按门禁模式分段渲染、宿主门禁句与修复轮注入 | 0 | |
 | M-06 | 开放 | 协议 v3：五份模板的 before_merge 段、金样与 eval 用例 | 0 | |
 | M-07 | 开放 | bug-protocol 补 before_merge 下修复门禁只跑复现命令（B-02） | 0 | |
@@ -742,6 +742,8 @@ T-62 同时在改 `audit.md` / `fix-review.md` 的范围规则：后合入的一
 - 负向对照：Bug 命令 `match` 不看 `gate_run`（FixGate 照旧拼两者）时，① 的 FixGate 命令断言失败、且因 `gate-ready` 缺失 FixGate 先失败使节点序列不符；FixGate 结果仍取当前配置的命令（不看 `.repro-only`）时，③ ⑤ 的 `command` 断言失败、④ 出现 `gate.reused` 而失败；无条件改用 `gate.started` 事件的命令时，⑥ 的 `command` 断言失败；把 `.repro-only` 放进 `Job::clear` 的清单（`start` 内部会删掉它）时，③ 的「启动后标记存在」断言与 gate 单测「`gate::start` 之后标记仍在」失败；`.repro-only` 对所有 FixGate 都写时，⑥ 的「从未出现标记文件」断言失败。
 
 ### M-04 验收契约
+
+最新证据：docs/门禁只在合并前跑一次-gate-run/evidence/M-04-r4-impl.md · 待审 · 实现 #4
 
 - 验收命令：`cargo test -p automed --lib brief && cargo test -p automed --test prompt_rendering && cargo test -p automed --test end_to_end brief_before_merge && cargo test -p automed --test end_to_end a_failing_gate_sends_the_work_back_and_a_passing_one_lets_it_merge`
 - 预期：automed lib 过滤 `brief` 33 个通过（基线 30 + 3 个 `brief::tests::before_merge_*`）；prompt_rendering 共 17 个通过（基线 16 + 1 个审计简报金样）；e2e 过滤 `brief_before_merge` 1 个通过；现有 `a_failing_gate_sends…`（`each_round` 审计简报含 `## 宿主门禁` 与「通过」）1 个通过、未改动。

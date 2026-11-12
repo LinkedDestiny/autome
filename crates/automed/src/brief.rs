@@ -18,10 +18,57 @@
 //! brief that guessed the section would be worse than one that does not offer
 //! it, because a round that trusts a wrong pointer stops looking.
 
+use autome_domain::config::{GateRun, ResolvedConfig};
+use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// A skipped round must not inherit a previous commit's gate verdict.
+pub const GATE_ONLY_BEFORE_MERGE: &str = "本项目门禁只在合并前运行，本轮没有宿主门禁结果。\n";
+
+pub fn gate_evidence(
+    config: &ResolvedConfig,
+    last: Option<&Value>,
+    head: Option<&str>,
+) -> Option<String> {
+    if config.gate.is_none() || config.gate_run == GateRun::EachRound {
+        return last.and_then(gate_line_of_result);
+    }
+    if let (Some(result), Some(head)) = (last, head)
+        && result.get("sha").and_then(Value::as_str) == Some(head)
+    {
+        return gate_line_of_result(result);
+    }
+    Some(GATE_ONLY_BEFORE_MERGE.to_owned())
+}
 
 use autome_domain::role::Role;
 use autome_domain::status_block::{Milestone, MilestoneState, StatusBlock};
+
+/// One line for the audit round's brief: what the core's own run of the gate
+/// found, on which commit, and where the full output is.
+pub fn gate_line_of_result(result: &Value) -> Option<String> {
+    let sha = result.get("sha")?.as_str()?;
+    let command = result.get("command")?.as_str()?;
+    let ok = result.get("ok")?.as_bool()?;
+    let code = result
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    let log = result.get("log").and_then(Value::as_str).unwrap_or("");
+    let short = &sha[..sha.len().min(10)];
+    let verdict =
+        autome_domain::gate_failure::kernel_timeout(result["tail"].as_str().unwrap_or(""))
+            .filter(|_| !ok)
+            .map_or_else(
+                || format!("{}（退出码 {code}）", if ok { "通过" } else { "未通过" }),
+                |n| format!("门禁超时（运行超过 {n} 分钟，被内核终止）"),
+            );
+
+    Some(format!(
+        "Autome 在提交 `{short}` 上运行了 `{command}`：{verdict}。完整输出：`{log}`。\n\
+         这是实现轮之外的一次独立运行。复验时可以引用它，但它不替代你自己的负向对照。\n"
+    ))
+}
 
 /// Which protocol sections each role's brief carries, read from the protocol
 /// version's own `brief-map.toml`.
@@ -363,6 +410,72 @@ pub fn path(doc_dir: &str, role: Role, round: u32) -> String {
 mod tests {
     use super::*;
     use autome_domain::status_block::{ConvergenceMode, DocStatus};
+
+    fn before_merge_config() -> ResolvedConfig {
+        use autome_domain::config::{self, GateConfig, GlobalConfig, ProjectConfig};
+        let mut config = config::resolve(&GlobalConfig::default(), &ProjectConfig::default());
+        config.gate = Some(GateConfig {
+            command: "make check".into(),
+            timeout_minutes: 5,
+        });
+        config.gate_run = GateRun::BeforeMerge;
+        config
+    }
+
+    #[test]
+    fn before_merge_missing_stale_or_unreadable_head_has_no_result() {
+        let config = before_merge_config();
+        let stale = serde_json::json!({"sha":"old", "command":"make check", "ok":false});
+        let missing_sha = serde_json::json!({"command":"make check", "ok":false});
+        for (last, head) in [
+            (None, Some("head")),
+            (Some(&stale), Some("head")),
+            (Some(&stale), None),
+            (None, None),
+            (Some(&missing_sha), None),
+            (Some(&missing_sha), Some("head")),
+        ] {
+            assert_eq!(
+                gate_evidence(&config, last, head).as_deref(),
+                Some(GATE_ONLY_BEFORE_MERGE)
+            );
+        }
+    }
+
+    #[test]
+    fn before_merge_same_head_preserves_success_and_failure() {
+        let config = before_merge_config();
+        for sha in ["a", "0123456789", "0123456789abcdef"] {
+            for ok in [true, false] {
+                let result = serde_json::json!({"sha":sha, "command":"make check", "ok":ok, "exit_code":if ok {0} else {1}, "log":"gate.log"});
+                let line = gate_evidence(&config, Some(&result), Some(sha));
+                assert_eq!(line, gate_line_of_result(&result));
+                assert!(
+                    line.unwrap()
+                        .contains(if ok { "：通过" } else { "：未通过" })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn before_merge_each_round_and_unconfigured_gate_are_byte_identical() {
+        let result = serde_json::json!({"sha":"old", "command":"make check", "ok":false});
+        let mut each_round = before_merge_config();
+        each_round.gate_run = GateRun::EachRound;
+        let mut no_gate = before_merge_config();
+        no_gate.gate = None;
+        for config in [each_round, no_gate] {
+            for last in [None, Some(&result)] {
+                for head in [None, Some("old"), Some("new")] {
+                    assert_eq!(
+                        gate_evidence(&config, last, head),
+                        last.and_then(gate_line_of_result)
+                    );
+                }
+            }
+        }
+    }
 
     const MAP: &str = r#"
 [roles.impl]

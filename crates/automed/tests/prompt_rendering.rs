@@ -394,3 +394,57 @@ fn bug_loop_bug_prompts_leave_no_placeholder() {
         }
     }
 }
+
+fn brief_golden(name: &str) -> String {
+    std::fs::read_to_string(format!(
+        "{}/tests/golden/briefs/{name}.md",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+fn maybe_update_brief_golden(name: &str, got: &str) {
+    if std::env::var("AUTOME_UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(
+            format!(
+                "{}/tests/golden/briefs/{name}.md",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            got,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn before_merge_audit_brief_matches_its_golden() {
+    use autome_domain::config::{self, GateConfig, GateRun, GlobalConfig, ProjectConfig};
+    use automed::brief::{self, BriefMap, Inputs};
+    let mut config = config::resolve(&GlobalConfig::default(), &ProjectConfig::default());
+    config.gate = Some(GateConfig {
+        command: "make check".into(),
+        timeout_minutes: 5,
+    });
+    config.gate_run = GateRun::BeforeMerge;
+    let old = serde_json::json!({
+        "sha":"old-head", "node":"merge_gate", "command":"make check",
+        "ok":false, "exit_code":1, "log":"gate.log"
+    });
+    let got = brief::build(&Inputs {
+        role: Role::Audit,
+        slug: "example",
+        doc_dir: "docs/example",
+        round: 2,
+        status: None,
+        audit_doc: None,
+        evidence: &[],
+        loop_protocol: "",
+        session_protocol: "",
+        map: &BriefMap::default(),
+        budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
+        decisions: None,
+        gate: brief::gate_evidence(&config, Some(&old), Some("<head>")),
+    });
+    maybe_update_brief_golden("audit-before-merge", &got);
+    assert_eq!(got, brief_golden("audit-before-merge"));
+}
