@@ -1,12 +1,12 @@
 # 费用可见：任务与项目的累计费用，可选预算告警
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 7/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在支持 Electron 与本地监听的环境复跑 M-05 全量门禁，取得通过证据后标待审
+next-action: 全部里程碑已完成，等待用户确认人工验收清单并合并
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -301,7 +301,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 | M-02 | 已完成 | 项目与看板费用字段 | 0 | |
 | M-03 | 已完成 | [budget] 配置读写 | 0 | |
 | M-04 | 已完成 | 超限告警与读者文案 | 0 | |
-| M-05 | 开放 | CLI 费用展示与全量门禁 | 0 | |
+| M-05 | 已完成 | CLI 费用展示与全量门禁 | 0 | |
 
 ## 里程碑说明
 
@@ -321,7 +321,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-04-r6-audit.md · 通过 · 审计 #5
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
   `ls` 费用列与脚注、`status` 运行中行费用；`USAGE` 末尾说明配置节的那句加上 `[budget]`。
-最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-impl.md · 专项通过，全量环境阻塞，保持开放 · 实现 #7
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r7-audit.md · 通过 · 审计 #6
 
 ## 验收契约
 
