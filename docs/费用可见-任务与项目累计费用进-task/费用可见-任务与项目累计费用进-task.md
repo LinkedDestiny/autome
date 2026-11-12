@@ -6,7 +6,7 @@ implementation-round: 5/25
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-03 配置读写；通过后推进 M-04 超限告警
+next-action: 推进 M-04 超限告警与读者文案；M-05 门禁前须先修 end_to_end 中 bug_loop_task_get_reports_the_fix_round_for_bugs_only 的键集合基线（见 Backlog B-07）
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -299,7 +299,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 |---|---|---|---|---|
 | M-01 | 已完成 | 任务费用纯聚合与 task.get.cost | 0 | |
 | M-02 | 已完成 | 项目与看板费用字段 | 0 | |
-| M-03 | 待审 | [budget] 配置读写 | 0 | |
+| M-03 | 已完成 | [budget] 配置读写 | 0 | |
 | M-04 | 开放 | 超限告警与读者文案 | 0 | |
 | M-05 | 开放 | CLI 费用展示与全量门禁 | 0 | |
 
@@ -315,7 +315,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-02-r4-audit.md · 通过 · 审计 #2
 - **M-03** 覆盖 G3 的配置部分、约束 4。前置：无（可与 M-01/M-02 独立，按编号顺序做）。结果：`BudgetConfig`、
   `parse_project` / `save_project` 支持 `[budget]`；README 与 technical-design 各补一处。
-最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r5-impl.md · 待审 · 实现 #5
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r5-audit.md · 通过 · 审计 #4
 - **M-04** 覆盖验收 3、G3 告警部分、约束 3。前置 M-01、M-03。结果：`budget_crossed`（带浮点容差）；`check_budget` 挂在回收后；
   `store.raise_budget_alert`（一次事务写警报与两条事件）；CLI `event_line` 两处文案；Web 通知器标题。
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
@@ -424,6 +424,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 - B-04 `stop_on_exceed`（任务卡点名的后续项）。
 - B-05 `autome status` 运行中行的 `$3.75*` 没有星号脚注（只有 `ls` 末尾有），可复用同一句释义（评审 N-01）。
 - B-06 `autome alerts`（`main.rs:983–991`）直接打印原始 `kind`，可与 B-02 的统一种类文案表一起做；`budget_exceeded` 的 detail 已是完整中文，含义可读（评审 N-02）。
+- B-07 `end_to_end.rs::bug_loop_task_get_reports_the_fix_round_for_bugs_only`（约 4650 行）的 task 键集合基线缺 `cost_usd` / `cost_sessions_without_cost`（M-02 起红；审计 #2 曾补过，被「还原审计轮越界改动」提交撤回）。M-05 的 `cargo test --workspace` 会因此红，须在 M-05 实现轮补上。
 
 ## 争议项
 
