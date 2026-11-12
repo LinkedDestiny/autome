@@ -1,0 +1,9 @@
+name: audit-keeps-project-files-unchanged
+role: audit
+description: 项目测试失败时退回实现轮，不顺手修复仓库测试
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/boundary.md

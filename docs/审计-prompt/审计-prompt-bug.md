@@ -1,7 +1,7 @@
 # 审计 prompt 与会话范围守卫冲突
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --test prompt_rendering scope_contract_
 根因: 审计模板允许未限定落点的加强验收，审计、复盘和复核模板未告知文档目录写入边界，而调度器按会话提交差异强制执行该边界。
 复核: 待复核
@@ -42,7 +42,14 @@ fix-round: 0/3
 
 ## 修复说明
 
-待修复轮填写。本轮仅新增失败回归测试和定位记录。
+第 1/3 轮修复：
+
+- 三份模板明确文档目录边界及越界后果；审计验证缺口仅可补验收契约或不入库临时检查，仓库测试、格式与 lint 失败按实现缺陷退回，禁止审计方自行修复。
+- 保留范围守卫判定，仅在错误中加入每个仓库的会话开始 SHA、恢复越界文件并提交后再 rerun 的步骤；补充恢复提示断言。
+- 协议升级为 v3，新增行为 eval 并编入种子，更新审计/复核 golden 和版本测试夹具。定位轮的四项回归测试文件未改动。
+- 原复现命令修复前 4 failed，修复后 4 passed；全部 prompt 渲染 20 passed；协议相关测试 61 passed；范围守卫测试 2 passed。
+- 行为 eval 脚手架已实跑；付费模型行为 eval 未运行，不声称行为层改前红、改后绿。
+- 协议静态门 8 passed、0 failed、1 条历史条文覆盖警告；格式检查和 Clippy 通过。完整 `sh scripts/ci-local.sh` 未通过：Desktop 的 Electron DOM harness 收到 SIGABRT，Web 类型检查在已有 `scripts/notifier-live-regression.mjs` 报隐式 any，Web 实测受本机监听 EPERM 和文件监听 EMFILE 阻断。未改动这些无关文件或弱化测试。前次运行还包含中间版本的协议失败，已由最终协议测试复验通过；最终 Rust 全量运行中 automed 单元测试 650 passed，端到端 111 passed、1 failed（另一处旧 v2 版本断言）；将该版本断言同步为 v3 后，单独重跑该用例 1 passed，其余 111 项未重复运行。real_cli 7 passed；原有忽略项未改动。完整 CI 因上述 Desktop/Web 失败仍未通过，不能作为发布通过证明。原始日志均留在 `.autome/output/fix-1-*.log`，不提交。
 
 ## 复核意见
 

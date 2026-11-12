@@ -815,7 +815,7 @@ mod tests {
     fn with_behavioral_entry(eval: &str) -> ProtocolFiles {
         let mut files = seed().clone();
         let text = format!(
-            "{}\n## protocol/v3\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
+            "{}\n## protocol/v4\n\n```yaml\n- id: C-90\n  kind: behavioral\n  \
              clause: prompts/impl.md\n  evidence: [T-1 一处, T-2 另一处]\n  \
              predicted_impact: {{metric: protocol_failures, direction: down, scope: task, horizon: 3}}\n  \
              eval: {eval}\n  realized_impact: null\n```\n",
@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn a_changed_run_covers_the_new_cases_and_the_three_baselines() {
         let files = with_behavioral_entry("evals/impl-self-check-before-pending/");
-        let cases = changed_cases(&files, "protocol/v3");
+        let cases = changed_cases(&files, "protocol/v4");
         for baseline in BASELINE_CASES {
             assert!(cases.contains(&baseline.to_string()), "{cases:?}");
         }
