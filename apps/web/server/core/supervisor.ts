@@ -1,7 +1,7 @@
 import { AutomedSidecar, type Outbound } from './sidecar.ts';
 import { nextRestart } from './restart-policy.ts';
 
-export const CALL_TIMEOUT_MS = 15000;
+export const CALL_TIMEOUT_MS = 125000;
 export type CoreStatus = { state: 'starting' | 'connected' | 'restarting' | 'offline' | 'stopped'; reason?: string; attempts: number };
 type Options = { binaryPath?: string; home: string; dbPath?: string; log?: (line: string) => void; now?: () => number; onStatus?: (status: CoreStatus) => void };
 export type TickReport = { skipped?: boolean; errors?: string[]; [key: string]: unknown };

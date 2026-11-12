@@ -80,17 +80,31 @@ pub fn try_acquire(db_path: &Path) -> std::io::Result<Option<DriverLock>> {
     Ok(Some(DriverLock { _file: file }))
 }
 
-/// Waits up to `timeout` for the lock. A write command uses this: the user
-/// pressed a button, and another driver's tick is a few hundred milliseconds
-/// at most, so waiting is right and refusing would be noise.
+/// Waits up to `timeout` for the lock. A tick can include slow synchronous
+/// work such as worktree cleanup, so callers must allow for long contention.
 pub fn acquire(db_path: &Path, timeout: Duration) -> std::io::Result<Option<DriverLock>> {
-    let deadline = Instant::now() + timeout;
+    acquire_with_notice(db_path, timeout, None)
+}
+
+/// Calls `notice` once if contention lasts at least two seconds.
+pub fn acquire_with_notice(
+    db_path: &Path,
+    timeout: Duration,
+    mut notice: Option<fn()>,
+) -> std::io::Result<Option<DriverLock>> {
+    let started = Instant::now();
+    let deadline = started + timeout;
     loop {
         if let Some(lock) = try_acquire(db_path)? {
             return Ok(Some(lock));
         }
         if Instant::now() >= deadline {
             return Ok(None);
+        }
+        if started.elapsed() >= Duration::from_secs(2)
+            && let Some(notice) = notice.take()
+        {
+            notice();
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -145,6 +159,34 @@ mod tests {
         let started = Instant::now();
         assert!(acquire(&db, Duration::from_millis(120)).unwrap().is_none());
         assert!(started.elapsed() >= Duration::from_millis(120));
+    }
+
+    #[test]
+    fn prolonged_contention_notifies_once_but_immediate_acquisition_is_silent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NOTICES: AtomicUsize = AtomicUsize::new(0);
+        fn notice() {
+            NOTICES.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let db = tmp_db("notice");
+        let held = acquire_with_notice(&db, Duration::from_secs(3), Some(notice))
+            .unwrap()
+            .unwrap();
+        assert_eq!(NOTICES.load(Ordering::SeqCst), 0);
+        assert!(
+            acquire_with_notice(&db, Duration::from_millis(2200), Some(notice))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(NOTICES.load(Ordering::SeqCst), 1);
+        drop(held);
+        assert!(
+            acquire_with_notice(&db, Duration::from_secs(3), Some(notice))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(NOTICES.load(Ordering::SeqCst), 1);
     }
 
     #[test]

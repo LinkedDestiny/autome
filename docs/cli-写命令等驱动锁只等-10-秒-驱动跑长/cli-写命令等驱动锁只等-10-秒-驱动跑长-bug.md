@@ -1,11 +1,11 @@
 # CLI 写命令在长 tick 持锁期间提前失败
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/autome-cli && cargo test --offline -p autome-cli --test cli write_command_waits_for_a_driver_lock_held_for_fifteen_seconds -- --exact --nocapture > ../../.autome/output/driver-lock-regression.log 2>&1
 根因: 写命令统一只等待驱动锁 10 秒，而 scheduler 在整个 tick（包括同步清理等长步骤）期间持锁，正常竞争超过预算即返回 Internal 并退出。
 复核: 待复核
-repos: crates/autome-cli, crates/automed
+repos: crates/autome-cli, crates/automed, apps/web
 
 ## 现象
 
@@ -42,7 +42,23 @@ repos: crates/autome-cli, crates/automed
 
 ## 修复说明
 
-定位轮，仅添加失败回归测试和本文档；修复轮尚未开始。
+第 1/3 修复轮采用延长等待方案：`dispatch` 的写命令驱动锁等待上限从 10 秒提高到 120 秒。保留整个 tick/写命令持锁的生命周期，避免拆锁改变任务状态与会话启动的原子性。超过 120 秒仍会返回原有竞争错误。
+
+锁等待支持可选提示回调，竞争达到 2 秒后只调用一次。CLI 仅在非 `--json` 模式启用，向 stderr 输出「等待驱动释放状态库…」；桌面调用默认不提示。同步修正了 tick 最多几百毫秒的过时注释。
+
+门禁发现 Web 的调用超时需大于核心锁等待时间，已将 `CALL_TIMEOUT_MS` 从 15 秒同步提高到 125 秒，保留现有契约测试。
+
+验证：
+
+- 修改前运行状态块原命令，退出 101，出现同一锁竞争错误；日志 `.autome/output/driver-lock-before-fix.log`。
+- 修改后运行同一命令通过（1 passed，16.16 秒），JSON stderr 为空，创建记录可读；日志 `.autome/output/driver-lock-regression.log`。定位轮回归测试未修改、删除或弱化。
+- 新增锁提示单元测试，验证立即拿锁无提示、持续竞争只提示一次、释放后可重新拿锁；已通过。
+- 隔离临时仓库的实际非 JSON CLI 验证通过：前 1.5 秒无提示，随后收到一次提示，释放锁后写命令成功且没有重复提示；日志 `.autome/output/fix-notice-smoke.log`。
+- 配置门禁 `sh scripts/ci-local.sh` 已完整执行，383 秒后退出 1；Format、Clippy、Rust 全量测试、Contract、Web lint/typecheck/build 通过。Desktop 的 Electron DOM harness 状态为 null，独立启动确认信号为 SIGABRT、stdout/stderr 为空（`.autome/output/fix-electron-probe.log`）。Web 测试包含监听 `127.0.0.1` 被拒绝（EPERM）、文件监听 EMFILE 和超时失败；未修改或跳过这些测试。完整日志 `.autome/output/fix-gate.log`。
+- 同次门禁还抓到了 Web 调用超时小于核心等锁预算的契约失败；同步修复后，`cd apps/web && npx vitest run test/core-supervisor.test.ts` 全部 10 项通过（`.autome/output/fix-web-timeout.log`）。该一行修复后未重跑完整门禁，整体门禁仍记为未通过，需宿主在支持 Electron/本地监听的环境复跑。
+- `git diff --check` 通过；定位轮 `crates/autome-cli/tests/cli.rs` 无差异。
+
+未重新驱动用户 T-27/T-36 的真实清理/合并流程，未运行可选打包门禁。
 
 ## 复核意见
 
