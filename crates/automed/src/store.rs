@@ -176,6 +176,14 @@ pub const COOLDOWN_MAX_MINUTES: i64 = 60;
 /// `(key, domain, proposal, evidence, state)` for one rule proposal.
 pub type RuleProposalRow = (String, String, String, Vec<String>, String);
 
+pub struct StoredEvent {
+    pub seq: u64,
+    pub kind: String,
+    pub subject: String,
+    pub payload: Value,
+    pub at: String,
+}
+
 pub struct Store {
     conn: Connection,
     db_path: PathBuf,
@@ -726,6 +734,32 @@ impl Store {
     /// `events_since`, with the subject each event is about — the task, the
     /// project or the alert. The command line's `run` names the task on every
     /// line it prints.
+    pub fn events_since_with_at(&self, after_seq: u64, limit: u32) -> Result<Vec<StoredEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, kind, subject_id, payload, at FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![after_seq as i64, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, kind, subject, payload, at) = row?;
+            Ok(StoredEvent {
+                seq,
+                kind,
+                subject,
+                payload: serde_json::from_str(&payload)?,
+                at,
+            })
+        })
+        .collect()
+    }
+
     pub fn events_since_with_subject(
         &self,
         after_seq: u64,
@@ -2856,6 +2890,25 @@ mod tests {
             .map(|(_, k, _)| k)
             .collect();
         assert_eq!(kinds, vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn stored_event_includes_original_timestamp_and_query_boundaries() {
+        let s = store();
+        assert!(s.events_since_with_at(0, 1).unwrap().is_empty());
+        let seq = s
+            .append_event("test", "subject", serde_json::json!({"a":1}))
+            .unwrap();
+        s.conn
+            .execute("UPDATE events SET at = '2000-02-29T23:59:59Z'", [])
+            .unwrap();
+        let events = s.events_since_with_at(0, 1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, seq);
+        assert_eq!(events[0].at, "2000-02-29T23:59:59Z");
+        assert_eq!(events[0].payload, serde_json::json!({"a":1}));
+        assert!(s.events_since_with_at(seq, 1).unwrap().is_empty());
+        assert!(s.events_since_with_at(0, 0).unwrap().is_empty());
     }
 
     #[test]

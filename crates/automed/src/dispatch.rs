@@ -2580,11 +2580,11 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         .and_then(Value::as_u64)
         .unwrap_or(200)
         .min(1000) as u32;
-    let events = ctx.store.events_since_with_subject(after, limit)?;
+    let events = ctx.store.events_since_with_at(after, limit)?;
     Ok((
         json!({
-            "events": events.iter().map(|(seq, kind, subject, payload)| json!({
-                "seq": seq, "kind": kind, "subject": subject, "payload": payload
+            "events": events.iter().map(|e| json!({
+                "seq": e.seq, "kind": e.kind, "subject": e.subject, "payload": e.payload, "at": e.at
             })).collect::<Vec<_>>(),
             "latest_seq": ctx.store.latest_seq()?,
         }),
@@ -4331,6 +4331,24 @@ mod tests {
         let events = ok_payload(&out)["events"].as_array().unwrap().clone();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["kind"], json!("project.added"));
+    }
+
+    #[test]
+    fn events_since_carries_when_each_event_happened() {
+        let mut sb = Sandbox::new("event-time");
+        sb.ctx()
+            .store
+            .append_event("test", "p", json!({"text":"a\nb"}))
+            .unwrap();
+        let stored = sb.ctx().store.events_since_with_at(0, 100).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("events.since", json!({"after_seq":0})));
+        let payload = ok_payload(&out);
+        let events = payload["events"].as_array().unwrap();
+        assert_eq!(events.len(), stored.len());
+        for (event, row) in events.iter().zip(stored) {
+            assert_eq!(event["at"], row.at);
+            assert_eq!(event["payload"], row.payload);
+        }
     }
 
     #[test]

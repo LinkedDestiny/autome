@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
+implementation-round: 1/10
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返回补 at 字段，再给 run 加 --json 分支与集成用例
+next-action: 独立审计 M-01；通过后下一实现轮推进 M-02 的 logs --json 与 --follow
 
 任务文件：`docs/autome-run-与-logs-支持/autome-run-与-logs-支持-task.md`
 
@@ -144,7 +144,7 @@ next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | events.since 补事件时间，run --json 逐行输出事件、错误与收尾行 | 0 | cli-run |
+| M-01 | 待审 | events.since 补事件时间，run --json 逐行输出事件、错误与收尾行 | 0 | cli-run |
 | M-02 | 开放 | logs --json [--follow] 逐行输出会话原始流的结构化事件 | 0 | cli-logs |
 
 ## 里程碑范围
@@ -161,14 +161,16 @@ next-action: M-01：Store 增加带 at 的只读事件查询，events.since 返�
 
 ### M-01 验收契约
 
+最新证据：docs/autome-run-与-logs-支持/evidence/M-01-r1-impl.md · 验收通过，宿主门禁见证据 · 实现 #1
+
 - 验收命令：`cargo test -p automed --lib events_since && cargo test -p autome-cli`
-- 预期：`automed` 过滤后 4 个用例通过（基线 3 + `events_since_carries_when_each_event_happened`：断言 `events.since` 每个事件有 `at` 且等于表里的值）；`autome-cli` 单元 28 个通过（基线 25 + 3：主体是任务时 `task_id` 等于主体、主体是项目时 `task_id` 为 `null` 且 `subject` 保留、`time` 取 `at`），集成 15 个通过（基线 14 + `run_json_prints_every_event_as_one_json_line`：在任务建好、**尚未被驱动推进**时先用 `autome rpc events.since` 记起点 seq，再由受测的 `run --json --until-idle --interval 0.05` 把它推进到等设计批准（起点必须在受测驱动之前取，否则驱动从最新 seq 起步、事件列表为空）；断言 stdout 事件行非空且含 `task.head`，每行可解析为 JSON；除最后一行外每行的 `seq` 列表与事后 `rpc events.since {after_seq: 起点}` 返回的 `seq` 列表完全相等、`time` 等于对应事件的 `at`、主体为该任务的事件 `task_id` 等于任务 id；最后一行 `idle` 为 `true` 且 `tasks` 里该任务的 `state` 等于 `status <任务> --json` 的 `.task.state`、`node` 为 `await_design_approval`；stderr 不含「驱动 Loop 中」）。
+- 预期：`automed` 过滤后 4 个用例通过（基线 3 + `events_since_carries_when_each_event_happened`：断言 `events.since` 每个事件有 `at` 且等于表里的值）；`autome-cli` 单元 28 个通过（基线 25 + 3：主体是任务时 `task_id` 等于主体、主体是项目时 `task_id` 为 `null` 且 `subject` 保留、`time` 取 `at`），集成 17 个通过（基线 14 + 断管/驱动占用、tick 错误/SIGINT 两条异常路径用例 + `run_json_prints_every_event_as_one_json_line`：在任务建好、**尚未被驱动推进**时先用 `autome rpc events.since` 记起点 seq，再由受测的 `run --json --until-idle --interval 0.05` 把它推进到等设计批准（起点必须在受测驱动之前取，否则驱动从最新 seq 起步、事件列表为空）；断言 stdout 事件行非空且含 `task.head`，每行可解析为 JSON；除最后一行外每行的 `seq` 列表与事后 `rpc events.since {after_seq: 起点}` 返回的 `seq` 列表完全相等、`time` 等于对应事件的 `at`、主体为该任务的事件 `task_id` 等于任务 id；最后一行 `idle` 为 `true` 且 `tasks` 里该任务的 `state` 等于 `status <任务> --json` 的 `.task.state`、`node` 为 `await_design_approval`；stderr 不含「驱动 Loop 中」）。
 - 负向对照：JSON 分支用 `print_json`（美化多行）时第一行 `{` 解析失败，集成用例红；沿用 `render::event_line` 过滤时每个会话收尾的 `task.head` 被丢掉，`seq` 列表相等断言红；`task_id` 直接取 `subject` 时项目主体那条单元用例红；`time` 用 `clock()` 时 `time == at` 断言红（`clock()` 输出本地 `HH:MM`，与 `at` 的 `YYYY-MM-DDTHH:MM:SSZ` 不同）。
 
 ### M-02 验收契约
 
 - 验收命令：`cargo test -p autome-cli`
-- 预期：单元 32 个通过（M-01 后的 28 + 4：Claude 样例行的 `type`/`text`/`event`、Codex 样例行（`turn.started` 的 `text` 为 `null`）、非 JSON 行得到 `event: null, type: null, text: 原文` 且空行不输出、行边界函数对「两行半」的输入只吐两行且会话结束后补出第三行），集成 16 个通过（M-01 后的 15 + `logs_json_prints_the_session_stream_one_json_value_per_line`：第 3 个会话写 Codex 样例、第 4 个写 Claude 样例与一行 stderr 文本，跑到等设计批准后：`logs <任务> --json` 与 `logs <任务> --json -f` 的 stdout 每行可解析为 JSON，行数等于最后一个会话 `.jsonl` 的非空行数，`type` 依次为 `system`、`assistant`、`system`、`result`、`null`，`assistant` 行 `text` 含 `hi there`、`hook_started` 行 `text` 为 `null`；`logs <任务> --session <review 会话 id> --json` 的 `text` 含 `Hello!` 与 `in 36111`；把 stdout 接到读端已关闭的管道再跑 `logs <任务> --json`，退出码为 0 或 SIGPIPE 且 stderr 为空）。
+- 预期：单元 32 个通过（M-01 后的 28 + 4：Claude 样例行的 `type`/`text`/`event`、Codex 样例行（`turn.started` 的 `text` 为 `null`）、非 JSON 行得到 `event: null, type: null, text: 原文` 且空行不输出、行边界函数对「两行半」的输入只吐两行且会话结束后补出第三行），集成 18 个通过（M-01 后的 17 + `logs_json_prints_the_session_stream_one_json_value_per_line`：第 3 个会话写 Codex 样例、第 4 个写 Claude 样例与一行 stderr 文本，跑到等设计批准后：`logs <任务> --json` 与 `logs <任务> --json -f` 的 stdout 每行可解析为 JSON，行数等于最后一个会话 `.jsonl` 的非空行数，`type` 依次为 `system`、`assistant`、`system`、`result`、`null`，`assistant` 行 `text` 含 `hi there`、`hook_started` 行 `text` 为 `null`；`logs <任务> --session <review 会话 id> --json` 的 `text` 含 `Hello!` 与 `in 36111`；把 stdout 接到读端已关闭的管道再跑 `logs <任务> --json`，退出码为 0 或 SIGPIPE 且 stderr 为空）。
 - 负向对照：读 `.log` 而不是 `.jsonl` 时行数多出收尾行 `=== autome session … ===`、`event` 全为 `null`，集成用例红；按运行时选错渲染函数（一律 `render_line`）时 Codex 会话的 `text` 不含 `in 36111`，集成用例红；行边界函数不留半行时「两行半」单元用例红；JSON 分支沿用 `write_all(..).map_err(CliError::Failed)` 时管道关闭那一步退出码 1 且 stderr 有 `Broken pipe`，集成用例红。
 
 ## 人工验收清单

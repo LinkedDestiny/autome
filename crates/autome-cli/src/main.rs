@@ -55,7 +55,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   task convert <任务> [--start]  把判定为「不是 Bug」的任务改建成需求（原任务取消）
 
 推进
-  run [--once | --until-idle] [--interval 秒]
+  run [--once | --until-idle] [--interval 秒] [--json]
                                  驱动 Loop；Ctrl-C 只停驱动，会话照常跑完
   status [任务]                  不带任务：等你决定 / 运行中 / 报警；带任务：详情
   ls                             所有任务（含已完成）
@@ -148,7 +148,13 @@ fn run(argv: &[String]) -> Result<()> {
             "--draft",
             "--start",
         ],
-        "run" => &["--once", "--until-idle", "--interval", "--verbose"],
+        "run" => &[
+            "--once",
+            "--until-idle",
+            "--interval",
+            "--verbose",
+            "--json",
+        ],
         "logs" => &["--session", "--follow"],
         other => return Err(CliError::Usage(format!("未知命令 `{other}`"))),
     };
@@ -811,23 +817,28 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
     let once = a.has("--once");
     let until_idle = a.has("--until-idle");
     let verbose = a.has("--verbose");
+    let json = a.has("--json");
     catch_sigint();
 
     let mut seq = c.call("events.since", json!({ "after_seq": u64::MAX }))?["latest_seq"]
         .as_u64()
         .unwrap_or(0);
-    if !once {
+    if !once && !json {
         eprintln!("驱动 Loop 中（每 {interval} 秒一轮，Ctrl-C 停止驱动；会话不受影响）");
     }
     let mut told_skipped = false;
     loop {
         let report = c.call("scheduler.tick", json!({}))?;
-        if report["skipped"] == json!(true) && !told_skipped {
+        if report["skipped"] == json!(true) && !told_skipped && !json {
             eprintln!("另一个驱动（桌面端或另一个 autome run）正在推进，本进程轮流推进。");
             told_skipped = true;
         }
         for e in report["errors"].as_array().cloned().unwrap_or_default() {
-            eprintln!("  ! {}", e.as_str().unwrap_or_default());
+            if json {
+                println!("{}", json!({"error": e.as_str().unwrap_or_default()}));
+            } else {
+                eprintln!("  ! {}", e.as_str().unwrap_or_default());
+            }
         }
         loop {
             let got = c.call("events.since", json!({ "after_seq": seq, "limit": 500 }))?;
@@ -839,6 +850,10 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
                 seq = seq.max(e["seq"].as_u64().unwrap_or(seq));
                 let kind = e["kind"].as_str().unwrap_or_default();
                 let subject = e["subject"].as_str().unwrap_or_default();
+                if json {
+                    println!("{}", run_event(e, c.ctx.store.get_task(subject).is_ok()));
+                    continue;
+                }
                 match render::event_line(kind, subject, &e["payload"]) {
                     Some(line) => println!("{}  {line}", clock()),
                     None if verbose => println!("{}  {subject} {kind}", clock()),
@@ -851,6 +866,23 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
             break;
         }
         if until_idle && idle(c) {
+            if json {
+                let unfinished = c
+                    .ctx
+                    .store
+                    .list_unfinished()
+                    .map_err(|e| CliError::Failed(e.to_string()))?;
+                let all = c.all_tasks()?;
+                let tasks: Vec<Value> = unfinished
+                    .iter()
+                    .filter_map(|t| {
+                        all.iter().find(|(_, v)| v["id"] == t.id).map(
+                            |(_, v)| json!({"id": v["id"], "slug": v["slug"], "state": v["state"]}),
+                        )
+                    })
+                    .collect();
+                println!("{}", json!({"idle": true, "tasks": tasks}));
+            }
             break;
         }
         // Slept in small steps so Ctrl-C is answered promptly.
@@ -864,7 +896,7 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
             break;
         }
     }
-    if INTERRUPTED.load(Ordering::SeqCst) {
+    if INTERRUPTED.load(Ordering::SeqCst) && !json {
         eprintln!("已停止驱动。还在跑的会话不受影响，下次 `autome run` 或打开桌面端会接着收结果。");
     }
     Ok(())
@@ -890,6 +922,12 @@ fn idle(c: &mut Client) -> bool {
             _ => false,
         }
     })
+}
+
+fn run_event(event: &Value, is_task: bool) -> Value {
+    json!({"seq": event["seq"], "time": event["at"],
+        "task_id": if is_task { event["subject"].clone() } else { Value::Null },
+        "kind": event["kind"], "subject": event["subject"], "payload": event["payload"]})
 }
 
 fn clock() -> String {
@@ -1093,6 +1131,34 @@ mod idle_tests {
                 doc_root: None,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn run_event_task_identity() {
+        let c = client();
+        insert(&c, "not-a-prefix", TaskState::Queued);
+        let e = json!({"subject":"not-a-prefix", "payload":{"text":"a\nb"}});
+        let v = run_event(&e, c.ctx.store.get_task("not-a-prefix").is_ok());
+        assert_eq!(v["task_id"], "not-a-prefix");
+        assert_eq!(v["payload"], e["payload"]);
+        assert_eq!(v.to_string().lines().count(), 1);
+    }
+
+    #[test]
+    fn run_event_project_preserves_subject() {
+        let c = client();
+        let e = json!({"subject":"p"});
+        let v = run_event(&e, c.ctx.store.get_task("p").is_ok());
+        assert!(v["task_id"].is_null());
+        assert_eq!(v["subject"], "p");
+    }
+
+    #[test]
+    fn run_event_time_is_stored_at() {
+        let e = json!({"seq":42, "at":"2000-02-29T23:59:59Z"});
+        let v = run_event(&e, false);
+        assert_eq!(v["time"], e["at"]);
+        assert_eq!(v["seq"], 42);
     }
 
     #[test]

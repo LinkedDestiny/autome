@@ -846,3 +846,179 @@ fn task_convert_with_start_queues_and_rejects_other_tasks() {
         assert_eq!(s.autome(&["task", "convert", name]).status.code(), Some(1));
     }
 }
+
+#[test]
+fn run_json_prints_every_event_as_one_json_line() {
+    let s = Sandbox::new("run-json");
+    let empty = s.ok(&["run", "--json", "--until-idle"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(empty.trim()).unwrap(),
+        serde_json::json!({"idle":true,"tasks":[]})
+    );
+    assert!(
+        s.ok(&["run", "--json", "--once", "--until-idle"])
+            .is_empty()
+    );
+    let bad = s.autome(&["run", "--json", "--interval", "bad"]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(bad.stdout.is_empty());
+    let request = "json events";
+    let slug = autome_domain::project::slugify(request);
+    s.step(1, &slug, &doc("设计中", 0, 0, &[]));
+    s.step(2, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(3, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", request]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let before = s.json(&["rpc", "events.since"])["latest_seq"].clone();
+    let output = s.autome(&["run", "--json", "--until-idle", "--interval", "0.05"]);
+    assert!(output.status.success(), "{:?}", output);
+    assert!(output.stderr.is_empty(), "{:?}", output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let mut lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let end = lines.pop().unwrap();
+    assert_eq!(end["idle"], true);
+    let task = end["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id)
+        .unwrap();
+    assert_eq!(task["state"], s.task_state(id));
+    assert_eq!(task["state"]["node"], "await_design_approval");
+    let expected = s.json(&[
+        "rpc",
+        "events.since",
+        &serde_json::json!({"after_seq":before,"limit":1000}).to_string(),
+    ]);
+    let events = expected["events"].as_array().unwrap();
+    assert!(!lines.is_empty());
+    assert!(lines.iter().any(|e| e["kind"] == "task.head"));
+    assert_eq!(lines.len(), events.len());
+    for (actual, expected) in lines.iter().zip(events) {
+        assert_eq!(actual["seq"], expected["seq"]);
+        assert_eq!(actual["time"], expected["at"]);
+        assert_eq!(actual["payload"], expected["payload"]);
+        if expected["subject"] == id {
+            assert_eq!(actual["task_id"], id);
+        }
+    }
+}
+
+#[test]
+fn run_json_closed_pipe_exits_quietly() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::{Command, Stdio};
+    let s = Sandbox::new("run-json-pipe");
+    s.ok(&["run", "--json", "--once"]);
+    let lock = automed::driver_lock::try_acquire(&s.root.join("home/ledger.sqlite3"))
+        .unwrap()
+        .unwrap();
+    let skipped = s.autome(&["run", "--json", "--once"]);
+    assert!(skipped.status.success());
+    assert!(skipped.stdout.is_empty());
+    assert!(skipped.stderr.is_empty());
+    drop(lock);
+
+    let mut fds = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    drop(reader);
+    let out = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["run", "--json", "--until-idle"])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let s = Sandbox::new("run-json-error");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "broken project"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    // An invalid project configuration makes its core step report an error.
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    store
+        .set_task_state(
+            id,
+            &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::Gate,
+            },
+        )
+        .unwrap();
+    drop(store);
+    std::fs::write(s.repo.join(".autome/config.toml"), "invalid = [").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_autome"))
+        .args(["run", "--json", "--interval", "0.05"])
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .env("AUTOMED_CLAUDE_BINARY", &s.fake_cli)
+        .env("AUTOMED_CODEX_BINARY", &s.fake_cli)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if tx.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let first = rx.recv_timeout(std::time::Duration::from_secs(10));
+    if first.is_err() {
+        child.kill().unwrap();
+    }
+    let first: Value = serde_json::from_str(&first.expect("tick must emit error")).unwrap();
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) },
+        0
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("SIGINT did not stop run");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    assert!(
+        first["error"].as_str().is_some_and(|e| e.contains(id)),
+        "{first}"
+    );
+    for line in rx.try_iter() {
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert!(value.get("idle").is_none());
+    }
+}
