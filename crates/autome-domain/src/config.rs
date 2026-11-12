@@ -294,7 +294,6 @@ pub struct MergeAfterConfig {
 
 pub const DEFAULT_MERGE_AFTER_TIMEOUT_MINUTES: u32 = 10;
 
-
 /// Optional per-task budget, stored in whole cents. Exceeding it only warns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetConfig {
