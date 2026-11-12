@@ -1,3 +1,3 @@
-# 实现审计
+# 审计 #7
 
-M-05 审计：**通过**。三条负向对照（`{}` 格式、误用 `sessions`、脚注无条件打印）均使 `cost_cli_` 失败；`cost_cli_` 5/5 通过；`sh scripts/ci-local.sh` exit 0 九项全绿。无缺陷、无验证缺口。证据：evidence/M-05-r7-audit.md。
+无待审里程碑（M-01–M-05 均为已完成，状态 已完成）。变基后复核：`cargo test --workspace` 全绿（rc=0，主要组 744/414/137/37/28/19/7 通过，0 失败；输出 .autome/output/audit7-test.txt）。里程碑表无需改动（无 `待审` 项可转换）。人工验收 H-01–H-03 由用户合并前确认。
