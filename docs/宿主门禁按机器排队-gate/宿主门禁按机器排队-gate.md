@@ -1,12 +1,12 @@
 # 宿主门禁按机器排队：`[gate] concurrency` 缺省 1，排队不计预算、超时从启动算
 
-status: 实现中
+status: 已完成
 design-round: 2/15
 implementation-round: 6/30
-current-milestone: M-06
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-06 文档与全量回归，复验本轮验收证据；H-01 留待用户合并前确认
+next-action: 无
 
 任务文件：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-task.md`
 任务卡：`docs/宿主门禁按机器排队-gate/宿主门禁按机器排队-gate-card.md`
@@ -401,7 +401,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 | M-03 | 已完成 | 读者：task.get / dashboard.get 与 CLI 显示排队 | 0 | |
 | M-04 | 已完成 | 门禁超时文案 | 0 | |
 | M-05 | 已完成 | 端到端验收：排队、预算、超时、账本隔离、重启 | 0 | |
-| M-06 | 待审 | 文档与全量回归 | 0 | |
+| M-06 | 已完成 | 文档与全量回归 | 0 | |
 
 ## 里程碑说明
 
@@ -512,7 +512,7 @@ serde 形状同样不动，第 8、9 条只在文案层按 `kernel_timeout(tail)
 
 ### M-06 验收契约
 
-最新证据：docs/宿主门禁按机器排队-gate/evidence/M-06-r6-impl.md · 验收通过，待审 · 实现 #6
+最新证据：docs/宿主门禁按机器排队-gate/evidence/M-06-r6-audit.md · 通过 · 审计 #6
 
 - 验收命令：`cargo test --workspace && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check && npm test --prefix apps/desktop && grep -n "concurrency" README.md && grep -n "concurrency" docs/development/technical-design.md`
 - 预期：`cargo test --workspace` 全绿，`cargo test --workspace -- --list` 共 1262 个用例（基线 1201 + 本任务新增 61：
@@ -600,6 +600,7 @@ worktree、真实包装脚本与真实后台作业，只把模型换成替身（
 - B-01 用户按下合并后的 MergeGate 是否需要「插到队首、但每个普通门禁至多被越过一次」的优先规则；需要先有等待时长的
   实际数据。
 - B-02 （已由 D1-P04 采纳并入 §2，不再是 Backlog。）
+- B-07 旧用例 `stopping_a_task_kills_the_cli_the_wrapper_started` 读 `cli.pid` 时可能读到刚创建尚未写入的空文件（并发整套下复现），应等到内容非空再解析。
 - B-03 统一「门禁超时」判据：`gate_failure::fingerprint` 与 `ReproDone.timed_out` 目前对任何 124 都按超时处理，与
   「内核终止行」判据不一致。
 - B-04 准备命令超时（`FailureReason::Setup` 退出码 124）的文案同样写明「准备命令超时」。
