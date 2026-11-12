@@ -8058,3 +8058,102 @@ fn cost_rollup_task_get_sums_two_sessions_and_counts_missing_cost() {
             .sum::<f64>()
     );
 }
+
+fn run_budget_alert_task(configured: bool) {
+    let mut w = World::new(if configured { "budget" } else { "no-budget" });
+    if configured {
+        w.configure("[budget]\nper_task_usd = 0.4\n");
+    }
+    let request = "budget alert coverage";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_with_usage(n, &slug, &body);
+    }
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    let before = w.ctx.store.list_sessions(&id).unwrap();
+    let before_ids: Vec<_> = before.iter().map(|s| s.id.clone()).collect();
+    assert!(
+        before
+            .iter()
+            .filter_map(|s| s.metrics.cost_usd)
+            .sum::<f64>()
+            >= 0.5
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.budget_exceeded")
+            .unwrap(),
+        u32::from(configured)
+    );
+    if configured {
+        let alerts = w.ctx.store.open_alerts().unwrap();
+        assert_eq!(
+            alerts
+                .iter()
+                .filter(|a| a.kind == "budget_exceeded")
+                .count(),
+            1
+        );
+        let alert = alerts.iter().find(|a| a.kind == "budget_exceeded").unwrap();
+        assert_eq!(alert.task_id.as_deref(), Some(id.as_str()));
+        assert!(alert.detail.contains("任务照常继续"));
+        w.ctx.store.dismiss_alert(&alert.id).unwrap();
+    }
+    w.call("task.approve", json!({"task_id": id}));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let after = w.ctx.store.list_sessions(&id).unwrap();
+    assert!(
+        after
+            .iter()
+            .any(|s| !before_ids.contains(&s.id) && s.metrics.cost_usd.is_some_and(|v| v > 0.0))
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.budget_exceeded")
+            .unwrap(),
+        u32::from(configured)
+    );
+    assert!(
+        w.ctx
+            .store
+            .open_alerts()
+            .unwrap()
+            .iter()
+            .all(|a| a.kind != "budget_exceeded")
+    );
+    let events = w.ctx.store.events_since(0, 1000).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(_, kind, p)| kind == "project.alert"
+                && p["kind"] == "budget_exceeded"
+                && p["task_id"] == id)
+            .count(),
+        usize::from(configured)
+    );
+}
+
+#[test]
+fn budget_alert_fires_once_and_the_task_keeps_going() {
+    needs_git!();
+    run_budget_alert_task(true);
+}
+
+#[test]
+fn budget_alert_without_a_budget_section_raises_nothing() {
+    needs_git!();
+    run_budget_alert_task(false);
+}

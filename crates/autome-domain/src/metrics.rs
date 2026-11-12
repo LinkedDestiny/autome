@@ -572,3 +572,44 @@ mod cost_tests {
         );
     }
 }
+
+/// Warn once per increasing budget, absorbing only floating point tail error.
+pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Option<u64>) -> bool {
+    let limit = limit_cents as f64;
+    let tolerance = 1e-6 + limit * 1e-12;
+    usd_total * 100.0 > limit + tolerance
+        && last_alerted_cents.is_none_or(|last| limit_cents > last)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::budget_crossed;
+    #[test]
+    fn budget_alert_requires_strictly_more_than_the_limit() {
+        for (total, cents, expected) in [
+            (20.0, 2000, false),
+            (20.25, 2000, true),
+            (0.07, 7, false),
+            (0.071, 7, true),
+            (0.1 + 0.2, 30, false),
+            (0.0, 1, false),
+            (0.01, 1, false),
+            (0.011, 1, true),
+            (1_000_000.0, 100_000_000, false),
+            (1_000_000.001, 100_000_000, true),
+        ] {
+            assert_eq!(budget_crossed(total, cents, None), expected);
+        }
+    }
+    #[test]
+    fn budget_alert_does_not_repeat_for_the_same_or_a_lower_limit() {
+        assert!(!budget_crossed(40.0, 2000, Some(2000)));
+        assert!(!budget_crossed(40.0, 1500, Some(2000)));
+    }
+    #[test]
+    fn budget_alert_fires_again_only_after_a_raised_limit_is_crossed() {
+        assert!(!budget_crossed(30.0, 3000, Some(2000)));
+        assert!(!budget_crossed(25.0, 3000, Some(2000)));
+        assert!(budget_crossed(30.25, 3000, Some(2000)));
+    }
+}

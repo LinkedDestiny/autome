@@ -1947,6 +1947,31 @@ impl Store {
         Ok(())
     }
 
+    /// The alert and its deduplication/notification events commit together.
+    pub fn raise_budget_alert(
+        &self,
+        project_id: &str,
+        task_id: &str,
+        detail: &str,
+        usd_total: f64,
+        limit_cents: u64,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id = self.raise_alert(project_id, "budget_exceeded", Some(task_id), detail)?;
+        self.append_event("task.budget_exceeded", task_id, serde_json::json!({
+            "alert_id": id, "usd_total": usd_total, "limit_usd": limit_cents as f64 / 100.0, "limit_cents": limit_cents
+        }))?;
+        self.append_event(
+            "project.alert",
+            project_id,
+            serde_json::json!({
+                "alert_id": id, "kind": "budget_exceeded", "task_id": task_id
+            }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn raise_alert(
         &self,
         project_id: &str,
@@ -2347,6 +2372,49 @@ mod tests {
     }
 
     // ---- projects --------------------------------------------------------
+
+    #[test]
+    fn budget_alert_record_is_all_or_nothing() {
+        for failure in ["none", "missing_events", "second_event"] {
+            let s = store();
+            s.insert_project(&project("p", "/p")).unwrap();
+            s.insert_task(&task("T-1", "p", "t")).unwrap();
+            if failure == "missing_events" {
+                s.conn.execute_batch("DROP TABLE events").unwrap();
+            } else if failure == "second_event" {
+                s.conn.execute_batch("CREATE TRIGGER fail_alert BEFORE INSERT ON events WHEN NEW.kind = 'project.alert' BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+            }
+            let result = s.raise_budget_alert("p", "T-1", "detail", 0.5, 40);
+            if failure == "none" {
+                result.unwrap();
+                let alerts = s.open_alerts().unwrap();
+                assert_eq!(alerts.len(), 1);
+                assert_eq!(s.count_events("T-1", "task.budget_exceeded").unwrap(), 1);
+                assert_eq!(s.count_events("p", "project.alert").unwrap(), 1);
+                let event = s
+                    .last_event("T-1", "task.budget_exceeded")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(event["alert_id"], alerts[0].id);
+                assert_eq!(event["limit_cents"], 40);
+                assert_eq!(event["limit_usd"], 0.4);
+                assert_eq!(event["usd_total"], 0.5);
+                s.dismiss_alert(&alerts[0].id).unwrap();
+                assert!(!autome_domain::metrics::budget_crossed(
+                    1.0,
+                    40,
+                    event["limit_cents"].as_u64()
+                ));
+            } else {
+                assert!(result.is_err());
+                assert!(s.open_alerts().unwrap().is_empty());
+                if failure == "second_event" {
+                    assert_eq!(s.count_events("T-1", "task.budget_exceeded").unwrap(), 0);
+                    assert_eq!(s.count_events("p", "project.alert").unwrap(), 0);
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_project_round_trips() {

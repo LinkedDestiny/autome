@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/25
-current-milestone: M-03
+implementation-round: 6/25
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-04 超限告警与读者文案；M-05 门禁前须先修 end_to_end 中 bug_loop_task_get_reports_the_fix_round_for_bugs_only 的键集合基线（见 Backlog B-07）
+next-action: 独立审计 M-04；通过后推进 M-05 CLI 费用展示与全量门禁，并修正 B-07 键集合基线
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -300,7 +300,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 | M-01 | 已完成 | 任务费用纯聚合与 task.get.cost | 0 | |
 | M-02 | 已完成 | 项目与看板费用字段 | 0 | |
 | M-03 | 已完成 | [budget] 配置读写 | 0 | |
-| M-04 | 开放 | 超限告警与读者文案 | 0 | |
+| M-04 | 待审 | 超限告警与读者文案 | 0 | |
 | M-05 | 开放 | CLI 费用展示与全量门禁 | 0 | |
 
 ## 里程碑说明
@@ -318,6 +318,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r5-audit.md · 通过 · 审计 #4
 - **M-04** 覆盖验收 3、G3 告警部分、约束 3。前置 M-01、M-03。结果：`budget_crossed`（带浮点容差）；`check_budget` 挂在回收后；
   `store.raise_budget_alert`（一次事务写警报与两条事件）；CLI `event_line` 两处文案；Web 通知器标题。
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-04-r6-impl.md · 待审 · 实现 #6
 - **M-05** 覆盖验收 4、5，G2。前置 M-02、M-04。结果：`render::usd` / `cost_cell`；`status <任务>` 费用行、
   `ls` 费用列与脚注、`status` 运行中行费用；`USAGE` 末尾说明配置节的那句加上 `[budget]`。
 
@@ -374,11 +375,11 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 ### M-04 验收契约
 
 - 验收命令：`cargo test -p autome-domain --lib budget_alert_ && cargo test -p automed --lib budget_alert_ && cargo test -p automed --test end_to_end budget_alert_ && cargo test -p autome-cli budget_alert_ && npm test --prefix apps/web -- test/notifier-rules.test.ts -t 预算告警`
-- 预期：共 8 个用例通过（基线 0，新增 8）。autome-domain 3 个：
+- 预期：共 9 个用例通过（基线 0，新增 9）。autome-domain 3 个：
   `budget_alert_requires_strictly_more_than_the_limit`（2000 美分，20.0 → 假，20.25 → 真；7 美分对 0.07 → 假、0.071 → 真；30 美分对 0.10 + 0.20 → 假）、
   `budget_alert_does_not_repeat_for_the_same_or_a_lower_limit`、
   `budget_alert_fires_again_only_after_a_raised_limit_is_crossed`（覆盖方案 §4.1 表的后五行）；
-  automed lib（`store.rs` 测试模块）1 个：`budget_alert_record_is_all_or_nothing`（正常调用 `raise_budget_alert` 后
+  automed lib 共 2 个：scheduler 的 `budget_alert_config_read_failure_preserves_task_and_alerts` 验证非法配置及读盘失败不更改任务状态、警报和事件；store 的`budget_alert_record_is_all_or_nothing`（正常调用 `raise_budget_alert` 后
   `open_alerts()` 有 1 条、`task.budget_exceeded` 与 `project.alert` 事件各 1 条；另开一个账本把 `events` 表删掉，
   调用返回错误，`open_alerts()` 为空）；
   end_to_end 2 个：`budget_alert_fires_once_and_the_task_keeps_going`（`configure("[budget]\nper_task_usd = 0.4")`，

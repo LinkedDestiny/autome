@@ -28,6 +28,6 @@ export function renderReason(reason: Record<string, unknown> = {}) {
 }
 export function renderTitle(rule: Rule, event: LedgerEvent, branch = 'main') {
   const payload = event.payload as EventPayload;
-  const values: Record<string, string> = { task: event.subject, reason: renderReason(payload.state?.reason), alert: payload.kind === 'main_gate_failed' ? `${branch} 门禁失败` : `项目告警：${payload.kind}` };
+  const values: Record<string, string> = { task: event.subject, reason: renderReason(payload.state?.reason), alert: payload.kind === 'budget_exceeded' ? `${payload.task_id} 费用超出预算` : payload.kind === 'main_gate_failed' ? `${branch} 门禁失败` : `项目告警：${payload.kind}` };
   return rule.title.replace(/\{(task|reason|alert)\}/g, (_, key: string) => values[key]);
 }

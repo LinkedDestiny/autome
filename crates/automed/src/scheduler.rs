@@ -273,6 +273,10 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         return Ok(true);
     }
 
+    if let Err(error) = check_budget(ctx, &project, &task) {
+        tracing::warn!(task_id = %task.id, %error, "预算告警检查失败，任务照常继续");
+    }
+
     // A retro run from the failure panel is not part of the Loop. The task is
     // already terminal; a valid retro leaves it there. The transition table would
     // rightly reject a `SessionEnded` against a finished task. Handling it
@@ -914,6 +918,35 @@ fn design_changed_outside_milestones(
 /// Best-effort on purpose: a session whose `.jsonl` is missing or truncated
 /// still has to be reaped and its task still has to advance. A failure here
 /// loses a row in a table; making it fatal would lose the task.
+fn check_budget(ctx: &Ctx, project: &Project, task: &TaskRecord) -> Result<()> {
+    use autome_domain::metrics::{CostSummary, budget_crossed};
+    let Some(budget) = config_io::load_project(Path::new(&project.path))?.budget else {
+        return Ok(());
+    };
+    let cost = CostSummary::of(&ctx.store.list_sessions(&task.id)?);
+    let last = ctx
+        .store
+        .last_event(&task.id, "task.budget_exceeded")?
+        .and_then(|p| p["limit_cents"].as_u64());
+    if budget_crossed(cost.usd_total, budget.per_task_cents, last) {
+        let detail = format!(
+            "任务 {} 累计费用 ${:.2}，超过本项目单任务预算 ${:.2}（.autome/config.toml [budget] per_task_usd）。任务照常继续；要停下用 autome stop {}。",
+            task.id,
+            cost.usd_total,
+            budget.per_task_cents as f64 / 100.0,
+            task.id
+        );
+        ctx.store.raise_budget_alert(
+            &project.id,
+            &task.id,
+            &detail,
+            cost.usd_total,
+            budget.per_task_cents,
+        )?;
+    }
+    Ok(())
+}
+
 fn record_usage(ctx: &mut Ctx, s: &Session, project: &Project, task: &TaskRecord, ended_at: &str) {
     // The session's own output lives beside the project, not in the task's
     // checkout — one directory per task under `.autome/output/`, which is
@@ -4703,6 +4736,28 @@ mod tests {
     /// A real repository, a real store, and a fake CLI that writes whatever
     /// design document the test wants. This is as close to the production path
     /// as a unit test can get without a terminal.
+    #[test]
+    fn budget_alert_config_read_failure_preserves_task_and_alerts() {
+        let mut w = World::new("budget-read-failure");
+        let task = w.add_task("T-1", "budget");
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let path = w.repo.join(".autome/config.toml");
+        std::fs::write(&path, "[budget]\nper_task_usd = false\n").unwrap();
+        assert!(check_budget(&w.ctx, &project, &task).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(check_budget(&w.ctx, &project, &task).is_err());
+        assert_eq!(w.ctx.store.get_task(&task.id).unwrap().state, task.state);
+        assert!(w.ctx.store.open_alerts().unwrap().is_empty());
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&task.id, "task.budget_exceeded")
+                .unwrap(),
+            0
+        );
+    }
+
     struct World {
         root: PathBuf,
         repo: PathBuf,

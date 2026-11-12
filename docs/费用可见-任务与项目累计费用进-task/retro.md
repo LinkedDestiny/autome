@@ -9,3 +9,4 @@
 审计 #3 | M-03 | 无待审（未实现，表未改） | docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r4-audit.md | 调度错位：需 M-03 实现轮
 实现 #5 | M-03 | 待审 | docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r5-impl.md | 无
 审计 #4 | M-03 | 通过 | docs/费用可见-任务与项目累计费用进-task/evidence/M-03-r5-audit.md | 无
+实现 #6 | M-04 | 待审 | docs/费用可见-任务与项目累计费用进-task/evidence/M-04-r6-impl.md | 无

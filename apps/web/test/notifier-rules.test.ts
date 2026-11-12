@@ -56,3 +56,9 @@ test('进入：124/145/150 两次进入，深相等的连续状态只算一次',
   try { await notifier.pull(); expect(store.list().map(n => n.event_seq)).toEqual([150, 124]); }
   finally { notifier.close(); store.close(); rmSync(home, { recursive: true, force: true }); }
 });
+
+test('预算告警标题', () => {
+  const event = { seq: 1, kind: 'project.alert', subject: 'p', payload: { kind: 'budget_exceeded', task_id: 'T-9' } };
+  expect(renderTitle(matchEvent(event)!, event)).toBe('T-9 费用超出预算');
+  expect(matchEvent({ ...event, kind: 'task.budget_exceeded' })).toBeUndefined();
+});
