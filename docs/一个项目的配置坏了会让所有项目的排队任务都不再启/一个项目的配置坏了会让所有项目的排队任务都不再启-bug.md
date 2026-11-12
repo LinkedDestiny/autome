@@ -1,7 +1,7 @@
 # 单项目配置解析失败阻断其它项目补位
 
 status: 已定位
-fix-round: 3/3
+fix-round: 4/4
 复现命令: cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture
 根因: fill_slots 在逐项目循环中用 resolve_config(ctx, &project)? 读取上限，单项目配置错误提前返回整个函数，tick 仅记录错误而不继续处理后续项目。
 复核: 待复核
@@ -41,6 +41,14 @@ repos: crates/automed
 
 ## 修复说明
 
+第 4/4 轮复查：当前起点已包含 `9b4e081` 对定位轮测试的纯格式调整，本轮未修改产品代码、回归测试或门禁配置，保留既有项目级配置错误隔离实现。原复现命令通过（1 passed、0 failed），配置门禁 `sh scripts/ci-local.sh` 已完整执行，退出码 1，用时 155 秒。
+
+Format、Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 均通过；此前 Format 阻塞已消除。Web test 仍失败，日志包含 `listen EPERM: operation not permitted 127.0.0.1` 与 `EMFILE: too many open files, watch`，共 11 个失败用例。当前受限环境的本地监听及文件监视错误不能通过修改调度器解决，本轮未绕过或弱化检查。完整门禁未通过，需由具备相应运行权限的宿主复验。
+
+本轮仅更新状态与验证记录，`git diff --check` 通过。原复现日志：`.autome/output/fix-round-4-repro.log`；完整门禁日志：`.autome/output/fix-round-4-gate.log`，均不进入提交。
+
+以下保留第 3/3 轮记录：
+
 第 3/3 轮复查：保留已有项目级配置错误隔离实现。重新执行宿主相同组合命令：`( cd crates/automed && cargo test --offline --lib scheduler::tests::tick_isolates_invalid_project_config_and_still_fills_other_projects -- --exact --nocapture ) && ( sh scripts/ci-local.sh )`。原复现测试通过；完整门禁退出码 1，用时 453 秒。
 
 Clippy、Test、End to end、Adapter flags、Desktop、Contract、Web lint、Web typecheck、Web build 通过。Format 仍失败：5 处 rustfmt 换行差异全部位于定位轮回归测试。用户本轮再次明确禁止修改回归测试，已询问是否允许仅格式调整，截至本轮记录未收到例外许可，因此没有改动测试或绕过门禁。Web test 为 4 个文件失败、11 个用例失败、271 个通过、19 个跳过，日志包含 `listen EPERM: operation not permitted 127.0.0.1` 和 `EMFILE: too many open files, watch`；受限环境结果不等同于宿主结果。
@@ -74,4 +82,4 @@ Format 再次失败，全部差异位于定位轮回归测试，均为 rustfmt �
 
 ## 复核意见
 
-待独立复核。第 3/3 轮原复现命令及完整 Rust Test 通过；项目门禁仍受 Format 与 Web test 阻塞，详见修复说明。
+待独立复核。第 4/4 轮原复现命令及 Rust Test 通过，Format 阻塞已消除；项目门禁仍受 Web test 环境错误阻塞，详见修复说明。
