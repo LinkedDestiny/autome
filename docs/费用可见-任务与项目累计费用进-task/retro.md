@@ -19,3 +19,4 @@
 复盘 #2 | 无 | 写 6 条教训（L-01..L-06，新增 L-05 门禁队列用例依赖 10 秒墙钟、L-06 审计未回应实现点名的失败） | docs/费用可见-任务与项目累计费用进-task/lessons.md | 无
 实现 #9 | M-05 | rebase 完成，保留审计关闭状态 | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r9-impl.md | Desktop SIGABRT；Web EPERM/EMFILE；H-01–H-03 未取证
 审计 #8 | 无 | 通过（无待审，无变更） | docs/费用可见-任务与项目累计费用进-task/evidence/M-05-r9-audit.md | 无
+复盘 #3 | 无 | 写 7 条教训（L-01..L-07，新增 L-07 变基后审计以「无新改动」跳过复验；L-02、L-05、L-06 补本次复现） | docs/费用可见-任务与项目累计费用进-task/lessons.md | 无
