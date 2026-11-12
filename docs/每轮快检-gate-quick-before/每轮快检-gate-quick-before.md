@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 1/25
-current-milestone: M-01
+current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-01；通过后推进 M-02 宿主快检执行、启动记录与结果沿用隔离
+next-action: 推进 M-02 宿主快检执行、启动记录与结果沿用隔离
 
 任务文件：`docs/每轮快检-gate-quick-before/每轮快检-gate-quick-before-task.md`
 
@@ -413,7 +413,7 @@ M-05 的实现轮在本 worktree 跑任务卡给的四段命令：先完整跑�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 待审 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
+| M-01 | 已完成 | quick 配置解析与需求状态机：实现轮结束进 Gate | 0 | |
 | M-02 | 开放 | 宿主在需求 Gate 上跑快检：种类、启动记录、沿用与熔断、e2e | 0 | |
 | M-03 | 开放 | Bug FixGate 跑复现命令加快检，结果不顶替 MergeGate | 0 | |
 | M-04 | 开放 | 会话文字与协议 v5：简报、快检句、失败注入、复核说明、金样 | 0 | |
