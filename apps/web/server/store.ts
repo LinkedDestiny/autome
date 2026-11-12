@@ -13,6 +13,10 @@ CREATE TABLE notifications (
 CREATE UNIQUE INDEX notifications_dedupe ON notifications (kind, ifnull(task_id, ''), event_seq);
 CREATE INDEX notifications_unread ON notifications (read_at, task_id);
 CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`, `
+ALTER TABLE notifications ADD COLUMN source TEXT NOT NULL DEFAULT 'event';
+CREATE TABLE notifier_task_state (task_id TEXT PRIMARY KEY, state TEXT NOT NULL, seq INTEGER NOT NULL);
+INSERT INTO event_cursor (name, seq) SELECT 'notifier_seed', seq FROM event_cursor WHERE name = 'notifier';
 `];
 
 function transaction<T>(db: DatabaseSync, action: () => T): T {
@@ -52,6 +56,8 @@ export type NotificationInput = {
 };
 export type Notification = NotificationInput & { id: string; created_at: string; read_at: string | null };
 type Cursor = { name: string; seq: number };
+type TaskState = { task_id: string; state: unknown; seq: number };
+type Backfill = { notifications: NotificationInput[]; taskStates: TaskState[] };
 
 export function openWebStore(home = resolveAutomeHome(process.env)) {
   const path = join(home, 'state', 'web.sqlite3');
@@ -67,6 +73,26 @@ export function openWebStore(home = resolveAutomeHome(process.env)) {
   const writeCursor = ({ name, seq }: Cursor) => {
     db.prepare('INSERT INTO event_cursor VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET seq=excluded.seq').run(name, seq);
   };
+  const writeTaskState = ({ task_id, state, seq }: TaskState) => {
+    db.prepare('INSERT INTO notifier_task_state VALUES (?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET state=excluded.state, seq=excluded.seq')
+      .run(task_id, JSON.stringify(state), seq);
+  };
+  const writeNotification = (notification: NotificationInput, source: 'event' | 'backfill'): Notification | undefined => {
+    const row: Notification = { ...notification, id: `ntf-${randomUUID()}`, created_at: new Date().toISOString(), read_at: null };
+    const result = db.prepare(`INSERT OR IGNORE INTO notifications
+      (id, kind, project_id, task_id, title, body, event_seq, created_at, read_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(row.id, row.kind, row.project_id, row.task_id, row.title, row.body, row.event_seq, row.created_at, row.read_at, source);
+    return result.changes ? row : undefined;
+  };
+  const writeBackfill = ({ notifications, taskStates }: Backfill): Notification[] => {
+    const rows: Notification[] = [];
+    for (const notification of notifications) {
+      const row = writeNotification(notification, 'backfill');
+      if (row) rows.push(row);
+    }
+    for (const state of taskStates) writeTaskState(state);
+    return rows;
+  };
   const readIds = (where: string, ids: string[] = []) => db.prepare(
     `UPDATE notifications SET read_at=? WHERE read_at IS NULL AND (${where}) RETURNING id`,
   ).all(new Date().toISOString(), ...ids).map(row => String(row.id));
@@ -76,28 +102,41 @@ export function openWebStore(home = resolveAutomeHome(process.env)) {
       const row = db.prepare('SELECT seq FROM event_cursor WHERE name=?').get(name);
       return row ? Number(row.seq) : undefined;
     },
-    commit({ cursor, notification }: { cursor: Cursor; notification?: NotificationInput }): Notification | undefined {
+    getTaskState(task_id: string): { state: unknown; seq: number } | undefined {
+      const row = db.prepare('SELECT state, seq FROM notifier_task_state WHERE task_id=?').get(task_id);
+      return row ? { state: JSON.parse(String(row.state)), seq: Number(row.seq) } : undefined;
+    },
+    commit({ cursor, notification, taskState }: { cursor: Cursor; notification?: NotificationInput; taskState?: TaskState }): Notification | undefined {
       return transaction(db, () => {
-        let inserted: Notification | undefined;
-        if (notification) {
-          const row: Notification = { ...notification, id: `ntf-${randomUUID()}`, created_at: new Date().toISOString(), read_at: null };
-          const result = db.prepare(`INSERT OR IGNORE INTO notifications
-            (id, kind, project_id, task_id, title, body, event_seq, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(row.id, row.kind, row.project_id, row.task_id, row.title, row.body, row.event_seq, row.created_at, row.read_at);
-          if (result.changes) inserted = row;
-        }
+        const inserted = notification ? writeNotification(notification, 'event') : undefined;
+        if (taskState) writeTaskState(taskState);
         writeCursor(cursor);
         return inserted;
       });
     },
-    resetLedger(name: string, latest: number) {
+    backfill({ cursor, notifications, taskStates }: Backfill & { cursor: Cursor }): Notification[] {
+      return transaction(db, () => {
+        const rows = writeBackfill({ notifications, taskStates });
+        writeCursor(cursor);
+        return rows;
+      });
+    },
+    seedTaskStates(taskStates: TaskState[]) {
       transaction(db, () => {
-        db.exec('UPDATE notifications SET event_seq=NULL');
+        for (const state of taskStates) writeTaskState(state);
+        db.exec("DELETE FROM event_cursor WHERE name='notifier_seed'");
+      });
+    },
+    resetLedger(name: string, latest: number, backfill?: Backfill): Notification[] {
+      return transaction(db, () => {
+        db.exec("UPDATE notifications SET event_seq=NULL; DELETE FROM notifier_task_state; DELETE FROM event_cursor WHERE name='notifier_seed'");
+        const rows = backfill ? writeBackfill(backfill) : [];
         writeCursor({ name, seq: latest });
+        return rows;
       });
     },
     list({ limit = 50 }: { limit?: number } = {}): Notification[] {
-      return db.prepare('SELECT * FROM notifications ORDER BY rowid DESC LIMIT ?').all(Math.min(200, Math.max(0, Math.trunc(limit)))) as Notification[];
+      return db.prepare('SELECT id, kind, project_id, task_id, title, body, event_seq, created_at, read_at FROM notifications ORDER BY rowid DESC LIMIT ?').all(Math.min(200, Math.max(0, Math.trunc(limit)))) as Notification[];
     },
     unreadCount: () => Number(db.prepare('SELECT count(*) AS count FROM notifications WHERE read_at IS NULL').get()!.count),
     markRead: (ids: string[]) => ids.length ? readIds(`id IN (${ids.map(() => '?').join(',')})`, ids) : [],
