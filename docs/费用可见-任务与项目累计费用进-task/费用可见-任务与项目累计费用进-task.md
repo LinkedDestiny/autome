@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/25
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 待独立审计；通过后下一实现轮推进 M-02 项目与看板费用字段及 3 个 cost_rollup_ 单测
+next-action: 宿主复跑 sh scripts/ci-local.sh，核对 Desktop 启动信号与 Web 失败详情；门禁通过后独立审计 M-01，不提前推进 M-02
 
 任务文件：`docs/费用可见-任务与项目累计费用进-task/费用可见-任务与项目累计费用进-task-task.md`
 
@@ -272,6 +272,9 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 的整对象做相等断言而因新增字段失败，只允许给期望值补上新字段，并在该轮证据文件逐条写明测试名与理由（约束 7）。
 改动任何现有断言的值、或删除断言，都不在允许之列。
 
+门禁诊断：`apps/desktop/test/dom.test.js` 的 real-DOM 用例在异常退出消息中补充信号与 spawn 错误，
+用于区分 Electron 启动中止和 DOM 断言失败；退出码、DOM 断言、超时与跳过条件不变。
+
 ## 风险与验证安排
 
 | 风险 | 落在哪 | 怎么验证 |
@@ -304,7 +307,7 @@ pub fn budget_crossed(usd_total: f64, limit_cents: u64, last_alerted_cents: Opti
 
 - **M-01** 覆盖验收 1、2，G1 的 `task.get` 部分。前置：无。结果：`CostSummary` 与 `SessionKind::cost_key`；
   `task.get.cost`；`running_totals` 注释。新增测试见契约。
-最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
+最新证据：docs/费用可见-任务与项目累计费用进-task/evidence/M-01-r2-impl.md · 费用验收通过，门禁受环境阻塞，保持待审 · 实现 #2
 
 - **M-02** 覆盖 G1 其余部分。前置 M-01。结果：`store.sessions_in_project`（子查询，非 JOIN）；`task_json` 的 `cost_usd` /
   `cost_sessions_without_cost`；`project.get` / `project.list` 的 `cost_usd_total` 与 `cost_sessions_without_cost`；
