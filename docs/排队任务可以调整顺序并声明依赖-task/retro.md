@@ -15,3 +15,4 @@
 审计 #5 | M-05 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r7-audit.md | 无
 
 实现 #8 | M-06 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-impl.md | 无
+审计 #6 | M-06 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-audit.md | 无
