@@ -10,3 +10,5 @@
 
 实现 #5 | M-04 | 开放，验收环境阻塞 | evidence/M-04-r5-impl.md | ps EPERM，收尾未取证
 审计 #4 | M-04 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-04-r5-audit.md | 无
+
+实现 #6 | M-05 | 开放 | evidence/M-05-r6-impl.md | HTTP/ps EPERM；真实状态矩阵待补强

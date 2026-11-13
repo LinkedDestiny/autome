@@ -15,11 +15,12 @@ export type TaskPayload = {
     milestones?: { id: string; state: string; title?: string }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
   sessions: TimelineSession[];
+  decisions?: { kind: string; item_id: string; consumed: boolean; disposition: string; text: string; ruling?: string; carried?: boolean }[];
   documents?: TaskDocument[];
   brief?: string | null;
   retry?: { attempts: number; not_before: string } | null;
