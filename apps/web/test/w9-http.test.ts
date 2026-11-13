@@ -11,9 +11,14 @@ async function setup() {
   const running = await startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome }); cleanups.push(running.close);
   const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('没有端口');
   const url = `http://127.0.0.1:${address.port}`;
-  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; body: { ok: boolean; payload?: unknown; error?: string } }>((resolve, reject) => {
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; body: string | { ok: boolean; payload?: unknown; error?: string } }>((resolve, reject) => {
     const req = request(url + path, { method: 'POST', headers: { Origin: url, 'Content-Type': 'application/json', ...headers } }, res => {
-      let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; }); res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(text) }));
+      let text = ''; res.setEncoding('utf8'); res.on('data', chunk => { text += chunk; }); res.on('end', () => {
+        try {
+          const isJson = res.headers['content-type']?.split(';')[0].trim() === 'application/json';
+          resolve({ status: res.statusCode!, body: isJson ? JSON.parse(text) : text });
+        } catch (error) { reject(error); }
+      });
     }); req.setTimeout(10000, () => req.destroy(new Error('请求超时'))); req.on('error', reject); req.end(JSON.stringify(body));
   });
   return { ...fixture, ...running, post };
@@ -33,6 +38,7 @@ test('confirm 坏头或外部路径均不注册', async () => {
 test('remove 坏头保留项目，合法头能够取消注册且文件仍在', async () => {
   const s = await setup(); s.repo('single');
   const added = await s.post('/api/write', { op: 'project.confirm', params: { path: '~/single' } }); expect(added.status).toBe(200);
+  if (typeof added.body === 'string') throw new Error('添加项目应返回 JSON');
   const project = (added.body.payload as { project: { id: string } }).project;
   const before = await s.gateway.core.call('project.list', {});
   for (const headers of [{ Host: 'evil.example' }, { Origin: 'http://evil.example' }] as Record<string, string>[]) expect((await s.post('/api/write', { op: 'project.remove', params: { project_id: project.id } }, headers)).status).toBe(403);
