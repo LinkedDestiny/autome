@@ -1,7 +1,7 @@
 # tick 会话收割错误缺少任务 ID
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli --test cli run_json_tick_error
 根因: scheduler::tick_locked 的会话收割错误分支只用 s.id 包装错误，遗漏已有的 s.task_id；CLI 原样输出该错误。
 复核: 待复核
@@ -36,8 +36,18 @@ fix-round: 0/3
 
 ## 修复说明
 
-本轮未修改产品代码。后续修复应在收割错误包装处补充任务 ID，保留会话 ID、原始原因和输出顺序；内核步骤格式保持不变，并按任务卡处理所属任务不存在时仅保留会话 ID 的回退。本轮未动态验证该极端回退分支。
+修复第 1/3 轮：仅修改 `scheduler::tick_locked` 的会话收割错误包装分支。查询所属任务成功时使用 `任务 ID 会话 ID: 原因`；查询失败时回退为 `会话 ID: 原因`，保留原始收割错误。内核步骤格式与错误输出顺序不变，CLI 两种输出继续使用同一报告。未修改定位轮回归测试。
+
+验证结果：
+
+- 修复前执行原复现命令，退出码 101，1 通过、1 失败，仍为收割错误前缀断言失败；日志 `.autome/output/fix-1-before.log`。
+- 修复后执行同一复现命令，退出码 0，2 通过、0 失败；日志 `.autome/output/fix-1-after.log`。
+- `cargo test --offline -p automed --test end_to_end a_session_that_finished_during_a_restart_is_consumed_on_recovery`：1 通过，覆盖重启后的已退出会话收割；日志 `.autome/output/fix-1-recovery.log`。
+- `cargo test --offline -p automed --test end_to_end a_tick_skips_while_another_driver_holds_the_ledger`：1 通过，覆盖 tick 驱动锁；日志 `.autome/output/fix-1-driver.log`。
+- `cargo fmt --all -- --check` 通过；日志 `.autome/output/fix-1-fmt.log`。
+
+未运行全量门禁 `sh scripts/ci-local.sh`，留给宿主合并前执行。所属任务不存在的回退与可读输出链路仅静态检查，未动态验证。
 
 ## 复核意见
 
-待独立复核。本轮提交的回归测试预期为红；修复轮应通过产品代码修改使其转绿，不删除或弱化回归断言。
+待独立复核。第 1/3 修复轮已通过产品代码修改使原回归转绿，回归测试保持不变。

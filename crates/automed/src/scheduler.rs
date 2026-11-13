@@ -185,7 +185,13 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
                 report.tasks_advanced.push(s.task_id.clone());
             }
             Ok(false) => {}
-            Err(e) => report.errors.push(format!("{}: {e}", s.id)),
+            Err(e) => {
+                let context = match ctx.store.get_task(&s.task_id) {
+                    Ok(task) => format!("{} {}", task.id, s.id),
+                    Err(_) => s.id.clone(),
+                };
+                report.errors.push(format!("{context}: {e}"));
+            }
         }
     }
 
