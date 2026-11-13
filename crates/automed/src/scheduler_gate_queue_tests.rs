@@ -880,15 +880,66 @@ fn user_action_slot_rerun_waits_for_capacity() {
     );
 }
 
-#[test]
-fn user_action_slot_merge_waits_for_capacity() {
-    user_action_slot_regression(
-        Trigger::Merge,
+// Ordinary merge runs core steps, so a busy implementation must not defer it.
+fn merge_with_session_capacity(parallel: u32) {
+    assert!(git_available(), "Git is required; this regression must not skip");
+    let mut w = World::new("merge-session-capacity");
+    w.set_parallel(parallel);
+    let task = w.add_task("T-target", "target");
+    w.write_design(
+        &task,
+        &design_doc("等你合并", &[("M-01", MilestoneState::Done)], ""),
+    );
+    let wt = w.with_worktree(&task);
+    git::commit_paths(&wt, &[&task.design_doc()], "ready to merge").unwrap();
+    let before = git::head_sha(&w.repo).unwrap();
+    w.set_state(
+        &task.id,
         TaskState::Active {
             node: Node::AwaitMerge,
         },
-        Node::Merging,
     );
+    w.add_task("T-busy", "busy");
+    let busy = TaskState::Active { node: Node::Implement };
+    w.set_state("T-busy", busy.clone());
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+
+    apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+    assert!(
+        !matches!(w.state(&task.id), TaskState::Requeued { .. }),
+        "ordinary merge must not wait for a session slot: {:?}",
+        w.state(&task.id)
+    );
+    if parallel == 1 {
+        assert_eq!(
+            w.ctx.store.slots_in_use(&w.project_id).unwrap(),
+            1,
+            "ordinary merge must not consume another session slot"
+        );
+    }
+    // Bound by core-node count, not wall-clock sleeps or another task exiting.
+    for _ in 0..4 {
+        let current = w.ctx.store.get_task(&task.id).unwrap();
+        if let TaskState::Active { node } = current.state {
+            assert!(node.is_core_step(), "unexpected session node: {node:?}");
+            run_core_step(&mut w.ctx, &current, node).unwrap();
+        }
+    }
+    assert_ne!(git::head_sha(&w.repo).unwrap(), before);
+    assert!(w.ctx.store.get_task(&task.id).unwrap().completed_at.is_some());
+    assert_eq!(w.state("T-busy"), busy);
+    assert!(w.ctx.store.list_sessions(&task.id).unwrap().is_empty());
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+}
+
+#[test]
+fn merge_does_not_wait_for_a_session_slot() {
+    merge_with_session_capacity(1);
+}
+
+#[test]
+fn merge_session_slot_free_capacity_control() {
+    merge_with_session_capacity(2);
 }
 
 #[test]
