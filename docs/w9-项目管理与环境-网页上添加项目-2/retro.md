@@ -19,3 +19,4 @@
 实现 #7 | M-05 | 开放（验收受阻） | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-05-r7-impl.md | HTTP 监听 EPERM；73 例中 66 通过、7 待复验
 审计 #6 | M-05 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-05-r7-audit.md | 无
 实现 #8 | M-06 | 开放 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-06-r8-impl.md | HTTP 监听 EPERM；106 例中 97 通过，另 12 例通过
+审计 #7 | M-06 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-06-r8-audit.md | 无
