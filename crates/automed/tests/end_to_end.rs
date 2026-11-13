@@ -2660,7 +2660,11 @@ fn rejecting_design_carries_pending_decisions_and_approval_starts_implementation
     let missing: Vec<_> = items
         .iter()
         .filter(|(id, text, disposition)| {
-            let verdict = if *disposition == "include" { "纳入" } else { "忽略" };
+            let verdict = if *disposition == "include" {
+                "纳入"
+            } else {
+                "忽略"
+            };
             !prompt.contains(&format!("{id} {text} → {verdict}"))
         })
         .map(|(id, _, _)| *id)
