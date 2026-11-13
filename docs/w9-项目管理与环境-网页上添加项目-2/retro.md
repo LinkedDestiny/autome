@@ -14,3 +14,4 @@
 实现 #5 | M-04 | 开放（验收受阻） | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-04-r5-impl.md | HTTP 监听 EPERM；44 例通过，6 例待宿主补验
 
 实现 #6 | M-04 | 快检修复，保持开放 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-04-r6-impl.md | 完整验收的 HTTP 监听证据待补
+审计 #5 | M-04 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-04-r6-audit.md | 无
