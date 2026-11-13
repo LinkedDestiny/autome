@@ -116,3 +116,10 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-notice { margin: 12px 0; padding: 12px 16px; background: var(--animal-bg-content); border-left: 3px solid var(--animal-primary); max-height: 180px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 .task-notice.is-error { border-color: var(--animal-error-active); }
 .task-notice p { margin: 4px 0; }
+
+.task-timeline { min-height: 0; overflow-y: auto; }
+.task-timeline ol { list-style: none; margin: 0; padding: 0; }
+.task-timeline li { padding: 12px 16px; border-bottom: 1px solid var(--animal-border); }
+.task-timeline h3 { margin: 0; font-size: 1rem; }
+.timeline-meta { overflow-wrap: anywhere; color: var(--animal-text-secondary); font-size: .85rem; }
+.timeline-step { color: var(--animal-text-secondary); }

@@ -9,7 +9,7 @@ import { loadTaskDetail } from '../components/task-detail-data.ts';
 import { useLoaderData, type LoaderFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
 import { bySubjectParam, liveShouldRevalidate } from '../lib/live-routes.ts';
-import { SessionLog } from '../components/session-log.tsx';
+import { TaskTimeline } from '../components/task-timeline.tsx';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
   return loadTaskDetail(context.get(servicesContext), params.id!, new URL(request.url));
@@ -24,6 +24,6 @@ export default function TaskPage() {
     <TaskHeader view={headerView(data, context)} />
     <TaskStage view={stageBarView(data, history?.events ?? [], settings)} />
     <TaskNotice view={noticeView(data, context)} />
-    {data.sessions.map(session => <SessionLog key={session.id} session={session} />)}
+    <TaskTimeline sessions={data.sessions} events={history?.events ?? []} now={context.now} truncated={history?.truncated} error={history && 'error' in history ? history.error : undefined} />
   </> : <p>{error}</p>}</div>;
 }

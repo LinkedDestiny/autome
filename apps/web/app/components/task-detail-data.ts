@@ -1,5 +1,5 @@
 import type { WebServices } from '../load-context.ts';
-import type { LogSession } from './session-log.tsx';
+import type { TimelineSession } from './task-timeline-model.ts';
 import type { TaskEvent } from '../../server/task-events.ts';
 import { DOC_LIMIT_BYTES, pickDocument, type TaskDocument } from '../../server/task-docs.ts';
 export type TaskPayload = {
@@ -18,7 +18,7 @@ export type TaskPayload = {
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
-  sessions: LogSession[];
+  sessions: TimelineSession[];
   documents?: TaskDocument[];
   brief?: string | null;
   retry?: { attempts: number; not_before: string } | null;
