@@ -12,3 +12,4 @@
 实现 #7 | M-05（集成复验） | 待审 | docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r7-impl.md | 无
 审计 #6 | M-05（集成复验） | 通过 | docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r7-audit.md | 无
 实现 #8 | M-05 | 待审 | docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r8-impl.md | 无
+审计 #7 | M-05（集成复验） | 通过 | docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r8-audit.md | 无
