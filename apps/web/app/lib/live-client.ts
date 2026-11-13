@@ -13,6 +13,11 @@ export function publishLiveMessage(type: string, message: LiveMessage) {
   }
 }
 
+export type LiveSender = (message: LiveMessage) => boolean;
+let sender: LiveSender | undefined;
+export function setLiveSender(value: LiveSender | undefined) { sender = value; }
+export function sendLiveMessage(message: LiveMessage) { return sender?.(message) ?? false; }
+
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting';
 export type LiveSocket = Pick<WebSocket, 'send' | 'close' | 'onmessage' | 'onclose' | 'onerror'>;
 export const reconnectDelay = (attempt: number) => Math.min(500 * 2 ** attempt, 10000);
@@ -28,6 +33,7 @@ export function createLiveClient(options: {
 }) {
   let socket: LiveSocket;
   let stopped = false;
+  let ready = false;
   let connectedBefore = false;
   let lastSeq: number | null = null;
   let attempt = 0;
@@ -41,9 +47,10 @@ export function createLiveClient(options: {
   }
   function connect() {
     if (stopped) return;
+    ready = false;
     try { socket = options.createSocket(options.url); } catch { reconnect(); return; }
     const current = socket;
-    current.onclose = () => { if (current === socket) reconnect(); };
+    current.onclose = () => { if (current === socket) { ready = false; reconnect(); } };
     current.onerror = () => current.close();
     current.onmessage = event => {
       if (stopped || current !== socket) return;
@@ -52,6 +59,7 @@ export function createLiveClient(options: {
       if (!message || typeof message !== 'object' || Array.isArray(message) || typeof message.type !== 'string') return;
       switch (message.type) {
         case 'hello':
+          ready = true;
           if (lastSeq !== null) current.send(JSON.stringify({ type: 'resume', after: lastSeq }));
           else {
             lastSeq = message.seq;
@@ -87,8 +95,12 @@ export function createLiveClient(options: {
   }
   options.onConnection('connecting');
   connect();
-  return { stop() {
+  return { send(message: LiveMessage): boolean {
+    if (stopped || !ready) return false;
+    try { socket.send(JSON.stringify(message)); return true; } catch { return false; }
+  }, stop() {
     stopped = true;
+    ready = false;
     clearTimeout(retry);
     clearTimeout(flush);
     batch = [];

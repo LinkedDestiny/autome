@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useRevalidator } from 'react-router';
 import type { CoreMessage } from '../../server/eventbus-protocol.ts';
-import { createLiveClient, publishLiveMessage, type ConnectionState } from './live-client.ts';
+import { createLiveClient, publishLiveMessage, setLiveSender, type ConnectionState } from './live-client.ts';
 import { revalidateAll, revalidateForEvents } from './live-routes.ts';
 
 export function useLiveEvents() {
@@ -21,7 +21,8 @@ export function useLiveEvents() {
       onEvents: events => { void revalidateForEvents(events, () => revalidate.current()); },
       onReload: () => { void revalidateAll(() => revalidate.current()); },
     });
-    return () => client.stop();
+    setLiveSender(client.send);
+    return () => { setLiveSender(undefined); client.stop(); };
   }, []);
   return { connection, core };
 }
