@@ -102,3 +102,69 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .session-log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .session-log-text { font-family: ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; overflow-anchor: none; padding: 16px; background: var(--animal-bg-input); border-radius: var(--animal-radius-sm); }
 .session-log-status { color: var(--animal-text-muted); font-size: 14px; }
+
+.task-detail-header h1 { margin: 12px 0; color: var(--animal-text); font-size: 24px; overflow-wrap: anywhere; }
+.task-detail-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; font-size: 14px; overflow-wrap: anywhere; }
+.task-detail-meta a { text-decoration: underline; }
+.task-stage { padding: 16px 0; border-bottom: 1px solid var(--animal-border-light); }
+.task-stage-list, .task-milestones { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 12px; list-style: none; }
+.task-stage-list li { padding: 6px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
+.task-stage-list [aria-current="step"], .task-milestones .is-current { color: var(--animal-text); background: var(--animal-primary); font-weight: 800; }
+.task-stage-mark { color: var(--animal-text-body); }
+.task-milestones { margin: 12px 0 0; font-size: 13px; }
+.task-milestones li { padding: 4px 8px; border-radius: var(--animal-radius-sm); }
+.task-notice { margin: 12px 0; padding: 12px 16px; background: var(--animal-bg-content); border-left: 3px solid var(--animal-primary); max-height: 180px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-notice.is-error { border-color: var(--animal-error-active); }
+.task-notice p { margin: 4px 0; }
+
+.task-timeline { min-height: 0; overflow-y: auto; }
+.task-timeline ol { list-style: none; margin: 0; padding: 0; }
+.task-timeline li { padding: 12px 16px; border-bottom: 1px solid var(--animal-border); }
+.task-timeline h3 { margin: 0; font-size: 1rem; }
+.timeline-meta { overflow-wrap: anywhere; color: var(--animal-text-secondary); font-size: .85rem; }
+.timeline-step { color: var(--animal-text-secondary); }
+
+.task-docs { min-height: 0; min-width: 0; }
+.task-docs nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.task-docs nav a { display: inline-block; padding: 8px 12px; border-radius: var(--animal-radius-sm); }
+.task-docs nav [aria-current="page"], .task-docs .is-current { background: var(--animal-primary-bg); font-weight: 800; }
+.task-docs :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 2px; }
+.task-docs summary { cursor: pointer; padding: 8px; }
+.task-docs-body { overflow: auto; max-height: 60vh; padding: 16px; overflow-wrap: anywhere; }
+.task-docs-body table { border-collapse: collapse; width: 100%; }
+.task-docs-body th, .task-docs-body td { border: 1px solid var(--animal-border-light); padding: 8px 12px; text-align: left; }
+.task-docs-body pre { overflow-x: auto; padding: 16px; background: var(--animal-bg-input); }
+.task-docs-body blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid var(--animal-border); }
+.task-docs-body a { text-decoration: underline; }
+
+.task-ops { flex-shrink: 0; max-height: 16rem; overflow-y: auto; padding: 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius); }
+.task-ops-list { display: flex; flex-wrap: wrap; align-items: start; gap: 12px; }
+.task-ops fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.task-ops label { display: flex; flex-direction: column; gap: 4px; }
+.task-ops textarea { max-width: 100%; min-height: 5rem; }
+.task-ops summary { cursor: pointer; }
+
+.task-page { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
+.task-detail-header { flex-shrink: 0; max-height: 18%; overflow-y: auto; }
+.task-page > .task-stage { flex-shrink: 0; max-height: 24%; overflow-y: auto; padding: 8px 0; }
+.task-controls { flex-shrink: 0; max-height: 24%; min-height: 0; overflow-y: auto; background: var(--animal-bg-content); border-radius: var(--animal-radius); }
+.task-detail-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; overflow: hidden; }
+.task-detail-body > .task-timeline { background: var(--animal-bg-content); border-radius: var(--animal-radius); min-width: 0; }
+.task-detail-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--animal-bg-content); border-radius: var(--animal-radius); }
+.task-detail-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; flex-shrink: 0; }
+.task-detail-tabs a { padding: 8px; border-radius: var(--animal-radius-sm); }
+.task-detail-tabs [aria-current="page"], .task-merge-progress [aria-current="step"] { background: var(--animal-primary-bg); font-weight: 800; }
+.task-detail-panel > .task-docs { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
+.task-docs h2 { margin: 0; padding: 0 12px; font-size: 1rem; }
+.task-docs nav { max-height: 30%; overflow-y: auto; flex-shrink: 0; }
+.task-docs-body { min-height: 0; overflow-y: auto; max-height: none; }
+.task-changes { min-height: 0; overflow-y: auto; padding: 16px; overflow-wrap: anywhere; }
+.task-decisions { min-height: 0; overflow-y: auto; padding: 16px; overflow-wrap: anywhere; }
+.task-decisions article { border-top: 1px solid var(--animal-border-light); padding: 12px 0; }
+.task-decisions fieldset { border: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.task-decisions label { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.task-decisions textarea { max-width: 100%; min-height: 5rem; }
+.task-merge-progress { display: flex; flex-wrap: wrap; gap: 12px; padding: 0; list-style: none; }
+.task-merge-progress li { padding: 8px; border-radius: var(--animal-radius-sm); }
+.task-merge-progress .is-complete { color: var(--animal-text-muted); }
+.task-delete-warning { border-left: 3px solid var(--animal-error-active); padding: 12px; font-weight: 800; }

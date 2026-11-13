@@ -1,0 +1,426 @@
+{
+  "available": true,
+  "blocked_by": null,
+  "branch": "autome/feat",
+  "commits": 20,
+  "files": [
+    {
+      "added": 127,
+      "deleted": 0,
+      "path": "docs/feat/brief/adjudicate-1.md"
+    },
+    {
+      "added": 247,
+      "deleted": 0,
+      "path": "docs/feat/brief/audit-1.md"
+    },
+    {
+      "added": 247,
+      "deleted": 0,
+      "path": "docs/feat/brief/audit-2.md"
+    },
+    {
+      "added": 239,
+      "deleted": 0,
+      "path": "docs/feat/brief/impl-1.md"
+    },
+    {
+      "added": 239,
+      "deleted": 0,
+      "path": "docs/feat/brief/impl-2.md"
+    },
+    {
+      "added": 221,
+      "deleted": 0,
+      "path": "docs/feat/brief/plan-1.md"
+    },
+    {
+      "added": 61,
+      "deleted": 0,
+      "path": "docs/feat/brief/retro-1.md"
+    },
+    {
+      "added": 116,
+      "deleted": 0,
+      "path": "docs/feat/brief/review-1.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r0-audit.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r0-impl.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r1-audit.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r1-impl.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r2-audit.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/evidence/M-01-r2-impl.md"
+    },
+    {
+      "added": 2,
+      "deleted": 0,
+      "path": "docs/feat/feat-card.md"
+    },
+    {
+      "added": 24,
+      "deleted": 0,
+      "path": "docs/feat/feat.md"
+    },
+    {
+      "added": 261,
+      "deleted": 0,
+      "path": "docs/feat/protocol/CHANGELOG.md"
+    },
+    {
+      "added": 48,
+      "deleted": 0,
+      "path": "docs/feat/protocol/README.md"
+    },
+    {
+      "added": 58,
+      "deleted": 0,
+      "path": "docs/feat/protocol/brief-map.toml"
+    },
+    {
+      "added": 53,
+      "deleted": 0,
+      "path": "docs/feat/protocol/bug-protocol.md"
+    },
+    {
+      "added": 37,
+      "deleted": 0,
+      "path": "docs/feat/protocol/contract.toml"
+    },
+    {
+      "added": 350,
+      "deleted": 0,
+      "path": "docs/feat/protocol/loop-protocol.md"
+    },
+    {
+      "added": 20,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/adjudicate.md"
+    },
+    {
+      "added": 35,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/audit.md"
+    },
+    {
+      "added": 17,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/fix-review.md"
+    },
+    {
+      "added": 15,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/fix.md"
+    },
+    {
+      "added": 28,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/impl.md"
+    },
+    {
+      "added": 48,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/intake.md"
+    },
+    {
+      "added": 12,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/locate.md"
+    },
+    {
+      "added": 14,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/onboarding.md"
+    },
+    {
+      "added": 28,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/plan.md"
+    },
+    {
+      "added": 43,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/retro.md"
+    },
+    {
+      "added": 16,
+      "deleted": 0,
+      "path": "docs/feat/protocol/prompts/review.md"
+    },
+    {
+      "added": 102,
+      "deleted": 0,
+      "path": "docs/feat/protocol/session-protocol.md"
+    },
+    {
+      "added": 9,
+      "deleted": 0,
+      "path": "docs/feat/retro.md"
+    }
+  ],
+  "into": "main",
+  "mergeable": true,
+  "pending_decisions": {
+    "included": 0,
+    "ruled": 0
+  },
+  "rebase_first": true,
+  "repos": [
+    {
+      "behind": true,
+      "blocked_by": null,
+      "branch": "autome/feat",
+      "commits": 20,
+      "files": [
+        {
+          "added": 127,
+          "deleted": 0,
+          "path": "docs/feat/brief/adjudicate-1.md"
+        },
+        {
+          "added": 247,
+          "deleted": 0,
+          "path": "docs/feat/brief/audit-1.md"
+        },
+        {
+          "added": 247,
+          "deleted": 0,
+          "path": "docs/feat/brief/audit-2.md"
+        },
+        {
+          "added": 239,
+          "deleted": 0,
+          "path": "docs/feat/brief/impl-1.md"
+        },
+        {
+          "added": 239,
+          "deleted": 0,
+          "path": "docs/feat/brief/impl-2.md"
+        },
+        {
+          "added": 221,
+          "deleted": 0,
+          "path": "docs/feat/brief/plan-1.md"
+        },
+        {
+          "added": 61,
+          "deleted": 0,
+          "path": "docs/feat/brief/retro-1.md"
+        },
+        {
+          "added": 116,
+          "deleted": 0,
+          "path": "docs/feat/brief/review-1.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r0-audit.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r0-impl.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r1-audit.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r1-impl.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r2-audit.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/evidence/M-01-r2-impl.md"
+        },
+        {
+          "added": 2,
+          "deleted": 0,
+          "path": "docs/feat/feat-card.md"
+        },
+        {
+          "added": 24,
+          "deleted": 0,
+          "path": "docs/feat/feat.md"
+        },
+        {
+          "added": 261,
+          "deleted": 0,
+          "path": "docs/feat/protocol/CHANGELOG.md"
+        },
+        {
+          "added": 48,
+          "deleted": 0,
+          "path": "docs/feat/protocol/README.md"
+        },
+        {
+          "added": 58,
+          "deleted": 0,
+          "path": "docs/feat/protocol/brief-map.toml"
+        },
+        {
+          "added": 53,
+          "deleted": 0,
+          "path": "docs/feat/protocol/bug-protocol.md"
+        },
+        {
+          "added": 37,
+          "deleted": 0,
+          "path": "docs/feat/protocol/contract.toml"
+        },
+        {
+          "added": 350,
+          "deleted": 0,
+          "path": "docs/feat/protocol/loop-protocol.md"
+        },
+        {
+          "added": 20,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/adjudicate.md"
+        },
+        {
+          "added": 35,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/audit.md"
+        },
+        {
+          "added": 17,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/fix-review.md"
+        },
+        {
+          "added": 15,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/fix.md"
+        },
+        {
+          "added": 28,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/impl.md"
+        },
+        {
+          "added": 48,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/intake.md"
+        },
+        {
+          "added": 12,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/locate.md"
+        },
+        {
+          "added": 14,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/onboarding.md"
+        },
+        {
+          "added": 28,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/plan.md"
+        },
+        {
+          "added": 43,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/retro.md"
+        },
+        {
+          "added": 16,
+          "deleted": 0,
+          "path": "docs/feat/protocol/prompts/review.md"
+        },
+        {
+          "added": 102,
+          "deleted": 0,
+          "path": "docs/feat/protocol/session-protocol.md"
+        },
+        {
+          "added": 9,
+          "deleted": 0,
+          "path": "docs/feat/retro.md"
+        }
+      ],
+      "into": "main",
+      "mergeable": true,
+      "merged": false,
+      "name": "",
+      "subjects": [
+        "bfd8fe4 session 9",
+        "8942002 chore(autome): T-1 retro 简报",
+        "36f7719 session 8",
+        "0ed0a36 chore(autome): T-1 audit 简报",
+        "e690327 session 7",
+        "235c127 chore(autome): T-1 impl 简报",
+        "ea806c6 session 6",
+        "59d6813 chore(autome): T-1 audit 简报",
+        "a9c1ca1 session 5",
+        "36ff34e chore(autome): T-1 impl 简报",
+        "bc05a09 session 4",
+        "24cbf0a chore(autome): T-1 adjudicate 简报",
+        "30af50f session 3",
+        "c051ce5 chore(autome): T-1 review 简报",
+        "46daed0 session 2",
+        "3a6577b chore(autome): T-1 plan 简报",
+        "60b71f0 session 1",
+        "9cc3231 chore(autome): T-1 固定协议 protocol/v7",
+        "f5ab737 chore(autome): T-1 inputs"
+      ],
+      "total_added": 2729,
+      "total_deleted": 0,
+      "unchanged": false
+    }
+  ],
+  "subjects": [
+    "bfd8fe4 session 9",
+    "8942002 chore(autome): T-1 retro 简报",
+    "36f7719 session 8",
+    "0ed0a36 chore(autome): T-1 audit 简报",
+    "e690327 session 7",
+    "235c127 chore(autome): T-1 impl 简报",
+    "ea806c6 session 6",
+    "59d6813 chore(autome): T-1 audit 简报",
+    "a9c1ca1 session 5",
+    "36ff34e chore(autome): T-1 impl 简报",
+    "bc05a09 session 4",
+    "24cbf0a chore(autome): T-1 adjudicate 简报",
+    "30af50f session 3",
+    "c051ce5 chore(autome): T-1 review 简报",
+    "46daed0 session 2",
+    "3a6577b chore(autome): T-1 plan 简报",
+    "60b71f0 session 1",
+    "9cc3231 chore(autome): T-1 固定协议 protocol/v7",
+    "f5ab737 chore(autome): T-1 inputs"
+  ],
+  "total_added": 2729,
+  "total_deleted": 0
+}

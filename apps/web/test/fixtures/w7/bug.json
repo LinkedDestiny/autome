@@ -1,0 +1,156 @@
+{
+  "brief": "# Bug card\n",
+  "cost": {
+    "by_role": {
+      "fix": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "fix_review": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "locate": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      }
+    },
+    "sessions": 3,
+    "sessions_without_cost": 3,
+    "usd_total": 0.0
+  },
+  "decisions": [],
+  "documents": [],
+  "gate": {
+    "command": "( sh regression.sh ) && ( sh /var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/gate.sh )",
+    "exit_code": 0,
+    "kind": "full",
+    "log": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/gates/T-2/merge_gate-c4944218005a.log",
+    "node": "merge_gate",
+    "ok": true,
+    "sha": "c4944218005a8ef32f13fea51c6f3af25fa50a15",
+    "tail": "out"
+  },
+  "gate_queue_position": null,
+  "next_role": null,
+  "pending_decisions": {
+    "included": 0,
+    "ruled": 0
+  },
+  "project": {
+    "default_branch": "main",
+    "id": "prj-b6b2ef67865449b0b265f56e6a34f89c",
+    "name": "repo"
+  },
+  "queue_position": null,
+  "retry": null,
+  "sessions": [
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:45Z",
+      "id": "ses-df09b304ebb241739b5c435002ed46a9",
+      "kind": {
+        "kind": "bug",
+        "step": "fix_review"
+      },
+      "label": "复核",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-2/ses-df09b304ebb241739b5c435002ed46a9.log",
+      "metrics": {
+        "duration_ms": 0
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "codex",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:45Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:44Z",
+      "id": "ses-9f8cf99f9241496eaf266b4e54f3406f",
+      "kind": {
+        "kind": "bug",
+        "step": "fix"
+      },
+      "label": "修复",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-2/ses-9f8cf99f9241496eaf266b4e54f3406f.log",
+      "metrics": null,
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:44Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:38Z",
+      "id": "ses-062853d0b7be45b194e16acb895f020f",
+      "kind": {
+        "kind": "bug",
+        "step": "locate"
+      },
+      "label": "定位",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-2/ses-062853d0b7be45b194e16acb895f020f.log",
+      "metrics": null,
+      "model": "",
+      "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:38Z"
+    }
+  ],
+  "so_far": {
+    "sessions_measured": 1,
+    "total_cost_usd": null,
+    "total_tokens": 0,
+    "total_turns": 0
+  },
+  "status_block": null,
+  "status_error": false,
+  "status_error_detail": null,
+  "task": {
+    "archived": false,
+    "branch": "autome/bugx",
+    "budget_n": 3,
+    "completed_at": null,
+    "cost_sessions_without_cost": 3,
+    "cost_usd": 0.0,
+    "created_at": "2026-11-13T11:53:38Z",
+    "doc_dir": "docs/bugx",
+    "fix_round": 1,
+    "id": "T-2",
+    "kind": "bug",
+    "merge_commit": null,
+    "metrics": null,
+    "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf",
+    "request": "bugx",
+    "slug": "bugx",
+    "state": {
+      "node": "await_merge",
+      "state": "active"
+    },
+    "title": "bugx"
+  },
+  "worktree": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/bugx"
+}

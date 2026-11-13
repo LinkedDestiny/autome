@@ -1,0 +1,23 @@
+import { request } from 'node:http';
+import { createServer as createProbe } from 'node:net';
+import { once } from 'node:events';
+import { afterAll,beforeAll,expect,it,vi } from 'vitest';
+import { createHttpServer } from '../server/http.ts';
+import { WRITE_OPS } from '../app/components/task-action.ts';
+import type { createGateway } from '../server/gateway.ts';
+import feature from './fixtures/w7/feature.json' with { type: 'json' };
+let http:Awaited<ReturnType<typeof createHttpServer>>|undefined;
+let origin:string;
+const write=vi.fn(async()=>({status:200,body:{ok:true,payload:{task:{id:'T-2'}}}}));
+const gateway={write,read:vi.fn(async({method}:{method:string})=>({status:200,body:{ok:true,payload:method==='task.get'?{...feature,task:{...feature.task,state:{state:'stopped',at:'design'},merge:{authorized:true}}}:method==='config.get'?{resolved:{roles:[]}}:method==='project.list'?{projects:[]}:{}}}))} as unknown as ReturnType<typeof createGateway>;
+const close=async()=>{if(http){await http.closeMiddleware();if(http.server.listening)await new Promise<void>((resolve,reject)=>http!.server.close(e=>e?reject(e):resolve()));http=undefined;}};
+beforeAll(async()=>{try{const probe=createProbe();probe.listen(0,'127.0.0.1');await once(probe,'listening');await new Promise<void>((resolve,reject)=>probe.close(e=>e?reject(e):resolve()));http=await createHttpServer({mode:'development',gateway});http.server.listen(0,'127.0.0.1');await once(http.server,'listening');const address=http.server.address();if(!address||typeof address==='string')throw Error('无端口');origin=`http://127.0.0.1:${address.port}`;}catch(error){await close();throw error;}},60_000);
+afterAll(close);
+const post=(path:string,intent:string,headers:Record<string,string>={})=>new Promise<number>((resolve,reject)=>{
+  const body=new URLSearchParams({intent,feedback:'意见',info:'补充',confirm:'yes',node:'rebase',extra_rounds:'1',kind:'backlog',item_id:'B-01',disposition:'include'}).toString();
+  const req=request(origin+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded','Content-Length':String(Buffer.byteLength(body)),...headers}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode!));});
+  req.setTimeout(10_000,()=>req.destroy(new Error('HTTP timeout')));req.on('error',reject);req.end(body);
+});
+it('两条 action 路径全部意图坏 Origin 拒绝且不调用网关',async()=>{write.mockClear();for(const path of ['/tasks/T-1','/tasks/T-1.data'])for(const op of Object.keys(WRITE_OPS))expect(await post(path,op,{Origin:'http://evil.example'})).toBe(403);expect(write).not.toHaveBeenCalled();});
+it('两条 action 路径全部意图坏 Host 拒绝且不调用网关',async()=>{write.mockClear();for(const path of ['/tasks/T-1','/tasks/T-1.data'])for(const op of Object.keys(WRITE_OPS))expect(await post(path,op,{Host:'evil.example'})).toBe(403);expect(write).not.toHaveBeenCalled();});
+it('合法请求通过实际路由 action 才写网关',async()=>{for(const path of ['/tasks/T-1','/tasks/T-1.data'])for(const [intent,op] of Object.entries(WRITE_OPS)){write.mockClear();expect(await post(path,intent)).toBe(200);expect(write).toHaveBeenCalledOnce();expect(write).toHaveBeenCalledWith(expect.objectContaining({op}));}});

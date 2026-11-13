@@ -41,8 +41,8 @@ export function SessionLogView({ session, state, open, onToggle, onAction, textR
   </details>;
 }
 
-export function SessionLog({ session }: { session: LogSession }) {
-  const [open, setOpen] = useState(false);
+export function SessionLog({ session, defaultOpen }: { session: LogSession; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
   const [update, setUpdate] = useState<LogUpdate>(() => ({ state: initialLogState(session.id) }));
   const controller = useRef<ReturnType<typeof createSessionLogController> | null>(null);
   const text = useRef<HTMLPreElement>(null);
