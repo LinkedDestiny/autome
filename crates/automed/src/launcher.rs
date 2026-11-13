@@ -899,7 +899,12 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         .prompt("intake")
         .ok_or_else(|| err("协议版本里没有 prompts/intake.md，无法启动任务整理轮"))?;
 
-    let inputs = render_inputs(spec.doc_dir, spec.attachments, spec.doc_refs);
+    let attachment_names = spec
+        .attachments
+        .iter()
+        .map(|path| bug_attachment_name(path))
+        .collect::<Vec<_>>();
+    let inputs = render_inputs(spec.doc_dir, &attachment_names, spec.doc_refs);
 
     if let Some(card_path) = spec.card_path {
         let parts = template
@@ -2071,13 +2076,14 @@ mod tests {
     fn the_intake_prompt_lists_attachments_and_doc_refs_when_present() {
         let tpl = templates();
         let mut s = spec(SessionKind::Intake, &[], None, &tpl);
-        let attachments = vec!["promo.csv".to_string()];
+        let attachments = vec!["/tmp/autome source/promo data.csv".to_string()];
         let refs = vec!["docs/notes.md".to_string()];
         s.attachments = &attachments;
         s.doc_refs = &refs;
         let p = build_prompt(&s).unwrap();
         assert!(
-            p.contains("docs/checkout-flow/attachments/promo.csv"),
+            p.lines()
+                .any(|line| line == "- docs/checkout-flow/attachments/promo data.csv"),
             "{p}"
         );
         assert!(p.contains("- docs/notes.md"), "{p}");
@@ -2167,17 +2173,32 @@ mod tests {
     }
 
     #[test]
-    fn the_intake_prompt_keeps_rendering_stored_attachment_values_verbatim() {
+    fn the_intake_prompt_resolves_absolute_attachments_to_task_copies() {
         let tpl = templates();
         let mut s = spec(SessionKind::Intake, &[], None, &tpl);
-        let attachments = ["/tmp/autome-src/promo.csv".into()];
+        let attachments = [
+            "/tmp/autome source/promo data.csv".into(),
+            "/tmp/autome-home/web/uploads/upload-123/screen shot.png".into(),
+        ];
         s.attachments = &attachments;
-        // B-05: preserve this existing defect; fixing intake requires separate authorization.
-        assert!(
-            build_prompt(&s)
-                .unwrap()
-                .contains("- docs/checkout-flow/attachments//tmp/autome-src/promo.csv")
-        );
+        // CLI canonicalizes --attach; the Web gateway resolves upload IDs to paths.
+        // Both intake branches must name the copies written by write_task_inputs.
+        for card_path in [None, Some("docs/checkout-flow/checkout-flow-card.md")] {
+            s.card_path = card_path;
+            let p = build_prompt(&s).unwrap();
+            let actual: Vec<_> = p
+                .lines()
+                .filter(|line| line.starts_with("- docs/checkout-flow/attachments/"))
+                .collect();
+            assert_eq!(
+                actual,
+                vec![
+                    "- docs/checkout-flow/attachments/promo data.csv",
+                    "- docs/checkout-flow/attachments/screen shot.png",
+                ],
+                "card_path={card_path:?}"
+            );
+        }
     }
 
     #[test]
