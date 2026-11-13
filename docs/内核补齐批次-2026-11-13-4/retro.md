@@ -39,3 +39,4 @@
 审计 #18 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r19-audit.md | 无；H-01 未确认
 复盘 #3 | 无 | 教训 6 条 | docs/内核补齐批次-2026-11-13-4/lessons.md | HEAD 6dfec533 上 automed --lib protocol:: 仍 8 败（D-1），门禁 cargo 无 --no-fail-fast 未暴露，合并前门禁会红；H-01 未确认
 实现 #20 | M-16 | 修复门禁失败，106 用例通过 | evidence/M-16-r20-impl.md | 宿主快检与合并门禁待重跑
+审计 #19 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r20-audit.md | 无；H-01 未确认
