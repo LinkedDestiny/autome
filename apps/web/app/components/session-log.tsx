@@ -6,7 +6,7 @@ export type LogSession = { id: string; label: string; round: number; running: bo
 export const SESSION_LOG_TEXT = {
   running: '正在运行', ended: '已结束', pause: '暂停滚动', jump: '跳到最新', unseen: '有新内容',
   earlier: '查看更早内容', top: '跳到开头', later: '查看后面内容', empty: '还没有日志输出',
-  loading: '正在加载日志', retry: '重新加载日志', paused: '已暂停滚动', following: '正在跟随日志',
+  loading: '正在加载日志', retry: '重新加载日志', paused: '自动滚动暂停中', following: '正在跟随日志',
   before: (bytes: number) => `前面还有约 ${Math.ceil(bytes / 1024)} KB 未显示`,
   after: (bytes: number) => `后面还有约 ${Math.ceil(bytes / 1024)} KB 未显示`,
 };

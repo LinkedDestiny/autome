@@ -7855,7 +7855,7 @@ fn main_check_reuse_runs_when_the_merge_commit_tree_differs() {
 }
 
 // Queue acceptance uses real sessions and jobs; release files are the only clock.
-fn queued_gate_world(tag: &str) -> World {
+fn queued_gate_world(tag: &str, timeout_minutes: u32) -> World {
     let w = World::new(tag);
     w.configure("[loop]\nparallel = 3\n");
     let script = w.root.join("queued-gate.sh");
@@ -7864,7 +7864,7 @@ fn queued_gate_world(tag: &str) -> World {
         w.root.display()
     )).unwrap();
     w.configure(&format!(
-        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = 1\n",
+        "[gate]\ncommand = \"sh {}\"\ntimeout_minutes = {timeout_minutes}\n",
         script.display()
     ));
     w
@@ -7965,7 +7965,7 @@ fn queue_assert_waiting(w: &mut World, id: &str, position: u64) {
 #[test]
 fn gate_queue_second_task_starts_its_gate_only_after_the_first_one_ends() {
     needs_git!();
-    let mut w = queued_gate_world("queue-fifo");
+    let mut w = queued_gate_world("queue-fifo", 30);
     let a = queue_task(&mut w, "queue first");
     let b = queue_task(&mut w, "queue second");
     queue_assert_waiting(&mut w, &b, 1);
@@ -8002,7 +8002,7 @@ fn gate_queue_second_task_starts_its_gate_only_after_the_first_one_ends() {
 #[test]
 fn gate_queue_bug_loop_repro_check_waits_without_spending_a_fix_round() {
     needs_git!();
-    let mut w = queued_gate_world("queue-bug");
+    let mut w = queued_gate_world("queue-bug", 30);
     let a = queue_task(&mut w, "queue regular");
     let slug = slug_for("queue bug");
     bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
@@ -8029,7 +8029,7 @@ fn gate_queue_bug_loop_repro_check_waits_without_spending_a_fix_round() {
 #[test]
 fn gate_queue_time_does_not_count_toward_the_gate_timeout() {
     needs_git!();
-    let mut w = queued_gate_world("queue-timeout");
+    let mut w = queued_gate_world("queue-timeout", 1);
     // A disk-backed test ledger lets us age B's actual queue event, not just
     // A's running clock. All scheduling still uses the production Store.
     let db = w.root.join("timeout-ledger.sqlite");
@@ -8099,8 +8099,8 @@ fn gate_queue_time_does_not_count_toward_the_gate_timeout() {
 #[test]
 fn gate_queue_counts_per_ledger_not_per_machine() {
     needs_git!();
-    let mut a = queued_gate_world("queue-ledger-a");
-    let mut b = queued_gate_world("queue-ledger-b");
+    let mut a = queued_gate_world("queue-ledger-a", 30);
+    let mut b = queued_gate_world("queue-ledger-b", 30);
     let x = queue_task(&mut a, "ledger first");
     let y = queue_task(&mut b, "ledger second");
     for (w, id) in [(&mut a, &x), (&mut b, &y)] {
@@ -8113,7 +8113,7 @@ fn gate_queue_counts_per_ledger_not_per_machine() {
 #[test]
 fn gate_queue_holds_a_setup_command_behind_another_tasks_gate() {
     needs_git!();
-    let mut w = queued_gate_world("queue-setup");
+    let mut w = queued_gate_world("queue-setup", 30);
     let a = queue_task(&mut w, "setup blocker");
     setup_fixture(&w, "setup waiter", "true");
     let b = create_task(&mut w, "setup waiter");
@@ -8131,8 +8131,23 @@ fn gate_queue_holds_a_setup_command_behind_another_tasks_gate() {
 #[test]
 fn gate_queue_order_survives_a_core_restart() {
     needs_git!();
-    let mut w = queued_gate_world("queue-restart");
+    let mut w = queued_gate_world("queue-restart", 30);
     let a = queue_task(&mut w, "restart first");
+    // Model a busy host spending over a minute preparing the other tasks.
+    // FIFO/recovery acceptance must still be controlled by release files.
+    let log = setup_events(&w, &a, "gate.started")[0].1["log"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        PathBuf::from(log).with_extension("started"),
+        (now - 61).to_string(),
+    )
+    .unwrap();
     let b = queue_task(&mut w, "restart second");
     let c = queue_task(&mut w, "restart third");
     queue_assert_waiting(&mut w, &b, 1);

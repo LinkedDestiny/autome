@@ -81,7 +81,7 @@ it('列表缺失、刷新失败、空正文均降级；无任务不跳转，项�
   showSystemNotification(notifier, true, message, [{ ...item, task_id: null }], targets);
   expect(notifier.show).toHaveBeenLastCalledWith(expect.objectContaining({ href: '/projects/p1' }));
   showSystemNotification(notifier, true, message, [item]);
-  expect(notifier.show).toHaveBeenLastCalledWith(expect.objectContaining({ href: null }));
+  expect(notifier.show).toHaveBeenLastCalledWith(expect.objectContaining({ href: '/tasks/T-3' }));
 });
 it('点击 focus；可用路由跳转，null 仅 focus', () => {
   const b = browser();

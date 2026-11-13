@@ -10,7 +10,7 @@ export async function loader({ context, params }: LoaderFunctionArgs): Promise<{
   if (!gateway) return { error: offline };
   const result = await gateway.read({ method: 'task.get', params: { task_id: params.id } });
   if (!result.body.ok) return { error: result.status === 503 || result.status === 504 ? offline
-    : result.status === 404 || result.body.code === 'not_found' ? `找不到任务 ${params.id}` : `读取任务失败：${result.body.error}` };
+    : result.status === 404 || result.body.code === 'not_found' ? `找不到任务 ${params.id}` : `无法读取任务：${result.body.error}` };
   return { data: result.body.payload as TaskData };
 }
 export const shouldRevalidate = liveShouldRevalidate(bySubjectParam(['task.', 'session.'], 'id'));

@@ -37,7 +37,7 @@ it('路由渲染标题 id 和每个会话，保持内核顺序，无阶段条和
 });
 it('离线、503/504 和 not_found/404 分支呈现中文', async () => {
   expect(render(await load(null))).toContain('内核离线，暂时拿不到任务');
-  for (const [status, code, expected] of [[503, '', '内核离线，暂时拿不到任务'], [504, '', '内核离线，暂时拿不到任务'], [400, 'not_found', '找不到任务'], [404, '', '找不到任务'], [500, '', '读取任务失败：失败']] as const) {
+  for (const [status, code, expected] of [[503, '', '内核离线，暂时拿不到任务'], [504, '', '内核离线，暂时拿不到任务'], [400, 'not_found', '找不到任务'], [404, '', '找不到任务'], [500, '', '无法读取任务：失败']] as const) {
     expect(render(await load({ read: vi.fn().mockResolvedValue({ status, body: { ok: false, code, error: '失败' } }), write: vi.fn() }))).toContain(expected);
   }
 });
