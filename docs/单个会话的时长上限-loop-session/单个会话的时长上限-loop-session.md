@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 2/15
-implementation-round: 5/20
+implementation-round: 6/20
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -169,6 +169,7 @@ TimedOut { limit_minutes: u32 },
 `pub fn terminate_group(pid: i32) -> Result<bool>`，`stop_session` 变成它的薄包装（签名与对 `pid <= 1` 的拒绝都不变，人叫停的调用方
 不动）。`terminate_group` 与今天同一组信号：对 `-pid` 发 SIGTERM；每 50 毫秒查一次 `kill(-pid, 0)`，组没了就返回 `true`；3 秒
 到了还在才 SIGKILL，再每 50 毫秒查、至多再等 2 秒；仍在则返回 `false`。信号顺序与 3 秒宽限不变，把「固定睡 3 秒」换成「轮询」，
+探测返回 EPERM 时保守视为组仍存在、继续有界轮询，只有 ESRCH 确认组不存在；实际发信号失败仍返回错误。
 人叫停也因此变快。wrapper 收到 TERM 后几十毫秒内写完 130 标记退出，所以一次超时通常只让持锁的 tick 多花不到 0.1 秒；最坏
 （进程忽略 TERM）5 秒。超时每个会话最多一次成功；`false` 的会话每个 tick 重试一轮信号，不会无声积累。
 `stop_running_session` 里的门禁清理（`gate::stop_all`、`discard_node`）**不**用于超时：任务没有停，只是这一轮重来。
@@ -378,7 +379,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
   - automed lib 5 个：config_io ④ 全局与项目都能读出；⑤ `save_global` 保留手写的 `session_minutes`；⑥ `save_project` 保留项目覆盖；
     dispatch ⑦ `config.validate` 对项目 `session_minutes = 1` 返回 `ok: false` 且违规 kind 为 `session_minutes_out_of_range`，
     缺省配置 `ok: true`；⑧ `config.set_loop` 写入 `session_minutes = 30` 后 `config.get` 读回 30，写 `4` 被拒绝且文件不变。
-最新证据：docs/单个会话的时长上限-loop-session/evidence/M-02-r2-audit.md · 通过 · 审计 #2
+最新证据：docs/单个会话的时长上限-loop-session/evidence/M-02-r6-impl.md · 门禁失败用例修复，相关子集通过 · 实现 #6
 
 - **M-02**（覆盖：R-2、A-3、C-1、C-3、C-4、C-7、开放问题 1、2、7、8、9。前置：M-01）。方案 §2、§3。`stop_session` 抽出 `terminate_group` 并改轮询；
   `read_outcome` / `read_bug_outcome` 加 `TimedOut` 文案；`set_session_pid`、终止确认与恢复路径；本里程碑结束时超时会话已经能经由

@@ -1299,6 +1299,11 @@ pub fn terminate_group(pid: i32) -> Result<bool> {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::ESRCH) {
                 Ok(false)
+            } else if error.raw_os_error() == Some(libc::EPERM) {
+                // A group that cannot be signalled still exists. In particular,
+                // orphaned children can briefly become inaccessible while being
+                // reaped after SIGKILL. Only ESRCH confirms termination.
+                Ok(true)
             } else {
                 Err(err(error.to_string()))
             }
