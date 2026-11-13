@@ -3,7 +3,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cargo test --offline -p automed --test end_to_end --test prompt_rendering --no-fail-fast regression_format_only -- --test-threads=1
 根因: 定位提示词缺少格式化检查要求，修复与复核提示词未明确格式化例外；File 的 Git tree 比较及旧 Section 的原文摘要比较拒绝纯格式化。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -78,3 +78,10 @@ fix-round: 2/3
 - 根因站得住：File 比 tree、旧 Section 比原文 SHA-256，格式化必然被拒；修复在不一致时从快照 head/path 取原文，核验原 tree/摘要与文件模式后再做 Rust token 比较，缺原提交或原文不匹配即拒绝。
 - 范围：仅 `.rs` 放宽，其它语言维持严格相等；token 化保留字面量、注释与标识符边界，并有负向单测。协议 v7 为 clarify，金样同步，旧协议不迁移。
 - 未运行全量门禁；`bug_regression_guard` 子集复验在超时后转后台，未取得结果，以修复轮日志（8/8）为参考，不影响结论。
+
+独立复核（修复第 2/3 轮）：通过。
+
+- 复现命令独立复跑：end_to_end 5/5、prompt_rendering 2/2 通过；旧用例 `every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task` 单跑通过。
+- 本轮差异（1d52319）仅把该旧用例的 `protocol/v6@` 预期改为 `protocol/v7@`，保留与 `current().0.to_wire()` 的精确比较及冻结检查；定位轮的回归测试未被删除、跳过或弱化。
+- 根因站得住：上一轮发布 v7 后漏同步版本前缀；改动范围最小，不涉及产品代码。
+- 未运行全量门禁，交宿主合并前运行。
