@@ -15,6 +15,8 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 function fixture() {
+  // Installation acceptance requires macOS, just like CI; never silently skip it.
+  expect(process.platform, '安装验收需要 macOS，与 CI 平台一致').toBe('darwin');
   const dir = mkdtempSync(path.join(os.tmpdir(), 'autome install '));
   dirs.push(dir);
   const prefix = path.join(dir, 'prefix');
@@ -31,7 +33,7 @@ function fixture() {
   return { dir, prefix, home, env, run, archive };
 }
 
-test.skipIf(process.platform !== 'darwin')('发布包包含同一 CLI 内核及说明，生成正确校验和', () => {
+test('发布包包含同一 CLI 内核及说明，生成正确校验和', () => {
   const { run, archive } = fixture();
   const entries = run('/usr/bin/tar', ['-tzf', archive]).trim().split('\n');
   const name = path.basename(archive, '.tar.gz');
@@ -44,7 +46,7 @@ test.skipIf(process.platform !== 'darwin')('发布包包含同一 CLI 内核及�
     `${createHash('sha256').update(readFileSync(archive)).digest('hex')}  ${path.basename(archive)}`);
 }, 60000);
 
-test.skipIf(process.platform !== 'darwin')('空 PREFIX 安装后按 PATH 找到 core，真实握手标识与 CLI 相同', async () => {
+test('空 PREFIX 安装后按 PATH 找到 core，真实握手标识与 CLI 相同', async () => {
   const { dir, prefix, home, env, run, archive } = fixture();
   expect(existsSync(prefix)).toBe(false);
   expect(run('/bin/sh', ['scripts/install-cli.sh', '--from', archive])).toContain('sha256 校验通过');
