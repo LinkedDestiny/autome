@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 7/25
+implementation-round: 8/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 由宿主复验本轮提交的快检与合并前全量门禁
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -440,7 +440,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### M-04 范围
 
-最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r5-audit.md · 通过 · 审计 #4
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r8-impl.md · 门禁字段契约修复，相关 27 例通过 · 实现 #8
 
 - 结果：停在合并卡点而 main 已前进的任务在 `task.get` / `status` / `ls` 上显示落后 N 个提交与「合并时会重新 rebase 并再跑一次
   门禁」；按合并后 rebase + 门禁 1 次 + 合并；`autome run` 对新事件各打一行；`status` 显示配置警告。

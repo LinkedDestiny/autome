@@ -5802,6 +5802,16 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
         let out = w.call("task.get", json!({"task_id":id}));
         let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        assert_eq!(
+            task.get("merge"),
+            Some(&json!({
+                "authorized": false,
+                "authorized_by": null,
+                "holds_section": false,
+                "waiting_for": null,
+                "stale": null,
+            }))
+        );
         if kind == "bug" {
             assert_eq!(task.remove("fix_round"), Some(json!(0)));
         } else {
@@ -5826,6 +5836,7 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         "branch",
         "created_at",
         "completed_at",
+        "merge",
         "merge_commit",
         "archived",
         "protocol_ref",
