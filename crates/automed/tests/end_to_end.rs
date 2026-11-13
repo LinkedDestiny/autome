@@ -189,6 +189,10 @@ struct World {
 
 impl World {
     fn new(tag: &str) -> Self {
+        Self::with_store(tag, false)
+    }
+
+    fn with_store(tag: &str, on_disk: bool) -> Self {
         install_fake_cli();
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let root =
@@ -201,7 +205,11 @@ impl World {
             std::fs::create_dir_all(d).unwrap();
         }
 
-        let store = Store::open_in_memory().unwrap();
+        let store = if on_disk {
+            Store::open(autome_home.join("test.db")).unwrap()
+        } else {
+            Store::open_in_memory().unwrap()
+        };
         // Headless: the wrapper runs directly rather than being handed to a
         // terminal. Everything else is the production path; the terminal hop
         // itself has its own test.
@@ -11561,4 +11569,139 @@ fn operator_note_e2e_bug_fix_rerun_fix_and_rerun_locate_carry_notes() {
                 .is_empty()
         );
     }
+}
+
+// Frozen audit template from 47fa384a^ (protocol/v7), before integration-audit.
+fn legacy_pointer_scenario(version: u32, dirty: bool) {
+    let mut w = World::with_store("legacy-pointer", true);
+    let command = format!("sh {}", write_gate_script(&w).display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "legacy pointer";
+    let slug = slug_for(request);
+    let pointer = "\n### M-01 验收契约\n最新证据：original-audit.md\n";
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(
+        6,
+        &slug,
+        &(doc("实现中", 2, 1, &[("M-01", "已完成")]) + pointer),
+    );
+    w.retro_step(7, &slug);
+    let changed = doc("实现中", 2, 2, &[("M-01", "已完成")])
+        + &pointer.replace("original-audit.md", "new-impl.md");
+    let mut script = World::doc_script(&slug, 8, &changed, "echo ok > gate-ok\ngit add gate-ok");
+    if dirty {
+        script.push_str("echo dirty > untracked-product\n");
+    }
+    w.step(8, &script);
+    if version < 8 {
+        // Legacy audit does not write fresh evidence: the new rule must warn.
+        w.step(9, "printf 'legacy audit complete\\n'\n");
+    } else {
+        w.doc_step(
+            9,
+            &slug,
+            &(doc("实现中", 2, 2, &[("M-01", "已完成")]) + pointer),
+        );
+    }
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let template = format!("docs/{slug}/protocol/prompts/audit.md");
+    if version < 8 {
+        std::fs::write(
+            wt.join(&template),
+            include_str!("fixtures/protocol-v7-audit.md"),
+        )
+        .unwrap();
+        automed::git::commit_paths(&wt, &[&template], "freeze v7 audit template").unwrap();
+    }
+    rusqlite::Connection::open(w.ctx.store.path())
+        .unwrap()
+        .execute(
+            "UPDATE tasks SET protocol_ref = ?1 WHERE id = ?2",
+            rusqlite::params![format!("protocol/v{version}@fixture"), id],
+        )
+        .unwrap();
+    w.settle();
+    if dirty {
+        assert_eq!(w.state(&id), "failed");
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&id, "guard.failed")
+                .unwrap()
+                .unwrap()["code"],
+            "impl_closed_milestone"
+        );
+        assert!(
+            std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}.md")))
+                .unwrap()
+                .contains("new-impl.md")
+        );
+        return;
+    }
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let fixed = w
+        .ctx
+        .store
+        .last_event(&id, "guard.auto_fixed")
+        .unwrap()
+        .expect("pointer restored");
+    assert_eq!(fixed["code"], "impl_closed_milestone");
+    assert_eq!(fixed["milestones"], json!(["M-01"]));
+    let restore_commit = fixed["commit"].as_str().unwrap();
+    let restored = automed::git::run_ok(
+        &wt,
+        &["show", &format!("{restore_commit}:docs/{slug}/{slug}.md")],
+    )
+    .unwrap()
+    .stdout;
+    assert!(restored.contains("original-audit.md"));
+    assert!(!restored.contains("new-impl.md"));
+    assert!(restored.contains("implementation-round: 2/"));
+    let detail = fixed["detail"].as_str().unwrap();
+    if version < 8 {
+        assert!(detail.contains("协议 v7 没有这条规则"), "{detail}");
+        let started = w.ctx.store.task_events(&id, "session.started").unwrap();
+        assert!(started.iter().any(|e| e["integration"]["legacy"] == true));
+        let brief = integration_e2e_brief(&w, &slug, 2);
+        assert!(brief.contains("本轮是**集成复验**"));
+        assert!(brief.contains("独立复跑验收"));
+        assert!(brief.contains("gate-ok"));
+        assert!(
+            w.ctx
+                .store
+                .task_events(&id, "guard.warning")
+                .unwrap()
+                .iter()
+                .any(|e| e["code"] == "audit_made_no_progress")
+        );
+    } else {
+        assert!(
+            detail.contains("违反『已完成里程碑的最新证据不改』"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn legacy_pointer_e2e_v7_task_is_restored_and_audited() {
+    legacy_pointer_scenario(7, false);
+}
+
+#[test]
+fn legacy_pointer_e2e_v8_task_is_restored_with_the_rule_named() {
+    legacy_pointer_scenario(8, false);
+}
+
+#[test]
+fn legacy_pointer_e2e_restore_failure_keeps_todays_failure() {
+    legacy_pointer_scenario(7, true);
 }
