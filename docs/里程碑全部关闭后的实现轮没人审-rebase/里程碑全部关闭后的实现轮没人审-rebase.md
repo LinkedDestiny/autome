@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 8/25
+implementation-round: 9/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验本轮协议大小预算修复，证据见 evidence/M-05-r8-impl.md；宿主重跑快检及合并前门禁
+next-action: 独立复验协议版本断言修复，证据见 evidence/M-05-r9-impl.md；宿主重跑快检及合并前门禁
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 

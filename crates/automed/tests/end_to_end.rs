@@ -1948,7 +1948,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v7@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v8@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
