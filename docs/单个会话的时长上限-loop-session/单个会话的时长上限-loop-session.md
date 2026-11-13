@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 2/15
 implementation-round: 3/20
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 待 M-03 独立审计通过后推进 M-04 的会话与 CLI 超时展示
+next-action: 推进 M-04：会话条目、autome status、事件行与技术设计中的超时展示
 
 任务文件：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-task.md`
 
@@ -365,7 +365,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 |---|---|---|---|---|
 | M-01 | 已完成 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
 | M-02 | 已完成 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
-| M-03 | 待审 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
+| M-03 | 已完成 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
 | M-04 | 开放 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
 
 ## 里程碑说明
@@ -402,7 +402,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
     前：仍被终止，事件 `limit` 为 5；⑩ 取不到 pid：账本里把会话的 `pid` 置 NULL 并临时挪走 pid 文件，拨到 6 分钟前 tick：会话仍
     `running`，有 `session.timeout_unconfirmed`、没有 `session.timeout`、进程仍在；把 pid 文件放回再 tick：补写 pid、被终止、生命周期
     `timed_out`、`pending_retry` 存在。
-最新证据：docs/单个会话的时长上限-loop-session/evidence/M-03-r3-impl.md · 验收通过，待审 · 实现 #3
+最新证据：docs/单个会话的时长上限-loop-session/evidence/M-03-r3-audit.md · 通过 · 审计 #3
 
 - **M-03**（覆盖：R-3、R-4、A-1、A-4、C-2、C-5、开放问题 3、4、5、6、10。前置：M-02）。方案 §4、§5。`next_round` 排除超时会话；
   `Inject::SessionTimedOut` / `timed_out` / `effective`；决定领取与修复守卫改读 `effective`；`render_inject`（含 Intake）。新增用例名
