@@ -1,6 +1,6 @@
 # logtail-live 假会话进程未退出
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts
 根因: afterAll 写入停止标记后立即删除临时目录，假 CLI 错过标记后无限等待，独立会话不会随 Core 退出
 复核: 待复核
@@ -58,8 +58,17 @@ repos: apps/web
 
 ## 修复说明
 
-定位轮未修改产品代码，也未修改原 logtail-live 测试。独立回归测试已在定位提交 `48cf58a3` 中新增，本次仅补充本文的宿主证据和状态。后续可核对目录消失退出、总寿命上限、等待或终止会话后再删除目录；具体修法由修复轮决定。
+修复第 1/3 轮：仅修改 `apps/web/test/logtail-live.test.ts` 中假 CLI 的 go/stop 等待循环。每次等待前检查所属临时目录是否仍存在，目录消失则 exit 0，使 afterAll 删除目录成为持续可观察的退出条件，避免错过短暂存在的停止标记后无限等待。保留标记正常路径与原有输出；未改变测试断言、输入、用例名或跳过标记。定位轮新增的独立回归测试 `logtail-live-cleanup.test.ts` 完全未修改。未改变 Core 的独立会话生命周期。
+
+本轮验证：
+
+- 原复现命令 `npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts`：退出 1，启动子测试前报 `spawnSync ps EPERM`。属于沙箱限制，未获得修复后通过证据，须由宿主复验。
+- 直接相关测试 `npm --prefix apps/web test -- test/logtail-live.test.ts`：退出 1，初始化报 `listen EPERM: operation not permitted 127.0.0.1`，3 项测试跳过，不计通过。
+- 临时 Node 验证程序从修改后的文件抽取实际假 CLI 脚本，分别验证等待 go 时删除目录、等待 stop 时删除目录、正常提供 go/stop 三条路径：全部在两秒界限内正常退出；正常路径保留最后一行。该检查只证明假 CLI 退出条件，不替代完整会话进程树回归。
+- `npm run lint --prefix apps/web`、`npm run typecheck --prefix apps/web`、`git diff --check` 均通过。未运行全量门禁 `sh scripts/ci-local.sh`；Rust 未改动，本轮未重跑 Rust 快检，由宿主执行配置的完整快检。
+
+原始日志：`.autome/output/fix-1-repro.log`、`fix-1-live.log`、`fix-1-fixture.log`、`fix-1-lint.log`、`fix-1-typecheck.log`。
 
 ## 复核意见
 
-待复核。宿主连续两次预期失败与 finally 清理结果已由用户补充；本轮不进入修复，也不启动后续会话。
+待复核。本轮修复已完成，完整进程树回归通过证据仍待宿主复现检查；后续由 Autome 调度，本轮不启动后续会话。
