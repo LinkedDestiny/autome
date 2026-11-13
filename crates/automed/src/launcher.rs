@@ -899,7 +899,12 @@ fn intake_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         .prompt("intake")
         .ok_or_else(|| err("协议版本里没有 prompts/intake.md，无法启动任务整理轮"))?;
 
-    let inputs = render_inputs(spec.doc_dir, spec.attachments, spec.doc_refs);
+    let attachment_names = spec
+        .attachments
+        .iter()
+        .map(|path| bug_attachment_name(path))
+        .collect::<Vec<_>>();
+    let inputs = render_inputs(spec.doc_dir, &attachment_names, spec.doc_refs);
 
     if let Some(card_path) = spec.card_path {
         let parts = template

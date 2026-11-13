@@ -1,7 +1,7 @@
 # 整理轮附件路径定位
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline -p automed --lib the_intake_prompt_
 根因: intake_prompt 将存储的源文件绝对路径直接传给按附件文件名拼接的 render_inputs，与 write_task_inputs 仅取 file_name 的复制规则不一致。
 复核: 待复核
@@ -46,7 +46,14 @@ repos: autome-v2
 
 ## 修复说明
 
-待修复轮填写。
+整理轮在调用 `render_inputs` 前复用 `bug_attachment_name`，将存储的源路径转换为附件文件名，与 `write_task_inputs` 的复制规则一致。映射位于任务卡分支之前，同时覆盖有任务卡和无任务卡的整理轮。未修改定位轮回归测试。
+
+验证结果：
+
+- 修复前运行原复现命令：3 passed、2 failed，失败仍为附件路径断言；日志 `.autome/output/fix-1-before.log`。
+- 修复后运行同一复现命令：5 passed、0 failed；日志 `.autome/output/fix-1-reproduction.log`。
+- 直接相关测试子集 `cd crates/automed && cargo test --offline -p automed --lib launcher::tests`：76 passed、0 failed；日志 `.autome/output/fix-1-launcher-tests.log`。
+- `git diff --check` 通过。未运行全量门禁 `sh scripts/ci-local.sh`，由宿主合并前执行；未运行真实 CLI/Web 上传端到端验收。
 
 ## 复核意见
 
