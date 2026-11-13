@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Link, useLoaderData, useLocation, type LoaderFunctionArgs } from 'react-router';
+import { Link, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
 import { newTaskHref } from '../components/nav-links.ts';
+import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
 import { KIND_FILTER_LABELS, doneFoldLabel } from '../lib/labels.ts';
@@ -10,6 +11,14 @@ import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 export function loader({ context, params, request }: LoaderFunctionArgs) {
   return loadBoard(context.get(servicesContext), params.id ?? '', new URL(request.url).searchParams.get('done') === 'all');
 }
+export async function action({ request, context }: ActionFunctionArgs) {
+  const form = await request.formData();
+  if (form.get('intent') !== 'start') return responseData({ error: '未知操作' }, { status: 400 });
+  const { gateway } = context.get(servicesContext);
+  if (!gateway) return { error: '内核未连接：服务未接入网关' };
+  const result = await gateway.write({ op: 'task.start', params: { task_id: form.get('task_id') } });
+  return result.body;
+}
 export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.', 'gate.', 'session.', 'runtime.'));
 function useNow(initial: string) {
   const [now, setNow] = useState(initial);
@@ -17,6 +26,7 @@ function useNow(initial: string) {
   return now > initial ? now : initial;
 }
 export default function ProjectBoard() {
+  useNotificationRevalidate();
   const data = useLoaderData<typeof loader>();
   const [kind, setKind] = useState<KindFilter>('all');
   const location = useLocation();
