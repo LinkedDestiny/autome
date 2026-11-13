@@ -1,18 +1,30 @@
-# T-70 复盘教训
+# T-70 复盘教训（复盘 #2 覆盖写）
 
-本任务没有记录到 Autome 指标，下面不引用任何数字指标，只引用证据文件里写明的事实。
-运行概况（来自 `retro.md` 与设计状态块）：设计 1 轮、实现 6 轮、5 个里程碑全部一次审计通过、reopen 0；
-唯一多出的一轮是 M-01 的实现 #2（宿主快检 Clippy 退回）。
+本任务没有记录到 Autome 指标，下面不引用任何数字指标，只引用证据文件和 git 记录里写明的事实。
+
+运行概况：设计 1 轮；实现 7 轮；审计 6 轮；5 个里程碑都是一次审计关闭，reopen 0。复盘 #1 之后又跑了两轮：
+实现 #7 按用户追加的指令 rebase 到 main `f5a963ad`，在 scheduler.rs、end_to_end.rs、task.rs、dispatch.rs 里手工解决了冲突，
+还改了 bug_loop.rs 的一条共享尾段测试、scheduler.rs 的一个旧字段，并就地改写了设计 D4/D8/验证安排；审计 #6 写「无待审里程碑」，
+没有写证据文件就结束了。
+
+与复盘 #1 相比：
+
+- L-01 改写。实现 #7 已把设计「验证安排」改成「fmt/clippy 由宿主轮后快检」，和 main 上 T-67 每轮快检的做法一致。
+  复盘 #1 的 proposal 要求实现轮证据写 clippy 退出码，和改后的设计、实现轮提示词都冲突了，所以作废。
+  能带走的是冲突本身：设计给实现轮安排了提示词禁止它跑的命令。
+- L-02..L-04 原样保留。
+- L-05 是新条目。proposal 逐字照抄 `docs/w8-实时会话日志/lessons.md` 的 L-06，那条也已经记下「宿主门禁按机器排队」任务里的同一经过，便于跨任务计数。
+- L-06 是新条目。
 
 ```yaml
 - id: L-01
-  domain: process
-  symptom: M-01 实现 #1 没跑 clippy 就标待审，宿主快检在 merge_queue.rs:82 报 clippy::nonminimal_bool，多花了实现 #2 专门修一行；实现 #1、#3、#4、#5、#6 的证据都写明“按本轮指令未运行宿主快检”
-  root_cause: 设计「验证安排」与任务验收 8 要求“每个实现轮跑 cargo fmt --check 与 clippy -D warnings 并记录退出码”，而实现轮提示词写“不要自己跑项目门禁命令”，实现轮按提示词执行，两份指令冲突无人裁定；审计也没有把证据里缺这两条退出码当作验证缺口
-  evidence: docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r2-impl.md
+  domain: design
+  symptom: 设计「验证安排」与任务验收 8 原本要求每个实现轮跑 cargo fmt --check 与 clippy -D warnings 并把退出码写进证据；实现 #1、#3、#4、#5、#6 的证据都写明按本轮指令没有运行宿主快检，审计 #1..#5 也没有把缺这两条退出码记成验证缺口。M-01 的 clippy::nonminimal_bool 由宿主轮后快检抓到，用实现 #2 修掉。实现 #7 最后把这一条改写成「由宿主在轮后快检」
+  root_cause: 设计轮写验证安排时没有对照实现轮提示词里「不要自己跑项目门禁命令」，给实现轮安排了它被禁止跑的命令；之后的轮次都按提示词执行，设计里的这一条一直没人满足，也没人提出来，直到 rebase 轮顺手改掉
+  evidence: docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r7-impl.md
   level: brief
-  proposal: 改动了 Rust 文件的实现轮，证据文件必须写出 `cargo clippy --all-targets -- -D warnings` 的退出码；实现轮简报要明确写出这条命令不算被禁止的“项目门禁命令”
-  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+  proposal: 设计「验证安排」里分配给实现轮的命令不得包含 cargo fmt --check、cargo clippy、sh scripts/ci-local.sh 这类宿主门禁命令；这些检查一律写成由宿主轮后快检或合并前门禁承担
+  predicted_impact: {metric: verification_gaps, direction: down, scope: project, horizon: 5}
 ```
 
 ```yaml
@@ -47,3 +59,27 @@
   proposal: 在 crates/automed/tests/end_to_end.rs 里，替身 CLI 脚本调用的每条 git 命令都要把输出重定向开，不写进 stdout
   predicted_impact: {metric: total_turns, direction: down, scope: project, horizon: 5}
 ```
+
+```yaml
+- id: L-05
+  domain: process
+  symptom: '审计 #5 关闭全部里程碑以后，实现 #7 按用户追加要求 rebase 到 main f5a963ad，在 rebase 的 continue 提交里手工合并了 scheduler.rs、end_to_end.rs、task.rs、dispatch.rs 的冲突，又在收尾提交 59c9f3d4 里把 scheduler.rs 的旧字段 merge_requested 改成 grants_merge_request，改写 bug_loop.rs 的共享尾段测试（让 MergeGate 冲突的 Bug 与需求转换不再要求相同，改为单独断言 start_fix），并就地把设计 D4/D8 的 Merging→Behind 从 Requeued{Rebase} 改成 Active{Rebase}。实现 #7 写「不自行关闭或重开已审计项」，五个里程碑保持已完成；审计 #6 写「无待审里程碑」，表未动、没有证据文件。冲突改动分散在被改写的 continue 提交里，只看最后一个提交的 diff 看不到。这与 w8-实时会话日志任务的 L-06 经过一致'
+  root_cause: '协议只有「实现轮标待审、审计轮复验待审」这一条路径。任务完成之后再改产品代码和测试断言（这里是解决 rebase 冲突），没有对应的里程碑状态可标。实现轮自己宣布保留关闭，审计轮看到表里没有待审项，就把空转当成了结论。合并进 main 之前最后一次改动产品行为、测试断言和设计条款，都没有经过对手复验'
+  evidence: docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r7-impl.md
+  level: protocol
+  proposal: '实现轮在已关闭的里程碑之后改动了产品源码（含解决 rebase 冲突）时，必须把受影响的里程碑重新标为 `待审`，并在证据里列出改动的文件；紧接着的审计轮必须对这些文件写出证据文件，不得以「无待审里程碑」结束'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 3}
+```
+
+```yaml
+- id: L-06
+  domain: process
+  symptom: '任务文件 §7.6 只点名 T-51、T-53、T-44，要求「每个实现轮开头重新核对」；设计 D4 也只写核对 T-51/T-53，实现 #5 证据也只核对了这两项（T-51 已合入、T-53 未命中）。这期间 main 上先后合入了 T-44 费用可见、T-67 每轮快检、T-57 rerun 修复预算和 T-73 合并核心步骤不占会话槽，四个都改了本设计要改的文件。按 author date，T-73（7f31316f，09:37）比 M-01 实现提交（e167a35e，11:19）早约 1 小时 40 分合入，它把 Merging→Behind 改成直接 Active{Rebase}，和设计 D4 表行、D8 的 Requeued{Rebase} 相反。五个里程碑按旧语义审计关闭，一直到实现 #7 rebase 时才暴露：scheduler.rs 的 E0560 编译错误、bug_loop_merge_tail_is_shared_with_the_feature_loop 测试失败、设计 D4/D8 被就地改写'
+  root_cause: '主线核对是按任务编号白名单做的，只看任务文件整理时想到的那几个任务，不看 main 上真正改了本设计目标文件的提交。分支基线 ce6ec5f 在任务整理时就落后 main 30 个提交，会话又被要求不要自己 rebase，所以偏差只能靠只读核对发现，而核对的范围选错了'
+  evidence: docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r7-impl.md
+  level: brief
+  proposal: '实现轮开头的主线核对必须运行 `git log --oneline $(git merge-base HEAD main)..main -- <本里程碑「结果」中要修改的已有文件>`，在证据里列出全部命中提交，并逐个注明是否改变本设计某条款的前提；只核对任务文件点名的任务编号不算照做'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 5}
+```
+
+提交说明：本轮直接提交；若提交被拒绝，提交由 Autome 兜底。
