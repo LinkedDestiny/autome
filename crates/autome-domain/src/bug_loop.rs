@@ -1404,6 +1404,33 @@ mod tests {
                 for requested in [false, true] {
                     let cfg = config();
                     let context = ctx(&cfg);
+                    if node == Node::MergeGate
+                        && let Trigger::CoreStepDone {
+                            node: Node::MergeGate,
+                            result: CoreStepResult::Conflict { files, .. },
+                        } = &trigger
+                    {
+                        assert_eq!(
+                            apply_for(
+                                TaskKind::Bug,
+                                &active(node),
+                                &trigger,
+                                &context,
+                                BugProgress::default(),
+                                requested,
+                            )
+                            .unwrap(),
+                            start_fix(
+                                node,
+                                Some(Inject::RebaseConflict {
+                                    files: files.clone()
+                                }),
+                                &context,
+                                BugProgress::default(),
+                            )
+                        );
+                        continue;
+                    }
                     assert_eq!(
                         apply_for(
                             TaskKind::Bug,

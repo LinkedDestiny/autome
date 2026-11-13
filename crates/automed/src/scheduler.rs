@@ -2054,7 +2054,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
                 action: Action::None,
                 budget_n: None,
                 consumes_decisions: false,
-                merge_requested: false,
+                grants_merge_request: false,
             };
         }
         let payload = if reproduced {

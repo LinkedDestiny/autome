@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 6/25
+implementation-round: 7/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -208,7 +208,7 @@ T 未终结、T 最后一条 `merge.locked` / `merge.unlocked` 是 `merge.locked
 | `[gate]` 中途被拿掉 | 需求任务 `MergeGate` 直接按通过处理 → 有授权进 `Merging` | 保留到合并结束 |
 | `Merging` → `Ok` | `MainCheck` / `Cleanup` | 释放 |
 | `Merging` → `Blocked` | `AwaitMerge` | 释放 |
-| `Merging` → `Behind`（外部提交，D8） | `Requeued { Rebase }` | 释放 |
+| `Merging` → `Behind`（外部提交，D8） | `Active { Rebase }` | 释放 |
 | `Merging` → `Failed` | `Failed` | 释放 |
 | 驱动重启 | 账本与任务状态原样，下一 tick 按上面规则继续 | 从账本推导 |
 
@@ -243,9 +243,8 @@ T 未终结、T 最后一条 `merge.locked` / `merge.unlocked` 是 `merge.locked
 任务等锁；未授权任务的门禁可以在别人持锁之前开跑（第 1 步只拦开跑，不拦已在跑的），它通过后停在 `AwaitMerge`，结果是否过期由
 G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 等锁 + 每个项目至多一个持锁者）。
 
-**T-53 / T-51**：T-53（排队任务调整顺序）调研时未合并；T-51（`bf399db`，approve/merge/rerun 直接启动会话不看并行上限）已合并，
-它改的是 `scheduler.rs` 里会话启动的并行名额与 `scheduler_gate_queue_tests.rs`，不改 `run_gate` 与 `waiters` 的排序。本设计只用
-`waiters` 的 seq 排序，T-53 若改的是它的排序口径，本设计自动沿用；每个实现轮开头重新核对这两项在主线上的状态。
+**主线调度兼容**：Git 核心步骤 Rebase、Merging、Cleanup 不占会话并行槽位；Merging 报 Behind 时直接进入 Active Rebase。
+本设计仍按门禁账本 seq 排序，保留 MainCheck 准入与执行共用的沿用判断，不改变主线快检与会话名额语义。
 
 ### D5 事件与 `autome run` 输出
 
@@ -309,7 +308,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 ### D8 本项目之外推进默认分支
 
 回答开放问题 4。临界区管不住用户自己在 main 上的提交。此时持锁者的 `Merging` 仍可能报 `Behind`，T-10 回退保留为兜底（释放锁、
-`Requeued { Rebase }`、授权 `by: "behind"` 不重复写因为已授权）。验收 1 的场景里没有外部提交，回退次数断言为 0；验收 1 的测试
+`Active { Rebase }`、授权 `by: "behind"` 不重复写因为已授权）。验收 1 的场景里没有外部提交，回退次数断言为 0；验收 1 的测试
 同时断言 `merge.auto { by: "behind" }` 与 `Merging → Behind` 都没有出现。
 
 ### 缺省行为与兼容性
@@ -349,8 +348,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### 验证安排
 
-- 每个实现轮：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`，加本里程碑的验收命令，退出码写进证据
-  （验收 8 的前两条）。全量门禁由宿主在合并前跑，会话不跑。
+- 实现轮只跑里程碑验收与直接相关的测试；fmt、clippy、Web lint/typecheck 由宿主在轮后快检，全量门禁由宿主在合并前运行。
 - 新测试一律带里程碑前缀，验收命令按前缀过滤，前缀在调研时没有任何既有测试名命中：M-01 `merge_queue_`、M-02 `merge_auth_`、
   M-03 `merge_conflict_`、M-04 `merge_view_`。
 - 调度器单测放新文件 `crates/automed/src/scheduler_merge_queue_tests.rs`，像 `scheduler_gate_queue_tests.rs` 一样被
@@ -374,7 +372,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 | 5 临界区内按合并不插队、A 失败后释放 | M-01 |
 | 6 `[merge] auto` 解析、缺省、警告、`save_project` | M-01（解析、缺省）、M-02（警告、`save_project`） |
 | 7 重启恢复 | M-01 |
-| 8 fmt / clippy / ci-local | 每个实现轮跑前两条；第三条由合并前门禁 |
+| 8 fmt / clippy / ci-local | 宿主轮后快检跑前两条；第三条由合并前门禁 |
 
 ### 既有测试处置（任务文件 §7.2 逐个）
 
@@ -410,7 +408,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### M-01 范围
 
-最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r2-audit.md · 通过 · 审计 #1
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r7-impl.md · rebase 兼容复验 · 实现 #7
 
 - 结果：`[merge] auto = true` 的项目里，三个同时到达合并前门禁的任务各跑一次门禁、依次合并，没有落后回退；临界区内被按合并的
   任务等持锁者，持锁者门禁失败后它继续；重启后照旧。
