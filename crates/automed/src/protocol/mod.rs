@@ -398,9 +398,20 @@ mod tests {
     #[test]
     fn the_version_in_force_is_the_newest_changelog_heading_over_the_seed() {
         let (r, files) = current();
-        assert_eq!(r.tag, "protocol/v8");
+        assert_eq!(r.tag, "protocol/v9");
         assert_eq!(r.hash, seed().hash());
         assert_eq!(files.hash(), seed().hash());
+    }
+
+    #[test]
+    fn test_fix_marker_is_in_the_v9_fix_prompt() {
+        assert_eq!(current().0.tag, "protocol/v9");
+        assert!(
+            seed()
+                .prompt("fix")
+                .unwrap()
+                .contains("<!-- regression-test-defect -->")
+        );
     }
 
     #[test]

@@ -297,3 +297,47 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
 为容纳集成复验，在不改变规则含义与简报摘录的前提下精简会话起止、读文件开销、
 协议失败说明及 Loop 引言；内核契约区不变。正文须留出既有 shell 样例回归测试的追加空间，
 避免正文自身未超限、追加样例后却被大小检查拒绝（T-68 合并前门禁）。
+
+## protocol/v9
+
+回归测试本身有缺陷时，声明并退回定位轮修正。
+
+```yaml
+- id: A-1
+  kind: behavioral
+  clause: prompts/fix.md
+  evidence: [T-72, T-64, T-75]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: evals/fix-declares-a-defective-regression-test/
+  realized_impact: null
+```
+
+```yaml
+- id: A-2
+  kind: clarify
+  clause: bug-protocol.md
+  evidence: [T-72, T-64, T-75]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: A-3
+  kind: clarify
+  clause: prompts/fix-review.md
+  evidence: [T-72, T-64, T-75]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: A-4
+  kind: clarify
+  clause: prompts/locate.md
+  evidence: [T-72, T-64, T-75]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```

@@ -4,6 +4,8 @@
 先读 `{doc_dir}/protocol/bug-protocol.md`。用户需求：{request}
 如有 `{doc_dir}/{slug}-card.md` 与 `{doc_dir}/{slug}-replies.md`，完整读取任务卡和补充信息。
 
+prompt 带「修正回归测试」一节时，按该节边界修正测试与任务文档，不改产品代码；该模式下以宿主的基线与 HEAD 成对检查为准。
+
 {inputs}定位根因，提交一个能稳定失败的回归测试，将复现命令、根因和现象写进 `{doc_dir}/{slug}-bug.md`。
 提交前对自己新增或修改的测试文件运行项目的格式化 / lint 检查，并在 Bug 文档「复现」一节记录命令与结果；格式化后重跑同一复现命令，确认仍以预期原因失败。{locate_format_check}
 不要修产品代码。信息不足时写 `status: 无法复现` 并列出需要补充的信息；符合设计时写 `status: 不是 Bug`。
