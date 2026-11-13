@@ -1,6 +1,6 @@
 export const TARGETS = [
   { pattern: '/tasks/:taskId', available: false },
-  { pattern: '/projects/:projectId', available: false },
+  { pattern: '/projects/:projectId', available: true },
 ];
 export function resolveTarget(item: { task_id: string | null; project_id: string | null }, targets = TARGETS): { href: string | null; note?: string } {
   const pattern = item.task_id ? '/tasks/:taskId' : item.project_id ? '/projects/:projectId' : null;

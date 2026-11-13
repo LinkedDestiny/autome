@@ -1,0 +1,35 @@
+import type { WebServices } from '../load-context.ts';
+import { COLUMN_LABELS } from '../lib/labels.ts';
+import type { ShellTask } from './shell-data.ts';
+import { columnOf, type TaskColumn } from './task-columns.ts';
+
+export interface BoardTask extends ShellTask { completed_at?: string | null }
+export type KindFilter = 'all' | 'feature' | 'bug';
+export interface BoardColumn { id: TaskColumn; label: string; tasks: BoardTask[]; recent: BoardTask[]; older: BoardTask[]; total: number }
+const fortnight = 14 * 24 * 60 * 60 * 1000;
+export function boardColumns(tasks: readonly BoardTask[], now: string): BoardColumn[] {
+  return (Object.keys(COLUMN_LABELS) as TaskColumn[]).map(id => {
+    const rows = tasks.filter(task => columnOf(task.state) === id).sort((a, b) => id === 'done'
+      ? completed(b) - completed(a)
+      : Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0));
+    const recent = id === 'done' ? rows.filter(task => Date.parse(now) - completed(task) <= fortnight) : rows;
+    const older = id === 'done' ? rows.filter(task => !recent.includes(task)) : [];
+    return { id, label: COLUMN_LABELS[id], tasks: rows, recent, older, total: rows.length };
+  });
+}
+function completed(task: BoardTask): number { const time = Date.parse(task.completed_at ?? ''); return Number.isFinite(time) ? time : -Infinity; }
+export function filterBoard(columns: readonly BoardColumn[], kind: KindFilter): BoardColumn[] {
+  const matches = (task: BoardTask) => kind === 'all' || task.kind === kind;
+  return columns.map(column => ({ ...column, tasks: column.tasks.filter(matches), recent: column.recent.filter(matches), older: column.older.filter(matches) }));
+}
+export function boardHeading(column: BoardColumn, kind: KindFilter): string {
+  return `${column.label}（${kind === 'all' ? column.total : `${column.tasks.length} / ${column.total}`}）`;
+}
+export type BoardData = { error: string } | { project: { id: string; display_name: string }; tasks: BoardTask[]; now: string; showAll: boolean };
+export async function loadBoard({ gateway }: WebServices, id: string, showAll = false): Promise<BoardData> {
+  if (!gateway) return { error: '内核未连接：服务未接入网关' };
+  const result = await gateway.read({ method: 'project.get', params: { project_id: id } });
+  if (!result.body.ok) return { error: result.body.error };
+  const payload = result.body.payload as { project: { id: string; display_name: string }; tasks: BoardTask[] };
+  return { project: payload.project, tasks: payload.tasks.map(task => ({ ...task, project_id: id })), now: new Date().toISOString(), showAll };
+}

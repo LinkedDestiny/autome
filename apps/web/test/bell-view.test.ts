@@ -25,10 +25,11 @@ it('列表标题、正文、本地时间、未读圆点与操作；全已读时�
   expect(read).not.toContain(item.body!);
   expect(read).not.toContain('标为已读'); expect(read).not.toContain('aria-label="未读"'); expect(read).toMatch(/disabled="">全部已读/);
 });
-it('默认任务与项目无链接；开放后正确目标；无归属不链接；ID 编码', () => {
-  for (const entry of [item, { ...item, task_id: null }]) {
+it('默认任务未开放而项目可访问；开放后正确目标；无归属不链接；ID 编码', () => {
+  for (const entry of [item]) {
     const html = view({ unread: 1, items: [entry] }); expect(html).not.toContain('href='); expect(html).toContain('详情页尚未开放');
   }
+  expect(view({ unread: 1, items: [{ ...item, task_id: null }] })).toContain('href="/projects/prj-1"');
   const available = TARGETS.map(target => ({ ...target, available: true }));
   expect(view({ unread: 1, items: [item] }, available)).toContain('href="/tasks/T-3"');
   expect(view({ unread: 1, items: [{ ...item, task_id: null }] }, available)).toContain('href="/projects/prj-1"');

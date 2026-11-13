@@ -41,3 +41,5 @@ export function taskStatusLine(state: TaskState): string {
   const label = Object.hasOwn(STATE_LABELS, state.state) ? STATE_LABELS[state.state as keyof typeof STATE_LABELS] : state.state;
   return node ? `${label} · ${nodeLabel(node)}` : label;
 }
+export const KIND_FILTER_LABELS = { all: '全部', feature: '需求', bug: 'Bug' } as const;
+export function doneFoldLabel(expanded: boolean, count: number): string { return expanded ? '收起' : `查看全部（${count}）`; }
