@@ -77,9 +77,11 @@ fn main() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let mut ctx = Ctx::new(store, autome_home, home);
 
+    automed::entry::apply_kernel_env(&mut ctx);
+
     tracing::info!(
         db_path,
-        build_id = automed::build_id::BUILD_ID,
+        build_id = %ctx.build_id,
         "automed core starting, reading commands on stdin"
     );
 

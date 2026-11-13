@@ -167,7 +167,7 @@ pub fn tick(ctx: &mut Ctx) -> TickReport {
             }
         }
     };
-    let report = match crate::kernel_guard::claim(ctx) {
+    let report = match crate::kernel_guard::claim(ctx, "scheduler.tick") {
         Ok(None) => tick_locked(ctx),
         Ok(Some(old)) => TickReport {
             skipped: true,

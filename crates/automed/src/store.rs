@@ -201,7 +201,17 @@ impl Store {
 
     /// The driver lock must cover this claim and all subsequent side effects.
     pub fn claim_kernel_mark(&self, current: &str) -> Result<Option<String>> {
+        self.claim_kernel_mark_with_adoption(current, None)
+            .map(|(rejected, _)| rejected)
+    }
+
+    pub(crate) fn claim_kernel_mark_with_adoption(
+        &self,
+        current: &str,
+        adopt_method: Option<&str>,
+    ) -> Result<(Option<String>, bool)> {
         use crate::build_id::{Verdict, verdict};
+
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -211,16 +221,33 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
+        let mut adopted = false;
         let rejected = match verdict(current, recorded.as_deref()) {
             Verdict::Advance => {
                 tx.execute("INSERT INTO kernel_mark (id, build_id, updated_at) VALUES (1, ?1, ?2) ON CONFLICT(id) DO UPDATE SET build_id = excluded.build_id, updated_at = excluded.updated_at", rusqlite::params![current, now_iso()])?;
                 None
             }
             Verdict::Same => None,
+            Verdict::Older | Verdict::Incomparable if adopt_method.is_some() => {
+                tx.execute(
+                    "UPDATE kernel_mark SET build_id = ?1, updated_at = ?2 WHERE id = 1",
+                    params![current, now_iso()],
+                )?;
+                self.append_event(
+                    "kernel.adopted",
+                    "kernel",
+                    serde_json::json!({
+                        "from": recorded, "to": current, "via": "AUTOME_ALLOW_OLDER_KERNEL",
+                        "method": adopt_method.unwrap()
+                    }),
+                )?;
+                adopted = true;
+                None
+            }
             Verdict::Older | Verdict::Incomparable => recorded,
         };
         tx.commit()?;
-        Ok(rejected)
+        Ok((rejected, adopted))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Store> {
@@ -2609,6 +2636,31 @@ mod tests {
             s.create_task(&task(id, "p", id), None).unwrap();
         }
         s
+    }
+
+    #[test]
+    fn adoption_event_failure_rolls_back_mark() {
+        let s = Store::open_in_memory().unwrap();
+        let old = "0000001-20200101T000000Z-000000000001";
+        let new = "0000002-20200101T000000Z-000000000002";
+        s.claim_kernel_mark(new).unwrap();
+        s.conn.execute_batch("CREATE TRIGGER reject_adoption BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'event unavailable'); END;").unwrap();
+        assert!(
+            s.claim_kernel_mark_with_adoption(old, Some("scheduler.tick"))
+                .is_err()
+        );
+        assert_eq!(s.kernel_mark().unwrap().as_deref(), Some(new));
+        assert_eq!(s.latest_seq().unwrap(), 0);
+        s.conn
+            .execute_batch("DROP TRIGGER reject_adoption")
+            .unwrap();
+        assert_eq!(
+            s.claim_kernel_mark_with_adoption(old, Some("scheduler.tick"))
+                .unwrap(),
+            (None, true)
+        );
+        assert_eq!(s.kernel_mark().unwrap().as_deref(), Some(old));
+        assert_eq!(s.events_since(0, 10).unwrap().len(), 1);
     }
 
     #[test]

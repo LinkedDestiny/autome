@@ -53,11 +53,9 @@ impl Client {
         let db = automed::entry::ledger_path(&home);
         let store = Store::open(&db).map_err(|e| CliError::Failed(format!("打不开状态库：{e}")))?;
         let user_home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        Ok(Client {
-            ctx: Ctx::new(store, &home, user_home),
-            home,
-            db,
-        })
+        let mut ctx = Ctx::new(store, &home, user_home);
+        automed::entry::apply_kernel_env(&mut ctx);
+        Ok(Client { ctx, home, db })
     }
 
     /// One JSON-RPC call, answered in-process.

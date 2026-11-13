@@ -25,15 +25,20 @@ pub fn check(ctx: &Ctx) -> Result<Option<OlderKernel>, StoreError> {
 }
 
 pub(crate) fn check_recorded(ctx: &Ctx, ledger: Option<String>) -> Option<OlderKernel> {
+    if ctx.allow_older_kernel && !ctx.adopted_older_kernel {
+        return None;
+    }
     match build_id::verdict(&ctx.build_id, ledger.as_deref()) {
         Verdict::Older | Verdict::Incomparable => ledger.map(|m| rejection(ctx, m)),
         _ => None,
     }
 }
 
-pub fn claim(ctx: &mut Ctx) -> Result<Option<OlderKernel>, StoreError> {
-    Ok(ctx
+pub fn claim(ctx: &mut Ctx, method: &str) -> Result<Option<OlderKernel>, StoreError> {
+    let adopt = ctx.allow_older_kernel && !ctx.adopted_older_kernel;
+    let (rejected, adopted) = ctx
         .store
-        .claim_kernel_mark(&ctx.build_id)?
-        .map(|m| rejection(ctx, m)))
+        .claim_kernel_mark_with_adoption(&ctx.build_id, adopt.then_some(method))?;
+    ctx.adopted_older_kernel |= adopted;
+    Ok(rejected.map(|m| rejection(ctx, m)))
 }

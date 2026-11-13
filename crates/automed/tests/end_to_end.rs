@@ -10016,3 +10016,85 @@ fn older_kernel_lock_error_stops_all_advancing() {
     assert_eq!(newer.store.latest_seq().unwrap(), before);
     assert!(!newer.recovered);
 }
+
+fn adoption_events(ctx: &Ctx) -> Vec<serde_json::Value> {
+    ctx.store
+        .events_since(0, 10000)
+        .unwrap()
+        .into_iter()
+        .filter(|(_, kind, _)| kind == "kernel.adopted")
+        .map(|(_, _, payload)| payload)
+        .collect()
+}
+
+#[test]
+fn kernel_adopt_advances_and_records_event() {
+    let (w, id) = guard_world("adopt-tick");
+    let mut old = w.second_kernel(GUARD_OLD);
+    old.allow_older_kernel = true;
+    let out = call(&mut old, "scheduler.tick", json!({}));
+    assert_eq!(ok(&out)["skipped"], false);
+    assert_ne!(
+        old.store.get_task(&id).unwrap().state,
+        autome_domain::task::TaskState::Queued
+    );
+    assert!(old.adopted_older_kernel);
+    assert_eq!(old.store.kernel_mark().unwrap().as_deref(), Some(GUARD_OLD));
+    assert_eq!(
+        adoption_events(&old),
+        vec![json!({
+            "from":GUARD_NEW, "to":GUARD_OLD,
+            "via":"AUTOME_ALLOW_OLDER_KERNEL", "method":"scheduler.tick"
+        })]
+    );
+
+    // The write-command channel shares the same claim and method attribution.
+    let (w, _) = guard_world("adopt-write");
+    let mut old = w.second_kernel(GUARD_OLD);
+    old.allow_older_kernel = true;
+    ok(&call(
+        &mut old,
+        "task.create",
+        json!({
+            "project_id":w.project_id, "request":"adopted write", "draft":true
+        }),
+    ));
+    assert_eq!(adoption_events(&old)[0]["method"], "task.create");
+    assert_eq!(adoption_events(&old).len(), 1);
+}
+
+#[test]
+fn kernel_adopt_only_once_despite_alternating_kernels() {
+    let (mut w, _) = guard_world("adopt-once");
+    let mut old = w.second_kernel(GUARD_OLD);
+    old.allow_older_kernel = true;
+    for round in 0..3 {
+        let out = call(&mut old, "scheduler.tick", json!({}));
+        assert_eq!(ok(&out)["skipped"], round != 0);
+        assert_eq!(ok(&out)["older_kernel"].is_null(), round == 0);
+        ok(&w.call("scheduler.tick", json!({})));
+    }
+    assert_eq!(adoption_events(&old).len(), 1);
+    let refused = call(&mut old, "task.create", json!({}));
+    assert_eq!(
+        serde_json::to_value(&refused.reply).unwrap()["outcome"]["code"],
+        "older_kernel"
+    );
+}
+
+#[test]
+fn kernel_adopt_new_kernel_restores_mark_without_event() {
+    let (mut w, _) = guard_world("adopt-restore");
+    let mut old = w.second_kernel(GUARD_OLD);
+    old.allow_older_kernel = true;
+    ok(&call(&mut old, "scheduler.tick", json!({})));
+    ok(&call(&mut old, "scheduler.tick", json!({})));
+    assert_eq!(adoption_events(&old).len(), 1);
+    ok(&w.call("scheduler.tick", json!({})));
+    assert_eq!(
+        w.ctx.store.kernel_mark().unwrap().as_deref(),
+        Some(GUARD_NEW)
+    );
+    assert_eq!(adoption_events(&old).len(), 1);
+    assert!(!w.ctx.adopted_older_kernel);
+}

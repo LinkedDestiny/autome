@@ -39,6 +39,8 @@ pub struct Outcome {
 /// test suite run commands against throwaway directories in parallel.
 pub struct Ctx {
     pub build_id: String,
+    pub allow_older_kernel: bool,
+    pub adopted_older_kernel: bool,
     pub store: Store,
     /// `~/.autome` — where the global config lives.
     pub autome_home: std::path::PathBuf,
@@ -79,6 +81,8 @@ impl Ctx {
     ) -> Self {
         Self {
             build_id: crate::build_id::BUILD_ID.into(),
+            allow_older_kernel: false,
+            adopted_older_kernel: false,
             store,
             autome_home: autome_home.into(),
             home: home.into(),
@@ -275,7 +279,7 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
         }
     }
     if writing {
-        let rejection = match crate::kernel_guard::claim(ctx) {
+        let rejection = match crate::kernel_guard::claim(ctx, &command.method) {
             Ok(Some(old)) => Some((ReplyErrorCode::OlderKernel, old.message)),
             Err(e) => Some((ReplyErrorCode::Internal, e.to_string())),
             Ok(None) => None,

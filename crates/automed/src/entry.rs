@@ -89,5 +89,81 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The CLI and standalone kernel share one compiled identity.
 pub fn version_line(name: &str) -> String {
-    format!("{name} {VERSION} ({})", crate::build_id::BUILD_ID)
+    format!("{name} {VERSION} ({})", effective_build_id())
+}
+
+/// Environment policy belongs to process entrypoints, never Ctx::new.
+pub fn apply_kernel_env(ctx: &mut crate::dispatch::Ctx) {
+    ctx.allow_older_kernel =
+        explicit_adoption(std::env::var("AUTOME_ALLOW_OLDER_KERNEL").ok().as_deref());
+    ctx.build_id = effective_build_id();
+}
+
+fn explicit_adoption(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+fn effective_build_id() -> String {
+    #[cfg(debug_assertions)]
+    {
+        debug_build_id(
+            crate::build_id::BUILD_ID,
+            std::env::var("AUTOME_TEST_BUILD_ID").ok().as_deref(),
+        )
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        crate::build_id::BUILD_ID.into()
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_build_id(compiled: &str, candidate: Option<&str>) -> String {
+    use crate::build_id::{BuildId, Verdict, verdict};
+    if let Some(candidate) = candidate {
+        if candidate.parse::<BuildId>().is_ok()
+            && matches!(
+                verdict(candidate, Some(compiled)),
+                Verdict::Older | Verdict::Same
+            )
+        {
+            return candidate.into();
+        }
+        eprintln!("忽略 AUTOME_TEST_BUILD_ID：标识无效或不能往旧改");
+    }
+    compiled.into()
+}
+
+#[cfg(all(test, debug_assertions))]
+mod kernel_env_tests {
+    use super::*;
+
+    #[test]
+    fn kernel_adopt_env_is_explicit() {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("01"),
+            Some(" 1"),
+            Some("1\n"),
+        ] {
+            assert!(!explicit_adoption(value));
+        }
+        assert!(explicit_adoption(Some("1")));
+        let current = "0000002-20200101T000000Z-000000000002";
+        let old = "0000001-20200101T000000Z-000000000001";
+        assert_eq!(debug_build_id(current, Some(old)), old);
+        for value in [
+            None,
+            Some(""),
+            Some("invalid"),
+            Some(current),
+            Some("9999999-29991231T000000Z-ffffffffffff"),
+            Some("0000002-20200101T000000Z-000000000003"),
+        ] {
+            assert_eq!(debug_build_id(current, value), current);
+        }
+    }
 }
