@@ -1541,8 +1541,8 @@ mod tests {
                     continue;
                 }
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // main.rs is the allowed caller; this file defines it.
-                if name == "main.rs" || name == "config_io.rs" {
+                // Process entrypoints may resolve it; this file defines it.
+                if name == "main.rs" || name == "entry.rs" || name == "config_io.rs" {
                     continue;
                 }
                 if std::fs::read_to_string(&path)

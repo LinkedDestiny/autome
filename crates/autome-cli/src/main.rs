@@ -75,6 +75,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   alerts [dismiss <报警>]        项目级报警，如合并后 main 门禁失败
 
 其他
+  core                           以 stdio 提供内核（面板用）
   rpc <方法> ['<JSON 参数>']     直接调用内核的任意 JSON-RPC 方法
   version | help
 
@@ -92,6 +93,7 @@ fn main() {
     // session, so these two must behave exactly as `automed`'s do — and
     // before anything else, because `render-stream` writes into the log.
     match argv.first().map(String::as_str) {
+        Some("core") => std::process::exit(automed::entry::serve_stdio()),
         Some("render-stream") => std::process::exit(automed::entry::render_stream_main(&argv[1..])),
         Some("protocol") if argv.get(1).map(String::as_str) == Some("eval") => {
             std::process::exit(automed::entry::protocol_eval_main(&argv[2..]))
@@ -236,6 +238,7 @@ fn print_json(v: &Value) {
 
 fn doctor(c: &mut Client, a: &Args) -> Result<()> {
     use autome_domain::environment::{Login, Severity};
+    let kernel = c.call("env.get", json!({}))?["kernel"].clone();
     let env = automed::env_probe::probe_all();
     if a.has("--json") {
         print_json(&json!({
@@ -243,11 +246,20 @@ fn doctor(c: &mut Client, a: &Args) -> Result<()> {
             "ledger": c.db,
             "driver_lock": automed::driver_lock::lock_path(&c.db),
             "binary": std::env::current_exe().ok(),
+            "kernel": kernel,
             "environment": env,
             "severity": env.severity(),
         }));
     } else {
         println!("autome {}", automed::entry::VERSION);
+        println!(
+            "内核：{}（账本记录：{}）",
+            kernel["build_id"].as_str().unwrap_or_default(),
+            kernel["ledger_build_id"].as_str().unwrap_or("还没有")
+        );
+        if let Some(message) = kernel["message"].as_str() {
+            println!("{message}");
+        }
         println!("  家目录    {}", c.home.display());
         println!("  状态库    {}", c.db.display());
         if let Ok(exe) = std::env::current_exe() {
@@ -988,9 +1000,35 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
         eprintln!("驱动 Loop 中（每 {interval} 秒一轮，Ctrl-C 停止驱动；会话不受影响）");
     }
     let mut told_skipped = false;
+    let mut older_message: Option<String> = None;
     loop {
         let report = c.call("scheduler.tick", json!({}))?;
-        if report["skipped"] == json!(true) && !told_skipped && !json {
+        let older = &report["older_kernel"];
+        let blocked = older["message"].as_str();
+        if let Some(message) = blocked {
+            if once || until_idle {
+                if json {
+                    println!("{}", json!({"older_kernel": older}));
+                    std::process::exit(1);
+                }
+                return Err(CliError::Failed(message.into()));
+            }
+            if older_message.as_deref() != Some(message) {
+                if json {
+                    println!("{}", json!({"older_kernel": older}));
+                } else {
+                    eprintln!("{message}");
+                }
+                older_message = Some(message.into());
+            }
+        } else if older_message.take().is_some() {
+            if json {
+                println!("{}", json!({"older_kernel": null}));
+            } else {
+                eprintln!("账本已允许本内核推进，继续驱动");
+            }
+        }
+        if blocked.is_none() && report["skipped"] == json!(true) && !told_skipped && !json {
             eprintln!("另一个驱动（桌面端或另一个 autome run）正在推进，本进程轮流推进。");
             told_skipped = true;
         }
