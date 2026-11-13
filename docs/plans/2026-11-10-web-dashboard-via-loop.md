@@ -478,7 +478,7 @@ autome task new "<一句话需求>" --doc docs/plans/2026-11-10-web-dashboard-vi
 切换节点：
 
 - **K1、K2 合并后**，重新运行 `sh scripts/install-cli.sh`。之后发现的 Bug 用 `autome task new --kind bug --brief -` 提交，或者装好 C1 之后在 Claude 对话里提。
-- **W6、W7 合并后**，用 `npm --prefix apps/web start` 起面板，改用面板本身来新建、开始、批准、合并后面的任务。
+- **W6、W7 合并后**，按 README 升级顺序先停旧进程并重装 CLI（`sh scripts/install-cli.sh`），再用 `npm --prefix apps/web start` 起面板，改用面板本身来新建、开始、批准、合并后面的任务。
 
 ### 7.4 止损
 

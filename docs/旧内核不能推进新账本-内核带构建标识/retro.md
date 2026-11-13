@@ -12,3 +12,5 @@
 
 实现 #5 | M-05 | 退回 web | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-05-r5-impl.md | 沙箱禁止本地监听，验收两例 EPERM，保持开放
 审计 #5 | M-05 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-05-r5-audit.md | 无
+
+实现 #6 | M-06 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-06-r6-impl.md | 无
