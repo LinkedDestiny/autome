@@ -1,5 +1,5 @@
 import type { WebServices } from '../load-context.ts';
-import { COLUMN_LABELS } from '../lib/labels.ts';
+import { BOARD_READ_ERROR, COLUMN_LABELS } from '../lib/labels.ts';
 import type { ShellTask } from './shell-data.ts';
 import { columnOf, type TaskColumn } from './task-columns.ts';
 
@@ -29,7 +29,7 @@ export type BoardData = { error: string } | { project: { id: string; display_nam
 export async function loadBoard({ gateway }: WebServices, id: string, showAll = false): Promise<BoardData> {
   if (!gateway) return { error: '内核未连接：服务未接入网关' };
   const result = await gateway.read({ method: 'project.get', params: { project_id: id } });
-  if (!result.body.ok) return { error: result.body.error };
+  if (!result.body.ok) return { error: result.body.error ?? BOARD_READ_ERROR };
   const payload = result.body.payload as { project: { id: string; display_name: string }; tasks: BoardTask[] };
   return { project: payload.project, tasks: payload.tasks.map(task => ({ ...task, project_id: id })), now: new Date().toISOString(), showAll };
 }

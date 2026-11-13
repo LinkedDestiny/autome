@@ -59,7 +59,10 @@ test('4 all filter transitions preserve columns, counts and source data', () => 
 test('5 recorded project counts agree with shared classification', async () => {
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/w5-project-get.json', import.meta.url), 'utf8'));
   const calls: unknown[] = [];
-  const gateway = { read: async (request: unknown) => { calls.push(request); return { status: 200, body: { ok: true, payload: fixture } }; } } as KernelGateway;
+  const gateway: KernelGateway = {
+    read: async (request: unknown) => { calls.push(request); return { status: 200, body: { ok: true, payload: fixture } }; },
+    write: async () => { throw new Error('只读看板不应调用 write'); },
+  };
   const loaded = await loadBoard({ gateway }, 'P-1');
   expect(calls).toEqual([{ method: 'project.get', params: { project_id: 'P-1' } }]);
   if ('error' in loaded) throw new Error(loaded.error);
@@ -79,10 +82,18 @@ test('6 SSR shows headings, filters, new link and reversible history folding', (
 });
 test('7 gateway 503 and 409 remain inline errors without throwing', async () => {
   for (const [status, error] of [[503, '内核离线'], [409, '项目读取被拒绝']] as const) {
-    const gateway = { read: async () => ({ status, body: { ok: false, error } }) } as KernelGateway;
+    const gateway: KernelGateway = {
+      read: async () => ({ status, body: { ok: false, error } }),
+      write: async () => { throw new Error('只读看板不应调用 write'); },
+    };
     const result = await loadBoard({ gateway }, 'P-1'); expect(result).toEqual({ error }); expect(render(result)).toContain(error);
   }
   expect(render(await loadBoard({ gateway: null }, ''))).toContain('内核未连接');
+  const gateway: KernelGateway = {
+    read: async () => ({ status: 503, body: { ok: false } }),
+    write: async () => { throw new Error('只读看板不应调用 write'); },
+  };
+  expect(render(await loadBoard({ gateway }, 'P-1'))).toContain('项目读取失败');
 });
 test('8 board source cannot duplicate state classification', () => {
   for (const path of ['components/board-data.ts', 'routes/projects.$id.tsx']) {

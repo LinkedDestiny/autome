@@ -1,6 +1,7 @@
 // Chinese vocabulary and stages mirror crates/autome-domain/src/task.rs.
 export const KIND_LABELS = { feature: '需求', bug: 'Bug' } as const;
 export const STATE_LABELS = { draft: '未开始', queued: '排队中', active: '进行中', paused: '已暂停', stopped: '已停止', failed: '失败', done: '已完成', cancelled: '已取消' } as const;
+export const BOARD_READ_ERROR = '项目读取失败';
 export const COLUMN_LABELS = { todo: '待开始', running: '进行中', needs_you: '等你处理', done: '已完成' } as const;
 export const NODE_LABELS = {
   intake: '任务整理', design: '设计', review: '评审', adjudicate: '裁决', await_design_approval: '设计批准',
