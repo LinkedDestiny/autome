@@ -544,11 +544,12 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
     }
     for (p, t) in &tasks {
         println!(
-            "{}  {:<28} {:<16} {}  {}",
+            "{}  {:<28} {:<16} {}{}  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
             render::state_line(&t["state"]),
+            render::merge_suffix(t, true),
             render::cost_cell(t)
         );
     }
@@ -582,6 +583,12 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
         print_json(&d);
         return Ok(());
     }
+    for project in d["config_warnings"].as_array().into_iter().flatten() {
+        print_config_warnings(
+            &project["warnings"],
+            project["project_name"].as_str().unwrap_or(""),
+        );
+    }
     let alerts = d["alerts"].as_array().cloned().unwrap_or_default();
     let waiting = d["waiting"].as_array().cloned().unwrap_or_default();
     let running = d["running"].as_array().cloned().unwrap_or_default();
@@ -611,10 +618,11 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
     for e in &waiting {
         let t = &e["task"];
         println!(
-            "  {}  {:<28} {}  ·  {}",
+            "  {}  {:<28} {}{}  ·  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             render::state_line(&t["state"]),
+            render::merge_suffix(t, false),
             e["project_name"].as_str().unwrap_or_default()
         );
         if let Some(next) = render::next_step(t) {
@@ -628,10 +636,11 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
     for e in &running {
         let t = &e["task"];
         let mut line = format!(
-            "  {}  {:<28} {}",
+            "  {}  {:<28} {}{}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"])
+            render::state_line(&t["state"]),
+            render::merge_suffix(t, false)
         );
         let cost = render::cost_cell(t);
         if !cost.is_empty() {
@@ -680,7 +689,16 @@ fn task_detail(got: &Value) {
         t["id"].as_str().unwrap_or_default(),
         t["title"].as_str().unwrap_or_default()
     );
-    println!("  状态      {}", render::state_line(&t["state"]));
+    print_config_warnings(
+        &got["config_warnings"],
+        got["project"]["name"].as_str().unwrap_or(""),
+    );
+    println!(
+        "  状态      {}{}",
+        render::state_line(&t["state"]),
+        render::merge_suffix(t, false)
+    );
+
     if let Some(cost) = got.get("cost") {
         println!(
             "  费用      {}（{} 个会话，其中 {} 个无计费数据）",
@@ -1156,6 +1174,17 @@ fn rpc(c: &mut Client, a: &Args) -> Result<()> {
     };
     print_json(&c.call(&method, params)?);
     Ok(())
+}
+
+fn print_config_warnings(warnings: &Value, project: &str) {
+    for warning in warnings
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        println!("注意：项目 {project}：{warning}");
+    }
 }
 
 #[cfg(test)]

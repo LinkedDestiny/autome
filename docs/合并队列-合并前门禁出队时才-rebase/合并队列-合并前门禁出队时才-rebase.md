@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/25
+implementation-round: 5/25
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-04：过期显示与合并队列的输出（D5 渲染、D7）
+next-action: 审计 M-04；通过后实现 M-05 README 与技术设计文档
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -283,7 +283,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 回答开放问题 8、12。
 
 - git 层新增 `git::behind_count(repo, branch, base) -> Result<u32>`（`git rev-list --count <branch>..<base>`）。
-- `task_json` 增加一个 `merge` 对象（终结任务为 `null`），于是 `task.get`、`dashboard.get`、`task.list`（`autome ls`）一起带出：
+- `task_json` 增加一个 `merge` 对象（终结任务为 `null`），于是 `task.get`、`dashboard.get`、`project.get.tasks`（`autome ls` 的实际列表数据源）一起带出：
 
 ```json
 "merge": {
@@ -340,7 +340,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
   且改了 `watch`）会让它重新排到队尾——可接受，记 Backlog B-03。已授权任务从取资格起持锁，本项目的合并不会在这段间隙里推进 main；
   未授权任务没有锁，仍按 G5 显示过期。M-01 有专门用例钉住常见路径。
 - R3 暂停后恢复的持锁者不会补拿锁：恢复后作业已存在，收结果时不持锁；若期间 main 前进，走 T-10 回退。可接受（D8 兜底），记 B-02。
-- R4 读路径调 git：`task.list` 对每个停在合并卡点的任务一次 `rev-list --count`；失败降级为 `null`。
+- R4 读路径调 git：`project.get` 对每个停在合并卡点的任务一次 `rev-list --count`；失败降级为 `null`。
 - R5 `apps/web` / `apps/desktop` 对任务 JSON 或事件种类的穷举：新增字段 / 事件若使其测试变红，实现轮最小修补；合并前门禁
   （`sh scripts/ci-local.sh`）会跑它们。
 - R6 改名 `Transition.merge_requested` → `grants_merge_request` 触及多处域测试；集中在 M-02 一次改完，避免半新半旧的含义。
@@ -403,7 +403,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 | M-01 | 已完成 | 合并队列核心：`[merge] auto` 读取、出队对齐、项目合并临界区 | 0 | merge-queue |
 | M-02 | 已完成 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
 | M-03 | 已完成 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
-| M-04 | 开放 | 过期显示与合并队列的输出 | 0 | merge-view |
+| M-04 | 待审 | 过期显示与合并队列的输出 | 0 | merge-view |
 | M-05 | 开放 | README 与技术设计文档 | 0 | docs |
 
 ## 里程碑范围
@@ -441,6 +441,8 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 - 内容：D6。
 
 ### M-04 范围
+
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r5-impl.md · 待审 · 实现 #5
 
 - 结果：停在合并卡点而 main 已前进的任务在 `task.get` / `status` / `ls` 上显示落后 N 个提交与「合并时会重新 rebase 并再跑一次
   门禁」；按合并后 rebase + 门禁 1 次 + 合并；`autome run` 对新事件各打一行；`status` 显示配置警告。

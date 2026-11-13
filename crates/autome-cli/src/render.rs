@@ -474,6 +474,57 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             short(&s("sha"))
         ),
         "gate.skipped" => format!("{subject} {}跳过：{}", node_label(&s("node")), s("reason")),
+        "merge.locked" => {
+            format!("{subject} 进入合并临界区：门禁通过即合并，期间本项目不开始别的合并")
+        }
+        "merge.unlocked" => format!("{subject} 离开合并临界区"),
+        "merge.waiting" => format!(
+            "{subject} 等 {} 合并完成后{}",
+            s("holder"),
+            if p["node"] == "merging" {
+                "再合并"
+            } else {
+                "再开跑门禁"
+            }
+        ),
+        "merge.direct" => format!(
+            "{subject} 门禁通过，直接合并（已授权：{}）",
+            match p["by"].as_str() {
+                Some("user") => "你预先同意了",
+                Some("project") => "项目开启了自动合并",
+                _ => "按合并时分支落后",
+            }
+        ),
+        "merge.auto" if p["by"] == "user" => format!(
+            "{subject} {}",
+            if p["active"] == true {
+                "已预先同意合并：走到合并卡点时直接合并"
+            } else {
+                "已撤销预先同意合并"
+            }
+        ),
+        "merge.rebased" if p["at"] == "dequeue" => {
+            let repos = p["repos"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|repo| {
+                    let name = repo["repo"].as_str().unwrap_or("");
+                    let prefix = if name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{name} → ")
+                    };
+                    format!(
+                        "{prefix}{} @ {}",
+                        repo["onto"].as_str().unwrap_or(""),
+                        short(repo["base_sha"].as_str().unwrap_or(""))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("；");
+            format!("{subject} 出队时已 rebase 到 {repos}")
+        }
         "merge.auto" if p["active"].as_bool() == Some(true) => {
             let repos = p["repos"]
                 .as_array()
@@ -525,6 +576,57 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         _ => return None,
     };
     Some(line)
+}
+
+/// Shared by list, dashboard status and task details. Old servers omit `merge`.
+pub fn merge_suffix(task: &Value, compact: bool) -> String {
+    let m = &task["merge"];
+    let mut parts = Vec::new();
+    if let Some(n) = m["stale"]["behind"].as_u64().filter(|n| *n > 0) {
+        let gated = m["stale"]["gated"] == true;
+        let bases = m["stale"]["repos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["base"].as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        if compact {
+            parts.push(format!(
+                "{}（落后 {n}）",
+                if gated {
+                    "结果已过期"
+                } else {
+                    "分支已落后"
+                }
+            ));
+        } else if gated {
+            parts.push(format!(
+                "门禁结果基于旧的 {bases}（落后 {n} 个提交），合并时会重新 rebase 并再跑一次门禁"
+            ));
+        } else {
+            parts.push(format!("分支落后 {bases} {n} 个提交，合并时会先 rebase"));
+        }
+    }
+    if m["authorized"] == true {
+        parts.push(
+            if m["authorized_by"] == "project" {
+                "项目已开启自动合并"
+            } else if compact {
+                "已同意合并"
+            } else {
+                "已预先同意合并"
+            }
+            .into(),
+        );
+    }
+    if let Some(holder) = m["waiting_for"].as_str() {
+        parts.push(format!(
+            "等 {holder} 合并{}",
+            if compact { "" } else { "完成" }
+        ));
+    }
+    parts.into_iter().map(|p| format!(" · {p}")).collect()
 }
 
 #[cfg(test)]
@@ -1156,4 +1258,94 @@ fn budget_alert_event_and_alert_lines() {
         event_line("project.alert", "p", &json!({"kind": "main_gate_failed"})).unwrap(),
         "报警（p）：main_gate_failed  → autome alerts"
     );
+}
+
+#[cfg(test)]
+mod merge_view_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn merge_view_event_lines_for_the_merge_queue() {
+        for (kind, payload, expected) in [
+            ("merge.locked", json!({}), "进入合并临界区"),
+            ("merge.unlocked", json!({}), "离开合并临界区"),
+            (
+                "merge.waiting",
+                json!({"node":"merge_gate","holder":"T-2"}),
+                "等 T-2 合并完成后再开跑门禁",
+            ),
+            (
+                "merge.waiting",
+                json!({"node":"merging","holder":"T-2"}),
+                "等 T-2 合并完成后再合并",
+            ),
+            (
+                "merge.auto",
+                json!({"active":true,"by":"user"}),
+                "已预先同意合并",
+            ),
+            (
+                "merge.auto",
+                json!({"active":false,"by":"user"}),
+                "已撤销预先同意合并",
+            ),
+        ] {
+            assert!(
+                event_line(kind, "T-1", &payload)
+                    .unwrap()
+                    .contains(expected)
+            );
+        }
+        for (by, expected) in [
+            ("user", "你预先同意了"),
+            ("project", "项目开启了自动合并"),
+            ("behind", "按合并时分支落后"),
+        ] {
+            assert!(
+                event_line("merge.direct", "T-1", &json!({"by":by}))
+                    .unwrap()
+                    .contains(expected)
+            );
+        }
+        for repos in [
+            json!([{"repo":"","onto":"main","base_sha":"abcdef123456","head":"wrong"}]),
+            json!([{"repo":"api","onto":"main","base_sha":"abcdef123456"},{"repo":"web","onto":"master","base_sha":"123456abcdef"}]),
+        ] {
+            let line = event_line(
+                "merge.rebased",
+                "T-1",
+                &json!({"at":"dequeue","repos":repos}),
+            )
+            .unwrap();
+            assert!(line.contains("出队时已 rebase 到"));
+            assert!(line.contains("main @ abcdef"));
+            assert!(!line.contains("wrong"));
+        }
+    }
+    #[test]
+    fn merge_view_state_suffixes_for_ls_and_status() {
+        assert_eq!(merge_suffix(&json!({}), false), "");
+        for gated in [true, false] {
+            let task = json!({"merge":{"authorized":true,"authorized_by":"user","waiting_for":"T-2","stale":{"behind":1,"gated":gated,"repos":[{"base":"main"}]}}});
+            let full = merge_suffix(&task, false);
+            assert!(full.contains("已预先同意合并"));
+            assert!(full.contains("等 T-2 合并完成"));
+            assert_eq!(full.contains("再跑一次门禁"), gated);
+            assert!(full.contains("main"));
+            let short = merge_suffix(&task, true);
+            assert!(short.contains("落后 1"));
+            assert!(short.contains("已同意合并"));
+        }
+        assert!(
+            merge_suffix(
+                &json!({"merge":{"authorized":true,"authorized_by":"project"}}),
+                false
+            )
+            .contains("项目已开启自动合并")
+        );
+        assert_eq!(
+            merge_suffix(&json!({"merge":{"stale":{"behind":0}}}), true),
+            ""
+        );
+    }
 }

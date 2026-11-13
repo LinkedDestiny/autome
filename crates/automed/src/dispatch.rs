@@ -633,6 +633,7 @@ fn task_json(
         // Where this task's documents live inside the repository holding
         // them, frozen when it was created. The panel opens paths under it.
         "doc_dir": t.doc_dir(),
+        "merge": crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))?,
     });
     if t.kind == TaskKind::Bug {
         value["fix_round"] = json!(ctx.store.count_events(&t.id, "bug.fix_round_started")?);

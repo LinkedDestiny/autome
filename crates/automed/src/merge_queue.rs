@@ -103,3 +103,63 @@ pub fn enter(ctx: &mut Ctx, task: &TaskRecord) -> Result<bool> {
     }
     Ok(true)
 }
+
+/// Read-only projection; a missing checkout must not hide the task itself.
+pub fn view(ctx: &Ctx, task: &TaskRecord) -> Result<serde_json::Value> {
+    if task.state.is_terminal() {
+        return Ok(serde_json::Value::Null);
+    }
+    let auth = authorization(ctx, task)?;
+    let waiting = match task.state {
+        TaskState::Active {
+            node: Node::MergeGate,
+        } => waiting_for(ctx, task)?,
+        TaskState::Active {
+            node: Node::Merging,
+        } => holder(ctx, &task.project_id)?.filter(|id| id != &task.id),
+        _ => None,
+    };
+    let stale = if task.state
+        == (TaskState::Active {
+            node: Node::AwaitMerge,
+        }) {
+        match stale_view(ctx, task) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(task_id = %task.id, %error, "cannot read merge staleness");
+                serde_json::Value::Null
+            }
+        }
+    } else {
+        serde_json::Value::Null
+    };
+    Ok(
+        json!({"authorized":auth.is_some(), "authorized_by":auth.map(AuthSource::as_str),
+        "holds_section":holds(ctx, task)?, "waiting_for":waiting, "stale":stale}),
+    )
+}
+fn stale_view(ctx: &Ctx, task: &TaskRecord) -> Result<serde_json::Value> {
+    let project = ctx.store.get_project(&task.project_id)?;
+    let layout = crate::layout::TaskLayout::of(
+        &project,
+        &task.slug,
+        &crate::scheduler::working_repos(&project, task),
+    );
+    let mut repos = Vec::new();
+    let mut total = 0u64;
+    for slot in &layout.repos {
+        let behind = crate::git::behind_count(&slot.repo_root, &slot.branch, &slot.base)?;
+        total += u64::from(behind);
+        repos.push(json!({"repo":slot.name,"base":slot.base,"behind":behind}));
+    }
+    if total == 0 {
+        return Ok(serde_json::Value::Null);
+    }
+    let global = config_io::load_global(&ctx.autome_home)?;
+    let local = config_io::load_project(Path::new(&project.path))?;
+    let gated = task.kind == autome_domain::task::TaskKind::Bug
+        || autome_domain::config::resolve(&global, &local)
+            .gate
+            .is_some();
+    Ok(json!({"behind":total,"gated":gated,"repos":repos}))
+}

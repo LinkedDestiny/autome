@@ -754,3 +754,180 @@ fn merge_conflict_bug_streak_and_budget_stop_before_launching_another_fix() {
         }
     }
 }
+
+fn mv_read(w: &mut World, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let result = crate::dispatch::handle_command(
+        &mut w.ctx,
+        &crate::ipc::Command {
+            request_id: "view".into(),
+            command_id: crate::store::new_id("view"),
+            expected_revision: None,
+            protocol_version: crate::ipc::PROTOCOL_VERSION,
+            method: method.into(),
+            params,
+        },
+    );
+    match result.reply.outcome {
+        crate::ipc::ReplyOutcome::Ok { payload, .. } => payload,
+        other => panic!("{other:?}"),
+    }
+}
+#[test]
+fn merge_view_behind_count_counts_commits_only_on_the_base() {
+    let mut w = mq_world("view-count");
+    let t = mq_task(&mut w, "A");
+    assert_eq!(git::behind_count(&w.repo, &t.branch(), "main").unwrap(), 0);
+    mq_move(&w);
+    assert_eq!(git::behind_count(&w.repo, &t.branch(), "main").unwrap(), 1);
+    assert!(git::behind_count(&w.repo, "missing", "main").is_err());
+    assert!(git::behind_count(&w.repo, "", "missing").is_err());
+}
+#[test]
+fn merge_view_task_get_reports_a_stale_await_merge() {
+    let mut w = mq_world("view-stale");
+    let t = mq_task(&mut w, "A");
+    mq_move(&w);
+    for node in [
+        Node::MergeGate,
+        Node::AwaitMerge,
+        Node::Implement,
+        Node::Merging,
+    ] {
+        w.set_state(&t.id, TaskState::Active { node });
+        let got = mv_read(&mut w, "task.get", json!({"task_id":t.id}));
+        let stale = &got["task"]["merge"]["stale"];
+        if node == Node::AwaitMerge {
+            assert_eq!(stale["behind"], 1);
+            assert_eq!(stale["gated"], true);
+            assert_eq!(stale["repos"][0]["base"], "main");
+        } else {
+            assert!(stale.is_null());
+        }
+    }
+    w.set_state(
+        &t.id,
+        TaskState::Active {
+            node: Node::AwaitMerge,
+        },
+    );
+    git::rebase(&w.repo.join(".worktree/A"), "main").unwrap();
+    assert!(
+        mv_read(&mut w, "task.get", json!({"task_id":t.id}))["task"]["merge"]["stale"].is_null()
+    );
+    std::fs::write(w.repo.join("another-main"), "another\n").unwrap();
+    git::commit_paths(&w.repo, &["another-main"], "move again").unwrap();
+    std::fs::write(
+        config_io::project_config_path(&w.repo),
+        "[merge]\nauto = true\n",
+    )
+    .unwrap();
+    let mut snapshot = w.ctx.store.get_task(&t.id).unwrap();
+    let plain = crate::merge_queue::view(&w.ctx, &snapshot).unwrap();
+    assert_eq!(plain["stale"]["gated"], false);
+    assert_eq!(plain["stale"]["behind"], 1);
+    snapshot.kind = TaskKind::Bug;
+    assert_eq!(
+        crate::merge_queue::view(&w.ctx, &snapshot).unwrap()["stale"]["gated"],
+        true
+    );
+    for (active, by, expected) in [
+        (true, "user", json!("user")),
+        (true, "behind", json!("behind")),
+        (false, "user", serde_json::Value::Null),
+    ] {
+        w.ctx
+            .store
+            .append_event("merge.auto", &t.id, json!({"active":active,"by":by}))
+            .unwrap();
+        assert_eq!(
+            mv_read(&mut w, "task.get", json!({"task_id":t.id}))["task"]["merge"]["authorized_by"],
+            expected
+        );
+    }
+    let listed = mv_read(&mut w, "project.get", json!({"project_id":t.project_id}));
+    assert_eq!(listed["tasks"][0]["merge"]["stale"]["behind"], 1);
+    // Missing branch: read path degrades, rather than failing task.get.
+
+    let mut broken = w.ctx.store.get_task(&t.id).unwrap();
+    broken.slug = "missing".into();
+    assert!(crate::merge_queue::view(&w.ctx, &broken).unwrap()["stale"].is_null());
+    w.set_state(&t.id, TaskState::Cancelled);
+    assert!(mv_read(&mut w, "task.get", json!({"task_id":t.id}))["task"]["merge"].is_null());
+    // Workspace totals include every member, even with different default branches.
+    w.set_state(
+        &t.id,
+        TaskState::Active {
+            node: Node::AwaitMerge,
+        },
+    );
+    let extra = w.root.join("extra");
+    std::fs::create_dir_all(&extra).unwrap();
+    git::init(&extra, "trunk").unwrap();
+    std::fs::write(extra.join("file"), "one").unwrap();
+    git::commit_paths(&extra, &["file"], "initial").unwrap();
+    let checkout = w.root.join(".worktree/A/extra");
+    git::worktree_add(&extra, checkout.to_str().unwrap(), &t.branch(), "trunk").unwrap();
+    for content in ["two", "three"] {
+        std::fs::write(extra.join("file"), content).unwrap();
+        git::commit_paths(&extra, &["file"], "advance").unwrap();
+    }
+    let mut project = w.ctx.store.get_project(&t.project_id).unwrap();
+    project.path = w.root.to_string_lossy().into_owned();
+    project.kind = autome_domain::project::ProjectKind::Workspace;
+    project.docs_repo = Some("repo".into());
+    project.members = [("repo", "main"), ("extra", "trunk")]
+        .into_iter()
+        .map(|(name, base)| autome_domain::project::Member {
+            name: name.into(),
+            default_branch: base.into(),
+        })
+        .collect();
+    w.ctx.store.replace_project(&project).unwrap();
+    let got = mv_read(&mut w, "task.get", json!({"task_id":t.id}));
+    assert_eq!(got["task"]["merge"]["stale"]["behind"], 3);
+    assert_eq!(
+        got["task"]["merge"]["stale"]["repos"][1],
+        json!({"repo":"extra","base":"trunk","behind":2})
+    );
+    std::fs::rename(&extra, w.root.join("missing-extra")).unwrap();
+    assert!(
+        mv_read(&mut w, "task.get", json!({"task_id":t.id}))["task"]["merge"]["stale"].is_null()
+    );
+}
+#[test]
+fn merge_view_dashboard_reports_authorization_waiting_and_warnings() {
+    let mut w = mq_world("view-dashboard");
+    let a = mq_task(&mut w, "A");
+    let b = mq_task(&mut w, "B");
+    crate::merge_queue::enter(&mut w.ctx, &a).unwrap();
+    let got = mv_read(&mut w, "dashboard.get", json!({}));
+    let entries = got["running"].as_array().unwrap();
+    let first = entries.iter().find(|e| e["task"]["id"] == a.id).unwrap();
+    let second = entries.iter().find(|e| e["task"]["id"] == b.id).unwrap();
+    assert_eq!(first["task"]["merge"]["holds_section"], true);
+    assert_eq!(first["task"]["merge"]["authorized_by"], "project");
+    assert_eq!(second["task"]["merge"]["waiting_for"], a.id);
+    assert!(second["gate_queue_position"].is_null());
+    w.set_state(
+        &b.id,
+        TaskState::Active {
+            node: Node::Implement,
+        },
+    );
+    assert!(
+        mv_read(&mut w, "task.get", json!({"task_id":b.id}))["task"]["merge"]["waiting_for"]
+            .is_null()
+    );
+    std::fs::write(
+        config_io::project_config_path(&w.repo),
+        "[merge]\nauto = true\n",
+    )
+    .unwrap();
+    let got = mv_read(&mut w, "dashboard.get", json!({}));
+    assert!(
+        got["config_warnings"][0]["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("没有配置 [gate]")
+    );
+}

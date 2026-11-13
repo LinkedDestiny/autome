@@ -349,3 +349,38 @@ fn merge_conflict_a_bug_dequeue_conflict_returns_to_the_fix_round() {
     assert!(w.prompt(4).contains("修复轮"));
     assert_eq!(setup_events(&w, &id, "merge.direct").len(), 1);
 }
+
+#[test]
+fn merge_view_a_stale_await_merge_shows_behind_and_one_gate_run_merges_it() {
+    needs_git!();
+    let mut w = World::new("view-stale-merge");
+    w.configure("[gate]\ncommand = 'git diff --exit-code'\ntimeout_minutes = 5\n");
+    let a = wait_for_automatic_merge(&mut w, "view first");
+    let b = wait_for_automatic_merge(&mut w, "view second");
+    ok(&w.call("task.merge", json!({"task_id":a})));
+    w.settle();
+    assert_eq!(w.state(&a), "done");
+    let task = w.ctx.store.get_task(&b).unwrap();
+    let count = std::process::Command::new("git")
+        .current_dir(&w.repo)
+        .args(["rev-list", "--count", &format!("{}..main", task.branch())])
+        .output()
+        .unwrap();
+    assert!(count.status.success());
+    let count: u64 = String::from_utf8(count.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(count > 0);
+    let got = w.call("task.get", json!({"task_id":b}));
+    assert_eq!(ok(&got)["task"]["merge"]["stale"]["behind"], count);
+    let before = setup_events(&w, &b, "gate.started").len();
+    ok(&w.call("task.merge", json!({"task_id":b})));
+    w.settle();
+    assert_eq!(w.state(&b), "done");
+    let events = setup_events(&w, &b, "gate.started");
+    assert_eq!(events.len() - before, 1);
+    assert_eq!(events.last().unwrap().1["node"], "merge_gate");
+    assert!(!setup_events(&w, &b, "merge.rebased").is_empty());
+}

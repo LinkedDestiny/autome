@@ -919,6 +919,19 @@ pub struct ChangeSummary {
     pub total_deleted: u32,
 }
 
+/// Commits reachable from the base but not from the task branch.
+pub fn behind_count(repo: &Path, branch: &str, base: &str) -> Result<u32> {
+    let range = format!("{branch}..{base}");
+    let args = ["rev-list", "--count", &range];
+    let output = run_ok(repo, &args)?;
+    output.line().parse().map_err(|e| GitError {
+        argv: args.iter().map(|s| s.to_string()).collect(),
+        code: None,
+        stderr: output.stdout.clone(),
+        detail: format!("invalid commit count: {e}"),
+    })
+}
+
 /// What the merge panel shows (requirement T-05): commit count, file list and
 /// per-file line counts. Deliberately not a line-level diff — the design sends
 /// the user to their editor for that.
