@@ -19,7 +19,7 @@ function gateway(fail?: string): KernelGateway {
 }
 test('1 reads list once and each detail once through the gateway', async () => {
   const g = gateway(); await loadShell(g);
-  expect(vi.mocked(g.read).mock.calls).toEqual([[{ method: 'project.list', params: {} }], ...['P-1', 'P-2'].map(project_id => [{ method: 'project.get', params: { project_id } }])]);
+  expect(vi.mocked(g.read).mock.calls).toEqual([[{ method: 'project.list', params: {} }], ...['P-1', 'P-2'].map(project_id => [{ method: 'project.get', params: { project_id } }]), [{ method: 'dashboard.get', params: {} }]]);
   expect(g.write).not.toHaveBeenCalled();
 });
 test('2 shared classification drives counts and exact sorted overview membership', async () => {

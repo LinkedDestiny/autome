@@ -1,0 +1,219 @@
+{
+  "probe": {
+    "exists": true,
+    "is_repo_root": true,
+    "members": [],
+    "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-i1s4Um/home/single",
+    "suggest_workspace": false,
+    "suggested_docs_repo": null
+  },
+  "add": {
+    "init": [
+      {
+        "action": "created",
+        "path": ".autome/skill/run_session.sh"
+      },
+      {
+        "action": "created",
+        "path": ".autome/rules/README.md"
+      },
+      {
+        "action": "created",
+        "path": ".gitignore"
+      },
+      {
+        "action": "created",
+        "path": "AGENTS.md"
+      }
+    ],
+    "pending_commit": [
+      ".autome/skill/run_session.sh",
+      ".autome/rules/README.md",
+      ".gitignore",
+      "AGENTS.md"
+    ],
+    "project": {
+      "added_at": "2026-11-13T13:30:01Z",
+      "default_branch": "main",
+      "display_name": "single",
+      "disposition": "adopted_existing",
+      "docs_repo": null,
+      "id": "prj-f27711ac4e9d4175af05b0e3440618c2",
+      "kind": "repo",
+      "members": [],
+      "onboarding": {
+        "onboarding": "in_progress",
+        "step": 3
+      },
+      "parallel_limit": 3,
+      "path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-i1s4Um/home/single",
+      "removed_at": null
+    },
+    "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf"
+  },
+  "skip": {
+    "init_commit": "0e9d6eede0e124e3161d724ca4f9eba83489e5cf",
+    "onboarding": {
+      "onboarding": "skipped"
+    }
+  },
+  "config": {
+    "global": {
+      "gate": {
+        "concurrency": 1
+      },
+      "loop_defaults": {
+        "budget_factor": 5,
+        "design_rounds": 15,
+        "parallel": 3,
+        "session_minutes": 120
+      },
+      "roles": {
+        "adjudicate": {
+          "effort": null,
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "audit": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "impl": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "plan": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "retro": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "review": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        }
+      },
+      "ui": {
+        "theme": "system"
+      }
+    },
+    "resolved": {
+      "bug": {
+        "fix_rounds": 3
+      },
+      "gate": null,
+      "gate_concurrency": 1,
+      "gate_reuse_for_main_check": true,
+      "gate_same_failure_limit": 3,
+      "loop_defaults": {
+        "budget_factor": 5,
+        "design_rounds": 15,
+        "parallel": 3,
+        "session_minutes": 120
+      },
+      "merge_after": null,
+      "merge_auto": false,
+      "retry": {
+        "attempts": 2,
+        "backoff_seconds": 60
+      },
+      "roles": [
+        {
+          "config": {
+            "effort": "high",
+            "enabled": true,
+            "model": "",
+            "runtime": "claude",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "plan"
+        },
+        {
+          "config": {
+            "effort": "high",
+            "enabled": true,
+            "model": "",
+            "runtime": "codex",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "review"
+        },
+        {
+          "config": {
+            "effort": null,
+            "enabled": true,
+            "model": "",
+            "runtime": "claude",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "adjudicate"
+        },
+        {
+          "config": {
+            "effort": "high",
+            "enabled": true,
+            "model": "",
+            "runtime": "claude",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "impl"
+        },
+        {
+          "config": {
+            "effort": "high",
+            "enabled": true,
+            "model": "",
+            "runtime": "codex",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "audit"
+        },
+        {
+          "config": {
+            "effort": "high",
+            "enabled": true,
+            "model": "",
+            "runtime": "codex",
+            "skills": []
+          },
+          "provenance": "global",
+          "role": "retro"
+        }
+      ]
+    },
+    "scope": "prj-1ca1a7903d884889a22f1c8bd8858c8c",
+    "violations": []
+  },
+  "alert": {
+    "created_at": "2026-11-13T14:34:11Z",
+    "detail": "任务 T-1 累计费用 $0.25，超过本项目单任务预算 $0.01（.autome/config.toml [budget] per_task_usd）。任务照常继续；要停下用 autome stop T-1。",
+    "id": "alr-185c415fcde140f58b018b94342aa728",
+    "kind": "budget_exceeded",
+    "project_id": "prj-81836018e22e4dc4b56fc58e6bb1b3ad",
+    "task_id": "T-1"
+  }
+}

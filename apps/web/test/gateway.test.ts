@@ -39,7 +39,7 @@ test('core.restart 本地处理', async () => {
 test('六种本地 op 未注册 501，注册后调用处理器', async () => {
   const { core, gateway } = setup();
   for (const [op, params] of [
-    ['project.pick', {}], ['project.confirm', {}], ['open.path', { kind: 'log', session_id: 's' }],
+    ['project.pick', {}], ['project.confirm', { path: '~/x' }], ['open.path', { kind: 'log', session_id: 's' }],
     ['open.terminal', {}], ['env.install', { component: 'git' }], ['env.login', { component: 'claude' }],
   ] as const) {
     expect((await gateway.write({ op, params })).status).toBe(501);

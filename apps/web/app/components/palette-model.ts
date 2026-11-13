@@ -1,3 +1,4 @@
+import { ADMIN } from '../lib/admin-labels.ts';
 import { STATE_LABELS } from '../lib/labels.ts';
 import { columnOf } from './task-columns.ts';
 import { newTaskHref, projectHref, taskHref } from './nav-links.ts';
@@ -31,6 +32,7 @@ export function buildCandidates(shell: ShellData, gate: Gate): Candidate[] {
     }),
     ...shell.projects.map(project => ({ key: `project:${project.id}`, id: project.id, title: project.name, project: project.name, subtitle: '项目', href: projectHref(project.id), defaultVisible: true, disabled: false })),
     ...shell.projects.map(project => ({ key: `new:${project.id}`, id: project.id, title: `在「${project.name}」新建任务卡`, project: project.name, subtitle: '新建任务卡', href: newTaskHref(project.id), defaultVisible: true, disabled: !gate.allowed, reason: gate.reason })),
+    { key: 'add-project', id: 'add-project', title: ADMIN.add, project: '', subtitle: ADMIN.add, href: '/projects/new', defaultVisible: true, disabled: false },
   ];
 }
 export function filterCandidates(list: Candidate[], query: string) {

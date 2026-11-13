@@ -32,7 +32,8 @@ it('根 loader 白名单读取项目列表和详情，空列表和单项目都�
   const g = gateway(); const result = await loader(args(g));
   expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
   expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
-  expect(g.read).toHaveBeenCalledTimes(2);
+  expect(g.read).toHaveBeenNthCalledWith(3, { method: 'dashboard.get', params: {} });
+  expect(g.read).toHaveBeenCalledTimes(3);
   expect(g.write).not.toHaveBeenCalled();
   expect(result.projects).toEqual([{ id: 'P-1', name: '演示项目甲', counts: { running: 0, needs_you: 0 } }]);
   vi.mocked(g.read).mockResolvedValue({ status: 200, body: { ok: true, payload: { projects: [] } } });
@@ -53,7 +54,8 @@ async function checkSSR(build: ServerBuild, mode: string) {
   expect(response.status).toBe(200); expect(await response.text()).toContain('演示项目甲');
   expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
   expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
-  expect(g.read).toHaveBeenCalledTimes(2);
+  expect(g.read).toHaveBeenNthCalledWith(3, { method: 'dashboard.get', params: {} });
+  expect(g.read).toHaveBeenCalledTimes(3);
 }
 it('开发 Vite SSR 取得 Node 注入的网关，不监听端口', async () => {
   const vite = await createServer({ root, server: { middlewareMode: true, hmr: false, watch: null } });

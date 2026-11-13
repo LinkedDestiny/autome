@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
 import { byKind, bySubjectParam, liveShouldRevalidate, revalidateAll, revalidateForEvents } from '../app/lib/live-routes.ts';
+import { shouldRevalidate as addProjectShouldRevalidate } from '../app/routes/projects.new.tsx';
 const event = (kind = 'task.updated', subject = 'T-1') => ({ seq: 1, kind, subject, payload: {} });
 const routers: ReturnType<typeof createMemoryRouter>[] = [];
 afterEach(() => { for (const router of routers.splice(0)) router.dispose(); });
@@ -72,6 +73,27 @@ it('事件待处理中参数导航与表单仍遵循默认重验', async () => {
 it('reload 重验所有声明 live 的路由', async () => {
   const c = await setup(); await revalidateAll(() => c.router.revalidate());
   expect(c.counts).toEqual({ project: 1, task: 1, other: 1 });
+});
+it('添加页随项目事件及 reload 重验，忽略任务事件并保留导航与表单重验', async () => {
+  const read = vi.fn(() => null);
+  const router = createMemoryRouter([{ path: '/projects/new', loader: read, action: () => null,
+    shouldRevalidate: addProjectShouldRevalidate }], { initialEntries: ['/projects/new?path=~/repo'] });
+  routers.push(router);
+  await vi.waitFor(() => expect(router.state.initialized).toBe(true));
+  read.mockClear();
+  for (const kind of ['project.added', 'project.removed']) {
+    await revalidateForEvents([event(kind, 'P-1')], () => router.revalidate());
+  }
+  expect(read).toHaveBeenCalledTimes(2);
+  await revalidateForEvents([event('task.updated')], () => router.revalidate());
+  await revalidateForEvents([], () => router.revalidate());
+  expect(read).toHaveBeenCalledTimes(2);
+  await revalidateAll(() => router.revalidate());
+  expect(read).toHaveBeenCalledTimes(3);
+  await router.navigate('/projects/new?path=~/other');
+  expect(read).toHaveBeenCalledTimes(4);
+  await router.navigate('/projects/new?path=~/other', { formMethod: 'post', formData: new FormData() });
+  expect(read).toHaveBeenCalledTimes(5);
 });
 function missingLive(files: string[]) {
   return files.filter(file => {

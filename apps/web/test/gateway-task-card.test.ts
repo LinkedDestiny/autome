@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
@@ -114,7 +114,7 @@ test('project.probe 经 HTTP 由真实内核展开家目录，越界路径被拒
   const s = await setup();
   const response = await s.post('read', { method: 'project.probe', params: { path: '~/repo' } });
   expect(response.status).toBe(200);
-  expect((await response.json()).payload).toMatchObject({ path: join(home, 'repo'), exists: true });
+  expect((await response.json()).payload).toMatchObject({ path: realpathSync(join(home, 'repo')), exists: true });
   for (const path of ['/etc', '~/../etc']) {
     const refused = await s.post('read', { method: 'project.probe', params: { path } });
     expect(refused.status).toBe(400);

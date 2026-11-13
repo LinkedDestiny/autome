@@ -18,7 +18,7 @@ const states: TaskState[] = [
 const tasks = states.map((state, i) => task(state, `T-${i + 1}`, i % 2 ? 'bug' : 'feature'));
 function render(data: BoardData, url = '/projects/P-1') {
   const Stub = createRoutesStub([{ id: 'board', path: '/projects/:id', Component: ProjectBoard }]);
-  return renderToStaticMarkup(createElement(Stub, { initialEntries: [url], hydrationData: { loaderData: { board: data } } }));
+  return renderToStaticMarkup(createElement(Stub, { initialEntries: [url], hydrationData: { loaderData: { board: { ...data, alerts: [] } } } }));
 }
 const data = (rows = tasks, showAll = false): BoardData => ({ project: { id: 'P-1', display_name: '项目甲' }, tasks: rows, now, showAll });
 test('1 fourteen state shapes reuse columnOf and omit unknown states', () => {

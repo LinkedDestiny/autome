@@ -1,10 +1,11 @@
+import { alertCounts, type AlertDashboard } from './alerts-data.ts';
 import type { KernelGateway } from '../load-context.ts';
 import type { TaskState } from '../lib/labels.ts';
 import { columnOf, countByColumn } from './task-columns.ts';
 
 export interface ShellTask { id: string; kind: string; title: string; project_id: string; state: TaskState; fix_round?: number }
-export interface ShellProject { id: string; name: string; counts: { running: number; needs_you: number } | null; error?: string }
-export interface ShellData { kernel: { ok: boolean; error?: string }; projects: ShellProject[]; tasks: ShellTask[] }
+export interface ShellProject { id: string; name: string; counts: { running: number; needs_you: number } | null; error?: string; alerts?: number }
+export interface ShellData { kernel: { ok: boolean; error?: string }; projects: ShellProject[]; tasks: ShellTask[]; environment?: unknown }
 export async function loadShell(gateway: KernelGateway | null): Promise<ShellData> {
   if (!gateway) return { kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [] };
   const result = await gateway.read({ method: 'project.list', params: {} });
@@ -20,7 +21,14 @@ export async function loadShell(gateway: KernelGateway | null): Promise<ShellDat
     const { running, needs_you } = countByColumn(tasks);
     return { project: { ...base, counts: { running, needs_you } }, tasks };
   }));
-  return { kernel: { ok: true }, projects: loaded.map(item => item.project), tasks: loaded.flatMap(item => item.tasks) };
+  const dashboard = await gateway.read({ method: 'dashboard.get', params: {} });
+  const extra = dashboard.body.ok ? dashboard.body.payload as AlertDashboard : {};
+  const counts = alertCounts(extra);
+  return { kernel: { ok: true }, projects: loaded.map(({ project }) => ({ ...project,
+    ...(counts.has(project.id) ? { alerts: counts.get(project.id) } : {}),
+  })), tasks: loaded.flatMap(item => item.tasks),
+    ...(extra.environment === undefined ? {} : { environment: extra.environment }) };
+
 }
 export function overviewTasks(tasks: ShellTask[], column: 'needs_you' | 'running'): ShellTask[] {
   return tasks.filter(task => columnOf(task.state) === column).sort((a, b) => Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0));

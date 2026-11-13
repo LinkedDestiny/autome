@@ -229,19 +229,19 @@ test('the workspace answer carries a choice, never a path', () => {
   assert.equal(
     gate.validateWriteRequest({
       op: 'project.confirm',
-      params: { workspace: true, docs_repo: 'docs' },
+      params: { path: '~/x', workspace: true, docs_repo: 'docs' },
     }).ok,
     true
   );
   assert.equal(
-    gate.validateWriteRequest({ op: 'project.confirm', params: { workspace: false } }).ok,
+    gate.validateWriteRequest({ op: 'project.confirm', params: { path: '~/x', workspace: false } }).ok,
     true
   );
   for (const bad of ['../etc', 'a/b', '~/evil']) {
     assert.equal(
       gate.validateWriteRequest({
         op: 'project.confirm',
-        params: { workspace: true, docs_repo: bad },
+        params: { path: '~/x', workspace: true, docs_repo: bad },
       }).ok,
       false,
       `${bad} must be refused`
@@ -548,6 +548,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
   }
   const specific: Record<string, object> = {
     'task.set_after': { task_id: 'T-1', after: [] }, 'task.move': { task_id: 'T-1', top: true },
+    'project.confirm': { path: '~/x' }, 'project.remove': { project_id: 'p1' },
     'task.start': { task_id: 't1' }, 'task.reply': { task_id: 't1', info: '' },
     'open.path': { kind: 'log', session_id: 's1' }, 'config.set_theme': { theme: 'system' },
     'env.install': { component: 'git' }, 'env.login': { component: 'codex' },
@@ -734,4 +735,19 @@ test('创建与修改依赖的列表边界和编号格式，移动 after 是单�
     assert.equal(gate.validateWriteRequest({ op, params: { task_id: 'T-1' } }).ok, op === 'task.create');
   }
   assert.equal(gate.validateWriteRequest({ op: 'task.move', params: { task_id: 'T-1', after: ['T-2'] } }).ok, false);
+});
+
+test('project.remove 只收非空非路径 id', () => {
+  for (const params of [{}, { project_id: '' }, { project_id: '/etc' }, { project_id: 'p1', extra: true }]) assert.equal(gate.validateWriteRequest({ op: 'project.remove', params }).ok, false);
+  assert.equal(gate.validateWriteRequest({ op: 'project.remove', params: { project_id: 'p1' } }).ok, true);
+});
+test('project.confirm 严格四键、路径与布尔类型', () => {
+  for (const params of [{}, { path: '' }, { path: '~/a..b' }, { path: '~/bad\0' }, { path: '~/x', extra: 1 }, { path: '~/x', workspace: 1 }, { path: '~/x', skip_onboarding: null }, { path: '~/x', docs_repo: 1 }]) assert.equal(gate.validateWriteRequest({ op: 'project.confirm', params }).ok, false);
+  assert.equal(gate.validateWriteRequest({ op: 'project.confirm', params: { path: '~/x', workspace: true, docs_repo: 'docs', skip_onboarding: false } }).ok, true);
+});
+test('env.install 和 env.login 只收 component', () => {
+  for (const op of ['env.install','env.login']) {
+    for (const component of ['git','claude','codex','iterm2']) assert.equal(gate.validateWriteRequest({op,params:{component}}).ok,true);
+    for (const extra of [{command:'rm -rf ~'},{other:null}]) assert.equal(gate.validateWriteRequest({op,params:{component:'git',...extra}}).ok,false);
+  }
 });

@@ -1,5 +1,8 @@
 import { createTaskEvents } from './task-events.ts';
 import { createTaskDocs } from './task-docs.ts';
+import { createMacTerminal, unavailableTerminal, type TerminalLauncher } from './terminal.ts';
+import { createAdmin } from './admin.ts';
+import { resolveUserHome } from './paths.ts';
 import { createUploads } from './uploads.ts';
 import { openWebStore } from './store.ts';
 import { createNotifier } from './notifier.ts';
@@ -16,7 +19,7 @@ import { HOST, resolvePort } from './config.ts';
 import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
-export async function startServer({ port, mode, home = resolveAutomeHome(process.env), binaryPath = resolveAutomedBinary().path }: { port: number; mode: Mode; home?: string; binaryPath?: string }) {
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath = resolveAutomedBinary().path, terminal = unavailableTerminal }: { port: number; mode: Mode; home?: string; userHome?: string; binaryPath?: string; terminal?: TerminalLauncher }) {
   const store = openWebStore(home);
   const bus = createEventBus({ call: (method, params) => core.call(method, params), log: console.error });
   const logtail = createLogtail({ bus, call: (method, params) => core.call(method, params), log: console.error });
@@ -27,8 +30,10 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const uploads = createUploads(home);
   const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
   const taskDocs = createTaskDocs();
-  const gateway = createGateway({ core, home, uploads });
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs }).catch(error => { store.close(); throw error; });
+  const admin = createAdmin({ core, automeHome: home, userHome, terminal, publish: message => bus.broadcast(message) });
+  const gateway = createGateway({ core, home, uploads, paths: admin.paths });
+  admin.register(gateway);
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -44,7 +49,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   }
   registerUpgrade('/ws', createWsUpgrade(bus));
   void core.start().catch(error => console.error(String(error)));
-  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: attached.onTick });
+  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
   return {
     server, gateway, registerUpgrade, bus, logtail,
     async close() {
@@ -69,7 +74,7 @@ export async function runFromEnv() {
   try {
     port = resolvePort(process.env.AUTOME_WEB_PORT);
     const mode = process.env.NODE_ENV === 'production' ? 'production' : 'development';
-    const running = await startServer({ port, mode });
+    const running = await startServer({ port, mode, terminal: createMacTerminal() });
     const address = running.server.address();
     if (address && typeof address === 'object') {
       console.log(`autome-web 已启动：http://127.0.0.1:${address.port}（${mode === 'production' ? '生产' : '开发'}模式）`);
