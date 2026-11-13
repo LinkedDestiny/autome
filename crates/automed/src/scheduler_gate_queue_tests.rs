@@ -937,6 +937,95 @@ fn merge_does_not_wait_for_a_session_slot() {
     merge_with_session_capacity(1);
 }
 
+fn merge_tail_with_session_capacity(parallel: u32) {
+    assert!(
+        git_available(),
+        "Git is required; this regression must not skip"
+    );
+    let mut w = queue_world("merge-tail-capacity");
+    w.set_parallel(parallel);
+    let task = w.add_task("T-target", "target");
+    w.write_design(
+        &task,
+        &design_doc("等你合并", &[("M-01", MilestoneState::Done)], ""),
+    );
+    let wt = w.with_worktree(&task);
+    git::commit_paths(&wt, &[&task.design_doc()], "ready to merge").unwrap();
+    let project = w.ctx.store.get_project(&w.project_id).unwrap();
+    let layout = TaskLayout::of(&project, &task.slug, &[]);
+    w.set_state(
+        &task.id,
+        TaskState::Active {
+            node: Node::MergeGate,
+        },
+    );
+    let ready = w.ctx.store.get_task(&task.id).unwrap();
+    reuse_collect(&mut w, &ready, &project, &layout, Node::MergeGate);
+    assert_eq!(
+        w.state(&task.id),
+        TaskState::Active {
+            node: Node::AwaitMerge
+        }
+    );
+    let started = queue_count(&w, &task, "gate.started");
+    w.add_task("T-busy", "busy");
+    let busy = TaskState::Active {
+        node: Node::Implement,
+    };
+    w.set_state("T-busy", busy.clone());
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+
+    apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+    for _ in 0..4 {
+        let current = w.ctx.store.get_task(&task.id).unwrap();
+        if let TaskState::Active { node } = current.state {
+            assert!(node.is_core_step());
+            run_core_step(&mut w.ctx, &current, node).unwrap();
+        }
+    }
+    let merged = w.ctx.store.get_task(&task.id).unwrap();
+    let commit = merged
+        .merge_commit
+        .as_ref()
+        .expect("merge must already have succeeded");
+    assert_eq!(git::head_sha(&w.repo).unwrap(), *commit);
+    assert!(
+        main_check_reuse(&w.ctx.store, &task.id, &w.repo, commit, "true", false)
+            .unwrap()
+            .is_some(),
+        "the merge must qualify for reuse"
+    );
+    assert_eq!(
+        merged.state,
+        TaskState::Done,
+        "reusable merge tail must finish while the other session holds its slot"
+    );
+    assert!(merged.completed_at.is_some());
+    assert!(!wt.exists());
+    assert!(
+        !git::run_ok(&w.repo, &["branch", "--list", &task.branch()])
+            .unwrap()
+            .stdout
+            .contains(&task.branch())
+    );
+    assert_eq!(queue_count(&w, &task, "gate.reused"), 1);
+    assert_eq!(queue_count(&w, &task, "gate.started"), started);
+    assert!(!w.repo.join(verify_dir(commit)).exists());
+    assert!(w.ctx.store.list_sessions(&task.id).unwrap().is_empty());
+    assert_eq!(w.state("T-busy"), busy);
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+}
+
+#[test]
+fn merge_tail_reaches_done_without_a_session_slot() {
+    merge_tail_with_session_capacity(1);
+}
+
+#[test]
+fn merge_tail_free_session_capacity_control() {
+    merge_tail_with_session_capacity(2);
+}
+
 #[test]
 fn merge_session_slot_free_capacity_control() {
     merge_with_session_capacity(2);
@@ -951,4 +1040,38 @@ fn user_action_slot_resume_control_waits_then_starts() {
         },
         Node::Implement,
     );
+}
+
+#[test]
+fn merge_tail_non_reusable_gate_still_waits_for_session_capacity() {
+    assert!(git_available(), "Git is required; this regression must not skip");
+    for mode in ["disabled", "changed-command"] {
+        let mut w = queue_world(mode);
+        w.set_parallel(1);
+        let task = w.add_task("target", "target");
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("feature"), "feature\n").unwrap();
+        git::commit_paths(&wt, &["feature"], "feature").unwrap();
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let layout = TaskLayout::of(&project, &task.slug, &[]);
+        w.set_state(&task.id, TaskState::Active { node: Node::MergeGate });
+        let ready = w.ctx.store.get_task(&task.id).unwrap();
+        reuse_collect(&mut w, &ready, &project, &layout, Node::MergeGate);
+        reuse_config(&w, if mode == "disabled" { "true" } else { "echo changed" }, mode != "disabled");
+        w.set_parallel(1);
+        w.add_task("busy", "busy");
+        w.set_state("busy", TaskState::Active { node: Node::Implement });
+        let started = queue_count(&w, &task, "gate.started");
+        apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+        let merging = w.ctx.store.get_task(&task.id).unwrap();
+        assert_eq!(merging.state, TaskState::Active { node: Node::Merging });
+        run_core_step(&mut w.ctx, &merging, Node::Merging).unwrap();
+        let merged = w.ctx.store.get_task(&task.id).unwrap();
+        assert_eq!(git::head_sha(&w.repo).unwrap(), merged.merge_commit.unwrap());
+        assert_eq!(merged.state, TaskState::Requeued { resume: Node::MainCheck });
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        assert_eq!(queue_count(&w, &task, "gate.reused"), 0);
+        assert_eq!(queue_count(&w, &task, "gate.started"), started);
+        assert!(wt.exists());
+    }
 }
