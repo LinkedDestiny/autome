@@ -1,8 +1,8 @@
 # logtail-live 假会话进程未退出
-status: 无法复现
+status: 已定位
 fix-round: 0/3
 复现命令: npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts
-根因: 静态分析发现停止标记随临时目录立即删除，假 CLI 可永久等待；受沙箱限制尚未完成动态确认
+根因: afterAll 写入停止标记后立即删除临时目录，假 CLI 错过标记后无限等待，独立会话不会随 Core 退出
 复核: 待复核
 repos: apps/web
 
@@ -10,7 +10,7 @@ repos: apps/web
 
 任务卡报告：原测试通过后留下 run_session.sh、fake-cli、tee、render-stream 等孤儿进程，假 CLI 每 50ms 创建一次 sleep，重复测试持续积累进程。
 
-期望：测试结束后两秒内，本次临时目录关联的进程全部退出。本轮不能将环境错误算作 Bug 复现，故状态为「无法复现」，并非判定不是 Bug。
+期望：测试结束后两秒内，本次临时目录关联的进程全部退出。用户补充的宿主连续两次动态复现已命中泄漏断言，因此状态更新为「已定位」；会话沙箱权限错误不计作复现成功。
 
 ## 复现
 
@@ -29,14 +29,24 @@ repos: apps/web
 
 1. `npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts`：退出 1。首次运行子测试在初始化阶段报 `listen EPERM: operation not permitted 127.0.0.1`，三个测试全部跳过，尚未创建假会话；外层 finally 的 `spawnSync ps EPERM` 又覆盖了原始错误。原始日志保存在 `.autome/output/repro-1.log` 和 `.autome/output/nested-blocked.log`。
 2. 修正新增测试的 lint 问题，并将 ps 能力检查移到启动前。`npm --prefix apps/web run lint`、`npm --prefix apps/web run typecheck` 均退出 0。项目没有单独的 Web 格式化脚本，以项目 ESLint 检查新增测试；未使用其他格式化规则。
-3. 检查后重跑完全相同的复现命令：退出 1，在启动前报 `spawnSync ps EPERM`，日志 `.autome/output/repro-2.log`。**尚未得到预期的 Leaked logtail-live processes 断言失败，也未证明稳定复现。**
+3. 检查后重跑完全相同的复现命令：退出 1，在启动前报 `spawnSync ps EPERM`，日志 `.autome/output/repro-2.log`。当时尚未得到预期的泄漏断言失败；后续宿主补证见下。
 4. quick 所含检查分步执行：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、上述 Web lint/typecheck 均通过；依赖已安装。日志为 `.autome/output/cargo-fmt.log`、`clippy.log`、`lint.log`、`typecheck.log`。没有执行完整门禁。
 
-宿主待补证据：在允许本地监听、ps 查询及本次子进程清理的 macOS 环境，完成以上准备后运行状态块命令至少两次；确认原子测试三项通过，而外层稳定因泄漏进程列表非空失败，并确认 finally 后无本次残留。当前需求、步骤、期望均充分，缺少的是可执行环境与动态证据，不需要用户重新说明需求。不能把超时、缺少命令或权限失败作为成功复现。
+### 宿主补证与本次核对
+
+用户补充信息（`apps-web-test-logtail-replies.md` 第 1 条，2026-11-13 19:17，macOS、Node v26.5.0）明确记录：准备完成后连续两次执行同一复现命令，均退出 1，失败于第 58 行 `Leaked logtail-live processes after child suite exited: expected [ Array(7) ] to deeply equal []`。没有 listen/spawnSync ps EPERM，也没有超时；每次 finally 后本次临时目录无残留进程。宿主日志位置为主检出 `.autome/output/t86-host-repro-1.log` 和 `.autome/output/t86-host-repro-2.log`。此处依据用户提供的动态结果，未跨 worktree 读取或重新运行这些宿主日志。
+
+本次定位核对基线 `c0e89881`。独立回归测试已由 `48cf58a3` 提交，本次保留其全部内容，不重复创建测试或改动断言。重新执行：
+
+- `npm --prefix apps/web run lint`：退出 0；`npm --prefix apps/web run typecheck`：退出 0。项目无独立 Web 格式化命令，ESLint 通过，无需格式改动。
+- 检查后重跑 `npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts`：退出 1，仍在启动子测试前因 `spawnSync ps EPERM` 受阻，不计作预期失败。测试未变，预期失败证据采用上述宿主连续两次结果。
+- quick 的 Rust 部分 `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` 均退出 0；Web 依赖已经存在，lint/typecheck 同上。未运行完整门禁。
+
+本次原始输出：`.autome/output/location-lint.log`、`location-typecheck.log`、`location-repro.log`、`location-fmt.log`、`location-clippy.log`。修复后通过证据仍须由宿主复现检查给出；当前无需补充需求信息。
 
 ## 根因分析
 
-静态证据支持以下机制，动态结论待宿主确认：
+宿主已确认残留进程现象；代码核对支持以下机制：
 
 - `apps/web/test/logtail-live.test.ts:50`、`:52` 的两个等待循环仅检查 go/stop 是否存在，没有目录消失退出条件或总寿命上限。
 - `:83–89` 的 afterAll 写入 go/stop 后删除整个目录，没有等待假会话进程结束。第三项测试已关闭服务并将 running 设为 undefined；其 afterAll 的可选 close 不会等待运行中的假会话。若 CLI 下一次轮询晚于目录删除，就永远无法再看到标记；甚至可能停在 go 循环。
@@ -48,8 +58,8 @@ repos: apps/web
 
 ## 修复说明
 
-定位轮未修改产品代码，也未修改原 logtail-live 测试。仅新增独立回归测试和本文。后续可核对目录消失退出、总寿命上限、等待或终止会话后再删除目录；具体修法由修复轮决定。
+定位轮未修改产品代码，也未修改原 logtail-live 测试。独立回归测试已在定位提交 `48cf58a3` 中新增，本次仅补充本文的宿主证据和状态。后续可核对目录消失退出、总寿命上限、等待或终止会话后再删除目录；具体修法由修复轮决定。
 
 ## 复核意见
 
-待复核。当前环境未完成预期失败证明，须先在宿主补齐动态复现证据。
+待复核。宿主连续两次预期失败与 finally 清理结果已由用户补充；本轮不进入修复，也不启动后续会话。
