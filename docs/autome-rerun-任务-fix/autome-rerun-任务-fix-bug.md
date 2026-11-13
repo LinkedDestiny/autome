@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end bug_loop_rerun_fix_cannot_bypass_exhausted_budget -- --exact
 根因: Bug Loop 的 RerunFrom(Fix) 直接创建修复会话，绕过 start_fix 的预算预检；调度器仍记账但未阻止超预算启动。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -52,4 +52,11 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。既有 extend 正向测试实跑通过（1 passed）；`cargo fmt --all -- --check` 和 `git diff --check` 通过。未运行全量门禁，未启动后续会话。
+复核通过（第 1/3 轮）。
+
+- 复现命令独立复验：`cargo test --offline -p automed --test end_to_end bug_loop_rerun_fix_cannot_bypass_exhausted_budget -- --exact` 1 passed；修复前断言会话数 3≠1，现为通过。
+- 相关子集：`cargo test --offline -p autome-domain --lib bug_loop` 33 passed；`bug_loop_fix_rounds_run_out_and_extend_adds_more` 1 passed。
+- 根因站得住：`apply_for` 的 Failed/Stopped RerunFrom 分支原先对 Fix 直接 `session`，绕过 `start_fix` 的预算检查。修复仅在角色检查后对 `BugStep::Fix` 复用 `start_fix(*at, …)`，其它节点与需求 Loop 不变，范围最小。
+- 回归测试有意义且未弱化：端到端测试未改动，覆盖连续重跑不增会话与 extend 后正向放行；领域单测把旧的“超预算仍启动”预期改为 FixBudget，并新增配置/任务预算 × Failed/Stopped × 上限前/达到/超出的边界断言，无删除或跳过。
+- README 与技术设计文档同步更新，与新行为一致。
+- 未运行全量门禁（留给宿主合并前）。
