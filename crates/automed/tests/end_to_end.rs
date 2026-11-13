@@ -942,6 +942,51 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn after_blocked_cancelled_dependency_holds_b_until_cleared() {
+    needs_git!();
+    let mut w = World::new("after-blocked");
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id": w.project_id, "parallel": 2}),
+    ));
+    for request in ["cancel dependency", "blocked dependent"] {
+        w.doc_step_for(&slug_for(request), 1, &doc("设计中", 0, 0, &[]), "sleep 60");
+    }
+    let a = create_task(&mut w, "cancel dependency");
+    let out = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "blocked dependent", "after": [a]}),
+    );
+    let b = ok(&out)["task"]["id"].as_str().unwrap().to_string();
+    let position = w.ctx.store.queued_seq(&b).unwrap();
+    assert_eq!(w.state(&b), "queued");
+    ok(&w.call("task.cancel", json!({"task_id": a})));
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.ctx.store.all_running_sessions().unwrap().is_empty() && w.state(&b) == "queued"
+        },
+        |w| format!("B={}", w.state(&b)),
+    );
+    let out = w.call("task.get", json!({"task_id": b}));
+    assert_eq!(
+        ok(&out)["task"]["blocked_by"],
+        json!([{"id": a, "state": {"state": "cancelled"}, "reason": "cancelled"}])
+    );
+    assert_eq!(w.ctx.store.count_events(&b, "task.blocked").unwrap(), 1);
+    assert_eq!(w.ctx.store.queued_seq(&b).unwrap(), position);
+    let out = w.call("task.set_after", json!({"task_id": b, "after": []}));
+    assert_eq!(ok(&out)["started"], true);
+    assert_eq!(ok(&out)["queue_position"], Value::Null);
+    assert_eq!(ok(&out)["task"]["after"], json!([]));
+    assert!(w.ctx.store.running_session(&b).unwrap().is_some());
+    assert_eq!(w.state(&b), "active");
+    ok(&w.call("task.cancel", json!({"task_id": b})));
+}
+
+#[test]
 fn after_create_b_waits_for_a_and_starts_once_a_is_done() {
     needs_git!();
     let mut w = World::new("after-create");
