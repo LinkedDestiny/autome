@@ -46,3 +46,4 @@
 复盘 #5 | 无 | 教训 8 条 | docs/内核补齐批次-2026-11-13-4/lessons.md | HEAD 6878d51b 上 workspace --all-targets --no-fail-fast 12 个目标 1912 过 0 败；ci-local.sh 仍无 --no-fail-fast；H-01 未确认
 
 实现 #22 | M-16 | 门禁修复待复验 | evidence/M-16-r22-impl.md | Web live 受 listen EPERM 阻断，相关 33 用例通过
+审计 #21 | M-16 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r22-audit.md | 无
