@@ -745,3 +745,9 @@ test('project.confirm 严格四键、路径与布尔类型', () => {
   for (const params of [{}, { path: '' }, { path: '~/a..b' }, { path: '~/bad\0' }, { path: '~/x', extra: 1 }, { path: '~/x', workspace: 1 }, { path: '~/x', skip_onboarding: null }, { path: '~/x', docs_repo: 1 }]) assert.equal(gate.validateWriteRequest({ op: 'project.confirm', params }).ok, false);
   assert.equal(gate.validateWriteRequest({ op: 'project.confirm', params: { path: '~/x', workspace: true, docs_repo: 'docs', skip_onboarding: false } }).ok, true);
 });
+test('env.install 和 env.login 只收 component', () => {
+  for (const op of ['env.install','env.login']) {
+    for (const component of ['git','claude','codex','iterm2']) assert.equal(gate.validateWriteRequest({op,params:{component}}).ok,true);
+    for (const extra of [{command:'rm -rf ~'},{other:null}]) assert.equal(gate.validateWriteRequest({op,params:{component:'git',...extra}}).ok,false);
+  }
+});

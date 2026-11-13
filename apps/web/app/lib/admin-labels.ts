@@ -40,3 +40,13 @@ export const ALERT_KINDS: Record<string, string> = {
   main_gate_failed: '主分支门禁失败', setup_failed: '初始化失败',
   after_merge_failed: '合并后命令失败', budget_exceeded: '预算超限',
 };
+
+export const ENV = {
+  title: '环境检查', detect: '重新检测', probing: '正在检测…', installed: '已安装', missing: '未安装',
+  noLogin: '不需要登录', loggedIn: '已登录', expired: '登录已过期', unknown: '登录状态未知',
+  attention: '需要处理', version: '版本', path: '路径', prerequisite: '前置条件', none: '无', met: '已满足', unmet: '未满足',
+  install: '在终端里安装', login: '在终端里登录', copy: '复制', copied: '已复制', copyError: '复制失败，请手动复制',
+  launched: '已在终端里执行', fallback: '请复制下面的命令，自己在终端里执行', terminalError: '打不开终端：',
+  go: '去环境页', summary: (n: number) => `本机环境有 ${n} 项需要处理：`,
+};
+export const COMPONENT_NAMES: Record<string, string> = { git: 'Git', claude: 'Claude Code', codex: 'Codex', iterm2: 'iTerm2' };

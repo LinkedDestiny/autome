@@ -17,3 +17,8 @@ test('报警区限高且内部滚动，详情保留换行', () => {
   for (const value of ['min-height: 0', 'max-height:', 'overflow-y: auto']) expect(rule).toContain(value);
   expect(css.split('.project-alert-detail {')[1]?.split('}')[0]).toContain('white-space: pre-wrap');
 });
+test('环境页限高与组件内部滚动', () => {
+  const css=readFileSync(new URL('../app/styles/app.css',import.meta.url),'utf8'); const rule=(s:string)=>css.split(s+' {')[1]?.split('}')[0];
+  for(const value of ['height: 100%','overflow: hidden'])expect(rule('.env-page')).toContain(value);
+  for(const value of ['overflow-y: auto','min-height: 0'])expect(rule('.env-components')).toContain(value);
+});

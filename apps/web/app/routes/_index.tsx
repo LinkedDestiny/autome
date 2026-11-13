@@ -1,11 +1,14 @@
-import { useRouteLoaderData } from 'react-router';
+import { environmentNotice } from '../components/env-model.ts';
+import { ENV } from '../lib/admin-labels.ts';
+import { Link, useRouteLoaderData } from 'react-router';
 import type { loader } from '../root.tsx';
 import { COLUMN_LABELS } from '../lib/labels.ts';
 import { overviewTasks } from '../components/shell-data.ts';
 import { OverviewCard } from '../components/overview-card.tsx';
 export default function Overview() {
-  const { kernel, projects, tasks } = useRouteLoaderData<typeof loader>('root')!;
-  return <div className="overview"><h1>总览</h1><div className="overview-columns">{(['needs_you', 'running'] as const).map(column => {
+  const { kernel, projects, tasks, environment } = useRouteLoaderData<typeof loader>('root')!;
+  const notice = environmentNotice(environment);
+  return <div className="overview"><h1>总览</h1>{notice && <p role="status">{notice} <Link to="/env">{ENV.go}</Link></p>}<div className="overview-columns">{(['needs_you', 'running'] as const).map(column => {
     const cards = overviewTasks(tasks, column);
     return <section className="overview-column" key={column} aria-labelledby={`heading-${column}`}>
       <h2 id={`heading-${column}`}>{`${COLUMN_LABELS[column]}（${cards.length}）`}</h2>

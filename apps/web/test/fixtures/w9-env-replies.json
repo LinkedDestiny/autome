@@ -1,0 +1,104 @@
+{
+  "environment": {
+    "can_run_anything": true,
+    "environment": {
+      "checked_at": "2026-11-13T14:47:05Z",
+      "components": [
+        {
+          "checked_at": "2026-11-13T14:47:05Z",
+          "component": "git",
+          "login": {
+            "login": "not_applicable"
+          },
+          "path": "/opt/homebrew/bin/git",
+          "present": true,
+          "version": "2.53.0"
+        },
+        {
+          "checked_at": "2026-11-13T14:47:05Z",
+          "component": "claude",
+          "login": {
+            "login": "expired"
+          },
+          "path": "/Users/dannie/.local/bin/claude",
+          "present": true,
+          "version": "2.1.322"
+        },
+        {
+          "checked_at": "2026-11-13T14:47:05Z",
+          "component": "codex",
+          "login": {
+            "login": "expired"
+          },
+          "path": "/opt/homebrew/bin/codex",
+          "present": true,
+          "version": "0.155.1"
+        },
+        {
+          "checked_at": "2026-11-13T14:47:05Z",
+          "component": "iterm2",
+          "login": {
+            "login": "not_applicable"
+          },
+          "path": "/Applications/iTerm.app",
+          "present": true,
+          "version": "3.7.6"
+        }
+      ]
+    },
+    "generation": 1,
+    "prerequisites": {
+      "brew": true,
+      "npm": true
+    },
+    "probed": true,
+    "probing": false,
+    "problems": [
+      "claude",
+      "codex"
+    ],
+    "severity": "blocking"
+  },
+  "recipes": {
+    "git": {
+      "login_command": null,
+      "prerequisite_ok": true,
+      "recipe": {
+        "command": "xcode-select --install",
+        "component": "git",
+        "note": "安装 Xcode 命令行工具，其中包含 git。会弹出系统对话框。",
+        "prerequisite": null
+      }
+    },
+    "claude": {
+      "login_command": "claude /login",
+      "prerequisite_ok": true,
+      "recipe": {
+        "command": "npm install -g @anthropic-ai/claude-code",
+        "component": "claude",
+        "note": "安装后需要执行 claude 登录。",
+        "prerequisite": "npm"
+      }
+    },
+    "codex": {
+      "login_command": "codex login",
+      "prerequisite_ok": true,
+      "recipe": {
+        "command": "npm install -g @openai/codex",
+        "component": "codex",
+        "note": "安装后需要执行 codex 登录。",
+        "prerequisite": "npm"
+      }
+    },
+    "iterm2": {
+      "login_command": null,
+      "prerequisite_ok": true,
+      "recipe": {
+        "command": "brew install --cask iterm2",
+        "component": "iterm2",
+        "note": "会话窗口会改用 iTerm2；未安装时暂用系统 Terminal。",
+        "prerequisite": "brew"
+      }
+    }
+  }
+}

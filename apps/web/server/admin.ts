@@ -1,3 +1,5 @@
+import { TerminalUnavailable, unavailableTerminal, type TerminalLauncher } from './terminal.ts';
+import type { InstallRecipe } from '../app/components/env-model.ts';
 import { relative, isAbsolute, join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { createOnboardingWatch } from './onboarding-watch.ts';
@@ -6,9 +8,10 @@ import { LocalOpError, type createGateway } from './gateway.ts';
 import type { CoreSupervisor } from './core/supervisor.ts';
 
 type Project = { id: string; onboarding: unknown; [key: string]: unknown };
-export function createAdmin({ core, userHome, automeHome, publish }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
+export function createAdmin({ core, userHome, automeHome, publish, terminal = unavailableTerminal }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; terminal?: TerminalLauncher; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
   const paths = createPathGuard({ home: userHome });
   const onboarding = createOnboardingWatch(publish);
+  let environment: { generation: number; probing: boolean } | undefined;
   return {
     configPaths(projectPath: string) {
       const display = (path: string) => {
@@ -24,6 +27,17 @@ export function createAdmin({ core, userHome, automeHome, publish }: { core: Pic
     onboarding,
     paths,
     register(gateway: ReturnType<typeof createGateway>) {
+      for (const op of ['env.install', 'env.login']) gateway.registerLocalOp(op, async params => {
+        const result = await core.call('env.install_recipe', { component: params.component }) as InstallRecipe;
+        if (op === 'env.install' && !result.prerequisite_ok) throw new LocalOpError(409, `请先安装 ${result.recipe.prerequisite}`);
+        const command = op === 'env.install' ? result.recipe.command : result.login_command;
+        if (!command) throw new LocalOpError(400, `${params.component} 不需要登录`);
+        try { await terminal(command); return { launched: true, command }; }
+        catch (error) {
+          if (error instanceof TerminalUnavailable) return { launched: false, command, reason: error.message };
+          throw error;
+        }
+      });
       gateway.registerLocalOp('project.confirm', async params => {
         const path = paths.check(params.path);
         if (!path.ok) throw new LocalOpError(400, path.message);
@@ -43,7 +57,13 @@ export function createAdmin({ core, userHome, automeHome, publish }: { core: Pic
         return result;
       });
     },
-    onTick() { onboarding.onTick(); },
+    onTick(report?: { [key: string]: unknown }) {
+      onboarding.onTick();
+      if (typeof report?.env_generation !== 'number' || typeof report.env_probing !== 'boolean') return;
+      const next = { generation: report.env_generation, probing: report.env_probing };
+      if (!environment || next.generation !== environment.generation || next.probing !== environment.probing) publish?.({ type: 'env.changed', ...next });
+      environment = next;
+    },
   };
 }
 export type AdminServices = ReturnType<typeof createAdmin>;

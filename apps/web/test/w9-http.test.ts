@@ -7,9 +7,9 @@ import { startServer } from '../server/main.ts';
 import { w9Kernel } from './fixtures/w9-replies.ts';
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function setup() {
+async function setup(terminal?: (command: string) => Promise<void>) {
   const fixture = await w9Kernel(); cleanups.push(fixture.close); await fixture.core.stop();
-  const running = await withBudgetCli(fixture.root, () => startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome })); cleanups.push(running.close);
+  const running = await withBudgetCli(fixture.root, () => startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome, terminal })); cleanups.push(running.close);
   const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('没有端口');
   const url = `http://127.0.0.1:${address.port}`;
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; body: string | { ok: boolean; payload?: unknown; error?: string } }>((resolve, reject) => {
@@ -89,4 +89,14 @@ test('报警 action 与 single fetch 坏 Host/Origin 保留报警，合法请求
   }
   expect((await s.post('/projects/' + project.id + '.data', body, { 'Content-Type': 'application/x-www-form-urlencoded' })).status).toBe(200);
   expect((await core.call('dashboard.get', {}) as { alerts: unknown[] }).alerts).toEqual([]);
+});
+test('环境安装与登录坏 Host/Origin 不启动终端，合法请求执行',async()=>{
+  const terminal=vi.fn<(command: string) => Promise<void>>(async()=>{}),s=await setup(terminal);
+  for(const op of ['env.install','env.login']) for(const headers of [{Host:'evil.example'},{Origin:'http://evil.example'}] as Record<string,string>[]) expect((await s.post('/api/write',{op,params:{component:'codex'}},headers)).status).toBe(403);
+  expect(terminal).not.toHaveBeenCalled();expect((await s.post('/api/write',{op:'env.login',params:{component:'codex'}})).status).toBe(200);expect(terminal).toHaveBeenCalledWith('codex login');
+});
+test('环境 action 与 single fetch 坏 Host/Origin 拒绝，合法检测可达',async()=>{
+  const terminal=vi.fn<(command: string) => Promise<void>>(async()=>{}),s=await setup(terminal);
+  for(const suffix of ['', '.data']) for(const intent of ['detect','install','login']) for(const headers of [{Host:'evil.example'},{Origin:'http://evil.example'}] as Record<string,string>[]) expect((await s.post('/env'+suffix,new URLSearchParams({intent,component:'codex'}).toString(),{'Content-Type':'application/x-www-form-urlencoded',...headers})).status).toBe(403);
+  expect(terminal).not.toHaveBeenCalled();expect((await s.post('/env.data','intent=detect',{'Content-Type':'application/x-www-form-urlencoded'})).status).toBe(200);
 });

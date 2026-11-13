@@ -236,6 +236,7 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
     return { ok: false, message: 'theme 必须是 system、light、dark 之一' };
   }
   if (op === 'env.install' || op === 'env.login') {
+    if (Object.keys(params).some(key => key !== 'component')) return { ok: false, message: '只允许 component 参数' };
     if ((typeof params.component !== 'string' || !COMPONENTS.includes(params.component))) {
       return { ok: false, message: 'component 必须是 git、claude、codex、iterm2 之一' };
     }

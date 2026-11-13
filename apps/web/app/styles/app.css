@@ -200,3 +200,13 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .project-alert-detail { white-space: pre-wrap; }
 .project-alert form { display: inline-block; margin-left: 16px; }
 .count-alert { background: var(--tile-yellow); }
+
+.env-page { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 24px; }
+.env-page header { display: flex; align-items: center; gap: 24px; }
+.env-page h1 { margin: 0; }
+.env-components { overflow-y: auto; min-height: 0; flex: 1; }
+.env-component { padding: 24px; margin-bottom: 16px; background: var(--animal-bg-content); border-radius: var(--animal-radius); overflow-wrap: anywhere; }
+.env-component h2 { margin-top: 0; }
+.env-component dd { margin: 0 0 12px; }
+.env-page pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--animal-bg-input); border-radius: var(--animal-radius-sm); }
+.env-component form { display: inline-block; margin: 12px; }
