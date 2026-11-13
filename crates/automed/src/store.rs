@@ -2683,6 +2683,15 @@ mod tests {
 
     #[test]
     fn onboarding_session_migration_v9_keeps_existing_rows() {
+        onboarding_migration_keeps_existing_rows(7);
+    }
+
+    #[test]
+    fn onboarding_session_migration_from_v8_preserves_kernel_mark() {
+        onboarding_migration_keeps_existing_rows(8);
+    }
+
+    fn onboarding_migration_keeps_existing_rows(version: i64) {
         let s = store();
         s.insert_project(&project("p1", "/a")).unwrap();
         s.insert_task(&task("T-1", "p1", "a")).unwrap();
@@ -2697,13 +2706,20 @@ mod tests {
             .unwrap();
         // Recreate the exact v7 column layout before replaying the real migration.
         downgrade_sessions_to_v7(&s);
+        s.conn.pragma_update(None, "user_version", version).unwrap();
+        s.claim_kernel_mark("0000002-20200101T000000Z-000000000002")
+            .unwrap();
         s.migrate().unwrap();
         assert_eq!(s.get_session("old").unwrap().unwrap(), original);
         assert_eq!(
             s.conn
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
+        );
+        assert_eq!(
+            s.kernel_mark().unwrap().as_deref(),
+            Some("0000002-20200101T000000Z-000000000002")
         );
         assert!(
             s.conn

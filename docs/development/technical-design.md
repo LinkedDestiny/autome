@@ -449,7 +449,7 @@ MergeGate 出队冲突复用 RebaseConflict，需求回 Implement、Bug 回 fix�
 
 初始化（幂等）：创建 `.autome/` 骨架与 `config.toml`（仅 `[loop]` 空节，全部继承全局）；追加 .gitignore；AGENTS.md 不存在时创建含规则段的最小版本，存在时只追加标记段。
 
-Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过时 automed 先提交初始化产物，再写结束状态和事件；提交失败保持原状态并可重试。工作区只在包含产物的成员仓库提交，根目录文件不提交，无产物不报错。Onboarding 会话写入 sessions（schema 8，task_id 为 NULL、project_id 指向项目），由收割器记录 session.ended；session.log 可读取日志，project.get 的 onboarding_session 返回最新会话的 id、lifecycle、started_at、ended_at。它不进入任务费用与轮次统计。
+Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过时 automed 先提交初始化产物，再写结束状态和事件；提交失败保持原状态并可重试。工作区只在包含产物的成员仓库提交，根目录文件不提交，无产物不报错。Onboarding 会话写入 sessions（schema 9，task_id 为 NULL、project_id 指向项目），由收割器记录 session.ended；session.log 可读取日志，project.get 的 onboarding_session 返回最新会话的 id、lifecycle、started_at、ended_at。它不进入任务费用与轮次统计。
 
 ## 11. 环境探测与安装
 
@@ -482,7 +482,7 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 启动恢复：加载 projects → 校验路径与 worktree 存在 → 对每个非终态 task 扫描会话目录（§2）→ 推进或标记失败 → 重建调度队列。
 
-schema v8 重建 sessions：task_id 可空且保留外键，project_id 外键引用 projects；只有 onboarding 会话使用 NULL task_id，且必须有项目归属。旧行与任务索引原样保留。
+schema v9 重建 sessions（v8 的 kernel_mark 保留）：task_id 可空且保留外键，project_id 外键引用 projects；只有 onboarding 会话使用 NULL task_id，且必须有项目归属。旧行与任务索引原样保留。
 
 ## 14. IPC 接口
 
