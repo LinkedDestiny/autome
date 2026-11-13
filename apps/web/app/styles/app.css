@@ -194,3 +194,9 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .config-rows { min-height: 0; overflow-y: auto; }
 .config-rows > div { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 16px; padding-block: 8px; }
 .config-rows dd { margin: 0; white-space: pre-wrap; }
+.board-alerts { min-height: 0; max-height: 30%; overflow-y: auto; flex-shrink: 0; }
+.project-alert { padding: 16px; margin-bottom: 12px; background: var(--animal-bg-content); border-radius: var(--animal-radius); overflow-wrap: anywhere; }
+.project-alert time { display: block; color: var(--animal-text-muted); font-size: 13px; }
+.project-alert-detail { white-space: pre-wrap; }
+.project-alert form { display: inline-block; margin-left: 16px; }
+.count-alert { background: var(--tile-yellow); }

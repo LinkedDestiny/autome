@@ -207,5 +207,13 @@
     },
     "scope": "prj-1ca1a7903d884889a22f1c8bd8858c8c",
     "violations": []
+  },
+  "alert": {
+    "created_at": "2026-11-13T14:34:11Z",
+    "detail": "任务 T-1 累计费用 $0.25，超过本项目单任务预算 $0.01（.autome/config.toml [budget] per_task_usd）。任务照常继续；要停下用 autome stop T-1。",
+    "id": "alr-185c415fcde140f58b018b94342aa728",
+    "kind": "budget_exceeded",
+    "project_id": "prj-81836018e22e4dc4b56fc58e6bb1b3ad",
+    "task_id": "T-1"
   }
 }

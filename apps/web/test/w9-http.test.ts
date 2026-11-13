@@ -1,14 +1,15 @@
+import { budgetTask, tickAlerts, withBudgetCli } from './fixtures/w9-alerts.ts';
 import { request } from 'node:http';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { startServer } from '../server/main.ts';
 import { w9Kernel } from './fixtures/w9-replies.ts';
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 async function setup() {
   const fixture = await w9Kernel(); cleanups.push(fixture.close); await fixture.core.stop();
-  const running = await startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome }); cleanups.push(running.close);
+  const running = await withBudgetCli(fixture.root, () => startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome })); cleanups.push(running.close);
   const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('没有端口');
   const url = `http://127.0.0.1:${address.port}`;
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; body: string | { ok: boolean; payload?: unknown; error?: string } }>((resolve, reject) => {
@@ -73,4 +74,19 @@ test('设置页移除 action 和 single fetch 坏 Host/Origin 保留项目', asy
     expect((await s.post(`/projects/${project.id}/settings${suffix}`, new URLSearchParams({ intent: 'remove', name: 'single' }).toString(), { 'Content-Type': 'application/x-www-form-urlencoded', ...headers })).status).toBe(403);
   }
   expect(await s.gateway.core.call('project.list', {})).toEqual(before);
+});
+
+test('报警 action 与 single fetch 坏 Host/Origin 保留报警，合法请求消除', async () => {
+  const s = await setup(); const path = s.repo('alerts'); const core = s.gateway.core;
+  const { project } = await core.call('project.add', { path }) as { project: { id: string } };
+  await budgetTask(core, path, project.id);
+  let alerts: Awaited<ReturnType<typeof tickAlerts>> = [];
+  await vi.waitFor(async () => { alerts = await tickAlerts(core); expect(alerts).toHaveLength(1); }, { timeout: 20000 });
+  const body = new URLSearchParams({ intent: 'dismiss', alert_id: alerts[0].id }).toString();
+  for (const suffix of ['', '.data']) for (const headers of [{ Host: 'evil.example' }, { Origin: 'http://evil.example' }] as Record<string, string>[]) {
+    expect((await s.post('/projects/' + project.id + suffix, body, { 'Content-Type': 'application/x-www-form-urlencoded', ...headers })).status).toBe(403);
+    expect((await core.call('dashboard.get', {}) as { alerts: unknown }).alerts).toEqual(alerts);
+  }
+  expect((await s.post('/projects/' + project.id + '.data', body, { 'Content-Type': 'application/x-www-form-urlencoded' })).status).toBe(200);
+  expect((await core.call('dashboard.get', {}) as { alerts: unknown[] }).alerts).toEqual([]);
 });

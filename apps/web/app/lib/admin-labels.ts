@@ -34,3 +34,9 @@ export const CONFIG_LABELS: Record<string, string> = {
   'loop_defaults.budget_factor': '预算系数', 'loop_defaults.design_rounds': '设计轮数',
   merge_after: '合并后命令', merge_auto: '自动合并', 'retry.attempts': '重试次数', 'retry.backoff_seconds': '重试等待（秒）',
 };
+
+export const ALERTS = { title: '项目报警', dismiss: '知道了', readError: '报警读取失败：', count: (n: number) => `报警 ${n}` };
+export const ALERT_KINDS: Record<string, string> = {
+  main_gate_failed: '主分支门禁失败', setup_failed: '初始化失败',
+  after_merge_failed: '合并后命令失败', budget_exceeded: '预算超限',
+};

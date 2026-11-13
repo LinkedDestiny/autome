@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import { budgetTask, tickAlerts, withBudgetCli } from './w9-alerts.ts';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,7 +41,18 @@ export async function captureReplies() {
     const add = await s.core.call('project.add', { path }) as { project: { id: string } };
     const skip = await s.core.call('project.onboarding.skip', { project_id: add.project.id });
     const config = await s.core.call('config.get', { project_id: add.project.id });
-    return { probe, add, skip, config };
+    await s.core.stop();
+    await withBudgetCli(s.root, () => s.core.start());
+    const alertPath = s.repo('alerts');
+    const alertProject = await s.core.call('project.add', { path: alertPath }) as { project: { id: string } };
+    await budgetTask(s.core, alertPath, alertProject.project.id);
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const alerts = await tickAlerts(s.core);
+      if (alerts.length) return { probe, add, skip, config, alert: alerts[0] };
+      await delay(50);
+    }
+    throw new Error('等待真实预算报警超时');
   } finally { await s.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
