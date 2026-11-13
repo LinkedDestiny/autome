@@ -6,7 +6,7 @@ implementation-round: 5/25
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-04；通过后实现 M-05 README 与技术设计文档
+next-action: 实现 M-05 README 与技术设计文档
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -403,7 +403,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 | M-01 | 已完成 | 合并队列核心：`[merge] auto` 读取、出队对齐、项目合并临界区 | 0 | merge-queue |
 | M-02 | 已完成 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
 | M-03 | 已完成 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
-| M-04 | 待审 | 过期显示与合并队列的输出 | 0 | merge-view |
+| M-04 | 已完成 | 过期显示与合并队列的输出 | 0 | merge-view |
 | M-05 | 开放 | README 与技术设计文档 | 0 | docs |
 
 ## 里程碑范围
@@ -442,7 +442,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### M-04 范围
 
-最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r5-impl.md · 待审 · 实现 #5
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r5-audit.md · 通过 · 审计 #4
 
 - 结果：停在合并卡点而 main 已前进的任务在 `task.get` / `status` / `ls` 上显示落后 N 个提交与「合并时会重新 rebase 并再跑一次
   门禁」；按合并后 rebase + 门禁 1 次 + 合并；`autome run` 对新事件各打一行；`status` 显示配置警告。
