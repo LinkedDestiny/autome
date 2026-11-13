@@ -8,3 +8,4 @@
 实现 #3 | M-03 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-03-r3-impl.md | 无
 审计 #3 | M-03 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-03-r3-audit.md | 无
 实现 #4 | M-04 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-04-r4-impl.md | 无
+审计 #4 | M-04 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-04-r4-audit.md | 无
