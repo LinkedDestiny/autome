@@ -7,3 +7,4 @@
 审计 #1 | M-01 | 通过 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-01-r2-audit.md | 无
 
 实现 #3 | M-02 | 待审 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-02-r3-impl.md | 无
+审计 #2 | M-02 | 通过 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-02-r3-audit.md | 无
