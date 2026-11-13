@@ -2649,7 +2649,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
                 "task": task_json(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
                 "pending_decisions": ctx.store.pending_decisions(&task.id)?,
-                "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
+                "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
             }));
         }

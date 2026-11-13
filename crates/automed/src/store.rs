@@ -2569,6 +2569,9 @@ mod tests {
     #[test]
     fn deps_store_migration_preserves_queue() {
         let s = deps_fixture();
+        let mut existing = session("existing", "A", SessionKind::Intake, 1);
+        existing.limit_minutes = Some(42);
+        s.insert_session(&existing).unwrap();
         s.conn
             .execute("UPDATE tasks SET queued_seq = NULL WHERE id = 'C'", [])
             .unwrap();
@@ -2585,8 +2588,9 @@ mod tests {
             s.conn
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-             7
+            7
         );
+        assert_eq!(s.list_sessions("A").unwrap()[0].limit_minutes, Some(42));
         assert_eq!(s.queued_tasks("p").unwrap(), before);
         for (t, seq) in before.iter().zip(seqs) {
             assert!(s.task_after(&t.id).unwrap().is_empty());

@@ -405,7 +405,7 @@ Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为
 
 SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog 与争议项的表态，及携带 / 消费它的会话）、`events`（append-only，界面事件流与审计用）、`session_retries`（等待重派的崩溃轮次）、`runtime_cooldowns`（限流中的 CLI）、`project_alerts`（项目级报警，如合并后 main 门禁失败）。
 
-schema v6 新增 `task_after(task_id, after_id, ord, notified)`：两个任务编号均外键引用 `tasks(id)`，联合主键为 `(task_id, after_id)`；`ord` 保留声明顺序，`notified` 记录已通知的阻塞原因。旧任务迁移后无依赖，原队列顺序不变；创建任务与依赖在同一事务内提交。
+schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务编号均外键引用 `tasks(id)`，联合主键为 `(task_id, after_id)`；`ord` 保留声明顺序，`notified` 记录已通知的阻塞原因。旧任务迁移后无依赖，原队列顺序不变；创建任务与依赖在同一事务内提交。
 
 事实分工：任务文档与状态块是任务进度的事实来源；SQLite 保存登记、索引、台账与表态。两者不一致时以文件为准并记录一条 `integrity_warning` 事件。
 

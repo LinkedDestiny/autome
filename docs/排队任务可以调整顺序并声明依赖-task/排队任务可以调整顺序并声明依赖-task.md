@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 10/30
+implementation-round: 11/30
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -39,7 +39,7 @@ next-action: 无
   会对每个放行的 op 用 `specific[op] ?? {}` 走一遍正路径。
 - **测试替身。** e2e 的 `settle` 用 `has_pending_work` 判断有没有活。它把任何 `queued` 任务都算作「还有活」
   （end_to_end.rs:47）。所以一个永久被阻塞的排队任务会让 `settle` 在 90 秒后超时。
-- **迁移测试。** v4→v5 测试（store.rs:3252）先把库降回 v4 再跑 `migrate`，这时 v6 块会在已经有新表的库上再跑一次。
+- **迁移测试。** v4→v5 测试（store.rs:3252）先把库降回 v4 再跑 `migrate`，这时 v7 块会在已经有新表的库上再跑一次。
 
 ## 目标与非目标
 
@@ -70,10 +70,12 @@ next-action: 无
 | 谁能改依赖 | 需求任务在设计批准之前（含等批准），且从未开始过实现轮；Bug 任务只在开始之前 |
 | 谁能移动 | `Queued`、`Requeued`、`Draft`；参照任务同样可以是这三类（含没移动过的 `Draft`） |
 
-### 2. 数据：store v6（问题 2；约束 3、5）
+### 2. 数据：store v7（问题 2；约束 3、5）
+
+默认分支的 v6 已用于 `sessions.limit_minutes`；保留该迁移不变，依赖表在 v7 单独迁移，保证已升级到 v6 的账本也能得到依赖表。
 
 **表。** 新增 `task_after` 表，不在 `tasks` 上加列。这样不用改 `TaskRecord`，也就不用改它的 14 处字面量构造（大多在现有测试里）。
-也不用改 `create_task` 的 61 处调用。v6 块照约束 5 写成单个事务：
+也不用改 `create_task` 的 61 处调用。v7 块照约束 5 写成单个事务：
 
 ```sql
 BEGIN;
@@ -84,11 +86,11 @@ CREATE TABLE IF NOT EXISTS task_after (
     notified TEXT,              -- 最近一次已写 task.blocked 的原因；NULL = 未通知
     PRIMARY KEY (task_id, after_id)
 );
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 COMMIT;
 ```
 
-v6 块用 `IF NOT EXISTS`，是因为 v4→v5 迁移测试会把已经是 v6 的库降回 v4 再迁移。这样那条测试只需要改版本号断言
+v7 块用 `IF NOT EXISTS`，是因为 v4→v5 迁移测试会把已经是 v7 的库降回 v4 再迁移。这样那条测试只需要改版本号断言
 （见方案 10）。旧任务迁移后没有任何行，也就是没有依赖。`queued_seq` 不动，所以队列顺序和迁移前一致。
 
 **store 新接口**（名字供实现参考，实现可以微调，但职责不变）：
@@ -288,7 +290,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   用户用 `autome after … --none` 或改指新任务来解除。
 - `docs/development/technical-design.md`：
   - §8 第 307 行「排队按 created_at 升序」改为 `queued_seq` 顺序、跳过依赖未完成的受约束排队任务、可移动。
-  - §13 补 `task_after` 表与 v6。
+  - §13 补 `task_after` 表与 v7。
   - §14 补 `task.set_after`、`task.move`、`task.create.after` 与三个新事件。
 - `README.md`「The command line」补 `after`、`queue move`、`task new --after`（英文）。
 
@@ -296,8 +298,8 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 | 位置 | 改动 | 理由 |
 |---|---|---|
-| store.rs `assert_eq!(SCHEMA_VERSION, 5)` | 5 → 6 | 任务文件点名的版本钉 |
-| store.rs v4→v5 迁移测试 `assert_eq!(version, 5)` | 5 → 6 | 同上；降级语句不改，靠 `IF NOT EXISTS` |
+| store.rs `assert_eq!(SCHEMA_VERSION, 5)` | 5 → 7 | 任务文件点名的版本钉 |
+| store.rs v4→v5 迁移测试 `assert_eq!(version, 5)` | 5 → 7 | 同上；沿用 main 删除 limit_minutes 的降级语句，依赖表靠 `IF NOT EXISTS` |
 | write-gate.test.ts「全部 op 正路径可达」的 `specific` 表 | 加 `'task.set_after': {task_id:'T-1', after:[]}`、`'task.move': {task_id:'T-1', top:true}` | 这条测试的设计就是「每个放行的 op 在表里登记正路径」。新 op 有必填参数，用 `{}` 走不通。这是登记新 op，不是迁就旧断言 |
 | end_to_end.rs `bug_loop_task_get_reports_the_fix_round_for_bugs_only` | 完整字段清单加入 `after`、`blocked_by`，并断言 feature/bug 默认均为空数组 | §6 明确新增这两个字段；保留原有字段、fix_round 差异和错误状态无副作用断言，不能用旧字段全集拒绝已约定的加法接口 |
 | Web `dashboard-double.ts` 与 `notifier-backfill-real.test.ts` | 替身加入 `queued: []`，真实空队列断言为空 | §6 明确 dashboard 新增 queued；保留完整顶层键比较和通知数量、重启去重断言 |
@@ -316,7 +318,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 已完成 | 依赖校验纯函数与 store v6 迁移 | 0 | |
+| M-01 | 已完成 | 依赖校验纯函数与 store v7 迁移 | 0 | |
 | M-02 | 已完成 | 创建即带依赖，出队跳过依赖未完成的任务 | 0 | |
 | M-03 | 已完成 | 改依赖、阻塞事件与 dashboard 排队组 | 0 | |
 | M-04 | 已完成 | task.move 调整队列顺序 | 0 | |
@@ -332,11 +334,11 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 新 e2e 用例不用 `settle`，因为被阻塞的排队任务会让它超时（见「背景与现状」）。它们用现有的 `scheduling_wait` 加自定义判据
 （tick 后「没有运行中的会话，且指定任务处于指定状态」）。`has_pending_work` / `settle` 不改。
 
-- **M-01**：覆盖需求 1 的校验与迁移、验收 4 与 5 的迁移部分；没有前置。可观察的结果：`deps` 模块与 v6 迁移通过单测。
+- **M-01**：覆盖需求 1 的校验与迁移、验收 4 与 5 的迁移部分；没有前置。可观察的结果：`deps` 模块与 v7 迁移通过单测。
   - `deps::` 12 个：自引用、不存在、跨项目、直接环、三节点环、超过 8 个、去重保序并接受 Done/Cancelled 依赖、
     全部拒绝文案是单行中文、需求任务的可改状态表（含 `impl_started == true` 时 `Active{Design}`、`Stopped{Design}` 等设计期状态也被拒绝）、Bug 任务的可改状态、`block_reason` 与 `is_satisfied`、`reposition` 的三种位置与两种拒绝。
     「超过 8 个」用例含 9 个相同 id 也被拒绝（按输入项数）。
-  - `deps_store_` 5 个（`has_impl_session` 并入 `set_task_after` 那个用例，数量不变）：v5→v6 迁移后无依赖且队列顺序不变；`create_task_after` 因外键失败时整体回滚、不留任务；
+  - `deps_store_` 5 个（`has_impl_session` 并入 `set_task_after` 那个用例，数量不变）：v7→v7 迁移后无依赖且队列顺序不变；`create_task_after` 因外键失败时整体回滚、不留任务；
     `set_task_after` 替换与清空：保留边的 `notified` 不变、新增边为空、删除边消失；`has_impl_session` 随 Impl 会话记录翻转；`reorder_queue` 不动别的项目的 `queued_seq`；`blocked_notice` 往返。
 - **M-02**：覆盖需求 1（create）、需求 2（跳过）、需求 4（`task.get` / `project.get`）、验收 1、验收 4（经 RPC 拒绝无副作用）；
   前置 M-01。
@@ -385,12 +387,11 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-01 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-audit.md · 通过 · 审计 #1
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r11-impl.md · rebase 集成复验（保留审计关闭） · 实现 #11
 
 - 验收命令：`cargo test -p autome-domain deps:: && cargo test -p automed --lib store::`
-- 预期：第一条 12 个用例通过。第二条通过的用例数为 store 模块基线 52（设计轮按源码 `#[test]` 计数，实现轮以实际运行为准，
-  记入证据）加 5，共 57，其中两条版本号断言已改为 6。
-- 负向对照：环检测只查直接边时，「三节点环」用例失败。v6 块写成不带 `IF NOT EXISTS` 的 `CREATE TABLE` 时，v4→v5 迁移测试
+- 预期：第一条 12 个用例通过。第二条为当前 main 的 store 基线 53 加本任务 5，共 58，其中版本号断言随当前 schema 更新。
+- 负向对照：环检测只查直接边时，「三节点环」用例失败。v7 块写成不带 `IF NOT EXISTS` 的 `CREATE TABLE` 时，v4→v5 迁移测试
   报 `table task_after already exists` 失败。
 
 ### M-02 验收契约
@@ -463,7 +464,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ## 风险与回退
 
-- **v6 迁移让旧二进制打不开账本**（约束 6）。合并并重装后，真实账本会迁到 v6，回退需要旧备份。由人工验收 H-01 在合并后确认。
+- **v7 迁移让旧二进制打不开账本**（约束 6）。合并并重装后，真实账本会迁到 v7，回退需要旧备份。由人工验收 H-01 在合并后确认。
   实现期不碰真实账本。
 - **e2e 的时序。** 验收 1、3 依赖 sleep 占住槽位，沿用 `the_parallel_limit…` 已验证过的写法。判据用账本 seq 和状态，不用「sleep 后看一眼」。
 - **`fill_slots` 每个 tick 多出的查询。** 只对有依赖的 `Queued` 任务做，依赖最多 8 个，可以忽略。
@@ -471,7 +472,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ## 人工验收清单
 
-- H-01 合并并重装 autome 后，用已安装的 `autome ls` 打开真实账本（会迁到 schema 6），确认能正常列出、已有排队任务的先后与升级前一致
+- H-01 合并并重装 autome 后，用已安装的 `autome ls` 打开真实账本（会迁到 schema 7），确认能正常列出、已有排队任务的先后与升级前一致
 - H-02 有排队任务时打开桌面端首页与网页面板，确认页面照常显示（`dashboard.get` 多了 `queued` 组，界面未改）
 
 ## Backlog
