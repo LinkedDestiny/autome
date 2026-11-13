@@ -341,6 +341,21 @@ autome extend <task> <n>
 autome rerun <task> <node>
 ```
 
+Declare dependencies when creating a task, or replace or clear them before implementation starts (Bug tasks must still be unstarted). Dependencies must be tasks in the same project; at most eight input IDs are accepted, and self-dependencies and cycles are rejected.
+
+```sh
+autome task new "Add checkout" --after T-41,T-47
+autome after T-52 T-41,T-47
+autome after T-52 --none
+autome queue move T-52 --top
+autome queue move T-52 --before T-44
+autome queue move T-52 --after T-46
+```
+
+Queue moves accept queued tasks and drafts; a moved draft keeps its position when started. The scheduler skips blocked tasks without changing their positions until every dependency is Done. Cancelled or failed dependencies keep tasks queued until you change or clear the dependencies. Implementation resumes are not held by dependencies. Converting a task does not redirect dependencies to its replacement.
+
+`autome ls` lists queued tasks in queue order with dependency annotations; `autome status` shows the queue, and `autome status <task>` shows its dependencies. JSON task objects expose `after` and `blocked_by`.
+
 `autome task start` accepts only drafts. For Bug Loop tasks, `autome reply`
 accepts non-empty information at `await_info` or `not_a_bug` and returns to
 `locate`; other nodes reject it. For feature tasks it is equivalent to

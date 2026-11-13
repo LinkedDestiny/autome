@@ -7,6 +7,8 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'project.onboarding.save',
   'project.alert.dismiss',
   'task.create',
+  'task.set_after',
+  'task.move',
   'task.start',
   'task.reply',
   'task.approve',
@@ -64,10 +66,12 @@ function utf8ByteLength(value: string) {
 }
 
 const ARRAY_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'task.create': ['attachments', 'doc_refs'],
+  'task.create': ['attachments', 'doc_refs', 'after'],
+  'task.set_after': ['after'],
   'config.set_role': ['skills'],
 });
 const MAX_ARRAY_ENTRIES = 256;
+const MAX_AFTER_IDS = 8;
 const MAX_ARRAY_ITEM_LENGTH = 1024;
 const NAME_ONLY_ARRAYS = Object.freeze(['skills']);
 
@@ -164,6 +168,26 @@ function validateShape(op: string, params: unknown): { ok: true } | { ok: false;
 }
 
 function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: true } | { ok: false; message: string } {
+  if (op === 'task.set_after' || (op === 'task.create' && params.after !== undefined)) {
+    if (!Array.isArray(params.after) || params.after.length > MAX_AFTER_IDS || !params.after.every(
+      (id: unknown) => typeof id === 'string' && /^T-\d+$/.test(id),
+    )) {
+      return { ok: false, message: `after 必须是任务编号列表，每项格式为 T-N，最多 ${MAX_AFTER_IDS} 项` };
+    }
+  }
+  if (op === 'task.move') {
+    for (const key of ['before', 'after']) {
+      if (params[key] !== undefined && (typeof params[key] !== 'string' || !/^T-\d+$/.test(params[key]))) {
+        return { ok: false, message: `${key} 必须是 T-N 格式的任务编号` };
+      }
+    }
+    if (params.top !== undefined && typeof params.top !== 'boolean') {
+      return { ok: false, message: 'top 必须是布尔值' };
+    }
+    if (Number(params.before !== undefined) + Number(params.after !== undefined) + Number(params.top === true) !== 1) {
+      return { ok: false, message: 'before、after、top 必须恰好指定一个位置' };
+    }
+  }
   if (op === 'task.create') {
     if (params.kind !== undefined && params.kind !== null && params.kind !== 'feature' && params.kind !== 'bug') {
       return { ok: false, message: 'kind 必须是 feature 或 bug' };
@@ -183,7 +207,7 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
       return { ok: false, message: '附件必须是上传编号（小写 UUID）' };
     }
   }
-  if (op === 'task.start' || op === 'task.reply') {
+  if (op === 'task.start' || op === 'task.reply' || op === 'task.set_after' || op === 'task.move') {
     if (typeof params.task_id !== 'string' || params.task_id.length === 0) {
       return { ok: false, message: 'task_id 必须是非空字符串' };
     }

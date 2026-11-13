@@ -547,6 +547,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
     assert.equal(check('task.approve', params), length === 32768);
   }
   const specific: Record<string, object> = {
+    'task.set_after': { task_id: 'T-1', after: [] }, 'task.move': { task_id: 'T-1', top: true },
     'task.start': { task_id: 't1' }, 'task.reply': { task_id: 't1', info: '' },
     'open.path': { kind: 'log', session_id: 's1' }, 'config.set_theme': { theme: 'system' },
     'env.install': { component: 'git' }, 'env.login': { component: 'codex' },
@@ -684,4 +685,53 @@ test('task.convert 只接受需求方向、非空任务编号与可选布尔 sta
   }
   const read = await import('../server/gates/read-gate.ts');
   assert.equal(read.validateReadRequest({ method: 'task.convert', params: valid }).ok, false);
+});
+
+test('依赖与移动操作放行，task_id 必须是非空字符串', () => {
+  for (const [op, extra] of [['task.set_after', { after: [] }], ['task.move', { top: true }]] as const) {
+    const params = { task_id: 'T-1', ...extra };
+    assert.deepEqual(gate.validateWriteRequest({ op, params }), { ok: true, op, params });
+    for (const task_id of [undefined, null, '', 7, true, [], {}]) {
+      const result = gate.validateWriteRequest({ op, params: { ...extra, task_id } });
+      assert.equal(result.ok, false);
+      assert.match(result.message!, /[\u4e00-\u9fff]/);
+    }
+  }
+});
+
+test('task.move 三个位置恰好一个，位置编号与 top 类型受限', () => {
+  for (let mask = 0; mask < 8; mask++) {
+    const params = { task_id: 'T-1', ...(mask & 1 ? { before: 'T-2' } : {}),
+      ...(mask & 2 ? { after: 'T-3' } : {}), ...(mask & 4 ? { top: true } : {}) };
+    assert.equal(gate.validateWriteRequest({ op: 'task.move', params }).ok, [1, 2, 4].includes(mask));
+  }
+  for (const key of ['before', 'after']) {
+    for (const id of ['', 't-1', 'T-', 'T--1', 'T-1.0', 'T-１', ' T-1', 'T-1\n', null, 1, true, [], {}]) {
+      assert.equal(gate.validateWriteRequest({ op: 'task.move', params: { task_id: 'T-1', [key]: id } }).ok, false);
+    }
+    for (const id of ['T-0', 'T-01', 'T-99999999999999999999']) {
+      assert.equal(gate.validateWriteRequest({ op: 'task.move', params: { task_id: 'T-1', [key]: id, top: false } }).ok, true);
+    }
+  }
+  for (const top of [false, null, '', 'true', 1, [], {}]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.move', params: { task_id: 'T-1', top } }).ok, false);
+  }
+});
+
+test('创建与修改依赖的列表边界和编号格式，移动 after 是单个编号', () => {
+  for (const op of ['task.create', 'task.set_after']) {
+    for (const count of [0, 1, 8, 9]) {
+      for (const after of [Array(count).fill('T-1'), Array.from({ length: count }, (_, i) => `T-${i}`)]) {
+        assert.equal(gate.validateWriteRequest({ op, params: { task_id: 'T-1', after } }).ok, count <= 8);
+      }
+    }
+    for (const after of [null, '', 'T-1', 1, true, {}, [''], ['bad'], ['T-1\n'], ['T--1'], ['T-１'], [1], [null]]) {
+      const result = gate.validateWriteRequest({ op, params: { task_id: 'T-1', after } });
+      assert.equal(result.ok, false);
+      assert.match(result.message!, /[\u4e00-\u9fff]/);
+    }
+    assert.equal(gate.validateWriteRequest({ op, params: { task_id: 'T-1', after: ['T-0', 'T-01'] } }).ok, true);
+    assert.equal(gate.validateWriteRequest({ op, params: { task_id: 'T-1' } }).ok, op === 'task.create');
+  }
+  assert.equal(gate.validateWriteRequest({ op: 'task.move', params: { task_id: 'T-1', after: ['T-2'] } }).ok, false);
 });

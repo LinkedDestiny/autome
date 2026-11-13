@@ -314,7 +314,7 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 ## 8. 调度器
 
 - 每个项目一个信号量，容量为 `parallel_limit`。占用槽位的状态：Intake、Design、Review、Adjudicate、Implement、Audit、Rebase、Merging、Cleanup。AwaitDesignApproval、AwaitMerge、Paused、Stopped、Failed 不占槽位。
-- 排队按 created_at 升序。槽位释放后立即启动队首。
+- 排队按 `queued_seq`、`created_at` 顺序，可用 `task.move` 调整；槽位释放后依次检查，跳过依赖尚未全部到 `Done` 的受约束任务，保留其队列位置，让后面的任务先走。约束适用于 `Queued`，以及需求任务在设计批准前节点的 `Requeued`；实现期和 Bug 的 `Requeued` 不受依赖约束。依赖取消或失败时任务继续排队，用户可修改或清空依赖。
 - 单个任务同一时刻最多一个会话。
 - 暂停在当前会话结束后生效；恢复时若槽位不足则排队。
 - 一次 tick 的顺序：收已结束的会话 → 启动到点的重试 → 跑内核步骤（rebase、门禁、合并、清理）→ 填空槽位。
@@ -405,6 +405,8 @@ Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为
 
 SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog 与争议项的表态，及携带 / 消费它的会话）、`events`（append-only，界面事件流与审计用）、`session_retries`（等待重派的崩溃轮次）、`runtime_cooldowns`（限流中的 CLI）、`project_alerts`（项目级报警，如合并后 main 门禁失败）。
 
+schema v6 新增 `task_after(task_id, after_id, ord, notified)`：两个任务编号均外键引用 `tasks(id)`，联合主键为 `(task_id, after_id)`；`ord` 保留声明顺序，`notified` 记录已通知的阻塞原因。旧任务迁移后无依赖，原队列顺序不变；创建任务与依赖在同一事务内提交。
+
 事实分工：任务文档与状态块是任务进度的事实来源；SQLite 保存登记、索引、台账与表态。两者不一致时以文件为准并记录一条 `integrity_warning` 事件。
 
 启动恢复：加载 projects → 校验路径与 worktree 存在 → 对每个非终态 task 扫描会话目录（§2）→ 推进或标记失败 → 重建调度队列。
@@ -421,9 +423,17 @@ SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog
 
 `task.get`、`dashboard.get`、`project.get.tasks` 的任务投影包含 `merge: {authorized, authorized_by, holds_section, waiting_for, stale}`，终结任务为 null。authorized_by 为 user/project/behind/null，waiting_for 为任务 ID 或 null。stale 只在 Active AwaitMerge 且落后时为 `{behind, gated, repos: [{repo, base, behind}]}`；工作区 behind 为各成员落后数之和，gated 表示配了项目门禁或为 Bug。Git 读取失败记 warning 并返回 stale=null，不阻断列表，也不代表已确认最新。`status` / `ls` 显示授权、等待与过期状态，有门禁时提示「合并时会重新 rebase 并再跑一次门禁」，无门禁则提示先 rebase。task.get 与 dashboard.get 另带 config_warnings（后者按项目），status 打印配置警告。
 
+`task.create` 可携带 `after: ["T-41"]`；`task.set_after {task_id, after}` 替换依赖，空数组清空。最多 8 个输入项，去重保序，只接受同项目存在的任务，拒绝自引用和环；需求任务只允许在设计批准前且从未开始实现轮时修改，Bug 任务只允许开始前修改。
+
+`task.move {task_id, before?, after?, top?}` 仅移动排队或待开始任务，`before` / `after` / `top: true` 恰好指定一个位置；参照必须是同项目的其它排队或待开始任务。重排只改变本项目队列；移动过的草稿在 `task.start` 时保留位置，未移动的草稿排到队尾。Web 网关放行这两个操作，要求非空 `task_id`，依赖列表最多 8 项，依赖及位置编号匹配 `^T-\d+$`。
+
+`task.get`、`project.get` 和 `dashboard.get` 的任务对象带 `after` 与 `blocked_by`，后者列出未完成依赖的编号、状态和阻塞原因；`dashboard.get` 的 `queued` 组按出队顺序排列。这里的 `blocked_by` 表示任务依赖，与 `task.changes` 中表示文件变更阻塞的同名字段不同。`task.convert` 不继承或改指依赖，依赖原任务者会继续等待已取消的原任务，需用户清空或改指。
+
 `task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
 
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
+
+新增事件：`task.after_set` 携带更新后的 `after`；`task.moved` 携带任务、项目、位置参数及 `queue_position`；`task.blocked` 携带 `task`、`on`、`reason`、`project_id`。依赖为取消或失败时，同一阻塞原因只通知一次；恢复后再次失败可再次通知。
 
 命令行 `autome`（`crates/autome-cli`）不走这条管道：它链接 `automed` 库，在本进程内用同一个 `dispatch::handle_command` 处理每条命令，打开同一个数据库，受同一把驱动锁约束（§8.1）。因此 CLI 与桌面端不存在两份实现；CLI 自己只有参数解析和输出格式。会话包装脚本用 `current_exe() render-stream` 渲染日志，所以 `autome` 与 `automed` 一样必须支持 `render-stream` 和 `protocol eval` 两个子命令。
 

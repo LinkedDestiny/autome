@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 7/30
+implementation-round: 8/30
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-06 Web 网关放行与随行文档
+next-action: 独立审计 M-06 网关验收与自审证据
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -319,7 +319,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 | M-03 | 已完成 | 改依赖、阻塞事件与 dashboard 排队组 | 0 | |
 | M-04 | 已完成 | task.move 调整队列顺序 | 0 | |
 | M-05 | 已完成 | CLI：task new --after、after、queue move、ls 与 status | 0 | |
-| M-06 | 开放 | Web 网关放行与随行文档 | 0 | |
+| M-06 | 待审 | Web 网关放行与随行文档 | 0 | |
 
 ## 里程碑说明
 
@@ -375,7 +375,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   - 单元测试 3 个：`USAGE` 包含新命令、`args` 解析 `--before` / `--after`、`event_line` 的三个新事件。
 - **M-06**：覆盖需求 5 和随行文档；前置 M-03、M-04。
   - `write-gate.test.ts` 新增 3 个：`set_after` / `move` 放行且 `task_id` 必填；`move` 的位置参数恰好一个；
-    三处 id 列表在 8 个放行、9 个拒绝，非 `T-N` 拒绝。
+    创建与修改依赖的两处 id 列表在 8 个放行、9 个拒绝，非 `T-N` 拒绝；移动位置只接受单个编号。
   - 修改 `specific` 表，见方案 10。
   - 文档按方案 9 改。
 
@@ -441,6 +441,8 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
     断言没有这条事件，因此失败。
 
 ### M-06 验收契约
+
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-impl.md · 待审 · 实现 #8
 
 - 验收命令：`npm test --prefix apps/web -- write-gate && ! grep -n "排队按 created_at 升序" docs/development/technical-design.md && grep -q "queue move" README.md && grep -q "task.set_after" docs/development/technical-design.md`
   （`apps/web/node_modules` 不存在时先执行 `cd apps/web && npm ci`）
