@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 6/30
-current-milestone: M-04
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 宿主重跑快检后独立审计 M-04 task.move；通过后推进 M-05 CLI
+next-action: 推进 M-05 CLI：task new --after、after、queue move、ls 与 status
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -317,7 +317,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 | M-01 | 已完成 | 依赖校验纯函数与 store v6 迁移 | 0 | |
 | M-02 | 已完成 | 创建即带依赖，出队跳过依赖未完成的任务 | 0 | |
 | M-03 | 已完成 | 改依赖、阻塞事件与 dashboard 排队组 | 0 | |
-| M-04 | 待审 | task.move 调整队列顺序 | 0 | |
+| M-04 | 已完成 | task.move 调整队列顺序 | 0 | |
 | M-05 | 开放 | CLI：task new --after、after、queue move、ls 与 status | 0 | |
 | M-06 | 开放 | Web 网关放行与随行文档 | 0 | |
 
@@ -417,7 +417,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-04 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-impl.md · 快检修复及验收通过，保持待审 · 实现 #6
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-audit.md · 通过 · 审计 #4
 
 - 验收命令：`cargo test -p automed queue_move_ && cargo test -p automed task_start_queues_a_draft && cargo test -p automed --test end_to_end task_card_a_started_draft_waits_behind_the_parallel_limit`
 - 预期：`queue_move_` 7 个通过（lib 6 个、end_to_end 1 个），另外两条命令各 1 个现有用例通过。
