@@ -7946,19 +7946,14 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_behind_main_is_requeued_for_a_rebase_and_main_is_untouched() {
+    fn a_merge_behind_main_starts_a_rebase_and_main_is_untouched() {
         needs_git!();
         let mut w = World::new("auto-queue");
         let (task, wt) = stale_merge(&mut w);
         let main = git::head_sha(&w.repo).unwrap();
         let head = git::head_sha(&wt).unwrap();
         run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
-        assert_eq!(
-            w.state(&task.id),
-            TaskState::Requeued {
-                resume: Node::Rebase
-            }
-        );
+        assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Rebase });
         let event = w
             .ctx
             .store
@@ -7996,7 +7991,7 @@ mod tests {
         let mut w = World::new("auto-rebase");
         let (task, wt) = stale_merge(&mut w);
         run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
-        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+        assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
         let task = w.ctx.store.get_task(&task.id).unwrap();
         run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
         let event = w
@@ -8075,7 +8070,7 @@ mod tests {
     }
 
     #[test]
-    fn with_every_slot_taken_the_requested_rebase_waits_in_the_queue_and_keeps_the_request() {
+    fn with_every_slot_taken_the_requested_rebase_runs_and_merges() {
         needs_git!();
         let mut w = World::new("auto-slot");
         w.set_parallel(1);
@@ -8088,31 +8083,92 @@ mod tests {
             },
         );
         let head = git::head_sha(&wt).unwrap();
-        // Tick phase 2 returns the transient merging slot before phase 3
-        // admits any sessions or gates (the unchanged press itself uses it).
         run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
         assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
         assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
-        assert_eq!(
-            w.state(&task.id),
-            TaskState::Requeued {
-                resume: Node::Rebase
-            }
-        );
+        assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Rebase });
         assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
         assert!(merge_requested(&w.ctx, &task.id).unwrap());
         assert_eq!(git::head_sha(&wt).unwrap(), head);
         assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
-        w.set_state(
-            "T-2",
-            TaskState::Active {
-                node: Node::AwaitMerge,
-            },
+        for node in [Node::Rebase, Node::Merging, Node::Cleanup] {
+            let current = w.ctx.store.get_task(&task.id).unwrap();
+            assert_eq!(current.state, TaskState::Active { node });
+            run_core_step(&mut w.ctx, &current, node).unwrap();
+            assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        }
+        assert!(w.repo.join("feature.txt").exists());
+        assert!(
+            w.ctx
+                .store
+                .get_task(&task.id)
+                .unwrap()
+                .completed_at
+                .is_some()
         );
-        assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
-        assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Rebase });
-        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
-        assert!(merge_requested(&w.ctx, &task.id).unwrap());
+        assert_eq!(
+            w.state("T-2"),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebase_conflict_waits_for_session_capacity() {
+        user_action_slot_regression(
+            Trigger::CoreStepDone {
+                node: Node::Rebase,
+                result: CoreStepResult::Conflict {
+                    files: vec!["feature.txt".into()],
+                    detail: "conflict".into(),
+                },
+            },
+            TaskState::Active { node: Node::Rebase },
+            Node::Implement,
+        );
+    }
+
+    #[test]
+    fn merge_core_steps_reacquire_capacity_for_gates() {
+        for (from, to) in [
+            (Node::Rebase, Node::MergeGate),
+            (Node::Merging, Node::MainCheck),
+        ] {
+            let mut w = queue_world("merge-gate-capacity");
+            w.set_parallel(1);
+            let task = w.add_task("target", "target");
+            w.set_state(&task.id, TaskState::Active { node: from });
+            w.add_task("busy", "busy");
+            w.set_state(
+                "busy",
+                TaskState::Active {
+                    node: Node::Implement,
+                },
+            );
+            apply_trigger(
+                &mut w.ctx,
+                &task.id,
+                &Trigger::CoreStepDone {
+                    node: from,
+                    result: CoreStepResult::Ok,
+                },
+            )
+            .unwrap();
+            assert_eq!(w.state(&task.id), TaskState::Requeued { resume: to });
+            assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+            assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+            w.set_state(
+                "busy",
+                TaskState::Stopped {
+                    at: Node::Implement,
+                },
+            );
+            assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+            assert_eq!(w.state(&task.id), TaskState::Active { node: to });
+            assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # 按合并要等会话槽位：定位记录
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib merge_does_not_wait_for_a_session_slot -- --test-threads=1
 根因: 用户动作准入以 occupies_slot 判断负载，Merging 被计入会话槽位，满槽时在执行合并前被改成 Requeued；Behind 路径还会显式排队等待 Rebase。
 复核: 待复核
@@ -43,7 +43,13 @@ repos: autome-v2
 
 ## 修复说明
 
-定位轮未修改产品代码。回归测试保持失败，交由后续修复轮处理；预算为 0/3。
+修复第 1/3 轮：`Node::occupies_slot` 排除 Merging、Rebase、Cleanup，保留门禁节点原有占槽规则；Merging 收到 Behind 后直接进入 Active/Rebase 并执行内核步骤，不再显式排队。调度器既有准入逻辑继续限制 Rebase 冲突后的 Implement 和后续 MergeGate/MainCheck，无需改动调度产品逻辑。
+
+定位轮新增的 `scheduler_gate_queue_tests.rs` 回归测试及复现命令保持不变。更新此前要求 Rebase 排队的旧领域/调度测试；满槽 Behind 测试现在驱动真实 Rebase、合并、清理直至完成，并检查占槽任务不变、没有新增模型会话。新增冲突转实现会话及转门禁的容量检查。
+
+验证：原复现命令修复前失败（`fix-before.log`），修复后通过（`fix-repro-final.log`）。领域 `task::tests` 119 项、调度 `merge_` 子集 60 项、`rebase` 子集 16 项通过（均无失败或忽略项）；`user_action_slot_` 3 项、`slots_in_use` 1 项、`merge_core_steps_reacquire_capacity_for_gates` 1 项通过。`cargo fmt --all -- --check` 和 `git diff --check` 通过。原始日志均在 `.autome/output/fix-*.log`。
+
+未运行 `sh scripts/ci-local.sh`，由宿主在合并前统一执行；未进行真实模型会话、CLI/RPC UI 端到端验收。本轮不处理 T-70 合并临界区。
 
 ## 复核意见
 

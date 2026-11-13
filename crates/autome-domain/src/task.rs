@@ -112,12 +112,18 @@ impl Node {
     }
 
     /// Whether this node holds one of the project's parallel slots
-    /// (design §8). The two human stopping points deliberately do not: a task
-    /// waiting on the user must never block another task from running.
+    /// (design §8). User waits and the short Git core steps do not hold
+    /// session capacity. Gates retain their existing slot accounting.
     pub const fn occupies_slot(self) -> bool {
         !matches!(
             self,
-            Node::AwaitDesignApproval | Node::AwaitMerge | Node::AwaitInfo | Node::NotABug
+            Node::AwaitDesignApproval
+                | Node::AwaitMerge
+                | Node::AwaitInfo
+                | Node::NotABug
+                | Node::Rebase
+                | Node::Merging
+                | Node::Cleanup
         )
     }
 
@@ -1282,11 +1288,9 @@ fn apply_inner(
                         }),
                     },
                 )),
-                (Node::Merging, CoreStepResult::Behind { .. }) => Ok(Transition::to(
-                    TaskState::Requeued {
-                        resume: Node::Rebase,
-                    },
-                    Action::None,
+                (Node::Merging, CoreStepResult::Behind { .. }) => Ok(Transition::active(
+                    Node::Rebase,
+                    Action::RunCoreStep { node: Node::Rebase },
                 )),
                 (_, CoreStepResult::Behind { .. }) => Err(reject("只有合并步骤可以报告分支落后")),
                 (Node::Merging, CoreStepResult::Ok) => {
@@ -1777,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn merging_behind_the_default_branch_queues_a_rebase_carrying_the_request() {
+    fn merging_behind_the_default_branch_runs_a_rebase_carrying_the_request() {
         for repos in [vec![], vec!["repo".into()], vec!["a".into(), "b".into()]] {
             for requested in [false, true] {
                 let t = apply_with_merge_request(
@@ -1793,13 +1797,8 @@ mod tests {
                     requested,
                 )
                 .unwrap();
-                assert_eq!(
-                    t.next,
-                    TaskState::Requeued {
-                        resume: Node::Rebase
-                    }
-                );
-                assert_eq!(t.action, Action::None);
+                assert_eq!(t.next, TaskState::Active { node: Node::Rebase });
+                assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
                 assert!(t.merge_requested);
             }
         }
@@ -3775,11 +3774,20 @@ mod tests {
     // ---- structural invariants ------------------------------------------
 
     #[test]
-    fn the_two_stopping_points_never_hold_a_parallel_slot() {
+    fn user_waits_and_short_git_steps_never_hold_a_parallel_slot() {
         for node in Node::ALL {
             assert_eq!(
                 node.occupies_slot(),
-                !matches!(node, Node::AwaitDesignApproval | Node::AwaitMerge),
+                !matches!(
+                    node,
+                    Node::AwaitDesignApproval
+                        | Node::AwaitMerge
+                        | Node::AwaitInfo
+                        | Node::NotABug
+                        | Node::Rebase
+                        | Node::Merging
+                        | Node::Cleanup
+                ),
                 "{node:?}"
             );
         }
