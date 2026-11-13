@@ -116,9 +116,17 @@ run 'Web build' npm run build --prefix apps/web
 if [ "$with_package" -eq 1 ]; then
   run 'Package' sh scripts/package.sh
   run 'CLI package' sh -c '
-    sh scripts/package-cli.sh &&
-    prefix=$(mktemp -d) &&
-    PREFIX="$prefix" sh scripts/install-cli.sh --from dist/autome-*.tar.gz > /dev/null &&
+    set -e
+    sh scripts/package-cli.sh
+    scratch=$(mktemp -d)
+    trap '\''rm -rf "$scratch"'\'' EXIT
+    trap '\''exit 129'\'' HUP
+    trap '\''exit 130'\'' INT
+    trap '\''exit 143'\'' TERM
+    prefix="$scratch/bin"
+    ledger_home="$scratch/home"
+    mkdir -p "$prefix" "$ledger_home"
+    PREFIX="$prefix" AUTOME_HOME="$ledger_home" sh scripts/install-cli.sh --from dist/autome-*.tar.gz > /dev/null
     "$prefix/autome" --version
   '
   run 'Bundle carries a runnable core' sh -c '
