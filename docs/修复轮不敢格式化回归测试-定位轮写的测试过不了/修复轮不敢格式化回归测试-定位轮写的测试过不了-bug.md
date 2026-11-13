@@ -1,9 +1,9 @@
 # 修复轮不敢格式化回归测试
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cargo test --offline -p automed --test end_to_end --test prompt_rendering --no-fail-fast regression_format_only -- --test-threads=1
 根因: 定位提示词缺少格式化检查要求，修复与复核提示词未明确格式化例外；File 的 Git tree 比较及旧 Section 的原文摘要比较拒绝纯格式化。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -36,6 +36,22 @@ fix-round: 1/3
 协议修复按任务卡要求发布独立 `## protocol/vN`、`clarify` 记录并同步金样；已固定旧协议的运行任务不迁移。本轮未改产品代码、协议正文或金样，也未把历史真实会话的行为作为本轮实测结果。
 
 ## 修复说明
+
+### 修复第 2/3 轮
+
+宿主尾部日志未给出失败用例；本轮单独复现确认，旧端到端用例 `every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task` 在第 1777 行仍要求 `protocol/v6@`，而上一轮已发布 v7，实际引用为 `protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf`。这是上一轮漏同步的旧测试版本预期。
+
+仅将该旧用例的版本前缀更新为 `protocol/v7@`，保留与 `current().0.to_wire()` 的精确比较及协议冻结、brief 检查；未修改定位轮新增的任何回归测试，也未修改产品代码或协议副本。
+
+验证（日志均在 `.autome/output/`）：
+
+- 上述单用例修复前失败（退出 101，`fix2-frozen-before.log`），修复后 1/1 通过（`fix2-frozen-after.log`）。
+- 原复现命令修复前已通过 7/7（`fix2-repro.log`）；修改后复跑仍为 7/7 通过，退出 0（`fix2-repro-after.log`）。
+- `cargo test --offline -p automed --lib`：798/798 通过（`fix2-lib.log`）。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`git diff --check` 通过（`fix2-fmt.log`、`fix2-clippy.log`）。
+- 未运行全量门禁 `sh scripts/ci-local.sh`；Web 未改动，未运行 Web 检查，由宿主执行快检及合并前全量门禁。
+
+以下为第一轮历史记录。
 
 本轮以最小范围修复提示词与 Rust 回归保护口径，未修改定位轮的 `end_to_end.rs`、`prompt_rendering.rs`，也未修改本任务已固定的协议副本。
 
