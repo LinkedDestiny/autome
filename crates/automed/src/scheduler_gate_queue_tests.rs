@@ -1041,3 +1041,37 @@ fn user_action_slot_resume_control_waits_then_starts() {
         Node::Implement,
     );
 }
+
+#[test]
+fn merge_tail_non_reusable_gate_still_waits_for_session_capacity() {
+    assert!(git_available(), "Git is required; this regression must not skip");
+    for mode in ["disabled", "changed-command"] {
+        let mut w = queue_world(mode);
+        w.set_parallel(1);
+        let task = w.add_task("target", "target");
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("feature"), "feature\n").unwrap();
+        git::commit_paths(&wt, &["feature"], "feature").unwrap();
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let layout = TaskLayout::of(&project, &task.slug, &[]);
+        w.set_state(&task.id, TaskState::Active { node: Node::MergeGate });
+        let ready = w.ctx.store.get_task(&task.id).unwrap();
+        reuse_collect(&mut w, &ready, &project, &layout, Node::MergeGate);
+        reuse_config(&w, if mode == "disabled" { "true" } else { "echo changed" }, mode != "disabled");
+        w.set_parallel(1);
+        w.add_task("busy", "busy");
+        w.set_state("busy", TaskState::Active { node: Node::Implement });
+        let started = queue_count(&w, &task, "gate.started");
+        apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+        let merging = w.ctx.store.get_task(&task.id).unwrap();
+        assert_eq!(merging.state, TaskState::Active { node: Node::Merging });
+        run_core_step(&mut w.ctx, &merging, Node::Merging).unwrap();
+        let merged = w.ctx.store.get_task(&task.id).unwrap();
+        assert_eq!(git::head_sha(&w.repo).unwrap(), merged.merge_commit.unwrap());
+        assert_eq!(merged.state, TaskState::Requeued { resume: Node::MainCheck });
+        assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+        assert_eq!(queue_count(&w, &task, "gate.reused"), 0);
+        assert_eq!(queue_count(&w, &task, "gate.started"), started);
+        assert!(wt.exists());
+    }
+}

@@ -1,6 +1,6 @@
 # 合并后的可复用验证被会话槽位阻塞
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib merge_tail_reaches_done_without_a_session_slot -- --test-threads=1
 根因: Merging 不占会话槽位而 MainCheck 占槽，合并成功后的统一准入先将 MainCheck 改为 Requeued，尚未执行无负载的门禁结果复用判断。
 复核: 待复核
@@ -35,11 +35,18 @@ parallel=1 且另一个 Implement 任务占满槽位时，目标任务已成功�
 
 ## 修复说明
 
-定位轮未修改产品代码。后续修复须保留真实门禁准入、会启动会话的用户动作排队及 slots_in_use 不变量；清理不等会话槽位。不得弱化本轮回归。
+修复第 1/3 轮：在 `advance` 的统一槽位准入前，使用与 `run_gate` 共用的 `reusable_main_check` 检查复用开关、单仓库合并提交、验证检出/job 是否存在，以及原有提交父子关系、树、实际命令和成功门禁证据。满足条件时记录 `gate.reused`，通过原状态机的 MainCheck/GateDone(Passed) 转移进入 Cleanup，不持久化超容量的 Active/MainCheck，也不启动额外命令或会话。
 
-验证通过：cargo fmt --all -- --check、git diff --check；slots_in_use 1 项、user_action_slot_ 3 项、merge_core_steps_reacquire_capacity_for_gates 1 项均通过，日志见 .autome/output/locate-{fmt,slots,actions,gates}.log。
+真实门禁仍按原规则占用 loop 槽位并遵循 gate concurrency；未改变 Node::occupies_slot、slots_in_use、清理和 after 钩子的执行规则。原定位回归测试保持不变，新增关闭复用、门禁命令变化两种满槽负向场景，确认 main 已合并但真实 MainCheck 仍排队、不启动门禁且保留 worktree。
 
-本轮未配置 merge.after 钩子，因此不宣称已动态验收钩子执行；后续修复须按原规则验证。未运行全仓门禁或真实 CLI/面板端到端验收。
+验证结果：
+
+- 原复现命令修复前返回 101，实际为 Requeued/MainCheck；修复后原命令通过（1 项），日志 `.autome/output/fix-before.log`、`.autome/output/fix-repro-final.log`。
+- `merge_tail_` 3 项通过；`main_check_reuse` 4 项通过；`merge_core_steps_reacquire_capacity_for_gates` 1 项、`user_action_slot_` 3 项、`slots_in_use` 1 项通过。
+- `gate_queue_` 24 项、`merge_after_` 10 项通过，覆盖既有门禁准入与合并后钩子规则。测试均以 `cargo test --offline -p automed --lib <过滤名> -- --test-threads=1` 执行，日志在 `.autome/output/fix-*.log`。
+- `cargo fmt --all -- --check`、`cargo clippy --offline --all-targets -- -D warnings`、`git diff --check` 通过。
+
+未运行全量门禁 `sh scripts/ci-local.sh`；前端 lint/typecheck 留给宿主快检。本轮未改 UI，未进行真实 CLI/面板端到端验收；合并后钩子使用既有专项测试验证，不宣称已覆盖可复用满槽尾段与钩子的组合端到端场景。
 
 ## 复核意见
 

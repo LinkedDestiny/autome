@@ -1964,6 +1964,34 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         read_status(&project, &task)
     });
 
+    // A proven MainCheck needs no process or slot. Resolve it before admission
+    // rather than persisting an over-capacity Active gate and hoping it reuses.
+    if transition.next
+        == (TaskState::Active {
+            node: Node::MainCheck,
+        })
+        && let Some(reused) = reusable_main_check(ctx, &task, &project, &resolved, bug)?
+    {
+        transition = bug_loop::apply_for(
+            if bug {
+                TaskKind::Bug
+            } else {
+                TaskKind::Feature
+            },
+            &transition.next,
+            &Trigger::GateDone {
+                node: Node::MainCheck,
+                outcome: GateOutcome::Passed,
+                status: read_status(&project, &task).map(Box::new),
+            },
+            &context,
+            progress,
+            before,
+        )
+        .map_err(|rejected| err(rejected.reason))?;
+        ctx.store.append_event("gate.reused", task_id, reused)?;
+    }
+
     // Reacquiring a slot must obey the same limit as starting from the queue.
     // Keep the original action: Reenter alone would resume an old session
     // instead of rerunning it, and would lose decision injections.
@@ -3447,6 +3475,33 @@ fn main_check_reuse(
     ))
 }
 
+/// Keep admission and execution on the same first-entry reuse conditions.
+fn reusable_main_check(
+    ctx: &Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    resolved: &ResolvedConfig,
+    bug: bool,
+) -> Result<Option<Value>> {
+    if !resolved.gate_reuse_for_main_check || project.is_workspace() {
+        return Ok(None);
+    }
+    let (Some(commit), Some(gate)) = (&task.merge_commit, &resolved.gate) else {
+        return Ok(None);
+    };
+    let repo = Path::new(&project.path);
+    let job = crate::gate::Job::at(
+        repo,
+        &task.id,
+        "main_check",
+        &commit[..commit.len().min(12)],
+    );
+    if repo.join(verify_dir(commit)).exists() || job.exists() {
+        return Ok(None);
+    }
+    main_check_reuse(&ctx.store, &task.id, repo, commit, &gate.command, bug)
+}
+
 fn run_gate(
     ctx: &mut Ctx,
     task: &TaskRecord,
@@ -3563,18 +3618,7 @@ fn run_gate(
                 }
             };
             let rel = verify_dir(&commit);
-            let job = crate::gate::Job::at(
-                &repo,
-                &task.id,
-                "main_check",
-                &commit[..commit.len().min(12)],
-            );
-            if resolved.gate_reuse_for_main_check
-                && !repo.join(&rel).exists()
-                && !job.exists()
-                && let Some(reused) =
-                    main_check_reuse(&ctx.store, &task.id, &repo, &commit, &gate.command, bug)?
-            {
+            if let Some(reused) = reusable_main_check(ctx, task, project, &resolved, bug)? {
                 ctx.store.append_event("gate.reused", &task.id, reused)?;
                 return finish_gate(ctx, task, project, node, GateOutcome::Passed);
             }
