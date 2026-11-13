@@ -11,3 +11,4 @@
 实现 #4 | M-04 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-impl.md | 无
 审计 #4 | M-04 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-audit.md | 无
 实现 #5 | M-03（rebase 修复） | rebase 完成，54 用例通过，保留已审状态 | docs/单个会话的时长上限-loop-session/evidence/M-03-r5-impl.md | 无
+审计 #5 | 无（全部已完成） | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r5-audit.md | 无
