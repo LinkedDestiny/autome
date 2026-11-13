@@ -8,3 +8,4 @@
 
 实现 #3 | M-03 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-03-r3-impl.md | 无
 审计 #3 | M-03 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-03-r3-audit.md | 无
+实现 #4 | M-04 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-impl.md | 无

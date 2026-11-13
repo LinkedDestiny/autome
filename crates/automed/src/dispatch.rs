@@ -1713,7 +1713,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "status_block": status.map(status_json),
             "status_error": doc.error().is_some(),
             "status_error_detail": doc.error(),
-            "sessions": sessions.iter().map(session_json).collect::<Vec<_>>(),
+            "sessions": sessions.iter().map(|s| session_json(ctx, &project, s)).collect::<Vec<_>>(),
             "cost": autome_domain::metrics::CostSummary::of(&sessions),
             "decisions": decisions
                 .iter()
@@ -1808,7 +1808,7 @@ fn status_json(s: &StatusBlock) -> Value {
     })
 }
 
-fn session_json(s: &autome_domain::session::Session) -> Value {
+fn session_json(ctx: &Ctx, project: &Project, s: &autome_domain::session::Session) -> Value {
     json!({
         "id": s.id,
         "kind": s.kind,
@@ -1822,6 +1822,9 @@ fn session_json(s: &autome_domain::session::Session) -> Value {
         "ended_at": s.ended_at,
         "lifecycle": s.lifecycle,
         "running": s.is_running(),
+        "timed_out": matches!(s.lifecycle, autome_domain::session::SessionLifecycle::TimedOut { .. }),
+        "limit_minutes": scheduler::effective_limit(ctx, s, project),
+        "elapsed_minutes": s.is_running().then(|| scheduler::secs_since(&s.started_at).map(|secs| secs / 60)).flatten(),
         // Where the readable log is, for `autome logs --follow`. Read-only:
         // nothing the renderer sends back ever names a path.
         "log_path": s.log_path,
@@ -2420,6 +2423,8 @@ fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
         message: format!("找不到会话 {session_id}"),
     })?;
 
+    let task = ctx.store.get_task(&session.task_id)?;
+    let project = ctx.store.get_project(&task.project_id)?;
     const MAX_BYTES: usize = 256 * 1024;
     let text = std::fs::read_to_string(&session.log_path).unwrap_or_default();
     let truncated = text.len() > MAX_BYTES;
@@ -2437,7 +2442,7 @@ fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
     };
     Ok((
         json!({
-            "session": session_json(&session),
+            "session": session_json(ctx, &project, &session),
             "log": shown,
             "truncated": truncated,
             "path": session.log_path,
@@ -2471,7 +2476,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
                 "task": task_json(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
                 "pending_decisions": pending,
-                "session": ctx.store.running_session(&task.id)?.as_ref().map(session_json),
+                "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
             });
             if task.state.awaits_user() {
@@ -3845,6 +3850,155 @@ mod tests {
         assert_eq!(ok_payload(&out)["task"]["cost_usd"], 0.0);
         sb.ctx.store.set_task_state(&id, &state).unwrap();
         id
+    }
+
+    fn visible_session(
+        sb: &Sandbox,
+        task: &str,
+        limit: Option<u32>,
+    ) -> autome_domain::session::Session {
+        cost_session(sb, task, "seed", None, false);
+        let mut session = sb.ctx.store.list_sessions(task).unwrap().remove(0);
+        session.id = format!("{task}-visible");
+        session.limit_minutes = limit;
+        session.lifecycle = autome_domain::session::SessionLifecycle::Running;
+        session.ended_at = None;
+        session.started_at = rusqlite::Connection::open_in_memory()
+            .unwrap()
+            .query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now','-37 minutes')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        sb.ctx.store.insert_session(&session).unwrap();
+        session
+    }
+
+    #[test]
+    fn timeout_visible_finished_entries_and_missing_log() {
+        use autome_domain::session::SessionLifecycle;
+        let mut sb = Sandbox::new("visible-finished");
+        let project = sb.add_project("p");
+        let task = cost_task(
+            &mut sb,
+            &project,
+            "visible",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        let session = visible_session(&sb, &task, Some(5));
+        sb.ctx
+            .store
+            .finish_session(
+                &session.id,
+                &SessionLifecycle::TimedOut { limit_minutes: 5 },
+                &now_iso(),
+            )
+            .unwrap();
+        let got = task_get(sb.ctx(), &task)
+            .unwrap_or_else(|e| panic!("{}", e.message))
+            .0;
+        for entry in got["sessions"].as_array().unwrap() {
+            let timeout = entry["id"] == session.id;
+            assert_eq!(entry["timed_out"], timeout);
+            let log = session_log(sb.ctx(), entry["id"].as_str().unwrap())
+                .unwrap_or_else(|e| panic!("{}", e.message))
+                .0;
+            assert_eq!(log["session"]["timed_out"], timeout);
+            assert_eq!(log["log"], "");
+            if timeout {
+                assert_eq!(entry["limit_minutes"], 5);
+                assert_eq!(log["session"]["limit_minutes"], 5);
+                assert_eq!(entry["running"], false);
+                assert!(entry["elapsed_minutes"].is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn timeout_visible_running_and_legacy_limits_across_endpoints() {
+        for limit in [Some(120), None] {
+            let mut sb = Sandbox::new("visible-running");
+            let project = sb.add_project("p");
+            let task = cost_task(
+                &mut sb,
+                &project,
+                "visible",
+                TaskState::Active {
+                    node: Node::Implement,
+                },
+            );
+            let session = visible_session(&sb, &task, limit);
+            std::fs::write(
+                sb.path("p/.autome/config.toml"),
+                "[loop]\nsession_minutes = 30\n",
+            )
+            .unwrap();
+            let expected = limit.unwrap_or(30);
+            let got = task_get(sb.ctx(), &task)
+                .unwrap_or_else(|e| panic!("{}", e.message))
+                .0;
+            let log = session_log(sb.ctx(), &session.id)
+                .unwrap_or_else(|e| panic!("{}", e.message))
+                .0;
+            let dashboard = dashboard_get(sb.ctx())
+                .unwrap_or_else(|e| panic!("{}", e.message))
+                .0;
+            let entry = got["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == session.id)
+                .unwrap();
+            for value in [entry, &log["session"], &dashboard["running"][0]["session"]] {
+                assert_eq!(value["elapsed_minutes"], 37);
+                assert_eq!(value["limit_minutes"], expected);
+                assert_eq!(value["timed_out"], false);
+                assert_eq!(value["running"], true);
+            }
+            let project = sb.ctx.store.get_project(&project).unwrap();
+            std::fs::write(sb.path("p/.autome/config.toml"), "invalid [").unwrap();
+            assert_eq!(
+                session_json(&sb.ctx, &project, &session)["limit_minutes"],
+                120
+            );
+            let mut boundary = session.clone();
+            boundary.started_at = String::new();
+            assert!(session_json(&sb.ctx, &project, &boundary)["elapsed_minutes"].is_null());
+            boundary.started_at = "9999-01-01T00:00:00Z".into();
+            boundary.limit_minutes = Some(u32::MAX);
+            let value = session_json(&sb.ctx, &project, &boundary);
+            assert_eq!(value["elapsed_minutes"], 0);
+            assert_eq!(value["limit_minutes"], u32::MAX);
+        }
+    }
+
+    #[test]
+    fn timeout_visible_dashboard_failure_reason() {
+        let mut sb = Sandbox::new("visible-failed");
+        let project = sb.add_project("p");
+        let detail = "会话运行超过 5 分钟，已被 Autome 终止（超时）";
+        let task = cost_task(
+            &mut sb,
+            &project,
+            "visible",
+            TaskState::Failed {
+                at: Node::Implement,
+                reason: autome_domain::task::FailureReason::SessionCrashed {
+                    detail: detail.into(),
+                },
+            },
+        );
+        let got = dashboard_get(sb.ctx())
+            .unwrap_or_else(|e| panic!("{}", e.message))
+            .0;
+        assert_eq!(got["waiting"][0]["task"]["id"], task);
+        assert_eq!(
+            got["waiting"][0]["task"]["state"]["reason"]["detail"],
+            detail
+        );
     }
 
     fn cost_session(sb: &Sandbox, task: &str, suffix: &str, cost: Option<f64>, running: bool) {

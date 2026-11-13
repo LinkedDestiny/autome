@@ -1088,7 +1088,7 @@ fn record_usage(ctx: &mut Ctx, s: &Session, project: &Project, task: &TaskRecord
 
 /// Seconds since an RFC 3339 timestamp. `None` when it cannot be parsed, so
 /// the caller can fall back rather than treat an unreadable timestamp as now.
-fn secs_since(ts: &str) -> Option<u64> {
+pub(crate) fn secs_since(ts: &str) -> Option<u64> {
     let then = epoch_secs(ts)?;
     let now = epoch_secs(&now_iso())?;
     Some((now - then).max(0) as u64)
