@@ -11,3 +11,4 @@
 实现 #5 | M-04 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r5-impl.md | 无
 实现 #6 | M-04 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-impl.md | 无
 审计 #4 | M-04 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-audit.md | 无
+实现 #7 | M-05 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r7-impl.md | 无

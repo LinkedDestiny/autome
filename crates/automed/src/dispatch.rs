@@ -595,12 +595,28 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let inventory = skills::scan(&home, &project.path);
     let violations = config::validate(&resolved, &inventory);
 
+    let positions: std::collections::BTreeMap<_, _> = ctx
+        .store
+        .queued_tasks(project_id)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, i + 1))
+        .collect();
+    let tasks_json = tasks
+        .iter()
+        .map(|t| {
+            let mut value = task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))?;
+            value["queue_position"] = json!(positions.get(&t.id));
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, DispatchError>>()?;
+
     Ok((
         json!({
             "project": project,
             "cost_usd_total": total,
             "cost_sessions_without_cost": missing,
-            "tasks": tasks.iter().map(|t| task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))).collect::<Result<Vec<_>, _>>()?,
+            "tasks": tasks_json,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
             "violations": violations,
