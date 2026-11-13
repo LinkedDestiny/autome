@@ -885,7 +885,18 @@ fn task_detail(got: &Value) {
         );
     }
     println!("  需求      {}", t["request"].as_str().unwrap_or_default());
-    if let Some(sb) = got["status_block"].as_object() {
+    if let Some(document) = got["documents"]
+        .as_array()
+        .and_then(|docs| docs.iter().find(|doc| doc["label"] == "Bug 文档"))
+    {
+        println!(
+            "  Bug 文档  {}",
+            document["absolute"].as_str().unwrap_or_default()
+        );
+    }
+    if let Some(sb) = got["status_block"].as_object()
+        && sb.contains_key("milestones")
+    {
         let ms: Vec<String> = sb
             .get("milestones")
             .and_then(Value::as_array)

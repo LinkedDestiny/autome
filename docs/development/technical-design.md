@@ -488,6 +488,8 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 `env.get.kernel` 含 build_id、origin（git/unknown）、ledger_build_id、may_advance、message，只读不更新标记。tick 保留布尔 skipped，新增 older_kernel（null 或 {message,kernel,ledger}）；锁忙与旧内核可区分。写命令拒绝码为 older_kernel，消息与 tick 相同；Web 映射 409。面板 outdated 状态保持可读、横幅显示原话并禁写，tick 降为每 10 个间隔一次，状态不变不重复日志。常驻 autome run 被拒时保持进程，只在原因变化时输出；恢复继续推进；--once/--until-idle 被拒退出 1。
 
+`task.get.documents` 按任务卡、设计文档 / Bug 文档、任务文件、评审、裁决、审计、运行记录、复盘教训、证据的顺序列出存在的文件，证据按文件名排序。每项保留 name、label、path、absolute、size，并带 source（worktree / default_branch）。任务文档目录存在时从任务检出读取；目录不存在时，从项目主检出（工作区为文档仓库）的默认分支树过滤文件，且仅列磁盘上存在的文件。此时 status_block 从默认分支的 Git 内容解析，不受主检出的未提交内容影响；未合并且默认分支无文档时返回空清单和 null。Bug 文档使用 BugDoc 解析器。CLI status 显示合并后的里程碑及 Bug 文档路径。
+
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
 
 补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。

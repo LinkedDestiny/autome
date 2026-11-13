@@ -2083,3 +2083,72 @@ fn operator_note_cli_records_and_status_displays_verbatim() {
     let human = s.ok(&["status", id]);
     assert!(human.contains("原文\n第二行") && human.contains("未送达"));
 }
+
+#[test]
+fn task_documents_status_shows_milestones_after_merge_and_bug_doc_path() {
+    let s = Sandbox::new("documents-status");
+    let request = "add cart checkout";
+    let slug = autome_domain::project::slugify(request);
+    // intake, design, review, adjudicate, implement, audit, retro — the same
+    // seven rounds as the core's happy path.
+    s.step(1, &slug, &doc("设计中", 0, 0, &[]));
+    s.step(2, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(3, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    s.step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    s.step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    s.retro(7, &slug);
+
+    let repo = s.repo.to_str().unwrap();
+    s.ok(&["project", "add", repo, "--skip-onboarding"]);
+    assert!(s.ok(&["project", "ls"]).contains(repo));
+
+    // No `-p`: the working directory names the project.
+    let created = s.json(&["task", "new", request]);
+    let id = created["task"]["id"].as_str().unwrap().to_string();
+
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(&id)["node"], "await_design_approval");
+    // The dashboard view tells the person what to type next.
+    assert!(s.ok(&["status"]).contains(&format!("autome approve {id}")));
+
+    s.ok(&["approve", &slug]); // a slug works as well as an id
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(&id)["node"], "await_merge");
+
+    let before = head(&s.repo);
+    s.ok(&["merge", &id]);
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+
+    assert_eq!(s.task_state(&id)["state"], "done");
+    assert_ne!(head(&s.repo), before, "the default branch moved");
+    assert!(s.repo.join(format!("docs/{slug}/{slug}.md")).exists());
+    // Every round's log is reachable from the command line.
+    s.ok(&["logs", &id]);
+    let status = s.ok(&["status", &id]);
+    assert!(status.contains("M-01 已完成"), "{status}");
+    assert!(
+        s.json(&["status", &id])["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+    let created = s.json(&["task", "new", "document path", "--kind", "bug", "--draft"]);
+    let bug_id = created["task"]["id"].as_str().unwrap();
+    let bug_slug = created["task"]["slug"].as_str().unwrap();
+    let dir = s.repo.join(format!("docs/{bug_slug}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bug_path = dir.join(format!("{bug_slug}-bug.md"));
+    std::fs::write(
+        &bug_path,
+        "status: 已定位\nfix-round: 1/5\n复现命令: false\n根因: test\n复核: 通过\n",
+    )
+    .unwrap();
+    automed::git::commit_paths(&s.repo, &[&format!("docs/{bug_slug}")], "bug document").unwrap();
+    let status = s.ok(&["status", bug_id]);
+    assert!(
+        status.contains(bug_path.canonicalize().unwrap().to_str().unwrap()),
+        "{status}"
+    );
+}

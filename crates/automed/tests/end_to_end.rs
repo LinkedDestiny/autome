@@ -11868,3 +11868,144 @@ fn gate_lane_e2e_bug_before_merge_light_each_round_heavy() {
         }
     }
 }
+
+#[test]
+fn task_documents_e2e_retro_adds_lessons() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions.iter().any(|s| s.kind
+            == autome_domain::session::SessionKind::Role {
+                role: autome_domain::role::Role::Retro
+            }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    let docs = ok(&got)["documents"].as_array().unwrap();
+    assert!(
+        docs.iter()
+            .any(|d| d["label"] == "复盘教训" && d["source"] == "worktree")
+    );
+}
+#[test]
+fn task_documents_e2e_merged_task_reads_default_branch_and_status_block() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions.iter().any(|s| s.kind
+            == autome_domain::session::SessionKind::Role {
+                role: autome_domain::role::Role::Retro
+            }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+    ok(&w.call("task.merge", json!({"task_id": task_id})));
+    w.settle();
+    assert_eq!(w.state(&task_id), "done");
+    assert!(!w.repo.join(format!(".worktree/{slug}")).exists());
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    let payload = ok(&got);
+    assert_eq!(payload["status_block"]["milestones_done"], 1);
+    assert!(!payload["documents"].as_array().unwrap().is_empty());
+    assert!(
+        payload["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+    // On-disk edits cannot replace the committed default-branch status block.
+    std::fs::write(w.repo.join(format!("docs/{slug}/{slug}.md")), "broken").unwrap();
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    assert_eq!(ok(&got)["status_block"]["milestones_done"], 1);
+}
+#[test]
+fn task_documents_e2e_bug_task_lists_its_bug_document() {
+    needs_git!();
+    let mut w = World::new("documents-bug");
+    let slug = slug_for("documents bug");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "documents bug");
+    w.settle();
+    let got = w.call("task.get", json!({"task_id":id}));
+    let payload = ok(&got);
+    let docs = payload["documents"].as_array().unwrap();
+    assert!(
+        docs.iter()
+            .any(|d| d["name"] == format!("{slug}-bug.md") && d["label"] == "Bug 文档")
+    );
+    assert_eq!(payload["status_block"]["review"], "Passed");
+    assert_eq!(payload["status_error"], false);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    let got = w.call("task.get", json!({"task_id":id}));
+    assert_eq!(ok(&got)["status_block"]["review"], "Passed");
+    assert!(
+        ok(&got)["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+}

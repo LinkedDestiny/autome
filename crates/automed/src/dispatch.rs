@@ -1981,7 +1981,8 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     // document that was right there.
     let layout = crate::layout::TaskLayout::of(&project, &task.slug, &[]);
 
-    let doc = read_status_block(&layout.docs_root, &task);
+    let source = DocumentSource::for_task(&project, &task);
+    let doc = source.status(&task);
     let status = doc.block();
     let sessions = ctx.store.list_sessions(task_id)?;
     let decisions = ctx.store.list_decisions(task_id)?;
@@ -2011,7 +2012,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "gate_queue_lane": crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?.iter().find(|w| w.task_id == task_id).map(|w| w.lane),
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
-            "status_block": status.map(status_json),
+            "status_block": doc.json(),
             "status_error": doc.error().is_some(),
             "status_error_detail": doc.error(),
             "sessions": sessions.iter().map(|s| session_json(ctx, &project, s)).collect::<Vec<_>>(),
@@ -2021,7 +2022,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
                 .map(|d| decision_json(d, status))
                 .collect::<Vec<_>>(),
             "pending_decisions": ctx.store.pending_decisions(task_id)?,
-            "documents": documents(&layout.docs_root, &task),
+            "documents": source.documents(&task),
             // What "打开 worktree" opens: the session's working directory,
             // which for a workspace is the directory the member checkouts sit
             // in rather than a checkout itself.
@@ -2059,9 +2060,18 @@ enum DocRead {
     /// `ParseError`, which names the field or the row and line number.
     Unreadable(String),
     Ok(Box<StatusBlock>),
+    Bug(autome_domain::bug_doc::BugDoc),
 }
 
 impl DocRead {
+    fn json(&self) -> Value {
+        match self {
+            Self::Ok(block) => status_json(block),
+            Self::Bug(block) => json!(block),
+            _ => Value::Null,
+        }
+    }
+
     fn block(&self) -> Option<&StatusBlock> {
         match self {
             DocRead::Ok(b) => Some(b),
@@ -2079,16 +2089,82 @@ impl DocRead {
     }
 }
 
-/// Reads the design document from the task's worktree. The panel shows the
-/// node flow whatever this returns; a parse failure has already failed the
-/// task through the normal path, and this is how the panel explains it.
-fn read_status_block(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> DocRead {
-    let Ok(text) = std::fs::read_to_string(worktree.join(task.design_doc())) else {
-        return DocRead::Absent;
-    };
-    match status_block::parse(&text) {
-        Ok(block) => DocRead::Ok(Box::new(block)),
-        Err(error) => DocRead::Unreadable(error.to_string()),
+/// After cleanup, membership and content come from the default branch, never HEAD.
+struct DocumentSource {
+    root: std::path::PathBuf,
+    branch: Option<String>,
+}
+
+impl DocumentSource {
+    fn for_task(project: &Project, task: &crate::store::TaskRecord) -> Self {
+        let worktree = std::path::PathBuf::from(project.docs_worktree(&task.slug));
+        if worktree.join(task.doc_dir()).is_dir() {
+            return Self {
+                root: worktree,
+                branch: None,
+            };
+        }
+        let root = project.docs_repo.as_ref().map_or_else(
+            || project.path.clone(),
+            |member| project.member_path(member),
+        );
+        Self {
+            root: root.into(),
+            branch: Some(project.default_branch.clone()),
+        }
+    }
+
+    fn status(&self, task: &crate::store::TaskRecord) -> DocRead {
+        let path = if task.kind == TaskKind::Bug {
+            task.bug_doc()
+        } else {
+            task.design_doc()
+        };
+        let text = match &self.branch {
+            Some(branch) => git::run_ok(&self.root, &["show", &format!("{branch}:{path}")])
+                .ok()
+                .map(|out| out.stdout),
+            None => std::fs::read_to_string(self.root.join(path)).ok(),
+        };
+        let Some(text) = text else {
+            return DocRead::Absent;
+        };
+        if task.kind == TaskKind::Bug {
+            return match autome_domain::bug_doc::parse(&text) {
+                Ok(block) => DocRead::Bug(block),
+                Err(error) => DocRead::Unreadable(error.to_string()),
+            };
+        }
+        match status_block::parse(&text) {
+            Ok(block) => DocRead::Ok(Box::new(block)),
+            Err(error) => DocRead::Unreadable(error.to_string()),
+        }
+    }
+
+    fn documents(&self, task: &crate::store::TaskRecord) -> Vec<Value> {
+        let mut docs = documents(&self.root, task);
+        if let Some(branch) = &self.branch {
+            let Ok(tree) = git::run_ok(
+                &self.root,
+                &[
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "-z",
+                    branch,
+                    "--",
+                    &format!("{}/", task.doc_dir()),
+                ],
+            ) else {
+                return vec![];
+            };
+            let paths: std::collections::HashSet<_> = tree.stdout.split('\0').collect();
+            docs.retain(|doc| paths.contains(doc["path"].as_str().unwrap_or_default()));
+            for doc in &mut docs {
+                doc["source"] = json!("default_branch");
+            }
+        }
+        docs
     }
 }
 
@@ -2212,24 +2288,40 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
     let dir = task.doc_dir();
     let slug = &task.slug;
     let names = [
-        (format!("{slug}.md"), "设计文档"),
+        (format!("{slug}-card.md"), "任务卡"),
+        (
+            if task.kind == TaskKind::Bug {
+                format!("{slug}-bug.md")
+            } else {
+                format!("{slug}.md")
+            },
+            if task.kind == TaskKind::Bug {
+                "Bug 文档"
+            } else {
+                "设计文档"
+            },
+        ),
         (format!("{slug}-task.md"), "任务文件"),
         (format!("{slug}-review.md"), "评审"),
         (format!("{slug}-adjudication.md"), "裁决"),
         (format!("{slug}-audit.md"), "审计"),
         ("retro.md".to_string(), "运行记录"),
+        ("lessons.md".to_string(), "复盘教训"),
     ];
     let mut out: Vec<Value> = names
         .iter()
         .filter_map(|(name, label)| {
             let path = worktree.join(&dir).join(name);
             let meta = std::fs::metadata(&path).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
             Some(json!({
                 "name": name,
                 "label": label,
                 "path": format!("{dir}/{name}"),
                 "absolute": path.to_string_lossy(),
-                "size": meta.len(),
+                "size": meta.len(), "source": "worktree",
             }))
         })
         .collect();
@@ -2250,7 +2342,11 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
                 if !name.ends_with(".md") {
                     return None;
                 }
-                let size = entry.metadata().ok()?.len();
+                let meta = entry.metadata().ok()?;
+                if !meta.is_file() {
+                    return None;
+                }
+                let size = meta.len();
                 Some((name, size, entry.path().to_string_lossy().into_owned()))
             })
             .collect();
@@ -2263,7 +2359,7 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
                 "label": "证据",
                 "path": format!("{dir}/evidence/{name}"),
                 "absolute": absolute,
-                "size": size,
+                "size": size, "source": "worktree",
             })
         }));
     }
@@ -5382,6 +5478,160 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn documents_fixture_task() -> crate::store::TaskRecord {
+        crate::store::TaskRecord {
+            kind: autome_domain::task::TaskKind::Feature,
+            id: "T-1".into(),
+            project_id: "p".into(),
+            slug: "cart".into(),
+            title: "t".into(),
+            request: "r".into(),
+            attachments: vec![],
+            doc_refs: vec![],
+            state: autome_domain::task::TaskState::Queued,
+            budget_n: None,
+            created_at: now_iso(),
+            completed_at: None,
+            merge_commit: None,
+            archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
+            doc_root: None,
+        }
+    }
+
+    #[test]
+    fn task_documents_lists_card_bug_doc_and_lessons_in_order() {
+        let sb = Sandbox::new("documents-order");
+        let mut task = documents_fixture_task();
+        task.kind = TaskKind::Bug;
+        let dir = sb.root.join(task.doc_dir());
+        std::fs::create_dir_all(dir.join("evidence")).unwrap();
+        for name in [
+            "cart-card.md",
+            "cart-bug.md",
+            "cart.md",
+            "cart-task.md",
+            "cart-review.md",
+            "cart-adjudication.md",
+            "cart-audit.md",
+            "retro.md",
+            "lessons.md",
+            "evidence/z.md",
+            "evidence/a.md",
+            "evidence/raw.log",
+        ] {
+            std::fs::write(dir.join(name), "内容").unwrap();
+        }
+        std::fs::create_dir(dir.join("evidence/directory.md")).unwrap();
+        let docs = documents(&sb.root, &task);
+        assert_eq!(
+            docs.iter()
+                .map(|d| d["label"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "任务卡",
+                "Bug 文档",
+                "任务文件",
+                "评审",
+                "裁决",
+                "审计",
+                "运行记录",
+                "复盘教训",
+                "证据",
+                "证据"
+            ]
+        );
+        assert_eq!(docs[8]["name"], "a.md");
+        assert_eq!(docs[9]["name"], "z.md");
+    }
+
+    #[test]
+    fn task_documents_carry_source_worktree() {
+        let mut sb = Sandbox::new("documents-source");
+        let id = sb.add_project("repo");
+        let project = sb.ctx.store.get_project(&id).unwrap();
+        let task = documents_fixture_task();
+        let root = std::path::PathBuf::from(project.docs_worktree(&task.slug));
+        std::fs::create_dir_all(root.join(task.doc_dir())).unwrap();
+        std::fs::write(root.join(task.design_doc()), "malformed").unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        assert_eq!(source.documents(&task)[0]["source"], "worktree");
+        assert!(source.status(&task).error().is_some());
+        std::fs::remove_file(root.join(task.design_doc())).unwrap();
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
+        // An existing, empty task directory must not fall back to the main checkout.
+        assert!(DocumentSource::for_task(&project, &task).branch.is_none());
+    }
+
+    fn check_documents_default_branch(workspace: bool) {
+        let mut sb = Sandbox::new("documents-default");
+        let id = sb.add_project("repo");
+        let mut project = sb.ctx.store.get_project(&id).unwrap();
+        let mut task = documents_fixture_task();
+        task.doc_root = Some("任务 文档".into());
+        if workspace {
+            project.path = sb.root.to_string_lossy().into_owned();
+            project.docs_repo = Some("repo".into());
+            project.kind = autome_domain::project::ProjectKind::Workspace;
+        }
+        let repo = sb.path("repo");
+        let dir = repo.join(task.doc_dir());
+        std::fs::create_dir_all(dir.join("evidence")).unwrap();
+        std::fs::write(dir.join("cart-card.md"), "card").unwrap();
+        std::fs::write(dir.join("lessons.md"), "lessons").unwrap();
+        std::fs::write(dir.join("evidence/a.md"), "evidence").unwrap();
+        std::fs::write(dir.join("cart.md"), "malformed from default").unwrap();
+        git::commit_paths(&repo, &[&task.doc_dir()], "documents").unwrap();
+        // HEAD and disk diverge from the default branch: no untracked/other-branch leakage.
+        git::run_ok(&repo, &["checkout", "-b", "other"]).unwrap();
+        std::fs::write(dir.join("cart.md"), "").unwrap();
+        std::fs::write(dir.join("retro.md"), "untracked").unwrap();
+        std::fs::remove_file(dir.join("lessons.md")).unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        let docs = source.documents(&task);
+        assert_eq!(docs.len(), 3);
+        assert_eq!(docs[0]["name"], "cart-card.md");
+        assert!(docs.iter().all(|d| d["source"] == "default_branch"));
+        assert_eq!(
+            std::fs::canonicalize(docs[0]["absolute"].as_str().unwrap()).unwrap(),
+            std::fs::canonicalize(dir.join("cart-card.md")).unwrap()
+        );
+        assert!(source.status(&task).error().is_some());
+        // Default branch read is distinct from the empty file on disk.
+        assert!(matches!(source.status(&task), DocRead::Unreadable(_)));
+    }
+
+    #[test]
+    fn task_documents_after_cleanup_come_from_the_default_branch() {
+        check_documents_default_branch(false);
+    }
+
+    #[test]
+    fn task_documents_workspace_reads_the_docs_repo_default_branch() {
+        check_documents_default_branch(true);
+    }
+
+    #[test]
+    fn task_documents_cancelled_unmerged_task_is_empty() {
+        let mut sb = Sandbox::new("documents-cancelled");
+        let id = sb.add_project("repo");
+        let project = sb.ctx.store.get_project(&id).unwrap();
+        let task = documents_fixture_task();
+        let dir = sb.path("repo").join(task.doc_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cart-card.md"), "not committed").unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
+        // Missing repository/read failure preserves the empty response.
+        std::fs::remove_dir_all(sb.path("repo")).unwrap();
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
     }
 
     #[test]
