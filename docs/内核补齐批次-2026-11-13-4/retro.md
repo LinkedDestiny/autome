@@ -21,3 +21,4 @@
 实现 #11 | M-10 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-10-r11-impl.md | 无
 审计 #10 | M-10 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-10-r11-audit.md | 无
 实现 #12 | M-11 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-11-r12-impl.md | 无
+审计 #11 | M-11 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-11-r12-audit.md | 无
