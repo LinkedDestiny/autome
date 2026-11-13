@@ -1480,6 +1480,21 @@ impl Store {
         Ok(())
     }
 
+    /// Publish the task-copy baseline and its scheme marker atomically. This
+    /// changes hash attribution only; it never rewrites the frozen files.
+    pub fn record_task_protocol_scheme(&self, id: &str, wire: &str, payload: Value) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        if self.last_event(id, "protocol.hash_scheme")?.is_none() {
+            tx.execute(
+                "UPDATE tasks SET protocol_ref = ?2 WHERE id = ?1",
+                params![id, wire],
+            )?;
+            self.append_event("protocol.hash_scheme", id, payload)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn task_metrics(&self, id: &str) -> Result<Option<autome_domain::metrics::TaskMetrics>> {
         let raw: Option<String> = self
             .conn

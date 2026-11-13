@@ -30,3 +30,4 @@
 审计 #14 | M-14 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-14-r15-audit.md | 无
 实现 #16 | M-15 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-15-r16-impl.md | 无
 审计 #15 | M-15 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-15-r16-audit.md | 无
+实现 #17 | M-16 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r17-impl.md | 本项无；既有 D-1 eval 缺失阻塞协议评估

@@ -1956,7 +1956,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v8@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v9@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -12365,6 +12365,19 @@ fn protocol_integrity_edited_copy_warns_exactly_once_over_two_sessions() {
     std::fs::write(copy.join("prompts/fix.md"), "edited\n").unwrap();
     integrity_two_sessions(&mut w, &id);
     assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    let actual = autome_domain::protocol::ProtocolRef::new(
+        automed::protocol::current().0.tag.clone(),
+        automed::protocol::read_dir_protocol(&copy).unwrap().hash(),
+    )
+    .to_wire();
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|s| s.protocol_ref.as_deref() == Some(&actual))
+            .count(),
+        2
+    );
 }
 
 #[test]

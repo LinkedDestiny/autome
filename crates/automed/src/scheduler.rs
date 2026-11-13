@@ -4051,7 +4051,7 @@ fn freeze_protocol(
         .join(task.doc_dir())
         .join(crate::protocol::TASK_SUBDIR);
 
-    if let Some(recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
+    if let Some(mut recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
         && dir.exists()
     {
         let files = read_task_protocol(&dir)?;
@@ -4061,16 +4061,43 @@ fn freeze_protocol(
         // attributed to a version, and this is the one moment the attribution
         // can be seen to be wrong.
         let hash = files.hash();
+        if ctx
+            .store
+            .last_event(&task.id, "protocol.hash_scheme")?
+            .is_none()
+        {
+            let previous = recorded.to_wire();
+            let verified = recorded.tag == crate::protocol::current().0.tag
+                && recorded.hash == crate::protocol::seed().hash();
+            recorded.hash = if verified {
+                crate::protocol::current().0.hash.clone()
+            } else {
+                hash.clone()
+            };
+            let mut payload = json!({
+                "ref": recorded.to_wire(), "scheme": "task_copy",
+                "reason": "migrated", "verified": verified, "previous": previous,
+            });
+            if !verified {
+                payload["limitation"] =
+                    json!("原始协议不可得，升级前的副本改动无法核实；以当前副本重建基线");
+            }
+            ctx.store
+                .record_task_protocol_scheme(&task.id, &recorded.to_wire(), payload)?;
+        }
         if hash != recorded.hash {
-            ctx.store.append_event(
-                "integrity_warning",
-                &task.id,
-                json!({
-                    "what": "protocol_copy_edited",
-                    "recorded": recorded.to_wire(),
-                    "actual_hash": hash,
-                }),
-            )?;
+            let last = ctx.store.last_event(&task.id, "integrity_warning")?;
+            if last.as_ref().and_then(|e| e["actual_hash"].as_str()) != Some(hash.as_str()) {
+                ctx.store.append_event(
+                    "integrity_warning",
+                    &task.id,
+                    json!({
+                        "what": "protocol_copy_edited",
+                        "recorded": recorded.to_wire(),
+                        "actual_hash": hash,
+                    }),
+                )?;
+            }
             return Ok((ProtocolRef::new(recorded.tag, hash), files));
         }
         return Ok((recorded, files));
@@ -4086,8 +4113,11 @@ fn freeze_protocol(
         &refs,
         &format!("chore(autome): {} 固定协议 {}", task.id, protocol_ref.tag),
     )?;
-    ctx.store
-        .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
+    ctx.store.record_task_protocol_scheme(
+        &task.id,
+        &protocol_ref.to_wire(),
+        json!({"ref": protocol_ref.to_wire(), "scheme": "task_copy", "reason": "frozen"}),
+    )?;
     Ok((protocol_ref, files))
 }
 

@@ -195,6 +195,11 @@ impl ProtocolFiles {
         self.files.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
+    /// The rules frozen into a task; eval fixtures are only used by developers.
+    pub fn task_copy(&self) -> Self {
+        Self::from_pairs(self.iter().filter(|(path, _)| !path.starts_with("evals/")))
+    }
+
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
