@@ -22,3 +22,4 @@
 
 实现 #9 | M-07 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r9-impl.md | 无
 审计 #8 | M-07 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r9-audit.md | 无
+实现 #10 | M-02 | 通过（rebase 集成回归，保留审计状态） | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-02-r10-impl.md | 无
