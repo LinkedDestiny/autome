@@ -380,9 +380,88 @@ pub fn dependencies(t: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn scope_paths(p: &Value, key: &str) -> Vec<String> {
+    p["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|repo| {
+            if key == "patch" {
+                repo[key].as_str().map(str::to_owned).into_iter().collect()
+            } else {
+                repo[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            }
+        })
+        .collect()
+}
+
+fn scope_patch_summary(p: &Value) -> String {
+    let patches = scope_paths(p, "patch");
+    let first = patches.first().map(String::as_str).unwrap_or("");
+    if patches.len() > 1 {
+        format!("{first} 等 {} 份", patches.len())
+    } else {
+        first.into()
+    }
+}
+
+pub fn scope_status_line(scope: &Value) -> Option<String> {
+    let last = &scope["last"];
+    if !last.is_object() {
+        return None;
+    }
+    let pending = scope["pending"].as_array();
+    let waiting = scope_paths(last, "patch").iter().any(|path| {
+        pending.is_some_and(|items| items.iter().any(|item| item.as_str() == Some(path)))
+    });
+    Some(format!(
+        "  越界还原：{} {}轮 #{} 还原 {} 个文件，补丁 {}（{}）",
+        local_time(last["at"].as_str().unwrap_or("")),
+        last["label"].as_str().unwrap_or(""),
+        last["round"],
+        scope_paths(last, "paths").len(),
+        scope_patch_summary(last),
+        if waiting { "待处理" } else { "已处理" }
+    ))
+}
+
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
+        "session.scope_restored" => {
+            let paths = scope_paths(p, "paths");
+            let mut listed = paths.iter().take(3).cloned().collect::<Vec<_>>().join("、");
+            if paths.len() > 3 {
+                listed.push_str(&format!(" 等 {} 个", paths.len()));
+            }
+            let next = if s("label") == "复核" {
+                "修复"
+            } else {
+                "实现"
+            };
+            format!(
+                "{subject} {}轮 #{} 越界改动已自动还原：{} 个文件（{}），补丁 {}；交给下一个{next}轮决定是否采纳",
+                s("label"),
+                p["round"],
+                paths.len(),
+                listed,
+                scope_patch_summary(p)
+            )
+        }
+        "session.scope_restore_failed" => {
+            format!("{subject} 越界改动自动还原失败：{}", s("detail"))
+        }
+        "session.scope_patches_handled" => format!(
+            "{subject} 越界补丁已交给会话 {} 处理（{} 份）",
+            s("session_id"),
+            p["patches"].as_array().map_or(0, Vec::len)
+        ),
         "bug.loop_started" => format!("{subject} 开始 Bug Loop"),
         "bug.located" => format!("{subject} 定位：{}；{}", s("status"), s("root_cause")),
         "bug.reproduced" => format!(
@@ -1508,4 +1587,102 @@ fn deps_cli_events() {
         short_state(&json!({"state":"active","node":"await_design_approval"})),
         "等你决定"
     );
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn payload() -> Value {
+        json!({"label":"审计", "round":3, "repos":[
+            {"paths":["a.rs", "中文 空格.rs", "x[1]*.rs"], "patch":"/tmp/a.patch"},
+            {"paths":["hidden.rs"], "patch":"/tmp/b.patch"}
+        ]})
+    }
+
+    #[test]
+    fn scope_restored_event_lists_bounded_paths_and_patches() {
+        let mut p = payload();
+        let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+        assert_eq!(
+            line,
+            "T-9 审计轮 #3 越界改动已自动还原：4 个文件（a.rs、中文 空格.rs、x[1]*.rs 等 4 个），补丁 /tmp/a.patch 等 2 份；交给下一个实现轮决定是否采纳"
+        );
+        p["repos"].as_array_mut().unwrap().pop();
+        let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+        assert!(!line.contains(" 等 "));
+        for label in ["复核", "复盘"] {
+            p["label"] = json!(label);
+            p["round"] = json!(u32::MAX);
+            p["repos"][0]["paths"] = json!(["单个"]);
+            let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+            assert!(line.contains(&format!("{label}轮 #4294967295")));
+            assert!(line.contains("1 个文件（单个）"));
+            assert!(line.contains(if label == "复核" {
+                "下一个修复轮"
+            } else {
+                "下一个实现轮"
+            }));
+        }
+        assert!(event_line("session.scope_restore_begun", "T-9", &p).is_none());
+    }
+
+    #[test]
+    fn scope_failed_event_preserves_detail() {
+        for detail in [
+            "只能修改 docs/t/。先保存补丁再 rerun。上一次已自动还原",
+            "自动还原没有完成：读盘失败",
+            "",
+        ] {
+            assert_eq!(
+                event_line(
+                    "session.scope_restore_failed",
+                    "T-9",
+                    &json!({"detail":detail})
+                )
+                .unwrap(),
+                format!("T-9 越界改动自动还原失败：{detail}")
+            );
+        }
+    }
+
+    #[test]
+    fn scope_handled_event_names_session_and_count() {
+        for patches in [json!([]), json!(["a"]), json!(["a", "b"])] {
+            assert_eq!(
+                event_line(
+                    "session.scope_patches_handled",
+                    "T-9",
+                    &json!({"session_id":"S-12", "patches":patches})
+                )
+                .unwrap(),
+                format!(
+                    "T-9 越界补丁已交给会话 S-12 处理（{} 份）",
+                    patches.as_array().unwrap().len()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn scope_task_detail_distinguishes_pending_and_handled() {
+        assert!(scope_status_line(&json!({"last":null,"pending":[]})).is_none());
+        let mut p = payload();
+        p["at"] = json!("2026-11-13T00:00:00Z");
+        for (pending, expected) in [
+            (json!(["/tmp/b.patch"]), "待处理"),
+            (json!([]), "已处理"),
+            (json!(["other.patch"]), "已处理"),
+        ] {
+            let line = scope_status_line(&json!({"last":p,"pending":pending})).unwrap();
+            assert_eq!(
+                line,
+                format!(
+                    "  越界还原：{} 审计轮 #3 还原 4 个文件，补丁 /tmp/a.patch 等 2 份（{expected}）",
+                    local_time("2026-11-13T00:00:00Z")
+                )
+            );
+        }
+    }
 }

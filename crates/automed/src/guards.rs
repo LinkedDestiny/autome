@@ -808,6 +808,7 @@ mod tests {
             },
         );
         let ctx = Context {
+            scope_patch_pending: false,
             config: &config,
             budget_n: Some(35),
             decisions: PendingDecisions::default(),

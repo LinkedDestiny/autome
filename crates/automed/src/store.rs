@@ -681,6 +681,15 @@ impl Store {
         Ok(raw.as_deref().map(serde_json::from_str).transpose()?)
     }
 
+    /// Complete, ordered ledger for one task and event kind (no page truncation).
+    pub fn task_events(&self, task_id: &str, kind: &str) -> Result<Vec<Value>> {
+        let mut query = self.conn.prepare(
+            "SELECT payload FROM events WHERE subject_id = ?1 AND kind = ?2 ORDER BY seq",
+        )?;
+        let rows = query.query_map(params![task_id, kind], |r| r.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
     /// Latest of a set of event kinds, without a payload-field restriction.
     pub fn last_event_of(
         &self,

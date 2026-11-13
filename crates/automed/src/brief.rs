@@ -262,6 +262,7 @@ pub struct Inputs<'a> {
     /// round is looking at, already rendered. For the audit round: the full
     /// suite has been run once by someone other than the round being audited.
     pub gate: Option<String>,
+    pub scope_patches: Option<String>,
 }
 
 /// The milestone this round is about: the current one if the status block
@@ -371,6 +372,9 @@ pub fn build(input: &Inputs<'_>) -> String {
         s.push_str("\n## 宿主门禁\n\n");
         s.push_str(g);
     }
+    if let Some(patches) = &input.scope_patches {
+        s.push_str(patches);
+    }
     s
 }
 
@@ -444,6 +448,22 @@ fn round_of(name: &str) -> u32 {
 /// Where a round's brief lives, relative to the worktree.
 pub fn path(doc_dir: &str, role: Role, round: u32) -> String {
     format!("{doc_dir}/brief/{}-{round}.md", role.as_str())
+}
+
+/// Render saved facts; launching a session never has to recompute patch stats.
+pub fn scope_patches(patches: &[autome_domain::scope::ScopeRestored]) -> Option<String> {
+    if patches.is_empty() {
+        return None;
+    }
+    let mut text = String::from("\n## 上一轮审计 / 复盘越界改动已被还原\n\n");
+    for entry in patches {
+        text.push_str(&format!("{}轮 #{}（会话 {}）改了文档目录之外的文件。Autome 已把它们还原到该会话开始时的样子，并把改动存成补丁：\n\n", entry.label, entry.round, entry.session_id));
+        for repo in &entry.repos {
+            text.push_str(&format!("- 补丁：`{}`（在仓库 `{}` 中应用）\n- 文件：{}\n- 摘要（git apply --stat）：\n{}\n", repo.patch.display(), repo.worktree.display(), repo.paths.join("、"), repo.stat));
+        }
+    }
+    text.push_str("\n由你判断是否采纳：采纳就在仓库根 `git apply <补丁>`，按需调整，跑与改动直接相关的测试后提交；不采纳就写一句理由。\n");
+    Some(text)
 }
 
 #[cfg(test)]
@@ -583,6 +603,7 @@ session-protocol = []
             budget_line: Some("本轮是实现轮第 3 轮，N = 35。\n".into()),
             decisions: None,
             gate: None,
+            scope_patches: None,
         }
     }
 
@@ -1037,6 +1058,7 @@ mod integration_section_tests {
     fn integration_section_none_preserves_the_brief() {
         let map = BriefMap::default();
         let mut input = Inputs {
+            scope_patches: None,
             integration: None,
             role: Role::Audit,
             slug: "x",
@@ -1062,6 +1084,10 @@ mod integration_section_tests {
         let new = build(&input);
         assert_eq!(new.replacen(&section, "", 1), old);
         assert!(new.find("## 本轮要审").unwrap() < new.find("## 上一轮").unwrap());
+        input.scope_patches = Some("补丁交接回归标记".to_string());
+        let combined = build(&input);
+        assert!(combined.contains(&section));
+        assert!(combined.contains("补丁交接回归标记"));
     }
     #[test]
     fn integration_section_contains_facts_and_seven_character_shas() {

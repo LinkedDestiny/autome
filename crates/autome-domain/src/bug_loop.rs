@@ -235,7 +235,9 @@ pub fn apply_for(
                     BugStatus::NotABug => Transition::active(Node::NotABug, Action::None),
                 },
                 Node::Fix => core(Node::FixGate),
-                _ if doc.review == BugReview::Passed => core(Node::Rebase),
+                _ if doc.review == BugReview::Passed && !ctx.scope_patch_pending => {
+                    core(Node::Rebase)
+                }
                 _ => start_fix(*node, Some(Inject::FixRejected), ctx, progress),
             })
         }
@@ -384,6 +386,7 @@ mod tests {
     }
     fn ctx(config: &ResolvedConfig) -> Context<'_> {
         Context {
+            scope_patch_pending: false,
             config,
             budget_n: None,
             decisions: PendingDecisions::default(),
@@ -1635,5 +1638,79 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn scope_patch_passed_review_returns_to_fix() {
+        let c = config();
+        let context = Context {
+            scope_patch_pending: true,
+            budget_n: Some(2),
+            ..ctx(&c)
+        };
+        for review in [BugReview::Passed, BugReview::Rejected] {
+            for round in [0, 1] {
+                let t = run(
+                    &active(Node::FixReview),
+                    &ended(BugStatus::Located, review),
+                    &context,
+                    BugProgress {
+                        fix_round: round,
+                        repro_misses: 0,
+                    },
+                )
+                .unwrap();
+                assert_eq!(t.next, active(Node::Fix));
+                assert_eq!(
+                    t.action,
+                    Action::StartBugSession {
+                        step: BugStep::Fix,
+                        inject: Some(Inject::FixRejected)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scope_patch_passed_review_obeys_fix_budget() {
+        let c = config();
+        for limit in [0, 2, u32::MAX] {
+            let context = Context {
+                scope_patch_pending: true,
+                budget_n: Some(limit),
+                ..ctx(&c)
+            };
+            for round in [limit, u32::MAX] {
+                let t = run(
+                    &active(Node::FixReview),
+                    &ended(BugStatus::Located, BugReview::Passed),
+                    &context,
+                    BugProgress {
+                        fix_round: round,
+                        repro_misses: 0,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    t.next,
+                    TaskState::Failed {
+                        at: Node::FixReview,
+                        reason: FailureReason::FixBudget { limit }
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scope_patch_clean_passed_review_rebases() {
+        assert_eq!(
+            at(
+                Node::FixReview,
+                ended(BugStatus::Located, BugReview::Passed)
+            ),
+            core(Node::Rebase)
+        );
     }
 }

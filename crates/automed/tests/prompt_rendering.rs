@@ -457,6 +457,7 @@ fn before_merge_audit_brief_matches_its_golden() {
         budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
         decisions: None,
         gate: brief::gate_evidence(&config, Some(&old), Some("<head>")),
+        scope_patches: None,
     });
     maybe_update_brief_golden("audit-before-merge", &got);
     assert_eq!(got, brief_golden("audit-before-merge"));
@@ -704,6 +705,7 @@ fn gate_quick_audit_brief_matches_golden() {
         budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
         decisions: None,
         gate: brief::gate_evidence(&config, Some(&result), Some("<head>")),
+        scope_patches: None,
     });
     maybe_update_brief_golden("audit-before-merge-quick", &got);
     assert_eq!(got, brief_golden("audit-before-merge-quick"));
@@ -849,6 +851,7 @@ fn integration_brief(trigger: serde_json::Value, name: &str) {
     let event = serde_json::json!({"impl_round":9,"evidence":"M-08-r9-audit.md","trigger":trigger,"repos":[{"repo":"","start":"3f2a1c0123456789","end":"9e81b77123456789","base":"55d0e12123456789","commits":[{"sha":"a1b2c3d123456789","subject":"fix: resolve launcher conflict","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 +-"},{"sha":"e4f5a6b123456789","subject":"test: keep old template compatible","paths":["crates/automed/tests/end_to_end.rs"],"stat":"crates/automed/tests/end_to_end.rs | 2 +-"}],"dropped":[{"sha":"0c9d8e7123456789","subject":"feat: launcher change","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 ++"}],"test_files":["crates/automed/tests/end_to_end.rs"],"commits_omitted":0,"dropped_omitted":0}]});
     let got = brief::build(&Inputs {
         integration: Some(brief::integration_section(&event, "docs/example")),
+        scope_patches: None,
         role: Role::Audit,
         slug: "example",
         doc_dir: "docs/example",

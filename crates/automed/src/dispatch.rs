@@ -1910,11 +1910,27 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let status = doc.block();
     let sessions = ctx.store.list_sessions(task_id)?;
     let decisions = ctx.store.list_decisions(task_id)?;
+    let mut last = Value::Null;
+    if let Some((seq, _, mut payload)) = ctx
+        .store
+        .last_event_of(task_id, &["session.scope_restore_begun"])?
+    {
+        if let Some(event) = ctx.store.events_since_with_at(seq - 1, 1)?.first() {
+            payload["at"] = json!(event.at);
+        }
+        last = payload;
+    }
+    let pending = crate::scope::pending(&ctx.store, task_id)
+        .map_err(|e| internal(e.to_string()))?
+        .into_iter()
+        .flat_map(|plan| plan.repos.into_iter().map(|repo| repo.patch))
+        .collect::<Vec<_>>();
 
     Ok((
         json!({
             "task": task_json(ctx, &task, &CostSummary::of(&sessions))?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
+            "scope_restore": {"last": last, "pending": pending},
             "brief": ctx.store.task_brief(task_id)?,
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
@@ -3825,6 +3841,70 @@ mod tests {
     fn gate_queue_get(sb: &mut Sandbox, id: &str) -> Value {
         let out = handle_command(sb.ctx(), &cmd("task.get", json!({"task_id":id})));
         ok_payload(&out).clone()
+    }
+
+    #[test]
+    fn task_get_scope_restore_reports_last_and_pending() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("scope-get");
+        let project = sb.add_project("repo");
+        let id = gate_queue_fixture(&mut sb, &project, "scope");
+        assert_eq!(
+            gate_queue_get(&mut sb, &id)["scope_restore"],
+            json!({"last":null,"pending":[]})
+        );
+        let plan = json!({"task":id,"session_id":"S-1","role":"audit","label":"审计","round":3,"repos":[{"repo":"repo","worktree":"/tmp/repo","base":"base","pre_head":"head","commit":null,"paths":["a.rs"],"patch":"/tmp/a.patch","stat":"1 file"}]});
+        sb.ctx
+            .store
+            .append_event("session.scope_restore_begun", &id, plan.clone())
+            .unwrap();
+        let first = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(first["pending"], json!(["/tmp/a.patch"]));
+        assert!(
+            first["last"]["at"]
+                .as_str()
+                .is_some_and(|at| !at.is_empty())
+        );
+        let mut without_at = first["last"].clone();
+        without_at.as_object_mut().unwrap().remove("at");
+        assert_eq!(without_at, plan);
+        sb.ctx
+            .store
+            .append_event(
+                "session.scope_restore_failed",
+                &id,
+                json!({"session_id":"S-1","detail":"failed"}),
+            )
+            .unwrap();
+        assert_eq!(
+            gate_queue_get(&mut sb, &id)["scope_restore"]["pending"],
+            json!([])
+        );
+        let mut second = plan.clone();
+        second["session_id"] = json!("S-2");
+        second["repos"][0]["patch"] = json!("/tmp/b.patch");
+        sb.ctx
+            .store
+            .append_event("session.scope_restore_begun", &id, second.clone())
+            .unwrap();
+        sb.ctx
+            .store
+            .append_event("session.scope_restored", &id, second)
+            .unwrap();
+        let before = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(before["last"]["session_id"], "S-2");
+        assert_eq!(before["pending"], json!(["/tmp/b.patch"]));
+        sb.ctx
+            .store
+            .append_event(
+                "session.scope_patches_handled",
+                &id,
+                json!({"session_id":"S-3","patches":["/tmp/b.patch"]}),
+            )
+            .unwrap();
+        let after = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(after["pending"], json!([]));
+        assert_eq!(after["last"], before["last"]);
     }
 
     #[test]

@@ -7736,14 +7736,6 @@ fn review_scope_seed(w: &World) {
     automed::git::commit_paths(&w.repo, &[REVIEW_SCOPE_OTHER], "seed merged task").unwrap();
 }
 
-fn review_scope_assert_failure(w: &World, id: &str, slug: &str) {
-    assert_eq!(w.state(id), "failed", "out-of-scope edit was admitted");
-    let detail = failure_detail(w, id);
-    assert!(detail.contains("只能修改"), "{detail}");
-    assert!(detail.contains(&format!("docs/{slug}/")), "{detail}");
-    assert!(detail.contains(REVIEW_SCOPE_OTHER), "{detail}");
-}
-
 #[test]
 fn review_scope_wrong_bug_document_reports_the_offending_path() {
     needs_git!();
@@ -7756,7 +7748,15 @@ fn review_scope_wrong_bug_document_reports_the_offending_path() {
     bug_step(&w, 3, "other-task", &bug_doc("通过"), "");
     let id = create_bug(&mut w, request);
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(w.state(&id), "failed");
+    assert!(failure_detail(&w, &id).contains("本轮没有更新"));
+    let restored = w
+        .ctx
+        .store
+        .last_event(&id, "session.scope_restored")
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored["repos"][0]["paths"], json!([REVIEW_SCOPE_OTHER]));
 }
 
 #[test]
@@ -7775,9 +7775,18 @@ fn review_scope_valid_verdict_does_not_hide_an_outside_edit() {
         &bug_doc("通过"),
         &format!("printf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}"),
     );
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
     let id = create_bug(&mut w, request);
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
 }
 
 #[test]
@@ -7826,28 +7835,339 @@ fn review_scope_feature_retro_rejects_other_task_edits() {
 }
 
 fn review_scope_feature_round(retro: bool) {
+    scope_restore_feature_run(retro, false, Some(REVIEW_SCOPE_OTHER));
+}
+
+#[test]
+fn scope_restore_feature_audit_edit_is_reverted_and_handed_to_next_impl() {
+    scope_restore_feature_run(false, true, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_last_milestone_adds_an_impl_round_then_reaches_merge() {
+    scope_restore_feature_run(false, false, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_retro_edit_routes_through_impl_and_audit() {
+    scope_restore_feature_run(true, false, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_clean_round_adds_nothing() {
+    scope_restore_feature_run(false, false, None);
+}
+
+fn scope_restore_feature_run(retro: bool, two: bool, outside: Option<&str>) {
     needs_git!();
-    let mut w = World::new("review-scope-feature");
+    let mut w = World::new("scope-restore-feature");
     review_scope_seed(&w);
+    std::fs::write(w.repo.join("product-test.rs"), "original test\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product-test.rs"], "seed product test").unwrap();
     let request = "review scope feature";
     let slug = slug_for(request);
+    let table = |first, second| {
+        let mut rows = vec![("M-01", first)];
+        if two {
+            rows.push(("M-02", second));
+        }
+        rows
+    };
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
     w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
     w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
-    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
-    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
-    w.retro_step(7, &slug);
-    let n = if retro { 7 } else { 6 };
-    let script_path = w.repo.join(format!(".autome/fake/{n}.sh"));
-    let mut script = std::fs::read_to_string(&script_path).unwrap();
-    script.push_str(&format!("\nprintf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}\ngit add {REVIEW_SCOPE_OTHER}\ngit -c user.name=fake -c user.email=f@f commit -qm 'out of scope review'\n"));
-    w.step(n, &script);
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &table("开放", "开放")));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &table("待审", "开放")));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &table("已完成", "开放")));
+    let crossing = if retro { 7 } else { 6 };
+    if retro {
+        w.retro_step(7, &slug);
+    }
+    if outside.is_some() {
+        let next = crossing + 1;
+        w.doc_step(next, &slug, &doc("实现中", 2, 2, &table("已完成", "待审")));
+        w.doc_step(
+            next + 1,
+            &slug,
+            &doc("实现中", 2, 2, &table("已完成", "已完成")),
+        );
+        // Evidence for the second milestone must be present for both rounds.
+        if two {
+            for n in [next, next + 1] {
+                let file = w.repo.join(format!(".autome/fake/{n}.sh"));
+                let mut script = std::fs::read_to_string(file).unwrap();
+                script.push_str(&format!("cp docs/{slug}/evidence/M-01-r2-impl.md docs/{slug}/evidence/M-02-r2-impl.md\ncp docs/{slug}/evidence/M-01-r2-audit.md docs/{slug}/evidence/M-02-r2-audit.md\n"));
+                w.step(n, &script);
+            }
+        }
+        w.retro_step(next + 2, &slug);
+    } else {
+        w.retro_step(7, &slug);
+    }
+    if let Some(path) = outside {
+        let script_path = w.repo.join(format!(".autome/fake/{crossing}.sh"));
+        let mut script = std::fs::read_to_string(script_path).unwrap();
+        script.push_str(&format!("\nprintf 'foreign review\\n' >> {path}\ngit add {path}\ngit -c user.name=fake -c user.email=f@f commit -qm 'out of scope review'\n"));
+        w.step(crossing, &script);
+    }
     let id = create_task(&mut w, request);
     w.settle();
     ok(&w.call("task.approve", json!({"task_id": id})));
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let events: Vec<_> = events
+        .iter()
+        .filter(|(_, _, subject, _)| subject == &id)
+        .collect();
+    let count = |kind: &str| events.iter().filter(|(_, k, _, _)| k == kind).count();
+    let mut sessions = w.ctx.store.list_sessions(&id).unwrap();
+    sessions.reverse();
+    let roles: Vec<_> = sessions
+        .iter()
+        .map(|s| s.kind.role().map(|r| r.as_str()).unwrap_or("intake"))
+        .collect();
+    let expected = if outside.is_none() {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    } else if retro {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "retro",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    } else {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    };
+    assert_eq!(roles, expected);
+    let log = automed::git::run_ok(&wt, &["log", "--format=%B"])
+        .unwrap()
+        .stdout;
+    let Some(path) = outside else {
+        for kind in [
+            "session.scope_restore_begun",
+            "session.scope_restored",
+            "session.scope_restore_failed",
+            "session.scope_patches_handled",
+        ] {
+            assert_eq!(count(kind), 0);
+        }
+        assert!(!log.contains("越界改动已还原"));
+        assert!(
+            events
+                .iter()
+                .filter(|(_, k, _, _)| k == "session.started")
+                .all(|(_, _, _, p)| p.get("scope_patches").is_none())
+        );
+        return;
+    };
+    assert_eq!(
+        std::fs::read(wt.join(path)).unwrap(),
+        std::fs::read(w.repo.join(path)).unwrap()
+    );
+    for kind in [
+        "session.scope_restore_begun",
+        "session.scope_restored",
+        "session.scope_patches_handled",
+    ] {
+        assert_eq!(count(kind), 1, "{kind}");
+    }
+    assert_eq!(count("session.scope_restore_failed"), 0);
+    assert_eq!(count("guard.failed"), 0);
+    let restored = events
+        .iter()
+        .find(|(_, k, _, _)| k == "session.scope_restored")
+        .unwrap()
+        .3
+        .clone();
+    let patch = restored["repos"][0]["patch"].as_str().unwrap();
+    assert!(std::path::Path::new(patch).exists());
+    automed::git::run_ok(&wt, &["apply", "--check", patch]).unwrap();
+    let commit = restored["repos"][0]["commit"].as_str().unwrap();
+    let message = automed::git::run_ok(&wt, &["show", "-s", "--format=%B", commit])
+        .unwrap()
+        .stdout;
+    for needle in [restored["session_id"].as_str().unwrap(), path, patch] {
+        assert!(message.contains(needle), "{message}");
+    }
+    assert!(
+        wt.join(format!("docs/{slug}/evidence/M-01-r1-audit.md"))
+            .exists()
+    );
+    let brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-2.md"))).unwrap();
+    for needle in [
+        path,
+        patch,
+        "由你判断是否采纳",
+        "git apply --stat",
+        restored["repos"][0]["stat"].as_str().unwrap(),
+    ] {
+        assert!(brief.contains(needle), "missing {needle}: {brief}");
+    }
+    let started = events
+        .iter()
+        .filter(|(_, k, _, _)| k == "session.started")
+        .find(|(_, _, _, p)| p.get("scope_patches").is_some())
+        .unwrap();
+    assert_eq!(started.3["scope_patches"], json!([patch]));
+    let handled = events
+        .iter()
+        .find(|(_, k, _, _)| k == "session.scope_patches_handled")
+        .unwrap();
+    assert_eq!(handled.3["session_id"], started.3["session_id"]);
+    assert_eq!(handled.3["patches"], json!([patch]));
+}
+
+#[test]
+fn scope_breaker_second_consecutive_audit_crossing_fails_with_note() {
+    scope_breaker_run(false, false);
+}
+
+#[test]
+fn scope_breaker_clean_audit_between_crossings_resets_the_streak() {
+    scope_breaker_run(true, false);
+}
+
+#[test]
+fn scope_breaker_restore_failure_falls_back_to_todays_failure() {
+    scope_breaker_run(false, true);
+}
+
+fn scope_breaker_run(clean_between: bool, blocked: bool) {
+    needs_git!();
+    let mut w = World::new("scope-breaker");
+    review_scope_seed(&w);
+    let request = "scope breaker";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    let rows = |round: u32, audit: bool| {
+        (1..=if clean_between { 3 } else { 1 })
+            .map(|n| {
+                (
+                    match n {
+                        1 => "M-01",
+                        2 => "M-02",
+                        _ => "M-03",
+                    },
+                    if n < round || n == round && audit {
+                        "已完成"
+                    } else if n == round {
+                        "待审"
+                    } else {
+                        "开放"
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &rows(0, false)));
+    for round in 1..=4 {
+        for audit in [false, true] {
+            let n = 3 + 2 * round + u32::from(audit);
+            w.doc_step(n, &slug, &doc("实现中", 2, round, &rows(round, audit)));
+            if clean_between && round <= 3 {
+                let file = w.repo.join(format!(".autome/fake/{n}.sh"));
+                let mut script = std::fs::read_to_string(file).unwrap();
+                script.push_str(&format!("cp docs/{slug}/evidence/M-01-r{round}-impl.md docs/{slug}/evidence/M-0{round}-r{round}-impl.md 2>/dev/null || true\ncp docs/{slug}/evidence/M-01-r{round}-audit.md docs/{slug}/evidence/M-0{round}-r{round}-audit.md 2>/dev/null || true\n"));
+                w.step(n, &script);
+            }
+        }
+    }
+    let last_crossing = if clean_between { 10 } else { 8 };
+    for n in [6, last_crossing] {
+        let path = w.repo.join(format!(".autome/fake/{n}.sh"));
+        let mut script = std::fs::read_to_string(path).unwrap();
+        script.push_str("\nprintf 'crossed\\n' >> README.md\ngit add README.md\ngit -c user.name=fake -c user.email=f@f commit -qm crossing\nmkdir -p .autome/output\ngit rev-parse HEAD > .autome/output/session-end-head\n");
+        w.step(n, &script);
+    }
+    w.retro_step(13, &slug);
+    if blocked {
+        std::fs::create_dir_all(w.repo.join(".autome/output")).unwrap();
+        std::fs::write(w.repo.join(".autome/output/scope"), "blocked").unwrap();
+    }
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let count = |kind| w.ctx.store.count_events(&id, kind).unwrap();
+    if clean_between {
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "{}",
+            failure_detail(&w, &id)
+        );
+        assert_eq!(count("session.scope_restored"), 2);
+        assert_eq!(
+            std::fs::read(wt.join("README.md")).unwrap(),
+            std::fs::read(w.repo.join("README.md")).unwrap()
+        );
+    } else {
+        assert_eq!(w.state(&id), "failed");
+        let detail = failure_detail(&w, &id);
+        for needle in [
+            "只能修改",
+            "README.md",
+            "重跑前先保存需要交回实现/修复轮的改动",
+            "不要重置整个分支或丢弃其他改动",
+            if blocked {
+                "自动还原没有完成"
+            } else {
+                "上一次已自动还原"
+            },
+        ] {
+            assert!(detail.contains(needle), "{detail}");
+        }
+        assert_eq!(count("session.scope_restored"), if blocked { 0 } else { 1 });
+        assert_eq!(
+            count("session.scope_restore_failed"),
+            if blocked { 1 } else { 0 }
+        );
+        assert_eq!(
+            automed::git::head_sha(&wt).unwrap(),
+            std::fs::read_to_string(wt.join(".autome/output/session-end-head"))
+                .unwrap()
+                .trim()
+        );
+        assert!(
+            std::fs::read_to_string(wt.join("README.md"))
+                .unwrap()
+                .contains("crossed")
+        );
+    }
 }
 
 fn gate_trace(w: &World, id: &str) -> Vec<String> {
@@ -10097,4 +10417,128 @@ fn kernel_adopt_new_kernel_restores_mark_without_event() {
     );
     assert_eq!(adoption_events(&old).len(), 1);
     assert!(!w.ctx.adopted_older_kernel);
+}
+
+#[test]
+fn scope_restore_bug_review_crossing_returns_to_fix_with_patch() {
+    scope_restore_bug_run(false, false);
+}
+
+#[test]
+fn scope_restore_bug_review_crossing_with_spent_fix_budget_fails_fix_budget() {
+    scope_restore_bug_run(true, false);
+}
+
+#[test]
+fn scope_restore_bug_second_consecutive_review_crossing_fails() {
+    scope_restore_bug_run(false, true);
+}
+
+fn scope_restore_bug_run(spent: bool, second_crossing: bool) {
+    needs_git!();
+    let mut w = World::new("scope-restore-bug");
+    if spent {
+        w.configure("[bug]\nfix_rounds = 1\n");
+    }
+    let request = "scope restore bug";
+    let slug = slug_for(request);
+    let crossing = "printf 'crossed\\n' >> README.md";
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), crossing);
+    if !spent {
+        bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+        bug_step(
+            &w,
+            5,
+            &slug,
+            &bug_doc("通过"),
+            if second_crossing { crossing } else { "" },
+        );
+    }
+    let id = create_bug(&mut w, request);
+    w.settle();
+    let restored = w
+        .ctx
+        .store
+        .last_event(&id, "session.scope_restored")
+        .unwrap()
+        .unwrap();
+    let patch = restored["repos"][0]["patch"].as_str().unwrap();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_restored")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        if spent { 1 } else { 2 }
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_patches_handled")
+            .unwrap(),
+        if spent { 0 } else { 1 }
+    );
+    if second_crossing {
+        assert_eq!(w.state(&id), "failed");
+        assert!(failure_detail(&w, &id).contains("上一次已自动还原"));
+        assert!(
+            std::fs::read_to_string(wt.join("README.md"))
+                .unwrap()
+                .contains("crossed")
+        );
+    } else {
+        assert_eq!(
+            std::fs::read(wt.join("README.md")).unwrap(),
+            std::fs::read(w.repo.join("README.md")).unwrap()
+        );
+        automed::git::run_ok(&wt, &["apply", "--check", patch]).unwrap();
+        if spent {
+            assert_eq!(w.state(&id), "failed");
+            let response = w.call("task.get", json!({"task_id":id}));
+            let task = ok(&response);
+            assert!(
+                task["task"]["state"].to_string().contains("fix_budget"),
+                "{task}"
+            );
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert_eq!(w.ctx.store.count_events(&id, "guard.failed").unwrap(), 0);
+        }
+    }
+    if !spent {
+        let prompt = w.prompt(4);
+        for needle in [
+            "上一轮复核越界改动已被还原",
+            "按复核不通过退回",
+            "README.md",
+            patch,
+            "由你判断是否采纳",
+            restored["repos"][0]["stat"].as_str().unwrap(),
+        ] {
+            assert!(prompt.contains(needle), "missing {needle}: {prompt}");
+        }
+        let events = w.ctx.store.task_events(&id, "session.started").unwrap();
+        let started = events
+            .iter()
+            .find(|p| p.get("scope_patches").is_some())
+            .unwrap();
+        assert_eq!(started["scope_patches"], json!([patch]));
+        let handled = w
+            .ctx
+            .store
+            .last_event(&id, "session.scope_patches_handled")
+            .unwrap()
+            .unwrap();
+        assert_eq!(handled["session_id"], started["session_id"]);
+        assert_eq!(handled["patches"], json!([patch]));
+    }
 }

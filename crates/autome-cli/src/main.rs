@@ -896,6 +896,9 @@ fn task_detail(got: &Value) {
             render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or("")),
         );
     }
+    if let Some(line) = render::scope_status_line(&got["scope_restore"]) {
+        println!("{line}");
+    }
     let decisions = got["decisions"].as_array().cloned().unwrap_or_default();
     let open: Vec<&Value> = decisions
         .iter()
