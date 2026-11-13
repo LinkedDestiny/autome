@@ -7,3 +7,4 @@
 审计 #2 | M-02 | 退回 + add-project | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-02-r2-audit.md | w9-http 新用例 post 辅助函数解析纯文本 403 报 JSON 错
 
 实现 #3 | M-02 | 开放（修复已落地，验收阻塞） | evidence/M-02-r3-impl.md | HTTP listen EPERM
+审计 #3 | M-02 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-02-r3-audit.md | 无
