@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -476,6 +476,14 @@ impl Store {
                  );
                  PRAGMA user_version = 5;
                  COMMIT;",
+            )?;
+        }
+        if version < 6 {
+            self.conn.execute_batch(
+                "BEGIN;
+         ALTER TABLE sessions ADD COLUMN limit_minutes INTEGER;
+         PRAGMA user_version = 6;
+         COMMIT;",
             )?;
         }
         Ok(())
@@ -1444,12 +1452,20 @@ impl Store {
     // Sessions
     // -----------------------------------------------------------------
 
+    pub fn set_session_pid(&self, id: &str, pid: i32) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE sessions SET pid = ?2 WHERE id = ?1",
+            params![id, pid],
+        )?;
+        self.require_one(n, "会话", id)
+    }
+
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, task_id, kind, runtime, model, effort, skills, round,
                                    started_at, ended_at, lifecycle, log_path, pid,
-                                   protocol_ref, rules_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                   protocol_ref, rules_hash, limit_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 session.id,
                 session.task_id,
@@ -1466,6 +1482,7 @@ impl Store {
                 session.pid,
                 session.protocol_ref,
                 session.rules_hash,
+                session.limit_minutes,
             ],
         )?;
         Ok(())
@@ -1571,7 +1588,7 @@ impl Store {
     pub fn next_round(&self, task_id: &str, kind: &SessionKind) -> Result<u32> {
         let target = serde_json::to_string(kind)?;
         let max: Option<i64> = self.conn.query_row(
-            "SELECT MAX(round) FROM sessions WHERE task_id = ?1 AND kind = ?2",
+            "SELECT MAX(round) FROM sessions WHERE task_id = ?1 AND kind = ?2 AND json_extract(lifecycle, '$.state') IS NOT 'timed_out'",
             params![task_id, target],
             |r| r.get(0),
         )?;
@@ -2048,7 +2065,7 @@ const SESSION_SELECT_BASE: &str = "SELECT id, task_id, kind, runtime, model, eff
             started_at, ended_at, lifecycle, log_path, pid,
             protocol_ref, rules_hash, input_tokens, cache_read_tokens, cache_write_tokens,
             output_tokens, cost_usd, turns, duration_ms, mean_request_input,
-            design_doc_bytes, evidence_files FROM sessions";
+            design_doc_bytes, evidence_files, limit_minutes FROM sessions";
 
 type RowResult<T> = rusqlite::Result<std::result::Result<T, serde_json::Error>>;
 
@@ -2157,6 +2174,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
     let u = |i: usize| -> rusqlite::Result<Option<u64>> {
         Ok(r.get::<_, Option<i64>>(i)?.map(|v| v.max(0) as u64))
     };
+    let limit_minutes = r.get::<_, Option<u32>>(25)?;
     let metrics = autome_domain::metrics::SessionMetrics {
         input_tokens: u(15)?,
         cache_read_tokens: u(16)?,
@@ -2184,6 +2202,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
             lifecycle: serde_json::from_str(&lifecycle)?,
             log_path: base.6,
             pid: base.7,
+            limit_minutes,
             protocol_ref: base.8,
             rules_hash: base.9,
             metrics,
@@ -2289,6 +2308,32 @@ mod tests {
     }
 
     #[test]
+    fn session_timeout_store_migration_limit_and_pid() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_task(&task("T-1", "p1", "a")).unwrap();
+        let mut row = session("s1", "T-1", SessionKind::Intake, 1);
+        s.insert_session(&row).unwrap();
+        // A genuine version-5 row survives the new nullable-column migration.
+        s.conn
+            .execute_batch(
+                "ALTER TABLE sessions DROP COLUMN limit_minutes; PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.list_sessions("T-1").unwrap()[0].limit_minutes, None);
+        row.id = "s2".into();
+        row.limit_minutes = Some(u32::MAX);
+        s.insert_session(&row).unwrap();
+        s.set_session_pid("s2", 1234).unwrap();
+        let rows = s.list_sessions("T-1").unwrap();
+        let saved = rows.iter().find(|r| r.id == "s2").unwrap();
+        assert_eq!(saved.limit_minutes, Some(u32::MAX));
+        assert_eq!(saved.pid, Some(1234));
+        assert!(s.set_session_pid("missing", 1234).is_err());
+    }
+
+    #[test]
     fn merge_after_failure_alert_and_result_event_are_written_in_one_transaction() {
         let s = Store::open_in_memory().unwrap();
         s.insert_project(&project("p", "/tmp/repo")).unwrap();
@@ -2365,6 +2410,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: Some(1),
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -2581,7 +2627,7 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap(),
             serde_json::json!({"state":"queued","resume":"implement"})
         );
-        assert_eq!(SCHEMA_VERSION, 5);
+        assert_eq!(SCHEMA_VERSION, 6);
     }
 
     #[test]
@@ -3219,7 +3265,7 @@ mod tests {
         use super::*;
 
         #[test]
-        fn a_v4_ledger_migrates_to_v5_and_every_old_task_reads_as_a_feature() {
+        fn a_v4_ledger_migrates_and_every_old_task_reads_as_a_feature() {
             let s = store();
             s.insert_project(&project("p1", "/repo")).unwrap();
             let states = [
@@ -3249,13 +3295,13 @@ mod tests {
                 t.state = state.clone();
                 s.insert_task(&t).unwrap();
             }
-            s.conn.execute_batch("ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE tasks DROP COLUMN queued_seq; DROP TABLE task_briefs; PRAGMA user_version = 4;").unwrap();
+            s.conn.execute_batch("ALTER TABLE sessions DROP COLUMN limit_minutes; ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE tasks DROP COLUMN queued_seq; DROP TABLE task_briefs; PRAGMA user_version = 4;").unwrap();
             s.migrate().unwrap();
             let version: i64 = s
                 .conn
                 .pragma_query_value(None, "user_version", |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 5);
+            assert_eq!(version, SCHEMA_VERSION);
             for (i, state) in states.iter().enumerate() {
                 let id = format!("T-{i}");
                 let t = s.get_task(&id).unwrap();

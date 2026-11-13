@@ -1262,20 +1262,55 @@ fn is_executable(path: &Path) -> bool {
 /// killing only the wrapper would orphan the CLI and leave it writing to a log
 /// nobody reads.
 pub fn stop_session(pid: i32) -> Result<()> {
+    terminate_group(pid).map(|_| ())
+}
+
+/// Signal the entire group, and confirm that no member remains before returning true.
+pub fn terminate_group(pid: i32) -> Result<bool> {
     if pid <= 1 {
         return Err(err(format!("拒绝对 pid {pid} 发信号")));
     }
     #[cfg(unix)]
-    unsafe {
-        // Negative pid targets the process group. The wrapper is the group
-        // leader because `run_in_terminal` starts it in a group of its own.
-        libc::kill(-pid, libc::SIGTERM);
-        std::thread::sleep(std::time::Duration::from_millis(3000));
-        if libc::kill(-pid, 0) == 0 {
-            libc::kill(-pid, libc::SIGKILL);
+    {
+        use std::time::{Duration, Instant};
+        let exists = || -> Result<bool> {
+            if unsafe { libc::kill(-pid, 0) } == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(false)
+            } else {
+                Err(err(error.to_string()))
+            }
+        };
+        for (signal, grace) in [(libc::SIGTERM, 3), (libc::SIGKILL, 2)] {
+            if !exists()? {
+                return Ok(true);
+            }
+            if unsafe { libc::kill(-pid, signal) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(err(error.to_string()));
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(grace);
+            loop {
+                if !exists()? {
+                    return Ok(true);
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
+        Ok(false)
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        Ok(false)
+    }
 }
 
 /// Whether a pid is still alive, for the liveness backstop (design §17).
@@ -1308,6 +1343,63 @@ pub fn system_role_config() -> RoleConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    fn timeout_group(ignore_term: bool) -> (i32, i32, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+        let script = if ignore_term {
+            "trap '' TERM; sleep 1000 & echo $!; wait"
+        } else {
+            "sleep 1000 & child=$!; trap 'wait $child; exit 0' TERM; echo $child; wait"
+        };
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", script])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let descendant = line.trim().parse().unwrap();
+        let waiter = std::thread::spawn(move || {
+            child.wait().unwrap();
+        });
+        (pid, descendant, waiter)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_timeout_terminates_group_promptly() {
+        let (pid, child, waiter) = timeout_group(false);
+        let started = std::time::Instant::now();
+        assert!(terminate_group(pid).unwrap());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        waiter.join().unwrap();
+        assert!(!pid_alive(pid));
+        assert!(!pid_alive(child));
+        assert_ne!(unsafe { libc::kill(-pid, 0) }, 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_timeout_escalates_and_accepts_absent_group() {
+        let (pid, child, waiter) = timeout_group(true);
+        let started = std::time::Instant::now();
+        assert!(terminate_group(pid).unwrap());
+        assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+        waiter.join().unwrap();
+        assert!(!pid_alive(pid));
+        assert!(!pid_alive(child));
+        assert_ne!(unsafe { libc::kill(-pid, 0) }, 0);
+        assert!(terminate_group(pid).unwrap());
+        for invalid in [i32::MIN, -1, 0, 1] {
+            assert!(terminate_group(invalid).is_err());
+        }
+    }
+
     #[test]
     fn gate_timeout_both_loop_injections_keep_ordinary_failure() {
         for kind in [

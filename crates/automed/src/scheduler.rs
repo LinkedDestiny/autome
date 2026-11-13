@@ -246,6 +246,20 @@ pub fn is_manual_retro(ctx: &Ctx, s: &Session) -> Result<bool> {
 
 /// Checks one running session against the filesystem and, if it has finished,
 /// records the outcome and advances its task. Returns whether it finished.
+/// Frozen for new sessions; legacy rows use current configuration or the default.
+pub(crate) fn effective_limit(ctx: &Ctx, s: &Session, project: &Project) -> u32 {
+    s.limit_minutes.unwrap_or_else(|| {
+        let loaded = (|| -> Result<u32> {
+            let global = config_io::load_global(&ctx.autome_home)?;
+            let local = config_io::load_project(Path::new(&project.path))?;
+            Ok(config::resolve(&global, &local)
+                .loop_defaults
+                .session_minutes)
+        })();
+        loaded.unwrap_or(config::DEFAULT_SESSION_MINUTES)
+    })
+}
+
 fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     let task = ctx.store.get_task(&s.task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
@@ -261,15 +275,74 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         &s.started_at,
     );
 
-    let lifecycle = session::classify(marker.as_ref(), alive, idle);
-    if lifecycle.is_running() {
+    let mut lifecycle = session::classify(marker.as_ref(), alive, idle);
+    let elapsed = secs_since(&s.started_at);
+    let limit = effective_limit(ctx, s, &project);
+    if lifecycle.is_running() && !elapsed.is_some_and(|secs| session::over_limit(secs, limit)) {
         return Ok(false);
     }
+    let timeout = ctx
+        .store
+        .session_event(&s.task_id, &s.id, "session.timeout")?;
+    if lifecycle.is_running() || timeout.is_some() {
+        // A persisted event means termination may have been interrupted, even
+        // when classify now says Exited or Vanished. Confirm the group again.
+        let limit = timeout
+            .as_ref()
+            .and_then(|e| e.get("limit").and_then(serde_json::Value::as_u64))
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(limit);
+        let pid = s.pid.or_else(|| {
+            std::fs::read_to_string(repo.join(SessionPaths::pid(&s.task_id, &s.id)))
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+        });
+        let Some(pid) = pid else {
+            if ctx
+                .store
+                .session_event(&s.task_id, &s.id, "session.timeout_unconfirmed")?
+                .is_none()
+            {
+                ctx.store.append_event(
+                    "session.timeout_unconfirmed",
+                    &s.task_id,
+                    json!({"session_id": s.id, "reason": "no_pid"}),
+                )?;
+            }
+            return Ok(false);
+        };
+        if s.pid.is_none() {
+            ctx.store.set_session_pid(&s.id, pid)?;
+        }
+        if timeout.is_none() {
+            ctx.store.append_event(
+                "session.timeout",
+                &s.task_id,
+                json!({"session_id": s.id, "minutes": elapsed.unwrap_or(0) / 60, "limit": limit}),
+            )?;
+        }
+        match launcher::terminate_group(pid) {
+            Ok(true) => {
+                lifecycle = SessionLifecycle::TimedOut {
+                    limit_minutes: limit,
+                }
+            }
+            Ok(false) => return Ok(false),
+            Err(error) => {
+                tracing::warn!(session_id = %s.id, %error, "会话超时终止未确认");
+                return Ok(false);
+            }
+        }
+    }
 
-    let ended_at = marker
-        .as_ref()
-        .map(|m| m.ended_at.clone())
-        .unwrap_or_else(now_iso);
+    let ended_at = if matches!(lifecycle, SessionLifecycle::TimedOut { .. }) {
+        now_iso()
+    } else {
+        marker
+            .as_ref()
+            .map(|m| m.ended_at.clone())
+            .unwrap_or_else(now_iso)
+    };
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
     record_usage(ctx, s, &project, &task, &ended_at);
 
@@ -1119,7 +1192,12 @@ fn read_bug_outcome(
 ) -> BugSessionOutcome {
     if !lifecycle.should_parse_document() {
         return BugSessionOutcome::Crashed {
-            detail: format!("会话异常结束：{lifecycle:?}"),
+            detail: match lifecycle {
+                SessionLifecycle::TimedOut { limit_minutes } => {
+                    format!("会话运行超过 {limit_minutes} 分钟，已被 Autome 终止（超时）")
+                }
+                _ => format!("会话异常结束：{lifecycle:?}"),
+            },
         };
     }
     let path = task.bug_doc();
@@ -1764,6 +1842,9 @@ fn read_outcome(
         return SessionOutcome::Crashed {
             detail: match lifecycle {
                 SessionLifecycle::Exited { exit_code } => format!("会话退出码 {exit_code}"),
+                SessionLifecycle::TimedOut { limit_minutes } => {
+                    format!("会话运行超过 {limit_minutes} 分钟，已被 Autome 终止（超时）")
+                }
                 SessionLifecycle::Killed => "会话被停止".into(),
                 SessionLifecycle::Vanished => "会话消失且长时间没有输出".into(),
                 SessionLifecycle::Running => unreachable!("checked above"),
@@ -3148,6 +3229,7 @@ fn launch_session(
         lifecycle: SessionLifecycle::Running,
         log_path: launched.log_path.clone(),
         pid,
+        limit_minutes: Some(resolved.loop_defaults.session_minutes),
         protocol_ref: Some(protocol_ref.to_wire()),
         rules_hash,
         // Filled in when the session is reaped and its stream is read.
@@ -5452,6 +5534,153 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn session_timeout_recovers_exit_and_vanished_with_surviving_group() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+        needs_git!();
+        for with_marker in [true, false] {
+            let mut w = World::new(if with_marker {
+                "timeout-exit"
+            } else {
+                "timeout-vanished"
+            });
+            let task = w.add_task("T-1", "timeout");
+            w.with_worktree(&task);
+            w.set_state(
+                "T-1",
+                if with_marker {
+                    TaskState::Paused {
+                        resume: Node::Design,
+                    }
+                } else {
+                    TaskState::Requeued {
+                        resume: Node::Design,
+                    }
+                },
+            );
+            // Reap the leader while retaining a real, independently waited
+            // member in its group. This also exercises Vanished classification.
+            let mut leader = std::process::Command::new("sleep")
+                .arg("1000")
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let pid = leader.id() as i32;
+            let mut member = std::process::Command::new("sh")
+                .args(["-c", "trap '' TERM; echo ready; exec sleep 1000"])
+                .process_group(pid)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut ready = String::new();
+            BufReader::new(member.stdout.take().unwrap())
+                .read_line(&mut ready)
+                .unwrap();
+            assert_eq!(ready.trim(), "ready");
+            let waiter = std::thread::spawn(move || {
+                member.wait().unwrap();
+            });
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+            leader.wait().unwrap();
+            assert!(!launcher::pid_alive(pid));
+            assert_eq!(unsafe { libc::kill(-pid, 0) }, 0);
+            let s = Session {
+                id: "s1".into(),
+                task_id: task.id.clone(),
+                kind: SessionKind::Role { role: Role::Plan },
+                runtime: autome_domain::role::Runtime::Claude,
+                model: "m".into(),
+                effort: None,
+                skills: vec![],
+                round: 1,
+                started_at: "2020-01-01T00:00:00Z".into(),
+                ended_at: None,
+                lifecycle: SessionLifecycle::Running,
+                log_path: "l".into(),
+                pid: Some(pid),
+                limit_minutes: Some(5),
+                protocol_ref: None,
+                rules_hash: None,
+                metrics: Default::default(),
+            };
+            w.ctx.store.insert_session(&s).unwrap();
+            let log = w.repo.join(SessionPaths::log(&task.id, &s.id));
+            std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+            let file = std::fs::File::create(&log).unwrap();
+            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(660))
+                .unwrap();
+            let marker = with_marker.then(|| ExitMarker {
+                exit_code: 130,
+                ended_at: now_iso(),
+            });
+            if let Some(marker) = &marker {
+                std::fs::write(
+                    w.repo.join(SessionPaths::exit(&task.id, &s.id)),
+                    marker.render(),
+                )
+                .unwrap();
+            } else {
+                assert_eq!(
+                    session::classify(None, false, session_idle_secs(&log, &s.started_at)),
+                    SessionLifecycle::Vanished
+                );
+                assert!(
+                    w.ctx
+                        .store
+                        .session_event(&task.id, &s.id, "session.timeout")
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            w.ctx
+                .store
+                .append_event(
+                    "session.timeout",
+                    &task.id,
+                    json!({"session_id": s.id, "minutes": 6, "limit": 5}),
+                )
+                .unwrap();
+            // Refusal/error is fail-closed: no finish, no retry, no sweep.
+            let mut invalid = s.clone();
+            invalid.pid = Some(1);
+            assert!(!reap_session(&mut w.ctx, &invalid).unwrap());
+            assert!(w.ctx.store.running_session(&task.id).unwrap().is_some());
+            assert!(w.ctx.store.pending_retry(&task.id).unwrap().is_none());
+            assert_eq!(unsafe { libc::kill(-pid, 0) }, 0);
+            assert!(reap_session(&mut w.ctx, &s).unwrap());
+            waiter.join().unwrap();
+            assert_ne!(unsafe { libc::kill(-pid, 0) }, 0);
+            let saved = &w.ctx.store.list_sessions(&task.id).unwrap()[0];
+            assert_eq!(
+                saved.lifecycle,
+                SessionLifecycle::TimedOut { limit_minutes: 5 }
+            );
+            let project = w.ctx.store.get_project(&w.project_id).unwrap();
+            assert!(matches!(read_outcome(&project, &task, &saved.lifecycle),
+            SessionOutcome::Crashed { detail } if detail.contains("超时")));
+            assert!(
+                matches!(read_bug_outcome(&project, &task, &saved.lifecycle),
+            BugSessionOutcome::Crashed { detail } if detail.contains("超时"))
+            );
+            assert_eq!(w.ctx.store.next_round(&task.id, &s.kind).unwrap(), 1);
+            // Also exercise the legacy configuration fallback without launching.
+            let mut legacy = s.clone();
+            legacy.limit_minutes = None;
+            assert_eq!(effective_limit(&w.ctx, &legacy, &project), 120);
+            std::fs::write(
+                w.repo.join(".autome/config.toml"),
+                "[loop]\nsession_minutes = 30\n",
+            )
+            .unwrap();
+            assert_eq!(effective_limit(&w.ctx, &legacy, &project), 30);
+            assert_eq!(effective_limit(&w.ctx, &s, &project), 5);
+            std::fs::write(w.repo.join(".autome/config.toml"), "invalid [").unwrap();
+            assert_eq!(effective_limit(&w.ctx, &legacy, &project), 120);
+        }
+    }
+
+    #[test]
     fn gate_quick_host_launch_marker_lifecycle() {
         let (w, task, _, _, head) = reuse_fixture("quick-marker");
         let job = crate::gate::Job::at(&w.repo, &task.id, "gate", &head[..12]);
@@ -7251,6 +7480,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7313,6 +7543,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7380,6 +7611,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7471,6 +7703,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7608,6 +7841,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7680,6 +7914,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -7735,6 +7970,7 @@ mod tests {
             log_path: "l".into(),
             // Our own pid is certainly alive.
             pid: Some(std::process::id() as i32),
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),
@@ -9383,6 +9619,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),

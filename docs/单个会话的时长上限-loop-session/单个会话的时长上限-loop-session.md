@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 1/20
+implementation-round: 2/20
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02：实现 TimedOut 生命周期、启动时上限与进程组终止
+next-action: 独立复验 M-02；通过后推进 M-03 的超时计次重试、预算与注入
 
 任务文件：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-task.md`
 
@@ -363,7 +363,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
-| M-02 | 开放 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
+| M-02 | 待审 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
 | M-03 | 开放 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
 | M-04 | 开放 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
 
@@ -377,9 +377,11 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
   - automed lib 5 个：config_io ④ 全局与项目都能读出；⑤ `save_global` 保留手写的 `session_minutes`；⑥ `save_project` 保留项目覆盖；
     dispatch ⑦ `config.validate` 对项目 `session_minutes = 1` 返回 `ok: false` 且违规 kind 为 `session_minutes_out_of_range`，
     缺省配置 `ok: true`；⑧ `config.set_loop` 写入 `session_minutes = 30` 后 `config.get` 读回 30，写 `4` 被拒绝且文件不变。
+最新证据：docs/单个会话的时长上限-loop-session/evidence/M-02-r2-impl.md · 验收通过，待审 · 实现 #2
+
 - **M-02**（覆盖：R-2、A-3、C-1、C-3、C-4、C-7、开放问题 1、2、7、8、9。前置：M-01）。方案 §2、§3。`stop_session` 抽出 `terminate_group` 并改轮询；
   `read_outcome` / `read_bug_outcome` 加 `TimedOut` 文案；`set_session_pid`、终止确认与恢复路径；本里程碑结束时超时会话已经能经由
-  现有 `schedule_retry` 被重派（带原注入、尚无超时说明；轮号处理在 M-03）。Onboarding 不在范围（§3）。新增用例名都含
+  现有 `schedule_retry` 被重派（带原注入、尚无超时说明；为满足⑨，next_round 排除超时行在本里程碑实现，完整重派预算验证在 M-03）。Onboarding 不在范围（§3）。新增用例名都含
   `session_timeout`：
   - autome-domain 2 个：① `over_limit` 在 `limit*60` 为真、`limit*60 - 1` 为假；② `TimedOut` 序列化为
     `{"state":"timed_out","limit_minutes":5}` 且能读回，`is_running` 与 `should_parse_document` 均为假。

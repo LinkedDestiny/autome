@@ -3,3 +3,4 @@
 评审 #2 | M-01 | 退回 + 超时恢复 | docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-review.md | D2-P01：无退出标记的超时恢复与轮号复用冲突
 实现 #1 | M-01 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-01-r1-impl.md | 无
 审计 #1 | M-01 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-02-r2-impl.md | 无

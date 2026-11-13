@@ -3871,6 +3871,7 @@ mod tests {
             },
             log_path: "l".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: autome_domain::metrics::SessionMetrics {
