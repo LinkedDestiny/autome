@@ -10915,3 +10915,67 @@ fn test_fix_e2e_review_can_request_repair_and_stale_declaration_is_rejected() {
     assert!(w.prompt(4).contains("这次是回来修测试的"));
     assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("必须删除"));
 }
+
+fn regression_base_relocate(mode: &str) {
+    needs_git!();
+    let mut w = World::new("regression-base");
+    let slug = slug_for("base regression");
+    let doc = bug_doc("待复核");
+    let first = if mode == "command" {
+        doc.replace("sh regression.sh", "true")
+    } else {
+        doc.replace("已定位", "无法复现")
+    };
+    bug_step(&w, 1, &slug, &first, BUG_LOCATE);
+    let fix_step = if mode == "fix" { 2 } else { 3 };
+    if mode != "fix" {
+        bug_step(&w, 2, &slug, &doc, "");
+    }
+    bug_step(&w, fix_step, &slug, &doc, "echo true > regression.sh");
+    let id = create_bug(&mut w, "base regression");
+    w.settle();
+    if mode != "command" {
+        assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+        if mode == "rebase" {
+            let wt = w.repo.join(format!(".worktree/{slug}"));
+            // Replace history while retaining the first locate's files.
+            let tree = automed::git::run_ok(&wt, &["write-tree"]).unwrap().stdout;
+            let root = automed::git::run_ok(&wt, &["rev-list", "--max-parents=0", "HEAD"]).unwrap().stdout;
+            let head = automed::git::run_ok(&wt, &["commit-tree", tree.trim(), "-p", root.trim(), "-m", "rebased locate"]).unwrap().stdout;
+            automed::git::run_ok(&wt, &["reset", "--hard", head.trim()]).unwrap();
+        }
+        if matches!(mode, "rerun" | "fix") {
+            ok(&w.call("task.rerun_from", json!({"task_id":id,"node":if mode == "fix" {"fix"} else {"locate"}})));
+        } else {
+            ok(&w.call("task.reply", json!({"task_id":id,"info":"retry reproduction"})));
+        }
+        w.settle();
+    }
+    assert_regression_rejected(&w, &id, "regression.sh");
+    let snapshot = w.ctx.store.last_event(&id, "bug.regression_snapshot").unwrap().unwrap();
+    assert!(snapshot["files"].as_array().unwrap().iter().any(|f| f["path"] == "regression.sh"));
+    if mode == "fix" {
+        assert_eq!(snapshot["source"], "rerun_fix");
+    }
+}
+
+#[test]
+fn bug_regression_base_second_locate_without_test_changes_keeps_the_first_tests() {
+    regression_base_relocate("reply");
+}
+#[test]
+fn bug_regression_base_command_only_relocate_keeps_the_tests() {
+    regression_base_relocate("command");
+}
+#[test]
+fn bug_regression_base_rerun_locate_after_failure_keeps_the_tests() {
+    regression_base_relocate("rerun");
+}
+#[test]
+fn bug_regression_base_rebased_branch_falls_back_to_merge_base() {
+    regression_base_relocate("rebase");
+}
+#[test]
+fn bug_regression_base_rerun_fix_without_snapshot_computes_one() {
+    regression_base_relocate("fix");
+}
