@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd crates/automed && cargo test --offline -p automed --lib the_intake_prompt_
 根因: intake_prompt 将存储的源文件绝对路径直接传给按附件文件名拼接的 render_inputs，与 write_task_inputs 仅取 file_name 的复制规则不一致。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -57,4 +57,7 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+- 复现命令独立重跑：5 passed、0 failed；launcher::tests 子集 76 passed、0 failed。
+- 修复提交 3919845 仅改 launcher.rs 产品代码（+6 -1），定位提交后回归测试未被改动、删除或弱化。
+- 根因成立：intake_prompt 直接传存储的绝对路径给 render_inputs；修复复用 Bug 轮已有的 bug_attachment_name 映射，与 write_task_inputs 的 file_name 复制规则一致，位于任务卡分支之前，覆盖两个分支，范围最小。
+- 未跑全量门禁，由宿主合并前运行。
