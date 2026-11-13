@@ -23,7 +23,7 @@ beforeAll(async () => {
     await promisify(execFile)('bash', [join(wt, 'apps/web/test/fixtures/w7-flow.sh'), root, wt], { timeout: 150_000, maxBuffer: 1024 * 1024 });
     await core.start({ timeoutMs: 30_000 });
   } catch (error) {
-    try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], `setup: ${String(error)}; cleanup: ${String(cleanupError)}`); }
+    try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], `setup: ${String(error)}; cleanup: ${String(cleanupError)}`, { cause: cleanupError }); }
     throw error;
   }
 }, 180_000);
