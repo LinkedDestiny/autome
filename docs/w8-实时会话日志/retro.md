@@ -5,3 +5,4 @@
 审计 #1 | M-01 | 通过 | docs/w8-实时会话日志/evidence/M-01-r1-audit.md | 无
 实现 #2 | M-02 | 待审 | docs/w8-实时会话日志/evidence/M-02-r2-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/w8-实时会话日志/evidence/M-02-r2-audit.md | 无
+实现 #3 | M-03 | 待审 | docs/w8-实时会话日志/evidence/M-03-r3-impl.md | listen EPERM，3 条 live 用例待审计复验
