@@ -44,3 +44,5 @@
 实现 #21 | M-16（集成修复） | 两条门禁失败已修复，21 用例通过 | evidence/M-16-r21-impl.md | 宿主快检与合并门禁待重跑；H-01 未确认
 审计 #20 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-audit.md | 无；H-01 未确认
 复盘 #5 | 无 | 教训 8 条 | docs/内核补齐批次-2026-11-13-4/lessons.md | HEAD 6878d51b 上 workspace --all-targets --no-fail-fast 12 个目标 1912 过 0 败；ci-local.sh 仍无 --no-fail-fast；H-01 未确认
+
+实现 #22 | M-16 | 门禁修复待复验 | evidence/M-16-r22-impl.md | Web live 受 listen EPERM 阻断，相关 33 用例通过

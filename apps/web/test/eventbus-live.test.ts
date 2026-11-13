@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
@@ -54,7 +55,9 @@ afterAll(async () => {
     const exited = once(child, 'exit'); child.kill('SIGTERM'); const timer = setTimeout(() => child?.kill('SIGKILL'), 5000);
     try { await exited; } finally { clearTimeout(timer); }
   }
-  rmSync(home, { recursive: true, force: true });
+  // macOS can transiently report ENOTEMPTY during recursive removal. Bound the
+  // retries; a persistently busy directory must still fail the suite cleanup.
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 test('合格 /ws 升级收到 connected hello', async () => {
   const c = connect(); const hello = await waitFor(() => c.messages.find(m => m.type === 'hello'));
