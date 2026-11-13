@@ -5,3 +5,4 @@
 实现 #3 | M-02 | 待审 | docs/合并队列-合并前门禁出队时才-rebase/evidence/M-02-r3-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/合并队列-合并前门禁出队时才-rebase/evidence/M-02-r3-audit.md | 无
 实现 #4 | M-03 | 待审 | docs/合并队列-合并前门禁出队时才-rebase/evidence/M-03-r4-impl.md | 无
+审计 #3 | M-03 | 通过 | docs/合并队列-合并前门禁出队时才-rebase/evidence/M-03-r4-audit.md | 无
