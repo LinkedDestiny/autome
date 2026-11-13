@@ -59,7 +59,7 @@ test('本地门禁在 Web test 之前已构建内核', () => {
 });
 
 test('CLI package 隔离 home 与 prefix，成功和安装失败均清理并保留退出码', () => {
-  const fragment = local.match(/run 'CLI package' (sh -c '[\s\S]*?\n  ')/)?.[1];
+  const fragment = local.match(/run 'CLI package' (sh -c '[\s\S]*?\n {2}')/)?.[1];
   expect(fragment).toBeDefined();
   const sandbox = mkdtempSync(resolve(tmpdir(), 'cli package 测试-'));
   try {
