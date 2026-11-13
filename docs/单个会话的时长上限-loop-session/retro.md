@@ -12,3 +12,4 @@
 审计 #4 | M-04 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-audit.md | 无
 实现 #5 | M-03（rebase 修复） | rebase 完成，54 用例通过，保留已审状态 | docs/单个会话的时长上限-loop-session/evidence/M-03-r5-impl.md | 无
 审计 #5 | 无（全部已完成） | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r5-audit.md | 无
+复盘 #2 | 无（全部已完成） | lessons.md 保留 L-01..L-04，新增 L-05（关闭后 rebase 修复无全量门禁） | docs/单个会话的时长上限-loop-session/lessons.md | 无

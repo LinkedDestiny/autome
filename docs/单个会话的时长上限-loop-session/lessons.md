@@ -45,3 +45,14 @@
   proposal: automed 集成测试里凡是需要 automed 可执行文件的夹具（wrapper 的 renderer 等）都必须用 env!("CARGO_BIN_EXE_automed")，不得经过 std::env::current_exe()
   predicted_impact: {metric: total_turns, direction: down, scope: project, horizon: 5}
 ```
+
+```yaml
+- id: L-05
+  domain: process
+  symptom: 四个里程碑全部已完成后，实现 #5 解决 rebase 冲突（crates/automed/tests/end_to_end.rs 与 prompt_rendering.rs 末尾追加冲突），只跑了与冲突文件相关的 54 条用例，证据写明「未运行全量门禁、宿主快检」；审计 #5 因没有待审里程碑未做任何复验，rebase 后提交的全量结果只来自宿主快检在 17b1f4ee 的退出码 0（见 evidence/M-04-r5-audit.md）
+  root_cause: 审计轮只复验「待审」里程碑，关闭后的 rebase 冲突修复既不重开也不转待审，协议里没有哪一轮负责对 rebase 后的提交跑全量门禁，结果全靠宿主快检兜底
+  evidence: docs/单个会话的时长上限-loop-session/evidence/M-03-r5-impl.md
+  level: protocol
+  proposal: 里程碑全部已完成后仍改动被跟踪文件（包括解决 rebase 冲突）的实现轮，必须在证据里写出在改动后 HEAD 上运行项目全量测试门禁的命令和退出码
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 5}
+```
