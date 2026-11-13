@@ -9,3 +9,5 @@
 审计 #3 | M-03 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-03-r3-audit.md | 无
 实现 #4 | M-04 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-04-r4-impl.md | 无
 审计 #4 | M-04 | 通过 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-04-r4-audit.md | 无
+
+实现 #5 | M-05 | 退回 web | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-05-r5-impl.md | 沙箱禁止本地监听，验收两例 EPERM，保持开放

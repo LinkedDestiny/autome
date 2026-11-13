@@ -11,6 +11,7 @@ import { createEventBus } from './eventbus.ts';
 import { createLogtail } from './logtail.ts';
 import { createWsUpgrade } from './eventbus-ws.ts';
 import { CoreSupervisor } from './core/supervisor.ts';
+import { describeKernel } from './core/identity.ts';
 import { resolveAutomedBinary } from './core/binary.ts';
 import { resolveAutomeHome } from './home.ts';
 import { createGateway } from './gateway.ts';
@@ -19,11 +20,14 @@ import { HOST, resolvePort } from './config.ts';
 import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
-export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath = resolveAutomedBinary().path, terminal = unavailableTerminal }: { port: number; mode: Mode; home?: string; userHome?: string; binaryPath?: string; terminal?: TerminalLauncher }) {
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal }: { port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
+  const binary = binaryPath ? { path: binaryPath, args: binaryArgs ?? [], source: 'env' as const } : resolveAutomedBinary();
+  if (binaryArgs) binary.args = binaryArgs;
+  console.error(await describeKernel(binary, { env: { ...process.env, ...kernelEnv, AUTOME_HOME: home } }));
   const store = openWebStore(home);
   const bus = createEventBus({ call: (method, params) => core.call(method, params), log: console.error });
   const logtail = createLogtail({ bus, call: (method, params) => core.call(method, params), log: console.error });
-  const core = new CoreSupervisor({ home, binaryPath, log: console.error, onStatus: status => attached.onStatus(status) });
+  const core = new CoreSupervisor({ home, binaryPath: binary.path, binaryArgs: binary.args, env: kernelEnv, log: console.error, onStatus: status => attached.onStatus(status) });
   const notifier = createNotifier({ store, call: (method, params) => core.call(method, params), publish: message => bus.broadcast(message), log: console.error });
   const attached = attachNotifier({ bus, notifier });
   const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
@@ -49,9 +53,9 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   }
   registerUpgrade('/ws', createWsUpgrade(bus));
   void core.start().catch(error => console.error(String(error)));
-  const ticker = createTicker({ call: () => core.tick(), isConnected: () => core.isConnected(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
+  const ticker = createTicker({ call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
   return {
-    server, gateway, registerUpgrade, bus, logtail,
+    server, gateway, core, registerUpgrade, bus, logtail,
     async close() {
       ticker.stop();
       notifier.close();

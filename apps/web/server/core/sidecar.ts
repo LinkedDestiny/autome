@@ -4,7 +4,7 @@ import { resolveAutomedBinary } from './binary.ts';
 
 export type Command = { request_id: string; [key: string]: unknown };
 export type Outbound = { frame: string; request_id: string; command_id?: string; outcome: { status: string; code?: string; [key: string]: unknown }; [key: string]: unknown };
-export type SidecarOptions = { binaryPath?: string; dbPath?: string; env?: NodeJS.ProcessEnv; onEvent?: (event: Outbound) => void; onStderrLine?: (line: string) => void; onExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+export type SidecarOptions = { binaryPath?: string; args?: string[]; dbPath?: string; env?: NodeJS.ProcessEnv; onEvent?: (event: Outbound) => void; onStderrLine?: (line: string) => void; onExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 const MAX_FRAME_LEN = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 // Enough of the core's stderr to explain why it died, and not a byte more:
@@ -23,6 +23,7 @@ const MAX_REASON_LENGTH = 400;
 // Command, so a caller waiting on one never hangs.
 export class AutomedSidecar {
   _binaryPath: string;
+  _args: string[];
   _dbPath?: string;
   _env?: NodeJS.ProcessEnv;
   _onEvent: NonNullable<SidecarOptions['onEvent']>;
@@ -34,8 +35,10 @@ export class AutomedSidecar {
   _diagnostics: string[];
   _exited: boolean;
   _stopping: boolean;
-  constructor({ binaryPath, dbPath, env, onEvent, onStderrLine, onExit }: SidecarOptions = {}) {
-    this._binaryPath = binaryPath || resolveAutomedBinary().path;
+  constructor({ binaryPath, args, dbPath, env, onEvent, onStderrLine, onExit }: SidecarOptions = {}) {
+    const binary = binaryPath ? { path: binaryPath, args: [] } : resolveAutomedBinary();
+    this._binaryPath = binary.path;
+    this._args = args ?? binary.args;
     this._dbPath = dbPath;
     this._onEvent = onEvent || (() => {});
     this._onStderrLine = onStderrLine || (() => {});
@@ -126,7 +129,7 @@ export class AutomedSidecar {
     // Chromium owns and split the installation in two.
     const env = { ...process.env, ...this._env };
     if (this._dbPath) env.AUTOMED_DB_PATH = this._dbPath;
-    this._child = spawn(this._binaryPath, [], {
+    this._child = spawn(this._binaryPath, this._args, {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -284,7 +287,6 @@ export class AutomedSidecar {
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         killIfRunning(child);
-        resolve();
       }, graceMs);
       child.once('exit', () => {
         clearTimeout(timer);

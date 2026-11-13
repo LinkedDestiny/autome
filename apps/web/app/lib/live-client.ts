@@ -67,7 +67,7 @@ export function createLiveClient(options: {
           }
           connectedBefore = true;
           attempt = 0;
-          options.onCore({ type: 'core', status: message.core });
+          options.onCore({ type: 'core', status: message.core, ...(message.reason === undefined ? {} : { reason: message.reason }) });
           options.onConnection('open');
           break;
         case 'event':

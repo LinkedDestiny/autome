@@ -128,7 +128,7 @@ export function createEventBus({ call, log }: {
       if (closed) { transport.close(1001, '服务正在关闭'); return () => {}; }
       const connection = { send: (message: ExtensionMessage) => transport.send(encodeMessage(message)) };
       connections.set(transport, { transport, connection, sentSeq: cursor, helloSeq: cursor, queue: [] });
-      transport.send(encodeMessage({ type: 'hello', seq: cursor, core: core.status }));
+      transport.send(encodeMessage({ type: 'hello', seq: cursor, core: core.status, ...(core.reason === undefined ? {} : { reason: core.reason }) }));
       return () => disconnect(transport);
     },
     receive(transport: Transport, text: string) {

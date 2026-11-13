@@ -2,9 +2,9 @@ import { AutomedSidecar, type Outbound } from './sidecar.ts';
 import { nextRestart } from './restart-policy.ts';
 
 export const CALL_TIMEOUT_MS = 125000;
-export type CoreStatus = { state: 'starting' | 'connected' | 'restarting' | 'offline' | 'stopped'; reason?: string; attempts: number };
-type Options = { binaryPath?: string; home: string; dbPath?: string; log?: (line: string) => void; now?: () => number; onStatus?: (status: CoreStatus) => void };
-export type TickReport = { skipped?: boolean; errors?: string[]; [key: string]: unknown };
+export type CoreStatus = { state: 'starting' | 'connected' | 'outdated' | 'restarting' | 'offline' | 'stopped'; reason?: string; attempts: number };
+type Options = { binaryPath?: string; binaryArgs?: string[]; env?: NodeJS.ProcessEnv; home: string; dbPath?: string; log?: (line: string) => void; now?: () => number; onStatus?: (status: CoreStatus) => void };
+export type TickReport = { skipped?: boolean; older_kernel?: { message: string; kernel: string; ledger: string } | null; errors?: string[]; [key: string]: unknown };
 
 function payload(reply: Outbound): unknown {
   if (reply.outcome.status === 'error') {
@@ -18,6 +18,7 @@ export class CoreSupervisor {
   sidecar?: AutomedSidecar;
   private options: Options;
   private stopping = false;
+  private stopGeneration = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private sequence = 0;
   private tickId?: string;
@@ -28,6 +29,8 @@ export class CoreSupervisor {
     this.options.onStatus?.(this.status);
   }
   isConnected() { return this.status.state === 'connected'; }
+  canTick() { return this.isConnected() || this.isSlow(); }
+  isSlow() { return this.status.state === 'outdated'; }
   isTickBusy() { return !!this.tickId && !!this.sidecar?.isOutstanding(this.tickId); }
 
   start({ timeoutMs = 5000 } = {}): Promise<TickReport> {
@@ -36,8 +39,9 @@ export class CoreSupervisor {
     const startedAt = (this.options.now ?? Date.now)();
     const sidecar = new AutomedSidecar({
       binaryPath: this.options.binaryPath,
+      args: this.options.binaryArgs,
       dbPath: this.options.dbPath,
-      env: { ...process.env, AUTOME_HOME: this.options.home },
+      env: { ...process.env, ...this.options.env, AUTOME_HOME: this.options.home },
       onStderrLine: this.options.log,
       onExit: () => {
         if (this.stopping || this.sidecar !== sidecar) return;
@@ -58,6 +62,10 @@ export class CoreSupervisor {
 
   async restart({ timeoutMs = 5000 } = {}) {
     if (this.status.state === 'starting' || this.isConnected()) return { already_running: true };
+    const stopped = this.stop();
+    const generation = this.stopGeneration;
+    await stopped;
+    if (generation !== this.stopGeneration) throw new Error("内核启动已取消");
     this.status.attempts = 0;
     try {
       await this.start({ timeoutMs });
@@ -72,7 +80,7 @@ export class CoreSupervisor {
     return { request_id: `web-req-${n}`, command_id: `web-cmd-${n}`, expected_revision: null, protocol_version: 1, method, params };
   }
   private activeSidecar() {
-    if (!this.sidecar || !['starting', 'connected'].includes(this.status.state)) {
+    if (!this.sidecar || !['starting', 'connected', 'outdated'].includes(this.status.state)) {
       throw new Error(`内核未连接：${this.status.reason ?? '已停止'}`);
     }
     return this.sidecar;
@@ -95,13 +103,25 @@ export class CoreSupervisor {
     const command = this.command('scheduler.tick', {});
     this.tickId = command.request_id;
     const reply = sidecar.requestUntilReply(command).then(reply => {
-      const report = payload(reply) as TickReport;
-      if (this.sidecar === sidecar && this.status.state === 'starting') this.setStatus('connected');
+      const report = (payload(reply) ?? {}) as TickReport;
+      if (this.sidecar === sidecar && ['starting', 'connected', 'outdated'].includes(this.status.state)) {
+        if (report.older_kernel) {
+          const reason = report.older_kernel.message;
+          if (!this.isSlow() || this.status.reason !== reason) {
+            this.options.log?.(`[内核] ${reason}`);
+            this.setStatus('outdated', reason);
+          }
+        } else {
+          if (this.isSlow()) this.options.log?.('[内核] 已恢复推进');
+          if (!this.isConnected()) this.setStatus('connected');
+        }
+      }
       return report;
     });
     return this.wait(reply, 'scheduler.tick', timeoutMs);
   }
   async stop() {
+    this.stopGeneration++;
     this.stopping = true;
     clearTimeout(this.timer);
     this.setStatus('stopped');
