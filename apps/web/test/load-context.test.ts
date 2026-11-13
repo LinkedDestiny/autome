@@ -89,3 +89,15 @@ it('根重验覆盖 task/project/bug/merge，忽略 config/session', async () =>
     }
   } finally { router.dispose(); }
 });
+it('可选 unread 和 uploads 注入 loader，旧调用保持 undefined', async () => {
+  const { createUploads } = await import('../server/uploads.ts');
+  const unread = { unreadByTask: () => [] }, uploads = createUploads('/tmp/context-upload-unused');
+  const context = createLoadContext({ gateway: null, unread, uploads })();
+  const router = createMemoryRouter([{ path: '/', loader: () => context.get(servicesContext) }]);
+  try {
+    await vi.waitFor(() => expect(router.state.initialized).toBe(true));
+    expect(router.state.loaderData['0']).toEqual({ gateway: null, unread, uploads });
+  } finally { router.dispose(); }
+  const old = createLoadContext({ gateway: null })().get(servicesContext);
+  expect(old.uploads).toBeUndefined(); expect(old.unread).toBeUndefined();
+});

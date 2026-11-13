@@ -1,3 +1,4 @@
+import { createUploads } from './uploads.ts';
 import { openWebStore } from './store.ts';
 import { createNotifier } from './notifier.ts';
 import { attachNotifier, createNotificationApi } from './notifier-api.ts';
@@ -19,8 +20,9 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const notifier = createNotifier({ store, call: (method, params) => core.call(method, params), publish: message => bus.broadcast(message), log: console.error });
   const attached = attachNotifier({ bus, notifier });
   const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
-  const gateway = createGateway({ core, home });
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications }).catch(error => { store.close(); throw error; });
+  const uploads = createUploads(home);
+  const gateway = createGateway({ core, home, uploads });
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);

@@ -1,4 +1,5 @@
-import { createLoadContext } from '../app/load-context.ts';
+import { UploadError, type UploadService } from './uploads.ts';
+import { type UnreadSource, createLoadContext } from '../app/load-context.ts';
 import type { createNotificationApi } from './notifier-api.ts';
 import type { createGateway } from './gateway.ts';
 import express from 'express';
@@ -12,7 +13,7 @@ import type { ServerBuild } from 'react-router';
 export type Mode = 'development' | 'production';
 const root = resolve(import.meta.dirname, '..');
 
-export async function createHttpServer({ mode, gateway, notifications }: { mode: Mode; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
+export async function createHttpServer({ mode, gateway, notifications, store, uploads }: { mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
   const app = express();
   const server = createServer(app);
   const port = () => {
@@ -20,6 +21,20 @@ export async function createHttpServer({ mode, gateway, notifications }: { mode:
     return address && typeof address === 'object' ? address.port : 0;
   };
   app.use(securityMiddleware(port));
+  if (uploads) app.post('/api/uploads', async (req, res) => {
+    if (!req.is('application/octet-stream')) {
+      res.status(415).json({ ok: false, error: '上传请求必须是文件原始字节' });
+      return;
+    }
+    try {
+      const payload = await uploads.receive({ name: req.get('X-Autome-Filename') ?? '', stream: req,
+        contentLength: req.headers['content-length'] === undefined ? undefined : Number(req.headers['content-length']) });
+      res.json({ ok: true, payload });
+    } catch (error) {
+      req.resume();
+      res.status(error instanceof UploadError ? error.status : 400).json({ ok: false, error: error instanceof UploadError ? error.message : '附件上传失败，请重试' });
+    }
+  });
   let closeMiddleware = async () => {};
   app.get('/healthz', (_req, res) => { res.json({ ok: true }); });
   if (gateway || notifications) {
@@ -57,13 +72,13 @@ export async function createHttpServer({ mode, gateway, notifications }: { mode:
     app.use(createRequestHandler({
       build: () => vite.ssrLoadModule('virtual:react-router/server-build') as Promise<ServerBuild>,
       mode,
-      getLoadContext: createLoadContext({ gateway: gateway ?? null }),
+      getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads }),
     }));
   } else {
     app.use('/assets', express.static(resolve(root, 'build/client/assets'), { immutable: true, maxAge: '1y' }));
     app.use(express.static(resolve(root, 'build/client'), { maxAge: '1h' }));
     const build = await import(pathToFileURL(resolve(root, 'build/server/index.js')).href);
-    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null }) }));
+    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads }) }));
   }
   const registerUpgrade = installUpgradeGuard(server, port);
   return { server, closeMiddleware, registerUpgrade };
