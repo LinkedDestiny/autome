@@ -668,6 +668,10 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
         .map(|a| bug_attachment_name(a))
         .collect();
     let inputs = render_inputs(spec.doc_dir, &attachment_names, spec.doc_refs);
+    // Only new templates opt in; pinned task protocols retain their wording.
+    let locate_format_check = spec.gate_quick.map_or_else(String::new, |command| {
+        format!("项目配置的 quick 检查命令：`{command}`。")
+    });
     // Validate only template text; user prose and paths may contain braces.
     let parts = template
         .split("{request}")
@@ -680,8 +684,11 @@ fn bug_prompt(step: BugStep, spec: &PromptSpec<'_>) -> Result<String> {
                             .replace("{doc_dir}", spec.doc_dir)
                             .replace("{slug}", spec.slug)
                             .replace("{budget_line}", &budget_line);
-                        check_no_placeholders_left(&rendered, &format!("prompts/{name}.md"))?;
-                        Ok(rendered)
+                        let parts = rendered.split("{locate_format_check}").collect::<Vec<_>>();
+                        for part in &parts {
+                            check_no_placeholders_left(part, &format!("prompts/{name}.md"))?;
+                        }
+                        Ok(parts.join(&locate_format_check))
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;

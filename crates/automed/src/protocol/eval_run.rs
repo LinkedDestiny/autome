@@ -312,6 +312,7 @@ fn render_prompt(template: &str, slug: &str, gate_command: Option<&str>) -> Resu
         part.replace("{doc_dir}", &format!("docs/{slug}"))
             .replace("{slug}", slug)
             .replace("{budget_line}", "")
+            .replace("{locate_format_check}", "")
             .replace(
                 "{brief_path}",
                 &format!("docs/{slug}/brief/（本次评估没有简报，直接读任务目录）"),

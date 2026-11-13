@@ -243,3 +243,19 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
 ```
 
 同样的说明同步到 `prompts/plan.md`、`prompts/locate.md` 与 `loop-protocol.md`。
+
+## protocol/v7
+
+明确定位提交前的格式化检查及修复轮的纯格式化例外，独立复核仍只写任务文档；已固定的旧协议不迁移。
+
+```yaml
+- id: F-2
+  kind: clarify
+  clause: prompts/locate.md
+  evidence: [T-64 格式化阻塞（用户任务卡提供，历史未独立核实）, 修复轮不敢格式化回归测试-定位轮写的测试过不了 回归测试]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+同样的边界同步到 `prompts/fix.md`、`prompts/fix-review.md` 与 `bug-protocol.md`。

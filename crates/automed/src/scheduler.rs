@@ -1253,31 +1253,98 @@ fn added_test_blocks(diff: &str, section_line: usize) -> Vec<String> {
     blocks
 }
 
-/// Every block still present, verbatim and in the original order.
+/// Rust tokens with layout removed, preserving literals, comments and token
+/// boundaries. This also accepts incomplete blocks from a zero-context diff.
+fn formatting_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let c = rest.chars().next().unwrap();
+        if c.is_whitespace() {
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let mut end = c.len_utf8();
+        if rest.starts_with("//") {
+            end = rest.find('\n').unwrap_or(rest.len());
+        } else if rest.starts_with("/*") {
+            let mut depth = 1;
+            end = 2;
+            while end < rest.len() && depth > 0 {
+                if rest[end..].starts_with("/*") {
+                    depth += 1;
+                    end += 2;
+                } else if rest[end..].starts_with("*/") {
+                    depth -= 1;
+                    end += 2;
+                } else {
+                    end += rest[end..].chars().next().unwrap().len_utf8();
+                }
+            }
+        } else if ["r", "br", "cr"].iter().any(|prefix| {
+            rest.strip_prefix(prefix)
+                .is_some_and(|s| s.trim_start_matches('#').starts_with('"'))
+        }) {
+            let prefix = if c == 'r' { 1 } else { 2 };
+            let hashes = rest[prefix..].chars().take_while(|c| *c == '#').count();
+            let start = prefix + 1 + hashes;
+            let closing = format!("\"{}", "#".repeat(hashes));
+            end = rest[start..]
+                .find(&closing)
+                .map_or(rest.len(), |at| start + at + closing.len());
+        } else if c == '"'
+            || (c == '\''
+                && (rest[1..].starts_with('\\') || rest[1..].chars().nth(1) == Some('\'')))
+        {
+            let mut escaped = false;
+            for (at, next) in rest[c.len_utf8()..].char_indices() {
+                end = c.len_utf8() + at + next.len_utf8();
+                if !escaped && next == c {
+                    break;
+                }
+                escaped = !escaped && next == '\\';
+            }
+        } else if c.is_alphanumeric() || c == '_' {
+            end = rest
+                .char_indices()
+                .find(|(_, ch)| !ch.is_alphanumeric() && *ch != '_')
+                .map_or(rest.len(), |(at, _)| at);
+        } else if "+-=><!&|:.*/%^".contains(c) {
+            end = [
+                "..=", "<<=", ">>=", "...", "::", "->", "=>", "==", "!=", "<=", ">=", "&&", "||",
+                "<<", ">>", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "..",
+            ]
+            .iter()
+            .find(|op| rest.starts_with(**op))
+            .map_or(end, |op| op.len());
+        }
+        let token = &rest[..end];
+        if matches!(token, ")" | "]" | "}") && tokens.last().is_some_and(|t| t == ",") {
+            tokens.pop();
+        }
+        tokens.push(token.to_string());
+        rest = &rest[end..];
+    }
+    tokens
+}
+
+/// Every block still present in the original order, allowing layout changes.
 fn blocks_kept_in_order(text: &str, blocks: &[String]) -> bool {
-    // Compared without whitespace or trailing commas: the gate's formatter may
-    // rewrap the added tests, and that is not an edit. Changing what they
-    // assert still is.
-    let squash = |s: &str| {
-        s.chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .replace(",)", ")")
-            .replace(",]", "]")
-            .replace(",}", "}")
-    };
-    let text = squash(text);
+    let text = formatting_tokens(text);
     let mut from = 0;
     blocks
         .iter()
-        .map(|block| squash(block))
-        .all(|block| match text[from..].find(block.as_str()) {
-            Some(at) => {
-                from += at + block.len();
-                true
-            }
-            None => false,
-        })
+        .map(|block| formatting_tokens(block))
+        .filter(|block| !block.is_empty())
+        .all(
+            |block| match text[from..].windows(block.len()).position(|w| w == block) {
+                Some(at) => {
+                    from += at + block.len();
+                    true
+                }
+                None => false,
+            },
+        )
 }
 
 fn section_digest(text: &str) -> String {
@@ -1285,17 +1352,24 @@ fn section_digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
+fn same_regression_text(path: &str, before: &str, after: &str) -> bool {
+    // Do not apply Rust layout rules to indentation-sensitive scripts or
+    // other languages whose literals and operators we cannot tokenize.
+    before == after
+        || (path.ends_with(".rs") && formatting_tokens(before) == formatting_tokens(after))
+}
+
 /// How a file the locate round touched is protected from the fix round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Protection {
-    /// A test file or the repro script: the fix may not change it at all.
+    /// A test file or the repro script: only recognized formatting may change.
     File,
     /// Product source with inline tests (Rust's `mod tests`): the fix may edit
     /// the product code above the tests, but not the test section itself.
     Section,
     /// An existing test file the locate round added tests to: the fix may edit
     /// the rest of it (the suite's own helpers can be where the bug is), but
-    /// every block the locate round added must survive verbatim and in order.
+    /// every block the locate round added must survive in order, modulo layout.
     Blocks,
 }
 
@@ -1612,13 +1686,47 @@ fn guard_bug_regression(
             } else if let Some(section) = file["section"].as_str() {
                 // Snapshots from the build that froze the whole test section.
                 let current = git::run(&slot.worktree, &["show", &format!("HEAD:{path}")])?;
+                let original = file["head"]
+                    .as_str()
+                    .map(|head| git::run(&slot.worktree, &["show", &format!("{head}:{path}")]))
+                    .transpose()?;
                 current.ok()
-                    && test_section_start(&current.stdout)
-                        .is_some_and(|start| section_digest(&current.stdout[start..]) == section)
+                    && test_section_start(&current.stdout).is_some_and(|start| {
+                        let after = &current.stdout[start..];
+                        section_digest(after) == section
+                            || original.as_ref().is_some_and(|old| {
+                                old.ok()
+                                    && test_section_start(&old.stdout).is_some_and(|start| {
+                                        let before = &old.stdout[start..];
+                                        section_digest(before) == section
+                                            && same_regression_text(path, before, after)
+                                    })
+                            })
+                    })
             } else {
                 // Snapshots taken before sections existed protect the whole file.
                 let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", "HEAD", "--", path])?;
-                Some(tree.stdout.as_str()) == file["tree"].as_str()
+                if Some(tree.stdout.as_str()) == file["tree"].as_str() {
+                    true
+                } else if let (Some(head), Some(saved_tree)) =
+                    (file["head"].as_str(), file["tree"].as_str())
+                {
+                    let original_tree =
+                        git::run(&slot.worktree, &["ls-tree", "-z", head, "--", path])?;
+                    let original = git::run(&slot.worktree, &["show", &format!("{head}:{path}")])?;
+                    let current = git::run(&slot.worktree, &["show", &format!("HEAD:{path}")])?;
+                    // Formatting may change the blob, never the mode or type.
+                    original_tree.ok()
+                        && original_tree.stdout == saved_tree
+                        && !tree.stdout.is_empty()
+                        && tree.stdout.split_whitespace().next()
+                            == saved_tree.split_whitespace().next()
+                        && original.ok()
+                        && current.ok()
+                        && same_regression_text(path, &original.stdout, &current.stdout)
+                } else {
+                    false
+                }
             };
             if !kept || !clean.ok() {
                 return Err(err(format!("回归测试被修改、删除或重命名：{repo}/{path}")));
@@ -9857,6 +9965,30 @@ mod tests {
 #[cfg(test)]
 mod regression_blocks {
     use super::{added_test_blocks, blocks_kept_in_order};
+
+    #[test]
+    fn formatting_preserves_literals_comments_and_token_boundaries() {
+        for (before, after) in [
+            ("assert_eq!(s, \"a b\");", "assert_eq!(s, \"ab\");"),
+            (
+                "assert_eq!(s, r#\"a \" b\"#);",
+                "assert_eq!(s, r#\"a \"b\"#);",
+            ),
+            ("assert_eq!(s, br#\"a b\"#);", "assert_eq!(s, br#\"ab\"#);"),
+            ("assert_eq!(s, ' ');", "assert_eq!(s, 'x');"),
+            ("let x = value;", "letx = value;"),
+            ("// skip this\nassert!(x);", "// skipthis\nassert!(x);"),
+            ("x=/* keep space */1;", "x=/* keepspace */1;"),
+            ("assert_eq!(x, 1);", "assert_eq!(y, 1);"),
+        ] {
+            assert!(!blocks_kept_in_order(after, &[before.to_string()]));
+        }
+        assert!(!super::same_regression_text(
+            "test.py",
+            "if x:\n    f()",
+            "if x:\nf()"
+        ));
+    }
 
     const DIFF: &str = "diff --git a/lib.rs b/lib.rs\n--- a/lib.rs\n+++ b/lib.rs\n@@ -1 +1 @@\n-old product\n+broken product\n@@ -3 +3,3 @@\n-mod tests {}\n+mod tests {\n+    #[test] fn regression() { assert!(fixed()); }\n+}\n";
 
