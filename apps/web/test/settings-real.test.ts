@@ -12,7 +12,7 @@ import { loader as rootLoader, shouldRevalidate } from '../app/root.tsx';
 import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
 import type { ShellData } from '../app/components/shell-data.ts';
-import fixture from './fixtures/w9-replies.json';
+import fixture from './fixtures/w9-replies.json' with { type: 'json' };
 const closes: (() => Promise<void>)[]=[];
 afterEach(async()=>{for(const close of closes.splice(0).reverse()) await close();});
 async function setup() {
