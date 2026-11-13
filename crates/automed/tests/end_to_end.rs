@@ -2599,6 +2599,94 @@ fn an_included_backlog_item_reaches_the_next_prompt_and_survives_a_crash() {
     assert!(b01.carried_by.is_none());
 }
 
+#[test]
+fn rejecting_design_carries_pending_decisions_and_approval_starts_implementation() {
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("reject-decisions");
+    let request = "reject with backlog decisions";
+    let slug = slug_for(request);
+    let items = [
+        ("B-01", "忽略项甲", "ignore"),
+        ("B-02", "次数上限要可配置", "include"),
+        ("B-03", "忽略项乙", "ignore"),
+    ];
+    let backlog = "\n## Backlog\n\n- B-01 忽略项甲\n- B-02 次数上限要可配置\n- B-03 忽略项乙\n";
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (
+            4,
+            format!("{}{backlog}", doc("实现中", 2, 0, &[("M-01", "开放")])),
+        ),
+        (5, doc("设计中", 3, 0, &[])),
+        (6, doc("设计中", 3, 0, &[])),
+        (7, doc("实现中", 4, 0, &[("M-01", "开放")])),
+        (8, doc("实现中", 4, 1, &[("M-01", "待审")])),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    for (item_id, _, disposition) in items {
+        w.call(
+            "task.decide",
+            json!({
+                "task_id": task_id, "kind": "backlog",
+                "item_id": item_id, "disposition": disposition,
+            }),
+        );
+    }
+    let before = w.ctx.store.list_decisions(&task_id).unwrap();
+    assert_eq!(before.len(), 3);
+    assert!(before.iter().all(|d| d.consumed_at.is_none()));
+
+    // Feedback deliberately does not repeat the Backlog text: only decision
+    // injection can put these items into the captured prompt.
+    let feedback = "请补充验收边界";
+    w.call(
+        "task.reject",
+        json!({ "task_id": task_id, "feedback": feedback }),
+    );
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_design_approval"));
+    assert_eq!(w.sessions_run().len(), 7);
+    let prompt = w.prompt(5);
+    assert!(
+        prompt.contains(feedback),
+        "rejection feedback must be retained"
+    );
+    let missing: Vec<_> = items
+        .iter()
+        .filter(|(id, text, disposition)| {
+            let verdict = if *disposition == "include" {
+                "纳入"
+            } else {
+                "忽略"
+            };
+            !prompt.contains(&format!("{id} {text} → {verdict}"))
+        })
+        .map(|(id, _, _)| *id)
+        .collect();
+    let decisions = w.ctx.store.list_decisions(&task_id).unwrap();
+    assert_eq!(decisions.len(), 3, "decisions must not disappear");
+    let unconsumed: Vec<_> = decisions
+        .iter()
+        .filter(|d| d.consumed_at.is_none() || d.carried_by.is_some())
+        .map(|d| d.item_id.as_str())
+        .collect();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    let node = w.node(&task_id);
+    // Stop the newly launched session before the fixture removes its files.
+    w.call("task.pause", json!({ "task_id": task_id }));
+    // Report the complete causal chain, even when prompt delivery failed.
+    assert!(
+        missing.is_empty() && unconsumed.is_empty() && node.as_deref() == Some("implement"),
+        "missing decision text in rejection prompt: {missing:?}; unconsumed decisions after successful redesign: {unconsumed:?}; node after approval: {node:?} (expected implement)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The host-run gate
 // ---------------------------------------------------------------------------

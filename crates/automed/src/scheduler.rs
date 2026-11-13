@@ -2116,7 +2116,7 @@ fn hands_decisions_to_a_session(action: &Action) -> bool {
     matches!(
         action,
         Action::StartRole {
-            inject: Some(Inject::Decisions),
+            inject: Some(Inject::Decisions | Inject::DesignFeedback { .. }),
             ..
         }
     )
@@ -2596,7 +2596,10 @@ fn start_session(
     // user's decisions marks them as its own before its prompt is written, so
     // the prompt, the brief and the ledger name one list.
     let session_id = crate::store::new_id("ses");
-    let decisions = if matches!(inject, Some(Inject::Decisions)) {
+    let decisions = if matches!(
+        inject,
+        Some(Inject::Decisions | Inject::DesignFeedback { .. })
+    ) {
         ctx.store.carry_decisions(&task.id, &session_id)?
     } else {
         Vec::new()
