@@ -420,7 +420,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
             };
             task_trigger(ctx, id, trigger)
         }
-        "task.merge" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Merge),
+        "task.merge" => task_merge(ctx, p),
         "task.pause" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Pause),
         "task.resume" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Resume),
         "task.stop" => task_stop(ctx, str_param(p, "task_id")?),
@@ -633,6 +633,7 @@ fn task_json(
         // Where this task's documents live inside the repository holding
         // them, frozen when it was created. The panel opens paths under it.
         "doc_dir": t.doc_dir(),
+        "merge": crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))?,
     });
     if t.kind == TaskKind::Bug {
         value["fix_round"] = json!(ctx.store.count_events(&t.id, "bug.fix_round_started")?);
@@ -1665,6 +1666,12 @@ fn task_retro(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     ))
 }
 
+fn project_warnings(ctx: &Ctx, project: &Project) -> Result<Vec<String>, DispatchError> {
+    let global = config_io::load_global(&ctx.autome_home)?;
+    let local = config_io::load_project(std::path::Path::new(&project.path))?;
+    Ok(config::warnings(&config::resolve(&global, &local)))
+}
+
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
@@ -1714,6 +1721,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "retry": retry_json(ctx, task_id)?,
             // The core's last run of the project gate on this task.
             "gate": ctx.store.last_event(task_id, "gate.result")?,
+            "config_warnings": project_warnings(ctx, &project)?,
         }),
         vec![],
     ))
@@ -1945,7 +1953,60 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
     out
 }
 
-/// Applies a trigger and returns the refreshed panel.
+/// Records merge intent without bypassing approval or changing nodes directly.
+fn task_merge(ctx: &mut Ctx, params: &Value) -> DispatchResult {
+    use autome_domain::merge_queue::{MergePress, cancel_press, merge_press};
+    let id = str_param(params, "task_id")?;
+    let cancel = match params.get("cancel") {
+        None => false,
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| bad_params("cancel 必须是布尔值"))?,
+    };
+    let task = ctx.store.get_task(id)?;
+    let result;
+    if cancel {
+        cancel_press(&task.state).map_err(rejected)?;
+        if crate::merge_queue::authorization(ctx, &task)
+            .map_err(|e| internal(e.to_string()))?
+            .is_none()
+        {
+            return Err(rejected("没有可撤销的合并授权"));
+        }
+        ctx.store
+            .append_event("merge.auto", id, json!({"active":false,"by":"user"}))?;
+        if crate::merge_queue::holds(ctx, &task).map_err(|e| internal(e.to_string()))? {
+            ctx.store
+                .append_event("merge.unlocked", id, json!({"reason":"cancel"}))?;
+        }
+        result = "revoked";
+    } else {
+        match merge_press(&task.state).map_err(rejected)? {
+            MergePress::Merge => {
+                scheduler::apply_trigger(ctx, id, &Trigger::Merge)?;
+                result = "merging";
+            }
+            MergePress::Authorize => {
+                if crate::merge_queue::authorization(ctx, &task)
+                    .map_err(|e| internal(e.to_string()))?
+                    .is_some()
+                {
+                    result = "already_authorized";
+                } else {
+                    ctx.store
+                        .append_event("merge.auto", id, json!({"active":true,"by":"user"}))?;
+                    result = "authorized";
+                }
+            }
+        }
+    }
+    scheduler::tick(ctx);
+    let (mut payload, _) = task_get(ctx, id)?;
+    payload["merge_request"] = json!(result);
+    let seq = ctx.store.latest_seq()?;
+    Ok((payload, vec![event(seq, "task.updated", id, json!({}))]))
+}
+
 fn task_trigger(ctx: &mut Ctx, task_id: &str, trigger: Trigger) -> DispatchResult {
     if matches!(trigger, Trigger::Resume)
         && let Some(s) = ctx.store.running_session(task_id)?
@@ -2378,9 +2439,14 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
     let gate_waiters = crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?;
     let mut waiting = Vec::new();
     let mut running = Vec::new();
+    let mut config_warnings = Vec::new();
 
     for project in ctx.store.list_projects()? {
         let costs = project_costs(ctx, &project.id)?;
+        let warnings = project_warnings(ctx, &project)?;
+        if !warnings.is_empty() {
+            config_warnings.push(json!({"project_id":project.id,"project_name":project.display_name,"warnings":warnings}));
+        }
         for task in ctx.store.list_tasks(&project.id)? {
             if task.state.is_terminal() {
                 continue;
@@ -2435,6 +2501,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
 
     Ok((
         json!({
+            "config_warnings": config_warnings,
             "waiting": waiting,
             "running": running,
             "alerts": alerts,

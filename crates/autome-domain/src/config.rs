@@ -277,6 +277,8 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_after: Option<MergeAfterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_auto: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_same_failure_limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_reuse_for_main_check: Option<bool>,
@@ -433,6 +435,8 @@ pub struct ResolvedConfig {
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "GateRun::is_each_round")]
     pub gate_run: GateRun,
+    #[serde(default)]
+    pub merge_auto: bool,
     pub merge_after: Option<MergeAfterConfig>,
     pub gate_same_failure_limit: u32,
     pub gate_reuse_for_main_check: bool,
@@ -532,6 +536,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         gate_quick: project.gate_quick.clone(),
         setup: project.setup.clone(),
         merge_after: project.merge_after.clone(),
+        merge_auto: project.merge_auto.unwrap_or(false),
         gate_same_failure_limit: project
             .gate_same_failure_limit
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
@@ -691,6 +696,15 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
     }
 
     violations
+}
+
+/// Non-blocking project warnings, computed from the current configuration.
+pub fn warnings(config: &ResolvedConfig) -> Vec<String> {
+    if config.merge_auto && config.gate.is_none() {
+        vec!["[merge] auto = true 但没有配置 [gate]：需求任务 rebase 后直接合并，没有门禁把关（Bug 任务仍会跑复现命令）".into()]
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -1419,5 +1433,36 @@ mod gate_concurrency_tests {
             resolve(&GlobalConfig::default(), &project).gate_concurrency,
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_auth_tests {
+    use super::*;
+    #[test]
+    fn merge_auth_config_warns_when_auto_has_no_gate() {
+        for auto in [false, true] {
+            for gate in [
+                None,
+                Some(GateConfig {
+                    command: "true".into(),
+                    timeout_minutes: 1,
+                }),
+            ] {
+                let expected = auto && gate.is_none();
+                let resolved = resolve(
+                    &GlobalConfig::default(),
+                    &ProjectConfig {
+                        merge_auto: Some(auto),
+                        gate,
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(warnings(&resolved).len(), usize::from(expected));
+                if expected {
+                    assert!(warnings(&resolved)[0].contains("没有门禁把关"));
+                }
+            }
+        }
     }
 }

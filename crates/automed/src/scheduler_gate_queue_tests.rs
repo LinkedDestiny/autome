@@ -747,7 +747,7 @@ fn gate_queue_fix_round_is_counted_once_after_setup_not_while_waiting() {
         },
         budget_n: None,
         consumes_decisions: false,
-        merge_requested: false,
+        grants_merge_request: false,
     };
     perform(&mut w.ctx, &b, &project, &resolved, &transition).unwrap();
     assert_eq!(queue_count(&w, &b, "bug.fix_round_started"), 0);

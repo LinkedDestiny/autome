@@ -60,6 +60,7 @@ pub mod ipc;
 pub mod launcher;
 pub mod layout;
 pub mod merge_after;
+pub mod merge_queue;
 pub mod protocol;
 pub mod scheduler;
 pub mod setup;

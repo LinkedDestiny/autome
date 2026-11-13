@@ -4339,8 +4339,8 @@ fn main_moving_after_the_press_takes_the_same_automatic_path() {
 }
 
 #[test]
-fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at_await_merge_again()
-{
+fn merge_auth_a_gate_failing_after_the_automatic_rebase_keeps_the_request_and_merges_after_the_repair()
+ {
     needs_git!();
     let mut w = World::new("auto-gate-failure");
     let gate = w.root.join("combination-gate.sh");
@@ -4392,14 +4392,21 @@ fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at
     let main = automed::git::head_sha(&w.repo).unwrap();
     ok(&w.call("task.merge", json!({"task_id":b})));
     w.settle();
-    assert_eq!(w.node(b).as_deref(), Some("await_merge"));
-    assert_eq!(automed::git::head_sha(&w.repo).unwrap(), main);
-    assert!(w.ctx.store.get_task(b).unwrap().merge_commit.is_none());
+    assert_eq!(w.state(b), "done");
+    assert_ne!(automed::git::head_sha(&w.repo).unwrap(), main);
+    assert!(w.ctx.store.get_task(b).unwrap().merge_commit.is_some());
     assert_eq!(
         w.ctx.store.last_event(b, "merge.auto").unwrap().unwrap()["active"],
-        false
+        true
     );
-    assert_eq!(w.ctx.store.count_events(b, "merge.rebased").unwrap(), 1);
+    assert_eq!(w.ctx.store.count_events(b, "merge.rebased").unwrap(), 2);
+    assert_eq!(
+        setup_events(&w, b, "merge.direct")
+            .iter()
+            .filter(|(_, p)| p["by"] == "behind")
+            .count(),
+        1
+    );
     let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
     let rebase = events
         .iter()
@@ -4429,11 +4436,8 @@ fn a_gate_failing_after_the_automatic_rebase_goes_back_to_implement_and_stops_at
             && p["node"] == node
             && p["ok"] == true));
     }
-    let wt = w
-        .repo
-        .join(format!(".worktree/{}", slug_for("gate second")));
-    assert!(wt.join("from-a").exists());
-    assert!(!wt.join("from-b").exists());
+    assert!(w.repo.join("from-a").exists());
+    assert!(!w.repo.join("from-b").exists());
     assert_eq!(
         std::fs::read_to_string(
             w.repo
@@ -5798,6 +5802,16 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
         let out = w.call("task.get", json!({"task_id":id}));
         let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        assert_eq!(
+            task.get("merge"),
+            Some(&json!({
+                "authorized": false,
+                "authorized_by": null,
+                "holds_section": false,
+                "waiting_for": null,
+                "stale": null,
+            }))
+        );
         if kind == "bug" {
             assert_eq!(task.remove("fix_round"), Some(json!(0)));
         } else {
@@ -5822,6 +5836,7 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         "branch",
         "created_at",
         "completed_at",
+        "merge",
         "merge_commit",
         "archived",
         "protocol_ref",
@@ -7734,7 +7749,6 @@ fn main_check_reuse_switched_off_matches_today_event_by_event() {
             "merge.rebased",
             "gate.started:merge_gate",
             "gate.result:merge_gate",
-            "merge.auto",
             "merge.repo",
             "gate.started:main_check",
             "gate.result:main_check"
@@ -8986,3 +9000,4 @@ fn regression_format_only_assertion_changes_remain_rejected() {
         regression_format_only_case(path, existing, legacy, true);
     }
 }
+include!("merge_queue_cases.inc");

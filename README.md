@@ -121,6 +121,7 @@ same_failure_limit = 3     # the default, 1–10: consecutive identical failures
 reuse_for_main_check = true # the default; false always runs the post-merge gate
 
 [merge]
+auto = false                       # default; true merges after the gate without another approval
 after = "sh scripts/install-cli.sh" # optional; sh -c in the main checkout
 after_timeout_minutes = 10          # optional; the default
 
@@ -156,6 +157,33 @@ fix_rounds = 3            # the default; an integer from 1–20
   `autome run` reports `gate.queued` with the position at enqueue time. Ledger
   events restore FIFO order after a core restart. This does not limit commands
   launched inside agent sessions, such as their own `cargo test`.
+- **Merge queue.** The regular Rebase step remains; when MergeGate leaves the
+  host queue, it rebases again if the default branch has advanced. A cached gate
+  result is reused only when the branch is also up to date. Authorized tasks
+  take a project merge lock in FIFO order, before preparation, host admission
+  and dequeue rebase, and keep it through the gate and merge. MainCheck, Cleanup
+  and `[merge] after` are outside this section. Other tasks in the project wait
+  to start MergeGate or execute Merging; lock waiters keep their queue order but
+  do not block the host queue or consume a host job slot. This does not change
+  `[gate] concurrency`, even when it is greater than one.
+  Use `autome merge cart` before the stopping point to authorize the eventual
+  merge; design approval and Bug information checkpoints still require attention.
+  Authorization survives conflicts, failed gates, stops and retries. Use
+  `autome merge cart --cancel` to revoke it, including for a task covered by
+  project auto-merge. Revocation is refused once Merging has begun. A dequeue
+  conflict releases the lock and returns to implementation (Bug: the fix round),
+  retaining authorization; after repair the task queues again at the tail.
+  Unapproved tasks stop at AwaitMerge without holding the lock. If main advances,
+  `status`, `ls` and `task.get` show the stale result and number of commits behind;
+  pressing merge then rebases and reruns the gate. `autome run` reports dequeue
+  rebase and direct authorized merge. Queue order, authorization and lock
+  ownership recover from the ledger after restart. The lock covers Autome merges
+  in this project; external main commits can still trigger the behind/rebase retry.
+  Project `[merge] auto = true` saves the manual merge approval, but lets passing
+  changes enter main without a final human review. It defaults to false and
+  coexists with `after`. Without `[gate]`, it warns rather than rejects the config:
+  feature tasks merge after rebase without a gate; Bug tasks still run their
+  reproduction command. Explicit user revocation overrides the project switch.
 - **The gate.** With `[gate]` set and the default `run = "each_round"`, Autome
   runs the command itself after every
   implementation round, on the commit that round produced, and only an exit
@@ -166,7 +194,7 @@ fix_rounds = 3            # the default; an integer from 1–20
   the reason and latest log path. Fix the environment, then use `autome rerun
   <id> <node>` or `autome extend <id> 1` to retry; the streak starts over. It runs
   again on the rebased head before the merge stopping point (skipped when the
-  head already passed), and once more on `main` after the merge — that last
+  head already passed and the branch is not behind), and once more on `main` after the merge — that last
   run cannot undo the merge, so a failure there raises an alert on the
   dashboard instead. By default (`reuse_for_main_check = true`), when the merge
   commit has the same tree as the commit that passed MergeGate, Autome reuses
@@ -272,6 +300,7 @@ autome run                               # drives the Loop; prints what happens
 autome status                            # what waits on you, what runs, alerts
 autome approve cart                      # a task by id or slug prefix
 autome merge cart
+autome merge cart --cancel  # revoke advance approval before merging starts
 ```
 
 `autome run` is what moves things. The desktop app moves them too while it is

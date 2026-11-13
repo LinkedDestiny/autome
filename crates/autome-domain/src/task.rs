@@ -545,7 +545,7 @@ pub enum SessionOutcome {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum CoreStepResult {
     Ok,
-    /// Rebase only.
+    /// Rebase step or MergeGate dequeue alignment.
     Conflict {
         files: Vec<String>,
         detail: String,
@@ -639,8 +639,8 @@ pub struct Transition {
     /// True when the pending decisions were consumed by this transition, so
     /// the store can mark them and not apply them twice.
     pub consumes_decisions: bool,
-    /// Authorization carried only through the requested rebase and merge gate.
-    pub merge_requested: bool,
+    /// True only when this transition grants authorization after a behind merge.
+    pub grants_merge_request: bool,
 }
 
 impl Transition {
@@ -650,7 +650,7 @@ impl Transition {
             action,
             budget_n: None,
             consumes_decisions: false,
-            merge_requested: false,
+            grants_merge_request: false,
         }
     }
 
@@ -813,29 +813,16 @@ pub fn apply_with_merge_request(
     ctx: &Context<'_>,
     merge_requested: bool,
 ) -> Result<Transition, Rejected> {
-    let requested = merge_requested && in_merge_stretch(state);
+    let requested = merge_requested;
     let mut transition = apply_inner(state, trigger, ctx, requested)?;
-    transition.merge_requested = matches!(
+    transition.grants_merge_request = matches!(
         trigger,
         Trigger::CoreStepDone {
             node: Node::Merging,
             result: CoreStepResult::Behind { .. }
         }
-    ) || (requested && in_merge_stretch(&transition.next));
+    );
     Ok(transition)
-}
-
-fn in_merge_stretch(state: &TaskState) -> bool {
-    matches!(
-        state,
-        TaskState::Active {
-            node: Node::Rebase | Node::MergeGate
-        } | TaskState::Requeued {
-            resume: Node::Rebase | Node::MergeGate
-        } | TaskState::Paused {
-            resume: Node::Rebase | Node::MergeGate
-        }
-    )
 }
 
 fn press_merge(ctx: &Context<'_>) -> Transition {
@@ -1279,15 +1266,17 @@ fn apply_inner(
                         Transition::active(Node::AwaitMerge, Action::None)
                     })
                 }
-                (Node::Rebase, CoreStepResult::Conflict { files, .. }) => Ok(Transition::active(
-                    Node::Implement,
-                    Action::StartRole {
-                        role: Role::Impl,
-                        inject: Some(Inject::RebaseConflict {
-                            files: files.clone(),
-                        }),
-                    },
-                )),
+                (Node::Rebase | Node::MergeGate, CoreStepResult::Conflict { files, .. }) => {
+                    Ok(Transition::active(
+                        Node::Implement,
+                        Action::StartRole {
+                            role: Role::Impl,
+                            inject: Some(Inject::RebaseConflict {
+                                files: files.clone(),
+                            }),
+                        },
+                    ))
+                }
                 (Node::Merging, CoreStepResult::Behind { .. }) => Ok(Transition::active(
                     Node::Rebase,
                     Action::RunCoreStep { node: Node::Rebase },
@@ -1598,7 +1587,7 @@ mod tests {
         .unwrap();
         assert_eq!(t.next, same_failure_state(Node::MergeGate));
         assert_eq!(t.action, Action::None);
-        assert!(!t.merge_requested);
+        assert!(!t.grants_merge_request);
     }
 
     #[test]
@@ -1781,7 +1770,40 @@ mod tests {
     }
 
     #[test]
-    fn merging_behind_the_default_branch_runs_a_rebase_carrying_the_request() {
+    fn merge_auth_only_a_behind_merge_grants_a_request() {
+        for node in Node::ALL.into_iter().chain(Node::BUG) {
+            for trigger in [
+                Trigger::Pause,
+                Trigger::Stop,
+                Trigger::Cancel,
+                Trigger::CoreStepDone {
+                    node,
+                    result: CoreStepResult::Ok,
+                },
+                Trigger::CoreStepDone {
+                    node,
+                    result: CoreStepResult::Behind {
+                        repos: vec![],
+                        detail: String::new(),
+                    },
+                },
+            ] {
+                if let Ok(t) = apply_with_merge_request(&active(node), &trigger, &ctx(&cfg()), true)
+                {
+                    assert_eq!(
+                        t.grants_merge_request,
+                        matches!(
+                            trigger,
+                            Trigger::CoreStepDone {
+                                node: Node::Merging,
+                                result: CoreStepResult::Behind { .. }
+                            }
+                        )
+                    );
+                }
+            }
+        }
+
         for repos in [vec![], vec!["repo".into()], vec!["a".into(), "b".into()]] {
             for requested in [false, true] {
                 let t = apply_with_merge_request(
@@ -1797,9 +1819,9 @@ mod tests {
                     requested,
                 )
                 .unwrap();
-                assert_eq!(t.next, TaskState::Active { node: Node::Rebase });
+                assert_eq!(t.next, active(Node::Rebase));
                 assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
-                assert!(t.merge_requested);
+                assert!(t.grants_merge_request);
             }
         }
     }
@@ -1814,7 +1836,7 @@ mod tests {
                 node: Node::Merging
             }
         );
-        assert!(!t.merge_requested);
+        assert!(!t.grants_merge_request);
     }
 
     #[test]
@@ -1827,7 +1849,7 @@ mod tests {
                 node: Node::MergeGate
             }
         );
-        assert!(t.merge_requested);
+        assert!(!t.grants_merge_request);
     }
 
     #[test]
@@ -1846,7 +1868,7 @@ mod tests {
                 node: Node::Merging
             }
         );
-        assert!(!t.merge_requested);
+        assert!(!t.grants_merge_request);
     }
 
     #[test]
@@ -1869,12 +1891,78 @@ mod tests {
             let t = apply_with_merge_request(&active(node), &trigger, &ctx(&c), false).unwrap();
             assert_eq!(t.next, active(Node::AwaitMerge));
             assert_eq!(t.action, Action::None);
-            assert!(!t.merge_requested);
+            assert!(!t.grants_merge_request);
         }
     }
 
     #[test]
-    fn a_conflicting_requested_rebase_goes_back_to_implement_and_drops_the_request() {
+    fn merge_conflict_a_dequeue_conflict_goes_back_to_implement() {
+        for requested in [false, true] {
+            for files in [vec![], vec!["one".into()], vec!["b".into(), "a".into()]] {
+                let c = cfg_with_gate();
+                let t = apply_with_merge_request(
+                    &active(Node::MergeGate),
+                    &Trigger::CoreStepDone {
+                        node: Node::MergeGate,
+                        result: CoreStepResult::Conflict {
+                            files: files.clone(),
+                            detail: "conflict".into(),
+                        },
+                    },
+                    &ctx(&c),
+                    requested,
+                )
+                .unwrap();
+                assert_eq!(t.next, active(Node::Implement));
+                assert_eq!(
+                    t.action,
+                    Action::StartRole {
+                        role: Role::Impl,
+                        inject: Some(Inject::RebaseConflict { files })
+                    }
+                );
+                assert!(!t.grants_merge_request);
+            }
+        }
+        for result in [
+            CoreStepResult::Ok,
+            CoreStepResult::Behind {
+                repos: vec![],
+                detail: "behind".into(),
+            },
+        ] {
+            assert!(
+                apply(
+                    &active(Node::MergeGate),
+                    &Trigger::CoreStepDone {
+                        node: Node::MergeGate,
+                        result
+                    },
+                    &ctx(&cfg())
+                )
+                .is_err()
+            );
+        }
+        for result in [
+            CoreStepResult::Failed {
+                detail: "read failure".into(),
+            },
+            CoreStepResult::Blocked {
+                detail: "blocked".into(),
+            },
+        ] {
+            assert!(matches!(
+                requested_step(Node::MergeGate, result, &cfg()).next,
+                TaskState::Failed {
+                    at: Node::MergeGate,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn merge_auth_a_conflicting_requested_rebase_goes_back_to_implement() {
         let files = vec!["conflict".into()];
         let t = requested_step(
             Node::Rebase,
@@ -1892,7 +1980,7 @@ mod tests {
                 inject: Some(Inject::RebaseConflict { files })
             }
         );
-        assert!(!t.merge_requested);
+        assert!(!t.grants_merge_request);
         let failed = requested_step(
             Node::Rebase,
             CoreStepResult::Failed {
@@ -1901,11 +1989,11 @@ mod tests {
             &cfg(),
         );
         assert!(matches!(failed.next, TaskState::Failed { .. }));
-        assert!(!failed.merge_requested);
+        assert!(!failed.grants_merge_request);
     }
 
     #[test]
-    fn a_failed_merge_gate_on_a_requested_merge_goes_back_to_implement_and_drops_the_request() {
+    fn merge_auth_a_failed_merge_gate_on_a_requested_merge_goes_back_to_implement() {
         let t = apply_with_merge_request(
             &active(Node::MergeGate),
             &gate_done(Node::MergeGate, red(), None),
@@ -1921,11 +2009,11 @@ mod tests {
                 ..
             }
         ));
-        assert!(!t.merge_requested);
+        assert!(!t.grants_merge_request);
     }
 
     #[test]
-    fn the_request_survives_the_queue_and_a_pause_but_not_a_stop() {
+    fn merge_auth_a_request_reaches_the_merge_after_a_stop_and_a_conflict() {
         let c = cfg_with_gate();
         for node in [Node::Rebase, Node::MergeGate] {
             let mut state = TaskState::Requeued { resume: node };
@@ -1936,18 +2024,73 @@ mod tests {
                 Trigger::SlotAvailable,
             ] {
                 let t = apply_with_merge_request(&state, &trigger, &ctx(&c), true).unwrap();
-                assert!(t.merge_requested, "{state:?} {trigger:?}");
+                assert!(!t.grants_merge_request, "{state:?} {trigger:?}");
                 state = t.next;
             }
             assert_eq!(state, active(node));
             for state in [state, TaskState::Paused { resume: node }] {
                 let stopped =
                     apply_with_merge_request(&state, &Trigger::Stop, &ctx(&c), true).unwrap();
-                assert!(!stopped.merge_requested);
+                assert!(!stopped.grants_merge_request);
                 let resumed =
                     apply_with_merge_request(&stopped.next, &Trigger::Resume, &ctx(&c), true)
                         .unwrap();
-                assert!(!resumed.merge_requested);
+                assert!(!resumed.grants_merge_request);
+                let admitted = apply_with_merge_request(
+                    &resumed.next,
+                    &Trigger::SlotAvailable,
+                    &ctx(&c),
+                    true,
+                )
+                .unwrap();
+                assert_eq!(admitted.next, active(node));
+                let gate = if node == Node::Rebase {
+                    let conflict = apply_with_merge_request(
+                        &admitted.next,
+                        &Trigger::CoreStepDone {
+                            node,
+                            result: CoreStepResult::Conflict {
+                                files: vec!["x".into()],
+                                detail: "x".into(),
+                            },
+                        },
+                        &ctx(&c),
+                        true,
+                    )
+                    .unwrap();
+                    assert_eq!(conflict.next, active(Node::Implement));
+                    let stopped =
+                        apply_with_merge_request(&conflict.next, &Trigger::Stop, &ctx(&c), true)
+                            .unwrap();
+                    let rebase = apply_with_merge_request(
+                        &stopped.next,
+                        &Trigger::RerunFrom { node: Node::Rebase },
+                        &ctx(&c),
+                        true,
+                    )
+                    .unwrap();
+                    apply_with_merge_request(
+                        &rebase.next,
+                        &Trigger::CoreStepDone {
+                            node: Node::Rebase,
+                            result: CoreStepResult::Ok,
+                        },
+                        &ctx(&c),
+                        true,
+                    )
+                    .unwrap()
+                    .next
+                } else {
+                    admitted.next
+                };
+                let merged = apply_with_merge_request(
+                    &gate,
+                    &gate_done(Node::MergeGate, GateOutcome::Passed, None),
+                    &ctx(&c),
+                    true,
+                )
+                .unwrap();
+                assert_eq!(merged.next, active(Node::Merging));
             }
             for state in [
                 active(node),
@@ -1956,7 +2099,7 @@ mod tests {
             ] {
                 let t = apply_with_merge_request(&state, &Trigger::Cancel, &ctx(&c), true).unwrap();
                 assert_eq!(t.next, TaskState::Cancelled);
-                assert!(!t.merge_requested);
+                assert!(!t.grants_merge_request);
             }
         }
     }
@@ -1978,7 +2121,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(t.next, active(Node::Rebase));
-            assert!(!t.merge_requested);
+            assert!(!t.grants_merge_request);
         }
         let t = apply_with_merge_request(
             &active(Node::Retro),
@@ -1988,8 +2131,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.next, active(Node::Rebase));
-        assert!(!t.merge_requested);
-        // Every accepted transition from outside the stretch must drop stale authorization.
+        assert!(!t.grants_merge_request);
+        // Ordinary transitions never grant new authorization.
         for node in Node::ALL {
             if matches!(node, Node::Rebase | Node::MergeGate) {
                 continue;
@@ -2005,7 +2148,7 @@ mod tests {
                 },
             ] {
                 if let Ok(t) = apply_with_merge_request(&active(node), &trigger, &ctx(&c), true) {
-                    assert!(!t.merge_requested, "{node:?} {trigger:?}");
+                    assert!(!t.grants_merge_request, "{node:?} {trigger:?}");
                 }
             }
         }
@@ -2034,7 +2177,7 @@ mod tests {
             assert_eq!(t.next, active(Node::Implement));
             assert!(t.consumes_decisions);
             assert_eq!(t.budget_n, Some(25 + c.loop_defaults.budget_factor));
-            assert!(!t.merge_requested);
+            assert!(!t.grants_merge_request);
         }
     }
 

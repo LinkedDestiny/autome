@@ -349,6 +349,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
 
     if let Some(t) = doc.get("merge") {
         let t = t.as_table().ok_or("[merge] 不是一个表")?;
+        if let Some(auto) = t.get("auto") {
+            config.merge_auto = Some(auto.as_bool().ok_or("[merge] auto 必须是 true 或 false")?);
+        }
         let command = match t.get("after") {
             None => "",
             Some(v) => v
@@ -882,14 +885,16 @@ mod tests {
     }
 
     #[test]
-    fn merge_after_section_survives_save_project() {
+    fn merge_auth_auto_and_after_survive_save_project() {
         let dir = TempDir::new("merge-after");
-        let section = "[merge]\n# keep this command\nafter = \"  make deploy  \"\nafter_timeout_minutes = 3\nunknown = true\n";
+        let section = "[merge]\n# keep this command\nauto = true\nafter = \"  make deploy  \"\nafter_timeout_minutes = 3\nunknown = true\n";
         write_project(dir.path(), section);
         let mut project = load_project(dir.path()).unwrap();
+        assert_eq!(project.merge_auto, Some(true));
         let expected = project.merge_after.clone();
         project.loop_overrides.parallel = Some(2);
         save_project(dir.path(), &project).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().merge_auto, Some(true));
         assert_eq!(load_project(dir.path()).unwrap().merge_after, expected);
         assert!(
             std::fs::read_to_string(project_config_path(dir.path()))
@@ -2083,5 +2088,35 @@ effort = ""
             global_config_path(Path::new("/tmp/somewhere")),
             PathBuf::from("/tmp/somewhere/config.toml")
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_queue_tests {
+    use super::*;
+    #[test]
+    fn merge_queue_auto_is_read_and_defaults_false() {
+        for (text, expected) in [
+            ("", false),
+            ("[merge]\nauto = false", false),
+            ("[merge]\nauto = true\nafter = 'true'", true),
+        ] {
+            let project = parse_project(text).unwrap();
+            assert_eq!(
+                autome_domain::config::resolve(&Default::default(), &project).merge_auto,
+                expected
+            );
+        }
+    }
+    #[test]
+    fn merge_queue_auto_rejects_non_booleans() {
+        for value in ["0", "1", "''", "'true'", "[]", "{}", "1.0"] {
+            assert!(
+                parse_project(&format!("[merge]\nauto = {value}"))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("auto 必须是 true 或 false")
+            );
+        }
     }
 }

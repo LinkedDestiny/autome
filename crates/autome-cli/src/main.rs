@@ -65,7 +65,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
   reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
-  merge <任务>                   合并到默认分支
+  merge <任务> [--cancel]        合并到默认分支；未到卡点时预先同意，--cancel 撤销
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
   rerun <任务> <节点>            从某个节点重跑（失败或已停止的任务）
@@ -128,8 +128,8 @@ fn run(argv: &[String]) -> Result<()> {
 
     let verb = verb.unwrap_or_default();
     let allowed: &[&str] = match verb {
-        "doctor" | "ls" | "alerts" | "rpc" | "approve" | "merge" | "pause" | "resume" | "stop"
-        | "cancel" | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
+        "doctor" | "ls" | "alerts" | "rpc" | "approve" | "pause" | "resume" | "stop" | "cancel"
+        | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
         "status" => &["--json"],
         "project" => &[
             "--json",
@@ -138,6 +138,7 @@ fn run(argv: &[String]) -> Result<()> {
             "--skip-onboarding",
             "--finish",
         ],
+        "merge" => &["--json", "--cancel"],
         "task" => &[
             "--json",
             "--project",
@@ -175,7 +176,12 @@ fn run(argv: &[String]) -> Result<()> {
         "run" => drive(&mut c, &a),
         "logs" => logs(&mut c, &a),
         "approve" => trigger(&mut c, &a, "task.approve", json!({})),
-        "merge" => trigger(&mut c, &a, "task.merge", json!({})),
+        "merge" => trigger(
+            &mut c,
+            &a,
+            "task.merge",
+            json!({"cancel": a.has("--cancel")}),
+        ),
         "pause" => trigger(&mut c, &a, "task.pause", json!({})),
         "resume" => trigger(&mut c, &a, "task.resume", json!({})),
         "stop" => trigger(&mut c, &a, "task.stop", json!({})),
@@ -538,11 +544,12 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
     }
     for (p, t) in &tasks {
         println!(
-            "{}  {:<28} {:<16} {}  {}",
+            "{}  {:<28} {:<16} {}{}  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
             render::state_line(&t["state"]),
+            render::merge_suffix(t, true),
             render::cost_cell(t)
         );
     }
@@ -576,6 +583,12 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
         print_json(&d);
         return Ok(());
     }
+    for project in d["config_warnings"].as_array().into_iter().flatten() {
+        print_config_warnings(
+            &project["warnings"],
+            project["project_name"].as_str().unwrap_or(""),
+        );
+    }
     let alerts = d["alerts"].as_array().cloned().unwrap_or_default();
     let waiting = d["waiting"].as_array().cloned().unwrap_or_default();
     let running = d["running"].as_array().cloned().unwrap_or_default();
@@ -605,10 +618,11 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
     for e in &waiting {
         let t = &e["task"];
         println!(
-            "  {}  {:<28} {}  ·  {}",
+            "  {}  {:<28} {}{}  ·  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             render::state_line(&t["state"]),
+            render::merge_suffix(t, false),
             e["project_name"].as_str().unwrap_or_default()
         );
         if let Some(next) = render::next_step(t) {
@@ -622,10 +636,11 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
     for e in &running {
         let t = &e["task"];
         let mut line = format!(
-            "  {}  {:<28} {}",
+            "  {}  {:<28} {}{}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"])
+            render::state_line(&t["state"]),
+            render::merge_suffix(t, false)
         );
         let cost = render::cost_cell(t);
         if !cost.is_empty() {
@@ -674,7 +689,16 @@ fn task_detail(got: &Value) {
         t["id"].as_str().unwrap_or_default(),
         t["title"].as_str().unwrap_or_default()
     );
-    println!("  状态      {}", render::state_line(&t["state"]));
+    print_config_warnings(
+        &got["config_warnings"],
+        got["project"]["name"].as_str().unwrap_or(""),
+    );
+    println!(
+        "  状态      {}{}",
+        render::state_line(&t["state"]),
+        render::merge_suffix(t, false)
+    );
+
     if let Some(cost) = got.get("cost") {
         println!(
             "  费用      {}（{} 个会话，其中 {} 个无计费数据）",
@@ -1071,6 +1095,17 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
         print_json(&out);
         return Ok(());
     }
+    if let Some(request) = out["merge_request"].as_str() {
+        println!(
+            "{} {}",
+            id,
+            match request {
+                "authorized" | "already_authorized" => "已预先同意合并",
+                "revoked" => "已撤销预先同意合并",
+                _ => "开始合并",
+            }
+        );
+    }
     let task = if out["task"].is_object() {
         out["task"].clone()
     } else {
@@ -1139,6 +1174,17 @@ fn rpc(c: &mut Client, a: &Args) -> Result<()> {
     };
     print_json(&c.call(&method, params)?);
     Ok(())
+}
+
+fn print_config_warnings(warnings: &Value, project: &str) {
+    for warning in warnings
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        println!("注意：项目 {project}：{warning}");
+    }
 }
 
 #[cfg(test)]
