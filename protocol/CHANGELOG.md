@@ -226,3 +226,20 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
   eval: null
   realized_impact: null
 ```
+
+## protocol/v6
+
+明确状态块必须写在标题下、首个二级标题之前且在代码围栏之外；样例围栏仅用于展示。
+这是对已有 session/bug 协议的澄清，不改变合法文档格式。
+
+```yaml
+- id: F-1
+  kind: clarify
+  clause: prompts/intake.md
+  evidence: [T-27 围栏状态块事件（用户任务卡提供，历史未独立核实）, T-40 围栏状态块事件（用户任务卡提供，历史未独立核实）, 状态块写在代码围栏里时报-缺少状态字段 回归测试]
+  predicted_impact: {metric: protocol_failures, direction: down, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+同样的说明同步到 `prompts/plan.md`、`prompts/locate.md` 与 `loop-protocol.md`。

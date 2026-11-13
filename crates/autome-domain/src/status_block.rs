@@ -243,6 +243,10 @@ impl StatusBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ParseError {
+    FencedField {
+        field: String,
+        line: usize,
+    },
     MissingField {
         field: String,
     },
@@ -274,6 +278,10 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ParseError::FencedField { field, line } => write!(
+                f,
+                "状态字段 `{field}` 不能放在代码围栏里（第 {line} 行），请将状态块移到标题下、代码围栏之外"
+            ),
             ParseError::MissingField { field } => write!(f, "缺少状态字段 `{field}`"),
             ParseError::BadValue { field, value } => {
                 write!(f, "状态字段 `{field}` 的值无法解析：{value}")
@@ -490,6 +498,8 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
     let mut section = Section::Preamble;
     let mut in_fence = false;
+    let mut fence_line = 0;
+    let mut fenced_fields = Vec::new();
     // Blank lines seen since the last bullet, so a list item written with a
     // blank line inside it keeps its shape instead of being cut there.
     let mut blank_run = 0usize;
@@ -506,9 +516,20 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
 
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
+            if in_fence {
+                fence_line = idx + 1;
+            }
             continue;
         }
         if in_fence {
+            // Diagnose missing header fields without treating examples as data.
+            // A real field outside the fence always takes precedence.
+            if section == Section::Preamble
+                && let Some((key, _)) = trimmed.split_once(':')
+            {
+                let key = key.trim().trim_start_matches(['-', '*', ' ']).trim();
+                fenced_fields.push((key, fence_line));
+            }
             continue;
         }
 
@@ -760,8 +781,17 @@ pub fn parse(doc: &str) -> Result<StatusBlock, ParseError> {
         }
     }
 
-    let require = |name: &str| ParseError::MissingField {
-        field: name.to_string(),
+    let require = |name: &str| {
+        if let Some((_, line)) = fenced_fields.iter().find(|(key, _)| *key == name) {
+            ParseError::FencedField {
+                field: name.to_string(),
+                line: *line,
+            }
+        } else {
+            ParseError::MissingField {
+                field: name.to_string(),
+            }
+        }
     };
     let status = status.ok_or_else(|| require("status"))?;
     let (design_round, design_round_limit) = design.ok_or_else(|| require("design-round"))?;
@@ -1573,6 +1603,34 @@ next-action: 补 promo.spec.ts 大小写用例，跑 vitest src/checkout/promo
         // A task that cannot be done never got as far as decomposing it.
         let doc = "status: 不可实现\ndesign-round: 2/15\nimplementation-round: 0/0\ncurrent-milestone: 无\ncurrent-milestone-reopens: 0\nconvergence-mode: normal\nnext-action: 无\n";
         assert!(parse(doc).is_ok());
+    }
+
+    #[test]
+    fn a_missing_field_in_a_header_tilde_fence_reports_its_opening_line() {
+        let doc = minimal("").replace("design-round: 1/15", "~~~text\ndesign-round: 1/15\n~~~");
+        let line = doc.lines().position(|line| line == "~~~text").unwrap() + 1;
+        assert_eq!(
+            parse(&doc).unwrap_err(),
+            ParseError::FencedField {
+                field: "design-round".into(),
+                line,
+            }
+        );
+    }
+
+    #[test]
+    fn a_body_fence_does_not_explain_a_missing_header_field() {
+        let doc = minimal("\n## 示例\n```text\nstatus: 设计中\n```\n").replacen(
+            "status: 设计中\n",
+            "",
+            1,
+        );
+        assert_eq!(
+            parse(&doc).unwrap_err(),
+            ParseError::MissingField {
+                field: "status".into()
+            }
+        );
     }
 
     #[test]

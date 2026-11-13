@@ -1001,6 +1001,35 @@ fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn an_intake_fenced_status_block_reports_the_fence_location() {
+    needs_git!();
+    let mut w = World::new("fenced-status");
+    let request = "fenced intake header";
+    let bare = doc("设计中", 0, 0, &[]);
+    assert!(autome_domain::status_block::parse(&bare).is_ok());
+    let (_, header) = bare.split_once('\n').unwrap();
+    w.doc_step(
+        1,
+        &slug_for(request),
+        &format!("# 标题\n```text\n{header}```\n"),
+    );
+    let task_id = create_task(&mut w, request);
+    w.settle();
+
+    assert_eq!(w.state(&task_id), "failed");
+    let task = w.ctx.store.get_task(&task_id).unwrap();
+    let state = serde_json::to_value(&task.state).unwrap();
+    assert_eq!(state["reason"]["kind"], json!("protocol"));
+    let reason = state["reason"].to_string();
+    assert!(
+        reason.contains("代码围栏") && reason.contains("第 2 行"),
+        "{reason}"
+    );
+    assert!(!reason.contains("缺少状态字段"), "{reason}");
+    assert_eq!(w.sessions_run().len(), 1, "no retry");
+}
+
+#[test]
 fn a_design_document_without_a_status_block_fails_the_task_once() {
     needs_git!();
     let mut w = World::new("protocol");
@@ -1745,7 +1774,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v5@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v6@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
