@@ -161,7 +161,11 @@ fn every_role_prompt_renders_exactly_what_the_constants_did() {
         if maybe_update_golden(
             name,
             &autome_domain::protocol::select_gate_run(
-                automed::protocol::seed().prompt(name).unwrap(),
+                &automed::launcher::select_integration_audit(
+                    automed::protocol::seed().prompt(name).unwrap(),
+                    false,
+                )
+                .unwrap(),
                 autome_domain::config::GateRun::EachRound,
             )
             .unwrap(),
@@ -882,4 +886,31 @@ fn integration_audit_brief_after_a_gate_failure_matches_its_golden() {
         serde_json::json!({"kind":"gate_failed","command":"make check","tail":"error: lint failed"}),
         "audit-integration-gate",
     );
+}
+
+fn operator_note_golden(name: &str, audit: bool, bug: bool) {
+    let notes =
+        [serde_json::json!({"n":1,"at":"2026-11-14T00:00:00Z","text":"保留原文\n检查空输入"})];
+    let section = automed::handoff::note_section(&notes, audit);
+    let text = if bug {
+        bug_rendered(autome_domain::session::BugStep::Fix, false) + &section
+    } else {
+        section
+    };
+    if !maybe_update_golden(name, &text) {
+        assert_eq!(text, golden(name));
+    }
+}
+
+#[test]
+fn operator_note_impl_brief_golden() {
+    operator_note_golden("operator-note-impl", false, false);
+}
+#[test]
+fn operator_note_audit_brief_golden() {
+    operator_note_golden("operator-note-audit", true, false);
+}
+#[test]
+fn operator_note_bug_fix_prompt_golden() {
+    operator_note_golden("operator-note-bug", false, true);
 }

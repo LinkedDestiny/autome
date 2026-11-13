@@ -556,3 +556,9 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 | 测试基础设施与 CI 配置 | `playbooks/`、`profiles/`、`skill-policies/`、capability broker |
 
 处置完成后更新 autome-v2 的 README 与 `docs/development/plan.md` 镜像，指向本文与需求文档。
+
+### 操作者备注交接
+
+`task.note` 在事件账本按序记 `task.note_added`；需求实现、Bug 定位及修复为收件轮。启动时 `session.started.notes` 固定本次编号集合，只有 Ok 收尾写 `task.note_delivered`，期间新来的备注留给下一轮。失败、超时和崩溃不标送达。
+未送达备注与越界补丁共用 `handoff_pending`，末次审计/复核、复盘及合并前门禁通过时补实现/修复轮。`AwaitMerge` 要显式 `--reopen`，保留合并预授权；Bug 预算不足拒绝 reopen。已开始合并只记备注并警告。停止和失败任务由 rerun 的下一收件轮消费。
+冻结审计模板含 `operator-notes` 标记才强制核对备注；审计启动固定待核对编号，通过关闭里程碑或集成复验后写 `task.notes_audited`。退回不确认，之后的审计仍列出。旧协议保持送达但不加强审计要求。

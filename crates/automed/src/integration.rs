@@ -114,6 +114,7 @@ pub(crate) fn integration_for_audit(
         Some("gate_failed") => "合并前门禁失败",
         Some("decisions") => "用户表态",
         Some("scope_patch") => "越界补丁交接",
+        Some("operator_note") => "操作者备注",
         _ => "没有注入：手动重跑或续跑",
     };
     let mut summary = vec![trigger.to_string()];
@@ -446,6 +447,9 @@ fn integration_trigger(inject: Option<&Inject>, attempt: &Value) -> Value {
             .is_some_and(|p| !p.is_empty()) =>
         {
             json!({"kind":"scope_patch"})
+        }
+        _ if attempt["notes"].as_array().is_some_and(|n| !n.is_empty()) => {
+            json!({"kind":"operator_note"})
         }
         _ => json!({"kind":"none"}),
     }

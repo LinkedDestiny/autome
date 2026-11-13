@@ -1,0 +1,10 @@
+name: audit-checks-operator-notes
+role: audit
+prompt: audit
+description: 实现漏处理操作者备注时审计必须退回
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/behavior.md

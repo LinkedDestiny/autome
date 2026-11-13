@@ -130,6 +130,31 @@ pub fn apply_for(
     }
     match (state, trigger) {
         (
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+            Trigger::ReopenForNote,
+        ) => {
+            let limit = ctx.budget_n.unwrap_or(ctx.config.bug.fix_rounds);
+            if progress.fix_round >= limit {
+                return Err(rejected(
+                    "有未送达的备注；修复预算已用完，请先 autome extend",
+                ));
+            }
+            Ok(start_fix(Node::AwaitMerge, None, ctx, progress))
+        }
+        (
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+            Trigger::GateDone {
+                node: Node::MergeGate,
+                outcome: crate::task::GateOutcome::Passed,
+                ..
+            },
+        ) if ctx.handoff_pending => Ok(start_fix(Node::MergeGate, None, ctx, progress)),
+
+        (
             _,
             Trigger::GateSameFailure {
                 node,
@@ -2386,5 +2411,47 @@ mod tests {
             serde_json::from_value::<Trigger>(old).unwrap(),
             repro(1, false)
         );
+    }
+    #[test]
+    fn operator_note_bug_reopen_and_merge_gate_obey_fix_budget() {
+        let c = config();
+        let mut context = ctx(&c);
+        context.handoff_pending = true;
+        context.budget_n = Some(1);
+        for round in [0, 1] {
+            let progress = BugProgress {
+                fix_round: round,
+                ..Default::default()
+            };
+            let t = run(
+                &active(Node::AwaitMerge),
+                &Trigger::ReopenForNote,
+                &context,
+                progress,
+            );
+            if round == 0 {
+                assert_eq!(t.unwrap().next, active(Node::Fix));
+            } else {
+                assert!(t.unwrap_err().reason.contains("autome extend"));
+            }
+            let t = run(
+                &active(Node::MergeGate),
+                &gate(Node::MergeGate, true),
+                &context,
+                progress,
+            )
+            .unwrap();
+            if round == 0 {
+                assert_eq!(t.next, active(Node::Fix));
+            } else {
+                assert!(matches!(
+                    t.next,
+                    TaskState::Failed {
+                        reason: FailureReason::FixBudget { limit: 1 },
+                        ..
+                    }
+                ));
+            }
+        }
     }
 }

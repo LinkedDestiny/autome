@@ -550,6 +550,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // round that applied the user's decisions must not be handed them again.
     if matches!(outcome, SessionOutcome::Ok { .. }) {
         mark_scope_patches_handled(ctx, s)?;
+        mark_operator_notes_delivered(ctx, s)?;
         ctx.store.settle_decisions(&s.id)?;
         ctx.store.clear_cooldown(s.runtime)?;
     } else {
@@ -824,6 +825,23 @@ fn resume_unfinished(ctx: &mut Ctx, task: &TaskRecord) -> Result<()> {
             }
             return Err(err(detail));
         }
+    }
+    Ok(())
+}
+
+fn mark_operator_notes_delivered(ctx: &mut Ctx, s: &Session) -> Result<()> {
+    if s.kind.role() != Some(Role::Impl) {
+        return Ok(());
+    }
+    if let Some(started) = ctx.store.session_started_event(&s.task_id, &s.id)?
+        && let Some(notes) = started["notes"].as_array()
+        && !notes.is_empty()
+        && ctx
+            .store
+            .session_event(&s.task_id, &s.id, "task.note_delivered")?
+            .is_none()
+    {
+        ctx.store.append_event("task.note_delivered", &s.task_id, json!({"notes":notes,"session_id":s.id,"role":s.kind.role().map(|r| r.as_str()),"round":s.round}))?;
     }
     Ok(())
 }
@@ -1197,6 +1215,27 @@ fn apply_guards(
             },
             &task.id,
             json!({ "code": f.code, "detail": f.detail, "role": role.as_str() }),
+        )?;
+    }
+
+    if role == Role::Audit
+        && !findings.iter().any(|f| f.level == guards::Level::Error)
+        && (status.all_milestones_done()
+            || before.as_ref().is_some_and(|b| {
+                status.milestones.iter().any(|m| {
+                    m.state == autome_domain::status_block::MilestoneState::Done
+                        && b.milestones.iter().any(|(id, state)| {
+                            id == &m.id
+                                && *state != autome_domain::status_block::MilestoneState::Done
+                        })
+                })
+            }))
+        && let Some(started) = &started
+    {
+        ctx.store.append_event(
+            "task.notes_audited",
+            &task.id,
+            json!({"session_id":started["session_id"],"notes":started["audit_notes"]}),
         )?;
     }
 
@@ -1626,6 +1665,22 @@ fn deliver_bug_outcome(
     } else {
         outcome
     };
+    if matches!(outcome, BugSessionOutcome::Ok { .. }) {
+        mark_operator_notes_delivered(ctx, s)?;
+        if s.kind
+            == (SessionKind::Bug {
+                step: BugStep::FixReview,
+            })
+            && matches!(&outcome, BugSessionOutcome::Ok { doc } if doc.review == autome_domain::bug_doc::BugReview::Passed)
+            && let Some(started) = ctx.store.session_started_event(&s.task_id, &s.id)?
+        {
+            ctx.store.append_event(
+                "task.notes_audited",
+                &s.task_id,
+                json!({"session_id":s.id,"notes":started["audit_notes"]}),
+            )?;
+        }
+    }
     if s.kind
         == (SessionKind::Bug {
             step: BugStep::Locate,
@@ -2875,6 +2930,7 @@ fn main_gate_timeout_note(tail: &str) -> String {
 
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
+        Trigger::ReopenForNote => "reopen_for_note",
         Trigger::BugSessionEnded { .. } => "bug_session_ended",
         Trigger::ReproDone { .. } => "repro_done",
         Trigger::SetupFailed { .. } => "setup_failed",
@@ -3441,6 +3497,11 @@ fn launch_session(
     } else {
         Vec::new()
     };
+    let notes = if kind.role() == Some(Role::Impl) {
+        crate::handoff::pending(&ctx.store, &task.id)?.notes
+    } else {
+        Vec::new()
+    };
     let repo = PathBuf::from(&project.path);
 
     // Which repositories this task works in. For a workspace it is whatever
@@ -3504,6 +3565,45 @@ fn launch_session(
     } else {
         None
     };
+    let audit_notes = if kind.role() == Some(Role::Audit)
+        && protocol
+            .prompt("audit")
+            .unwrap_or("")
+            .lines()
+            .any(|l| l == "<!-- operator-notes -->")
+    {
+        crate::handoff::audit_notes(&ctx.store, &task.id)?
+    } else {
+        Vec::new()
+    };
+    let mut presented_notes = notes.clone();
+    if kind.role() == Some(Role::Impl)
+        && protocol
+            .prompt("audit")
+            .unwrap_or("")
+            .lines()
+            .any(|l| l == "<!-- operator-notes -->")
+    {
+        let reviewed = ctx.store.task_events(&task.id, "session.started")?;
+        presented_notes.extend(
+            crate::handoff::audit_notes(&ctx.store, &task.id)?
+                .into_iter()
+                .filter(|note| {
+                    reviewed.iter().any(|s| {
+                        s["audit_notes"]
+                            .as_array()
+                            .is_some_and(|ns| ns.contains(&note["n"]))
+                    })
+                }),
+        );
+
+        presented_notes.sort_by_key(|n| n["n"].as_u64().unwrap_or(0));
+    }
+    let closed_note_instruction = if !notes.is_empty() && task.kind == TaskKind::Feature {
+        read_status(project, task).filter(|s| s.all_milestones_done()).and_then(|s| s.milestones.last().map(|m| format!("\n本轮只处理交接事项：不改里程碑表，也不改已完成里程碑的『最新证据』行；证据写 `evidence/{}-r{round}-impl.md`。\n",m.id))).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let integration_audit = if kind == (SessionKind::Role { role: Role::Audit }) {
         crate::integration::integration_for_audit(
             &ctx.store,
@@ -3545,7 +3645,21 @@ fn launch_session(
                     .filter(|s| s.all_milestones_done())
                     .and_then(|s| s.milestones.last().map(|m| (m.id.as_str(), round))),
                 false,
-            ),
+            )
+            .map(|s| {
+                (if notes.is_empty() {
+                    s
+                } else {
+                    s.replace("本轮只处理补丁", "本轮只处理交接事项")
+                }) + &crate::handoff::note_section(&presented_notes, false)
+                    + &crate::handoff::note_section(&audit_notes, true)
+            })
+            .or_else(|| {
+                let text = crate::handoff::note_section(&presented_notes, false)
+                    + &crate::handoff::note_section(&audit_notes, true)
+                    + &closed_note_instruction;
+                (!text.is_empty()).then_some(text)
+            }),
         )?,
         None => String::new(),
     };
@@ -3613,6 +3727,11 @@ fn launch_session(
         && bug_progress(ctx, task)?.test_fix_open
     {
         prompt.push_str(&crate::handoff::test_fix_section());
+    }
+
+    if matches!(kind, SessionKind::Bug { .. }) {
+        prompt.push_str(&crate::handoff::note_section(&presented_notes, false));
+        prompt.push_str(&crate::handoff::note_section(&audit_notes, true));
     }
 
     // Capture before the process can edit a checkout, not after launch returns.
@@ -3694,6 +3813,8 @@ fn launch_session(
         // What the round was carrying, so a crash can be retried with it.
         "inject": inject,
     });
+    started["notes"] = json!(notes.iter().map(|n| &n["n"]).collect::<Vec<_>>());
+    started["audit_notes"] = json!(audit_notes.iter().map(|n| &n["n"]).collect::<Vec<_>>());
     if let Some(integration) = integration_audit {
         started["integration"] = integration;
     }
@@ -5039,7 +5160,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Reading it fresh on every transition is what makes "改动即生效" true
 /// (requirement C-09): the next node to start picks up whatever the file says
 /// now, without any cache to invalidate.
-fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
+pub(crate) fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
     let global = config_io::load_global(&ctx.autome_home)?;
     let project_config = config_io::load_project(Path::new(&project.path))?;
     let resolved = config::resolve(&global, &project_config);
@@ -9340,6 +9461,88 @@ mod tests {
         );
         w.ctx.store.settle_decisions(&session.id).unwrap();
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
+    }
+
+    #[test]
+    fn handoff_note_timeout_keeps_notes_for_retry() {
+        let mut w = World::new("note-timeout");
+        w.ctx
+            .store
+            .append_event(
+                "task.note_added",
+                "T-1",
+                json!({"n":1,"text":"timeout note"}),
+            )
+            .unwrap();
+        let s = timeout_retry_start(&mut w, None);
+        assert_eq!(
+            w.ctx
+                .store
+                .session_started_event("T-1", &s.id)
+                .unwrap()
+                .unwrap()["notes"],
+            json!([1])
+        );
+        timeout_retry_finish(&mut w, &s);
+        timeout_retry_deliver(&mut w, &s);
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.note_delivered")
+                .unwrap(),
+            0
+        );
+        assert!(w.ctx.store.pending_retry("T-1").unwrap().is_some());
+        redispatch(&mut w.ctx, "T-1", Node::Implement).unwrap();
+        let retry = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .session_started_event("T-1", &retry.id)
+                .unwrap()
+                .unwrap()["notes"],
+            json!([1])
+        );
+    }
+
+    #[test]
+    fn handoff_note_unreadable_outcome_is_not_delivered() {
+        let mut w = World::new("note-read-failure");
+        w.ctx
+            .store
+            .append_event(
+                "task.note_added",
+                "T-1",
+                json!({"n":1,"text":"read failure note"}),
+            )
+            .unwrap();
+        let s = deferred_session(&mut w, Node::Implement);
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        std::fs::remove_file(w.with_worktree(&task).join(task.design_doc())).unwrap();
+        std::fs::write(
+            w.repo.join(SessionPaths::exit("T-1", &s.id)),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        reap_session(&mut w.ctx, &s).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.note_delivered")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::handoff::pending(&w.ctx.store, "T-1")
+                .unwrap()
+                .notes
+                .len(),
+            1
+        );
     }
 
     fn timeout_retry_start(w: &mut World, inject: Option<&Inject>) -> Session {

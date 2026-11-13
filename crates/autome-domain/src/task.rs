@@ -429,6 +429,7 @@ impl PendingDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum Trigger {
+    ReopenForNote,
     SetupFailed {
         command: String,
         exit_code: i32,
@@ -1277,6 +1278,13 @@ fn apply_inner(
             ))
         }
 
+        (
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+            Trigger::ReopenForNote,
+        ) => Ok(start_impl(ctx, None)),
+
         // ---- Merge stopping point ----------------------------------------
         (
             TaskState::Active {
@@ -1303,6 +1311,9 @@ fn apply_inner(
                                 node: Node::MergeGate,
                             },
                         ));
+                    }
+                    if ctx.handoff_pending {
+                        return Ok(start_impl(ctx, None));
                     }
                     Ok(if merge_requested {
                         press_merge(ctx)
@@ -1389,6 +1400,9 @@ fn apply_inner(
             let node = *node;
             if node != *done || !node.is_gate() {
                 return Err(reject("门禁结果与当前节点不符"));
+            }
+            if node == Node::MergeGate && *outcome == GateOutcome::Passed && ctx.handoff_pending {
+                return Ok(start_impl(ctx, None));
             }
             if node == Node::MergeGate && *outcome == GateOutcome::Passed && merge_requested {
                 return Ok(press_merge(ctx));
@@ -4351,6 +4365,51 @@ mod tests {
         let t = scope_patch_transition(&cfg(), Node::Retro, false, 25, &[MilestoneState::Done]);
         assert_eq!(t.next, active(Node::Rebase));
         assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
+    }
+    #[test]
+    fn operator_note_feature_merge_edges_return_to_impl_with_authorization() {
+        let c = cfg();
+        for pending in [false, true] {
+            let mut context = ctx(&c);
+            context.handoff_pending = pending;
+            for requested in [false, true] {
+                let t = apply_with_merge_request(
+                    &active(Node::MergeGate),
+                    &gate_done(Node::MergeGate, GateOutcome::Passed, None),
+                    &context,
+                    requested,
+                )
+                .unwrap();
+                let mut no_gate = c.clone();
+                no_gate.gate = None;
+                let mut rebase_context = ctx(&no_gate);
+                rebase_context.handoff_pending = pending;
+                let rebased = apply_with_merge_request(
+                    &active(Node::Rebase),
+                    &Trigger::CoreStepDone {
+                        node: Node::Rebase,
+                        result: CoreStepResult::Ok,
+                    },
+                    &rebase_context,
+                    requested,
+                )
+                .unwrap();
+                assert_eq!(rebased.next.node(), t.next.node());
+                assert_eq!(
+                    t.next.node(),
+                    Some(if pending {
+                        Node::Implement
+                    } else if requested {
+                        Node::Merging
+                    } else {
+                        Node::AwaitMerge
+                    })
+                );
+            }
+        }
+        let t = apply(&active(Node::AwaitMerge), &Trigger::ReopenForNote, &ctx(&c)).unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        assert!(apply(&active(Node::Merging), &Trigger::ReopenForNote, &ctx(&c)).is_err());
     }
 }
 

@@ -927,6 +927,9 @@ fn task_detail(got: &Value) {
             render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or("")),
         );
     }
+    if let Some(hint) = render::note_budget_hint(t, &got["notes"]) {
+        println!("{hint}");
+    }
     for line in render::note_status_lines(&got["notes"]) {
         println!("{line}");
     }

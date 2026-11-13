@@ -341,3 +341,13 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
   eval: null
   realized_impact: null
 ```
+
+```yaml
+- id: D-1
+  kind: behavioral
+  clause: prompts/audit.md
+  evidence: [T-59, T-72, T-61]
+  predicted_impact: {metric: impl_defects, direction: down, scope: task, horizon: 3}
+  eval: evals/audit-checks-operator-notes/
+  realized_impact: null
+```

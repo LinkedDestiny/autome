@@ -1922,6 +1922,28 @@ fn task_note(ctx: &mut Ctx, p: &Value) -> DispatchResult {
         }
         _ => {}
     }
+    let reopen = matches!(
+        task.state,
+        TaskState::Active {
+            node: Node::AwaitMerge
+        }
+    );
+    if reopen && p["reopen"] != true {
+        return Err(rejected(if task.kind == TaskKind::Bug {
+            "任务已在等你合并；加 --reopen 会把它送回修复轮处理这条备注，之后重新复核与过门禁"
+        } else {
+            "任务已在等你合并；加 --reopen 会把它送回实现轮处理这条备注，之后重新审计与过门禁"
+        }));
+    }
+    if reopen && task.kind == TaskKind::Bug {
+        let project = ctx.store.get_project(&task.project_id)?;
+        let config = scheduler::resolve_config(ctx, &project)?;
+        if scheduler::bug_progress(ctx, &task)?.fix_round
+            >= task.budget_n.unwrap_or(config.bug.fix_rounds)
+        {
+            return Err(rejected("修复预算已用完，请先 autome extend"));
+        }
+    }
     let late = matches!(
         task.state,
         TaskState::Active {
@@ -1936,6 +1958,9 @@ fn task_note(ctx: &mut Ctx, p: &Value) -> DispatchResult {
     let seq = ctx
         .store
         .append_event("task.note_added", id, payload.clone())?;
+    if reopen {
+        scheduler::apply_trigger(ctx, id, &Trigger::ReopenForNote)?;
+    }
     let mut out = json!({"n":n});
     if late {
         out["warning"] = json!("任务已经在合并，这条备注不会被任何一轮读到；要处理请新建任务");
@@ -3926,7 +3951,11 @@ mod tests {
                 reason: autome_domain::task::FailureReason::DesignBudget { limit: 1 },
             },
         ];
-        for node in Node::ALL.into_iter().chain(Node::BUG) {
+        for node in Node::ALL
+            .into_iter()
+            .chain(Node::BUG)
+            .filter(|n| *n != Node::AwaitMerge)
+        {
             states.push(TaskState::Active { node });
         }
         for (i, state) in states.into_iter().enumerate() {
@@ -3953,7 +3982,6 @@ mod tests {
         for node in [
             Node::Rebase,
             Node::MergeGate,
-            Node::AwaitMerge,
             Node::Merging,
             Node::MainCheck,
             Node::Cleanup,

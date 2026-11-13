@@ -397,6 +397,7 @@ result containing `task`, `started` and `queue_position`; a draft has
 ```sh
 autome task new --kind bug --brief - --draft --json < card.md
 autome task start <task>
+autome note <task> "A note for the next implementation/fix round" [--reopen]
 autome reply <task> "Additional reproduction details"
 autome extend <task> <n>
 autome rerun <task> <node>
@@ -616,3 +617,8 @@ Not done: signing and notarisation have configuration but have never been run
 without verifying its signature. Two drivers (the app and `autome run`) take
 turns on a lock rather than one being refused, and the CLI is packaged for
 Apple silicon only, because that is what CI builds on.
+
+### 操作者备注
+
+`autome note <任务> "内容"`（或 `--file <路径|->`）给下一需求实现轮、Bug 定位或修复轮捎话，不打断当前会话。成功收尾后标记送达，崩溃重试会再次呈现；状态页可查内容和收件轮。
+没有后续实现轮时会补轮，再审计并过门禁。在合并卡点必须加 `--reopen`，预先合并授权保留；Bug 修复预算耗尽须先 `autome extend`。失败或停止时备注只记录，`rerun` 后送达。合并已经开始后只收下并警告，不再送达。备注与冻结设计冲突时须在证据说明，不能悄悄改范围。

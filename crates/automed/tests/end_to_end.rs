@@ -11094,3 +11094,471 @@ fn bug_regression_base_rerun_fix_rejects_empty_or_unreadable_baseline() {
         );
     }
 }
+
+fn operator_note_feature(name: &str, reject: bool) -> (World, String, String) {
+    let mut w = World::new(name);
+    let slug = slug_for(name);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(
+        6,
+        &slug,
+        &doc(
+            "实现中",
+            2,
+            1,
+            &[("M-01", if reject { "开放" } else { "已完成" })],
+        ),
+    );
+    w.doc_step(
+        7,
+        &slug,
+        &doc(
+            "实现中",
+            2,
+            2,
+            &[("M-01", if reject { "待审" } else { "已完成" })],
+        ),
+    );
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, name);
+    w.settle();
+    (w, id, slug)
+}
+
+fn operator_note_at(w: &mut World, id: &str, node: &str) {
+    scheduling_wait(
+        w,
+        |w| {
+            if w.node(id).as_deref() == Some(node) {
+                return true;
+            }
+            automed::scheduler::tick(&mut w.ctx);
+            false
+        },
+        |w| format!("waiting for {node}: {:?}", w.task_states()),
+    );
+}
+
+fn operator_note_brief(w: &World, slug: &str, role: &str, n: u32) -> String {
+    std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/{role}-{n}.md")),
+    )
+    .unwrap()
+}
+
+#[test]
+fn operator_note_e2e_note_during_last_audit_adds_an_impl_round_then_merges() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-last-audit", false);
+    w.doc_step_for_prelude(
+        7,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo adopted > product.txt\ngit add product.txt",
+    );
+
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    operator_note_at(&mut w, &id, "audit");
+    ok(&w.call("task.note", json!({"task_id":id,"text":"唯一原文\n第二行"})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("唯一原文\n第二行"));
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(&id, "integration.range")
+            .unwrap()
+            .unwrap()["trigger"]["kind"],
+        "operator_note"
+    );
+    assert!(operator_note_brief(&w, &slug, "audit", 2).contains("操作者备注"));
+
+    assert!(!operator_note_brief(&w, &slug, "impl", 1).contains("唯一原文"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+
+#[test]
+fn operator_note_e2e_note_during_impl_reaches_the_next_impl_once() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-during-impl", false);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    operator_note_at(&mut w, &id, "implement");
+    ok(&w.call("task.note", json!({"task_id":id,"text":"during impl"})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(!operator_note_brief(&w, &slug, "impl", 1).contains("during impl"));
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("during impl"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_unhandled_note_stays_in_the_audit_brief_after_a_reject() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-rejected", true);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"must remain"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    for n in [1, 2] {
+        assert!(operator_note_brief(&w, &slug, "audit", n).contains("must remain"));
+    }
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("must remain"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+    assert!(
+        automed::handoff::audit_notes(&w.ctx.store, &id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn operator_note_e2e_v9_audit_brief_lists_delivered_notes() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-v9", false);
+    w.retro_step(7, &slug);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"v9 note"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "audit", 1).contains("本里程碑送达的操作者备注"));
+}
+
+#[test]
+fn operator_note_e2e_old_protocol_audit_brief_has_no_note_check() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-old", false);
+    w.retro_step(7, &slug);
+    let path = w.repo.join(format!(
+        ".worktree/{slug}/docs/{slug}/protocol/prompts/audit.md"
+    ));
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.split("<!-- operator-notes -->").next().unwrap()).unwrap();
+    ok(&w.call("task.note", json!({"task_id":id,"text":"old note"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("old note"));
+    assert!(!operator_note_brief(&w, &slug, "audit", 1).contains("本里程碑送达的操作者备注"));
+}
+
+#[test]
+fn operator_note_e2e_several_notes_arrive_in_order() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-ordered", false);
+    w.retro_step(7, &slug);
+    for text in ["first note", "second note", "third note"] {
+        ok(&w.call("task.note", json!({"task_id":id,"text":text})));
+    }
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    let brief = operator_note_brief(&w, &slug, "impl", 1);
+    assert!(brief.find("first note").unwrap() < brief.find("second note").unwrap());
+    assert!(brief.find("second note").unwrap() < brief.find("third note").unwrap());
+    let delivered = w
+        .ctx
+        .store
+        .last_event(&id, "task.note_delivered")
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered["notes"], json!([1, 2, 3]));
+}
+
+#[test]
+fn operator_note_e2e_at_await_merge_needs_reopen_and_keeps_preauthorization() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-reopen", false);
+    w.retro_step(7, &slug);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let rejected = w.call("task.note", json!({"task_id":id,"text":"reopen note"}));
+    assert!(
+        serde_json::to_string(&rejected.reply)
+            .unwrap()
+            .contains("--reopen")
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "task.note_added").unwrap(), 0);
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    // Reopening must not revoke a pre-existing authorization.
+    w.ctx
+        .store
+        .append_event("merge.auto", &id, json!({"active":true,"by":"user"}))
+        .unwrap();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::AwaitMerge,
+            },
+        )
+        .unwrap();
+    ok(&w.call(
+        "task.note",
+        json!({"task_id":id,"text":"reopen note","reopen":true}),
+    ));
+    w.settle();
+    assert_eq!(w.state(&id), "done", "{}", failure_detail(&w, &id));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_queued_task_note_reaches_the_first_impl_not_design() {
+    needs_git!();
+    let mut w = World::new("note-queued");
+    let name = "note queued";
+    let slug = slug_for(name);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, name);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"queued unique"})));
+    w.settle();
+    for n in 1..=4 {
+        assert!(!w.prompt(n).contains("queued unique"));
+    }
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("queued unique"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_crashed_impl_presents_the_note_again() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-crash", false);
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+    w.step(5, "exit 3\n");
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(7, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"retry unchanged"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.wait_for_exit_marker(&id);
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        0
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("retry unchanged"));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let starts = w.ctx.store.task_events(&id, "session.started").unwrap();
+    assert_eq!(
+        starts.iter().filter(|v| v["notes"] == json!([1])).count(),
+        2
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_note_during_merge_gate_adds_an_impl_round_before_merge() {
+    needs_git!();
+    for auto in [false, true] {
+        let (mut w, id, slug) = operator_note_feature("note-merge-gate", false);
+        w.configure(&format!(
+            "[gate]\ncommand = 'true'\n[merge]\nauto = {auto}\n"
+        ));
+        w.retro_step(7, &slug);
+        w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+        w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+        w.retro_step(10, &slug);
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        operator_note_at(&mut w, &id, "merge_gate");
+        ok(&w.call(
+            "task.note",
+            json!({"task_id":id,"text":"before merge note"}),
+        ));
+        w.settle();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "task.note_delivered")
+                .unwrap(),
+            1,
+            "{}",
+            failure_detail(&w, &id)
+        );
+        if auto {
+            assert_eq!(w.state(&id), "done");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+        let delivered = events
+            .iter()
+            .find(|(_, k, s, _)| s == &id && k == "task.note_delivered")
+            .unwrap()
+            .0;
+        for (seq, k, s, _) in &events {
+            if s == &id && k == "task.merged" {
+                assert!(*seq > delivered);
+            }
+        }
+    }
+}
+
+#[test]
+fn operator_note_e2e_bug_fix_rerun_fix_and_rerun_locate_carry_notes() {
+    needs_git!();
+    for target in ["fix", "locate", "fix_bad"] {
+        let mut w = World::new("note-bug-rerun");
+        let request = "note bug rerun";
+        let slug = slug_for(request);
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, request);
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        w.ctx
+            .store
+            .set_task_state(
+                &id,
+                &autome_domain::task::TaskState::Stopped {
+                    at: autome_domain::task::Node::Fix,
+                },
+            )
+            .unwrap();
+        ok(&w.call("task.note", json!({"task_id":id,"text":"bug rerun note"})));
+        assert_eq!(w.state(&id), "stopped");
+        if target == "locate" {
+            bug_step(&w, 4, &slug, &bug_doc("待复核"), BUG_LOCATE);
+            bug_step(&w, 5, &slug, &bug_doc("待复核"), BUG_FIX);
+            bug_step(&w, 6, &slug, &bug_doc("通过"), "");
+        } else {
+            bug_step(
+                &w,
+                4,
+                &slug,
+                &bug_doc("待复核"),
+                if target == "fix_bad" {
+                    "echo true > regression.sh"
+                } else {
+                    BUG_FIX
+                },
+            );
+            bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+        }
+        ok(&w.call(
+            "task.rerun_from",
+            json!({"task_id":id,"node":if target == "fix_bad" { "fix" } else { target }}),
+        ));
+        w.settle();
+        assert!(w.prompt(4).contains("bug rerun note"));
+        if target == "fix_bad" {
+            assert_eq!(w.state(&id), "failed");
+            assert!(failure_detail(&w, &id).contains("回归测试被修改"));
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&id, "task.note_delivered")
+                    .unwrap(),
+                0
+            );
+            continue;
+        }
+
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "{}",
+            failure_detail(&w, &id)
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "task.note_delivered")
+                .unwrap(),
+            1
+        );
+        assert!(
+            automed::handoff::audit_notes(&w.ctx.store, &id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

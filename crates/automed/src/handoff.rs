@@ -3,7 +3,7 @@ use autome_domain::scope::ScopeRestored;
 
 pub struct Handoff {
     pub scope_patches: Vec<ScopeRestored>,
-    /// Reserved for operator notes, connected in M-09.
+    /// Undelivered notes in ledger order.
     pub notes: Vec<serde_json::Value>,
 }
 
@@ -17,9 +17,19 @@ pub fn pending(
     store: &crate::store::Store,
     task: &str,
 ) -> Result<Handoff, crate::scope::RestoreError> {
+    let late = store
+        .task_events(task, "task.note_added")?
+        .into_iter()
+        .filter(|n| n["late"] == true)
+        .map(|n| n["n"].clone())
+        .collect::<Vec<_>>();
     Ok(Handoff {
         scope_patches: crate::scope::pending(store, task)?,
-        notes: Vec::new(),
+        notes: store
+            .operator_notes(task)?
+            .into_iter()
+            .filter(|n| n["delivered"].is_null() && !late.contains(&n["n"]))
+            .collect(),
     })
 }
 
@@ -54,6 +64,52 @@ pub fn sections(
 
 pub fn test_fix_section() -> String {
     "\n## 修正回归测试\n\n这次是回来修测试的。缺陷说明见 Bug 文档『回归测试缺陷』小节。只能改回归测试与任务文档，产品修复已经在分支上。结束时删掉 `回归测试: 有缺陷` 并写 `status: 已定位`。\n".into()
+}
+
+pub fn note_section(notes: &[serde_json::Value], audit: bool) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let title = if audit {
+        "本里程碑送达的操作者备注"
+    } else {
+        "操作者备注"
+    };
+    let mut text = format!("\n## {title}\n\n");
+    for note in notes {
+        text.push_str(&format!(
+            "### 备注 #{} · {}\n\n{}\n\n",
+            note["n"],
+            note["at"].as_str().unwrap_or(""),
+            note["text"].as_str().unwrap_or("")
+        ));
+    }
+    if audit {
+        text.push_str(
+            "逐条核对实现证据的『操作者备注』小节：照做或写了不照做的理由；缺一条按未通过退回。\n",
+        );
+        return text;
+    }
+    text.push_str("这是操作者在任务进行中留下的话。逐条处理：照做，或者写一句不照做的理由；处理结果写进本轮证据的『操作者备注』小节。\n备注与已冻结的需求或设计冲突时，停下来在证据里写明冲突，不要悄悄改范围。\n");
+    text
+}
+
+/// Only an accepted audit acknowledges notes. Rejected audits leave the window open.
+pub fn audit_notes(
+    store: &crate::store::Store,
+    task: &str,
+) -> Result<Vec<serde_json::Value>, crate::scope::RestoreError> {
+    let accepted = store.task_events(task, "task.notes_audited")?;
+    Ok(store
+        .operator_notes(task)?
+        .into_iter()
+        .filter(|n| {
+            !n["delivered"].is_null()
+                && !accepted
+                    .iter()
+                    .any(|a| a["notes"].as_array().is_some_and(|ns| ns.contains(&n["n"])))
+        })
+        .collect())
 }
 
 #[cfg(test)]

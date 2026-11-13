@@ -16,3 +16,4 @@
 审计 #7 | M-07 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-07-r8-audit.md | 无
 实现 #9 | M-08 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-08-r9-impl.md | 无
 审计 #8 | M-08 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-08-r9-audit.md | 无
+实现 #10 | M-09 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-09-r10-impl.md | 无

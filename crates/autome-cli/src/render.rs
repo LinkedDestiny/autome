@@ -437,6 +437,19 @@ pub fn scope_status_line(scope: &Value) -> Option<String> {
     ))
 }
 
+pub fn note_budget_hint(task: &Value, notes: &Value) -> Option<String> {
+    (task["state"]["reason"]["kind"] == "fix_budget"
+        && notes
+            .as_array()
+            .is_some_and(|ns| ns.iter().any(|n| n["delivered"].is_null())))
+    .then(|| {
+        format!(
+            "有未送达的备注；请先 autome extend {} 1",
+            task["id"].as_str().unwrap_or("?")
+        )
+    })
+}
+
 pub fn note_status_lines(notes: &Value) -> Vec<String> {
     notes
         .as_array()
@@ -1795,6 +1808,16 @@ fn test_fix_events_and_status_read_plainly() {
 
 #[test]
 fn operator_note_status_lists_notes() {
+    let task =
+        serde_json::json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"fix_budget"}}});
+    assert!(
+        note_budget_hint(&task, &serde_json::json!([{ "delivered":null }]))
+            .unwrap()
+            .contains("有未送达的备注")
+    );
+    assert!(note_budget_hint(&task, &serde_json::json!([{ "delivered":{} }])).is_none());
+    assert!(note_budget_hint(&task, &serde_json::json!([])).is_none());
+
     let lines = note_status_lines(&serde_json::json!([
         {"n":1,"text":"原文\n下一行","at":"now","delivered":null},
         {"n":2,"text":"ok","at":"then","delivered":{"role":"impl","round":2}}
