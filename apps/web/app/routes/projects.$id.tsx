@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLoaderData, useLocation, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
 import { newTaskHref } from '../components/nav-links.ts';
-import { OverviewCard } from '../components/overview-card.tsx';
+import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
 import { KIND_FILTER_LABELS, doneFoldLabel } from '../lib/labels.ts';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
@@ -31,7 +31,7 @@ export default function ProjectBoard() {
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header><div className="board-columns">{columns.map(column => <section className="board-column" key={column.id} aria-labelledby={`board-${column.id}`}>
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
-      {(data.showAll ? column.tasks : column.recent).map(task => <OverviewCard key={task.id} task={task} projectName={data.project.display_name} />)}
+      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.older.length)}</Link>}
     </div></section>)}</div></div>;

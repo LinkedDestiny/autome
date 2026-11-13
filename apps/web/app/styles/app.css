@@ -78,3 +78,9 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .board-column h2 { font-size: 18px; margin: 0 0 16px; }
 .board-column-body { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 16px; padding: 4px; }
 .board-fold { padding: 12px; text-align: center; text-decoration: underline; }
+.task-card-stages { display: flex; list-style: none; margin: 16px 0; padding: 0; gap: 4px; }
+.task-card-stages li { flex: 1; text-align: center; font-size: 11px; padding-top: 6px; border-top: 3px solid var(--animal-border-light); color: var(--animal-text-muted); }
+.task-card-stages li[data-passed="true"] { border-color: var(--animal-text-muted); }
+.task-card-stages li[aria-current="step"] { border-color: var(--animal-text); color: var(--animal-text); font-weight: 700; }
+.task-card-badge { display: inline-block; padding: 4px 8px; border-radius: var(--animal-radius-sm); background: var(--tile-yellow); }
+.task-card-gate { font-size: 13px; }

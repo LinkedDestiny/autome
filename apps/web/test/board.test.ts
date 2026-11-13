@@ -58,13 +58,13 @@ test('4 all filter transitions preserve columns, counts and source data', () => 
 });
 test('5 recorded project counts agree with shared classification', async () => {
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/w5-project-get.json', import.meta.url), 'utf8'));
-  const calls: unknown[] = [];
+  const calls: { method: string; params?: unknown }[] = [];
   const gateway: KernelGateway = {
-    read: async (request: unknown) => { calls.push(request); return { status: 200, body: { ok: true, payload: fixture } }; },
+    read: async request => { const call = request as { method: string; params?: unknown }; calls.push(call); return { status: 200, body: { ok: true, payload: call.method === 'project.get' ? fixture : {} } }; },
     write: async () => { throw new Error('只读看板不应调用 write'); },
   };
   const loaded = await loadBoard({ gateway }, 'P-1');
-  expect(calls).toEqual([{ method: 'project.get', params: { project_id: 'P-1' } }]);
+  expect(calls.filter(call => call.method === 'project.get')).toEqual([{ method: 'project.get', params: { project_id: 'P-1' } }]);
   if ('error' in loaded) throw new Error(loaded.error);
   expect(Object.fromEntries(boardColumns(loaded.tasks, loaded.now).map(c => [c.id, c.total]))).toEqual(countByColumn(fixture.tasks));
 });

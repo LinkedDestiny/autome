@@ -2,10 +2,12 @@ import { createContext, RouterContextProvider, type RouterContext } from 'react-
 import type { GetLoadContextFunction } from '@react-router/express';
 import type { createGateway } from '../server/gateway.ts';
 
+import type { openWebStore } from '../server/store.ts';
+export type UnreadSource = Pick<ReturnType<typeof openWebStore>, 'unreadByTask'>;
 export type KernelGateway = Pick<ReturnType<typeof createGateway>, 'read' | 'write'>;
 export type WebServices = {
   gateway: KernelGateway | null;
-  // W6 can add store/notifications here when their first loader needs them.
+  unread?: UnreadSource | null;
 };
 
 // Node, Vite SSR and the production bundle must use the same object key.

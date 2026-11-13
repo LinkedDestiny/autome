@@ -59,3 +59,8 @@ test('7 views do not duplicate status, column or stage Chinese literals', () => 
     }
   }
 });
+test('8 runtime labels match serialized Runtime variants', async () => {
+  const { RUNTIME_LABELS } = await import('../app/lib/labels.ts');
+  const role = readFileSync(new URL('../../../crates/autome-domain/src/role.rs', import.meta.url), 'utf8');
+  expect(sorted(Object.keys(RUNTIME_LABELS))).toEqual(sorted(variants(role, 'Runtime')));
+});

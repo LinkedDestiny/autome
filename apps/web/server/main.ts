@@ -20,7 +20,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const attached = attachNotifier({ bus, notifier });
   const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home });
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications }).catch(error => { store.close(); throw error; });
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
