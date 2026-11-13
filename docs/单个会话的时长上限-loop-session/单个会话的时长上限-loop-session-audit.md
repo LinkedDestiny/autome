@@ -26,3 +26,9 @@
 - 里程碑表 M-01～M-04 均已 `已完成`，状态块 `status: 已完成`，没有 `待审` 项可复验；表无需改动（无可关闭、无可退回）。
 - 上一实现轮 #5 只是 M-03 的 rebase 修复，已审状态保留（54 用例通过，见 evidence/M-03-r5-impl.md）。
 - 未自造检查、未改任何产品文件。证据：docs/单个会话的时长上限-loop-session/evidence/M-04-r5-audit.md
+
+## 审计 #6 · 无待审里程碑 · 无结论变更
+
+- 里程碑表 M-01～M-04 均已 `已完成`，没有 `待审` 项；表无需改动。
+- 上一轮实现 #6 为 M-02 宿主门禁失败修复（terminate_group 探测 EPERM），已审状态保留。独立复跑 `cargo test -p automed --lib launcher::tests::session_timeout`：2 通过、0 失败（对原失败用例转绿）。
+- 未改任何产品文件。证据：docs/单个会话的时长上限-loop-session/evidence/M-02-r6-audit.md
