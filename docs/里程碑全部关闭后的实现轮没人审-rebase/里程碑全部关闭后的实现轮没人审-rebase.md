@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 4/25
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-03；通过后推进 M-04 集成复验 e2e
+next-action: 推进 M-04 集成复验 e2e
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -379,7 +379,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 |---|---|---|---|---|
 | M-01 | 已完成 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
 | M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
-| M-03 | 待审 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
+| M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
 | M-04 | 开放 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
 | M-05 | 开放 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
 
@@ -419,7 +419,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 ### M-03 验收契约
 
-最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-03-r4-impl.md · 验收通过，待审 · 实现 #4
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-03-r4-audit.md · 通过 · 审计 #4
 
 - 验收命令：`cargo test -p automed --test prompt_rendering && cargo test -p automed --lib integration_section && cargo run -p automed -- protocol eval protocol/ && git diff --quiet --diff-filter=MD "$(git merge-base HEAD main)" -- crates/automed/tests/golden/`
 - 预期：`prompt_rendering` 35 个通过，比基线 31 个多 4 个（`integration_audit_prompt_matches_its_golden`、`integration_audit_prompt_before_merge_matches_its_golden`、`integration_audit_brief_after_a_rebase_conflict_matches_its_golden`、`integration_audit_brief_after_a_gate_failure_matches_its_golden`，对应新增金样 `golden/prompts/audit-integration.md`、`audit-integration-before-merge.md`、`golden/briefs/audit-integration-rebase.md`、`audit-integration-gate.md`）；`integration_section` 6 个通过，基线 0（简报 3：无段时逐字不变、段内容齐全且 SHA 为 7 位且不含失败提交 SHA 与「未通过」、证据路径确切；launcher 2：标记去掉 / 保留、不配对标记报错；eval_run 1：`integration_audit` 字段决定取舍）；静态门退出码 0；最后一条退出码 0（`tests/golden/` 下没有被修改或删除的既有文件，只有新增）。
