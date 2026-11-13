@@ -16,3 +16,4 @@
 
 实现 #8 | M-06 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-impl.md | 无
 审计 #6 | M-06 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-audit.md | 无
+实现 #9 | M-05（rebase 集成复验） | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r9-impl.md | 无

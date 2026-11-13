@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 8/30
+implementation-round: 9/30
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -429,7 +429,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-05 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r7-audit.md · 通过 · 审计 #5
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r9-impl.md · rebase 集成复验通过（保留审计关闭） · 实现 #9
 
 - 验收命令：`cargo test -p autome-cli deps_cli_ && cargo test -p autome-cli --test cli`
 - 预期：`deps_cli_` 7 个通过（bin 单测 3 个、cli 集成 4 个）。`tests/cli.rs` 共 28 个通过，即基线 24 加新增 4，其中包括

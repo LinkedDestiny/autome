@@ -3661,7 +3661,9 @@ mod tests {
                 .iter()
                 .find(|t| t["id"] == task["id"])
                 .unwrap();
-            assert_eq!(found, task);
+            let mut expected_project_task = task.clone();
+            expected_project_task["queue_position"] = Value::Null;
+            assert_eq!(found, &expected_project_task);
         }
     }
 
