@@ -949,22 +949,69 @@ fn run_json_closed_pipe_exits_quietly() {
 
 #[test]
 fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
+    assert_run_json_tick_error(false);
+}
+
+#[test]
+fn run_json_tick_error_reaped_session_identifies_task() {
+    assert_run_json_tick_error(true);
+}
+
+fn assert_run_json_tick_error(reap_finished_session: bool) {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
-    let s = Sandbox::new("run-json-error");
+    let s = Sandbox::new(if reap_finished_session {
+        "run-json-reap-error"
+    } else {
+        "run-json-error"
+    });
     s.ok(&[
         "project",
         "add",
         s.repo.to_str().unwrap(),
         "--skip-onboarding",
     ]);
-    // Start from a draft: an auto-started session can finish before the first
-    // tick and report a session-reaping error ahead of the core-step error.
-    let created = s.json(&["task", "new", "broken project", "--draft"]);
+    // Cover both core-step errors from a draft and reaping errors from an
+    // auto-started session that has finished before the first tick.
+    let created = if reap_finished_session {
+        s.json(&["task", "new", "broken project"])
+    } else {
+        s.json(&["task", "new", "broken project", "--draft"])
+    };
     let id = created["task"]["id"].as_str().unwrap();
     // An invalid project configuration makes its core step report an error.
     let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
-    assert!(store.all_running_sessions().unwrap().is_empty());
+    let expected_prefix = if reap_finished_session {
+        let sessions = store.list_sessions(id).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].lifecycle.is_running());
+        let exit_path = s.repo.join(autome_domain::session::SessionPaths::exit(
+            id,
+            &sessions[0].id,
+        ));
+        // Wait for a complete exit marker before corrupting configuration.
+        // This forces reaping to fail before the task's core step runs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if std::fs::read_to_string(&exit_path)
+                .ok()
+                .and_then(|text| autome_domain::session::ExitMarker::parse(&text))
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture intake did not exit: {}",
+                exit_path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        format!("{id} {}:", sessions[0].id)
+    } else {
+        assert!(store.all_running_sessions().unwrap().is_empty());
+        format!("{id}:")
+    };
     store
         .set_task_state(
             id,
@@ -1019,7 +1066,7 @@ fn run_json_tick_error_and_interrupt_have_no_idle_trailer() {
     assert!(
         first["error"]
             .as_str()
-            .is_some_and(|e| e.starts_with(&format!("{id}:")) && e.contains("TOML parse error")),
+            .is_some_and(|e| e.starts_with(&expected_prefix) && e.contains("TOML parse error")),
         "{first}"
     );
     assert!(first.get("idle").is_none());
