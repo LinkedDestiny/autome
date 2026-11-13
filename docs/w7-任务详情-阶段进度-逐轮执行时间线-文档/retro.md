@@ -9,3 +9,4 @@
 审计 #3 | M-03 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-03-r4-audit.md | 无
 
 实现 #5 | M-04 | 开放，验收环境阻塞 | evidence/M-04-r5-impl.md | ps EPERM，收尾未取证
+审计 #4 | M-04 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-04-r5-audit.md | 无
