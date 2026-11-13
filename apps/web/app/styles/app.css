@@ -123,3 +123,16 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-timeline h3 { margin: 0; font-size: 1rem; }
 .timeline-meta { overflow-wrap: anywhere; color: var(--animal-text-secondary); font-size: .85rem; }
 .timeline-step { color: var(--animal-text-secondary); }
+
+.task-docs { min-height: 0; min-width: 0; }
+.task-docs nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.task-docs nav a { display: inline-block; padding: 8px 12px; border-radius: var(--animal-radius-sm); }
+.task-docs nav [aria-current="page"], .task-docs .is-current { background: var(--animal-primary-bg); font-weight: 800; }
+.task-docs :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 2px; }
+.task-docs summary { cursor: pointer; padding: 8px; }
+.task-docs-body { overflow: auto; max-height: 60vh; padding: 16px; overflow-wrap: anywhere; }
+.task-docs-body table { border-collapse: collapse; width: 100%; }
+.task-docs-body th, .task-docs-body td { border: 1px solid var(--animal-border-light); padding: 8px 12px; text-align: left; }
+.task-docs-body pre { overflow-x: auto; padding: 16px; background: var(--animal-bg-input); }
+.task-docs-body blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid var(--animal-border); }
+.task-docs-body a { text-decoration: underline; }

@@ -1,3 +1,4 @@
+import { parseMarkdown } from '../lib/markdown.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TimelineSession } from './task-timeline-model.ts';
 import type { TaskEvent } from '../../server/task-events.ts';
@@ -14,7 +15,7 @@ export type TaskPayload = {
     milestones?: { id: string; state: string; title?: string }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { id: string; title: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
@@ -47,12 +48,12 @@ export async function loadTaskDetail(services: WebServices, id: string, url: URL
     mergeSegment ? read('task.changes', { task_id: id }) : undefined,
   ]);
   const name = url.searchParams.get('doc');
-  let document;
+  let document: { name: string | null; text?: string; error?: string; size?: number; truncated?: boolean; missingBrief?: boolean };
   if (name !== null) {
     const picked = pickDocument(data.documents ?? [], name);
     document = !picked.ok ? { name, error: picked.message } : services.taskDocs
       ? { name, ...await services.taskDocs.read(picked.entry.absolute, DOC_LIMIT_BYTES) }
       : { name, error: '文档读取服务不可用' };
   } else document = { name: null, text: data.brief ?? data.task.request ?? '', missingBrief: data.brief == null, truncated: false };
-  return { data, config, history, dashboard, changes, document };
+  return { data, config, history, dashboard, changes, document: { ...document, nodes: 'text' in document ? parseMarkdown(document.text ?? '') : [] } };
 }

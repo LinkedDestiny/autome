@@ -1,3 +1,4 @@
+import { TaskDocs } from '../components/task-docs.tsx';
 import { TaskHeader } from '../components/task-header.tsx';
 import { headerView } from '../components/task-header-model.ts';
 import { TaskStage } from '../components/task-stage.tsx';
@@ -16,7 +17,7 @@ export async function loader({ context, params, request }: LoaderFunctionArgs) {
 }
 export const shouldRevalidate = liveShouldRevalidate(bySubjectParam(['task.', 'session.'], 'id'));
 export default function TaskPage() {
-  const { data, error, config, history, dashboard } = useLoaderData<typeof loader>();
+  const { data, error, config, history, dashboard, document } = useLoaderData<typeof loader>();
   const settings = config && 'payload' in config ? config.payload as TaskConfig : {};
   const context: CardContext = { now: new Date().toISOString(), fixRounds: data?.task.budget_n ?? settings.resolved?.bug?.fix_rounds ?? 0,
     cooldowns: dashboard && 'payload' in dashboard ? (dashboard.payload as { cooldowns?: CardContext['cooldowns'] }).cooldowns ?? [] : [], unread: {} };
@@ -25,5 +26,6 @@ export default function TaskPage() {
     <TaskStage view={stageBarView(data, history?.events ?? [], settings)} />
     <TaskNotice view={noticeView(data, context)} />
     <TaskTimeline sessions={data.sessions} events={history?.events ?? []} now={context.now} truncated={history?.truncated} error={history && 'error' in history ? history.error : undefined} />
+    <TaskDocs data={data} document={document} />
   </> : <p>{error}</p>}</div>;
 }
