@@ -22,3 +22,4 @@
 审计 #7 | M-06 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-06-r8-audit.md | 无
 
 实现 #9 | M-01 | 退回 + rebase 接线验收环境受限 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-01-r9-impl.md | listen/ps EPERM；rebase 已完成
+审计 #8 | 无 | 无待审里程碑，未改动里程碑表 | 无 | 表内 M-01..M-06 均已完成；M-01 的 r9 集成复验因监听 EPERM 未取证，见 evidence/M-01-r9-impl.md
