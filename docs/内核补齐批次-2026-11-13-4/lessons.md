@@ -1,8 +1,19 @@
 # 内核补齐批次（T-95）：教训
 
-复盘 #5，2026-11-14，覆盖复盘 #4 的版本。本任务没有记录到 Autome 指标，下列条目只引用证据文件和本轮复跑的事实，不含指标数字。
+复盘 #6，2026-11-14，覆盖复盘 #5 的版本。本任务没有记录到 Autome 指标，下列条目只引用证据文件、门禁日志和本轮复跑的事实，不含指标数字。
 
-复盘 #4 之后的事实：
+复盘 #5 之后的事实：
+- 宿主第四次合并前门禁在 `43d1b09d` 上失败，用时 739 秒（主检出 `.autome/output/gates/T-95/merge_gate-43d1b09d9e23.log`）。
+  Format、Clippy、Rust 测试、Desktop、Contract、Web lint、Web typecheck、Web build 全过。Rust 的 12 个测试目标都有 `test result` 且 0 失败：automed 库 993 个、`end_to_end` 258 个、`prompt_rendering` 43 个、`real_cli` 7 个，与复盘 #5 用 `--no-fail-fast` 预先跑出的结果一致。
+  唯一失败是 Web test：833 个用例全过，但 `test/eventbus-live.test.ts` 的 afterAll 在 `rmSync(home, …)` 处报 ENOTEMPTY，110 个测试文件里有 1 个判失败。
+- 实现 #22（`1f666e58`）把这一处清理换成 `await rm(…, {maxRetries: 5, retryDelay: 100})`。实现轮沙箱里 listen EPERM，修前、修后都没拿到红绿。审计 #21 实跑 7 个用例全过，宿主快检在 `1f666e58` 通过。
+- 本轮先用 `target/debug` 里的现成二进制跑 eventbus-live，有 3 个用例失败：`autome`（05:09 构建）比推进过临时账本的 `automed`（05:25 构建）旧，被版本守卫拒绝。这是本地构建产物新旧不一，不是产品缺陷。
+  重新 `cargo build -p autome-cli -p automed` 后连跑 3 次都是 7/7 通过，每次跑完 `pgrep` 都看不到残留的 `target/debug/automed`。所以「内核守护进程活过 afterAll 并继续写临时目录」这个猜测不成立。ENOTEMPTY 的写入者仍未定位，没有根因，本版不把它写成教训。
+- `scripts/ci-local.sh` 第 83 行仍然没有 `--no-fail-fast`。
+
+本版的改动：L-01 至 L-04、L-06 至 L-08 原样保留；L-05 补上第四次门禁的事实；没有新增条目。
+
+复盘 #4 之后的事实（复盘 #5 记录，保留）：
 - 宿主第三次合并前门禁在 `842714cc` 上失败，用时 914 秒（日志在主检出 `.autome/output/gates/T-95/merge_gate-842714cc3a67.log`）。
   autome-cli、autome-domain、automed 库测试（993）、`build_rerun` 全过；`end_to_end` 256 过、2 败，就是复盘 #4 点名的两条。
   cargo 在 `end_to_end` 处停下，`prompt_rendering` 和 `real_cli` 没有跑。
@@ -12,8 +23,6 @@
   1912 个通过、0 个失败、1 个忽略，其中 `end_to_end` 258 个全过、`prompt_rendering` 43 个、`real_cli` 7 个。
   Web、Desktop、Contract 三步在第三次门禁里已经通过，本轮没有重跑。
 - `scripts/ci-local.sh` 第 83 行仍然没有 `--no-fail-fast`。
-
-本版的改动：L-01、L-02、L-03、L-07 原样保留；L-04、L-05、L-06 补上第 21 轮和本轮复跑的事实；新增 L-08。
 
 ```yaml
 - id: L-01
@@ -62,7 +71,7 @@
 ```yaml
 - id: L-05
   domain: tooling
-  symptom: 宿主合并前门禁跑 `cargo test --workspace --all-targets`，三次都在第一个失败的测试目标处停下。`2e0696bf` 上停在 autome-domain，automed 一个都没跑，实现 #19 只修了日志里的 7 个；`f0c98afe` 上停在 automed 库测试（13 败），`end_to_end` 一个都没跑，实现 #20 只修了这 13 个；`842714cc` 上停在 `end_to_end`（2 败），`prompt_rendering`、`real_cli` 没跑，实现 #21 只修了这 2 个。复盘 #4、#5 加 `--no-fail-fast` 才看到每次门禁之后剩下的部分。三批失败分属三个目标，被拆成了三次门禁、每次约 15 分钟
+  symptom: 宿主合并前门禁跑 `cargo test --workspace --all-targets`，三次都在第一个失败的测试目标处停下。`2e0696bf` 上停在 autome-domain，automed 一个都没跑，实现 #19 只修了日志里的 7 个；`f0c98afe` 上停在 automed 库测试（13 败），`end_to_end` 一个都没跑，实现 #20 只修了这 13 个；`842714cc` 上停在 `end_to_end`（2 败），`prompt_rendering`、`real_cli` 没跑，实现 #21 只修了这 2 个。复盘 #4、#5 加 `--no-fail-fast` 才看到每次门禁之后剩下的部分。三批失败分属三个目标，被拆成了三次门禁、每次约 15 分钟。第四次门禁（`43d1b09d`）里 Rust 12 个目标全过，与复盘 #5 用 `--no-fail-fast` 在 `6878d51b` 上预先跑出的 1912 过、0 败一致，说明一次不中断的全量运行足以预报门禁的 Rust 段
   root_cause: 项目门禁脚本 `scripts/ci-local.sh` 第 83 行的测试段是 `cargo test --workspace --all-targets -- --nocapture`，没有 `--no-fail-fast`，第一个失败的测试二进制之后的目标全被跳过；门禁修复轮把门禁日志当成失败的全集，没有意识到日志只覆盖到第一个失败的目标
   evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-impl.md
   level: test

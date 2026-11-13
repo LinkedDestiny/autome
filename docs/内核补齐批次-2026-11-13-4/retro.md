@@ -47,3 +47,4 @@
 
 实现 #22 | M-16 | 门禁修复待复验 | evidence/M-16-r22-impl.md | Web live 受 listen EPERM 阻断，相关 33 用例通过
 审计 #21 | M-16 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r22-audit.md | 无
+复盘 #6 | 无 | 教训 8 条（无新增） | docs/内核补齐批次-2026-11-13-4/lessons.md | 第四次合并门禁 43d1b09d 仅 eventbus-live afterAll ENOTEMPTY，根因未定位，1f666e58 加有界重试待门禁复跑；ci-local.sh 仍无 --no-fail-fast；H-01 未确认
