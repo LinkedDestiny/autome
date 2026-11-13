@@ -1,8 +1,8 @@
 # 里程碑之外的实现轮要有人审：rebase 冲突 / 合并前门禁修复之后的审计轮改为集成复验
 
-status: 设计中
-design-round: 0/15
-implementation-round: 0/0
+status: 实现中
+design-round: 1/15
+implementation-round: 0/30
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -94,8 +94,11 @@ next-action: 实现 M-01：给实现会话记 start_heads，在 apply_guards 里
 |---|---|
 | (a) 本轮开始时表非空且全部 `已完成` | `apply_guards` 已读出的 `before`（最近一条 `task.snapshot`，即上一轮角色会话留下的表） |
 | (b) 本轮结束时表仍全部 `已完成` | 会话写的状态块（`task_metrics::snapshot(status)`） |
-| (c) 本轮提交范围非空（§2） | Git，按仓库逐个算 |
-| (d) 范围内至少一个提交改了 `<doc_dir>/` 之外的路径 | 同上；路径口径与 `guard_session_scope` 一致 |
+| (c) 本轮提交范围「列出」或「消失」非空（§2） | Git，按仓库逐个算 |
+| (d) 「列出」或「消失」里至少一个提交改了 `<doc_dir>/` 之外的路径 | 同上；路径口径与 `guard_session_scope` 一致 |
+
+(d) 把「消失」也算进来：rebase 冲突时实现会话选择上游版本、使自己原来的产品提交变成空提交而被丢弃，丢掉的正是
+已验收的产品改动，必须有人复验（D1-P01）。
 
 (b) 的作用：用户表态（`Inject::Decisions`）的实现轮会新增 `开放` 里程碑并推进成 `待审`，那时审计有正常对象，不进集成
 复验；任何把表改成非全 `已完成` 的实现轮同理。所以不需要按注入种类排除。
@@ -127,7 +130,16 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
   提交。剩下的就是「冲突解决后补丁变了的提交 + 会话 rebase 之后追加的普通提交」，正是任务卡说的「冲突解决提交」
   加上「rebase 后追加的提交」。「消失」列出 rebase 前有、rebase 后找不到同一补丁的提交（被改写或被丢掉），简报单列。
 - 设计轮在临时仓库里实测过：分支 T1（干净）、T2（与 main 冲突）、T3（文档），会话 rebase 解决 T2 后追加 T4，「列出」
-  恰为 `T2, T4`，「消失」为 `T2`（旧版本）；`H1...H1` 为空。
+  恰为 `T2, T4`，「消失」为 `T2`（旧版本）；`H1...H1` 为空。评审轮另用临时仓库实测了两个反例（冲突中选上游而丢掉自己的
+  产品提交；patch-id 空白归一化把改写后的提交判等价），已由上面两条规则覆盖，并成为 M-01 的用例。
+- **冲突文件的保守纳入（D1-P01）。** patch-id 会归一化空白，所以「冲突解决后补丁被判等价」是漏审来源（字符串字面量里
+  `"hello world"` 被解成 `"helloworld"`，patch-id 不变）；只凭 patch-id 一致不能断定无需复验。当 H0 不是 H1 的祖先
+  （会话 rebase 过）时加一条规则：**凡是 `B1..H1` 中、不在 H0 历史里（被重写过或新增）、且改到了冲突文件的提交，不论
+  patch-id 是否等价，一律并入「列出」**。冲突文件取自该实现会话的 `carried_inject`（`RebaseConflict.files`）。触发原因
+  不是 rebase 冲突而会话自己 rebase 了（冲突文件未知）时只按 patch-id，这是已知残余（R1）。没有冲突文件的干净 rebase
+  不受这条影响，零变化路径保持。
+- **「消失」不只是显示项。** 每个「消失」提交记 `paths` 与 `stat`（口径同「列出」，用被丢弃提交自己的 diff）；改到目录外路径的
+  「消失」提交使本轮成为集成轮（§1 (d)），审计能看到哪个产品改动在冲突解决中被放弃。
 - 会话违反 prompt 用了 `git merge`：合并提交在「列出」里（不加 `--no-merges`），按 (d) 用第一父比较。
 - 选这个而不选 `git range-diff`：`range-diff` 的输出是给人看的模糊配对，难以逐字断言；`rev-list --cherry-pick` 是
   确定的集合运算，测试能钉住，一条公式覆盖全部三种触发原因。
@@ -137,7 +149,11 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
 1. 路径中有一段是 `tests`、`test`、`__tests__`、`golden`、`fixtures`、`evals`；
 2. 文件名匹配 `*.test.*`、`*.spec.*`、`*_test.*`、`test_*`；
 3. 该路径在某个「列出」提交的 diff 里，有一行增删（不含 `+++`/`---` 头）包含 `#[test]`、`#[cfg(test)]`、`assert`、
-   `expect(` 之一——这一条覆盖 Rust 源文件里的内联测试模块，按路径分不出来的那一类。
+   `expect(` 之一；
+4. **文件本身带内联测试（D1-P04）：** 该路径在 H1 的版本或在该提交第一父的版本里含 `#[cfg(test)]` 或 `#[test]`
+   （`git show <rev>:<path>` 取文本只扫文本，不要求本次增删了标记）。这一条覆盖「只改了测试准备条件或 helper、没碰断言
+   与测试标记」的修改（例如把 `scheduler.rs` 测试用配置里的 `reuse_for_main_check` 改成 `false`）。读不出内容时
+   （Git 报错、二进制）宁可列入。实现时可参考 `scheduler.rs` 的 `test_section_start`。
 
 ### 3. 账本事件 `integration.range`（新事件种类，表结构不变，约束 12）
 
@@ -154,7 +170,7 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
   "repos": [{
     "repo": "", "start": "<H0>", "end": "<H1>", "base": "<B1>",
     "commits": [{"sha": "…", "subject": "…", "paths": ["…"], "stat": "…"}],
-    "dropped": [{"sha": "…", "subject": "…"}],
+    "dropped": [{"sha": "…", "subject": "…", "paths": ["…"], "stat": "…"}],
     "test_files": ["…"]
   }]
 }
@@ -165,9 +181,13 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
 - `trigger` 取该实现会话 `carried_inject`；`gate_failed` **不存提交 SHA**（理由见 §5 的格式规则）。
 - 只列改了目录外路径的提交；`stat` 为 `git show --stat=120 --format= <sha> -- . ':(exclude)<doc_dir>/'`（成员仓库不加
   exclude），每个提交最多 30 行，超出写「其余 n 行见 `git show --stat <sha>`」；`commits` 最多 50 个，超出同样写明。
-- 只有文档目录内提交的仓库不进 `repos`；`repos` 为空即不写事件（验收 5 的「空轮」）。
-- 计算失败（Git 报错）→ 不写事件，写 `guard.warning {code: "integration_range_unreadable", detail}`：退回今天的行为，
-  但不是静默的。
+- 「列出」与「消失」里都没有改目录外路径的提交的仓库不进 `repos`；`repos` 为空即不写事件（验收 5 的「空轮」）。
+- **读取失败的两级处理（D1-P03）。** ① 判定「是不是集成轮」所需的事实（H0 / H1 / B1、`rev-list` 的两个集合、各提交的路径列表）
+  读取失败：范围未知，不能当作已证实的空轮，也不能退回今天的放行——沿用 `apply_guards` 里其他账本 / Git 读取失败的
+  `?` 传播路径，让会话收尾报错、任务停在可 `rerun` 的状态，错误信息用中文写明哪一步读取失败（实现时核对该路径确实停下
+  而不是继续审计，核对结论写进证据）。② 已确认是集成轮之后才读取的展示信息（`stat`、测试文件内容扫描）失败：**不取消
+  集成身份**，该字段写 `（读取失败：<原因>）`，扫描失败的路径一律列入测试文件；事件照常写入，简报照常出现该段并带着缺失项
+  的说明。两级都不新增 `FailureReason`，也不标「协议失败」。
 - 读者：只有 `scheduler.rs`（审计启动时，§4）。桌面端与面板按事件种类通用展示，不需要改（实现轮用
   `grep -rn "guard.failed\|task.snapshot" apps/` 核对没有按种类白名单过滤的读者，结论写进证据）。
 
@@ -176,7 +196,9 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
 审计会话启动时（`launch_session`，`kind == Role { Audit }`）调 `integration_for_audit`：
 
 1. 取最近一条 `integration.range` 事件 E；
-2. 取最近一条 `kind` 为实现的 `session.started` 的「本轮第一次尝试」的会话 id（与 §1 同一口径）S；
+2. 取最近一条 `kind` 为实现的 `session.started`，记为 I；S = 严格早于 I 的最近一条 `task.head` 之后的第一条实现
+   `session.started` 的会话 id（I 所在尝试组的第一次尝试，与 §1 同一口径）。审计收尾写的 `task.head` 不改变 S，因为 S
+   是相对于最近实现会话 I 向前定位的（评审 R1-N01 的澄清）；
 3. **E 存在、`E.session_id == S`，且本任务固定协议的 `prompts/audit.md` 含独占行 `<!-- integration-audit -->`** 时，
    本审计是集成复验；否则不是。
 
@@ -185,8 +207,11 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
 自己、以及升级时正在跑的任务）模板里没有这个标记，**简报、prompt、守卫都与今天逐字相同**——协议原则 6「版本固定」
 在这里是代码属性。
 
-结论写进审计的 `session.started`：`"integration": {"impl_session": S, "impl_round": k, "evidence": "…", "summary": "…"}`
-（`summary` 为一行文字：触发原因 + 每个仓库 `H0短..H1短，n 个提交`）。简报、prompt、守卫三处都从这一个值读，不各算各的。
+结论写进审计的 `session.started`：`"integration": {"impl_session": S, "impl_round": k, "evidence": "…", "summary": "…",
+"evidence_stamp": {"exists": false, "mtime_ns": null, "len": null}}`（`summary` 为一行文字：触发原因 + 每个仓库
+`H0短..H1短，n 个提交`；`evidence_stamp` 是启动时简报指定的那个证据路径的状态，用途见 §7）。简报、prompt、守卫三处都从
+这一个值读，不各算各的。审计崩溃重试或 `rerun` 时，`evidence_stamp` 不重取，沿用这组审计尝试里**第一次**审计
+`session.started`（I 之后的第一条审计启动）里的值，所以崩溃那次已写下的证据算本轮的证据。
 
 ### 5. 简报段「本轮要审的集成改动」
 
@@ -253,14 +278,17 @@ rebase 前有、rebase 后找不到同一补丁的提交 1 个：
 
 ### 7. 守卫 A：集成复验未推进（约束 6、验收 3）
 
-`guards::Round` 增加 `integration: Option<&'a IntegrationAudit>`（`IntegrationAudit { impl_round, evidence, summary }`，
+`guards::Round` 增加 `integration: Option<&'a IntegrationAudit>`（`IntegrationAudit { impl_round, evidence, summary, evidence_touched }`，
 来自审计 `session.started` 的 `integration`）。`check` 对审计轮：
 
 - `integration` 为 `None`：与今天完全相同（免查例外与 `audit_moved_the_table` 都保留）。
 - `integration` 为 `Some`：用一个函数 `integration_audit_concluded` **取代**免查例外、`evidence_file("audit")` 与
   `audit_moved_the_table`，只产出至多一条 Error：
-  - 有证据 = `evidence_files` 里存在 `M-*-r<impl_round>-audit.md`（与 `evidence_file` 同一认法，k 取事件里的
-    `impl_round` 而不是审计可改的状态块）；
+  - 有证据 = **简报指定的那个路径**（事件里的 `evidence`，即 `M-<表最后一行 ID>-r<impl_round>-audit.md`）在审计会话
+    期间被写入过：`apply_guards` 对该路径取当前状态，与 `integration.evidence_stamp`（审计启动时的状态，§4）比较——启动时
+    不存在而现在存在，或 `mtime_ns` / `len` 任一变了，`evidence_touched = true`，写进 `IntegrationAudit`。k 取事件里的
+    `impl_round` 而不是审计可改的状态块。**文件名里的 k 只决定路径，不再等于「本轮新增」（D1-P02）**：实现轮正常递增 k
+    并提前提交同名 `-audit.md`，审计什么都不写时，文件存在但状态没变，不算证据；
   - 有证据 → 通过（表不动是合法的「通过」，表被退回也合法）；
   - 无证据且表与轮前快照相同 → `audit_made_no_progress`，detail 用中文写：本轮是集成复验轮、`summary`（触发原因与
     提交范围）、应写的证据路径、两条出路（逐项复验后写证据、表不动；或退回受影响里程碑 `开放`、`reopen` 加 1 并写
@@ -268,8 +296,9 @@ rebase 前有、rebase 后找不到同一补丁的提交 1 个：
   - 无证据但表动了（退回了里程碑）→ `evidence_missing`，detail 写出确切路径。
 - `retro_one_line`、`audit_stayed_in_its_column` 照旧。
 
-「本轮新增」按现有 `evidence_file` 的口径以文件名里的 k 识别，不比较文件内容——这样现有 e2e 的替身审计（每步都写
-`M-01-r$k-audit.md`）不改就通过。残余风险见 R2。
+「本轮新增」以审计会话期间该路径被写入为准（`printf >` 重写同样内容也会更新 `mtime_ns`），不比较文件内容——现有 e2e
+的替身审计每步都重写 `M-01-r$k-audit.md`，所以不改就通过；而「实现轮预写同 k 审计文件、审计不写」被拒绝。
+纯函数 `guards::check` 不碰文件系统，`evidence_touched` 由 `apply_guards` 传入。残余风险见 R2。
 
 ### 8. 守卫 B：已关闭里程碑的「最新证据」指针（约束 7、验收 4）
 
@@ -374,14 +403,14 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 ### M-01 验收契约
 
 - 验收命令：`cargo test -p automed --lib integration_range`
-- 预期：11 个用例通过，基线 0 个（本轮之前没有名字含 `integration_range` 的用例）。逐个：`integration_range_linear_repair_lists_the_fix_commit`、`integration_range_rebase_lists_only_rewritten_and_new_commits`（同时断言「消失」列表）、`integration_range_clean_rebase_is_empty`、`integration_range_doc_only_commits_are_not_integration`、`integration_range_counts_the_sweep_commit_and_skips_the_brief_commit`、`integration_range_a_crashed_attempt_keeps_its_commits`、`integration_range_test_files_by_path_and_by_content`、`integration_range_workspace_member_paths_carry_the_repo_name`、`integration_range_is_recorded_only_for_an_all_done_table_that_stays_done`（轮前有 `待审`、轮后新增 `开放` 两种都不记）、`integration_range_records_the_trigger_from_the_carried_inject`（rebase / 门禁 / 无注入三种）、`integration_range_bug_loop_records_nothing`。
-- 负向对照：去掉 `--cherry-pick` 时 `…rebase_lists_only_rewritten_and_new_commits` 与 `…clean_rebase_is_empty` 失败（干净重放的提交被列出）；不按 `<doc_dir>/` 过滤时 `…doc_only_commits_are_not_integration` 失败；H0 取重试那次会话的 `start_heads` 而不是本轮第一次尝试时 `…a_crashed_attempt_keeps_its_commits` 失败。
+- 预期：16 个用例通过，基线 0 个（本轮之前没有名字含 `integration_range` 的用例）。逐个：`integration_range_linear_repair_lists_the_fix_commit`、`integration_range_rebase_lists_only_rewritten_and_new_commits`（同时断言「消失」列表）、`integration_range_clean_rebase_is_empty`、`integration_range_doc_only_commits_are_not_integration`、`integration_range_counts_the_sweep_commit_and_skips_the_brief_commit`、`integration_range_a_crashed_attempt_keeps_its_commits`、`integration_range_test_files_by_path_and_by_content`、`integration_range_workspace_member_paths_carry_the_repo_name`、`integration_range_is_recorded_only_for_an_all_done_table_that_stays_done`（轮前有 `待审`、轮后新增 `开放` 两种都不记）、`integration_range_records_the_trigger_from_the_carried_inject`（rebase / 门禁 / 无注入三种）、`integration_range_bug_loop_records_nothing`；另 5 个（评审 R1 的反例）：`integration_range_conflict_that_drops_the_product_commit_is_still_integration`（冲突中选上游、自己的产品提交变空被丢弃：事件写出，「消失」带该提交的路径与 stat）、`integration_range_conflict_file_commit_with_an_equivalent_patch_id_is_still_listed`（`"hello world"` 解成 `"helloworld"`，patch-id 相同仍被列出）、`integration_range_inline_test_module_with_only_setup_changed_is_listed`（只改内联测试模块里的测试准备行，文件进测试清单）、`integration_range_unreadable_range_fails_closed`（范围读取失败不写事件也不放行）、`integration_range_a_stat_failure_keeps_the_range`（stat 读取失败：事件仍写、字段带「读取失败」）。
+- 负向对照：去掉 `--cherry-pick` 时 `…rebase_lists_only_rewritten_and_new_commits` 与 `…clean_rebase_is_empty` 失败（干净重放的提交被列出）；不按 `<doc_dir>/` 过滤时 `…doc_only_commits_are_not_integration` 失败；H0 取重试那次会话的 `start_heads` 而不是本轮第一次尝试时 `…a_crashed_attempt_keeps_its_commits` 失败；(d) 只看「列出」时 `…conflict_that_drops_the_product_commit_is_still_integration` 失败；去掉冲突文件保守纳入时 `…equivalent_patch_id_is_still_listed` 失败；测试文件只看路径与增删行时 `…inline_test_module_with_only_setup_changed_is_listed` 失败；展示信息读取失败时不写事件则 `…a_stat_failure_keeps_the_range` 失败。
 
 ### M-02 验收契约
 
 - 验收命令：`cargo test -p automed --lib guards && cargo test -p automed --lib integration_wiring`
-- 预期：`guards` 33 个用例通过，比基线 24 个多 9 个（`integration_audit_with_a_still_table_and_no_evidence_made_no_progress`、`integration_audit_with_evidence_and_a_still_table_passes`、`integration_audit_that_reopens_without_evidence_is_missing_evidence`、`integration_audit_that_reopens_with_evidence_passes`、`integration_audit_evidence_of_an_earlier_round_does_not_count`、`closed_pointer_retargeted_to_impl_evidence_fails`、`closed_pointer_added_under_a_closed_milestone_fails`、`closed_pointer_rules_leave_open_milestones_and_fences_alone`、`closed_pointer_without_a_baseline_is_not_guessed`）；既有 24 个（含 `rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence`）断言不变全部通过。`integration_wiring` 4 个通过，基线 0（`integration_wiring_audit_after_a_recorded_range_is_marked`、`integration_wiring_a_later_impl_session_supersedes_the_range`、`integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit`、`integration_wiring_impl_guard_reads_the_design_at_the_last_task_head`）。
-- 负向对照：集成复验时仍保留「全 `已完成` 且表未变即免查」的例外，`integration_audit_with_a_still_table_and_no_evidence_made_no_progress` 失败（守卫放行）；指针检查不限于轮前 `已完成` 的里程碑时 `closed_pointer_rules_leave_open_milestones_and_fences_alone` 失败；判定集成时不比对最近实现会话 id 时 `integration_wiring_a_later_impl_session_supersedes_the_range` 失败。
+- 预期：`guards` 34 个用例通过，比基线 24 个多 10 个（`integration_audit_with_a_prewritten_evidence_file_and_no_new_write_made_no_progress`、`integration_audit_with_a_still_table_and_no_evidence_made_no_progress`、`integration_audit_with_evidence_and_a_still_table_passes`、`integration_audit_that_reopens_without_evidence_is_missing_evidence`、`integration_audit_that_reopens_with_evidence_passes`、`integration_audit_evidence_of_an_earlier_round_does_not_count`、`closed_pointer_retargeted_to_impl_evidence_fails`、`closed_pointer_added_under_a_closed_milestone_fails`、`closed_pointer_rules_leave_open_milestones_and_fences_alone`、`closed_pointer_without_a_baseline_is_not_guessed`）；既有 24 个（含 `rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence`）断言不变全部通过。`integration_wiring` 5 个通过，基线 0（`integration_wiring_evidence_stamp_is_taken_at_the_first_audit_attempt_and_detects_a_rewrite`、`integration_wiring_audit_after_a_recorded_range_is_marked`、`integration_wiring_a_later_impl_session_supersedes_the_range`、`integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit`、`integration_wiring_impl_guard_reads_the_design_at_the_last_task_head`）。
+- 负向对照：集成复验时仍保留「全 `已完成` 且表未变即免查」的例外，`integration_audit_with_a_still_table_and_no_evidence_made_no_progress` 失败（守卫放行）；指针检查不限于轮前 `已完成` 的里程碑时 `closed_pointer_rules_leave_open_milestones_and_fences_alone` 失败；判定集成时不比对最近实现会话 id 时 `integration_wiring_a_later_impl_session_supersedes_the_range` 失败；证据只看文件名存在时 `integration_audit_with_a_prewritten_evidence_file_and_no_new_write_made_no_progress` 失败。
 
 ### M-03 验收契约
 
@@ -392,7 +421,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 ### M-04 验收契约
 
 - 验收命令：`cargo test -p automed --test end_to_end integration_e2e && cargo test -p automed --test end_to_end before_merge && cargo test -p automed --test end_to_end a_gate_failing_after_the_automatic_rebase && cargo test -p automed --test end_to_end a_failing_gate_sends_the_work_back && ! git diff -U0 "$(git merge-base HEAD main)" -- crates/automed/tests/end_to_end.rs | grep -q '^-[^-]'`
-- 预期：`integration_e2e` 4 个通过，基线 0（`integration_e2e_rebase_conflict_after_all_done_is_reviewed_then_reaches_await_merge`：审计 prompt 含集成块、简报含「本轮要审的集成改动」与冲突文件名和改到的测试文件，节点序列 `implement, audit, retro, rebase, await_merge`；`integration_e2e_merge_gate_fix_reopened_by_the_audit_returns_to_implement`：简报含门禁命令与尾部，审计退回后下一节点 `implement`、状态块 reopen 1、有 `milestone.contradicted`，最终到 `await_merge`；`integration_e2e_audit_without_evidence_stops_with_a_readable_reason`：任务 `failed`，`guard.failed` 的 code 为 `audit_made_no_progress`，detail 含「集成复验」、提交范围与「开放」；`integration_e2e_doc_only_repair_keeps_todays_audit`：里程碑全 `已完成` 时的修复轮只提交文档目录内的文件，没有 `integration.range` 事件，其后审计的 prompt 不含集成块、简报不含该段，审计不写证据也照常继续）；`before_merge` 11 个与另两个各 1 个既有用例全部通过，数量不变；最后一条退出码 0（`end_to_end.rs` 只有新增行，没有删除或改动的既有行）。
+- 预期：`integration_e2e` 4 个通过，基线 0（`integration_e2e_rebase_conflict_after_all_done_is_reviewed_then_reaches_await_merge`：审计 prompt 含集成块、简报含「本轮要审的集成改动」与冲突文件名和改到的测试文件，节点序列 `implement, audit, retro, rebase, await_merge`；`integration_e2e_merge_gate_fix_reopened_by_the_audit_returns_to_implement`：简报含门禁命令与尾部，审计退回后下一节点 `implement`、状态块 reopen 1、有 `milestone.contradicted`，最终到 `await_merge`；`integration_e2e_audit_without_evidence_stops_with_a_readable_reason`：实现步骤用 `World::EVIDENCE`（预写同 k 的 `M-01-r$k-audit.md`，正是评审的绕过场景），审计步骤什么都不写；任务 `failed`，`guard.failed` 的 code 为 `audit_made_no_progress`，detail 含「集成复验」、提交范围与「开放」；`integration_e2e_doc_only_repair_keeps_todays_audit`：里程碑全 `已完成` 时的修复轮只提交文档目录内的文件，没有 `integration.range` 事件，其后审计的 prompt 不含集成块、简报不含该段，审计不写证据也照常继续）；`before_merge` 11 个与另两个各 1 个既有用例全部通过，数量不变；最后一条退出码 0（`end_to_end.rs` 只有新增行，没有删除或改动的既有行）。
 - 负向对照：`apply_guards` 不把审计 `session.started` 的 `integration` 传进 `Round` 时 `integration_e2e_audit_without_evidence_stops_with_a_readable_reason` 失败（任务继续到 `retro`）；简报段把门禁失败提交 SHA 写成 10 位以上时既有的 `brief_before_merge_audit_brief_never_shows_a_stale_result` 失败；判定不要求轮后表仍全 `已完成` 时不影响这四个用例，但 M-01 的 `…all_done_table_that_stays_done` 会红（由 M-01 契约拦）。
 
 ### M-05 验收契约
@@ -405,15 +434,18 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 - B-01 内核自己对集成范围内每个提交执行冲突标记扫描，把结果写进简报或作为守卫（本任务只要求审计轮执行；L-06 的检查可以机械化）。
 - B-02 审计角色关闭的项目里，里程碑之外的实现轮仍然没人审；需要时另立任务决定是强制插入一轮审计还是只告警。
-- B-03 集成复验证据以文件名里的 k 认定「本轮」（R2）；若出现实现轮不加 k 的情况，可改为比较审计会话 `scope_heads` 之后的差异。
+- B-03 集成复验证据的「本轮新增」靠 mtime / 长度变化认定（R2）；若出现审计只 `touch` 证据文件而不写内容的情形，可再比对内容或要求证据含复验提交的 SHA。
+- B-04 （评审 R1-N01，已在 §4 澄清）实现 `integration_for_audit` 时用「最近实现会话 I 再向前取 `task.head`」定位 S，并用「审计收尾已写新 `task.head`」作测试前提。
+- B-05 （评审 R1-N02）守卫失败的实现尝试已修产品、重跑只修文档时，旧 `integration.range` 会因新实现会话失效，是否把守卫失败的尝试与重跑累计为同一审计单元，待用户另行决定；本任务不扩大触发范围。
+- B-06 rebase 由会话自行完成、触发原因不是 rebase 冲突时冲突文件未知，§2 只按 patch-id 列出；可考虑让内核在会话前后各取一次文件级三方合并结果。
 
 ## 风险与未决问题
 
 - **R1 patch-id 对上下文敏感。** 干净 rebase 时，若默认分支改了某个分支提交的上下文行，该提交 patch-id 会变而被「列出」。
   结果是多列不少列，与约束 9「宁可多列」一致；简报写明「rebase 前后补丁不变的提交不列出」，审计能看出哪些只是被重放。
-- **R2 「本轮证据」按 k 认定。** 实现轮若没有把 `implementation-round` 加一，上一轮同名的审计证据会让守卫 A 误放行。
-  prompt 第一行已要求实现轮按 Autome 给的 k 写；选择按 k 认定是为了与 `evidence_file` 一致并让现有 e2e 不改就通过。
-  记为 B-03。
+- **R2 「本轮证据」按路径状态变化认定。** 路径固定为简报指定的 `M-xx-r<k>-audit.md`；是否「本轮新增」比较审计启动时与
+  收尾时该路径的存在 / `mtime_ns` / 长度。实现轮没递增 k 或预写同名文件，都不会让审计不写证据而通过；残余是审计只 `touch`
+  文件（B-03）。选择它而不是比较内容，是因为现有 e2e 的替身审计每步重写同样内容的同名文件，改测试不是允许的做法。
 - **R3 运行中的旧版本任务。** 守卫 A、简报段、prompt 分支都受 §4 版本门约束，v6 任务逐字不变；守卫 B 对所有需求任务
   生效（它只拦一种本来就不该发生的改动）。合并后正在跑的任务若真被守卫 B 拦下，detail 写明原因与做法，用户 `rerun`。
 - **R4 并行任务改同一批文件。** 本仓库 `parallel = 3`，其他任务也改 `scheduler.rs`、`guards.rs`、`protocol/`。新逻辑放进
@@ -421,5 +453,6 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
   冲突面；本任务被 rebase 时按约束 14 在证据里记录逐提交冲突标记扫描结果，`CHANGELOG.md` 冲突时两侧版本标题都保留，
   若 main 先发布了 v7，本任务顺延为 v8 并相应修改 M-05 契约里的标题计数（这是事实变化，不是放宽验收）。
 - **R5 事件体积。** 提交数与 stat 行数有上限（§3）；门禁尾部沿用注入里已有的尾部，不另取。
-- **R6 范围算不出来。** Git 报错时不写事件、写 `integration_range_unreadable` 警告，退回今天的行为——可见，不静默。
+- **R6 范围算不出来。** 判定所需事实读取失败时失败关闭（§3 ①），不当作空轮也不放行；已确认集成轮后只有展示信息缺失时，
+  事件与简报段照常（§3 ②）。
 - 未决问题：无。需要真人确认的验收项：无（全部验收由测试命令覆盖），故不设 `## 人工验收清单`。
