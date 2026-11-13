@@ -1,8 +1,14 @@
-# T-70 复盘教训（复盘 #2 覆盖写）
+# T-70 复盘教训（复盘 #3 覆盖写）
 
 本任务没有记录到 Autome 指标，下面不引用任何数字指标，只引用证据文件和 git 记录里写明的事实。
 
-运行概况：设计 1 轮；实现 7 轮；审计 6 轮；5 个里程碑都是一次审计关闭，reopen 0。复盘 #1 之后又跑了两轮：
+运行概况：设计 1 轮；实现 8 轮；审计 7 轮；5 个里程碑都是一次审计关闭，reopen 0。
+
+复盘 #3 相对复盘 #2 的变化：复盘 #2 之后，宿主合并前门禁在提交 `2b7669a4` 上失败了。Rust end_to_end 174 例里挂 1 例，Web 535 例里挂 2 例，
+摘录见 `evidence/M-04-r8-impl.md`。实现 #8 只改了测试基线和替身（提交 `8697b21f`），审计 #7 复验了那一例。这一段写成新条目 L-07，
+L-01..L-06 原样保留。
+
+复盘 #1 之后又跑了两轮：
 实现 #7 按用户追加的指令 rebase 到 main `f5a963ad`，在 scheduler.rs、end_to_end.rs、task.rs、dispatch.rs 里手工解决了冲突，
 还改了 bug_loop.rs 的一条共享尾段测试、scheduler.rs 的一个旧字段，并就地改写了设计 D4/D8/验证安排；审计 #6 写「无待审里程碑」，
 没有写证据文件就结束了。
@@ -81,5 +87,20 @@
   proposal: '实现轮开头的主线核对必须运行 `git log --oneline $(git merge-base HEAD main)..main -- <本里程碑「结果」中要修改的已有文件>`，在证据里列出全部命中提交，并逐个注明是否改变本设计某条款的前提；只核对任务文件点名的任务编号不算照做'
   predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 5}
 ```
+
+```yaml
+- id: L-07
+  domain: verification
+  symptom: '五个里程碑关闭以后，宿主合并前门禁在 2b7669a4 上失败 3 例。第一例：end_to_end 的 bug_loop_task_get_reports_the_fix_round_for_bugs_only 对 task.get 做严格键集合断言，缺 M-04（D7，cf1c06af）新加的 merge。这条测试 214a5dc4 就有，早在分支起点 ce6ec5f 之前。另两例在 apps/web/test/notifier-backfill-real.test.ts：共享替身 dashboard-double.ts 缺 D2/D7 新加的 config_warnings，第一处断言提前退出，下一例的通知基线跟着坏掉。这个测试文件（902c14af）和替身（c8b23997）都不在 ce6ec5f 里，是实现 #7 rebase 到 f5a963ad 时才进来的。实现 #5、审计 #4 只跑了 merge_view_ 前缀（6 例），实现 #7 也只跑了 merge_、cost_rollup_ 等按名过滤的子集，没有一轮不加名称过滤地运行引用 task.get 或 dashboard.get 的测试文件。为修这个多出实现 #8、审计 #7、复盘 #3 和一次合并前门禁重跑。设计 R5 事先写到了这个风险，处理办法是「合并前门禁会跑它们」'
+  root_cause: '验收命令按里程碑前缀过滤，同一个 RPC 已有的严格键断言和替身不在过滤结果里。设计 R5 把发现这类测试变红的时机交给了合并前门禁，没有交给实现轮。rebase 会带进新的同接口消费者测试，rebase 之后的那一轮同样只跑了按名过滤的子集。所以返回字段一变，这类断言注定要等到合并前门禁才红'
+  evidence: docs/合并队列-合并前门禁出队时才-rebase/evidence/M-04-r8-impl.md
+  level: rule
+  proposal: '改动某个 RPC 返回字段集合的里程碑，以及其后每一个做过 rebase 的实现轮，都要运行 `git grep -l -e <方法名> -- crates/automed/tests apps/web/test apps/desktop/test`（本任务为 task.get、dashboard.get、project.get）。命中的每个测试文件都要不加名称过滤地运行一次，证据里写出命中列表和每个文件的用例总数；少一个文件就不算照做'
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: project, horizon: 5}
+```
+
+L-07 与 `docs/通知器首次启动补发当前等你处理的任务/lessons.md` 的 L-05 是同一个现象：拦下问题的是同一个替身 `dashboard-double.ts`，
+是同一处严格键断言，也都是到合并前门禁才红。不同的是责任方：那边是替身所在的任务没跟上 main 新加的字段；这边是改返回形状的任务没去找
+已有的消费者测试。两条 proposal 管的是两方各自的动作，所以没有合并成一条。
 
 提交说明：本轮直接提交；若提交被拒绝，提交由 Autome 兜底。
