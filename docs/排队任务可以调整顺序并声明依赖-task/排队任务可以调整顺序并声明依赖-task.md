@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 2/30
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-02 独立审计通过后，推进 M-03 修改依赖、阻塞事件与 dashboard 排队组
+next-action: 推进 M-03 修改依赖、阻塞事件与 dashboard 排队组
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -315,7 +315,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 依赖校验纯函数与 store v6 迁移 | 0 | |
-| M-02 | 待审 | 创建即带依赖，出队跳过依赖未完成的任务 | 0 | |
+| M-02 | 已完成 | 创建即带依赖，出队跳过依赖未完成的任务 | 0 | |
 | M-03 | 开放 | 改依赖、阻塞事件与 dashboard 排队组 | 0 | |
 | M-04 | 开放 | task.move 调整队列顺序 | 0 | |
 | M-05 | 开放 | CLI：task new --after、after、queue move、ls 与 status | 0 | |
@@ -393,7 +393,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-02 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-02-r2-impl.md · 验收通过，待审 · 实现 #2
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`cargo test -p automed after_create_ && cargo test -p automed fill_slots_ && cargo test -p automed --test end_to_end the_parallel_limit`
 - 预期：`after_create_` 6 个通过（lib 5 个、end_to_end 1 个）。`fill_slots_` 2 个现有用例通过。`the_parallel_limit` 2 个现有用例通过（并发上限用例与 `task_card_a_started_draft_waits_behind_the_parallel_limit`）。
