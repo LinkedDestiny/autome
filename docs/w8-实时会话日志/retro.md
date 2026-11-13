@@ -9,3 +9,4 @@
 审计 #3 | M-03 | 退回 + logtail-live | docs/w8-实时会话日志/evidence/M-03-r3-audit.md | 无
 
 实现 #4 | M-03 | 待审 | docs/w8-实时会话日志/evidence/M-03-r4-impl.md | listen EPERM，端到端及负向对照待复验
+审计 #4 | M-03 | 通过 | docs/w8-实时会话日志/evidence/M-03-r4-audit.md | 无
