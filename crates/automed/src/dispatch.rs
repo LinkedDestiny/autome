@@ -398,6 +398,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "task.create" => task_create(ctx, p),
         "task.start" => task_start(ctx, str_param(p, "task_id")?),
         "task.set_after" => task_set_after(ctx, p),
+        "task.move" => task_move(ctx, p),
         "task.get" => task_get(ctx, str_param(p, "task_id")?),
         "task.approve" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Approve),
         "task.reject" => task_trigger(
@@ -1698,9 +1699,84 @@ fn task_set_after(ctx: &mut Ctx, p: &Value) -> DispatchResult {
     ))
 }
 
+fn task_move(ctx: &mut Ctx, p: &Value) -> DispatchResult {
+    use autome_domain::deps::{Placement, reposition};
+    let id = str_param(p, "task_id")?;
+    let invalid = || bad_params("before、after、top 必须且只能给一个");
+    let before = p
+        .get("before")
+        .map(|v| v.as_str().ok_or_else(invalid))
+        .transpose()?;
+    let after = p
+        .get("after")
+        .map(|v| v.as_str().ok_or_else(invalid))
+        .transpose()?;
+    let top = p
+        .get("top")
+        .map(|v| v.as_bool().ok_or_else(invalid))
+        .transpose()?
+        .unwrap_or(false);
+    if usize::from(before.is_some()) + usize::from(after.is_some()) + usize::from(top) != 1 {
+        return Err(invalid());
+    }
+    let movable = |state: &TaskState| {
+        matches!(
+            state,
+            TaskState::Draft | TaskState::Queued | TaskState::Requeued { .. }
+        )
+    };
+    let task = ctx.store.get_task(id)?;
+    if !movable(&task.state) {
+        return Err(rejected("只有排队或待开始的任务可以移动"));
+    }
+    let reference = before.or(after);
+    if let Some(reference) = reference {
+        if reference == id {
+            return Err(rejected("不能以任务自己为参照移动"));
+        }
+        let missing = || {
+            rejected(format!(
+                "{reference} 不在队列里：只能参照同项目排队中或待开始的任务"
+            ))
+        };
+        match ctx.store.get_task(reference) {
+            Ok(other) if other.project_id == task.project_id && movable(&other.state) => {}
+            Ok(_) | Err(crate::store::StoreError::NotFound { .. }) => return Err(missing()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut order: Vec<String> = ctx
+        .store
+        .queue_order(&task.project_id)?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    for candidate in reference.into_iter().chain(std::iter::once(id)) {
+        if !order.iter().any(|item| item == candidate) {
+            order.push(candidate.into());
+        }
+    }
+    let placement = match (before, after) {
+        (Some(id), _) => Placement::Before(id),
+        (_, Some(id)) => Placement::After(id),
+        _ => Placement::Top,
+    };
+    let order = reposition(&order, id, placement).map_err(|e| rejected(e.to_string()))?;
+    ctx.store.reorder_queue(&task.project_id, &order)?;
+    let position = queue_position(ctx, &task)?;
+    let payload = json!({"task": id, "project_id": task.project_id, "before": before, "after": after, "top": top, "queue_position": position});
+    let seq = ctx.store.append_event("task.moved", id, payload.clone())?;
+    Ok((
+        json!({"task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(id)?))?, "queue_position": position, "order": order}),
+        vec![event(seq, "task.moved", id, payload)],
+    ))
+}
+
 fn task_start(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     scheduler::apply_trigger(ctx, task_id, &Trigger::Start)?;
-    ctx.store.mark_queued(task_id)?;
+    if ctx.store.queued_seq(task_id)?.is_none() {
+        ctx.store.mark_queued(task_id)?;
+    }
     let task = ctx.store.get_task(task_id)?;
     let seq = ctx.store.append_event(
         "task.started",
@@ -2993,6 +3069,237 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn move_fixture(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
+        let id = cost_task(sb, project, name, state.clone());
+        if matches!(state, TaskState::Queued | TaskState::Requeued { .. }) {
+            sb.ctx.store.mark_queued(&id).unwrap();
+        }
+        id
+    }
+
+    fn move_call(sb: &mut Sandbox, id: &str, mut params: Value) -> Value {
+        params["task_id"] = json!(id);
+        let out = handle_command(sb.ctx(), &cmd("task.move", params));
+        ok_payload(&out).clone()
+    }
+
+    #[test]
+    fn queue_move_positions_and_event() {
+        use autome_domain::task::Node;
+        let mut sb = Sandbox::new("move-positions");
+        let p = sb.add_project("repo");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Queued);
+        let c = move_fixture(
+            &mut sb,
+            &p,
+            "c",
+            TaskState::Requeued {
+                resume: Node::Design,
+            },
+        );
+        for (params, order, position) in [
+            (json!({"top":true}), json!([c, a, b]), 1),
+            (json!({"after":b}), json!([a, b, c]), 3),
+            (json!({"before":b}), json!([a, c, b]), 2),
+        ] {
+            let out = move_call(&mut sb, &c, params.clone());
+            assert_eq!(out["order"], order);
+            assert_eq!(out["queue_position"], position);
+            let events = sb.ctx.store.events_since(0, 100).unwrap();
+            let (_, _, payload) = events
+                .iter()
+                .filter(|(_, k, _)| k == "task.moved")
+                .next_back()
+                .unwrap();
+            assert_eq!(
+                *payload,
+                json!({"task":c,"project_id":p,"before":params.get("before"),"after":params.get("after"),"top":params.get("top").and_then(Value::as_bool).unwrap_or(false),"queue_position":position})
+            );
+            assert_eq!(
+                sb.ctx.store.get_task(&c).unwrap().state,
+                TaskState::Requeued {
+                    resume: Node::Design
+                }
+            );
+            assert!(sb.ctx.store.all_running_sessions().unwrap().is_empty());
+        }
+        assert!(!READ_METHODS.contains(&"task.move"));
+    }
+
+    #[test]
+    fn queue_move_rejects_without_changes() {
+        use autome_domain::task::{FailureReason, Node};
+        let mut sb = Sandbox::new("move-reject");
+        let p = sb.add_project("repo");
+        let q = sb.add_project("other");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let foreign = move_fixture(&mut sb, &q, "foreign", TaskState::Draft);
+        let invalid_states = [
+            TaskState::Active { node: Node::Design },
+            TaskState::Paused {
+                resume: Node::Design,
+            },
+            TaskState::Stopped { at: Node::Design },
+            TaskState::Failed {
+                at: Node::Design,
+                reason: FailureReason::SessionCrashed {
+                    detail: "test".into(),
+                },
+            },
+            TaskState::Done,
+            TaskState::Cancelled,
+        ];
+        let seq = sb.ctx.store.queued_seq(&a).unwrap();
+
+        for params in [
+            json!({}),
+            json!({"top":false}),
+            json!({"top":true,"before":a}),
+            json!({"before":a,"after":foreign}),
+            json!({"before":a}),
+            json!({"after":foreign}),
+            json!({"before":"T-99999"}),
+            json!({"before":""}),
+            json!({"before":"T-0001"}),
+            json!({"top":"true"}),
+            json!({"before":null}),
+            json!({"after":1}),
+        ] {
+            let mut params = params;
+            params["task_id"] = json!(a);
+            let out = handle_command(sb.ctx(), &cmd("task.move", params));
+            match out.reply.outcome {
+                ReplyOutcome::Error { message, .. } => assert!(
+                    !message.contains('\n')
+                        && message
+                            .chars()
+                            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+                ),
+                _ => panic!("must reject"),
+            }
+        }
+        for state in invalid_states {
+            sb.ctx.store.set_task_state(&foreign, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.move", json!({"task_id":foreign,"top":true})),
+            );
+            assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+            let local = move_fixture(&mut sb, &p, "invalid", state);
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.move", json!({"task_id":a,"after":local})),
+            );
+            assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+        }
+        assert_eq!(sb.ctx.store.queued_seq(&a).unwrap(), seq);
+        assert!(
+            !sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .any(|(_, kind, _)| kind == "task.moved")
+        );
+    }
+
+    #[test]
+    fn queue_move_unpositioned_draft_reference() {
+        for before in [true, false] {
+            let mut sb = Sandbox::new("move-reference");
+            let p = sb.add_project("repo");
+            let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+            let a = move_fixture(&mut sb, &p, "a", TaskState::Draft);
+            let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+            for id in [&a, &b] {
+                sb.ctx
+                    .store
+                    .set_task_after(id, std::slice::from_ref(&blocker))
+                    .unwrap();
+            }
+            let params = if before {
+                json!({"before":a})
+            } else {
+                json!({"after":a})
+            };
+            let expected = if before { json!([b, a]) } else { json!([a, b]) };
+            assert_eq!(move_call(&mut sb, &b, params)["order"], expected);
+            for id in [&a, &b] {
+                let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":id})));
+                ok_payload(&out);
+            }
+            let ids: Vec<_> = sb
+                .ctx
+                .store
+                .queued_tasks(&p)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+            assert_eq!(json!(ids), expected);
+        }
+    }
+
+    #[test]
+    fn queue_move_other_project_unchanged() {
+        let mut sb = Sandbox::new("move-isolation");
+        let p = sb.add_project("repo");
+        let q = sb.add_project("other");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let foreign = move_fixture(&mut sb, &q, "foreign", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Queued);
+        let seq = sb.ctx.store.queued_seq(&foreign).unwrap();
+        assert_eq!(
+            move_call(&mut sb, &b, json!({"top":true}))["order"],
+            json!([b, a])
+        );
+        assert_eq!(sb.ctx.store.queued_seq(&foreign).unwrap(), seq);
+    }
+
+    #[test]
+    fn queue_move_draft_keeps_position_on_start() {
+        let mut sb = Sandbox::new("move-draft");
+        let p = sb.add_project("repo");
+        let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+        for id in [&a, &b] {
+            sb.ctx
+                .store
+                .set_task_after(id, std::slice::from_ref(&blocker))
+                .unwrap();
+        }
+        let out = move_call(&mut sb, &b, json!({"top":true}));
+        assert!(out["queue_position"].is_null());
+        let seq = sb.ctx.store.queued_seq(&b).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":b})));
+        assert_eq!(ok_payload(&out)["queue_position"], 1);
+        assert_eq!(sb.ctx.store.queued_seq(&b).unwrap(), seq);
+    }
+
+    #[test]
+    fn queue_move_unmoved_draft_starts_at_tail_and_singleton() {
+        let mut sb = Sandbox::new("move-tail");
+        let p = sb.add_project("repo");
+        let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        for id in [&a, &b] {
+            sb.ctx
+                .store
+                .set_task_after(id, std::slice::from_ref(&blocker))
+                .unwrap();
+        }
+        assert_eq!(
+            move_call(&mut sb, &a, json!({"top":true}))["order"],
+            json!([a])
+        );
+        assert!(sb.ctx.store.queued_seq(&b).unwrap().is_none());
+        let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":b})));
+        assert_eq!(ok_payload(&out)["queue_position"], 2);
+    }
 
     #[test]
     fn after_blocked_set_rejects_without_side_effects() {

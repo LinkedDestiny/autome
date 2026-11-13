@@ -942,6 +942,43 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn queue_move_the_third_task_moved_to_top_starts_first() {
+    needs_git!();
+    let mut w = World::new("queue-move");
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id":w.project_id,"parallel":1}),
+    ));
+    for request in ["slot holder", "queue first", "queue second", "queue third"] {
+        w.doc_step_for(&slug_for(request), 1, &doc("设计中", 0, 0, &[]), "sleep 60");
+    }
+    let holder = create_task(&mut w, "slot holder");
+    let a = create_task(&mut w, "queue first");
+    let b = create_task(&mut w, "queue second");
+    let c = create_task(&mut w, "queue third");
+    for id in [&a, &b, &c] {
+        assert_eq!(w.state(id), "queued");
+    }
+    let out = w.call("task.move", json!({"task_id":c,"top":true}));
+    assert_eq!(ok(&out)["order"], json!([c, a, b]));
+    ok(&w.call("task.cancel", json!({"task_id":holder})));
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.state(&c) == "active"
+        },
+        |_| "moved third task starts".into(),
+    );
+    assert_eq!(w.state(&a), "queued");
+    assert_eq!(w.state(&b), "queued");
+    assert!(w.ctx.store.list_sessions(&a).unwrap().is_empty());
+    assert!(w.ctx.store.list_sessions(&b).unwrap().is_empty());
+    assert_eq!(w.ctx.store.list_sessions(&c).unwrap().len(), 1);
+}
+
+#[test]
 fn after_blocked_cancelled_dependency_holds_b_until_cleared() {
     needs_git!();
     let mut w = World::new("after-blocked");
