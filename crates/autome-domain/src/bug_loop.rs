@@ -235,9 +235,7 @@ pub fn apply_for(
                     BugStatus::NotABug => Transition::active(Node::NotABug, Action::None),
                 },
                 Node::Fix => core(Node::FixGate),
-                _ if doc.review == BugReview::Passed && !ctx.scope_patch_pending => {
-                    core(Node::Rebase)
-                }
+                _ if doc.review == BugReview::Passed && !ctx.handoff_pending => core(Node::Rebase),
                 _ => start_fix(*node, Some(Inject::FixRejected), ctx, progress),
             })
         }
@@ -386,7 +384,7 @@ mod tests {
     }
     fn ctx(config: &ResolvedConfig) -> Context<'_> {
         Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config,
             budget_n: None,
             decisions: PendingDecisions::default(),
@@ -1644,7 +1642,7 @@ mod tests {
     fn scope_patch_passed_review_returns_to_fix() {
         let c = config();
         let context = Context {
-            scope_patch_pending: true,
+            handoff_pending: true,
             budget_n: Some(2),
             ..ctx(&c)
         };
@@ -1677,7 +1675,7 @@ mod tests {
         let c = config();
         for limit in [0, 2, u32::MAX] {
             let context = Context {
-                scope_patch_pending: true,
+                handoff_pending: true,
                 budget_n: Some(limit),
                 ..ctx(&c)
             };

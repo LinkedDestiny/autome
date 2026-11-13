@@ -2385,7 +2385,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     let decisions = ctx.store.pending_decisions(task_id)?;
     let context = task::Context {
-        scope_patch_pending: !crate::scope::pending(&ctx.store, &task.id)?.is_empty(),
+        handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
         decisions,
@@ -3473,7 +3473,7 @@ fn launch_session(
                 step: BugStep::Locate
             }
         ) {
-        crate::scope::pending(&ctx.store, &task.id)?
+        crate::handoff::pending(&ctx.store, &task.id)?.scope_patches
     } else {
         Vec::new()
     };
@@ -3574,7 +3574,14 @@ fn launch_session(
                     &layout.doc_dir_from_cwd(&task.doc_dir()),
                 )
             }),
-            crate::brief::scope_patches(&patches),
+            crate::handoff::sections(
+                &patches,
+                read_status(project, task)
+                    .as_ref()
+                    .filter(|s| s.all_milestones_done())
+                    .and_then(|s| s.milestones.last().map(|m| (m.id.as_str(), round))),
+                false,
+            ),
         )?,
         None => String::new(),
     };
@@ -3630,13 +3637,9 @@ fn launch_session(
     })?;
 
     if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
-        && let Some(section) = crate::brief::scope_patches(&patches)
+        && let Some(section) = crate::handoff::sections(&patches, None, true)
     {
-        prompt.push_str(&section.replace(
-            "上一轮审计 / 复盘越界改动已被还原",
-            "上一轮复核越界改动已被还原",
-        ));
-        prompt.push_str("\n本轮因此按复核不通过退回修复轮。是否采纳及理由写进 Bug 文档里本轮的记录；补丁文件本身不要复制进仓库。\n");
+        prompt.push_str(&section);
     }
 
     // Capture before the process can edit a checkout, not after launch returns.
@@ -4964,7 +4967,7 @@ fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()
 pub(crate) fn check_convert_cancel(ctx: &Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
     let context = task::Context {
-        scope_patch_pending: !crate::scope::pending(&ctx.store, &task.id)?.is_empty(),
+        handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
         decisions: ctx.store.pending_decisions(&task.id)?,

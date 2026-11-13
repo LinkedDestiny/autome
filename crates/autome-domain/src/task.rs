@@ -572,7 +572,7 @@ pub struct Context<'a> {
     pub budget_n: Option<u32>,
     pub decisions: PendingDecisions,
     /// Whether restored scope patches still need an implementation round.
-    pub scope_patch_pending: bool,
+    pub handoff_pending: bool,
 }
 
 /// A side effect `automed` must perform as part of applying a transition.
@@ -1195,7 +1195,7 @@ fn apply_inner(
                 Node::Audit => {
                     let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
                     if status.all_milestones_done() {
-                        Ok(if ctx.scope_patch_pending {
+                        Ok(if ctx.handoff_pending {
                             start_impl(ctx, None)
                         } else {
                             after_the_loop(ctx.config)
@@ -1210,7 +1210,7 @@ fn apply_inner(
                     }
                 }
                 // Restored retro patches must pass through implementation and audit.
-                Node::Retro if ctx.scope_patch_pending => Ok(start_impl(ctx, None)),
+                Node::Retro if ctx.handoff_pending => Ok(start_impl(ctx, None)),
                 Node::Retro => Ok(Transition::active(
                     Node::Rebase,
                     Action::RunCoreStep { node: Node::Rebase },
@@ -2266,7 +2266,7 @@ mod tests {
 
     fn ctx<'a>(config: &'a ResolvedConfig) -> Context<'a> {
         Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config,
             budget_n: Some(25),
             decisions: PendingDecisions::default(),
@@ -3236,7 +3236,7 @@ mod tests {
     fn approving_with_pending_decisions_runs_one_more_design_round() {
         let c = cfg();
         let context = Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config: &c,
             budget_n: None,
             decisions: PendingDecisions {
@@ -3266,7 +3266,7 @@ mod tests {
     /// A context with `included` Backlog items waiting to be absorbed.
     fn with_included(c: &ResolvedConfig, included: u32, budget: u32) -> Context<'_> {
         Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config: c,
             budget_n: Some(budget),
             decisions: PendingDecisions { included, ruled: 0 },
@@ -3392,7 +3392,7 @@ mod tests {
         // while the task sits here has no later round to be picked up by.
         let c = cfg();
         let context = Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config: &c,
             budget_n: Some(25),
             decisions: PendingDecisions {
@@ -3411,7 +3411,7 @@ mod tests {
     fn merging_with_only_ignored_items_proceeds_to_merge() {
         let c = cfg();
         let context = Context {
-            scope_patch_pending: false,
+            handoff_pending: false,
             config: &c,
             budget_n: Some(25),
             decisions: PendingDecisions {
@@ -4215,7 +4215,7 @@ mod tests {
         states: &[MilestoneState],
     ) -> Transition {
         let context = Context {
-            scope_patch_pending: pending,
+            handoff_pending: pending,
             ..ctx(config)
         };
         let mut status = block(DocStatus::Implementing, states);

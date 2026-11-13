@@ -451,21 +451,6 @@ pub fn path(doc_dir: &str, role: Role, round: u32) -> String {
 }
 
 /// Render saved facts; launching a session never has to recompute patch stats.
-pub fn scope_patches(patches: &[autome_domain::scope::ScopeRestored]) -> Option<String> {
-    if patches.is_empty() {
-        return None;
-    }
-    let mut text = String::from("\n## 上一轮审计 / 复盘越界改动已被还原\n\n");
-    for entry in patches {
-        text.push_str(&format!("{}轮 #{}（会话 {}）改了文档目录之外的文件。Autome 已把它们还原到该会话开始时的样子，并把改动存成补丁：\n\n", entry.label, entry.round, entry.session_id));
-        for repo in &entry.repos {
-            text.push_str(&format!("- 补丁：`{}`（在仓库 `{}` 中应用）\n- 文件：{}\n- 摘要（git apply --stat）：\n{}\n", repo.patch.display(), repo.worktree.display(), repo.paths.join("、"), repo.stat));
-        }
-    }
-    text.push_str("\n由你判断是否采纳：采纳就在仓库根 `git apply <补丁>`，按需调整，跑与改动直接相关的测试后提交；不采纳就写一句理由。\n");
-    Some(text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,6 +978,7 @@ pub fn integration_section(event: &serde_json::Value, doc_dir: &str) -> String {
             string(&trigger["tail"])
         )),
         Some("decisions") => out.push_str("用户表态。\n"),
+        Some("scope_patch") => out.push_str("越界补丁交接。\n"),
         _ => out.push_str("没有注入：手动重跑或续跑。\n"),
     }
     if let Some(repos) = event["repos"].as_array() {

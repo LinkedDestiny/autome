@@ -321,7 +321,25 @@ rebase 用 patch-id 等价比较列出改写或新增提交，另列原分支中
 
 退出标记出现后：读取 exit code；exit 非零或日志空白判 `crashed`；否则解析状态块（§5.4）并按转换表推进。日志路径写入 Session，界面按需读取。
 
+### 7.4 会话写入范围与越界还原
+
+审计、复盘、Bug 复核只允许修改本任务文档目录。`sweep_commit` 后按会话 `scope_heads` 基线计算越界路径；首次越界先存 binary 补丁到主检出 `.autome/output/scope/<任务>/<会话>.patch`，工作区项目每仓库一份 `<会话>--<成员>.patch`。先持久登记 `session.scope_restore_begun`，再只还原越界路径、核对 `git apply --check`、提交并记 `session.scope_restored`；文档改动保持不变，不 reset 分支。启动恢复与会话启动前接续未完成意图；失败时路径级补偿到会话结束的树，记 `session.scope_restore_failed`，沿用协议失败与手工步骤并补「自动还原没有完成」。
+
+熔断只看本任务最近一个已结束的同角色会话：有 begun 且无 failed 即为生效的还原，连续第二次越界不再还原，原失败详情追加「上一次已自动还原」。需求审计和 Bug 复核角色均为 audit，手动与流程内复盘均为 retro；实现/修复轮不打断，同角色一次干净会话打断。判断来自持久账本，重启与 extend 不清零；熔断轮没有 begun，因此手工处理后 rerun 的下一次越界重新算首次。
+
+待处理由 begun 排除 failed 与 scope_patches_handled 推出，每次启动实现/修复轮写入简报或 prompt，并在 session.started 的 scope_patches 列出；会话正常结束且过守卫才记 session.scope_patches_handled，崩溃不消费。是否采纳由会话判断。需求最后审计/复盘仍有补丁时补实现 → 审计，不受实现预算拦截；Bug 复核按不通过退回修复，仍遵守修复预算。手动复盘不改变已终结任务状态，补丁留待人处理或 rerun 后交接。补丁轮沿用现有审计路径，与 T-68 的衔接标记为 session.started.scope_patches。
+
+CLI run 展示还原、失败、已处理三种事件，begun 不打印；还原行含角色、轮次、总文件数、前 3 个路径及首份补丁（多份带份数），Bug 指向修复轮。task.get 顶层 scope_restore 返回最近 begun 载荷与账本时间 at、待处理补丁路径 pending；无记录 last 为 null，不改变 task 对象键。status 以本地时间显示最近还原记录与待处理/已处理；失败详情保留手工恢复步骤。prompt 与协议正文不变，边界不放宽。
+
+
+### 里程碑关闭之后的交接轮
+
+域上下文 `handoff_pending` 由 `handoff::pending` 从账本计算；目前来源是未处理的越界补丁，操作者备注接入后成为第二类来源。交接文案统一由 `handoff::sections` 写入需求实现轮简报或 Bug 修复 prompt。审计全部关闭里程碑、复盘结束时仍有交接工作则补实现 → 审计；Bug 复核通过时仍有补丁则按复核不通过退回修复，遵守修复预算。熔断仍按 §7.4 的同角色已结束会话口径计算。
+
+全部里程碑已完成时，补丁轮只处理补丁，不改里程碑表或已完成里程碑的最新证据指针；证据写最后一个里程碑本实现轮的文件。产生目录外产品提交则由 T-68 记录 `integration.range`，触发标签 `scope_patch`（越界补丁交接），随后集成复验；仅文档改动仍走普通审计。会话正常收尾才记已处理，崩溃重试继续交接。
+
 ## 8. 调度器
+
 
 - 每个项目一个信号量，容量为 `parallel_limit`。占用槽位的状态：Intake、Design、Review、Adjudicate、Implement、Audit、Rebase、Merging、Cleanup。AwaitDesignApproval、AwaitMerge、Paused、Stopped、Failed 不占槽位。
 - 排队按 `queued_seq`、`created_at` 顺序，可用 `task.move` 调整；槽位释放后依次检查，跳过依赖尚未全部到 `Done` 的受约束任务，保留其队列位置，让后面的任务先走。约束适用于 `Queued`，以及需求任务在设计批准前节点的 `Requeued`；实现期和 Bug 的 `Requeued` 不受依赖约束。依赖取消或失败时任务继续排队，用户可修改或清空依赖。

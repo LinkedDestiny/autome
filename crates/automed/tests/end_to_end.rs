@@ -10542,3 +10542,59 @@ fn scope_restore_bug_run(spent: bool, second_crossing: bool) {
         assert_eq!(handled["patches"], json!([patch]));
     }
 }
+
+#[test]
+fn handoff_e2e_last_milestone_patch_with_product_change_is_integration_audited_then_merges() {
+    needs_git!();
+    let mut w = World::new("handoff-integration");
+    let request = "handoff integration";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成")]),
+        "printf 'review patch\\n' > product.txt\ngit add product.txt",
+    );
+    w.doc_step_for_prelude(
+        7,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "test ! -e product.txt\nprintf 'adopted patch\\n' > product.txt\ngit add product.txt",
+    );
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let range = w.ctx.store.task_events(&id, "integration.range").unwrap();
+    assert_eq!(range.len(), 1);
+    assert_eq!(range[0]["trigger"]["kind"], "scope_patch");
+    assert!(w.prompt(8).contains("本轮是**集成复验**"));
+    assert!(integration_e2e_brief(&w, &slug, 2).contains("越界补丁交接"));
+    let brief = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/impl-2.md")),
+    )
+    .unwrap();
+    assert!(brief.contains("本轮只处理补丁"));
+    assert!(brief.contains("evidence/M-01-r2-impl.md"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_patches_handled")
+            .unwrap(),
+        1
+    );
+}

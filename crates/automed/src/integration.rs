@@ -113,6 +113,7 @@ pub(crate) fn integration_for_audit(
         Some("rebase_conflict") => "rebase 冲突",
         Some("gate_failed") => "合并前门禁失败",
         Some("decisions") => "用户表态",
+        Some("scope_patch") => "越界补丁交接",
         _ => "没有注入：手动重跑或续跑",
     };
     let mut summary = vec![trigger.to_string()];
@@ -228,14 +229,7 @@ pub(crate) fn range(
     if repos.is_empty() {
         return Ok(None);
     }
-    let trigger = match inject {
-        Some(Inject::RebaseConflict { files }) => json!({"kind":"rebase_conflict", "files":files}),
-        Some(Inject::GateFailed { command, tail, .. }) => {
-            json!({"kind":"gate_failed", "command":command, "tail":tail})
-        }
-        Some(Inject::Decisions) => json!({"kind":"decisions"}),
-        _ => json!({"kind":"none"}),
-    };
+    let trigger = integration_trigger(inject, &attempt);
     Ok(Some(
         json!({"session_id": attempt["session_id"], "impl_round":status.impl_round,
         "evidence":format!("{}-r{}-audit.md", status.milestones.last().unwrap().id, status.impl_round),
@@ -438,6 +432,34 @@ fn repo_range(
         json!({"repo":slot.name, "start":start,"end":end,"base":base,"commits":commits,
         "dropped":dropped,"test_files":tests,"commits_omitted":commits_omitted,"dropped_omitted":dropped_omitted}),
     )
+}
+
+fn integration_trigger(inject: Option<&Inject>, attempt: &Value) -> Value {
+    match inject {
+        Some(Inject::RebaseConflict { files }) => json!({"kind":"rebase_conflict", "files":files}),
+        Some(Inject::GateFailed { command, tail, .. }) => {
+            json!({"kind":"gate_failed", "command":command, "tail":tail})
+        }
+        Some(Inject::Decisions) => json!({"kind":"decisions"}),
+        _ if attempt["scope_patches"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty()) =>
+        {
+            json!({"kind":"scope_patch"})
+        }
+        _ => json!({"kind":"none"}),
+    }
+}
+
+#[test]
+fn handoff_integration_trigger_names_the_scope_patch() {
+    assert_eq!(
+        integration_trigger(None, &json!({"scope_patches":["patch"]}))["kind"],
+        "scope_patch"
+    );
+    for attempt in [json!({}), json!({"scope_patches":[]})] {
+        assert_eq!(integration_trigger(None, &attempt)["kind"], "none");
+    }
 }
 
 #[cfg(test)]
