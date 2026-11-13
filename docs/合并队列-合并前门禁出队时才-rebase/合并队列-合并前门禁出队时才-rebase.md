@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/25
-current-milestone: M-04
+implementation-round: 6/25
+current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-05 README 与技术设计文档
+next-action: 独立审计 M-05 文档与验收证据
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -404,7 +404,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 | M-02 | 已完成 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
 | M-03 | 已完成 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
 | M-04 | 已完成 | 过期显示与合并队列的输出 | 0 | merge-view |
-| M-05 | 开放 | README 与技术设计文档 | 0 | docs |
+| M-05 | 待审 | README 与技术设计文档 | 0 | docs |
 
 ## 里程碑范围
 
@@ -451,6 +451,8 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 - 内容：D5 渲染、D7。
 
 ### M-05 范围
+
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-05-r6-impl.md · 待审 · 实现 #6
 
 - 结果：README 与技术设计文档写明合并队列的行为、临界区范围、`[merge] auto` 的取舍与 `task.merge --cancel`。
 - 覆盖：G8。

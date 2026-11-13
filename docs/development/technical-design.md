@@ -96,8 +96,9 @@ effort = "high"
 [roles.impl]
 [roles.audit]
 
-# 仅项目级：合并后由宿主在主检出执行
+# 仅项目级：自动合并与合并后宿主命令
 [merge]
+auto = false               # 缺省 false；true 表示门禁通过后直接合并
 after = "sh scripts/install-cli.sh"
 after_timeout_minutes = 10  # 可省，缺省 10 分钟
 ```
@@ -189,12 +190,17 @@ Paused(resume_node) · Stopped(node) · Failed(reason) · Cancelled
 | Audit | 会话结束 | 全部里程碑 done | Rebase |
 | Audit | 会话结束 | 有未完成 且 k < N | Implement |
 | Audit | 会话结束 | k ≥ N | Failed(impl_budget) |
-| Rebase | 内核执行 | 无冲突 | AwaitMerge |
+| Rebase | 内核执行 | 无冲突，配了门禁 | MergeGate |
+| Rebase | 内核执行 | 无冲突，未配门禁 | 已授权走合并入口，否则 AwaitMerge |
 | Rebase | 内核执行 | 有冲突 | Implement（冲突修复 prompt） |
+| MergeGate | 门禁结果 | 通过 | 已授权走合并入口（无纳入表态时 Merging），否则 AwaitMerge |
+| MergeGate | 门禁结果 | 失败 | Implement（门禁失败 prompt；熔断时 Failed） |
+| MergeGate | 内核执行 | MergeGate 出队冲突 | Implement（冲突修复 prompt；连续冲突或预算用尽时 Failed） |
 | AwaitMerge | 用户点合并 | 无纳入表态 且 前置条件满足 | Merging |
 | AwaitMerge | 用户点合并 | 有纳入表态 | Implement（新增里程碑，N 加 5 × 新增数） |
 | AwaitMerge | 用户点合并 | 前置条件不满足 | AwaitMerge（提示原因） |
-| Merging | 内核执行 | 成功 | Cleanup |
+| Merging | 内核执行 | 成功 | 配了门禁则 MainCheck，否则 Cleanup |
+| Merging | 内核执行 | 落后 / 其它阻塞 | Requeued(Rebase) / AwaitMerge |
 | Cleanup | 内核执行 | — | Done |
 | 任一运行态 | 用户暂停 | — | Paused（当前会话跑完后不再启动） |
 | 任一运行态 | 用户停止 | — | Stopped（杀会话） |
@@ -246,6 +252,7 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 | fix_gate | 门禁结果 | 通过 / 失败 | fix_review / fix（注入门禁命令与日志尾）；出处：`apply_for` |
 | fix_review | 会话结束 | 复核通过 / 打回 | Rebase（不经 Retro）/ fix（注入打回）；出处：`apply_for` |
 | Rebase | 内核结果 | 成功 / 冲突 | MergeGate / fix（注入冲突文件）；出处：`apply_for` |
+| MergeGate | 内核结果 | 出队 rebase 冲突 | fix（注入 RebaseConflict，保留授权、释放锁和门禁位置；预算用尽或连续冲突则 Failed） |
 | MergeGate | 门禁结果 | 失败 / 通过 | fix / 共用需求任务 AwaitMerge 以后的尾段；出处：`bug_loop_merge_tail_is_shared_with_the_feature_loop`、`apply_for` |
 | await_info / not_a_bug | reply | 非空补充信息 | locate；空白文本拒绝「补充信息不能为空」，其它节点拒绝 reply；出处：`bug_loop_reply_is_refused_when_empty_or_not_waiting`、`apply_for` |
 | await_info / not_a_bug | 用户操作 | 取消 / 暂停、停止、追加轮次 | Cancelled / 拒绝；出处：`bug_loop_waiting_nodes_allow_cancel_but_not_pause_stop_or_extend` |
@@ -319,7 +326,7 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 
-**宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同则沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。默认 `[gate] reuse_for_main_check = true`：合并提交与最近通过 MergeGate 的提交树相同，且被合并的 head 与实际启动命令均匹配时，沿用该结果并写 `gate.reused`，不创建验证检出、不启动 MainCheck 作业；设为 `false` 则始终照常运行。无法确认通过记录、命令或树时也照常运行。同一任务同一 `gate` / `merge_gate` / `fix_gate` 节点连续相同失败指纹达到 `[gate] same_failure_limit`（默认 3，整数 1–10）时熔断，任务失败并附原因摘要与最近日志路径；同节点通过或指纹变化打断连续计数，修复环境后可用 `rerun` / `extend` 重跑，熔断后的新运行从零计数；`repro_check` 与 `main_check` 不参与熔断。每次实际执行的门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
+**宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同且分支不落后才可沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。默认 `[gate] reuse_for_main_check = true`：合并提交与最近通过 MergeGate 的提交树相同，且被合并的 head 与实际启动命令均匹配时，沿用该结果并写 `gate.reused`，不创建验证检出、不启动 MainCheck 作业；设为 `false` 则始终照常运行。无法确认通过记录、命令或树时也照常运行。同一任务同一 `gate` / `merge_gate` / `fix_gate` 节点连续相同失败指纹达到 `[gate] same_failure_limit`（默认 3，整数 1–10）时熔断，任务失败并附原因摘要与最近日志路径；同节点通过或指纹变化打断连续计数，修复环境后可用 `rerun` / `extend` 重跑，熔断后的新运行从零计数；`repro_check` 与 `main_check` 不参与熔断。每次实际执行的门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
 
 宿主门禁与准备共享全局 `~/.autome/config.toml` 的 `[gate] concurrency`（缺省 1，整数 1–10）；项目覆盖取与全局的较小值，仅配置 concurrency 不启用门禁命令。按一个账本内所有项目的在途作业总数与当前项目有效限额比较，不扫描全机进程，也不限制会话内的命令。Gate / MergeGate / MainCheck / ReproCheck / FixGate 严格 FIFO，无优先级；排队保留原节点及项目并行槽位，不写作业文件或 started 事件、不消耗预算与失败/重试计数，超时从真正启动的 `.started` 算起。`gate.queued.position` 是入队时从 1 起的快照，`task.get` 与 `dashboard.get` 的 `gate_queue_position` 是实时名次（非排队为 null），不复用 `queue_position`；CLI 显示「排队等门禁（前面还有 k 个）」，k = 名次 − 1。有效排队项按事件 seq 恢复，启动、状态变化、会话冷却或 `gate.queue_dropped` 使其失效，再来排队尾；准入前出错的队首退队并报告错误。正常结束、失败、超时或作废后释放名额；暂停的活作业继续占位，每 tick 全任务超时回收，已退出未收作业有 tick 期限，避免永久占位。无法读作业目录且账本不能证明无在途作业时保守暂停新准入并报告恢复目录或取消任务的提示。升级时已有超额作业正常收取，不为限额杀掉它们。内核超时终止行在注入、警报与 CLI 中明确显示「门禁超时」；命令自行返回 124 而无终止行不使用该文案，但保留既有熔断指纹将任何 124 视为超时的兼容行为，其摘要仍按超时显示。
 
@@ -330,6 +337,16 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 **重试与冷却。** 会话结果为崩溃（非零退出、进程消失）且不是人叫停的，不推进，写一行 `session_retries`，退避 `backoff_seconds × 2^(n-1)` 后由 tick 重派，带着原来的注入。次数上限为 `[retry] attempts`（默认 2），用尽才 Failed。输出不可解析、缺产物、守卫失败不重试——那是协议问题。崩溃输出里能认出限流（429、rate limit、usage limit、overloaded）时，给这个 CLI 写一条冷却（10 分钟起，连续限流翻倍，最长 60 分钟；CLI 给了重置时间就用它），这次不计入次数。冷却期间要启动的角色，若改派到另一个 CLI 仍满足 SAME-MODEL 的分离（按 runtime 粒度判断），就改派并记 `session.rerouted`；否则任务留在原节点，等冷却结束。
 
 **表态租约。** 用户对 Backlog 与争议项的表态，不再在会话启动前就记为已消费。启动带 `Decisions` 注入的会话时，把「已表态、未消费、未被别的会话带走」的条目标上 `carried_by = 会话`，prompt 与简报只列这批。会话正常结束才写 `consumed_by`；崩溃、守卫失败或被叫停，就清掉 `carried_by`，下一个会话重新带上。复盘关闭时的忽略项等没有会话可携带的路径，照旧直接消费。
+
+**合并队列。** 保留入队前的 Rebase；需求与 Bug 的 MergeGate 在真正出队时重新检查各检出 `git rev-list --count <head>..<base>`，落后才 rebase。沿用结果除原有 SHA/命令条件外还要求不落后。已授权任务先按 `gate.queued` 的 seq 取得项目合并资格，写 `merge.locked {node}`，再检查沿用、准备、宿主准入与出队对齐。对齐改变准备输入时重跑准备，期间仍持锁，下一次启动门禁前重新检查基线；真正对齐写 `merge.rebased {at: "dequeue", repos: [{repo, onto, base_sha, head}]}`。
+
+锁覆盖准备和等待宿主名额、出队 rebase、MergeGate、Merging，到离开 Active MergeGate / Merging 时写 `merge.unlocked {reason}`。MainCheck、Cleanup、`[merge] after` 在锁外。其它任务的 MergeGate 不开跑、Merging 不执行，写 `merge.waiting {node, holder}`；等锁者保留 FIFO seq，但从宿主可准入队列排除，`gate_queue_position` 为 null，不堵其它项目。持锁者仍遵守宿主准入限额；`concurrency > 1` 也不允许同项目第二个已授权任务越过锁。已在运行的未授权门禁不被中断，中途授权不补拿锁，其 Merging 仍等待已有持锁者。
+
+门禁失败、熔断、准备失败、出队冲突、暂停、停止、取消，以及合并成功、阻塞、落后或失败离开临界区时释放锁；授权保留。撤销授权立即解锁，已启动的门禁照常完成，通过后停 AwaitMerge。作业消失或 head 改变而仍在 MergeGate 时保留锁并重新准入、对齐；移除项目门禁时需求任务按通过处理，有授权则持锁进入 Merging。持有关系由最后一条 `merge.locked` / `merge.unlocked` 与当前 Active 节点共同推导，重启从账本恢复队列、授权和锁，不依赖内存。未授权任务停在 AwaitMerge 不持锁；没有项目门禁的需求任务不拿锁，但 Merging 服从其它持锁者。外部工具或用户提交不受锁约束，仍由 Merging 的 Behind 路径释放锁、排队 rebase 后重试。
+
+MergeGate 出队冲突复用 RebaseConflict，需求回 Implement、Bug 回 fix；同文件集连续三次冲突或预算用尽会失败。未启动门禁、不写 gate.started，状态变化让排队条目失效，名额让给下一任务；修好重新排队尾。出处：`scheduler.rs` 的 `run_gate` / `advance`、两个 crate 的 `merge_queue.rs` 与 `gate_queue.rs`。
+
+项目 `[merge] auto` 仅接受布尔值，缺省 false，与 `after` 共存，`save_project` 保留整个表。开启可省人工确认，但通过的修改会未经最终人工检查进入 main；未配置 `[gate]` 时只给 `config_warnings` 警告，需求任务 rebase 后直接合并，Bug 仍跑复现命令。有效授权每次读取：最后一条 `merge.auto` 事件 active=true 表示 user/behind 授权；active=false 且 by=user 表示显式撤销，覆盖项目开关；无记录或旧版无 by 的 false 才回落到项目 auto。`merge.auto` 事件是单任务授权记录，不是配置开关。冲突、失败、暂停、停止、重跑均不自动清授权；设计批准、Bug 等人卡点照常停，Blocked 返回 AwaitMerge 等用户处理。直接合并写 `merge.direct {by}`，`autome run` 打印出队对齐和已授权直接合并信息。
 
 ### 8.2 任务卡正文、附件与待开始（Draft）
 
@@ -396,6 +413,10 @@ SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
 
 补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。
+
+`task.merge {task_id, cancel?: bool}`：cancel 缺省 false，非布尔拒绝。在 AwaitMerge 走合并入口；其它未完成且未失败状态（含 Draft、排队、暂停、停止和设计卡点）记录预先同意，不跳过卡点。Failed 要先重跑；Active Merging / MainCheck / Cleanup 以及 Done / Cancelled 拒绝再次授权。`cancel: true` 对应 CLI `autome merge cart --cancel`，撤销有效授权；无授权、已终结或合并已开始时拒绝，Failed 可撤销。成功返回 task.get 投影加 `merge_request: "merging" | "authorized" | "already_authorized" | "revoked"`；`merging` 表示已执行合并入口，仍可能因纳入表态回实现轮，不保证已落地。出处：`dispatch::task_merge`、领域层 `merge_press` / `cancel_press`。
+
+`task.get`、`dashboard.get`、`project.get.tasks` 的任务投影包含 `merge: {authorized, authorized_by, holds_section, waiting_for, stale}`，终结任务为 null。authorized_by 为 user/project/behind/null，waiting_for 为任务 ID 或 null。stale 只在 Active AwaitMerge 且落后时为 `{behind, gated, repos: [{repo, base, behind}]}`；工作区 behind 为各成员落后数之和，gated 表示配了项目门禁或为 Bug。Git 读取失败记 warning 并返回 stale=null，不阻断列表，也不代表已确认最新。`status` / `ls` 显示授权、等待与过期状态，有门禁时提示「合并时会重新 rebase 并再跑一次门禁」，无门禁则提示先 rebase。task.get 与 dashboard.get 另带 config_warnings（后者按项目），status 打印配置警告。
 
 `task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
 
