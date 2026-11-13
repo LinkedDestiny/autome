@@ -17,3 +17,5 @@
 实现 #7 | M-06 | 开放（验收受阻） | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-06-r7-impl.md | listen 与 ps EPERM
 
 实现 #8 | M-06 | 快检修复通过，保持开放 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-06-r8-impl.md | 实时与进程收尾证据沿用上一轮未取证
+
+审计 #6 | M-06 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-06-r8-audit.md | 无
