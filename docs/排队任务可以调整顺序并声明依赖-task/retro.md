@@ -2,3 +2,4 @@
 评审 #1 | M-01 | 提出 4 项问题、2 项非阻塞建议 | 排队任务可以调整顺序并声明依赖-task-review.md | D1-P01～D1-P04 待裁决
 裁决 #1 | 无 | 采纳 D1-P01～P04 与 N1/N2；设计定稿（status→实现中，design-round 1/15；M-04 用例 6→7） | 排队任务可以调整顺序并声明依赖-task-adjudication.md | 无
 实现 #1 | M-01 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-impl.md | 无
+审计 #1 | M-01 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-audit.md | 无
