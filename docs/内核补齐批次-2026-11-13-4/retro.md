@@ -42,3 +42,4 @@
 审计 #19 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r20-audit.md | 无；H-01 未确认
 复盘 #4 | 无 | 教训 7 条 | docs/内核补齐批次-2026-11-13-4/lessons.md | HEAD ab0d2908 上 `cargo test --workspace --all-targets --no-fail-fast`：automed 库 993 全过；end_to_end 256 过 2 败，the_merge_panel_offers_the_merge_when_only_main_has_moved 单独重跑仍败（基线用例断言合并后 available=false，与 M-13 的 merged 结构冲突），legacy_pointer_e2e_restore_failure_keeps_todays_failure 单独重跑通过；两次合并门禁都没跑到 end_to_end，下次合并前门禁会红；H-01 未确认
 实现 #21 | M-16（集成修复） | 两条门禁失败已修复，21 用例通过 | evidence/M-16-r21-impl.md | 宿主快检与合并门禁待重跑；H-01 未确认
+审计 #20 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-audit.md | 无；H-01 未确认
