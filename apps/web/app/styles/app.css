@@ -93,3 +93,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-new-attachments { max-height: 160px; min-height: 0; overflow-y: auto; }
 .task-new footer { display: flex; gap: 16px; }
 .task-new :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 2px; }
+.task-page { height: 100%; overflow-y: auto; min-height: 0; }
+.task-page h1 { color: var(--animal-text); overflow-wrap: anywhere; }
+.task-page small { font-size: 14px; color: var(--animal-text-muted); }
+.session-log { margin: 16px 0; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius); background: var(--animal-bg-content); }
+.session-log summary { padding: 16px; cursor: pointer; overflow-wrap: anywhere; font-weight: 800; }
+.session-log-body { padding: 0 16px 16px; min-width: 0; }
+.session-log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.session-log-text { font-family: ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; overflow-anchor: none; padding: 16px; background: var(--animal-bg-input); border-radius: var(--animal-radius-sm); }
+.session-log-status { color: var(--animal-text-muted); font-size: 14px; }

@@ -13,3 +13,5 @@
 
 实现 #5 | M-04 | 待审 | docs/w8-实时会话日志/evidence/M-04-r5-impl.md | 无
 审计 #5 | M-04 | 通过 | docs/w8-实时会话日志/evidence/M-04-r5-audit.md | 无
+
+实现 #6 | M-05 | 待审 | docs/w8-实时会话日志/evidence/M-05-r6-impl.md | 无（H-01–H-05 待人工验收）
