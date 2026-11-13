@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/25
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 待独立审计；通过后推进 M-02：授权寿命、预先同意与撤销、配置警告及保存验收
+next-action: 等待宿主快检与 M-01 独立审计；通过后推进 M-02：授权寿命、预先同意与撤销、配置警告及保存验收
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -410,7 +410,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### M-01 范围
 
-最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r1-impl.md · 验收通过，待独立审计 · 实现 #1
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-01-r2-impl.md · 快检修复，保持待审 · 实现 #2
 
 - 结果：`[merge] auto = true` 的项目里，三个同时到达合并前门禁的任务各跑一次门禁、依次合并，没有落后回退；临界区内被按合并的
   任务等持锁者，持锁者门禁失败后它继续；重启后照旧。

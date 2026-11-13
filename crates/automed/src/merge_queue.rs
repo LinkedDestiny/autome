@@ -79,10 +79,10 @@ pub fn wait(ctx: &mut Ctx, task: &TaskRecord, node: Node, holder: &str) -> Resul
             json!({"node": node.as_str(), "job":"gate"}),
         )?;
     }
-    if !ctx
+    if ctx
         .store
         .last_event_of(&task.id, &["task.updated", "merge.waiting"])?
-        .is_some_and(|(_, kind, _)| kind == "merge.waiting")
+        .is_none_or(|(_, kind, _)| kind != "merge.waiting")
     {
         ctx.store.append_event(
             "merge.waiting",
