@@ -1,14 +1,23 @@
-# 教训：W8 实时会话日志（复盘 #1）
+# 教训：W8 实时会话日志（复盘 #2）
 
-Autome 没有为本任务记录指标，下文不引用任何指标数值。所有事实都来自 `retro.md`、`evidence/`、评审、裁决、审计记录和设计文档头部。
+Autome 没有为本任务记录指标，下文不引用任何指标数值。所有事实都来自 `retro.md`、`evidence/`、评审、裁决、审计记录、设计文档，以及 `.autome/output/gates/T-59/` 下的宿主门禁日志。
 
 运行概况（可核对）：
 - 设计 1/15 轮。评审 #1 提出 3 项问题，裁决 #1 全部采纳，没有复审。
-- 实现 6/25 轮，审计 6 轮。M-01..M-05 全部 `已完成`。
-- M-03 reopen 1（领域 logtail-live），其余里程碑 reopen 0，都是第一次审计就通过。
-- 人工验收 H-01–H-05 留待合并前由用户确认。
+- 实现 7/25 轮，审计 7 轮。M-01..M-05 全部 `已完成`。M-03 reopen 1（领域 logtail-live），其余里程碑 reopen 0。
+- 复盘 #1 之后的合并前全量门禁 `merge_gate-01e4ff7c3cd2`（kind full）退出码 1：Rust `end_to_end` 163 通过、1 失败（`gate_queue_order_survives_a_core_restart`）；Web 55 个测试文件中 2 个失败（`bell-system.test.ts`、`labels.test.ts`）。
+- 实现 #7 修掉这三处，不改里程碑状态。之后宿主只跑了快检 `gate-352b58148f6c`（kind quick：fmt、clippy、lint、typecheck），退出码 0。本轮复盘时合并前全量门禁还没重跑，A-05 仍未取证。
+- 审计 #7 没有待审里程碑，未改表。人工验收 H-01–H-05 留待合并前由用户确认。
 
-设计按「前车之鉴」把需要监听端口的用例全部放进 M-03 一个文件，M-01、M-02、M-04、M-05 都不监听，所以这几个里程碑不受实现轮 listen EPERM 影响，一次就过。多花的一对实现轮和审计轮全部出在 M-03。
+和复盘 #1 相比的变化：
+- L-03 改写了。本次门禁失败证明原 proposal（`git grep` 符号名）抓不到这次的漏网测试（见 L-03 root_cause）。
+- 新增 L-05。
+- L-01、L-02、L-04 原样保留。
+
+三件不成为教训、只记录的事实：
+- Rust `gate_queue_order_survives_a_core_restart` 的失败，实现 #7 只能用「回拨 61 秒后稳定变红」从机制上推断，宿主日志没有留下失败时的时序。只出现一次，根因没有证实，所以不写成教训。
+- 该修复改了 `crates/automed/tests/end_to_end.rs`。任务文件「前车之鉴」原本要求范围外失败只记 Backlog，实现 #7 的证据写明这是按最新用户指令做的。
+- 另外，设计文档第 71 行仍写着「`bell-system.test.ts` … 不受影响（已核对）」，和实现 #7 在第 311 行新加的说明矛盾。留给后续设计轮或用户处理，本轮不改设计文档。
 
 ```yaml
 - id: L-01
@@ -35,12 +44,12 @@ Autome 没有为本任务记录指标，下文不引用任何指标数值。所�
 ```yaml
 - id: L-03
   domain: design
-  symptom: '设计原稿要求把 bell-targets.ts 里任务目标的 available 改为 true，同时在文件清单里写「已有测试文件不改」，M-05 预期 bell-view 8 条照常通过。评审 #1 D1-P03 核对 apps/web/test/bell-view.test.ts:28–31：这条用例用默认 TARGETS 断言任务通知不含 `href=`，开放任务目标后必然变红；临时探针实测 2 条中 1 条按预期失败。设计只考虑了同一文件第 62 行的路由一致性守卫，漏掉了第 28 行'
-  root_cause: '设计改的是一个导出常量的默认值，却没有在测试目录里查这个符号的全部引用。它只检查了一个已知的守卫，就宣称已有测试不受影响'
-  evidence: 'docs/w8-实时会话日志/w8-实时会话日志-review.md'
+  symptom: '设计原稿只处理了 bell-view.test.ts 第 62 行的路由一致性守卫；评审 #1 D1-P03 用探针实测补出第 28 行。裁决 #1 和设计第 71 行接着写下「bell-system.test.ts 自己注入 targets，不读默认值，不受影响（已核对）」。合并前全量门禁里 bell-system「列表缺失、刷新失败、空正文均降级；无任务不跳转，项目路由可解析」失败：同一用例第 83 行 `showSystemNotification(notifier, true, message, [item])` 没传 targets，走的是默认参数 `targets = TARGETS`，仍断言 `href: null`。实现 #7 把它改成 `/tasks/T-3`'
+  root_cause: '设计、评审、裁决三轮都靠读代码判断改一个导出常量会波及哪些测试。默认参数让调用点不出现这个符号名，裁决又按文件下结论（「它自己注入」），漏掉了同一文件里不传参的那次调用。`git grep -n TARGETS -- apps/web/test` 只命中 bell-view 和 task-page，所以复盘 #1 原 L-03 的 grep 做法同样会漏。评审 #1 唯一抓准的那一处，是把改动临时施加后真跑出来的'
+  evidence: 'docs/w8-实时会话日志/evidence/M-05-r7-impl.md'
   level: brief
-  proposal: '设计修改导出常量或默认配置的取值时，必须列出 `git grep -n <符号名>` 在测试目录下的全部命中，并逐条写明该测试是否需要修改'
-  predicted_impact: {metric: impl_defects, direction: down, scope: project, horizon: 5}
+  proposal: '设计或裁决写「某已有测试不受改动影响」时，必须附上把该改动临时施加后运行所在包全量测试得到的失败用例清单；只凭阅读代码写的「已核对」不得作为依据'
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 5}
 ```
 
 ```yaml
@@ -52,6 +61,17 @@ Autome 没有为本任务记录指标，下文不引用任何指标数值。所�
   level: brief
   proposal: '设计对任务要求或验收标准加大小、数量或场景上的限定（如「不超过 N 时」）时，必须引用任务文件或任务卡中允许该限定的原文；引用不出原文的，不得加这种限定，也不得把满足原要求所需的能力放进 Backlog'
   predicted_impact: {metric: closed_then_contradicted, direction: down, scope: project, horizon: 5}
+```
+
+```yaml
+- id: L-05
+  domain: verification
+  symptom: '审计 #6 关闭最后一个里程碑 M-05 时只跑了验收命令（4 个文件、29 个用例）和 lint、typecheck、build，没跑 `npm --prefix apps/web test`；六个实现轮的证据也都写明未跑全量。合并前全量门禁的 Web 部分 55 个文件里 2 个失败：一个是 bell-system（见 L-03），另一个是 labels「7 views do not duplicate status, column or stage Chinese literals」——任务页新文案「读取任务失败」含状态标签「失败」，日志组件「已暂停滚动」含「已暂停」。两处都是确定性失败，在审计环境里跑一次 Web 全量就会变红，结果多花了实现 #7、审计 #7 和一次全量门禁'
+  root_cause: '任务文件 §4 第 11 条要求 A-05 全绿「由合并前门禁与最后的审计给出」。设计目标表 A-05 行只写了「合并前宿主门禁」，验收约定第 376 行写「全量回归由合并前门禁负责」，把最后一次审计负责的那一半丢了。协议审计复验范围里的「项目测试体系（全量跑一次即可）」也没有执行。审计环境能监听回环（审计 #4 的 listen 探针 ok），并没有环境上的理由不跑'
+  evidence: 'docs/w8-实时会话日志/evidence/M-05-r6-audit.md'
+  level: brief
+  proposal: '关闭最后一个开放里程碑的审计轮，证据文件必须写出任务验收「全绿」条款中全量测试命令（本任务为 `npm --prefix apps/web test`）运行时报告的用例总数与退出码'
+  predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
 ```
 
 L-01 的 proposal 原文与 `docs/bug-loop-的定位-修复-复核/lessons.md` L-04 逐字相同，方便跨任务计数。
