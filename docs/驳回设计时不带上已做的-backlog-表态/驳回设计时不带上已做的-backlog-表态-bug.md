@@ -1,10 +1,10 @@
 # 驳回设计未携带已做的 Backlog 表态
 
 status: 已定位
-fix-round: 3/3
+fix-round: 4/4
 复现命令: cargo test --offline -p automed --test end_to_end rejecting_design_carries_pending_decisions_and_approval_starts_implementation -- --exact --nocapture
 根因: Reject 原先未携带和租用表态，第 1 轮已修复；另有 task_trigger 在启动会话后立即 tick 的时序竞争，快速完成的实现会话会在批准命令返回前被收割并推进到 audit。
-复核: 打回
+复核: 待复核
 repos: .
 
 ## 现象
@@ -43,6 +43,12 @@ missing decision text in rejection prompt: ["B-01", "B-02", "B-03"]; unconsumed 
 任务卡引用的 `docs/plans/2026-10-11-decisions-take-effect-next-round.md` 在当前 checkout 不存在，未将其内容作为已核实证据。现有表态租约测试与当前生产实现足以支持以上因果链。
 
 ## 修复说明
+
+第 4/4 轮验证与收尾：
+
+- 本轮开始时 HEAD 已包含 `28d28fd`，仅将回归测试中的单行 `if/else` 按 rustfmt 展开，上一轮的格式阻塞已解除。本轮未修改产品代码或定位轮回归测试，仅更新本记录。
+- `cargo fmt --all -- --check` 通过（退出码 0）；原复现命令通过（1 passed、0 failed）；直接相关子集 `cargo test --offline -p automed --lib rejecting` 通过（2 passed、0 failed）。日志分别为 `.autome/output/fix-round-4-fmt.log`、`.autome/output/fix-round-4-repro.log`、`.autome/output/fix-round-4-rejecting.log`。
+- 保持 `status: 已定位`、原复现命令、根因和 repos 不变，按本轮预算更新 `fix-round: 4/4`，重置 `复核: 待复核`。`git diff --check` 通过。未运行全量门禁 `sh scripts/ci-local.sh`，由宿主合并前执行；未启动下一会话。
 
 第 3/3 轮检查与阻塞：
 
