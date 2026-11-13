@@ -729,6 +729,14 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
         print_json(&d);
         return Ok(());
     }
+    for row in d["projects"].as_array().into_iter().flatten() {
+        if let Some(error) = row["config_error"].as_str() {
+            println!(
+                "{} 配置有误：{error}",
+                row["project"]["display_name"].as_str().unwrap_or("")
+            );
+        }
+    }
     for project in d["config_warnings"].as_array().into_iter().flatten() {
         print_config_warnings(
             &project["warnings"],

@@ -496,6 +496,12 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 `task.merge {task_id, cancel?: bool}`：cancel 缺省 false，非布尔拒绝。在 AwaitMerge 走合并入口；其它未完成且未失败状态（含 Draft、排队、暂停、停止和设计卡点）记录预先同意，不跳过卡点。Failed 要先重跑；Active Merging / MainCheck / Cleanup 以及 Done / Cancelled 拒绝再次授权。`cancel: true` 对应 CLI `autome merge cart --cancel`，撤销有效授权；无授权、已终结或合并已开始时拒绝，Failed 可撤销。成功返回 task.get 投影加 `merge_request: "merging" | "authorized" | "already_authorized" | "revoked"`；`merging` 表示已执行合并入口，仍可能因纳入表态回实现轮，不保证已落地。出处：`dispatch::task_merge`、领域层 `merge_press` / `cancel_press`。
 
+`project.probe.rejection` 为 null 或 `{kind, message, project_id?}`，与 project.add 共用拒绝判定，kind 为 not_a_directory / already_project / nested_in_project / contains_project；正常或可重新添加的已移除项目不拒绝。probe 不创建目录，别名按规范路径判定。
+
+`config.get.resolved` 始终给出全部 14 个生效顶层字段，包括 gate_run=each_round、gate_quick=null、setup=null；不改变 ResolvedConfig 在其它接口的稀疏序列化。并列 defaults 列表标记项目与全局都未指定而使用内置值的键；整个聚合字段皆缺省时用顶层键，loop_defaults 部分覆盖时用 loop_defaults.<字段>。显式填写的值即使等于内置值也不标缺省，角色聚合有覆盖时不标为整体缺省。
+
+`dashboard.get.projects` 列出所有 `{project, config_error}`，项目配置解析或读取失败时携带原始错误，其任务、其它项目及全局视图仍返回；健康项目 config_error=null。`project.get` 同样容错，坏配置时 config=null、config_error 为原始错误，其余字段保留。坏配置项目的任务 merge 投影为 null，避免推断未知授权；修复配置后恢复投影。容错仅用于展示，调度准入仍严格报告配置错误。`project.list` 仍不读配置；CLI `autome status` 在项目名旁显示「配置有误：<原文>」。
+
 `task.get`、`dashboard.get`、`project.get.tasks` 的任务投影包含 `merge: {authorized, authorized_by, holds_section, waiting_for, stale}`，终结任务为 null。authorized_by 为 user/project/behind/null，waiting_for 为任务 ID 或 null。stale 只在 Active AwaitMerge 且落后时为 `{behind, gated, repos: [{repo, base, behind}]}`；工作区 behind 为各成员落后数之和，gated 表示配了项目门禁或为 Bug。Git 读取失败记 warning 并返回 stale=null，不阻断列表，也不代表已确认最新。`status` / `ls` 显示授权、等待与过期状态，有门禁时提示「合并时会重新 rebase 并再跑一次门禁」，无门禁则提示先 rebase。task.get 与 dashboard.get 另带 config_warnings（后者按项目），status 打印配置警告。
 
 `task.create` 可携带 `after: ["T-41"]`；`task.set_after {task_id, after}` 替换依赖，空数组清空。最多 8 个输入项，去重保序，只接受同项目存在的任务，拒绝自引用和环；需求任务只允许在设计批准前且从未开始实现轮时修改，Bug 任务只允许开始前修改。

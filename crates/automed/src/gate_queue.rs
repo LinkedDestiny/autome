@@ -41,6 +41,14 @@ pub fn queued_seq(ctx: &Ctx, task: &str) -> Result<Option<u64>> {
 }
 
 pub fn waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
+    waiters_inner(ctx, false)
+}
+
+pub fn display_waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
+    waiters_inner(ctx, true)
+}
+
+fn waiters_inner(ctx: &Ctx, tolerate_config: bool) -> Result<Vec<Waiter>> {
     let mut queue = Vec::new();
     for task in ctx.store.list_unfinished()? {
         if let Some((seq, kind, payload)) = ctx.store.last_event_of(&task.id, QUEUE_EVENTS)?
@@ -50,7 +58,17 @@ pub fn waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
                 == (TaskState::Active {
                     node: Node::MergeGate,
                 })
-                && crate::merge_queue::waiting_for(ctx, &task)?.is_some()
+                && crate::merge_queue::waiting_for(ctx, &task)
+                    .or_else(|error| {
+                        if tolerate_config
+                            && error.downcast_ref::<config_io::ConfigError>().is_some()
+                        {
+                            Ok(None)
+                        } else {
+                            Err(error)
+                        }
+                    })?
+                    .is_some()
             {
                 continue;
             }

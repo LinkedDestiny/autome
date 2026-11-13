@@ -118,6 +118,76 @@ pub fn load_project(repo: &Path) -> Result<ProjectConfig> {
     })
 }
 
+/// Top-level resolved keys whose entire value comes from built-in defaults.
+/// A partially overridden aggregate is not labelled as entirely default.
+/// Read the file rather than the repaired GlobalConfig to distinguish an
+/// explicit value equal to the default from an omitted setting.
+pub fn resolved_defaults(autome_home: &Path, project: &ProjectConfig) -> Result<Vec<String>> {
+    let path = global_config_path(autome_home);
+    let raw: toml::Value = toml::from_str(&read(&path)?).map_err(|e| ConfigError::Parse {
+        path: path.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let local = serde_json::to_value(project).expect("project config is serializable");
+    let mut defaults = Vec::new();
+    for key in [
+        "bug",
+        "gate",
+        "gate_quick",
+        "gate_run",
+        "setup",
+        "merge_auto",
+        "merge_after",
+        "gate_same_failure_limit",
+        "gate_reuse_for_main_check",
+        "retry",
+    ] {
+        if local.get(key).is_none() {
+            defaults.push(key.to_string());
+        }
+    }
+    for (key, global_key) in [
+        ("gate_concurrency", "concurrency"),
+        ("gate_quick_concurrency", "quick_concurrency"),
+    ] {
+        if local.get(key).is_none() && raw.get("gate").and_then(|t| t.get(global_key)).is_none() {
+            defaults.push(key.to_string());
+        }
+    }
+    let loop_fields = [
+        "parallel",
+        "design_rounds",
+        "budget_factor",
+        "session_minutes",
+    ];
+    let omitted = |key: &str| {
+        local["loop"]
+            .get(key)
+            .is_none_or(serde_json::Value::is_null)
+            && raw.get("loop").and_then(|t| t.get(key)).is_none()
+    };
+    if loop_fields.iter().all(|key| omitted(key)) {
+        defaults.push("loop_defaults".into());
+    } else {
+        defaults.extend(
+            loop_fields
+                .iter()
+                .filter(|key| omitted(key))
+                .map(|key| format!("loop_defaults.{key}")),
+        );
+    }
+    if project.roles.is_empty()
+        && raw
+            .get("roles")
+            .and_then(toml::Value::as_table)
+            .is_none_or(|t| t.is_empty())
+    {
+        defaults.push("roles".into());
+    }
+    defaults.sort();
+    Ok(defaults)
+}
+
 fn read(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
         path: path.display().to_string(),

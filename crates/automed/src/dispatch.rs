@@ -623,11 +623,17 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let costs = project_costs(ctx, project_id)?;
     let (total, missing) = project_cost_json(&tasks, &costs);
     let global = config_io::load_global(&ctx.autome_home)?;
-    let project_config = config_io::load_project(std::path::Path::new(&project.path))?;
-    let resolved = config::resolve(&global, &project_config);
+    let (resolved, config_error) =
+        match config_io::load_project(std::path::Path::new(&project.path)) {
+            Ok(local) => (Some(config::resolve(&global, &local)), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let home = ctx.home.to_string_lossy().into_owned();
     let inventory = skills::scan(&home, &project.path);
-    let violations = config::validate(&resolved, &inventory);
+    let violations = resolved
+        .as_ref()
+        .map(|r| config::validate(r, &inventory))
+        .unwrap_or_default();
 
     let positions: std::collections::BTreeMap<_, _> = ctx
         .store
@@ -639,7 +645,12 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let tasks_json = tasks
         .iter()
         .map(|t| {
-            let mut value = task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))?;
+            let mut value = task_json_with_config(
+                ctx,
+                t,
+                costs.get(&t.id).unwrap_or(&CostSummary::default()),
+                config_error.is_none(),
+            )?;
             value["queue_position"] = json!(positions.get(&t.id));
             Ok(value)
         })
@@ -653,6 +664,7 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
             "tasks": tasks_json,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
+            "config_error": config_error,
             "violations": violations,
             "rules": rule_files(&project.path),
         }),
@@ -664,6 +676,15 @@ fn task_json(
     ctx: &Ctx,
     t: &crate::store::TaskRecord,
     cost: &CostSummary,
+) -> Result<Value, DispatchError> {
+    task_json_with_config(ctx, t, cost, true)
+}
+
+fn task_json_with_config(
+    ctx: &Ctx,
+    t: &crate::store::TaskRecord,
+    cost: &CostSummary,
+    config_ok: bool,
 ) -> Result<Value, DispatchError> {
     let after = ctx.store.task_after(&t.id)?;
     let mut blocked_by = Vec::new();
@@ -699,7 +720,7 @@ fn task_json(
         // Where this task's documents live inside the repository holding
         // them, frozen when it was created. The panel opens paths under it.
         "doc_dir": t.doc_dir(),
-        "merge": crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))?,
+        "merge": if config_ok { crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))? } else { Value::Null },
     });
     if t.kind == TaskKind::Bug {
         value["test_fix"] = crate::scheduler::test_fix::view(&ctx.store, &t.id)?;
@@ -741,7 +762,7 @@ fn project_add(
     let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
 
     if path.exists() && !path.is_dir() {
-        return Err(rejected(format!("{} 不是目录", path.display())));
+        return Err(rejected(add_rejection(&ctx.store, &path)?.unwrap().message));
     }
 
     let existed = path.exists();
@@ -754,34 +775,10 @@ fn project_add(
         .map_err(|e| internal(format!("无法解析路径：{e}")))?;
     let canonical_str = canonical.to_string_lossy().into_owned();
 
-    // A directory that was removed from the registry can be added again: P-08
-    // says removal touches nothing on disk, so there is nothing to stop the
-    // user changing their mind — but `projects.path` is UNIQUE, so the row is
-    // still sitting on the path and the insert used to come back as "该目录已
-    // 经是一个项目" about a project that is not there any more.
-    //
-    // The old row is reused rather than replaced. Its id is what the removed
-    // project's tasks still point at, and dropping it would orphan their
-    // history to make room for a project at the same path.
-    let readding = match ctx.store.project_by_path(&canonical_str)? {
-        Some(existing) if existing.is_active() => {
-            return Err(rejected("该目录已经是一个项目".to_string()));
-        }
-        Some(removed) => Some(removed.id),
-        None => None,
-    };
-
-    // Nested projects would make `.worktree/` and `.autome/` ambiguous.
-    for other in ctx.store.list_projects()? {
-        let other_path = std::path::Path::new(&other.path);
-        if canonical.starts_with(other_path) || other_path.starts_with(&canonical) {
-            return Err(rejected(format!(
-                "{} 与已有项目「{}」嵌套，不能同时管理",
-                canonical.display(),
-                other.display_name
-            )));
-        }
+    if let Some(reason) = add_rejection(&ctx.store, &path)? {
+        return Err(rejected(reason.message));
     }
+    let readding = ctx.store.project_by_path(&canonical_str)?.map(|p| p.id);
 
     let was_repo = git::is_repo_root(&canonical);
     let members = discover_members(&canonical);
@@ -927,6 +924,84 @@ fn discover_members(dir: &std::path::Path) -> Vec<project::Member> {
 /// and *also* holds several — which is exactly what a wrongly-initialised
 /// workspace looks like — is reported as both, because only the user knows
 /// which one they meant.
+#[derive(serde::Serialize)]
+struct Rejection {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+}
+
+fn add_rejection(
+    store: &Store,
+    path: &std::path::Path,
+) -> Result<Option<Rejection>, DispatchError> {
+    if path.exists() && !path.is_dir() {
+        return Ok(Some(Rejection {
+            kind: "not_a_directory",
+            message: format!("{} 不是目录", path.display()),
+            project_id: None,
+        }));
+    }
+    // Resolve the existing ancestor too, so probing a not-yet-created child
+    // gives the same answer as add after create_dir_all, without writing it.
+    let canonical = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| internal(format!("无法解析路径：{e}")))?
+    } else {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| internal(e.to_string()))?
+                .join(path)
+        };
+        let ancestor = absolute.ancestors().find(|p| p.exists()).unwrap();
+        let mut resolved = ancestor
+            .canonicalize()
+            .map_err(|e| internal(e.to_string()))?;
+        for component in absolute.strip_prefix(ancestor).unwrap().components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => resolved.push(other.as_os_str()),
+            }
+        }
+        resolved
+    };
+    if let Some(existing) = store.project_by_path(&canonical.to_string_lossy())?
+        && existing.is_active()
+    {
+        return Ok(Some(Rejection {
+            kind: "already_project",
+            message: "该目录已经是一个项目".into(),
+            project_id: Some(existing.id),
+        }));
+    }
+    for other in store.list_projects()? {
+        let other_path = std::path::Path::new(&other.path);
+        let kind = if canonical.starts_with(other_path) {
+            "nested_in_project"
+        } else if other_path.starts_with(&canonical) {
+            "contains_project"
+        } else {
+            continue;
+        };
+        return Ok(Some(Rejection {
+            kind,
+            message: format!(
+                "{} 与已有项目「{}」嵌套，不能同时管理",
+                canonical.display(),
+                other.display_name
+            ),
+            project_id: Some(other.id),
+        }));
+    }
+    Ok(None)
+}
+
 fn project_probe(ctx: &Ctx, raw_path: &str) -> DispatchResult {
     let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
     let exists = path.is_dir();
@@ -944,6 +1019,7 @@ fn project_probe(ctx: &Ctx, raw_path: &str) -> DispatchResult {
             "is_repo_root": is_repo_root,
             "members": members,
             "suggest_workspace": suggest_workspace,
+            "rejection": add_rejection(&ctx.store, &path)?,
             "suggested_docs_repo": members
                 .iter()
                 .find(|m| m.name == project::DEFAULT_DOC_ROOT_REPO)
@@ -1147,6 +1223,11 @@ fn config_get(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
         None => (ProjectConfig::default(), None),
     };
     let resolved = config::resolve(&global, &project_config);
+    let mut resolved_json = json!(resolved);
+    resolved_json["gate_run"] = json!(resolved.gate_run);
+    resolved_json["gate_quick"] = json!(resolved.gate_quick);
+    resolved_json["setup"] = json!(resolved.setup);
+    let defaults = config_io::resolved_defaults(&ctx.autome_home, &project_config)?;
     let home = ctx.home.to_string_lossy().into_owned();
     let inventory = match &repo {
         Some(path) => skills::scan(&home, path),
@@ -1156,7 +1237,8 @@ fn config_get(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
     Ok((
         json!({
             "global": global,
-            "resolved": resolved,
+            "resolved": resolved_json,
+            "defaults": defaults,
             "violations": violations,
             "scope": project_id,
         }),
@@ -2896,15 +2978,21 @@ fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
 /// The dashboard: everything waiting on the user, and everything running,
 /// across every project (requirement U-02).
 fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
-    let gate_waiters = crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?;
+    let gate_waiters =
+        crate::gate_queue::display_waiters(ctx).map_err(|e| internal(e.to_string()))?;
     let mut waiting = Vec::new();
     let mut running = Vec::new();
     let mut queued = Vec::new();
     let mut config_warnings = Vec::new();
+    let mut projects = Vec::new();
 
     for project in ctx.store.list_projects()? {
         let costs = project_costs(ctx, &project.id)?;
-        let warnings = project_warnings(ctx, &project)?;
+        let (warnings, config_error) = match project_warnings(ctx, &project) {
+            Ok(warnings) => (warnings, None),
+            Err(error) => (Vec::new(), Some(error.message)),
+        };
+        projects.push(json!({"project": project, "config_error": config_error}));
         if !warnings.is_empty() {
             config_warnings.push(json!({"project_id":project.id,"project_name":project.display_name,"warnings":warnings}));
         }
@@ -2915,7 +3003,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "queue_position": index + 1,
                 "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
-                "task": task_json(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
+                "task": task_json_with_config(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()), config_error.is_none())?,
                 "pending_decisions": ctx.store.pending_decisions(&task.id)?,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2931,7 +3019,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "project_name": project.display_name,
                 "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
-                "task": task_json(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
+                "task": task_json_with_config(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()), config_error.is_none())?,
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2976,6 +3064,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
 
     Ok((
         json!({
+            "projects": projects,
             "config_warnings": config_warnings,
             "waiting": waiting,
             "running": running,
@@ -5902,6 +5991,259 @@ mod tests {
     }
 
     // ---- config ----------------------------------------------------------
+
+    #[test]
+    fn probe_rejection_matches_project_add_for_each_kind() {
+        let mut sb = Sandbox::new("probe-rejections");
+        let id = sb.add_project("parent/repo");
+        let file = sb.path("file");
+        std::fs::write(&file, "x").unwrap();
+        for (path, kind) in [
+            (file, "not_a_directory"),
+            (sb.path("parent/repo"), "already_project"),
+            (sb.path("parent/repo/missing/.."), "already_project"),
+            (sb.path("parent/repo/new/child"), "nested_in_project"),
+            (sb.path("parent"), "contains_project"),
+        ] {
+            let existed = path.exists();
+            let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+            let rejection = ok_payload(&out)["rejection"].clone();
+            assert_eq!(rejection["kind"], kind);
+            assert_eq!(path.exists(), existed, "probe must not create paths");
+            if kind != "not_a_directory" {
+                assert_eq!(rejection["project_id"], id);
+            }
+            let out = handle_command(sb.ctx(), &cmd("project.add", json!({"path":path})));
+            assert_eq!(rejection["message"], err_message(&out));
+        }
+        // Existing symlink aliases use the same canonical identity.
+        let alias = sb.path("alias");
+        std::os::unix::fs::symlink(sb.path("parent/repo"), &alias).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":alias})));
+        assert_eq!(ok_payload(&out)["rejection"]["kind"], "already_project");
+        sb.ctx.store.remove_project(&id).unwrap();
+        let path = sb.path("parent/repo");
+        let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+        assert!(ok_payload(&out)["rejection"].is_null());
+        let out = handle_command(sb.ctx(), &cmd("project.add", json!({"path":path})));
+        assert_eq!(ok_payload(&out)["project"]["id"], id);
+    }
+
+    #[test]
+    fn probe_rejection_normal_directory_is_null() {
+        let mut sb = Sandbox::new("probe-normal");
+        for path in [sb.path("中文 空目录"), sb.path("missing/deep")] {
+            if path.file_name().unwrap() != "deep" {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+            let existed = path.exists();
+            let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+            assert_eq!(ok_payload(&out).get("rejection"), Some(&Value::Null));
+            assert_eq!(path.exists(), existed);
+        }
+    }
+
+    #[test]
+    fn config_get_reports_every_resolved_key_and_marks_defaults() {
+        let mut sb = Sandbox::new("config-complete");
+        let id = sb.add_project("repo");
+        let local = sb.path("repo/.autome/config.toml");
+        let global = sb.ctx.autome_home.join("config.toml");
+        std::fs::write(&local, "").unwrap();
+        std::fs::write(&global, "").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        let keys = [
+            "bug",
+            "gate",
+            "gate_concurrency",
+            "gate_quick",
+            "gate_quick_concurrency",
+            "gate_reuse_for_main_check",
+            "gate_run",
+            "gate_same_failure_limit",
+            "loop_defaults",
+            "merge_after",
+            "merge_auto",
+            "retry",
+            "roles",
+            "setup",
+        ];
+        assert_eq!(
+            got["resolved"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            keys
+        );
+        assert_eq!(got["defaults"], json!(keys));
+        assert_eq!(got["resolved"]["gate_run"], "each_round");
+        assert_eq!(got["resolved"].get("gate_quick"), Some(&Value::Null));
+        assert_eq!(got["resolved"].get("setup"), Some(&Value::Null));
+        assert_eq!(
+            got.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["defaults", "global", "resolved", "scope", "violations"]
+        );
+        // Explicit values equal to built-ins must not be called defaults;
+        // project concurrency remains bounded by the global limit.
+        std::fs::write(
+            &local,
+            "[gate]\nrun = 'each_round'\nconcurrency = 10\n[merge]\nauto = false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &global,
+            "[gate]\nconcurrency = 1\nquick_concurrency = 10\n[loop]\nparallel = 3\n",
+        )
+        .unwrap();
+        let out = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        for key in [
+            "gate_run",
+            "gate_concurrency",
+            "gate_quick_concurrency",
+            "merge_auto",
+            "loop_defaults",
+            "loop_defaults.parallel",
+        ] {
+            assert!(
+                !got["defaults"].as_array().unwrap().contains(&json!(key)),
+                "{key}"
+            );
+        }
+        assert!(
+            got["defaults"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("loop_defaults.session_minutes"))
+        );
+        assert_eq!(got["resolved"]["gate_concurrency"], 1);
+        assert_eq!(got["resolved"]["gate_quick_concurrency"], 10);
+        let resolved = config::resolve(&Default::default(), &Default::default());
+        assert!(
+            json!(resolved).get("gate_run").is_none(),
+            "shared serde must stay sparse"
+        );
+    }
+
+    #[test]
+    fn dashboard_tolerates_a_broken_project_config() {
+        let mut sb = Sandbox::new("dashboard-config");
+        let bad = sb.add_project("bad");
+        let good = sb.add_project("good");
+        let bad_task = cost_task(
+            &mut sb,
+            &bad,
+            "bad-task",
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+        );
+        let good_task = cost_task(&mut sb, &good, "good-task", TaskState::Queued);
+        let bad_queued = cost_task(&mut sb, &bad, "bad-queued", TaskState::Queued);
+        let bad_waiting = cost_task(
+            &mut sb,
+            &bad,
+            "bad-waiting",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+
+        sb.ctx
+            .store
+            .append_event("gate.queued", &bad_task, json!({"lane":"heavy"}))
+            .unwrap();
+        let path = sb.path("bad/.autome/config.toml");
+        for broken in ["[", "[gate]\nconcurrency = 0\n"] {
+            std::fs::write(&path, broken).unwrap();
+            let expected = config_io::load_project(&sb.path("bad").canonicalize().unwrap())
+                .unwrap_err()
+                .to_string();
+            let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+            let got = ok_payload(&out);
+            assert_eq!(
+                got.as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [
+                    "alerts",
+                    "config_warnings",
+                    "cooldowns",
+                    "environment",
+                    "projects",
+                    "queued",
+                    "running",
+                    "waiting"
+                ]
+            );
+            let rows = got["projects"].as_array().unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows.iter().find(|p| p["project"]["id"] == bad).unwrap()["config_error"],
+                expected
+            );
+            assert!(
+                rows.iter().find(|p| p["project"]["id"] == good).unwrap()["config_error"].is_null()
+            );
+            assert_eq!(got["running"][0]["task"]["id"], bad_task);
+            assert!(got["running"][0]["task"]["merge"].is_null());
+            assert_eq!(got["waiting"][0]["task"]["id"], bad_waiting);
+            let queued = got["queued"].as_array().unwrap();
+            assert_eq!(queued.len(), 2);
+            assert!(
+                queued
+                    .iter()
+                    .find(|r| r["task"]["id"] == bad_queued)
+                    .unwrap()["task"]["merge"]
+                    .is_null()
+            );
+            let healthy = queued
+                .iter()
+                .find(|r| r["task"]["id"] == good_task)
+                .unwrap();
+            assert!(healthy["task"]["merge"].is_object());
+        }
+        std::fs::write(path, "").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+        assert!(ok_payload(&out)["running"][0]["task"]["merge"].is_object());
+    }
+
+    #[test]
+    fn dashboard_tolerates_project_get_with_config_error() {
+        let mut sb = Sandbox::new("project-config");
+        let id = sb.add_project("repo");
+        let task = cost_task(&mut sb, &id, "task", TaskState::Queued);
+        let path = sb.path("repo/.autome/config.toml");
+        // A directory at the file path exercises an actual read failure.
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::create_dir(&path).unwrap();
+        let expected = config_io::load_project(&sb.path("repo").canonicalize().unwrap())
+            .unwrap_err()
+            .to_string();
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        assert!(got["config"].is_null());
+        assert_eq!(got["config_error"], expected);
+        assert_eq!(got["tasks"][0]["id"], task);
+        assert!(got["rules"].is_array());
+        let out = handle_command(sb.ctx(), &cmd("project.list", json!({})));
+        assert_eq!(ok_payload(&out)["projects"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir(&path).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert!(ok_payload(&out)["config"].is_object());
+        assert!(ok_payload(&out)["config_error"].is_null());
+    }
 
     #[test]
     fn config_get_without_a_project_returns_the_global_defaults() {

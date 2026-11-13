@@ -26,3 +26,4 @@
 审计 #12 | M-12 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-12-r13-audit.md | 无
 实现 #14 | M-13 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-13-r14-impl.md | 无
 审计 #13 | M-13 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-13-r14-audit.md | 无
+实现 #15 | M-14 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-14-r15-impl.md | 无

@@ -2152,3 +2152,37 @@ fn task_documents_status_shows_milestones_after_merge_and_bug_doc_path() {
         "{status}"
     );
 }
+
+#[test]
+fn dashboard_tolerates_broken_config_in_autome_status() {
+    let sb = Sandbox::new("dashboard-bad-config");
+    sb.ok(&["project", "add", sb.repo.to_str().unwrap()]);
+    let good = sb.root.join("healthy");
+    std::fs::create_dir_all(&good).unwrap();
+    sb.ok(&["project", "add", good.to_str().unwrap()]);
+    sb.ok(&[
+        "task",
+        "new",
+        "healthy-task",
+        "--project",
+        good.to_str().unwrap(),
+    ]);
+    std::fs::write(
+        sb.repo.join(".autome/config.toml"),
+        "[gate]\nconcurrency = 0\n",
+    )
+    .unwrap();
+    let out = sb.ok(&["status"]);
+    assert!(out.contains("healthy-task"), "{out}");
+    assert!(out.contains("配置有误："), "{out}");
+    assert!(out.contains("concurrency"), "{out}");
+    let got = sb.json(&["status"]);
+    assert_eq!(got["projects"].as_array().unwrap().len(), 2);
+    assert!(
+        got["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["config_error"].is_null())
+    );
+}
