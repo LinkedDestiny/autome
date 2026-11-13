@@ -12218,3 +12218,66 @@ fn task_changes_status_workspace_after_cleanup() {
         assert_eq!(repo["merged"], true);
     }
 }
+
+#[test]
+fn onboarding_session_e2e_run_log_end_and_task_cost_isolation() {
+    needs_git!();
+    let mut w = World::new("onboarding-ledger");
+    let project = w.project_id.clone();
+    w.ctx
+        .store
+        .update_project_onboarding(
+            &project,
+            autome_domain::project::Onboarding::InProgress { step: 3 },
+        )
+        .unwrap();
+    let draft = ok(&w.call(
+        "task.create",
+        json!({"project_id":project,"title":"untouched", "request":"untouched", "draft":true}),
+    ))
+    .clone();
+    let task = draft["task"]["id"].as_str().unwrap();
+    let before = ok(&w.call("task.get", json!({"task_id":task}))).clone();
+    w.step(1, "printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"onboarding-log-marker\"}]}}'\n");
+    let run = ok(&w.call("project.onboarding.run", json!({"project_id":project}))).clone();
+    let sid = run["session_id"].as_str().unwrap();
+    let row = w.ctx.store.get_session(sid).unwrap().unwrap();
+    assert_eq!(row.project_id.as_deref(), Some(project.as_str()));
+    assert!(
+        w.ctx
+            .store
+            .session_event(&project, sid, "session.started")
+            .unwrap()
+            .is_some()
+    );
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert!(!report.tasks_advanced.iter().any(|id| id == "onboarding"));
+            let row = w.ctx.store.get_session(sid).unwrap().unwrap();
+            !row.is_running() && !row.pid.is_some_and(automed::launcher::pid_alive)
+        },
+        |_| "waiting for onboarding wrapper exit".into(),
+    );
+    let log = ok(&w.call("session.log", json!({"session_id":sid}))).clone();
+    assert!(log["log"].as_str().unwrap().contains(sid), "{log}");
+    let view = ok(&w.call("project.get", json!({"project_id":project}))).clone();
+    assert_eq!(view["onboarding_session"]["id"], sid);
+    assert!(view["onboarding_session"]["ended_at"].is_string());
+    let ended = w
+        .ctx
+        .store
+        .session_event(&project, sid, "session.ended")
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended["end"], "exited");
+    assert_eq!(
+        w.ctx.store.count_events(&project, "session.ended").unwrap(),
+        1
+    );
+    let after = ok(&w.call("task.get", json!({"task_id":task}))).clone();
+    assert_eq!(before, after);
+    assert!(w.ctx.store.list_sessions(task).unwrap().is_empty());
+}

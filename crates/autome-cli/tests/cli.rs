@@ -163,6 +163,7 @@ fn visible_status_session(tag: &str, timed_out: bool) -> String {
     let store = automed::store::Store::open(&db).unwrap();
     store
         .insert_session(&Session {
+            project_id: None,
             id: "visible-session".into(),
             task_id: id.into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -232,6 +233,7 @@ fn status_shows_latest_five_sessions_in_chronological_order() {
     for n in [4, 1, 7, 2, 6, 3, 5] {
         store
             .insert_session(&Session {
+                project_id: None,
                 id: format!("history-{n}"),
                 task_id: id.into(),
                 kind: SessionKind::Role { role: Role::Impl },
@@ -1363,6 +1365,7 @@ fn cost_fixture(tag: &str) -> (Sandbox, String) {
         let running = n == 3;
         store
             .insert_session(&Session {
+                project_id: None,
                 id: format!("cost-{n}"),
                 task_id: id.clone(),
                 kind: SessionKind::Role { role: Role::Impl },

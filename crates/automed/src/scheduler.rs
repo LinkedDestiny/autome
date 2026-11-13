@@ -230,7 +230,9 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
         match reap_session(ctx, &s) {
             Ok(true) => {
                 report.sessions_reaped.push(s.id.clone());
-                report.tasks_advanced.push(s.task_id.clone());
+                if s.kind != SessionKind::Onboarding {
+                    report.tasks_advanced.push(s.task_id.clone());
+                }
             }
             Ok(false) => {}
             Err(e) => {
@@ -308,7 +310,56 @@ pub(crate) fn effective_limit(ctx: &Ctx, s: &Session, project: &Project) -> u32 
     })
 }
 
+fn reap_onboarding(ctx: &mut Ctx, s: &Session) -> Result<bool> {
+    let project = ctx.store.get_project(
+        s.project_id
+            .as_deref()
+            .ok_or_else(|| err("Onboarding 会话缺少项目"))?,
+    )?;
+    let repo = PathBuf::from(&project.path);
+    let marker =
+        std::fs::read_to_string(repo.join(SessionPaths::exit(ONBOARDING_SESSION_KEY, &s.id)))
+            .ok()
+            .and_then(|text| ExitMarker::parse(&text));
+    let pid = s.pid.or_else(|| {
+        std::fs::read_to_string(repo.join(SessionPaths::pid(ONBOARDING_SESSION_KEY, &s.id)))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+    });
+    let mut lifecycle = session::classify(
+        marker.as_ref(),
+        pid.map(launcher::pid_alive).unwrap_or(false),
+        session_idle_secs(
+            &repo.join(SessionPaths::log(ONBOARDING_SESSION_KEY, &s.id)),
+            &s.started_at,
+        ),
+    );
+    let limit = effective_limit(ctx, s, &project);
+    if lifecycle.is_running() {
+        if !secs_since(&s.started_at).is_some_and(|secs| session::over_limit(secs, limit)) {
+            return Ok(false);
+        }
+        let Some(pid) = pid else {
+            return Ok(false);
+        };
+        if !launcher::terminate_group(pid)? {
+            return Ok(false);
+        }
+        lifecycle = SessionLifecycle::TimedOut {
+            limit_minutes: limit,
+        };
+    }
+    let ended_at = now_iso();
+    ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
+    record_session_ended(&ctx.store, s, &project.id, &lifecycle, &ended_at)?;
+    Ok(true)
+}
+
 fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
+    if s.kind == SessionKind::Onboarding {
+        return reap_onboarding(ctx, s);
+    }
+
     let task = ctx.store.get_task(&s.task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let repo = PathBuf::from(&project.path);
@@ -1548,10 +1599,7 @@ pub(crate) fn record_session_ended(
         SessionLifecycle::Vanished => ("crashed", None),
         _ => return Ok(()),
     };
-    let stored = store
-        .list_sessions(&s.task_id)?
-        .into_iter()
-        .find(|row| row.id == s.id);
+    let stored = store.get_session(&s.id)?;
     let metrics = stored.as_ref().map(|row| &row.metrics);
     store.append_event("session.ended", subject, json!({
         "session_id": s.id, "kind": s.kind, "round": s.round, "end": end, "exit_code": exit_code,
@@ -3914,6 +3962,7 @@ fn launch_session(
 
     let pid = read_pid(&repo, &task.id, session_id);
     ctx.store.insert_session(&Session {
+        project_id: None,
         id: session_id.to_string(),
         task_id: task.id.clone(),
         kind,
@@ -5585,6 +5634,11 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         doc_refs: &[],
     })?;
 
+    let global = config_io::load_global(&ctx.autome_home)?;
+    let local = config_io::load_project(&repo)?;
+    let limit_minutes = config::resolve(&global, &local)
+        .loop_defaults
+        .session_minutes;
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id: &session_id,
@@ -5600,6 +5654,30 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         mode: ctx.launch_mode,
     })?;
 
+    ctx.store.insert_session(&Session {
+        id: session_id.clone(),
+        project_id: Some(project.id.clone()),
+        task_id: ONBOARDING_SESSION_KEY.into(),
+        kind: SessionKind::Onboarding,
+        runtime: role_config.runtime,
+        model: role_config.model.clone(),
+        effort: role_config.effort.clone(),
+        skills: role_config.skills.clone(),
+        round: 0,
+        started_at: now_iso(),
+        ended_at: None,
+        lifecycle: SessionLifecycle::Running,
+        log_path: launched.log_path.clone(),
+        pid: if matches!(ctx.launch_mode, launcher::LaunchMode::Dry) {
+            None
+        } else {
+            read_pid(&repo, ONBOARDING_SESSION_KEY, &session_id)
+        },
+        limit_minutes: Some(limit_minutes),
+        protocol_ref: None,
+        rules_hash: None,
+        metrics: Default::default(),
+    })?;
     ctx.store.append_event(
         "session.started",
         project_id,
@@ -6356,6 +6434,7 @@ mod tests {
             assert!(!launcher::pid_alive(pid));
             assert_eq!(unsafe { libc::kill(-pid, 0) }, 0);
             let s = Session {
+                project_id: None,
                 id: "s1".into(),
                 task_id: task.id.clone(),
                 kind: SessionKind::Role { role: Role::Plan },
@@ -8239,6 +8318,7 @@ mod tests {
         w.set_state("T-1", TaskState::Active { node: Node::Design });
         w.write_design(&task, "这不是一个状态块\n");
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Plan },
@@ -8302,6 +8382,7 @@ mod tests {
             &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8370,6 +8451,7 @@ mod tests {
             &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8462,6 +8544,7 @@ mod tests {
         std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
 
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8600,6 +8683,7 @@ mod tests {
         );
 
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8673,6 +8757,7 @@ mod tests {
         let after_own_commit = git::head_sha(&wt).unwrap();
 
         let session = Session {
+            project_id: None,
             id: "s2".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8728,6 +8813,7 @@ mod tests {
             },
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -11675,11 +11761,87 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_session_is_reaped_with_session_ended() {
+        needs_git!();
+        let mut w = World::new("onboarding-reap");
+        w.add_task("T-1", "untouched");
+        let project_id = w.ctx.store.get_task("T-1").unwrap().project_id;
+        for code in [0, 17] {
+            let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+            let s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            assert!(!reap_session(&mut w.ctx, &s).unwrap());
+            std::fs::write(
+                w.repo
+                    .join(SessionPaths::exit(ONBOARDING_SESSION_KEY, &sid)),
+                ExitMarker {
+                    exit_code: code,
+                    ended_at: now_iso(),
+                }
+                .render(),
+            )
+            .unwrap();
+            assert!(reap_session(&mut w.ctx, &s).unwrap());
+            let row = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            assert_eq!(row.lifecycle, SessionLifecycle::Exited { exit_code: code });
+            assert!(row.ended_at.is_some());
+            let event = w
+                .ctx
+                .store
+                .session_event(&project_id, &sid, "session.ended")
+                .unwrap()
+                .unwrap();
+            assert_eq!(event["exit_code"], code);
+            assert_eq!(event["end"], if code == 0 { "exited" } else { "crashed" });
+            assert!(w.ctx.store.list_sessions("T-1").unwrap().is_empty());
+        }
+        let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+        let mut s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+        let _ = std::fs::remove_file(&s.log_path);
+        s.started_at = "2000-01-01T00:00:00Z".into();
+        assert!(reap_session(&mut w.ctx, &s).unwrap());
+        assert_eq!(
+            w.ctx.store.get_session(&sid).unwrap().unwrap().lifecycle,
+            SessionLifecycle::Vanished
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+            let mut s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            s.pid = Some(child.id() as i32);
+            s.started_at = "2000-01-01T00:00:00Z".into();
+            s.limit_minutes = Some(5);
+            let waiter = std::thread::spawn(move || child.wait().unwrap());
+            let result = reap_session(&mut w.ctx, &s);
+            waiter.join().unwrap();
+            assert!(result.unwrap());
+            assert_eq!(
+                w.ctx.store.get_session(&sid).unwrap().unwrap().lifecycle,
+                SessionLifecycle::TimedOut { limit_minutes: 5 }
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .session_event(&project_id, &sid, "session.ended")
+                    .unwrap()
+                    .unwrap()["end"],
+                "timed_out"
+            );
+        }
+    }
+
+    #[test]
     fn session_ended_vanished_metrics_and_timestamp_boundaries() {
         needs_git!();
         let mut w = World::new("ended-boundaries");
         w.add_task("T-1", "ended");
         let mut s = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Intake,
@@ -11756,6 +11918,7 @@ mod tests {
         w.set_state("T-1", TaskState::Active { node: Node::Design });
         w.write_design(&task, &design_doc("设计中", &[], ""));
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Plan },

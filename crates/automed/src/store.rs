@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -569,6 +569,31 @@ impl Store {
                      updated_at TEXT NOT NULL
                  );
                  PRAGMA user_version = 8;
+                 COMMIT;",
+            )?;
+        }
+        if version < 9 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE sessions_v9 (
+                    id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id),
+                    kind TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT NOT NULL,
+                    effort TEXT, skills TEXT NOT NULL, round INTEGER NOT NULL,
+                    started_at TEXT NOT NULL, ended_at TEXT, lifecycle TEXT NOT NULL,
+                    log_path TEXT NOT NULL, pid INTEGER, protocol_ref TEXT, rules_hash TEXT,
+                    input_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                    output_tokens INTEGER, cost_usd REAL, turns INTEGER, duration_ms INTEGER,
+                    mean_request_input INTEGER, design_doc_bytes INTEGER, evidence_files INTEGER,
+                    limit_minutes INTEGER, project_id TEXT REFERENCES projects(id),
+                    CHECK ((task_id IS NULL) = (json_extract(kind, '$.kind') = 'onboarding')),
+                    CHECK (task_id IS NOT NULL OR project_id IS NOT NULL)
+                 );
+                 INSERT INTO sessions_v9 SELECT *, NULL FROM sessions;
+                 DROP TABLE sessions;
+                 ALTER TABLE sessions_v9 RENAME TO sessions;
+                 CREATE INDEX sessions_by_task ON sessions (task_id, started_at);
+                 CREATE INDEX sessions_by_project ON sessions (project_id, started_at);
+                 PRAGMA user_version = 9;
                  COMMIT;",
             )?;
         }
@@ -1748,11 +1773,11 @@ impl Store {
         self.conn.execute(
             "INSERT INTO sessions (id, task_id, kind, runtime, model, effort, skills, round,
                                    started_at, ended_at, lifecycle, log_path, pid,
-                                   protocol_ref, rules_hash, limit_minutes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                   protocol_ref, rules_hash, limit_minutes, project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 session.id,
-                session.task_id,
+                (session.kind != SessionKind::Onboarding).then_some(&session.task_id),
                 serde_json::to_string(&session.kind)?,
                 session.runtime.as_str(),
                 session.model,
@@ -1767,6 +1792,7 @@ impl Store {
                 session.protocol_ref,
                 session.rules_hash,
                 session.limit_minutes,
+                session.project_id,
             ],
         )?;
         Ok(())
@@ -1813,6 +1839,22 @@ impl Store {
             ],
         )?;
         self.require_one(n, "会话", id)
+    }
+
+    pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("{SESSION_SELECT_BASE} WHERE id = ?1"),
+                params![id],
+                row_to_session,
+            )
+            .optional()?
+            .transpose()?)
+    }
+
+    pub fn latest_onboarding_session(&self, project_id: &str) -> Result<Option<Session>> {
+        Ok(self.conn.query_row(&format!("{SESSION_SELECT_BASE} WHERE project_id = ?1 AND json_extract(kind, '$.kind') = 'onboarding' ORDER BY started_at DESC, rowid DESC LIMIT 1"), params![project_id], row_to_session).optional()?.transpose()?)
     }
 
     /// A task's sessions, newest first — the order the history panel shows.
@@ -2345,11 +2387,12 @@ const TASK_SELECT: &str = "SELECT id, project_id, slug, title, request, attachme
             protocol_ref, rules_hash, metrics, doc_root, kind
      FROM tasks WHERE id = ?1";
 
-const SESSION_SELECT_BASE: &str = "SELECT id, task_id, kind, runtime, model, effort, skills, round,
+const SESSION_SELECT_BASE: &str =
+    "SELECT id, COALESCE(task_id, 'onboarding'), kind, runtime, model, effort, skills, round,
             started_at, ended_at, lifecycle, log_path, pid,
             protocol_ref, rules_hash, input_tokens, cache_read_tokens, cache_write_tokens,
             output_tokens, cost_usd, turns, duration_ms, mean_request_input,
-            design_doc_bytes, evidence_files, limit_minutes FROM sessions";
+            design_doc_bytes, evidence_files, limit_minutes, project_id FROM sessions";
 
 type RowResult<T> = rusqlite::Result<std::result::Result<T, serde_json::Error>>;
 
@@ -2458,6 +2501,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
     let u = |i: usize| -> rusqlite::Result<Option<u64>> {
         Ok(r.get::<_, Option<i64>>(i)?.map(|v| v.max(0) as u64))
     };
+    let project_id = r.get(26)?;
     let limit_minutes = r.get::<_, Option<u32>>(25)?;
     let metrics = autome_domain::metrics::SessionMetrics {
         input_tokens: u(15)?,
@@ -2473,6 +2517,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> RowResult<Session> {
     };
     Ok((|| -> std::result::Result<Session, serde_json::Error> {
         Ok(Session {
+            project_id,
             id: base.0,
             task_id: base.1,
             kind: serde_json::from_str(&kind)?,
@@ -2591,6 +2636,108 @@ mod tests {
         }
     }
 
+    fn downgrade_sessions_to_v7(s: &Store) {
+        let schema: String = s
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let old = schema.split(", project_id").next().unwrap();
+        let old = format!(
+            "{})",
+            old.replace("CREATE TABLE \"sessions\"", "CREATE TABLE sessions_old")
+                .replace(
+                    "task_id TEXT REFERENCES",
+                    "task_id TEXT NOT NULL REFERENCES"
+                )
+        );
+        s.conn.execute_batch(&old).unwrap();
+        let columns: Vec<String> = s
+            .conn
+            .prepare("PRAGMA table_info(sessions_old)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        s.conn.execute_batch(&format!("INSERT INTO sessions_old SELECT {} FROM sessions; DROP TABLE sessions; ALTER TABLE sessions_old RENAME TO sessions; CREATE INDEX sessions_by_task ON sessions (task_id, started_at); PRAGMA user_version = 7;", columns.join(","))).unwrap();
+    }
+
+    #[test]
+    fn onboarding_session_migration_v9_keeps_existing_rows() {
+        let s = store();
+        s.insert_project(&project("p1", "/a")).unwrap();
+        s.insert_task(&task("T-1", "p1", "a")).unwrap();
+        let mut original = session("old", "T-1", SessionKind::Intake, 3);
+        original.protocol_ref = Some("protocol/v8@frozen".into());
+        original.rules_hash = Some("rules".into());
+        original.limit_minutes = Some(17);
+        original.metrics.cost_usd = Some(2.5);
+        original.metrics.input_tokens = Some(99);
+        s.insert_session(&original).unwrap();
+        s.set_session_metrics(&original.id, &original.metrics)
+            .unwrap();
+        // Recreate the exact v7 column layout before replaying the real migration.
+        downgrade_sessions_to_v7(&s);
+        s.migrate().unwrap();
+        assert_eq!(s.get_session("old").unwrap().unwrap(), original);
+        assert_eq!(
+            s.conn
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        assert!(
+            s.conn
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE name = 'sessions_by_task'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .is_ok()
+        );
+        let mut onboarding = session("new", "onboarding", SessionKind::Onboarding, 0);
+        onboarding.project_id = Some("p1".into());
+        s.insert_session(&onboarding).unwrap();
+        assert!(
+            s.conn
+                .query_row(
+                    "SELECT task_id IS NULL FROM sessions WHERE id = 'new'",
+                    [],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+        assert!(
+            s.conn
+                .execute("UPDATE sessions SET task_id = 'T-1' WHERE id = 'new'", [])
+                .is_err()
+        );
+        assert!(
+            s.conn
+                .execute("UPDATE sessions SET task_id = NULL WHERE id = 'old'", [])
+                .is_err()
+        );
+        onboarding.id = "missing-project".into();
+        onboarding.project_id = None;
+        assert!(s.insert_session(&onboarding).is_err());
+        onboarding.project_id = Some("unknown".into());
+        assert!(s.insert_session(&onboarding).is_err());
+        assert!(
+            s.conn
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .query([])
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn session_timeout_store_migration_limit_and_pid() {
         let s = store();
@@ -2598,6 +2745,7 @@ mod tests {
         s.insert_task(&task("T-1", "p1", "a")).unwrap();
         let mut row = session("s1", "T-1", SessionKind::Intake, 1);
         s.insert_session(&row).unwrap();
+        downgrade_sessions_to_v7(&s);
         // A genuine version-5 row survives the new nullable-column migration.
         s.conn
             .execute_batch(
@@ -2681,6 +2829,7 @@ mod tests {
 
     fn session(id: &str, task_id: &str, kind: SessionKind, round: u32) -> Session {
         Session {
+            project_id: None,
             id: id.into(),
             task_id: task_id.into(),
             kind,
@@ -2785,6 +2934,7 @@ mod tests {
             .iter()
             .map(|t| s.queued_seq(&t.id).unwrap())
             .collect();
+        downgrade_sessions_to_v7(&s);
         s.conn
             .execute_batch("DROP TABLE task_after; PRAGMA user_version = 6;")
             .unwrap();
@@ -3152,7 +3302,7 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap(),
             serde_json::json!({"state":"queued","resume":"implement"})
         );
-        assert_eq!(SCHEMA_VERSION, 8);
+        assert_eq!(SCHEMA_VERSION, 9);
     }
 
     #[test]
@@ -3820,6 +3970,7 @@ mod tests {
                 t.state = state.clone();
                 s.insert_task(&t).unwrap();
             }
+            downgrade_sessions_to_v7(&s);
             s.conn.execute_batch("ALTER TABLE sessions DROP COLUMN limit_minutes; ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE tasks DROP COLUMN queued_seq; DROP TABLE task_briefs; PRAGMA user_version = 4;").unwrap();
             s.migrate().unwrap();
             let version: i64 = s

@@ -449,7 +449,7 @@ MergeGate 出队冲突复用 RebaseConflict，需求回 Implement、Bug 回 fix�
 
 初始化（幂等）：创建 `.autome/` 骨架与 `config.toml`（仅 `[loop]` 空节，全部继承全局）；追加 .gitignore；AGENTS.md 不存在时创建含规则段的最小版本，存在时只追加标记段。
 
-Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过后 automed 创建 init commit。
+Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过时 automed 先提交初始化产物，再写结束状态和事件；提交失败保持原状态并可重试。工作区只在包含产物的成员仓库提交，根目录文件不提交，无产物不报错。Onboarding 会话写入 sessions（schema 8，task_id 为 NULL、project_id 指向项目），由收割器记录 session.ended；session.log 可读取日志，project.get 的 onboarding_session 返回最新会话的 id、lifecycle、started_at、ended_at。它不进入任务费用与轮次统计。
 
 ## 11. 环境探测与安装
 
@@ -482,6 +482,8 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 启动恢复：加载 projects → 校验路径与 worktree 存在 → 对每个非终态 task 扫描会话目录（§2）→ 推进或标记失败 → 重建调度队列。
 
+schema v8 重建 sessions：task_id 可空且保留外键，project_id 外键引用 projects；只有 onboarding 会话使用 NULL task_id，且必须有项目归属。旧行与任务索引原样保留。
+
 ## 14. IPC 接口
 
 沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。`autome core` 与 `automed` 共用 stdio 入口，stdout 只写帧。
@@ -495,6 +497,8 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。
 
 `task.merge {task_id, cancel?: bool}`：cancel 缺省 false，非布尔拒绝。在 AwaitMerge 走合并入口；其它未完成且未失败状态（含 Draft、排队、暂停、停止和设计卡点）记录预先同意，不跳过卡点。Failed 要先重跑；Active Merging / MainCheck / Cleanup 以及 Done / Cancelled 拒绝再次授权。`cancel: true` 对应 CLI `autome merge cart --cancel`，撤销有效授权；无授权、已终结或合并已开始时拒绝，Failed 可撤销。成功返回 task.get 投影加 `merge_request: "merging" | "authorized" | "already_authorized" | "revoked"`；`merging` 表示已执行合并入口，仍可能因纳入表态回实现轮，不保证已落地。出处：`dispatch::task_merge`、领域层 `merge_press` / `cancel_press`。
+
+`project.get.onboarding_session` 为 null 或最新会话的 `{id, lifecycle, started_at, ended_at}`；`session.log` 可按会话 id 读取 Onboarding 日志，开始与结束事件的 subject 为项目 id。
 
 `project.probe.rejection` 为 null 或 `{kind, message, project_id?}`，与 project.add 共用拒绝判定，kind 为 not_a_directory / already_project / nested_in_project / contains_project；正常或可重新添加的已移除项目不拒绝。probe 不创建目录，别名按规范路径判定。
 
@@ -545,7 +549,7 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 ## 17. 风险与对策
 
-- **会话墙钟时长上限**。`[loop] session_minutes` 默认 120、至少 5 分钟，启动时冻结；旧会话按当前配置回退。tick 超限终止整个进程组，确认不了就保持运行、不重派；重试用尽才失败。电脑睡眠时间也计入，醒来可能立即超时。Onboarding 不登记会话、不受此上限约束；既有心跳兜底保持不变。
+- **会话墙钟时长上限**。`[loop] session_minutes` 默认 120、至少 5 分钟，启动时冻结；旧会话按当前配置回退。tick 超限终止整个进程组，确认不了就保持运行、不重派；重试用尽才失败。电脑睡眠时间也计入，醒来可能立即超时。Onboarding 同样登记会话并冻结上限，超时终止后只记录项目会话结束，不推进任务；既有心跳兜底保持不变。
 
 
 - **退出感知依赖包装脚本**。用户手动关闭终端标签会丢失退出标记。对策：pid 探活 + 日志 mtime 心跳，超过 10 分钟无心跳判崩溃。

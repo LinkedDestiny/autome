@@ -656,8 +656,14 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
         })
         .collect::<Result<Vec<_>, DispatchError>>()?;
 
+    let onboarding_session = ctx.store.latest_onboarding_session(project_id)?.map(|s| {
+        json!({
+            "id": s.id, "lifecycle": s.lifecycle, "started_at": s.started_at, "ended_at": s.ended_at
+        })
+    });
     Ok((
         json!({
+            "onboarding_session": onboarding_session,
             "project": project,
             "cost_usd_total": total,
             "cost_sessions_without_cost": missing,
@@ -1080,13 +1086,18 @@ fn onboarding_step(ctx: &mut Ctx, project_id: &str, advance: bool) -> DispatchRe
     } else {
         Onboarding::Skipped
     };
-    ctx.store.update_project_onboarding(project_id, next)?;
 
     let mut committed = None;
     if next.is_settled() && !project.onboarding.is_settled() {
-        committed = init_commit(&project)?;
+        committed = init_commit(&project).map_err(|e| {
+            rejected(format!(
+                "Onboarding 结束时提交失败：{}。状态没有改，处理后可以重试",
+                e.message
+            ))
+        })?;
     }
 
+    ctx.store.update_project_onboarding(project_id, next)?;
     let seq = ctx.store.append_event(
         "project.onboarding",
         project_id,
@@ -1174,12 +1185,35 @@ fn init_commit(project: &Project) -> std::result::Result<Option<String>, Dispatc
     // Stage only the wizard's artefacts, never the user's entire docs tree.
     paths.extend(ONBOARDING_FILES.iter().map(|path| (*path).to_string()));
     paths.retain(|p| repo.join(p).exists());
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    Ok(git::commit_paths(
-        repo,
-        &refs,
-        "chore(autome): initialise project",
-    )?)
+    let mut committed = None;
+    let repos = if project.kind == autome_domain::project::ProjectKind::Workspace {
+        project
+            .members
+            .iter()
+            .map(|m| repo.join(&m.name))
+            .collect::<Vec<_>>()
+    } else {
+        vec![repo.to_path_buf()]
+    };
+    for member in repos {
+        let relative = paths
+            .iter()
+            .filter_map(|p| {
+                repo.join(p)
+                    .strip_prefix(&member)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .collect::<Vec<_>>();
+        if relative.is_empty() {
+            continue;
+        }
+        let refs = relative.iter().map(String::as_str).collect::<Vec<_>>();
+        if let Some(sha) = git::commit_paths(&member, &refs, "chore(autome): initialise project")? {
+            committed = Some(sha);
+        }
+    }
+    Ok(committed)
 }
 
 // ---------------------------------------------------------------------------
@@ -2925,30 +2959,24 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 /// The tail of a session's log (requirement T-14). Bounded, because a long
 /// implementation round can produce megabytes and the panel only shows a tail.
 fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
-    let mut found = None;
-    for task in ctx.store.list_unfinished()?.into_iter().chain(
-        ctx.store
-            .list_projects()?
-            .into_iter()
-            .flat_map(|p| ctx.store.list_tasks(&p.id).unwrap_or_default()),
-    ) {
-        if let Some(s) = ctx
-            .store
-            .list_sessions(&task.id)?
-            .into_iter()
-            .find(|s| s.id == session_id)
-        {
-            found = Some(s);
-            break;
-        }
-    }
-    let session = found.ok_or_else(|| DispatchError {
-        code: ReplyErrorCode::NotFound,
-        message: format!("找不到会话 {session_id}"),
-    })?;
-
-    let task = ctx.store.get_task(&session.task_id)?;
-    let project = ctx.store.get_project(&task.project_id)?;
+    let session = ctx
+        .store
+        .get_session(session_id)?
+        .ok_or_else(|| DispatchError {
+            code: ReplyErrorCode::NotFound,
+            message: format!("找不到会话 {session_id}"),
+        })?;
+    let project = if session.kind == autome_domain::session::SessionKind::Onboarding {
+        ctx.store.get_project(
+            session
+                .project_id
+                .as_deref()
+                .ok_or_else(|| rejected("Onboarding 会话缺少项目"))?,
+        )?
+    } else {
+        let task = ctx.store.get_task(&session.task_id)?;
+        ctx.store.get_project(&task.project_id)?
+    };
     const MAX_BYTES: usize = 256 * 1024;
     let text = std::fs::read_to_string(&session.log_path).unwrap_or_default();
     let truncated = text.len() > MAX_BYTES;
@@ -5242,6 +5270,107 @@ mod tests {
         assert!(ok_payload(&last).get("init_commit").unwrap().is_string());
     }
 
+    fn onboarding_start(sb: &mut Sandbox, id: &str) -> String {
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.run", json!({"project_id": id})),
+        );
+        ok_payload(&out)["session_id"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn onboarding_session_writes_a_row_and_start_event() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-row");
+        let id = sb.add_project("p");
+        let sid = onboarding_start(&mut sb, &id);
+        let row = sb.ctx.store.get_session(&sid).unwrap().unwrap();
+        assert_eq!(row.project_id.as_deref(), Some(id.as_str()));
+        assert_eq!(row.task_id, scheduler::ONBOARDING_SESSION_KEY);
+        assert_eq!(row.round, 0);
+        assert!(row.is_running());
+        assert!(
+            sb.ctx
+                .store
+                .session_event(&id, &sid, "session.started")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn onboarding_session_log_is_readable() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-log");
+        let (id, _) = onboarding_workspace(&mut sb);
+        let sid = onboarding_start(&mut sb, &id);
+        let row = sb.ctx.store.get_session(&sid).unwrap().unwrap();
+        std::fs::write(&row.log_path, "会话日志\n").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("session.log", json!({"session_id":sid})));
+        assert_eq!(ok_payload(&out)["log"], "会话日志\n");
+        std::fs::remove_file(&row.log_path).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("session.log", json!({"session_id":sid})));
+        assert_eq!(ok_payload(&out)["log"], "");
+    }
+
+    #[test]
+    fn onboarding_session_project_get_reports_latest() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-latest");
+        let id = sb.add_project("p");
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert_eq!(ok_payload(&out)["onboarding_session"], Value::Null);
+        let first = onboarding_start(&mut sb, &id);
+        sb.ctx
+            .store
+            .finish_session(
+                &first,
+                &autome_domain::session::SessionLifecycle::Exited { exit_code: 0 },
+                &crate::store::now_iso(),
+            )
+            .unwrap();
+        let last = onboarding_start(&mut sb, &id);
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert_eq!(ok_payload(&out)["onboarding_session"]["id"], last);
+        assert_eq!(
+            ok_payload(&out)["onboarding_session"]
+                .as_object()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn onboarding_session_costs_stay_out_of_tasks() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-cost");
+        let id = sb.add_project("p");
+        let task = cost_task(&mut sb, &id, "task", TaskState::Draft);
+        cost_session(&sb, &task, "task-session", Some(2.0), false);
+        let before = project_costs(&sb.ctx, &id).unwrap_or_else(|e| panic!("{}", e.message));
+        let sid = onboarding_start(&mut sb, &id);
+        sb.ctx
+            .store
+            .set_session_metrics(
+                &sid,
+                &autome_domain::metrics::SessionMetrics {
+                    cost_usd: Some(999.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(sb.ctx.store.list_sessions(&task).unwrap().len(), 1);
+        assert_eq!(sb.ctx.store.sessions_in_project(&id).unwrap().len(), 1);
+        assert_eq!(
+            serde_json::to_value(
+                project_costs(&sb.ctx, &id).unwrap_or_else(|e| panic!("{}", e.message))
+            )
+            .unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+
     fn onboarding_workspace(sb: &mut Sandbox) -> (String, std::path::PathBuf) {
         let root = sb.path("ws");
         workspace_at(&root, &[("docs", "main"), ("app", "main")]);
@@ -5275,6 +5404,16 @@ mod tests {
         assert!(ok_payload(&out)["init_commit"].is_string());
         assert_ne!(before, git::head_sha(&root.join("docs")).unwrap());
         assert!(!root.join(".git").exists());
+        let mut empty = Sandbox::new("ws-empty");
+        let (id, root) = onboarding_workspace(&mut empty);
+        std::fs::remove_file(root.join("docs/agent-project-profile.md")).unwrap();
+        let before = git::head_sha(&root.join("docs")).unwrap();
+        let out = handle_command(
+            empty.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert_eq!(ok_payload(&out)["init_commit"], Value::Null);
+        assert_eq!(before, git::head_sha(&root.join("docs")).unwrap());
     }
 
     #[test]
@@ -5306,9 +5445,23 @@ mod tests {
                 .iter()
                 .any(|e| e.1 == "project.onboarding" && e.2["init_commit"].is_string())
         );
+        let head = git::head_sha(&root.join("docs")).unwrap();
+        for _ in 0..2 {
+            let rejected_advance = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.advance", json!({"project_id":id})),
+            );
+            assert!(format!("{:?}", rejected_advance.reply).contains("Onboarding 已经结束"));
+            let skipped = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.skip", json!({"project_id":id})),
+            );
+            assert_eq!(ok_payload(&skipped)["init_commit"], Value::Null);
+        }
+        assert_eq!(head, git::head_sha(&root.join("docs")).unwrap());
     }
 
-    fn onboarding_locked_commit(workspace: bool) {
+    fn onboarding_locked_commit(workspace: bool, advance: bool) {
         let mut sb = Sandbox::new("onboarding-lock");
         let (id, root) = if workspace {
             onboarding_workspace(&mut sb)
@@ -5316,33 +5469,63 @@ mod tests {
             let id = sb.add_project("p");
             (id, sb.path("p"))
         };
+        if advance {
+            for _ in 0..2 {
+                let out = handle_command(
+                    sb.ctx(),
+                    &cmd("project.onboarding.advance", json!({"project_id":id})),
+                );
+                ok_payload(&out);
+            }
+        }
+        let method = if advance {
+            "project.onboarding.advance"
+        } else {
+            "project.onboarding.skip"
+        };
         let repo = if workspace { root.join("docs") } else { root };
+        let event_count = sb
+            .ctx
+            .store
+            .events_since(0, 100)
+            .unwrap()
+            .iter()
+            .filter(|e| e.1 == "project.onboarding")
+            .count();
         let before = sb.ctx.store.get_project(&id).unwrap().onboarding;
         std::fs::write(repo.join(".git/index.lock"), "locked").unwrap();
-        let out = handle_command(
-            sb.ctx(),
-            &cmd("project.onboarding.skip", json!({"project_id":id})),
-        );
+        let out = handle_command(sb.ctx(), &cmd(method, json!({"project_id":id})));
         assert_eq!(sb.ctx.store.get_project(&id).unwrap().onboarding, before);
         assert!(format!("{:?}", out.reply).contains("状态没有改"));
-        std::fs::remove_file(repo.join(".git/index.lock")).unwrap();
-        let out = handle_command(
-            sb.ctx(),
-            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        assert_eq!(
+            sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .filter(|e| e.1 == "project.onboarding")
+                .count(),
+            event_count
         );
+        std::fs::remove_file(repo.join(".git/index.lock")).unwrap();
+        let out = handle_command(sb.ctx(), &cmd(method, json!({"project_id":id})));
         assert!(ok_payload(&out)["init_commit"].is_string());
     }
 
     #[test]
     fn workspace_onboarding_commit_failure_keeps_state_and_can_retry() {
         needs_git!();
-        onboarding_locked_commit(true);
+        for advance in [false, true] {
+            onboarding_locked_commit(true, advance);
+        }
     }
 
     #[test]
     fn workspace_onboarding_commit_single_repo_index_lock_keeps_state() {
         needs_git!();
-        onboarding_locked_commit(false);
+        for advance in [false, true] {
+            onboarding_locked_commit(false, advance);
+        }
     }
 
     fn cost_task(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
@@ -5511,6 +5694,7 @@ mod tests {
     fn cost_session(sb: &Sandbox, task: &str, suffix: &str, cost: Option<f64>, running: bool) {
         use autome_domain::session::{Session, SessionKind, SessionLifecycle};
         let session = Session {
+            project_id: None,
             id: format!("{task}-{suffix}"),
             task_id: task.into(),
             kind: SessionKind::Intake,
