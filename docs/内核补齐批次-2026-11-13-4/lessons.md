@@ -1,21 +1,19 @@
 # 内核补齐批次（T-95）：教训
 
-复盘 #4，2026-11-14，覆盖复盘 #3 的版本。本任务没有记录到 Autome 指标，下列条目只引用证据文件和本轮复跑的事实，不含指标数字。
+复盘 #5，2026-11-14，覆盖复盘 #4 的版本。本任务没有记录到 Autome 指标，下列条目只引用证据文件和本轮复跑的事实，不含指标数字。
 
-复盘 #3 之后的事实：
-- 宿主第二次合并前门禁在 `f0c98afe` 上失败（日志在主检出 `.autome/output/gates/T-95/merge_gate-f0c98afe872f.log`）。
-  automed 库测试 993 个中 13 个失败：D-1 的 8 个、4 个 scheduler 测试、1 个 store 迁移测试。
-- cargo 在 automed 库测试处停下，automed 的 `end_to_end`、`build_rerun`、`prompt_rendering`、`real_cli` 四个目标都没跑。
-- 实现 #20（`c53b2b25`）修好了这 13 个，审计 #19 复验通过，宿主快检在 `c53b2b25` 通过。
-- 本轮在 HEAD `ab0d2908` 上跑 `cargo test --offline --workspace --all-targets --no-fail-fast`，退出 101
-  （输出在不入库的 `.autome/output/retro4-workspace.txt`）。automed 库测试 993 个全过，用时 73 秒；
-  `end_to_end` 256 过、2 败：
-  - `the_merge_panel_offers_the_merge_when_only_main_has_moved` 单独重跑仍然失败（`end_to_end.rs:4836`，合并后断言
-    `available == false`，实际是 `true`）。
-  - `legacy_pointer_e2e_restore_failure_keeps_todays_failure` 在全量运行中因 git commit 失败而红，单独重跑通过。
-- 下一次合并前门禁至少还会红 1 个。
+复盘 #4 之后的事实：
+- 宿主第三次合并前门禁在 `842714cc` 上失败，用时 914 秒（日志在主检出 `.autome/output/gates/T-95/merge_gate-842714cc3a67.log`）。
+  autome-cli、autome-domain、automed 库测试（993）、`build_rerun` 全过；`end_to_end` 256 过、2 败，就是复盘 #4 点名的两条。
+  cargo 在 `end_to_end` 处停下，`prompt_rendering` 和 `real_cli` 没有跑。
+- 实现 #21（`b2a5b64e`）修了这两条：一条是基线断言与 M-13 冲突，另一条是 M-10 夹具的提交竞争。审计 #20 复验通过，宿主快检在 `b2a5b64e` 通过。
+- 本轮在 HEAD `6878d51b` 上跑 `cargo test --offline --workspace --all-targets --no-fail-fast`，退出 0
+  （输出在不入库的 `.autome/output/retro5-workspace.txt`）。12 个测试目标都有 `test result`：
+  1912 个通过、0 个失败、1 个忽略，其中 `end_to_end` 258 个全过、`prompt_rendering` 43 个、`real_cli` 7 个。
+  Web、Desktop、Contract 三步在第三次门禁里已经通过，本轮没有重跑。
+- `scripts/ci-local.sh` 第 83 行仍然没有 `--no-fail-fast`。
 
-本版的改动：L-01、L-02、L-03 原样保留；L-04、L-05、L-06 补上第 20 轮和本轮复跑的事实；新增 L-07。
+本版的改动：L-01、L-02、L-03、L-07 原样保留；L-04、L-05、L-06 补上第 21 轮和本轮复跑的事实；新增 L-08。
 
 ```yaml
 - id: L-01
@@ -53,7 +51,7 @@
 ```yaml
 - id: L-04
   domain: process
-  symptom: 复盘 #1 在 retro.md 写明「HEAD 上 automed --lib protocol:: 8 败（D-1 eval 未进 seed，M-09 引入），合并前门禁会红」，复盘 #2、#3 又写进 lessons.md；此后实现 #18、#19、#20 和审计 #17、#18、#19 共六份简报里，grep「D-1」「protocol::」「复盘」「教训」「lessons」均为 0 命中；D-1 最后是实现 #20 从第二次合并前门禁日志里看到才修的，比复盘 #1 晚了两次门禁
+  symptom: 复盘 #1 在 retro.md 写明「HEAD 上 automed --lib protocol:: 8 败（D-1 eval 未进 seed，M-09 引入），合并前门禁会红」，复盘 #2、#3 又写进 lessons.md；此后实现 #18、#19、#20 和审计 #17、#18、#19 共六份简报里，grep「D-1」「protocol::」「复盘」「教训」「lessons」均为 0 命中；D-1 最后是实现 #20 从第二次合并前门禁日志里看到才修的，比复盘 #1 晚了两次门禁。复盘 #4 点名的两条 e2e 失败，在 impl-21、audit-20 两份简报里 grep 失败用例名、「复盘」「lessons」同样 0 命中，实现 #21 是从第三次门禁日志里得知的
   root_cause: 复盘轮发现的「HEAD 上有已知失败」只落在 retro.md 和 lessons.md，这两份文件不进实现轮、审计轮简报；所有里程碑已完成时，简报的「本里程碑」「上一轮对手轮的结论」两节都是空的，没有别的通道把它送到下一轮
   evidence: docs/内核补齐批次-2026-11-13-4/brief/impl-20.md
   level: brief
@@ -64,9 +62,9 @@
 ```yaml
 - id: L-05
   domain: tooling
-  symptom: 宿主合并前门禁跑 `cargo test --workspace --all-targets`，两次都在第一个失败的测试目标处停下。`2e0696bf` 上停在 autome-domain，automed 一个都没跑，实现 #19 只修了日志里的 7 个；`f0c98afe` 上停在 automed 库测试（13 败），automed `end_to_end` 的 258 个一个都没跑，实现 #20 只修了这 13 个。复盘 #4 在 HEAD `ab0d2908` 上加 `--no-fail-fast` 才看到 `end_to_end` 还有 2 败，其中 1 个能稳定复现。三批失败分属三个目标，被拆成了三次门禁
+  symptom: 宿主合并前门禁跑 `cargo test --workspace --all-targets`，三次都在第一个失败的测试目标处停下。`2e0696bf` 上停在 autome-domain，automed 一个都没跑，实现 #19 只修了日志里的 7 个；`f0c98afe` 上停在 automed 库测试（13 败），`end_to_end` 一个都没跑，实现 #20 只修了这 13 个；`842714cc` 上停在 `end_to_end`（2 败），`prompt_rendering`、`real_cli` 没跑，实现 #21 只修了这 2 个。复盘 #4、#5 加 `--no-fail-fast` 才看到每次门禁之后剩下的部分。三批失败分属三个目标，被拆成了三次门禁、每次约 15 分钟
   root_cause: 项目门禁脚本 `scripts/ci-local.sh` 第 83 行的测试段是 `cargo test --workspace --all-targets -- --nocapture`，没有 `--no-fail-fast`，第一个失败的测试二进制之后的目标全被跳过；门禁修复轮把门禁日志当成失败的全集，没有意识到日志只覆盖到第一个失败的目标
-  evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r20-impl.md
+  evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-impl.md
   level: test
   proposal: 项目门禁的 cargo 测试段带 `--no-fail-fast`，合并前门禁日志对 workspace 的每个测试目标都有一行 `test result`
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
@@ -75,9 +73,9 @@
 ```yaml
 - id: L-06
   domain: verification
-  symptom: M-11、M-12、M-14、M-15 各自审计通过，第一次合并前门禁在它们改过的回包形状上红了 7 个（domain 的 `gate_quick_resolved_json_is_unchanged_without_quick`，以及 Web 的 notifier-backfill-real、project-confirm-real、settings-real、settings-onboarding-real、task-detail-real），由实现 #19 专门修。同类的还有一个：M-13 按 F-R3 让已合并任务的 `task.changes` 返回 `merged: true` 结构，审计 #13 通过；基线就有的 e2e `the_merge_panel_offers_the_merge_when_only_main_has_moved` 仍断言合并后 `available == false`，复盘 #4 在 HEAD 上复跑稳定失败
+  symptom: M-11、M-12、M-14、M-15 各自审计通过，第一次合并前门禁在它们改过的回包形状上红了 7 个（domain 的 `gate_quick_resolved_json_is_unchanged_without_quick`，以及 Web 的 notifier-backfill-real、project-confirm-real、settings-real、settings-onboarding-real、task-detail-real），由实现 #19 专门修。同类的还有一个：M-13 按 F-R3 让已合并任务的 `task.changes` 返回 `merged: true` 结构，审计 #13 通过；基线就有的 e2e `the_merge_panel_offers_the_merge_when_only_main_has_moved` 仍断言合并后 `available == false`，第三次合并前门禁在它上面红，实现 #21 把断言改成 `available`、`merged` 为 true 且文件清单非空，审计 #20 确认是对齐设计 M-13 而不是削弱
   root_cause: before_merge 模式下实现轮和审计轮只跑「与本轮改动直接相关的测试子集」，选子集都用本轮用例的名字前缀（M-13 用的是 `task_changes_status_`、`events_by_subject_`、`session_ended_`）；断言同一个 RPC 回包的既有测试名字对不上前缀——`end_to_end.rs` 里调用 `"task.changes"` 的有 17 处，`apps/web/test/` 里还有消费这些回包的测试——一次都没跑
-  evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-13-r14-audit.md
+  evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-audit.md
   level: rule
   proposal: 里程碑改动了某个 RPC 方法的回包或某个序列化类型的字段时，其相关子集必须包含 `grep -rl` 该方法名或类型名命中的全部测试文件（含 `crates/*/tests/` 与 `apps/web/test/`），证据写出这条 grep 命令和命中清单
   predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
@@ -91,5 +89,16 @@
   evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r20-impl.md
   level: rule
   proposal: 实现轮或审计轮只要改动了 `crates/<c>/src/` 下的文件（包括 rebase 解冲突），证据里就必须有一次不带名字过滤的 `cargo test -p <c> --lib`，并贴出它的 `test result` 行
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
+```
+
+```yaml
+- id: L-08
+  domain: implementation
+  symptom: 第三次合并前门禁里 `legacy_pointer_e2e_restore_failure_keeps_todays_failure` 失败，失败在夹具的 git commit 上（退出 1，stderr 为空）；M-10 的实现 #11 与审计 #10 只按 `legacy_pointer_` 子集跑过它，都是绿；复盘 #4 在全量运行里看到它红，单独重跑通过，就没把它算进「下次门禁会红」；实现 #21 修复前单独连跑 4 次也都通过
+  root_cause: M-10 在 `36029e60` 加的夹具 `legacy_pointer_scenario` 在 `resume_setup` 返回之后才提交 v7 模板，但 `resume_setup` 返回前已经批准并启动了第 5 个会话，会话自己的 `git add -A docs` 与 commit 和夹具共用同一个索引；会话先把夹具已暂存的模板提交掉，夹具再 commit 就退出 1。实现 #21 让夹具停在 `await_design_approval`、断言没有运行中的会话后再改模板，并验证这条断言在修复前红
+  evidence: docs/内核补齐批次-2026-11-13-4/evidence/M-16-r21-impl.md
+  level: rule
+  proposal: e2e 夹具对任务仓库做 git 写操作（add、commit、改被跟踪文件）之前，必须让任务停在等待节点，并断言当时没有运行中的会话
   predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
