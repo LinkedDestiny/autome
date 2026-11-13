@@ -1,10 +1,10 @@
 # 状态块围栏导致误导性缺字段错误
 
 status: 已定位
-fix-round: 4/5
+fix-round: 5/5
 复现命令: cargo test --offline -p autome-domain --test fenced_status_regression
 根因: 状态解析器无条件跳过代码围栏内容且不保留位置，随后将围栏内已有的 status 误报为缺失；任务整理提示词展示围栏样例却未就地说明禁止围栏。
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -38,6 +38,20 @@ fix-round: 4/5
 无围栏对照成功排除了字段值和标题位置导致失败的假设；仅添加围栏就稳定失败，与跳过逻辑吻合。修复不能简单读取全文所有围栏，否则会破坏示例隔离；需限定真实头部或提供带行号的明确拒绝。
 
 ## 修复说明
+
+第 5/5 修复轮：已将本分支 rebase 到本地默认分支 `main`（`d9ad281`），逐步解决 `protocol/CHANGELOG.md` 冲突并完成 rebase，未使用 merge。冲突原因是 main 与本任务都新增了 v5：保留 main 的 Q-1、Q-2 记录，将本任务 F-1 围栏说明顺延为 `protocol/v6`，同步协议版本单测和冻结协议 e2e 的明确版本断言为 v6，其它断言保持不变。沿用已通过的解析器修复，没有新增无关产品改动。
+
+本轮验证结果：
+
+- 原复现命令 `cargo test --offline -p autome-domain --test fenced_status_regression`：4 passed。
+- `cargo test --offline -p autome-domain --lib status_block::tests::`：52 passed。
+- `cargo test --offline -p automed --lib protocol::`：69 passed，包含协议版本与体积预算检查。
+- `cargo test --offline -p automed --test prompt_rendering`：31 passed。
+- `cargo test --offline -p automed --test end_to_end an_intake_fenced_status_block_reports_the_fence_location`：1 passed。
+- `cargo test --offline -p automed --test end_to_end every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task`：1 passed。
+- 对比定位提交 `3a26e64`，`fenced_status_regression.rs` 无差异；未修改、删除、跳过或弱化定位回归测试。`git diff --check` 通过，已确认 main 是当前 HEAD 的祖先。
+
+原始输出位于 `.autome/output/round5-*.log`，不提交。未运行 `sh scripts/ci-local.sh`、全量测试或真实模型会话，宿主仍需执行合并前全量门禁。状态保持已定位、复现命令不变，复核重置为待复核；下方前四轮说明与复核意见均为历史记录。
 
 第 4/5 修复轮：当前起点为第 3 轮复核提交 `7fd7bf8`，工作区干净；未提供新的失败用例或宿主失败日志，也没有 replies 补充文件。本轮原样执行定位时的复现命令及直接相关测试，均通过，未复现新的产品缺陷。因此保留前三轮修复与原根因，不追加没有失败依据的产品代码改动；仅按本轮预算更新状态并重置复核。下方前三轮修复、复核意见为历史记录，不代表本轮已复核。
 
