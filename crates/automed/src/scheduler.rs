@@ -11224,6 +11224,78 @@ mod tests {
     }
 
     #[test]
+    fn bug_reply_after_interruption_defers_with_budget_and_verbatim_text() {
+        needs_git!();
+        for stopped in [false, true] {
+            let mut w = World::new("bug-reply-deferred");
+            w.set_parallel(1);
+            let base = w.add_task("T-0", "blocker");
+            w.set_state(
+                "T-0",
+                TaskState::Active {
+                    node: Node::Implement,
+                },
+            );
+            let task = TaskRecord {
+                id: "T-1".into(),
+                slug: "reply".into(),
+                kind: TaskKind::Bug,
+                state: if stopped {
+                    TaskState::Stopped { at: Node::FixGate }
+                } else {
+                    TaskState::Failed {
+                        at: Node::FixGate,
+                        reason: FailureReason::FixBudget { limit: 3 },
+                    }
+                },
+                budget_n: Some(3),
+                ..base
+            };
+            w.ctx.store.insert_task(&task).unwrap();
+            let wt = w.with_worktree(&task);
+            freeze_protocol(&mut w.ctx, &task, &wt).unwrap();
+            w.ctx
+                .store
+                .append_event("bug.loop_started", &task.id, json!({}))
+                .unwrap();
+            for round in 1..=3 {
+                w.ctx
+                    .store
+                    .append_event("bug.fix_round_started", &task.id, json!({"round": round}))
+                    .unwrap();
+            }
+            let text = "决定：保留  空格\n{request}\n";
+            advance(&mut w.ctx, &task.id, &Trigger::Reply { info: text.into() }).unwrap();
+            assert_eq!(
+                w.state(&task.id),
+                TaskState::Requeued {
+                    resume: Node::Locate
+                }
+            );
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().budget_n, Some(6));
+            assert_eq!(bug_progress(&w.ctx, &task).unwrap().fix_round, 3);
+            assert!(w.ctx.store.running_session(&task.id).unwrap().is_none());
+            assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            w.set_state("T-0", TaskState::Done);
+            assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+            assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Locate });
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "task.replied").unwrap(),
+                1
+            );
+            let replies = std::fs::read_to_string(wt.join("docs/reply/reply-replies.md")).unwrap();
+            assert_eq!(replies.matches(text).count(), 1);
+            let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+            assert_eq!(
+                session.kind,
+                SessionKind::Bug {
+                    step: BugStep::Locate
+                }
+            );
+        }
+    }
+
+    #[test]
     fn fill_slots_respects_the_projects_parallel_limit() {
         needs_git!();
         let mut w = World::new("slots");

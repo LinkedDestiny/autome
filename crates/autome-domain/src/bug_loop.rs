@@ -1082,6 +1082,150 @@ mod tests {
         }
     }
     #[test]
+    fn bug_loop_reply_restores_a_fix_window_without_losing_history() {
+        let cfg = config();
+        for state in [
+            TaskState::Stopped { at: Node::FixGate },
+            TaskState::Failed {
+                at: Node::Fix,
+                reason: FailureReason::FixBudget { limit: 3 },
+            },
+        ] {
+            for (used, budget) in [
+                (0, None),
+                (3, Some(3)),
+                (3, Some(20)),
+                (u32::MAX - cfg.bug.fix_rounds, None),
+            ] {
+                let mut context = ctx(&cfg);
+                context.budget_n = budget;
+                let progress = BugProgress {
+                    fix_round: used,
+                    repro_misses: 0,
+                    ..BugProgress::default()
+                };
+                let t = run(
+                    &state,
+                    &Trigger::Reply {
+                        info: "补充".into(),
+                    },
+                    &context,
+                    progress,
+                )
+                .unwrap();
+                assert_eq!(t.next, active(Node::Locate));
+                assert_eq!(
+                    t.action,
+                    Action::StartBugSession {
+                        step: BugStep::Locate,
+                        inject: None
+                    }
+                );
+                assert_eq!(
+                    t.budget_n,
+                    Some(
+                        budget
+                            .unwrap_or(cfg.bug.fix_rounds)
+                            .max(used + cfg.bug.fix_rounds)
+                    )
+                );
+                context.budget_n = t.budget_n;
+                let fix = run(
+                    &active(Node::ReproCheck),
+                    &repro(1, false),
+                    &context,
+                    progress,
+                )
+                .unwrap();
+                assert_eq!(fix.next, active(Node::Fix));
+                assert_eq!(fix.budget_n, t.budget_n);
+            }
+            for info in ["", " \n\t"] {
+                assert!(
+                    run(
+                        &state,
+                        &Trigger::Reply { info: info.into() },
+                        &ctx(&cfg),
+                        BugProgress::default()
+                    )
+                    .is_err()
+                );
+            }
+            assert!(
+                run(
+                    &state,
+                    &Trigger::Reply {
+                        info: "补充".into()
+                    },
+                    &ctx(&cfg),
+                    BugProgress {
+                        fix_round: u32::MAX,
+                        repro_misses: 0,
+                        ..BugProgress::default()
+                    }
+                )
+                .unwrap_err()
+                .reason
+                .contains("溢出")
+            );
+        }
+        for node in [Node::AwaitInfo, Node::NotABug] {
+            let t = run(
+                &active(node),
+                &Trigger::Reply {
+                    info: "补充".into(),
+                },
+                &ctx(&cfg),
+                BugProgress {
+                    fix_round: 3,
+                    repro_misses: 0,
+                    ..BugProgress::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(t.budget_n, None);
+        }
+    }
+
+    #[test]
+    fn bug_loop_reply_invalid_states_explain_the_next_command() {
+        for (state, command) in [
+            (TaskState::Draft, "autome task start"),
+            (TaskState::Queued, "autome status"),
+            (
+                TaskState::Requeued {
+                    resume: Node::Locate,
+                },
+                "autome status",
+            ),
+            (TaskState::Paused { resume: Node::Fix }, "autome resume"),
+            (TaskState::Done, "autome task new"),
+            (TaskState::Cancelled, "autome task new"),
+        ]
+        .into_iter()
+        .chain(
+            Node::ALL
+                .into_iter()
+                .chain(Node::BUG)
+                .filter(|node| !matches!(node, Node::AwaitInfo | Node::NotABug))
+                .map(|node| (active(node), "autome stop")),
+        ) {
+            let reason = run(
+                &state,
+                &Trigger::Reply {
+                    info: "补充".into(),
+                },
+                &ctx(&config()),
+                BugProgress::default(),
+            )
+            .unwrap_err()
+            .reason;
+            assert!(reason.contains(command), "{reason}");
+            assert!(!reason.contains("转换表"), "{reason}");
+        }
+    }
+
+    #[test]
     fn bug_loop_reply_returns_to_locate_from_both_waiting_nodes() {
         for node in [Node::AwaitInfo, Node::NotABug] {
             assert_eq!(

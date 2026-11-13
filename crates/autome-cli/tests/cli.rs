@@ -701,6 +701,72 @@ fn bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim() {
 }
 
 #[test]
+fn bug_loop_reply_after_failure() {
+    bug_reply_after_interruption(false);
+}
+
+#[test]
+fn bug_loop_reply_after_stop() {
+    bug_reply_after_interruption(true);
+}
+
+fn bug_reply_after_interruption(stopped: bool) {
+    let slug = if stopped {
+        "bug-reply-stop"
+    } else {
+        "bug-reply-failure"
+    };
+    let s = Sandbox::new(slug);
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    std::fs::write(s.repo.join(".autome/fake/1.sh"), "exit 0\n").unwrap();
+    let created = s.json(&["task", "new", slug, "--kind", "bug"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    // Missing the required artifact fails deterministically without crash retries.
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    let failed = s.task_state(id);
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["at"], "locate");
+    if stopped {
+        std::fs::write(s.repo.join(".autome/fake/2.sh"), "exec sleep 60\n").unwrap();
+        s.ok(&["rerun", id, "locate"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !s.repo.join(".autome/fake/2.prompt").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rerun did not start session 2"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        s.ok(&["stop", id]);
+        let state = s.task_state(id);
+        assert_eq!(state["state"], "stopped");
+        assert_eq!(state["at"], "locate");
+    }
+    let reply_session = if stopped { 3 } else { 2 };
+    bug_wait_step(&s, reply_session, slug, "无法复现");
+    let text = "产品决定：保留  双空格\n{request} 与中文原文。\n";
+    s.ok(&["reply", id, text]);
+    assert_eq!(s.task_state(id)["node"], "locate");
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(id)["node"], "await_info");
+    let worktree = s.repo.join(format!(".worktree/{slug}"));
+    let replies =
+        std::fs::read_to_string(worktree.join(format!("docs/{slug}/{slug}-replies.md"))).unwrap();
+    assert!(replies.ends_with(&format!("\n\n{text}\n\n")), "{replies}");
+    assert_eq!(replies.matches(text).count(), 1);
+    assert!(automed::git::is_clean(&worktree).unwrap());
+    let prompt =
+        std::fs::read_to_string(s.repo.join(format!(".autome/fake/{reply_session}.prompt")))
+            .unwrap();
+    assert!(prompt.contains(&format!("{slug}-replies.md")), "{prompt}");
+}
+
+#[test]
 fn bug_loop_status_shows_the_bug_nodes_and_what_to_do_next() {
     let s = Sandbox::new("bug-status");
     s.ok(&[
