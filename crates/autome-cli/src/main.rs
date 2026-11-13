@@ -67,6 +67,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
   reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定、失败或已停止时用；需求任务等同 reject
+  note <任务> [内容] [--file <路径|->] [--reopen]  留下操作者备注
   merge <任务> [--cancel]        合并到默认分支；未到卡点时预先同意，--cancel 撤销
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
@@ -134,6 +135,7 @@ fn run(argv: &[String]) -> Result<()> {
     let allowed: &[&str] = match verb {
         "doctor" | "ls" | "alerts" | "rpc" | "approve" | "pause" | "resume" | "stop" | "cancel"
         | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
+        "note" => &["--json", "--file", "--reopen"],
         "after" => &["--json", "--none"],
         "queue" => &["--json", "--before", "--after", "--top"],
         "status" => &["--json"],
@@ -203,6 +205,15 @@ fn run(argv: &[String]) -> Result<()> {
             let feedback = a.need(2, "补充信息")?;
             trigger(&mut c, &a, "task.reply", json!({ "info": feedback }))
         }
+        "note" => {
+            let text = note_text(&a, &mut std::io::stdin())?;
+            trigger(
+                &mut c,
+                &a,
+                "task.note",
+                json!({"text":text, "reopen":a.has("--reopen")}),
+            )
+        }
         "rerun" => {
             let node = a
                 .need(2, "节点（如 design、implement、audit）")?
@@ -225,6 +236,26 @@ fn run(argv: &[String]) -> Result<()> {
         "alerts" => alerts(&mut c, &a),
         "rpc" => rpc(&mut c, &a),
         _ => unreachable!("checked above"),
+    }
+}
+
+fn note_text(a: &Args, stdin: &mut impl Read) -> Result<String> {
+    if let Some(path) = a.value("--file") {
+        if a.positional.len() > 2 {
+            return Err(CliError::Usage("内容与 --file 只能指定一个".into()));
+        }
+        let mut text = String::new();
+        if path == "-" {
+            stdin
+                .read_to_string(&mut text)
+                .map_err(|e| CliError::Failed(format!("读取备注：{e}")))?;
+        } else {
+            text = std::fs::read_to_string(path)
+                .map_err(|e| CliError::Failed(format!("读取备注 {path}：{e}")))?;
+        }
+        Ok(text)
+    } else {
+        Ok(a.need(2, "备注内容或 --file")?.to_string())
     }
 }
 
@@ -896,6 +927,9 @@ fn task_detail(got: &Value) {
             render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or("")),
         );
     }
+    for line in render::note_status_lines(&got["notes"]) {
+        println!("{line}");
+    }
     if let Some(line) = render::scope_status_line(&got["scope_restore"]) {
         println!("{line}");
     }
@@ -1261,6 +1295,9 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
         print_json(&out);
         return Ok(());
     }
+    if let Some(warning) = out["warning"].as_str() {
+        println!("{warning}");
+    }
     if let Some(request) = out["merge_request"].as_str() {
         println!(
             "{} {}",
@@ -1550,4 +1587,28 @@ fn deps_cli_usage() {
     ] {
         assert!(USAGE.contains(text));
     }
+}
+
+#[test]
+fn operator_note_reads_text_from_file_and_stdin() {
+    let file = std::env::temp_dir().join(format!("autome-note-{}", std::process::id()));
+    std::fs::write(&file, " 原文\n第二行 ").unwrap();
+    let args =
+        |path: &str| Args::parse(&["note", "T-1", "--file", path].map(String::from)).unwrap();
+    assert_eq!(
+        note_text(&args(file.to_str().unwrap()), &mut &b""[..]).unwrap(),
+        " 原文\n第二行 "
+    );
+    assert_eq!(
+        note_text(&args("-"), &mut " 原文\n第二行 ".as_bytes()).unwrap(),
+        " 原文\n第二行 "
+    );
+    std::fs::remove_file(&file).unwrap();
+    assert!(note_text(&args(file.to_str().unwrap()), &mut &b""[..]).is_err());
+    assert!(note_text(&args("-"), &mut &b"\xff"[..]).is_err());
+    let a = Args::parse(&["note", "T-1", "直接内容", "--reopen"].map(String::from)).unwrap();
+    assert_eq!(note_text(&a, &mut &b""[..]).unwrap(), "直接内容");
+    assert!(a.has("--reopen"));
+    let a = Args::parse(&["note", "T-1", "内容", "--file", "-"].map(String::from)).unwrap();
+    assert!(note_text(&a, &mut &b""[..]).is_err());
 }

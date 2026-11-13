@@ -437,9 +437,42 @@ pub fn scope_status_line(scope: &Value) -> Option<String> {
     ))
 }
 
+pub fn note_status_lines(notes: &Value) -> Vec<String> {
+    notes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| {
+            let delivery = if n["delivered"].is_object() {
+                format!(
+                    "已送达 {} 第 {} 轮",
+                    n["delivered"]["role"].as_str().unwrap_or(""),
+                    n["delivered"]["round"]
+                )
+            } else {
+                "未送达".to_string()
+            };
+            format!(
+                "备注 #{} · {} · {}\n{}",
+                n["n"],
+                n["at"].as_str().unwrap_or(""),
+                delivery,
+                n["text"].as_str().unwrap_or("")
+            )
+        })
+        .collect()
+}
+
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
+        "task.note_added" => format!("{subject} 留下备注 #{}", p["n"]),
+        "task.note_delivered" => format!(
+            "{subject} 备注 {} 已送达 {} 第 {} 轮",
+            p["notes"],
+            s("role"),
+            p["round"]
+        ),
         "session.scope_restored" => {
             let paths = scope_paths(p, "paths");
             let mut listed = paths.iter().take(3).cloned().collect::<Vec<_>>().join("、");
@@ -1758,4 +1791,29 @@ fn test_fix_events_and_status_read_plainly() {
         ),
         "运行中 · 定位（修正回归测试 1/2）"
     );
+}
+
+#[test]
+fn operator_note_status_lists_notes() {
+    let lines = note_status_lines(&serde_json::json!([
+        {"n":1,"text":"原文\n下一行","at":"now","delivered":null},
+        {"n":2,"text":"ok","at":"then","delivered":{"role":"impl","round":2}}
+    ]));
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("未送达") && lines[0].contains("原文\n下一行"));
+    assert!(lines[1].contains("已送达 impl 第 2 轮"));
+}
+
+#[test]
+fn operator_note_events_render_one_line_each() {
+    for kind in ["task.note_added", "task.note_delivered"] {
+        let line = event_line(
+            kind,
+            "T-1",
+            &serde_json::json!({"n":1,"text":"a\nb","notes":[1,2],"role":"impl","round":3}),
+        )
+        .unwrap();
+        assert_eq!(line.lines().count(), 1);
+        assert!(line.contains("T-1") && line.contains("备注"));
+    }
 }

@@ -2059,3 +2059,27 @@ fn kernel_guard_test_override_cannot_raise_the_id() {
         assert!(String::from_utf8_lossy(&out.stderr).contains("忽略 AUTOME_TEST_BUILD_ID"));
     }
 }
+
+#[test]
+fn operator_note_cli_records_and_status_displays_verbatim() {
+    let s = Sandbox::new("operator-note");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "note target", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let file = s.root.join("note.txt");
+    std::fs::write(&file, " 原文\n第二行 ").unwrap();
+    let out = s.json(&["note", id, "--file", file.to_str().unwrap()]);
+    assert_eq!(out["n"], 1);
+    s.ok(&["note", id, "second"]);
+    let got = s.json(&["status", id]);
+    assert_eq!(got["notes"][0]["text"], " 原文\n第二行 ");
+    assert_eq!(got["notes"][1]["n"], 2);
+    assert_eq!(got["task"]["state"]["state"], "draft");
+    let human = s.ok(&["status", id]);
+    assert!(human.contains("原文\n第二行") && human.contains("未送达"));
+}

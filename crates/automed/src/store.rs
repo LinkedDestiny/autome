@@ -833,6 +833,37 @@ impl Store {
         .collect()
     }
 
+    pub fn operator_notes(&self, task_id: &str) -> Result<Vec<Value>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, at, payload FROM events WHERE subject_id = ?1 AND kind IN ('task.note_added', 'task.note_delivered') ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([task_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut notes: Vec<Value> = Vec::new();
+        for row in rows {
+            let (kind, at, raw) = row?;
+            let p: Value = serde_json::from_str(&raw)?;
+            if kind == "task.note_added" {
+                notes.push(serde_json::json!({"n":p["n"], "text":p["text"], "at":at, "delivered":null, "late":p["late"] == true}));
+            } else if let Some(numbers) = p["notes"].as_array() {
+                for note in &mut notes {
+                    if note["late"] != true && numbers.contains(&note["n"]) {
+                        note["delivered"] = serde_json::json!({"session_id":p["session_id"], "role":p["role"], "round":p["round"], "at":at});
+                    }
+                }
+            }
+        }
+        for note in &mut notes {
+            note.as_object_mut().unwrap().remove("late");
+        }
+        Ok(notes)
+    }
+
     /// Events after `after_seq`, oldest first. The Renderer's resync path.
     /// `events_since`, with the subject each event is about — the task, the
     /// project or the alert. The command line's `run` names the task on every

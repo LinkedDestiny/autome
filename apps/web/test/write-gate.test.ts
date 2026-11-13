@@ -549,6 +549,7 @@ test('长度上限钉死，边界两侧和全部 op 正路径可达', () => {
   const specific: Record<string, object> = {
     'task.set_after': { task_id: 'T-1', after: [] }, 'task.move': { task_id: 'T-1', top: true },
     'project.confirm': { path: '~/x' }, 'project.remove': { project_id: 'p1' },
+    'task.note': { task_id: 't1', text: 'note' },
     'task.start': { task_id: 't1' }, 'task.reply': { task_id: 't1', info: '' },
     'open.path': { kind: 'log', session_id: 's1' }, 'config.set_theme': { theme: 'system' },
     'env.install': { component: 'git' }, 'env.login': { component: 'codex' },
@@ -750,4 +751,20 @@ test('env.install 和 env.login 只收 component', () => {
     for (const component of ['git','claude','codex','iterm2']) assert.equal(gate.validateWriteRequest({op,params:{component}}).ok,true);
     for (const extra of [{command:'rm -rf ~'},{other:null}]) assert.equal(gate.validateWriteRequest({op,params:{component:'git',...extra}}).ok,false);
   }
+});
+
+test('task.note accepts prose and optional boolean reopen', () => {
+  for (const text of ['x'.repeat(600), '中'.repeat(8000), '😀'.repeat(4000)]) {
+    assert.equal(gate.validateWriteRequest({ op: 'task.note', params: { task_id: 'T-1', text, reopen: true } }).ok, true);
+  }
+  assert.equal(gate.validateWriteRequest({ op: 'task.note', params: { task_id: 'T-1', text: 'x', reopen: 'yes' } }).ok, false);
+});
+test('task.note requires task_id', () => {
+  for (const task_id of [undefined, '', 7]) assert.equal(gate.validateWriteRequest({ op: 'task.note', params: { task_id, text: 'x' } }).ok, false);
+});
+test('task.note requires string text', () => {
+  for (const text of [undefined, null, 7, true]) assert.equal(gate.validateWriteRequest({ op: 'task.note', params: { task_id: 'T-1', text } }).ok, false);
+});
+test('task.note rejects text over 8000', () => {
+  for (const text of ['中'.repeat(8001), '😀'.repeat(4001)]) assert.equal(gate.validateWriteRequest({ op: 'task.note', params: { task_id: 'T-1', text } }).ok, false);
 });

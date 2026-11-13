@@ -441,6 +441,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
                 feedback: str_param(p, "feedback")?.to_string(),
             },
         ),
+        "task.note" => task_note(ctx, p),
         "task.reply" => {
             let id = str_param(p, "task_id")?;
             let info = str_param(p, "info")?.to_string();
@@ -1894,6 +1895,54 @@ fn project_warnings(ctx: &Ctx, project: &Project) -> Result<Vec<String>, Dispatc
     Ok(config::warnings(&config::resolve(&global, &local)))
 }
 
+fn task_note(ctx: &mut Ctx, p: &Value) -> DispatchResult {
+    let id = str_param(p, "task_id")?;
+    let text = str_param(p, "text")?;
+    if p.get("reopen").is_some_and(|v| !v.is_boolean()) {
+        return Err(bad_params("reopen 必须是布尔值"));
+    }
+    if text.trim().is_empty() {
+        return Err(rejected("备注不能为空"));
+    }
+    // Match the web gateway's JavaScript string length (UTF-16 code units).
+    if text.encode_utf16().count() > 8000 {
+        return Err(rejected("备注不能超过 8000 字符"));
+    }
+    let task = ctx.store.get_task(id)?;
+    match task.state {
+        TaskState::Done => {
+            return Err(rejected(
+                "任务已经完成，备注不会再被任何一轮读到；有新问题请新建任务",
+            ));
+        }
+        TaskState::Cancelled => {
+            return Err(rejected(
+                "任务已经取消，备注不会再被任何一轮读到；有新问题请新建任务",
+            ));
+        }
+        _ => {}
+    }
+    let late = matches!(
+        task.state,
+        TaskState::Active {
+            node: Node::Merging | Node::MainCheck | Node::Cleanup
+        }
+    );
+    let n = ctx.store.count_events(id, "task.note_added")? + 1;
+    let mut payload = json!({"n":n, "text":text});
+    if late {
+        payload["late"] = json!(true);
+    }
+    let seq = ctx
+        .store
+        .append_event("task.note_added", id, payload.clone())?;
+    let mut out = json!({"n":n});
+    if late {
+        out["warning"] = json!("任务已经在合并，这条备注不会被任何一轮读到；要处理请新建任务");
+    }
+    Ok((out, vec![event(seq, "task.note_added", id, payload)]))
+}
+
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
@@ -1932,6 +1981,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "task": task_json(ctx, &task, &CostSummary::of(&sessions))?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
             "scope_restore": {"last": last, "pending": pending},
+            "notes": ctx.store.operator_notes(task_id)?,
             "brief": ctx.store.task_brief(task_id)?,
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
@@ -3849,6 +3899,174 @@ mod tests {
     fn gate_queue_get(sb: &mut Sandbox, id: &str) -> Value {
         let out = handle_command(sb.ctx(), &cmd("task.get", json!({"task_id":id})));
         ok_payload(&out).clone()
+    }
+
+    fn note_fixture() -> (Sandbox, String) {
+        let mut sb = Sandbox::new("operator-note");
+        let project = sb.add_project("repo");
+        let id = gate_queue_fixture(&mut sb, &project, "note");
+        (sb, id)
+    }
+
+    #[test]
+    fn operator_note_is_recorded_in_order_without_changing_state() {
+        let (mut sb, id) = note_fixture();
+        let mut states = vec![
+            TaskState::Draft,
+            TaskState::Queued,
+            TaskState::Requeued {
+                resume: Node::Implement,
+            },
+            TaskState::Paused {
+                resume: Node::Implement,
+            },
+            TaskState::Stopped { at: Node::Fix },
+            TaskState::Failed {
+                at: Node::Implement,
+                reason: autome_domain::task::FailureReason::DesignBudget { limit: 1 },
+            },
+        ];
+        for node in Node::ALL.into_iter().chain(Node::BUG) {
+            states.push(TaskState::Active { node });
+        }
+        for (i, state) in states.into_iter().enumerate() {
+            sb.ctx.store.set_task_state(&id, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":" 原样\n备注 "})),
+            );
+            assert_eq!(ok_payload(&out)["n"], i + 1);
+            assert!(sb.ctx.store.list_sessions(&id).unwrap().is_empty());
+            assert_eq!(sb.ctx.store.get_task(&id).unwrap().state, state);
+        }
+        let notes = sb.ctx.store.operator_notes(&id).unwrap();
+        assert!(
+            notes
+                .iter()
+                .all(|n| n["text"] == " 原样\n备注 " && n["delivered"].is_null())
+        );
+    }
+
+    #[test]
+    fn operator_note_after_merge_started_is_recorded_with_a_warning() {
+        let (mut sb, id) = note_fixture();
+        for node in [
+            Node::Rebase,
+            Node::MergeGate,
+            Node::AwaitMerge,
+            Node::Merging,
+            Node::MainCheck,
+            Node::Cleanup,
+        ] {
+            sb.ctx
+                .store
+                .set_task_state(&id, &TaskState::Active { node })
+                .unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":"备注"})),
+            );
+            let late = matches!(node, Node::Merging | Node::MainCheck | Node::Cleanup);
+            assert_eq!(ok_payload(&out)["warning"].is_string(), late);
+            let event = sb
+                .ctx
+                .store
+                .last_event(&id, "task.note_added")
+                .unwrap()
+                .unwrap();
+            assert_eq!(event["late"] == true, late);
+            assert_eq!(out.events.len(), 1);
+            sb.ctx
+                .store
+                .append_event(
+                    "task.note_delivered",
+                    &id,
+                    json!({"notes":[event["n"]],"session_id":"s","role":"impl","round":1}),
+                )
+                .unwrap();
+            let notes = sb.ctx.store.operator_notes(&id).unwrap();
+            assert_eq!(notes.last().unwrap()["delivered"].is_null(), late);
+        }
+    }
+
+    #[test]
+    fn operator_note_rejects_done_and_cancelled_plainly() {
+        let (mut sb, id) = note_fixture();
+        for (state, message) in [
+            (TaskState::Done, "已经完成"),
+            (TaskState::Cancelled, "已经取消"),
+        ] {
+            sb.ctx.store.set_task_state(&id, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":"备注"})),
+            );
+            assert!(err_message(&out).contains(message));
+            assert_eq!(sb.ctx.store.get_task(&id).unwrap().state, state);
+        }
+        assert!(sb.ctx.store.operator_notes(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn operator_note_rejects_blank_and_over_8000_chars() {
+        let (mut sb, id) = note_fixture();
+        for text in [
+            "".into(),
+            " \n\t".into(),
+            "中".repeat(8001),
+            "😀".repeat(4001),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            assert!(err_message(&out).contains("备注"));
+        }
+        for params in [
+            json!({"task_id":id,"text":7}),
+            json!({"task_id":id,"text":"x","reopen":"yes"}),
+            json!({"text":"x"}),
+        ] {
+            let out = handle_command(sb.ctx(), &cmd("task.note", params));
+            assert!(!err_message(&out).is_empty());
+        }
+        assert!(sb.ctx.store.operator_notes(&id).unwrap().is_empty());
+        for text in ["中".repeat(8000), "😀".repeat(4000), "x".into()] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            ok_payload(&out);
+        }
+    }
+
+    #[test]
+    fn operator_note_task_get_lists_notes_with_delivery() {
+        let (mut sb, id) = note_fixture();
+        for text in ["first", "second"] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            ok_payload(&out);
+        }
+        sb.ctx
+            .store
+            .append_event(
+                "task.note_delivered",
+                &id,
+                json!({"notes":[1],"session_id":"s1","role":"impl","round":3}),
+            )
+            .unwrap();
+        let got = gate_queue_get(&mut sb, &id);
+        assert_eq!(got["notes"].as_array().unwrap().len(), 2);
+        assert_eq!(got["notes"][0]["text"], "first");
+        assert_eq!(got["notes"][0]["delivered"]["session_id"], "s1");
+        assert_eq!(got["notes"][0]["delivered"]["role"], "impl");
+        assert_eq!(got["notes"][0]["delivered"]["round"], 3);
+        assert!(got["notes"][0]["at"].is_string());
+        assert!(got["notes"][0]["delivered"]["at"].is_string());
+        assert!(got["notes"][1]["delivered"].is_null());
     }
 
     #[test]

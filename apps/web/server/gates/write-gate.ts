@@ -12,6 +12,7 @@ const ALLOWED_WRITE_OPS = Object.freeze([
   'task.move',
   'task.start',
   'task.reply',
+  'task.note',
   'task.approve',
   'task.reject',
   'task.merge',
@@ -50,6 +51,7 @@ const ROLES = Object.freeze(['plan', 'review', 'adjudicate', 'impl', 'audit', 'r
 const PROSE_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'task.create': ['request'],
   'task.reply': ['info'],
+  'task.note': ['text'],
   'task.reject': ['feedback'],
   'task.decide': ['ruling'],
   // A whole project profile or AGENTS.md, edited in the wizard.
@@ -208,12 +210,17 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
       return { ok: false, message: '附件必须是上传编号（小写 UUID）' };
     }
   }
-  if (op === 'task.start' || op === 'task.reply' || op === 'task.set_after' || op === 'task.move') {
+  if (op === 'task.note' || op === 'task.start' || op === 'task.reply' || op === 'task.set_after' || op === 'task.move') {
     if (typeof params.task_id !== 'string' || params.task_id.length === 0) {
       return { ok: false, message: 'task_id 必须是非空字符串' };
     }
   }
-  if (op === 'task.reply' && typeof params.info !== 'string') {
+  if (op === 'task.note') {
+    if (typeof params.text !== 'string') return { ok: false, message: 'text 必须是字符串' };
+    if (params.reopen !== undefined && typeof params.reopen !== 'boolean') return { ok: false, message: 'reopen 必须是布尔值' };
+  }
+  if (op === 'task.reply' &&
+ typeof params.info !== 'string') {
     return { ok: false, message: 'info 必须是字符串' };
   }
   if (op === 'open.path') {
