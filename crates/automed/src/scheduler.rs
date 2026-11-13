@@ -820,6 +820,40 @@ fn apply_guards(
         repairing: is_repairing(carried_inject(ctx, &task.id, &session.id)?.as_ref()),
     };
     let findings = guards::check(&round);
+    // Read the range before replacing task.head: retries share the first attempt's H0.
+    let integration = crate::integration::range(
+        &ctx.store,
+        &task.id,
+        session.kind,
+        before.as_ref(),
+        status,
+        &TaskLayout::of(project, &task.slug, &working_repos(project, task)),
+        &task.doc_dir(),
+        carried_inject(ctx, &task.id, &session.id)?.as_ref(),
+    )
+    .map_err(|detail| {
+        // reap_session has already marked the process ended. Merely returning
+        // an error would strand an active Implement node with no running session.
+        let failed = TaskState::Failed {
+            at: task.state.node().unwrap_or(Node::Implement),
+            reason: FailureReason::Config {
+                detail: detail.clone(),
+            },
+        };
+        let saved = ctx.store.set_task_state(&task.id, &failed).and_then(|()| {
+            ctx.store
+                .append_event(
+                    "task.updated",
+                    &task.id,
+                    json!({"state": failed, "trigger": "integration_range_failed"}),
+                )
+                .map(|_| ())
+        });
+        err(match saved {
+            Ok(()) => detail,
+            Err(e) => format!("{detail}；记录失败状态失败：{e}"),
+        })
+    })?;
 
     // Before the snapshot is replaced: a milestone that was closed and has
     // just been taken back can only be seen by comparing the two, and the
@@ -847,6 +881,10 @@ fn apply_guards(
             design_bytes,
         }),
     )?;
+    if let Some(integration) = integration {
+        ctx.store
+            .append_event("integration.range", &task.id, integration)?;
+    }
     if let Ok(head) = git::head_sha(&worktree) {
         ctx.store
             .append_event("task.head", &task.id, json!({ "sha": head }))?;
@@ -3252,6 +3290,17 @@ fn launch_session(
     } else {
         None
     };
+    let start_heads = if kind == (SessionKind::Role { role: Role::Impl }) {
+        Some(
+            layout
+                .repos
+                .iter()
+                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
     let locate_heads = if kind
         == (SessionKind::Bug {
             step: BugStep::Locate,
@@ -3307,6 +3356,9 @@ fn launch_session(
         // What the round was carrying, so a crash can be retried with it.
         "inject": inject,
     });
+    if let Some(heads) = start_heads {
+        started["start_heads"] = json!(heads);
+    }
     if let Some(heads) = locate_heads {
         started["locate_heads"] = json!(heads);
     }
@@ -9146,6 +9198,81 @@ mod tests {
         )
         .unwrap();
         s
+    }
+
+    #[test]
+    fn integration_range_read_failure_stops_task_before_audit() {
+        let mut w = World::new("integration-read-failure");
+        let s = deferred_session(&mut w, Node::Implement);
+        w.set_state(
+            "T-1",
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let started = w
+            .ctx
+            .store
+            .session_started_event("T-1", &s.id)
+            .unwrap()
+            .unwrap();
+        assert!(started["start_heads"][0]["head"].as_str().is_some());
+        w.ctx
+            .store
+            .append_event("task.head", "T-1", json!({"sha":"previous"}))
+            .unwrap();
+        w.ctx.store.append_event("session.started", "T-1", json!({
+            "session_id":s.id,"kind":s.kind,"start_heads":[{"repo":"","head":"missing-object"}]
+        })).unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "task.snapshot",
+                "T-1",
+                json!(guards::Snapshot {
+                    milestones: vec![("M-01".into(), MilestoneState::Done)],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let status =
+            status_block::parse(&design_doc("实现中", &[("M-01", MilestoneState::Done)], ""))
+                .unwrap();
+        let error = apply_guards(
+            &mut w.ctx,
+            &s,
+            &project,
+            &task,
+            SessionOutcome::Ok {
+                status: Box::new(status),
+            },
+        )
+        .unwrap_err();
+        assert!(error.detail.contains("集成范围读取失败"));
+        assert!(matches!(
+            w.state("T-1"),
+            TaskState::Failed {
+                at: Node::Implement,
+                reason: FailureReason::Config { .. }
+            }
+        ));
+        assert!(
+            w.ctx
+                .store
+                .last_event("T-1", "integration.range")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event("T-1", "task.updated")
+                .unwrap()
+                .unwrap()["trigger"],
+            "integration_range_failed"
+        );
     }
 
     #[test]

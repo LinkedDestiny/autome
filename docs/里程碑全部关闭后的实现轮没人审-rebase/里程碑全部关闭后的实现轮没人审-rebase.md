@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/30
-current-milestone: 无
+implementation-round: 1/25
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-01：给实现会话记 start_heads，在 apply_guards 里按「方案 §2」的口径算出提交范围并写 integration.range 事件
+next-action: M-01 独立审计通过后，实现 M-02 的集成复验守卫、证据指针守卫与审计启动接线
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -171,7 +171,7 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
     "repo": "", "start": "<H0>", "end": "<H1>", "base": "<B1>",
     "commits": [{"sha": "…", "subject": "…", "paths": ["…"], "stat": "…"}],
     "dropped": [{"sha": "…", "subject": "…", "paths": ["…"], "stat": "…"}],
-    "test_files": ["…"]
+    "test_files": ["…"], "commits_omitted": 0, "dropped_omitted": 0
   }]
 }
 ```
@@ -180,12 +180,10 @@ rename 检测，源与目标两个路径都出现在列表里），对文档仓�
   简报照此写出确切路径（约束 5）。
 - `trigger` 取该实现会话 `carried_inject`；`gate_failed` **不存提交 SHA**（理由见 §5 的格式规则）。
 - 只列改了目录外路径的提交；`stat` 为 `git show --stat=120 --format= <sha> -- . ':(exclude)<doc_dir>/'`（成员仓库不加
-  exclude），每个提交最多 30 行，超出写「其余 n 行见 `git show --stat <sha>`」；`commits` 最多 50 个，超出同样写明。
+  exclude），每个提交最多 30 行，超出写「其余 n 行见 `git show --stat <sha>`」；`commits` 与 `dropped` 各最多 50 个，超出数量写入 `commits_omitted` / `dropped_omitted`，供简报明确展示。
 - 「列出」与「消失」里都没有改目录外路径的提交的仓库不进 `repos`；`repos` 为空即不写事件（验收 5 的「空轮」）。
 - **读取失败的两级处理（D1-P03）。** ① 判定「是不是集成轮」所需的事实（H0 / H1 / B1、`rev-list` 的两个集合、各提交的路径列表）
-  读取失败：范围未知，不能当作已证实的空轮，也不能退回今天的放行——沿用 `apply_guards` 里其他账本 / Git 读取失败的
-  `?` 传播路径，让会话收尾报错、任务停在可 `rerun` 的状态，错误信息用中文写明哪一步读取失败（实现时核对该路径确实停下
-  而不是继续审计，核对结论写进证据）。② 已确认是集成轮之后才读取的展示信息（`stat`、测试文件内容扫描）失败：**不取消
+  读取失败：范围未知，不能当作已证实的空轮，也不能退回今天的放行——在 `apply_guards` 传播错误前，用既有 `FailureReason::Config` 记录 Failed 与 `task.updated`，让任务停在可 `rerun` 的状态；错误信息用中文写明读取失败的步骤。不能只用 `?`：收尾时会话已结束，单纯传播会留下没有运行会话的 Active/Implement。② 已确认是集成轮之后才读取的展示信息（`stat`、测试文件内容扫描）失败：**不取消
   集成身份**，该字段写 `（读取失败：<原因>）`，扫描失败的路径一律列入测试文件；事件照常写入，简报照常出现该段并带着缺失项
   的说明。两级都不新增 `FailureReason`，也不标「协议失败」。
 - 读者：只有 `scheduler.rs`（审计启动时，§4）。桌面端与面板按事件种类通用展示，不需要改（实现轮用
@@ -377,7 +375,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
+| M-01 | 待审 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
 | M-02 | 开放 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
 | M-03 | 开放 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
 | M-04 | 开放 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
@@ -402,8 +400,11 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 ### M-01 验收契约
 
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-01-r1-impl.md · 17 用例通过，待独立审计 · 实现 #1
+
 - 验收命令：`cargo test -p automed --lib integration_range`
-- 预期：16 个用例通过，基线 0 个（本轮之前没有名字含 `integration_range` 的用例）。逐个：`integration_range_linear_repair_lists_the_fix_commit`、`integration_range_rebase_lists_only_rewritten_and_new_commits`（同时断言「消失」列表）、`integration_range_clean_rebase_is_empty`、`integration_range_doc_only_commits_are_not_integration`、`integration_range_counts_the_sweep_commit_and_skips_the_brief_commit`、`integration_range_a_crashed_attempt_keeps_its_commits`、`integration_range_test_files_by_path_and_by_content`、`integration_range_workspace_member_paths_carry_the_repo_name`、`integration_range_is_recorded_only_for_an_all_done_table_that_stays_done`（轮前有 `待审`、轮后新增 `开放` 两种都不记）、`integration_range_records_the_trigger_from_the_carried_inject`（rebase / 门禁 / 无注入三种）、`integration_range_bug_loop_records_nothing`；另 5 个（评审 R1 的反例）：`integration_range_conflict_that_drops_the_product_commit_is_still_integration`（冲突中选上游、自己的产品提交变空被丢弃：事件写出，「消失」带该提交的路径与 stat）、`integration_range_conflict_file_commit_with_an_equivalent_patch_id_is_still_listed`（`"hello world"` 解成 `"helloworld"`，patch-id 相同仍被列出）、`integration_range_inline_test_module_with_only_setup_changed_is_listed`（只改内联测试模块里的测试准备行，文件进测试清单）、`integration_range_unreadable_range_fails_closed`（范围读取失败不写事件也不放行）、`integration_range_a_stat_failure_keeps_the_range`（stat 读取失败：事件仍写、字段带「读取失败」）。
+- 预期：17 个用例通过，基线 0 个（本轮之前没有名字含 `integration_range` 的用例）。逐个：`integration_range_linear_repair_lists_the_fix_commit`、`integration_range_rebase_lists_only_rewritten_and_new_commits`（同时断言「消失」列表）、`integration_range_clean_rebase_is_empty`、`integration_range_doc_only_commits_are_not_integration`、`integration_range_counts_the_sweep_commit_and_skips_the_brief_commit`、`integration_range_a_crashed_attempt_keeps_its_commits`、`integration_range_test_files_by_path_and_by_content`、`integration_range_workspace_member_paths_carry_the_repo_name`、`integration_range_is_recorded_only_for_an_all_done_table_that_stays_done`（轮前有 `待审`、轮后新增 `开放` 两种都不记）、`integration_range_records_the_trigger_from_the_carried_inject`（rebase / 门禁 / 无注入三种）、`integration_range_bug_loop_records_nothing`；另 5 个（评审 R1 的反例）：`integration_range_conflict_that_drops_the_product_commit_is_still_integration`（冲突中选上游、自己的产品提交变空被丢弃：事件写出，「消失」带该提交的路径与 stat）、`integration_range_conflict_file_commit_with_an_equivalent_patch_id_is_still_listed`（`"hello world"` 解成 `"helloworld"`，patch-id 相同仍被列出）、`integration_range_inline_test_module_with_only_setup_changed_is_listed`（只改内联测试模块里的测试准备行，文件进测试清单）、`integration_range_unreadable_range_fails_closed`（范围读取失败不写事件也不放行）、`integration_range_a_stat_failure_keeps_the_range`（stat 读取失败：事件仍写、字段带「读取失败」）。
+- 另含调度器回归 `integration_range_read_failure_stops_task_before_audit`：真实启动记录 start_heads，范围读取失败后明确进入 Failed(Config)，不写 integration.range；补足只测范围函数不足以证明收尾状态迁移的缺口。
 - 负向对照：去掉 `--cherry-pick` 时 `…rebase_lists_only_rewritten_and_new_commits` 与 `…clean_rebase_is_empty` 失败（干净重放的提交被列出）；不按 `<doc_dir>/` 过滤时 `…doc_only_commits_are_not_integration` 失败；H0 取重试那次会话的 `start_heads` 而不是本轮第一次尝试时 `…a_crashed_attempt_keeps_its_commits` 失败；(d) 只看「列出」时 `…conflict_that_drops_the_product_commit_is_still_integration` 失败；去掉冲突文件保守纳入时 `…equivalent_patch_id_is_still_listed` 失败；测试文件只看路径与增删行时 `…inline_test_module_with_only_setup_changed_is_listed` 失败；展示信息读取失败时不写事件则 `…a_stat_failure_keeps_the_range` 失败。
 
 ### M-02 验收契约
