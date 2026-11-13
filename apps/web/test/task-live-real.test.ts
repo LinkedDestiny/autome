@@ -42,7 +42,7 @@ beforeAll(async()=>{try{
  const origin=`http://127.0.0.1:${address.port}`;ws=new WebSocket(origin.replace('http:','ws:')+'/ws',{origin});let hello=false;
  ws.on('message',data=>{const m=JSON.parse(data.toString());if(m.type==='hello')hello=true;if(m.type==='event')messages.push(m);});
  await vi.waitFor(()=>{if(!hello)throw Error('no hello');});
-}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],'setup and cleanup failed');}throw error;}},240000);
+}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],'setup and cleanup failed',{cause:cleanupError});}throw error;}},240000);
 afterAll(cleanup);
 async function revalidates(event:LedgerEvent,id:string) {
  let matched=false;const url=new URL(`http://localhost/tasks/${id}`);

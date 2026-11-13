@@ -22,7 +22,7 @@ const cleanup=async()=>{if(existsSync(root))writeFileSync(join(root,'release-mai
 beforeAll(async()=>{try{
  await promisify(execFile)('bash',[join(wt,'apps/web/test/fixtures/w7-flow.sh'),root,wt],{timeout:150000,maxBuffer:1024*1024});
  await core.start({timeoutMs:30000});
-}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],'setup and cleanup failed');}throw error;}},180000);
+}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],'setup and cleanup failed',{cause:cleanupError});}throw error;}},180000);
 afterAll(cleanup);
 const load=()=>loadTaskDetail(services,'T-1',new URL('http://localhost/tasks/T-1?tab=changes'));
 const act=(fields:Record<string,string>)=>{const form=new FormData();Object.entries(fields).forEach(([k,v])=>form.set(k,v));return handleTaskAction(form,'T-1',services);};
