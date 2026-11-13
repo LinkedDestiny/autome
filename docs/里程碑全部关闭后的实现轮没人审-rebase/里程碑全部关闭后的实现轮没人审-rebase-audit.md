@@ -1,4 +1,7 @@
-# 审计结论 · 审计 #5
+# 审计结论 · 审计 #6（集成复验）
 
-M-05：**通过**（标 `已完成`，reopen 0）。证据：`docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r6-audit.md`。
-验收命令退出码 0（静态门 8 通过 1 既有警告、prompt_rendering 35、v1..v7 共 7 个标题、两条 grep 命中）。负向对照：改成 `#### 集成复验` 时被 grep 拦下，但契约原写的“两个金样失败”不成立（金样用空协议）——属验证缺口，已改正契约描述，产品无缺陷，不计 reopen；坏 metric 被静态门拦下；少一个版本标题计数不等。五个里程碑全部已完成。Backlog 无新增。
+对象：实现 #7 的 rebase 集成（`main..HEAD` 共 36 个提交，已包含 main，`git merge-base --is-ancestor main HEAD` 成立）。结论：**通过**。里程碑表五行均已是 `已完成`，无需改动，reopen 0。证据：`docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r7-audit.md`。
+
+- M-05 验收链各段退出 0；prompt_rendering 40、integration 子集 34、integration_e2e 4、before_merge 11、版本单测 1，均通过；protocol eval 退出 0。
+- 负向对照：`## 集成复验` 改成 `####` 后 grep 退出 1（被拦下）；已还原。
+- 未发现冲突标记；无实现缺陷、无验证缺口。Backlog 无新增。
