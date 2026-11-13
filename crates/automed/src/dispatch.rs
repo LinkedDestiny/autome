@@ -5242,6 +5242,109 @@ mod tests {
         assert!(ok_payload(&last).get("init_commit").unwrap().is_string());
     }
 
+    fn onboarding_workspace(sb: &mut Sandbox) -> (String, std::path::PathBuf) {
+        let root = sb.path("ws");
+        workspace_at(&root, &[("docs", "main"), ("app", "main")]);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({
+                    "path": root, "workspace": true, "docs_repo": "docs"
+                }),
+            ),
+        );
+        let id = ok_payload(&out)["project"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        std::fs::write(root.join("docs/agent-project-profile.md"), "profile\n").unwrap();
+        (id, root)
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_skip_succeeds_without_a_root_repo() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-skip");
+        let (id, root) = onboarding_workspace(&mut sb);
+        let before = git::head_sha(&root.join("docs")).unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert!(ok_payload(&out)["init_commit"].is_string());
+        assert_ne!(before, git::head_sha(&root.join("docs")).unwrap());
+        assert!(!root.join(".git").exists());
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_finish_succeeds_and_records_the_event() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-finish");
+        let (id, root) = onboarding_workspace(&mut sb);
+        for _ in 0..3 {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.advance", json!({"project_id":id})),
+            );
+            ok_payload(&out);
+        }
+        assert!(
+            sb.ctx
+                .store
+                .get_project(&id)
+                .unwrap()
+                .onboarding
+                .is_settled()
+        );
+        assert!(!root.join(".git").exists());
+        assert!(
+            sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .any(|e| e.1 == "project.onboarding" && e.2["init_commit"].is_string())
+        );
+    }
+
+    fn onboarding_locked_commit(workspace: bool) {
+        let mut sb = Sandbox::new("onboarding-lock");
+        let (id, root) = if workspace {
+            onboarding_workspace(&mut sb)
+        } else {
+            let id = sb.add_project("p");
+            (id, sb.path("p"))
+        };
+        let repo = if workspace { root.join("docs") } else { root };
+        let before = sb.ctx.store.get_project(&id).unwrap().onboarding;
+        std::fs::write(repo.join(".git/index.lock"), "locked").unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert_eq!(sb.ctx.store.get_project(&id).unwrap().onboarding, before);
+        assert!(format!("{:?}", out.reply).contains("状态没有改"));
+        std::fs::remove_file(repo.join(".git/index.lock")).unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert!(ok_payload(&out)["init_commit"].is_string());
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_failure_keeps_state_and_can_retry() {
+        needs_git!();
+        onboarding_locked_commit(true);
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_single_repo_index_lock_keeps_state() {
+        needs_git!();
+        onboarding_locked_commit(false);
+    }
+
     fn cost_task(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
         let out = handle_command(
             sb.ctx(),
