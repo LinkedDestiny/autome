@@ -5,7 +5,19 @@
 //! than walked at build time so that a case which stops being embedded fails
 //! here rather than on a user's machine.
 
-pub const SEED: [(&str, &str); 125] = [
+pub const SEED: [(&str, &str); 128] = [
+    (
+        "evals/audit-integration-review/case.yaml",
+        include_str!("../../../../protocol/evals/audit-integration-review/case.yaml"),
+    ),
+    (
+        "evals/audit-integration-review/graders/integration.md",
+        include_str!("../../../../protocol/evals/audit-integration-review/graders/integration.md"),
+    ),
+    (
+        "evals/audit-integration-review/scaffold.sh",
+        include_str!("../../../../protocol/evals/audit-integration-review/scaffold.sh"),
+    ),
     (
         "evals/audit-manual-only-milestone-goes-to-checklist/case.yaml",
         include_str!(

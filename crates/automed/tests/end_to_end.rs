@@ -1948,7 +1948,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v7@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v8@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -9509,4 +9509,272 @@ fn timeout_retry_pause_holds_result_and_resume_keeps_timeout_prompt() {
     assert!(w.prompt(2).contains("tick 1"));
     assert_ne!(retry.id, s.id);
     ok(&w.call("task.stop", json!({"task_id": id})));
+}
+
+// Integration review uses the same real scheduler and Git harness as ordinary
+// milestone rounds; only the model's documents and repair commands are scripted.
+fn integration_e2e_brief(w: &World, slug: &str, round: u32) -> String {
+    std::fs::read_to_string(w.repo.join(format!(
+        ".worktree/{slug}/docs/{slug}/brief/audit-{round}.md"
+    )))
+    .unwrap()
+}
+
+#[test]
+fn integration_e2e_rebase_conflict_after_all_done_is_reviewed_then_reaches_await_merge() {
+    needs_git!();
+    let mut w = World::new("integration-conflict");
+    let request = "integration conflict";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        "printf 'feature\\n' > README.md\ngit add README.md",
+    );
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        r#"if git rebase main >/dev/null 2>&1; then exit 91; fi
+printf 'main and feature\n' > README.md
+git add README.md
+GIT_EDITOR=true git -c user.name=fake -c user.email=f@f rebase --continue >/dev/null 2>&1
+mkdir -p tests
+printf 'integration regression\n' > tests/conflict.txt
+git add tests/conflict.txt"#,
+    );
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    std::fs::write(w.repo.join("README.md"), "main\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["README.md"], "concurrent main change").unwrap();
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{:?}",
+        w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap()
+    );
+    assert!(w.prompt(9).contains("本轮是**集成复验**"));
+    let brief = integration_e2e_brief(&w, &slug, 2);
+    for fact in [
+        "本轮要审的集成改动",
+        "rebase 冲突",
+        "README.md",
+        "tests/conflict.txt",
+    ] {
+        assert!(brief.contains(fact), "missing {fact}: {brief}");
+    }
+    assert_eq!(
+        w.ctx.store.count_events(&id, "integration.range").unwrap(),
+        1
+    );
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let conflict = events
+        .iter()
+        .find(|(_, k, s, _)| s == &id && k == "rebase.conflicts")
+        .unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|(seq, k, s, _)| *seq > conflict.0 && s == &id && k == "task.updated")
+        .filter_map(|(_, _, _, p)| p["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        ["implement", "audit", "retro", "rebase", "await_merge"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(w.repo.join(format!(".worktree/{slug}/README.md"))).unwrap(),
+        "main and feature\n"
+    );
+}
+
+#[test]
+fn integration_e2e_merge_gate_fix_reopened_by_the_audit_returns_to_implement() {
+    needs_git!();
+    let mut w = World::new("integration-reopen");
+    let command = format!("sh {}", write_gate_script(&w).display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "integration reopen";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    let reopened = |round, state| {
+        doc("实现中", 2, round, &[("M-01", state)])
+            .replace("| 0 | |", "| 1 | integration |")
+            .replace(
+                "current-milestone-reopens: 0",
+                "current-milestone-reopens: 1",
+            )
+    };
+    w.doc_step(9, &slug, &reopened(2, "开放"));
+    w.doc_step_for_prelude(
+        10,
+        &slug,
+        &reopened(3, "待审"),
+        "echo reviewed > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(11, &slug, &reopened(3, "已完成"));
+    w.retro_step(12, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let brief = integration_e2e_brief(&w, &slug, 2);
+    for fact in [
+        "本轮要审的集成改动",
+        &command,
+        "gate says no: gate-ok is missing",
+    ] {
+        assert!(brief.contains(fact), "missing {fact}: {brief}");
+    }
+    assert!(w.prompt(9).contains("本轮是**集成复验**"));
+    assert!(!w.prompt(11).contains("本轮是**集成复验**"));
+    assert!(!integration_e2e_brief(&w, &slug, 3).contains("本轮要审的集成改动"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "integration.range").unwrap(),
+        1
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "milestone.contradicted")
+            .unwrap(),
+        1
+    );
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let failed = events
+        .iter()
+        .find(|(_, k, s, p)| s == &id && k == "gate.result" && p["ok"] == false)
+        .unwrap();
+    let nodes: Vec<_> = events
+        .iter()
+        .filter(|(seq, k, s, _)| *seq > failed.0 && s == &id && k == "task.updated")
+        .filter_map(|(_, _, _, p)| p["state"]["node"].as_str())
+        .collect();
+    assert_eq!(
+        nodes,
+        [
+            "implement",
+            "audit",
+            "implement",
+            "audit",
+            "retro",
+            "rebase",
+            "merge_gate",
+            "await_merge"
+        ]
+    );
+    let design = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/{slug}.md")),
+    )
+    .unwrap();
+    assert!(design.contains("| M-01 | 已完成 | M-01 标题 | 1 | integration |"));
+    assert!(design.contains("implementation-round: 3/25"));
+}
+
+#[test]
+fn integration_e2e_audit_without_evidence_stops_with_a_readable_reason() {
+    needs_git!();
+    let mut w = World::new("integration-no-evidence");
+    let command = format!("sh {}", write_gate_script(&w).display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "integration no evidence";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    // doc_step uses World::EVIDENCE: the same-k audit file already exists.
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.step(9, "printf '无待审里程碑\\n'\n");
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert!(w.prompt(9).contains("本轮是**集成复验**"));
+    let failure = w
+        .ctx
+        .store
+        .last_event(&id, "guard.failed")
+        .unwrap()
+        .unwrap();
+    assert_eq!(failure["code"], "audit_made_no_progress");
+    let detail = failure["detail"].as_str().unwrap();
+    let range = w
+        .ctx
+        .store
+        .last_event(&id, "integration.range")
+        .unwrap()
+        .unwrap();
+    for fact in [
+        "集成复验",
+        "开放",
+        "M-01-r2-audit.md",
+        &range["repos"][0]["start"].as_str().unwrap()[..7],
+        &range["repos"][0]["end"].as_str().unwrap()[..7],
+    ] {
+        assert!(detail.contains(fact), "missing {fact}: {detail}");
+    }
+    assert!(
+        w.repo
+            .join(format!(
+                ".worktree/{slug}/docs/{slug}/evidence/M-01-r2-audit.md"
+            ))
+            .exists()
+    );
+    assert!(!w.repo.join(".autome/fake/10.prompt").exists());
+}
+
+#[test]
+fn integration_e2e_doc_only_repair_keeps_todays_audit() {
+    needs_git!();
+    let mut w = World::new("integration-doc-only");
+    // The external service recovers; the repair round only records that fact.
+    let recovered = w.root.join("recovered");
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'test -f {}'\n",
+        recovered.display()
+    ));
+    let request = "integration doc only";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        &format!("touch '{}'", recovered.display()),
+    );
+    w.step(9, "printf '无待审里程碑\\n'\n");
+    w.retro_step(10, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx.store.count_events(&id, "integration.range").unwrap(),
+        0
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "guard.failed").unwrap(), 0);
+    assert!(!w.prompt(9).contains("本轮是**集成复验**"));
+    assert!(!integration_e2e_brief(&w, &slug, 2).contains("本轮要审的集成改动"));
 }

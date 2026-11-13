@@ -1,0 +1,10 @@
+name: audit-integration-review
+role: audit
+integration_audit: true
+description: 全部里程碑关闭后仍独立检查集成提交与测试前提
+runs: 3
+max_turns: 15
+timeout_seconds: 900
+scaffold: ./scaffold.sh
+graders:
+  - graders/integration.md

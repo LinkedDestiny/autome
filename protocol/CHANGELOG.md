@@ -259,3 +259,41 @@ Bug 三个步骤列出任务附件副本与参考文档的位置。
 ```
 
 同样的边界同步到 `prompts/fix.md`、`prompts/fix-review.md` 与 `bug-protocol.md`。
+
+## protocol/v8
+
+里程碑之外的实现改动进入独立的集成复验；普通审计保留原有行为。
+
+```yaml
+- id: J-1
+  kind: behavioral
+  clause: prompts/audit.md
+  evidence: [T-61 L-05（docs/门禁只在合并前跑一次-gate-run/lessons.md）, T-61 L-06 实现 #9/#10 之后的空转审计, T-68 任务卡]
+  predicted_impact: {metric: impl_defects, direction: up, scope: task, horizon: 3}
+  eval: evals/audit-integration-review/
+  realized_impact: null
+```
+
+```yaml
+- id: J-2
+  kind: clarify
+  clause: loop-protocol.md
+  evidence: [T-61 L-05（docs/门禁只在合并前跑一次-gate-run/lessons.md）, T-61 L-06 实现 #9/#10 之后的空转审计, T-68 任务卡]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+```yaml
+- id: J-3
+  kind: clarify
+  clause: session-protocol.md
+  evidence: [T-61 L-05, T-68 M-05 协议正文超出静态预算]
+  predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}
+  eval: null
+  realized_impact: null
+```
+
+为容纳集成复验，在不改变规则含义与简报摘录的前提下精简会话起止、读文件开销、
+协议失败说明及 Loop 引言；内核契约区不变。正文须留出既有 shell 样例回归测试的追加空间，
+避免正文自身未超限、追加样例后却被大小检查拒绝（T-68 合并前门禁）。

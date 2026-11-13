@@ -56,6 +56,7 @@ pub mod gate_queue;
 pub mod git;
 pub mod guards;
 pub mod init;
+mod integration;
 pub mod ipc;
 pub mod launcher;
 pub mod layout;

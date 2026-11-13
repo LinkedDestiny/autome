@@ -237,6 +237,7 @@ pub fn section(text: &str, heading: &str) -> Option<String> {
 /// Everything the brief is assembled from. Read by the caller so this module
 /// does no I/O.
 pub struct Inputs<'a> {
+    pub integration: Option<String>,
     pub role: Role,
     pub slug: &'a str,
     /// The task's document directory as the session sees it — the same value
@@ -331,6 +332,9 @@ pub fn build(input: &Inputs<'_>) -> String {
         None => s.push_str("还没有里程碑表，或者所有里程碑都已完成。\n"),
     }
 
+    if let Some(section) = &input.integration {
+        s.push_str(section);
+    }
     s.push_str("\n## 上一轮对手轮的结论\n\n");
     s.push_str(&counterpart(input));
 
@@ -565,6 +569,7 @@ session-protocol = []
         evidence: &'a [String],
     ) -> Inputs<'a> {
         Inputs {
+            integration: None,
             role,
             slug: "checkout",
             doc_dir: "docs/checkout",
@@ -788,6 +793,9 @@ session-protocol = []
             evidence_files: vec!["M-03-r3-audit.md".into()],
             design_changed_outside_milestones: None,
             repairing: false,
+            integration: None,
+            design_before: None,
+            design_after: None,
         };
         assert!(
             crate::guards::check(&round)
@@ -937,5 +945,171 @@ session-protocol = []
             );
         }
         assert!(gate_line_of_result(&serde_json::Value::Null).is_none());
+    }
+}
+
+/// Render only kernel-recorded facts; never read implementation evidence.
+pub fn integration_section(event: &serde_json::Value, doc_dir: &str) -> String {
+    let string = |v: &serde_json::Value| v.as_str().unwrap_or("").to_owned();
+    let short = |v: &serde_json::Value| string(v).chars().take(7).collect::<String>();
+    let mut out = format!(
+        "\n## 本轮要审的集成改动\n\n本轮是**集成复验**：实现 #{} 开始时里程碑表没有 `开放` / `待审`，却在 `{doc_dir}/` 之外留下了提交。规则见 `{doc_dir}/protocol/loop-protocol.md` 的「集成复验」一节。\n\n触发原因：",
+        event["impl_round"]
+    );
+    let trigger = &event["trigger"];
+    match trigger["kind"].as_str() {
+        Some("rebase_conflict") => {
+            out.push_str("rebase 冲突。冲突文件：\n");
+            if let Some(files) = trigger["files"].as_array() {
+                for file in files {
+                    out.push_str(&format!("- {}\n", string(file)));
+                }
+            }
+        }
+        Some("gate_failed") => out.push_str(&format!(
+            "合并前门禁失败。命令：`{}`。输出末尾：\n```text\n{}\n```\n",
+            string(&trigger["command"]),
+            string(&trigger["tail"])
+        )),
+        Some("decisions") => out.push_str("用户表态。\n"),
+        _ => out.push_str("没有注入：手动重跑或续跑。\n"),
+    }
+    if let Some(repos) = event["repos"].as_array() {
+        for repo in repos {
+            let name = string(&repo["repo"]);
+            let prefix = if name.is_empty() {
+                String::new()
+            } else {
+                format!("{name}/")
+            };
+            if !name.is_empty() {
+                out.push_str(&format!("\n### 仓库 {name}\n"));
+            }
+            out.push_str(&format!("\n提交范围：`{prefix}{}..{}`（默认分支基线 `{}`），rebase 前后补丁不变的提交不列出。\n", short(&repo["start"]), short(&repo["end"]), short(&repo["base"])));
+            for (key, label) in [
+                ("commits", "列出的提交"),
+                ("dropped", "rebase 前有、rebase 后找不到同一补丁的提交"),
+            ] {
+                let commits = repo[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                out.push_str(&format!("\n{label} {} 个：\n", commits.len()));
+                for commit in commits {
+                    out.push_str(&format!(
+                        "- `{prefix}{}` {}\n",
+                        short(&commit["sha"]),
+                        string(&commit["subject"])
+                    ));
+                    if let Some(paths) = commit["paths"].as_array() {
+                        for path in paths {
+                            out.push_str(&format!("  - {prefix}{}\n", string(path)));
+                        }
+                    }
+                    // The bounded stat's continuation hint contains the full SHA.
+                    let stat = string(&commit["stat"])
+                        .replace(&string(&commit["sha"]), &short(&commit["sha"]));
+                    out.push_str(&format!(
+                        "\n改动统计（`{doc_dir}/` 之外）：\n```text\n{stat}\n```\n"
+                    ));
+                }
+                let omitted = repo[format!("{key}_omitted")].as_u64().unwrap_or(0);
+                if omitted > 0 {
+                    out.push_str(&format!(
+                        "其余 {omitted} 个提交未展示，请按上述范围查看。\n"
+                    ));
+                }
+            }
+            out.push_str("\n改到的测试文件（逐个看 diff，留意测试前提有没有被改弱）：\n");
+            if let Some(files) = repo["test_files"].as_array() {
+                for file in files {
+                    out.push_str(&format!("- {}\n", string(file)));
+                }
+            }
+        }
+    }
+    out.push_str(&format!("\n本轮证据必须写入 `{doc_dir}/evidence/{}`。结论二选一：通过（里程碑表不动）；或把受影响的里程碑退回 `开放`、`reopen` 加 1。两种都要写这个证据文件。\n", string(&event["evidence"])));
+    out
+}
+
+#[cfg(test)]
+mod integration_section_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn integration_section_none_preserves_the_brief() {
+        let map = BriefMap::default();
+        let mut input = Inputs {
+            integration: None,
+            role: Role::Audit,
+            slug: "x",
+            doc_dir: "docs/x",
+            round: 1,
+            status: None,
+            audit_doc: None,
+            evidence: &[],
+            loop_protocol: "",
+            session_protocol: "",
+            map: &map,
+            budget_line: None,
+            decisions: None,
+            gate: None,
+        };
+        let old = build(&input);
+        assert!(!old.contains("## 本轮要审的集成改动"));
+        let section = integration_section(
+            &json!({"impl_round":9,"evidence":"M-08-r9-audit.md"}),
+            "docs/x",
+        );
+        input.integration = Some(section.clone());
+        let new = build(&input);
+        assert_eq!(new.replacen(&section, "", 1), old);
+        assert!(new.find("## 本轮要审").unwrap() < new.find("## 上一轮").unwrap());
+    }
+    #[test]
+    fn integration_section_contains_facts_and_seven_character_shas() {
+        let event = json!({"impl_round":9,"evidence":"M-08-r9-audit.md", "trigger":{"kind":"gate_failed","command":"make check","tail":"error: assertion failed","sha":"failure0123456789"}, "repos":[{"repo":"api","start":"123456789012345","end":"abcdef012345678","base":"987654321098765","commits":[{"sha":"fedcba987654321","subject":"repair","paths":["src/a.rs"],"stat":"src/a.rs | 2 +-\n其余 3 行见 git show --stat fedcba987654321"}],"dropped":[{"sha":"765432109876543","subject":"lost","paths":["old.rs"],"stat":"（读取失败：denied）"}],"commits_omitted":1,"dropped_omitted":2,"test_files":["api/tests/a.rs"]}]});
+        let s = integration_section(&event, "docs/x");
+        for term in [
+            "make check",
+            "error: assertion failed",
+            "api/1234567..abcdef0",
+            "9876543",
+            "api/fedcba9",
+            "api/7654321",
+            "api/tests/a.rs",
+            "api/old.rs",
+            "读取失败",
+            "其余 1 个",
+            "其余 2 个",
+            "git show --stat fedcba9",
+        ] {
+            assert!(s.contains(term), "{term}");
+        }
+        assert!(!s.contains("api/api/"));
+        for term in ["failure012", "1234567890", "fedcba98765", "未通过"] {
+            assert!(!s.contains(term), "{term}");
+        }
+        for (trigger, expected) in [
+            (
+                json!({"kind":"rebase_conflict","files":["api/a.rs"]}),
+                "api/a.rs",
+            ),
+            (json!({"kind":"decisions"}), "用户表态"),
+            (json!({"kind":"none"}), "没有注入"),
+        ] {
+            let mut event = event.clone();
+            event["trigger"] = trigger;
+            assert!(integration_section(&event, "docs/x").contains(expected));
+        }
+    }
+    #[test]
+    fn integration_section_exact_evidence_path_and_empty_range() {
+        let s = integration_section(
+            &json!({"impl_round":0,"evidence":"M-01-r0-audit.md","repos":[]}),
+            "workspace/docs/x",
+        );
+        assert!(s.contains("`workspace/docs/x/evidence/M-01-r0-audit.md`"));
+        assert!(s.contains("通过（里程碑表不动）"));
+        assert!(s.contains("`reopen` 加 1"));
+        assert!(!s.contains("### 仓库"));
+        assert!(!s.contains("提交范围："));
     }
 }
