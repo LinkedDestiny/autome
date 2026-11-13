@@ -1,12 +1,12 @@
 # 排队任务的依赖声明与顺序调整：`--after`、`autome after`、`autome queue move`，出队跳过依赖未完成的任务
 
-status: 设计中
-design-round: 0/15
+status: 实现中
+design-round: 1/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：新增 autome_domain::deps（校验、可改状态、阻塞原因、重排）与 store v6 迁移（task_after 表）及其单测
+next-action: M-01：新增 autome_domain::deps（校验、可改状态、阻塞原因、重排）与 store v6 迁移（task_after 表）及其单测；check_editable 额外接收「是否已有 impl 会话」
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -46,14 +46,14 @@ next-action: M-01：新增 autome_domain::deps（校验、可改状态、阻塞�
 目标（对应需求 1–5）：
 
 1. 任务可以声明「在哪些同项目任务之后」。创建时就能带上，之后可以在设计批准前改或清空。非法的依赖在写入前拒绝。
-2. 出队时跳过依赖没有全部到 `Done` 的首次排队任务，但不改它的位置。依赖被取消或失败时写一次 `task.blocked`。
+2. 出队时跳过依赖没有全部到 `Done` 的受约束排队任务（`Queued`，及设计期的 `Requeued`），但不改它的位置。依赖被取消或失败时写一次 `task.blocked`。
 3. 排队与待开始的任务可以移到队首、某任务之前或之后。待开始的任务开始时按移动后的位置入队。
 4. `after` / `blocked_by` 出现在 `task.get` / `project.get` / `dashboard.get`、`ls`、`status` 里，文本与 `--json` 一致。
 5. Web 网关放行 `task.set_after`、`task.move`，并接受 `task.create` 的 `after`。
 
 非目标：任务文件 §5「不在范围内」全部照办。另外三条：
 
-- 依赖不约束「恢复」（`Requeued`），只约束首次开始（见方案 4.1）。
+- 依赖只在任务「还能改依赖」的排队状态起作用：`Queued`，以及停在设计期节点的 `Requeued`；实现期的 `Requeued` 不受约束（见方案 4.1）。
 - 不改通知器规则（问题 11(f)，进 Backlog B-01）。
 - 不改桌面端写白名单。
 
@@ -63,12 +63,12 @@ next-action: M-01：新增 autome_domain::deps（校验、可改状态、阻塞�
 
 | 事项 | 规则 |
 |---|---|
-| 依赖何时起作用 | 只在 `Queued`（首次开始）出队时起作用。`Requeued` 不受约束 |
+| 依赖何时起作用 | 出队时，对「受约束的排队任务」起作用：`Queued`，以及 `resume` 节点属于 `PRE` 的需求任务 `Requeued`（这两类恰好都是用户还能改依赖的）。`resume` 在 `Implement` 及以后的 `Requeued`、Bug 任务的 `Requeued` 不受约束 |
 | 依赖何时算满足 | 依赖任务的状态是 `Done`，与是否归档无关 |
 | 阻塞原因 | 依赖为 `Cancelled` → `cancelled`；为 `Failed` → `failed`；其它未完成状态没有原因（`null`） |
-| 何时写 `task.blocked` | 首次排队任务的某个依赖带阻塞原因，且这个原因没有通知过 |
-| 谁能改依赖 | 需求任务在设计批准之前（含等批准）；Bug 任务只在开始之前 |
-| 谁能移动 | `Queued`、`Requeued`、`Draft` |
+| 何时写 `task.blocked` | 受约束的排队任务的某个依赖带阻塞原因，且这个原因没有通知过 |
+| 谁能改依赖 | 需求任务在设计批准之前（含等批准），且从未开始过实现轮；Bug 任务只在开始之前 |
+| 谁能移动 | `Queued`、`Requeued`、`Draft`；参照任务同样可以是这三类（含没移动过的 `Draft`） |
 
 ### 2. 数据：store v6（问题 2；约束 3、5）
 
@@ -96,10 +96,13 @@ v6 块用 `IF NOT EXISTS`，是因为 v4→v5 迁移测试会把已经是 v6 的
 - `create_task_after(task, brief, after: &[String])`：和 `create_task` 在同一个事务里写任务、写依赖。
   原来的 `create_task` 改成调用它并传 `&[]`。约束 3 要求的「同一事务、在 tick 之前落库」就落在这里。
 - `task_after(id) -> Vec<String>`：按 `ord` 排序。
-- `set_task_after(id, &[String])`：在事务里先删后插，`notified` 随之清空。
+- `set_task_after(id, &[String])`：在事务里按新列表同步：新列表里没有的边删除；仍保留的边**保留 `notified` 并更新 `ord`**；新增的边 `notified` 为 `NULL`。
+  这样重复设置相同的列表、调整声明顺序、增加或删除其它依赖，都不会让保留边的通知记录丢失，也就不会重复写 `task.blocked`（约束 9）。
+  清空依赖就是删除全部边。
 - `project_after(project_id) -> BTreeMap<id, Vec<id>>`：环检测要用。
 - `blocked_notice(task, on) -> Option<String>`、`set_blocked_notice(task, on, Option<&str>)`。
 - `queued_seq(id) -> Option<i64>`。
+- `has_impl_session(task_id) -> bool`：`sessions` 表里是否存在该任务 Impl 角色的会话记录（`kind` 的字符串值实现时核对）。会话记录不随重跑删除，所以它是「这个任务是否开始过实现轮」的可核验历史事实（见 §3 `check_editable`）。
 - `queue_order(project_id) -> Vec<TaskRecord>`：取 `Queued`、`Requeued` 和 `queued_seq` 非空的 `Draft`。
   排序键和 `queued_tasks` 一样。
 - `reorder_queue(project_id, ordered: &[String])`：在一个事务里，令 `base = MAX(queued_seq)`（全表），然后按给定顺序
@@ -112,28 +115,32 @@ v6 块用 `IF NOT EXISTS`，是因为 v4→v5 迁移测试会把已经是 v6 的
 - `MAX_AFTER = 8`。内核和网关用同一个上限（问题 11(d)）：网页、CLI 能给的依赖一样多。
 - `check_after(task_id, project_id, proposed, lookup) -> Result<Vec<String>, DepError>`。
   `lookup(id) -> Option<(project_id, after)>` 由内核从 store 构造。检查顺序如下：
-  1. 先去重，保留首次出现的顺序。
-  2. 超过 8 个就拒绝。
+  1. 先按**输入项数**判断：超过 8 项就拒绝（含重复项；网关限制的也是数组长度，两端口径一致，问题 11(d)）。
+  2. 再去重，保留首次出现的顺序。
   3. 每个 id：是自己就拒绝；`lookup` 为空就是「不存在」；项目不同就是「跨项目」（问题 12：id 是全局的，
      所以这两种拒绝分开写）。
   4. 从每个新依赖出发沿 `after` 边做 DFS，能回到自己就是成环，报出完整路径。
 
-  指向 `Done`、`Cancelled`、`Draft` 的任务都接受。指向 `Done` 的依赖立刻满足；指向 `Cancelled` 的依赖会在首次排队时
+  指向 `Done`、`Cancelled`、`Draft` 的任务都接受。指向 `Done` 的依赖立刻满足；指向 `Cancelled` 的依赖会在出队时
   按 §4 被阻塞并写事件。任务卡只列了四种拒绝，所以这里不再加别的拒绝。
-- `check_editable(id, kind, state) -> Result<(), DepError>`（问题 3）。设 `PRE = {Intake, Design, Review, Adjudicate,
-  AwaitDesignApproval}`：
-  - 需求任务可以修改的状态：`Draft`、`Queued`；`Requeued{resume}`、`Active{node}`、`Paused{resume}`、`Stopped{at}`、
+- `check_editable(id, kind, state, impl_started) -> Result<(), DepError>`（问题 3）。设 `PRE = {Intake, Design, Review, Adjudicate,
+  AwaitDesignApproval}`。`impl_started` 由内核用 `store.has_impl_session(id)` 算出再传入，纯函数不做 I/O：
+  - **先看历史。** 需求任务 `impl_started == true` 时一律拒绝（文案「已开始实现轮」），不论当前状态。
+    原因：`Failed` / `Stopped` 经 `RerunFrom` 可以回到 `Intake / Design / Review / Adjudicate`
+    （task.rs:1027 起的分支，调度层没有禁止），当前节点属于 `PRE` 不能证明「还没有开始过实现」。
+    实现→停止→从 Design 重跑后，`Active{Design}`、之后的 `Paused` / `Stopped` / `Failed` / `Requeued` 包装状态都被这一条挡住。
+  - 再看当前状态。需求任务可以修改的状态：`Draft`、`Queued`；`Requeued{resume}`、`Active{node}`、`Paused{resume}`、`Stopped{at}`、
     `Failed{at,..}` 中节点属于 `PRE` 的那些。其中 `AwaitDesignApproval` 就是任务卡说的「等你决定（设计卡点之前）」。
   - 节点在 `Implement` 及以后的，拒绝。
   - Bug 任务只有 `Draft`、`Queued` 可以修改。Bug Loop 没有设计阶段，开始即进入定位与修复。
   - `Done`、`Cancelled` 拒绝。
 
-  对已经离开排队的任务改依赖，只改记录：`after` / `blocked_by` 照常显示，但这个任务不会再经过首次出队，
-  所以对调度没有作用。这和任务卡「依赖只控制什么时候开始」一致。
+  对正在运行（`Active`）或暂停、停止、失败的设计期任务改依赖，只改记录：`after` / `blocked_by` 照常显示，但它不在排队，
+  所以暂时对调度没有作用；之后若它因暂停/恢复回到 `Requeued{PRE}`，新依赖就会在出队时生效（见 §4.1）。这和任务卡「依赖只控制什么时候开始」一致。
 - `block_reason(state) -> Option<BlockReason>`：`Cancelled` 返回 `cancelled`，`Failed` 返回 `failed`，其它返回 `None`。
   另有 `is_satisfied(state) = (state == Done)`。
 - `reposition(order, task, Placement::{Top, Before(id), After(id)}) -> Result<Vec<String>, DepError>`。
-  参照任务就是自己时拒绝；不在 `order` 里时拒绝。
+  参照任务就是自己时拒绝；不在 `order` 里时拒绝。`order` 由调用方准备，调用方负责把没移动过的待开始任务先追加进去（见 §5 `task.move`）。
 - 拒绝文案都是一句中文，不含换行，沿用 `rejected(...)` 返回：
 
   | 情况 | 文案 |
@@ -147,28 +154,34 @@ v6 块用 `IF NOT EXISTS`，是因为 v4→v5 迁移测试会把已经是 v6 的
   | Bug 已开始 | Bug 任务 T-5 已经开始，依赖只能在开始之前修改 |
   | 已结束 | T-5 已经结束（已取消），不能再改依赖 |
   | 移动参照是自己 | 不能以任务自己为参照移动 |
-  | 参照不在队列 | T-9 不在队列里：只能参照排队中或移动过的待开始任务 |
+  | 参照不在队列 | T-9 不在队列里：只能参照同项目排队中或待开始的任务 |
 
 ### 4. 出队与 `task.blocked`（问题 4、5、6；约束 1、2、7、9）
 
-**4.1 首次排队才受约束（问题 4）。** 恢复中的任务（`Requeued`）当初开始时已经过了依赖关，不再受约束。
-如果它也受约束，会出现死锁：需求任务在设计期被加上依赖 X，进入实现后暂停、再恢复，变成 `Requeued{Implement}`；
-这时 X 被取消，任务被挡住，而 `check_editable` 又拒绝在实现期改依赖，用户没有办法解开。
-所以任务卡的「排队任务」按「首次排队」理解。
+**4.1 哪些排队任务受约束（问题 4）。** 受约束的集合 = 用户还能改依赖的排队任务，即 `check_editable` 通过的 `Queued` 与 `Requeued`：
+`Queued`，以及 `resume` 在 `PRE`、且从未开始过实现轮的需求任务 `Requeued`。
+任务卡的「排队任务」对外就包括 `Requeued`（它对外仍显示排队），所以设计期暂停→恢复排队的任务，在设计期新增的依赖要生效，不能被忽略。
+
+`resume` 在 `Implement` 及以后的 `Requeued`（以及 Bug 任务的 `Requeued`）不受约束。理由是避免死锁：
+需求任务进入实现后依赖才被取消，任务被挡住，而 `check_editable` 拒绝在实现期改依赖，用户没有办法解开。
+受约束集合与「可改依赖」集合一致，所以**被挡住的任务用户总能用 `autome after … --none` 解开**，不存在死锁。
+这些任务在设计期的依赖，在它们第一次出队（`Queued`）时已经被检查过；Bug 任务的依赖只能在开始前设置，同理。
+
+判断「受约束」所需的 `impl_started` 由 `fill_slots` 对有依赖的 `Requeued` 任务调 `store.has_impl_session` 取得，没有依赖的任务不查。
 
 **4.2 `fill_slots` 的改动。** 每个项目分两步，二者都在拿到 `queued_tasks` 之后：
 
-1. **通知。** 这一步与槽位无关，所以槽位满的项目也会做。对每个 `Queued` 且有依赖的任务，逐个依赖计算
+1. **通知。** 这一步与槽位无关，所以槽位满的项目也会做。对每个**受约束**（§4.1）且有依赖的排队任务，逐个依赖计算
    `block_reason`：
    - 原因为 `r`，且 `notified != r`：写 `task.blocked`，payload 为
      `{"task", "on", "reason", "project_id"}`，subject 是被阻塞的任务；然后 `notified = r`。
    - 没有原因，但 `notified` 非空：把它清空。这样依赖从失败重跑、之后又失败时，会再通知一次。
 
    同一个 `(任务, 依赖, 原因)` 只写一次，连续多少个 tick 都不会再写（约束 9）。
-2. **出队。** 依次处理，遇到 `Queued` 且有任一依赖不满足的任务就 `continue`（不是 `break`）。不碰它的
+2. **出队。** 依次处理，遇到受约束且有任一依赖不满足的任务就 `continue`（不是 `break`）。不碰它的
    `queued_seq` 和状态。后面的任务照常 `advance`（约束 1）。
 
-没有依赖时第 1 步什么都不写，第 2 步走原路径。出队顺序、`queue_position`、事件的种类与顺序都和现在一样（约束 7）。
+没有依赖时第 1 步什么都不写、不多做查询，第 2 步走原路径。出队顺序、`queue_position`、事件的种类与顺序都和现在一样（约束 7）。
 
 **4.3 归档与失败（问题 5、6）。** 满足条件只看 `Done`。理由有两条：
 
@@ -191,7 +204,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   - 校验通过就用 `create_task_after` 落库，之后才 tick（约束 3）。
   - 依赖非空时，`task.created` 的 payload 加上 `"after"`。依赖为空时 payload 和现在一样。
 - **`task.set_after { task_id, after: [id] }`**，写方法，不进 `READ_METHODS`（约束 8）。
-  - 依次检查 `check_editable`、`check_after`，然后 `set_task_after`。传空数组就是清空。
+  - 依次检查 `check_editable`（`impl_started` 取自 `store.has_impl_session`）、`check_after`，然后 `set_task_after`。传空数组就是清空。
   - 写 `task.after_set {after}` 事件。现有写方法都留事件，桌面端和面板靠事件刷新。
   - 最后调 `scheduler::tick`。它和 `task.create` / `task.start` 一样：清空依赖、而且有空槽位时，在这次调用里就启动
     （验收 2 说的「下一个 tick」就是这一次）。
@@ -199,16 +212,18 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 - **`task.move { task_id, before?, after?, top? }`**，写方法（问题 9）。
   - `before`、`after`、`top: true` 必须恰好给一个，否则用 `bad_params` 拒绝，文案「before、after、top 必须且只能给一个」。
   - 被移动的任务必须是 `Queued`、`Requeued` 或 `Draft`，否则拒绝，文案「只有排队或待开始的任务可以移动」。
-  - 参照任务必须同项目，而且在 `queue_order` 里；违反时按 §3 的文案拒绝。跨项目的参照必然不在本项目的队列里，
-    所以合并成「不在队列里」这一种拒绝。
-  - 步骤：取 `queue_order` 的 id 列表，用 `reposition` 算出新顺序，再 `reorder_queue`。待开始任务没移动过、不在列表里时，
-    由 `reposition` 把它插进去，从此它就是「移动过的待开始任务」。
+  - 参照任务必须同项目，且处于 `Queued`、`Requeued` 或 `Draft`（含没移动过的 `Draft`，任务 §7 问题 9）；违反时按 §3 的文案拒绝。
+    跨项目、运行中、已结束的参照合并成「不在队列里」这一种拒绝。
+  - 步骤：取 `queue_order` 的 id 列表；被移动的任务和参照任务里，凡是没移动过的 `Draft`（`queued_seq` 为空，不在列表里），
+    **先按「参照任务在前、被移动任务在后」的次序追加到列表末尾**（等同于它们各自 `task start` 时的队尾位置）；
+    再用 `reposition` 算出新顺序，最后 `reorder_queue` 落库。一次事务内完成，所以两个都没移动过的待开始任务
+    `queue move B --before A` 直接成功：落库后 B 在 A 之前，二者的 `queued_seq` 都非空，从此都是「移动过的待开始任务」。
   - 不调 tick：移动不改变任何任务能否出队，有空槽位的话它们早就开始了。
   - 写 `task.moved {task, project_id, before, after, top, queue_position}` 事件。
   - 返回 `{task, queue_position, order: [ids]}`。
   - 允许把任务移到它自己的依赖前面：出队时依赖规则优先，它会被跳过。
 - **`task.start`**（问题 9）：`queued_seq(id)` 为空时才调 `mark_queued`。为空就是没移动过，照旧排到队尾（约束 7）；
-  非空就保持移动后的位置。
+  非空（被移动过，或曾被当作参照而落了位置）就保持已有位置，按这个位置入队。
 
 ### 6. 可见（问题 7、8；约束 10）
 
@@ -217,7 +232,9 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   - `blocked_by: [{id, state, reason}]`：`after` 里状态不是 `Done` 的那些。`state` 是线上的 `TaskState`，`reason` 取
     `"cancelled"`、`"failed"` 或 `null`。
 
-  没有依赖的任务两个字段都是 `[]`，现有字段不变。注意 `task.changes` 已经有一个同名但不同义的 `blocked_by`，
+  没有依赖的任务两个字段都是 `[]`，现有字段不变。
+- **`project.get` 的任务对象**（`ls` 的数据来源，N1）另加 `queue_position`：每个项目只调一次 `queued_tasks`，
+  `Queued` / `Requeued` 的任务给 1 起始的下标，其它任务为 `null`。`task.get` 本来就带这个字段，取值规则相同。注意 `task.changes` 已经有一个同名但不同义的 `blocked_by`，
   它在另一个对象里，两者不冲突。
 - **`dashboard.get`**（问题 7）新增 `queued` 组，按项目、按出队顺序列出 `Queued` / `Requeued` 的任务。条目的形状和
   `running` 一样，另带 `queue_position`。`waiting`、`running` 不变。现有读者都是按键名取值，见「背景与现状」。
@@ -233,7 +250,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   `queue` 只有 `move` 这一个子命令，其它写法一律是用法错误。`--after` 在 `task new` 下表示依赖，在 `queue move` 下表示位置。
   每个动词允许哪些开关本来就是在 `run` 里按动词列的，所以不会混淆。
 - **`ls` 文本（问题 8）。** 不在排队的任务照原样、原顺序输出。`Queued` / `Requeued` 的任务从原位置移到末尾的
-  「排队（按出队顺序）」段：按项目分组，按 `queue_position` 排序。行格式和原来一样，被阻塞的行（`Queued` 且 `blocked_by`
+  「排队（按出队顺序）」段：按项目分组，按 `project.get` 任务对象里的 `queue_position` 排序。行格式和原来一样，被阻塞的行（`Queued` 且 `blocked_by`
   非空）在末尾追加 `  ← 等 T-41（已取消）`，多个依赖用顿号连接。
   - 没有排队任务时不出现这一段，输出和现在一样。
   - 费用脚注仍然是最后一行。`cost_cli_ls_appends_cost_and_a_footnote` 断言的「行首是 id、行尾是费用、末行是脚注」都不受影响。
@@ -270,7 +287,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 - `task.convert` 不继承、也不改指依赖。依赖原任务的排队任务会看到「等 T-x（已取消）」，并收到一次 `task.blocked`。
   用户用 `autome after … --none` 或改指新任务来解除。
 - `docs/development/technical-design.md`：
-  - §8 第 307 行「排队按 created_at 升序」改为 `queued_seq` 顺序、跳过依赖未完成的首次排队任务、可移动。
+  - §8 第 307 行「排队按 created_at 升序」改为 `queued_seq` 顺序、跳过依赖未完成的受约束排队任务、可移动。
   - §13 补 `task_after` 表与 v6。
   - §14 补 `task.set_after`、`task.move`、`task.create.after` 与三个新事件。
 - `README.md`「The command line」补 `after`、`queue move`、`task new --after`（英文）。
@@ -290,7 +307,8 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 - **在 `tasks` 上加一列 JSON。** 要改 `TaskRecord` 和它的 14 处构造，`notified` 也没地方放。
 - **重排用小数或间隔序号。** `queued_seq` 是 `INTEGER`。重编号只动本项目的行，更简单。
 - **扫描账本去重 `task.blocked`。** 每个 tick 都要查事件。用 `notified` 列是 O(1)，而且可以随状态复位。
-- **让 `Requeued` 也受依赖约束。** 会出现 §4.1 的死锁。
+- **让所有 `Requeued` 都受依赖约束。** 实现期的 `Requeued` 会出现 §4.1 的死锁；所以只约束「还能改依赖」的那部分。
+- **完全不约束 `Requeued`。** 设计期恢复排队的任务刚设置的依赖会被忽略，违反任务 §3.2。
 
 ## 里程碑
 
@@ -314,9 +332,10 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 - **M-01**：覆盖需求 1 的校验与迁移、验收 4 与 5 的迁移部分；没有前置。可观察的结果：`deps` 模块与 v6 迁移通过单测。
   - `deps::` 12 个：自引用、不存在、跨项目、直接环、三节点环、超过 8 个、去重保序并接受 Done/Cancelled 依赖、
-    全部拒绝文案是单行中文、需求任务的可改状态表、Bug 任务的可改状态、`block_reason` 与 `is_satisfied`、`reposition` 的三种位置与两种拒绝。
-  - `deps_store_` 5 个：v5→v6 迁移后无依赖且队列顺序不变；`create_task_after` 因外键失败时整体回滚、不留任务；
-    `set_task_after` 替换与清空并复位 `notified`；`reorder_queue` 不动别的项目的 `queued_seq`；`blocked_notice` 往返。
+    全部拒绝文案是单行中文、需求任务的可改状态表（含 `impl_started == true` 时 `Active{Design}`、`Stopped{Design}` 等设计期状态也被拒绝）、Bug 任务的可改状态、`block_reason` 与 `is_satisfied`、`reposition` 的三种位置与两种拒绝。
+    「超过 8 个」用例含 9 个相同 id 也被拒绝（按输入项数）。
+  - `deps_store_` 5 个（`has_impl_session` 并入 `set_task_after` 那个用例，数量不变）：v5→v6 迁移后无依赖且队列顺序不变；`create_task_after` 因外键失败时整体回滚、不留任务；
+    `set_task_after` 替换与清空：保留边的 `notified` 不变、新增边为空、删除边消失；`has_impl_session` 随 Impl 会话记录翻转；`reorder_queue` 不动别的项目的 `queued_seq`；`blocked_notice` 往返。
 - **M-02**：覆盖需求 1（create）、需求 2（跳过）、需求 4（`task.get` / `project.get`）、验收 1、验收 4（经 RPC 拒绝无副作用）；
   前置 M-01。
   - `after_create_` 6 个：
@@ -324,22 +343,23 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
     - dispatch：`task.get` / `project.get` 带 `after` / `blocked_by`，无依赖时为 `[]`。
     - scheduler：被阻塞的任务 `queued_seq` 与 `queue_position` 不变，后面的任务先启动。
     - scheduler：依赖置为 `Done` 后放行。
-    - scheduler：`Requeued` 不受依赖约束。
+    - scheduler：`Requeued{Design}`（无 impl 会话）受依赖约束、被跳过；`Requeued{Implement}` 与有 impl 会话的 `Requeued{Design}` 不受约束、照常出队。
     - e2e `after_create_b_waits_for_a_and_starts_once_a_is_done`（验收 1：`parallel=2`，A、C 的会话 sleep 占槽；
       A 经批准、合并到 `done` 后 B 自动开始；断言账本里 A 到 `done` 的 seq 小于 B 第一次进入 `active` 的 seq）。
 - **M-03**：覆盖需求 1（`set_after`）、需求 2（阻塞与事件）、需求 4（`dashboard.get`）、验收 2；前置 M-02。
   - `after_blocked_` 7 个：
-    - dispatch：已开始实现轮的任务被拒绝，原依赖不变；成环被拒绝，原依赖不变。
+    - dispatch：已开始实现轮的任务被拒绝，原依赖不变；「实现后停止、从 Design 重跑」后（有 impl 会话，当前 `Active{Design}`）修改依赖同样被拒绝，原依赖不变；成环被拒绝，原依赖不变。
     - dispatch：Draft、Queued、Active{Design}、AwaitDesignApproval 可改，清空后写 `task.after_set`。
     - dispatch：`dashboard.get` 的 `queued` 组按出队顺序列出，并带 `blocked_by` 和原因。
-    - scheduler：依赖取消后连跑 3 个 tick 只有 1 条 `task.blocked`，payload 正确。
+    - scheduler：依赖取消后连跑 3 个 tick 只有 1 条 `task.blocked`，payload 正确；再 `task.set_after` 同样的列表（或加上另一个依赖）后再 tick，事件数仍是 1；设计期 `Requeued{Design}` 的任务同理写出一条。
     - scheduler：依赖失败、重跑、再失败，共 2 条。
     - scheduler：依赖为 Draft 或运行中时不写事件。
     - e2e `after_blocked_cancelled_dependency_holds_b_until_cleared`（验收 2）。
 - **M-04**：覆盖需求 3、验收 3；前置 M-02。
-  - `queue_move_` 6 个：
+  - `queue_move_` 7 个：
     - dispatch：top / before / after 三种移动后的顺序，以及 `task.moved` 的 payload。
-    - dispatch：位置参数为零个或两个、参照是自己、参照在别的项目、参照在运行中、参照是没移动过的待开始任务，都被拒绝且文案是中文。
+    - dispatch：位置参数为零个或两个、参照是自己、参照在别的项目、参照在运行中，都被拒绝且文案是中文。
+    - dispatch：参照是没移动过的待开始任务——两个没移动过的待开始任务 `move B --before A` 成功，随后 `task start` A、B，B 先于 A 出队；`--after` 同理。
     - dispatch：别的项目的 `queued_seq` 不变。
     - dispatch：移动过的待开始任务开始后保持位置。
     - dispatch：没移动过的待开始任务开始后仍排到队尾。
@@ -376,7 +396,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 - 负向对照：
   - 跳过写成 `break` 时，「后面的任务先启动」用例与验收 1 的 e2e 失败（C 不会启动）。
   - `after` 改成在 tick 之后才落库（先创建、再写依赖）时，e2e 里 B 在创建时就被启动，断言「B 仍在排队」失败。
-  - `Requeued` 也按依赖跳过时，「`Requeued` 不受依赖约束」用例失败。
+  - 所有 `Requeued` 都按依赖跳过时，「`Requeued{Implement}` 不受约束」用例失败；完全不约束 `Requeued` 时，「`Requeued{Design}` 受约束」用例失败。
 
 ### M-03 验收契约
 
@@ -386,15 +406,18 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
   - 每个 tick 都写 `task.blocked` 时，「3 个 tick 只有 1 条」用例失败。
   - `task.set_after` 不调 tick 时，验收 2 的 e2e 断言「清空后 B 开始」失败。
   - 校验放在写入之后时，「成环被拒绝，原依赖不变」用例失败。
+  - `check_editable` 只看当前节点时，「实现后重跑 Design 仍被拒绝」用例失败。
+  - `set_task_after` 先删后插并清空 `notified` 时，「同样列表再设置后事件数仍是 1」用例失败。
 
 ### M-04 验收契约
 
 - 验收命令：`cargo test -p automed queue_move_ && cargo test -p automed task_start_queues_a_draft && cargo test -p automed --test end_to_end task_card_a_started_draft_waits_behind_the_parallel_limit`
-- 预期：`queue_move_` 6 个通过（lib 5 个、end_to_end 1 个），另外两条命令各 1 个现有用例通过。
+- 预期：`queue_move_` 7 个通过（lib 6 个、end_to_end 1 个），另外两条命令各 1 个现有用例通过。
 - 负向对照：
   - 只给被移动的任务赋 `MAX+1`、不重编号时，`--top` 用例与验收 3 的 e2e 失败。
   - `task_start` 仍然无条件调 `mark_queued` 时，「移动过的待开始任务保持位置」用例失败。
   - 重编号用全表顺序而不是只动本项目时，「别的项目不变」用例失败。
+  - 参照是没移动过的待开始任务时仍被拒绝，「参照是没移动过的待开始任务」用例失败。
 
 ### M-05 验收契约
 
