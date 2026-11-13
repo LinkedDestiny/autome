@@ -1,3 +1,4 @@
+import { inMergeSegment } from './task-changes-model.ts';
 import { parseMarkdown } from '../lib/markdown.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TimelineSession } from './task-timeline-model.ts';
@@ -39,8 +40,7 @@ export async function loadTaskDetail(services: WebServices, id: string, url: URL
       return response.body.ok ? { payload: response.body.payload } : { error: response.body.error };
     } catch (error) { return { error: String(error) }; }
   }
-  const mergeSegment = data.task.merge?.authorized || (data.task.state?.state === 'active'
-    && ['await_merge', 'rebase', 'merge_gate', 'merging', 'main_check', 'cleanup'].includes(data.task.state.node ?? ''));
+  const mergeSegment = inMergeSegment(data);
   const [config, history, dashboard, changes] = await Promise.all([
     data.project ? read('config.get', { project_id: data.project.id }) : Promise.resolve({ error: '角色状态未知' }),
     services.taskEvents ? services.taskEvents.forTask(id).catch(error => ({ events: [] as TaskEvent[], truncated: false, error: `内核事件暂时读不到：${String(error)}` }))
