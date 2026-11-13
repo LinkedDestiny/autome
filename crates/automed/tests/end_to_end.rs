@@ -12281,3 +12281,165 @@ fn onboarding_session_e2e_run_log_end_and_task_cost_isolation() {
     assert_eq!(before, after);
     assert!(w.ctx.store.list_sessions(task).unwrap().is_empty());
 }
+
+// Protocol identity must describe the files actually frozen for the task.
+fn integrity_world() -> (World, String, PathBuf) {
+    let mut w = World::with_store("integrity", true);
+    let request = "integrity copy";
+    let slug = slug_for(request);
+    for n in 1..=3 {
+        w.doc_step(n, &slug, &doc("设计中", 1, 0, &[]));
+    }
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.sessions_run().len(), 4);
+    let copy = w
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/protocol"));
+    (w, id, copy)
+}
+
+fn integrity_two_sessions(w: &mut World, id: &str) {
+    w.ctx
+        .store
+        .set_task_state(
+            id,
+            &autome_domain::task::TaskState::Stopped {
+                at: autome_domain::task::Node::Review,
+            },
+        )
+        .unwrap();
+    let slug = slug_for(&request_of(w, id));
+    let n = w.sessions_run().len() as u32;
+    w.doc_step(n + 1, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(n + 2, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    ok(&w.call("task.rerun_from", json!({"task_id": id, "node": "review"})));
+    w.settle();
+    assert_eq!(w.sessions_run().len(), n as usize + 2);
+}
+
+fn integrity_events(w: &World, id: &str, kind: &str) -> Vec<Value> {
+    w.ctx.store.task_events(id, kind).unwrap()
+}
+
+fn integrity_legacy(w: &World, id: &str, verifiable: bool) -> String {
+    let reference = autome_domain::protocol::ProtocolRef::new(
+        if verifiable {
+            automed::protocol::current().0.tag.as_str()
+        } else {
+            "protocol/v1"
+        },
+        automed::protocol::seed().hash(),
+    )
+    .to_wire();
+    // Simulate the persisted state of a pre-upgrade daemon, not a new freeze.
+    let db = rusqlite::Connection::open(w.ctx.store.path()).unwrap();
+    db.execute(
+        "UPDATE tasks SET protocol_ref = ?2 WHERE id = ?1",
+        rusqlite::params![id, reference],
+    )
+    .unwrap();
+    db.execute("DELETE FROM events WHERE subject_id = ?1 AND kind IN ('protocol.hash_scheme', 'integrity_warning')", [id]).unwrap();
+    reference
+}
+
+#[test]
+fn protocol_integrity_untouched_copy_records_no_warning() {
+    needs_git!();
+    let (w, id, _) = integrity_world();
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let task = w.ctx.store.get_task(&id).unwrap();
+    for session in w.ctx.store.list_sessions(&id).unwrap() {
+        assert_eq!(session.protocol_ref, task.protocol_ref);
+    }
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["reason"], "frozen");
+}
+
+#[test]
+fn protocol_integrity_edited_copy_warns_exactly_once_over_two_sessions() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    std::fs::write(copy.join("prompts/fix.md"), "edited\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+}
+
+#[test]
+fn protocol_integrity_legacy_ref_is_migrated_once_without_warning() {
+    needs_git!();
+    let (mut w, id, _) = integrity_world();
+    let previous = integrity_legacy(&w, &id, true);
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["verified"], true);
+    assert_eq!(schemes[0]["previous"], previous);
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(automed::protocol::current().0.to_wire())
+    );
+}
+
+#[test]
+fn protocol_integrity_legacy_ref_with_an_edited_copy_still_warns() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    integrity_legacy(&w, &id, true);
+    std::fs::write(copy.join("prompts/fix.md"), "edited before upgrade\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(automed::protocol::current().0.to_wire())
+    );
+}
+
+#[test]
+fn protocol_integrity_unverifiable_legacy_ref_rebuilds_the_baseline_and_says_so() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    let previous = integrity_legacy(&w, &id, false);
+    std::fs::write(copy.join("prompts/fix.md"), "unknown history\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["verified"], false);
+    assert_eq!(schemes[0]["previous"], previous);
+    assert!(
+        schemes[0]["limitation"]
+            .as_str()
+            .unwrap()
+            .contains("无法核实")
+    );
+    let expected = autome_domain::protocol::ProtocolRef::new(
+        "protocol/v1",
+        automed::protocol::read_dir_protocol(&copy).unwrap().hash(),
+    )
+    .to_wire();
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(expected)
+    );
+}
+
+#[test]
+fn protocol_integrity_edit_after_migration_still_warns() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    integrity_legacy(&w, &id, false);
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    // Empty added file, then deletion: path membership matters as well as bytes.
+    std::fs::write(copy.join("extra.md"), "").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    std::fs::remove_file(copy.join("prompts/fix.md")).unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 2);
+    assert_eq!(integrity_events(&w, &id, "protocol.hash_scheme").len(), 1);
+}

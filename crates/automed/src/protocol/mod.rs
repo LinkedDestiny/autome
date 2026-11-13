@@ -396,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn protocol_integrity_version_hash_equals_a_fresh_task_copy_hash() {
+        let dir = std::env::temp_dir().join(format!("autome-integrity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (reference, files) = current();
+        copy_into_task(files, &dir, "docs/task").unwrap();
+        let copy = read_dir_protocol(&dir.join("docs/task/protocol")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(copy.contains("contract.toml"));
+        assert!(!copy.paths().any(|p| p.starts_with("evals/")));
+        assert_eq!(reference.hash, copy.hash());
+    }
+
+    #[test]
     fn the_version_in_force_is_the_newest_changelog_heading_over_the_seed() {
         let (r, files) = current();
         assert_eq!(r.tag, "protocol/v9");
