@@ -2002,127 +2002,7 @@ fn guard_bug_regression(
         })
         && doc.status == autome_domain::bug_doc::BugStatus::Located
     {
-        let started = ctx.store.session_started_event(&task.id, &session.id)?;
-        let Some(heads) = started.as_ref().and_then(|v| v["locate_heads"].as_array()) else {
-            return Ok(()); // Sessions begun by older binaries have no starting snapshot.
-        };
-        let mut files = Vec::new();
-        let mut support = ctx
-            .store
-            .last_event(&task.id, "bug.regression_snapshot")?
-            .and_then(|s| s["support"].as_array().cloned())
-            .unwrap_or_default();
-        for entry in heads {
-            let repo = entry["repo"]
-                .as_str()
-                .ok_or_else(|| err("missing locate repo"))?;
-            let slot = layout
-                .repos
-                .iter()
-                .find(|s| s.name == repo)
-                .ok_or_else(|| err(format!("missing locate repository {repo}")))?;
-            let base = entry["head"]
-                .as_str()
-                .ok_or_else(|| err("missing locate head"))?;
-            let head = git::head_sha(&slot.worktree)?;
-            let changed = git::run_ok(
-                &slot.worktree,
-                &[
-                    "diff",
-                    "--name-status",
-                    "--diff-filter=AM",
-                    "--no-renames",
-                    "-z",
-                    base,
-                    &head,
-                    "--",
-                ],
-            )?;
-            let entries: Vec<_> = changed
-                .stdout
-                .split('\0')
-                .filter(|p| !p.is_empty())
-                .collect();
-            let docs = format!("{}/", task.doc_dir());
-            for entry in entries.chunks_exact(2) {
-                let path = entry[1];
-                // The Bug doc, card and replies are the protocol's own files:
-                // the fix and review rounds are required to edit them.
-                if path.starts_with(&docs) {
-                    continue;
-                }
-                let previous = if entry[0] == "M" {
-                    git::run_ok(&slot.worktree, &["show", &format!("{base}:{path}")])?.stdout
-                } else {
-                    String::new()
-                };
-
-                let contents = git::run_ok(&slot.worktree, &["show", &format!("{head}:{path}")])?;
-                if let Some(mut protection) =
-                    regression_protection(path, &contents.stdout, &previous, &doc.repro_command)
-                {
-                    let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", &head, "--", path])?;
-                    let mut blocks = None;
-                    if protection != Protection::File {
-                        let section_line = if protection == Protection::Section {
-                            let start = test_section_start(&contents.stdout).unwrap_or(0);
-                            contents.stdout[..start].matches('\n').count() + 1
-                        } else {
-                            1
-                        };
-                        let diff = git::run_ok(
-                            &slot.worktree,
-                            &[
-                                "diff",
-                                "-U0",
-                                "--no-color",
-                                "--no-ext-diff",
-                                base,
-                                &head,
-                                "--",
-                                path,
-                            ],
-                        )?;
-                        let added = added_test_blocks(&diff.stdout, section_line);
-                        // A test file the locate round only trimmed has no
-                        // added tests to hold on to; protect all of it.
-                        if added.is_empty() && protection == Protection::Blocks {
-                            protection = Protection::File;
-                        } else {
-                            blocks = Some(added);
-                        }
-                    }
-                    let mut file = json!({
-                        "repo": repo, "path": path, "tree": tree.stdout, "head": head,
-                        "protect": protection.as_str(),
-                    });
-                    if let Some(blocks) = blocks {
-                        file["blocks"] = json!(blocks);
-                    }
-                    files.push(file);
-                } else if !support
-                    .iter()
-                    .any(|f| f["repo"] == repo && f["path"] == path)
-                {
-                    support.push(json!({"repo":repo,"path":path}));
-                }
-            }
-        }
-        if files.is_empty() {
-            // An invalid or passing command must still follow the repro-miss
-            // flow. Reject this locate result only after a genuine reproduction.
-            ctx.store.append_event(
-                "bug.regression_empty",
-                &task.id,
-                json!({"session_id": session.id}),
-            )?;
-            return Ok(());
-        }
-        ctx.store.append_event(
-            "bug.regression_snapshot",
-            &task.id,
-            json!({"session_id": session.id, "files": files, "support": support}),
-        )?;
+        test_fix::regression_set(ctx, Some(session), project, task, doc, "locate")?;
     } else if session.kind == (SessionKind::Bug { step: BugStep::Fix })
         && let Some(snapshot) = ctx.store.last_event(&task.id, "bug.regression_snapshot")?
     {
@@ -3245,6 +3125,33 @@ fn start_session(
     };
 
     ensure_checkouts(ctx, task, project, resolved, kind)?;
+    if kind == (SessionKind::Bug { step: BugStep::Fix })
+        && ctx
+            .store
+            .last_event(&task.id, "bug.regression_snapshot")?
+            .is_none()
+    {
+        let result = (|| {
+            let text =
+                std::fs::read_to_string(task_docs_root(project, &task.slug).join(task.bug_doc()))
+                    .map_err(|e| err(e.to_string()))?;
+            let doc = autome_domain::bug_doc::parse(&text).map_err(|e| err(e.to_string()))?;
+            test_fix::regression_set(ctx, None, project, task, &doc, "rerun_fix")
+        })();
+        if let Err(error) = result {
+            ctx.store.set_task_state(
+                &task.id,
+                &TaskState::Failed {
+                    at: Node::Fix,
+                    reason: FailureReason::Protocol {
+                        detail: error.to_string(),
+                    },
+                },
+            )?;
+            return Ok(());
+        }
+    }
+
     if resolved.setup.is_some() {
         crate::setup::skip_workspace(ctx, task, project).map_err(|e| err(e.to_string()))?;
     }

@@ -1,4 +1,4 @@
-//! Test-repair permissions and ledger state; ordinary locate keeps its old baseline.
+//! Shared regression baselines and snapshots, plus test-repair permissions.
 use super::*;
 use std::collections::BTreeSet;
 
@@ -100,15 +100,30 @@ pub(super) fn snapshot(
     task: &TaskRecord,
     doc: &autome_domain::bug_doc::BugDoc,
 ) -> Result<()> {
+    regression_set(ctx, Some(session), project, task, doc, "test_fix")
+}
+
+pub(super) fn regression_set(
+    ctx: &Ctx,
+    session: Option<&Session>,
+    project: &Project,
+    task: &TaskRecord,
+    doc: &autome_domain::bug_doc::BugDoc,
+    source: &str,
+) -> Result<()> {
+    let repairing = source == "test_fix";
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+
     let previous = ctx
         .store
         .last_event(&task.id, "bug.regression_snapshot")?
         .unwrap_or(json!({}));
-    let started = ctx
-        .store
-        .session_started_event(&task.id, &session.id)?
-        .ok_or_else(|| err("缺少定位会话基线"))?;
+    let started = match session {
+        Some(session) => ctx.store.session_started_event(&task.id, &session.id)?,
+        None => None,
+    }
+    .unwrap_or(json!({}));
+
     let mut files = Vec::new();
     let mut support = previous["support"].as_array().cloned().unwrap_or_default();
     for slot in &layout.repos {
@@ -116,7 +131,7 @@ pub(super) fn snapshot(
             .as_array()
             .and_then(|heads| heads.iter().find(|h| h["repo"] == slot.name))
             .and_then(|h| h["head"].as_str())
-            .ok_or_else(|| err("缺少定位仓库基线"))?;
+            .unwrap_or("HEAD");
         let base = regression_base(ctx, task, &slot.name, &slot.worktree, &slot.base)?;
         let old_files: Vec<_> = previous["files"]
             .as_array()
@@ -126,7 +141,7 @@ pub(super) fn snapshot(
             .collect();
         let changes = changed(&slot.worktree, start, "HEAD")?;
         let docs = format!("{}/", task.doc_dir());
-        for path in &changes {
+        for path in changes.iter().filter(|_| repairing) {
             if path.starts_with(&docs) {
                 continue;
             }
@@ -178,10 +193,20 @@ pub(super) fn snapshot(
                 candidates.insert(path);
             }
         }
+        // Session-local classification still recognizes edited command scripts.
+        for path in &changes {
+            if !path.starts_with(&docs) {
+                let before = contents(&slot.worktree, start, path)?.unwrap_or_default();
+                let now = contents(&slot.worktree, "HEAD", path)?.unwrap_or_default();
+                if regression_protection(path, &now, &before, &doc.repro_command).is_some() {
+                    candidates.insert(path.clone());
+                }
+            }
+        }
         for path in candidates {
             let original = contents(&slot.worktree, &base, &path)?.unwrap_or_default();
             let now = contents(&slot.worktree, "HEAD", &path)?.unwrap_or_default();
-            let protection = old_files
+            let mut protection = old_files
                 .iter()
                 .find(|f| f["path"] == path && f["protect"] == "file")
                 .map(|_| Protection::File)
@@ -207,7 +232,31 @@ pub(super) fn snapshot(
                 } else {
                     0
                 };
-                file["blocks"] = json!([&now[start..]]);
+                if repairing {
+                    file["blocks"] = json!([&now[start..]]);
+                } else {
+                    let diff = git::run_ok(
+                        &slot.worktree,
+                        &[
+                            "diff",
+                            "-U0",
+                            "--no-color",
+                            "--no-ext-diff",
+                            &base,
+                            "HEAD",
+                            "--",
+                            &path,
+                        ],
+                    )?;
+                    let blocks =
+                        added_test_blocks(&diff.stdout, now[..start].matches('\n').count() + 1);
+                    if blocks.is_empty() && protection == Protection::Blocks {
+                        protection = Protection::File;
+                        file["protect"] = json!(protection.as_str());
+                    } else {
+                        file["blocks"] = json!(blocks);
+                    }
+                }
             }
             files.push(file);
         }
@@ -225,12 +274,20 @@ pub(super) fn snapshot(
         }
     }
     if files.is_empty() {
-        return Err(err("回归测试保护集为空"));
+        if source == "locate" {
+            ctx.store.append_event(
+                "bug.regression_empty",
+                &task.id,
+                json!({"session_id": session.map(|s| &s.id)}),
+            )?;
+            return Ok(());
+        }
+        return Err(err("回归测试保护集为空：定位轮必须新增或修改测试文件"));
     }
     ctx.store.append_event(
         "bug.regression_snapshot",
         &task.id,
-        json!({"session_id":session.id,"source":"test_fix","files":files,"support":support}),
+        json!({"session_id":session.map(|s| &s.id),"source":source,"files":files,"support":support}),
     )?;
     Ok(())
 }

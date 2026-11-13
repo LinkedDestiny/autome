@@ -275,6 +275,12 @@ Queued 首次进入定位时记录 `bug.loop_started`。出处：`crates/automed
 
 Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-round`、`复现命令`、`根因`、`复核`（待复核 / 通过 / 打回）。会话模板为 `protocol/prompts/locate.md`、`protocol/prompts/fix.md`、`protocol/prompts/fix-review.md`，规则为 `protocol/bug-protocol.md`，编译进 automed。出处：`crates/autome-domain/src/bug_doc.rs` 的 `parse`；`crates/automed/src/protocol/mod.rs` 的 `SEED`。
 
+**定位阶段累计保护。** 普通定位和修测试共用 `scheduler/test_fix.rs` 的 `regression_set`：
+以任务最早定位会话的各仓库 `locate_heads` 为基线，非 HEAD 祖先时回退到与默认分支的 merge-base；
+累计测试、当前会话测试与上一快照路径取并集。普通定位仍只冻结新增测试块，不冻结产品辅助代码。
+未定位会话留下的测试即使没有快照也会纳入。普通定位为空时先走复现判定，真正复现后才拒绝；
+直接重跑 fix 而无快照时，启动会话前现算 `source: rerun_fix` 快照，空集或读盘失败转 `Failed(Fix, Protocol)`，不启动修复会话。
+
 **修正回归测试。**
 
 冻结的 `prompts/fix.md` 含 `<!-- regression-test-defect -->` 时启用修测试路径。

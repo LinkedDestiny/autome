@@ -10932,6 +10932,7 @@ fn regression_base_relocate(mode: &str) {
         bug_step(&w, 2, &slug, &doc, "");
     }
     bug_step(&w, fix_step, &slug, &doc, "echo true > regression.sh");
+    bug_step(&w, fix_step + 1, &slug, &bug_doc("通过"), "");
     let id = create_bug(&mut w, "base regression");
     w.settle();
     if mode != "command" {
@@ -10940,20 +10941,75 @@ fn regression_base_relocate(mode: &str) {
             let wt = w.repo.join(format!(".worktree/{slug}"));
             // Replace history while retaining the first locate's files.
             let tree = automed::git::run_ok(&wt, &["write-tree"]).unwrap().stdout;
-            let root = automed::git::run_ok(&wt, &["rev-list", "--max-parents=0", "HEAD"]).unwrap().stdout;
-            let head = automed::git::run_ok(&wt, &["commit-tree", tree.trim(), "-p", root.trim(), "-m", "rebased locate"]).unwrap().stdout;
+            let root = automed::git::run_ok(&wt, &["rev-list", "--max-parents=0", "HEAD"])
+                .unwrap()
+                .stdout;
+            let head = automed::git::run_ok(
+                &wt,
+                &[
+                    "commit-tree",
+                    tree.trim(),
+                    "-p",
+                    root.trim(),
+                    "-m",
+                    "rebased locate",
+                ],
+            )
+            .unwrap()
+            .stdout;
             automed::git::run_ok(&wt, &["reset", "--hard", head.trim()]).unwrap();
         }
         if matches!(mode, "rerun" | "fix") {
-            ok(&w.call("task.rerun_from", json!({"task_id":id,"node":if mode == "fix" {"fix"} else {"locate"}})));
+            w.ctx
+                .store
+                .set_task_state(
+                    &id,
+                    &autome_domain::task::TaskState::Failed {
+                        at: autome_domain::task::Node::Locate,
+                        reason: autome_domain::task::FailureReason::Protocol {
+                            detail: "interrupted locate".into(),
+                        },
+                    },
+                )
+                .unwrap();
+        }
+        if matches!(mode, "rerun" | "fix") {
+            ok(&w.call(
+                "task.rerun_from",
+                json!({"task_id":id,"node":if mode == "fix" {"fix"} else {"locate"}}),
+            ));
         } else {
-            ok(&w.call("task.reply", json!({"task_id":id,"info":"retry reproduction"})));
+            ok(&w.call(
+                "task.reply",
+                json!({"task_id":id,"info":"retry reproduction"}),
+            ));
+        }
+        if mode == "fix" {
+            assert!(
+                w.ctx
+                    .store
+                    .last_event(&id, "bug.regression_snapshot")
+                    .unwrap()
+                    .is_some(),
+                "rerun fix must snapshot before starting the session"
+            );
         }
         w.settle();
     }
     assert_regression_rejected(&w, &id, "regression.sh");
-    let snapshot = w.ctx.store.last_event(&id, "bug.regression_snapshot").unwrap().unwrap();
-    assert!(snapshot["files"].as_array().unwrap().iter().any(|f| f["path"] == "regression.sh"));
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert!(
+        snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "regression.sh")
+    );
     if mode == "fix" {
         assert_eq!(snapshot["source"], "rerun_fix");
     }
@@ -10978,4 +11034,63 @@ fn bug_regression_base_rebased_branch_falls_back_to_merge_base() {
 #[test]
 fn bug_regression_base_rerun_fix_without_snapshot_computes_one() {
     regression_base_relocate("fix");
+}
+
+#[test]
+fn bug_regression_base_rerun_fix_rejects_empty_or_unreadable_baseline() {
+    needs_git!();
+    for remove_doc in [false, true] {
+        let mut w = World::new("regression-base-empty");
+        let slug = slug_for("empty base");
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核").replace("已定位", "无法复现"),
+            "",
+        );
+        let id = create_bug(&mut w, "empty base");
+        w.settle();
+        w.ctx
+            .store
+            .set_task_state(
+                &id,
+                &autome_domain::task::TaskState::Failed {
+                    at: autome_domain::task::Node::Locate,
+                    reason: autome_domain::task::FailureReason::Protocol {
+                        detail: "interrupted locate".into(),
+                    },
+                },
+            )
+            .unwrap();
+        if remove_doc {
+            let task = w.ctx.store.get_task(&id).unwrap();
+            std::fs::remove_file(
+                w.repo
+                    .join(format!(".worktree/{slug}"))
+                    .join(task.bug_doc()),
+            )
+            .unwrap();
+        }
+        ok(&w.call("task.rerun_from", json!({"task_id":id,"node":"fix"})));
+
+        let state = w.ctx.store.get_task(&id).unwrap().state;
+        assert!(
+            matches!(
+                state,
+                autome_domain::task::TaskState::Failed {
+                    at: autome_domain::task::Node::Fix,
+                    reason: autome_domain::task::FailureReason::Protocol { .. },
+                }
+            ),
+            "{state:?}"
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "bug.fix_round_started")
+                .unwrap(),
+            0
+        );
+    }
 }
