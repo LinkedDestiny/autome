@@ -613,8 +613,22 @@ fn task_json(
     t: &crate::store::TaskRecord,
     cost: &CostSummary,
 ) -> Result<Value, DispatchError> {
+    let after = ctx.store.task_after(&t.id)?;
+    let mut blocked_by = Vec::new();
+    for id in &after {
+        let dependency = ctx.store.get_task(id)?;
+        if !autome_domain::deps::is_satisfied(&dependency.state) {
+            blocked_by.push(json!({
+                "id": id,
+                "state": dependency.state,
+                "reason": autome_domain::deps::block_reason(&dependency.state),
+            }));
+        }
+    }
     let mut value = json!({
         "id": t.id,
+        "after": after,
+        "blocked_by": blocked_by,
         "cost_usd": cost.usd_total,
         "cost_sessions_without_cost": cost.sessions_without_cost,
         "kind": t.kind,
@@ -1405,6 +1419,11 @@ fn role_label(role: Role) -> &'static str {
 /// would only add friction.
 fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let project_id = str_param(params, "project_id")?;
+    let after: Vec<String> = match params.get("after") {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| bad_params("after 必须是任务编号列表"))?,
+    };
     let kind = match params.get("kind") {
         None | Some(Value::Null) => autome_domain::task::TaskKind::Feature,
         Some(value) => value
@@ -1504,6 +1523,7 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         attachments,
         doc_refs,
         (kind, brief, draft),
+        &after,
     )
 }
 
@@ -1580,6 +1600,7 @@ fn create(
     attachments: Vec<String>,
     doc_refs: Vec<String>,
     card: (autome_domain::task::TaskKind, Option<&str>, bool),
+    proposed_after: &[String],
 ) -> DispatchResult {
     let (kind, brief, draft) = card;
     let task = prepare_task(
@@ -1591,10 +1612,33 @@ fn create(
         (kind, draft),
     )?;
     let id = task.id.clone();
-    ctx.store.create_task(&task, brief)?;
-    let seq = ctx
-        .store
-        .append_event("task.created", &id, json!({ "project_id": project_id }))?;
+    let mut lookup = std::collections::BTreeMap::new();
+    if !proposed_after.is_empty() {
+        for (id, edges) in ctx.store.project_after(project_id)? {
+            lookup.insert(id, (project_id.to_string(), edges));
+        }
+        for id in proposed_after {
+            if !lookup.contains_key(id) {
+                match ctx.store.get_task(id) {
+                    Ok(task) => {
+                        lookup.insert(id.clone(), (task.project_id, Vec::new()));
+                    }
+                    Err(crate::store::StoreError::NotFound { .. }) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
+    let after = autome_domain::deps::check_after(&id, project_id, proposed_after, |id| {
+        lookup.get(id).cloned()
+    })
+    .map_err(|e| rejected(e.to_string()))?;
+    ctx.store.create_task_after(&task, brief, &after)?;
+    let mut created = json!({ "project_id": project_id });
+    if !after.is_empty() {
+        created["after"] = json!(after);
+    }
+    let seq = ctx.store.append_event("task.created", &id, created)?;
 
     // Start it immediately if the project has a free slot.
     let report = if draft {
@@ -2896,6 +2940,139 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn after_create_rejects_invalid_dependencies_without_writing() {
+        let mut sb = Sandbox::new("after-invalid");
+        let project = sb.add_project("repo");
+        let other = sb.add_project("other");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({
+                    "project_id": other, "request": "foreign", "draft": true
+                }),
+            ),
+        );
+        let foreign = ok_payload(&out)["task"]["id"].clone();
+        let next = sb.ctx.store.next_task_id(&project).unwrap();
+        for (after, message) in [
+            (json!([next]), "任务不能依赖自己"),
+            (json!(["T-9999"]), "不存在"),
+            (json!([foreign]), "另一个项目"),
+            (json!(vec!["T-9999"; 9]), "依赖最多 8 个"),
+            (json!(null), "after 必须是任务编号列表"),
+            (json!("T-1"), "after 必须是任务编号列表"),
+            (json!([1]), "after 必须是任务编号列表"),
+            (json!([""]), "不存在"),
+            (json!(["T-0001"]), "不存在"),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": "invalid", "after": after
+                    }),
+                ),
+            );
+            assert!(err_message(&out).contains(message), "{}", err_message(&out));
+            assert!(!err_message(&out).contains('\n'));
+            assert!(sb.ctx.store.list_tasks(&project).unwrap().is_empty());
+            assert_eq!(sb.ctx.store.count_events(&next, "task.created").unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn after_create_reads_dependencies_and_input_boundaries() {
+        let mut sb = Sandbox::new("after-read");
+        let project = sb.add_project("repo");
+        let mut ids = Vec::new();
+        for i in 0..8 {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": format!("dependency {i}"), "draft": true
+                    }),
+                ),
+            );
+            assert_eq!(ok_payload(&out)["task"]["after"], json!([]));
+            assert_eq!(ok_payload(&out)["task"]["blocked_by"], json!([]));
+            ids.push(ok_payload(&out)["task"]["id"].as_str().unwrap().to_string());
+        }
+        sb.ctx
+            .store
+            .set_task_state(&ids[0], &TaskState::Done)
+            .unwrap();
+        sb.ctx
+            .store
+            .set_task_state(&ids[1], &TaskState::Cancelled)
+            .unwrap();
+        for after in [
+            vec![],
+            vec![ids[0].clone()],
+            vec![ids[1].clone(); 8],
+            ids.clone(),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": "dependent", "draft": true, "after": after
+                    }),
+                ),
+            );
+            let task = &ok_payload(&out)["task"];
+            let mut expected = after.clone();
+            expected.dedup();
+            assert_eq!(task["after"], json!(expected));
+            let created = sb
+                .ctx
+                .store
+                .last_event(task["id"].as_str().unwrap(), "task.created")
+                .unwrap()
+                .unwrap();
+            if expected.is_empty() {
+                assert_eq!(created, json!({"project_id": project}));
+            } else {
+                assert_eq!(created, json!({"project_id": project, "after": expected}));
+            }
+            let blocked: Vec<_> = expected.iter().filter(|id| *id != &ids[0]).collect();
+            assert_eq!(task["blocked_by"].as_array().unwrap().len(), blocked.len());
+            for (entry, id) in task["blocked_by"].as_array().unwrap().iter().zip(blocked) {
+                assert_eq!(entry["id"], json!(id));
+                assert_eq!(
+                    entry["state"],
+                    json!(sb.ctx.store.get_task(id).unwrap().state)
+                );
+                assert_eq!(
+                    entry["reason"],
+                    if id == &ids[1] {
+                        json!("cancelled")
+                    } else {
+                        Value::Null
+                    }
+                );
+            }
+            let get = handle_command(sb.ctx(), &cmd("task.get", json!({"task_id": task["id"]})));
+            assert_eq!(ok_payload(&get)["task"], *task);
+            let get = handle_command(
+                sb.ctx(),
+                &cmd("project.get", json!({"project_id": project})),
+            );
+            let found = ok_payload(&get)["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["id"] == task["id"])
+                .unwrap();
+            assert_eq!(found, task);
+        }
+    }
 
     /// A throwaway world: its own store, its own `~/.autome` and its own
     /// `$HOME`. Nothing here touches process-global state, so the whole
