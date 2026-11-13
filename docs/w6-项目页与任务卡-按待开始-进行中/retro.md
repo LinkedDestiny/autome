@@ -17,3 +17,4 @@
 
 实现 #6 | M-05 | 待审 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-05-r6-impl.md | 监听 EPERM，2 例待审计复验
 审计 #5 | M-05 | 通过 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-05-r6-audit.md | 无
+实现 #7 | M-05 | 门禁修复，非监听回归通过 | docs/w6-项目页与任务卡-按待开始-进行中/evidence/M-05-r7-impl.md | 监听 EPERM，宿主待复验

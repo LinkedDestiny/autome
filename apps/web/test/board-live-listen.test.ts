@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { WebSocket } from 'ws';
 import { expect, test, vi } from 'vitest';
 import { startServer } from '../server/main.ts';
+import { waitForTransition } from './fixtures/wait-for-transition.ts';
 
 async function scenario(check: (url: string, stop: () => Promise<void>, taskId: string, projectId: string) => Promise<void>) {
   const root=mkdtempSync(join(tmpdir(),'w6-listen-')),home=join(root,'home'),wt=resolve(import.meta.dirname,'../../..');
@@ -26,9 +27,15 @@ test('1 external stop reaches websocket within 4500 ms',()=>scenario(async(url,s
  const ws=new WebSocket(url.replace('http:','ws:')+'/ws',{origin:url});
  try {
  await new Promise<void>((yes,no)=>{const timer=setTimeout(()=>no(Error('hello timeout')),5000);ws.on('message',raw=>{if(JSON.parse(String(raw)).type==='hello'){clearTimeout(timer);yes();}});ws.once('error',e=>{clearTimeout(timer);no(e);});});
- const start=performance.now();
- const received=new Promise<void>((yes,no)=>{const timer=setTimeout(()=>no(Error('task.updated timeout 4500 ms')),4500);ws.on('message',raw=>{const m=JSON.parse(String(raw));if(m.type==='event'&&m.kind==='task.updated'&&m.subject===taskId&&m.payload?.state?.state==='stopped'){clearTimeout(timer);yes();}});});
- await Promise.all([stop(),received]);const elapsed=performance.now()-start;process.stdout.write(`W6 stop to websocket ${Math.ceil(elapsed)} ms\n`);expect(elapsed).toBeLessThanOrEqual(4500);
+ const elapsed = await waitForTransition(received => {
+   const onMessage = (raw: import('ws').RawData) => {
+     const m = JSON.parse(String(raw));
+     if (m.type === 'event' && m.kind === 'task.updated' && m.subject === taskId && m.payload?.state?.state === 'stopped') received();
+   };
+   ws.on('message', onMessage);
+   return () => { ws.off('message', onMessage); };
+ }, stop);
+ process.stdout.write(`W6 stop reply to websocket ${Math.ceil(elapsed)} ms\n`);expect(elapsed).toBeLessThanOrEqual(4500);
  }finally{ws.terminate();}
 }),120_000);
 test('2 new SSR request after stop places card in needs-you column',()=>scenario(async(url,stop,taskId,projectId)=>{

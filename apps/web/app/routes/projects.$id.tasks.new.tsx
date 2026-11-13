@@ -8,7 +8,7 @@ import type { ShellData } from '../components/shell-data.ts';
 import type { UploadInfo } from '../../server/uploads.ts';
 import { UPLOAD_MAX_BYTES, UPLOAD_MAX_FILES } from '../../server/uploads-limits.ts';
 import { servicesContext } from '../load-context.ts';
-import { KIND_LABELS } from '../lib/labels.ts';
+import { KIND_LABELS, COLUMN_LABELS } from '../lib/labels.ts';
 import { useWriteGate } from '../lib/live.tsx';
 
 export function action({ request, params, context }: ActionFunctionArgs) {
@@ -67,6 +67,6 @@ export default function NewTask() {
     {result && 'error' in result && <p role="alert">{result.error}</p>}
     {!gate.allowed && <p role="status">{gate.reason}</p>}
     <footer><button className="btn-primary" name="intent" value="start" disabled={Boolean(disabled)}>创建并开始</button>
-      <button name="intent" value="draft" disabled={Boolean(disabled)}>存为待开始</button></footer>
+      <button name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
   </Form>;
 }
