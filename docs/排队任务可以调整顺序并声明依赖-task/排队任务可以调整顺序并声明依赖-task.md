@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/30
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：新增 autome_domain::deps（校验、可改状态、阻塞原因、重排）与 store v6 迁移（task_after 表）及其单测；check_editable 额外接收「是否已有 impl 会话」
+next-action: M-01 待独立审计；通过后推进 M-02 创建依赖原子落库与出队跳过
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -314,7 +314,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | 依赖校验纯函数与 store v6 迁移 | 0 | |
+| M-01 | 待审 | 依赖校验纯函数与 store v6 迁移 | 0 | |
 | M-02 | 开放 | 创建即带依赖，出队跳过依赖未完成的任务 | 0 | |
 | M-03 | 开放 | 改依赖、阻塞事件与 dashboard 排队组 | 0 | |
 | M-04 | 开放 | task.move 调整队列顺序 | 0 | |
@@ -382,6 +382,8 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 ## 验收契约
 
 ### M-01 验收契约
+
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
 
 - 验收命令：`cargo test -p autome-domain deps:: && cargo test -p automed --lib store::`
 - 预期：第一条 12 个用例通过。第二条通过的用例数为 store 模块基线 52（设计轮按源码 `#[test]` 计数，实现轮以实际运行为准，

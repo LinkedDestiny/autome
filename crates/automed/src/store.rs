@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -484,6 +484,20 @@ impl Store {
          ALTER TABLE sessions ADD COLUMN limit_minutes INTEGER;
          PRAGMA user_version = 6;
          COMMIT;",
+            )?;
+        }
+        if version < 7 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS task_after (
+                     task_id TEXT NOT NULL REFERENCES tasks(id),
+                     after_id TEXT NOT NULL REFERENCES tasks(id),
+                     ord INTEGER NOT NULL,
+                     notified TEXT,
+                     PRIMARY KEY (task_id, after_id)
+                 );
+                 PRAGMA user_version = 7;
+                 COMMIT;",
             )?;
         }
         Ok(())
@@ -1018,6 +1032,15 @@ impl Store {
     }
 
     pub fn create_task(&self, task: &TaskRecord, brief: Option<&str>) -> Result<()> {
+        self.create_task_after(task, brief, &[])
+    }
+
+    pub fn create_task_after(
+        &self,
+        task: &TaskRecord,
+        brief: Option<&str>,
+        after: &[String],
+    ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.insert_task(task)?;
         if matches!(task.state, TaskState::Queued) {
@@ -1027,6 +1050,12 @@ impl Store {
             tx.execute(
                 "INSERT INTO task_briefs (task_id, body, created_at) VALUES (?1, ?2, ?3)",
                 params![task.id, body, task.created_at],
+            )?;
+        }
+        for (ord, id) in after.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO task_after (task_id, after_id, ord) VALUES (?1, ?2, ?3)",
+                params![task.id, id, ord as i64],
             )?;
         }
         tx.commit()?;
@@ -1081,6 +1110,117 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    pub fn task_after(&self, id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .conn
+            .prepare("SELECT after_id FROM task_after WHERE task_id = ?1 ORDER BY ord")?
+            .query_map([id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_task_after(&self, id: &str, after: &[String]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for old in self.task_after(id)? {
+            if !after.contains(&old) {
+                tx.execute(
+                    "DELETE FROM task_after WHERE task_id = ?1 AND after_id = ?2",
+                    params![id, old],
+                )?;
+            }
+        }
+        for (ord, on) in after.iter().enumerate() {
+            tx.execute("INSERT INTO task_after (task_id, after_id, ord) VALUES (?1, ?2, ?3) ON CONFLICT(task_id, after_id) DO UPDATE SET ord = excluded.ord", params![id, on, ord as i64])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn project_after(&self, project_id: &str) -> Result<BTreeMap<String, Vec<String>>> {
+        let mut result = BTreeMap::new();
+        for task in self.list_tasks(project_id)? {
+            result.insert(task.id.clone(), self.task_after(&task.id)?);
+        }
+        Ok(result)
+    }
+
+    pub fn blocked_notice(&self, task: &str, on: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT notified FROM task_after WHERE task_id = ?1 AND after_id = ?2",
+                params![task, on],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_blocked_notice(&self, task: &str, on: &str, reason: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE task_after SET notified = ?3 WHERE task_id = ?1 AND after_id = ?2",
+            params![task, on, reason],
+        )?;
+        Ok(())
+    }
+
+    pub fn has_impl_session(&self, task_id: &str) -> Result<bool> {
+        let kind = serde_json::to_string(&SessionKind::Role {
+            role: autome_domain::role::Role::Impl,
+        })?;
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE task_id = ?1 AND kind = ?2)",
+            params![task_id, kind],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn queued_seq(&self, id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT queued_seq FROM tasks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
+
+    pub fn queue_order(&self, project_id: &str) -> Result<Vec<TaskRecord>> {
+        let mut stmt = self.conn.prepare(&format!("{TASK_SELECT_BASE} WHERE project_id = ?1 ORDER BY queued_seq IS NOT NULL, queued_seq, created_at"))?;
+        let tasks = stmt
+            .query_map([project_id], row_to_task)?
+            .map(|row| Ok(row??))
+            .collect::<Result<Vec<_>>>()?;
+        let mut order = Vec::new();
+        for task in tasks {
+            if matches!(task.state, TaskState::Queued | TaskState::Requeued { .. })
+                || (task.state == TaskState::Draft && self.queued_seq(&task.id)?.is_some())
+            {
+                order.push(task);
+            }
+        }
+        Ok(order)
+    }
+
+    pub fn reorder_queue(&self, project_id: &str, ordered: &[String]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let base: i64 =
+            tx.query_row("SELECT COALESCE(MAX(queued_seq), 0) FROM tasks", [], |r| {
+                r.get(0)
+            })?;
+        for (i, id) in ordered.iter().enumerate() {
+            let seq = base
+                .checked_add(i as i64)
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| StoreError::Conflict {
+                    detail: "队列序号已达到上限".into(),
+                })?;
+            tx.execute(
+                "UPDATE tasks SET queued_seq = ?3 WHERE id = ?1 AND project_id = ?2",
+                params![id, project_id, seq],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn mark_queued(&self, id: &str) -> Result<()> {
@@ -2417,6 +2557,182 @@ mod tests {
         }
     }
 
+    fn deps_fixture() -> Store {
+        let s = store();
+        s.insert_project(&project("p", "/p")).unwrap();
+        for id in ["A", "B", "C", "D"] {
+            s.create_task(&task(id, "p", id), None).unwrap();
+        }
+        s
+    }
+
+    #[test]
+    fn deps_store_migration_preserves_queue() {
+        let s = deps_fixture();
+        s.conn
+            .execute("UPDATE tasks SET queued_seq = NULL WHERE id = 'C'", [])
+            .unwrap();
+        let before = s.queued_tasks("p").unwrap();
+        let seqs: Vec<_> = before
+            .iter()
+            .map(|t| s.queued_seq(&t.id).unwrap())
+            .collect();
+        s.conn
+            .execute_batch("DROP TABLE task_after; PRAGMA user_version = 6;")
+            .unwrap();
+        s.migrate().unwrap();
+        assert_eq!(
+            s.conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+             7
+        );
+        assert_eq!(s.queued_tasks("p").unwrap(), before);
+        for (t, seq) in before.iter().zip(seqs) {
+            assert!(s.task_after(&t.id).unwrap().is_empty());
+            assert_eq!(s.queued_seq(&t.id).unwrap(), seq);
+        }
+        s.migrate().unwrap();
+    }
+
+    #[test]
+    fn deps_store_create_is_atomic() {
+        let s = deps_fixture();
+        let t = task("E", "p", "E");
+        assert!(
+            s.create_task_after(&t, Some("brief"), &["A".into(), "missing".into()])
+                .is_err()
+        );
+        assert!(s.get_task("E").is_err());
+        assert_eq!(s.task_brief("E").unwrap(), None);
+        assert!(s.task_after("E").unwrap().is_empty());
+        s.create_task_after(&t, Some("brief"), &["B".into(), "A".into()])
+            .unwrap();
+        assert_eq!(s.task_after("E").unwrap(), ["B", "A"]);
+        assert_eq!(s.task_brief("E").unwrap().as_deref(), Some("brief"));
+        assert!(s.queued_seq("E").unwrap().is_some());
+    }
+
+    #[test]
+    fn deps_store_replace_clear_and_impl_history() {
+        let s = deps_fixture();
+        s.set_task_after("A", &["B".into(), "C".into()]).unwrap();
+        s.set_blocked_notice("A", "B", Some("failed")).unwrap();
+        s.set_task_after("A", &["B".into(), "C".into()]).unwrap();
+        assert_eq!(
+            s.blocked_notice("A", "B").unwrap().as_deref(),
+            Some("failed")
+        );
+        s.set_task_after("A", &["D".into(), "B".into()]).unwrap();
+        assert_eq!(s.task_after("A").unwrap(), ["D", "B"]);
+        assert_eq!(
+            s.blocked_notice("A", "B").unwrap().as_deref(),
+            Some("failed")
+        );
+        assert_eq!(s.blocked_notice("A", "D").unwrap(), None);
+        assert_eq!(s.blocked_notice("A", "C").unwrap(), None);
+        assert_eq!(s.project_after("p").unwrap()["A"], ["D", "B"]);
+        assert!(s.set_task_after("A", &["missing".into()]).is_err());
+        assert_eq!(s.task_after("A").unwrap(), ["D", "B"]);
+        assert_eq!(
+            s.blocked_notice("A", "B").unwrap().as_deref(),
+            Some("failed")
+        );
+        s.set_task_after("A", &[]).unwrap();
+        assert!(s.task_after("A").unwrap().is_empty());
+        assert!(!s.has_impl_session("A").unwrap());
+        s.insert_session(&session("intake", "A", SessionKind::Intake, 1))
+            .unwrap();
+        assert!(!s.has_impl_session("A").unwrap());
+        s.insert_session(&session(
+            "impl",
+            "A",
+            SessionKind::Role {
+                role: autome_domain::role::Role::Impl,
+            },
+            1,
+        ))
+        .unwrap();
+        s.set_task_state("A", &TaskState::Active { node: Node::Design })
+            .unwrap();
+        assert!(s.has_impl_session("A").unwrap());
+        assert!(!s.has_impl_session("B").unwrap());
+    }
+
+    #[test]
+    fn deps_store_reorder_is_project_local() {
+        let s = deps_fixture();
+        s.insert_project(&project("q", "/q")).unwrap();
+        s.create_task(&task("X", "q", "X"), None).unwrap();
+        let other = s.queued_seq("X").unwrap();
+        s.set_task_state("D", &TaskState::Draft).unwrap();
+        s.conn
+            .execute("UPDATE tasks SET queued_seq = NULL WHERE id = 'D'", [])
+            .unwrap();
+        s.set_task_state(
+            "C",
+            &TaskState::Requeued {
+                resume: Node::Design,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.queue_order("p")
+                .unwrap()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "B", "C"]
+        );
+        s.reorder_queue("p", &["D".into(), "C".into(), "B".into(), "A".into()])
+            .unwrap();
+        assert_eq!(
+            s.queue_order("p")
+                .unwrap()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["D", "C", "B", "A"]
+        );
+        assert_eq!(
+            s.queued_tasks("p")
+                .unwrap()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["C", "B", "A"]
+        );
+        assert_eq!(s.queued_seq("X").unwrap(), other);
+        let before = s.queued_seq("A").unwrap();
+        s.reorder_queue("p", &[]).unwrap();
+        assert_eq!(s.queued_seq("A").unwrap(), before);
+        s.conn
+            .execute(
+                "UPDATE tasks SET queued_seq = ?1 WHERE id = 'X'",
+                [i64::MAX - 1],
+            )
+            .unwrap();
+        assert!(s.reorder_queue("p", &["A".into(), "B".into()]).is_err());
+        assert_eq!(s.queued_seq("A").unwrap(), before);
+    }
+
+    #[test]
+    fn deps_store_blocked_notice_round_trip() {
+        let s = deps_fixture();
+        s.set_task_after("A", &["B".into()]).unwrap();
+        for reason in [
+            None,
+            Some("failed"),
+            None,
+            Some("failed"),
+            Some("cancelled"),
+            None,
+        ] {
+            s.set_blocked_notice("A", "B", reason).unwrap();
+            assert_eq!(s.blocked_notice("A", "B").unwrap().as_deref(), reason);
+        }
+    }
+
     // ---- projects --------------------------------------------------------
 
     #[test]
@@ -2627,7 +2943,7 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap(),
             serde_json::json!({"state":"queued","resume":"implement"})
         );
-        assert_eq!(SCHEMA_VERSION, 6);
+        assert_eq!(SCHEMA_VERSION, 7);
     }
 
     #[test]
