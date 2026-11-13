@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'vitest';
+import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,7 +18,7 @@ const marker = `marker-${randomUUID()}`;
 const empty = { connections: 0, subscriptions: 0, openHandles: 0, timer: false };
 const exec = promisify(execFile);
 let running: Awaited<ReturnType<typeof startServer>> | undefined;
-let core: CoreSupervisor, ws: WebSocket, sessionId: string, logPath: string;
+let core: CoreSupervisor, ws: WebSocket, projectId: string, sessionId: string, logPath: string;
 const messages: LogServerMessage[] = [];
 const chunks = () => messages.filter(m => m.type === 'log.chunk');
 const text = () => chunks().map(m => m.text).join('');
@@ -26,9 +26,7 @@ const send = (message: object) => ws.send(JSON.stringify(message));
 const handles = async () => (await exec('lsof', ['-nP', '-p', String(process.pid), '-Fn'])).stdout.split('\n');
 
 async function startTask() {
-  const { project } = await core.call('project.add', { path: repo }) as { project: { id: string } };
-  await core.call('project.onboarding.skip', { project_id: project.id });
-  const { task } = await core.call('task.create', { project_id: project.id, kind: 'bug', brief: `# 日志验证-${randomUUID()}\n测试会话日志`, draft: true }) as { task: { id: string } };
+  const { task } = await core.call('task.create', { project_id: projectId, kind: 'bug', brief: `# 日志验证-${randomUUID()}\n测试会话日志`, draft: true }) as { task: { id: string } };
   await core.call('task.start', { task_id: task.id });
   let id = '';
   await expect.poll(async () => {
@@ -63,7 +61,10 @@ exec "${join(wt, 'target/debug/automed')}" "$@"
   await exec('git', ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-qm', 'init'], { cwd: repo });
   running = await startServer({ port: 0, mode: 'production', home, binaryPath: wrapper });
   core = running.gateway.core as CoreSupervisor;
-  await expect.poll(() => core.isConnected(), { timeout: 10000 }).toBe(true);
+  await vi.waitFor(() => expect(core.isConnected()).toBe(true), { timeout: 10000 });
+  const { project } = await core.call('project.add', { path: repo }) as { project: { id: string } };
+  projectId = project.id;
+  await core.call('project.onboarding.skip', { project_id: projectId });
   const address = running.server.address();
   if (!address || typeof address === 'string') throw new Error('无监听地址');
   const origin = `http://127.0.0.1:${address.port}`;
@@ -74,9 +75,7 @@ exec "${join(wt, 'target/debug/automed')}" "$@"
     if (message.type === 'hello') hello = true;
     if (message.type.startsWith('log.')) messages.push(message);
   });
-  await expect.poll(() => hello).toBe(true);
-  sessionId = await startTask();
-  logPath = (await core.call('session.log', { session_id: sessionId }) as { path: string }).path;
+  await vi.waitFor(() => expect(hello).toBe(true));
 }, 90000);
 
 afterAll(async () => {
@@ -88,6 +87,8 @@ afterAll(async () => {
 });
 
 test('真实会话通过同一 /ws 在一个 tick 内收到增量', async () => {
+  sessionId = await startTask();
+  logPath = (await core.call('session.log', { session_id: sessionId }) as { path: string }).path;
   send({ type: 'log.subscribe', session_id: sessionId, offset: 0 });
   await expect.poll(text, { timeout: 5000, interval: 20 }).toContain('第一行');
   expect(text()).toContain('started');
