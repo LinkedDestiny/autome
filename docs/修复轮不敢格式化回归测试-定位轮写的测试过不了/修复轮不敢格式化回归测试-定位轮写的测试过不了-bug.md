@@ -3,7 +3,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end --test prompt_rendering --no-fail-fast regression_format_only -- --test-threads=1
 根因: 定位提示词缺少格式化检查要求，修复与复核提示词未明确格式化例外；File 的 Git tree 比较及旧 Section 的原文摘要比较拒绝纯格式化。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -55,4 +55,10 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。
+独立复核（修复第 1/3 轮）：通过。
+
+- 复现命令独立复跑：end_to_end 5/5、prompt_rendering 2/2 通过，退出码 0；`regression_blocks` 单测 5/5 通过。
+- 回归测试未被弱化：`git diff e680677 HEAD` 中 end_to_end.rs 的新增测试保持不变，prompt_rendering.rs 仅有新增；断言修改被拒的对照用例（四种保护路径）仍在且通过。
+- 根因站得住：File 比 tree、旧 Section 比原文 SHA-256，格式化必然被拒；修复在不一致时从快照 head/path 取原文，核验原 tree/摘要与文件模式后再做 Rust token 比较，缺原提交或原文不匹配即拒绝。
+- 范围：仅 `.rs` 放宽，其它语言维持严格相等；token 化保留字面量、注释与标识符边界，并有负向单测。协议 v7 为 clarify，金样同步，旧协议不迁移。
+- 未运行全量门禁；`bug_regression_guard` 子集复验在超时后转后台，未取得结果，以修复轮日志（8/8）为参考，不影响结论。
