@@ -1,0 +1,24 @@
+设计 #1 | M-01..M-05（开放） | 设计初稿 | docs/w8-实时会话日志/w8-实时会话日志.md | 无
+评审 #1 | M-01..M-05 | 退回 + 历史完整性、结束条件、测试冲突 | docs/w8-实时会话日志/w8-实时会话日志-review.md | 3 项待裁决
+
+实现 #1 | M-01 | 待审 | docs/w8-实时会话日志/evidence/M-01-r1-impl.md | 无
+审计 #1 | M-01 | 通过 | docs/w8-实时会话日志/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审 | docs/w8-实时会话日志/evidence/M-02-r2-impl.md | 无
+审计 #2 | M-02 | 通过 | docs/w8-实时会话日志/evidence/M-02-r2-audit.md | 无
+实现 #3 | M-03 | 待审 | docs/w8-实时会话日志/evidence/M-03-r3-impl.md | listen EPERM，3 条 live 用例待审计复验
+审计 #3 | M-03 | 退回 + logtail-live | docs/w8-实时会话日志/evidence/M-03-r3-audit.md | 无
+
+实现 #4 | M-03 | 待审 | docs/w8-实时会话日志/evidence/M-03-r4-impl.md | listen EPERM，端到端及负向对照待复验
+审计 #4 | M-03 | 通过 | docs/w8-实时会话日志/evidence/M-03-r4-audit.md | 无
+
+实现 #5 | M-04 | 待审 | docs/w8-实时会话日志/evidence/M-04-r5-impl.md | 无
+审计 #5 | M-04 | 通过 | docs/w8-实时会话日志/evidence/M-04-r5-audit.md | 无
+
+实现 #6 | M-05 | 待审 | docs/w8-实时会话日志/evidence/M-05-r6-impl.md | 无（H-01–H-05 待人工验收）
+审计 #6 | M-05 | 通过 | docs/w8-实时会话日志/evidence/M-05-r6-audit.md | 无（H-01–H-05 待人工验收）
+
+实现 #7 | M-05 | 门禁修复子集通过，状态不变 | docs/w8-实时会话日志/evidence/M-05-r7-impl.md | 宿主快检/全量待重跑，H-01–H-05 待人工验收
+审计 #7 | 无 | 无待审里程碑（M-01–M-05 均已完成），未改表 | 无 | 无（H-01–H-05 待人工验收；宿主快检/全量待重跑）
+
+实现 #8 | M-05 | rebase 完成，相关验收通过，保留已关闭状态 | docs/w8-实时会话日志/evidence/M-05-r8-impl.md | 无
+审计 #8 | 无 | 无待审里程碑（M-01–M-05 均已完成），未改表 | 无 | 无（H-01–H-05 待人工验收；全量门禁待宿主合并前运行）
