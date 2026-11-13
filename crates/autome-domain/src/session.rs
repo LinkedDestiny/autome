@@ -124,9 +124,16 @@ pub enum SessionLifecycle {
     Exited { exit_code: i32 },
     /// `automed` killed it on the user's Stop.
     Killed,
+    /// Stopped after reaching the session wall-clock limit.
+    TimedOut { limit_minutes: u32 },
     /// No exit marker, the pid is gone, and the log stopped growing long
     /// enough ago to rule out a slow session (§17).
     Vanished,
+}
+
+/// Wall-clock limit, using wide arithmetic even for the largest configuration.
+pub fn over_limit(elapsed_secs: u64, limit_minutes: u32) -> bool {
+    elapsed_secs >= u64::from(limit_minutes) * 60
 }
 
 impl SessionLifecycle {
@@ -203,6 +210,9 @@ pub struct Session {
     pub lifecycle: SessionLifecycle,
     pub log_path: String,
     pub pid: Option<i32>,
+    /// Frozen at launch; older ledger rows fall back to current configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_minutes: Option<u32>,
     /// The protocol version this session ran under, in wire form
     /// (`protocol/v7@3f9a…`). `None` for sessions recorded before the protocol
     /// left the binary.
@@ -274,6 +284,31 @@ pub fn classify(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_timeout_boundaries() {
+        for limit in [0, 5, 120, u32::MAX] {
+            let seconds = u64::from(limit) * 60;
+            assert!(super::over_limit(seconds, limit));
+            assert!(super::over_limit(u64::MAX, limit));
+            if seconds > 0 {
+                assert!(!super::over_limit(seconds - 1, limit));
+            }
+        }
+    }
+
+    #[test]
+    fn session_timeout_lifecycle_roundtrip() {
+        let life = super::SessionLifecycle::TimedOut { limit_minutes: 5 };
+        let json = r#"{"state":"timed_out","limit_minutes":5}"#;
+        assert_eq!(serde_json::to_string(&life).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<super::SessionLifecycle>(json).unwrap(),
+            life
+        );
+        assert!(!life.is_running());
+        assert!(!life.should_parse_document());
+    }
+
     use super::*;
 
     #[test]
@@ -403,6 +438,7 @@ mod tests {
             lifecycle: SessionLifecycle::Running,
             log_path: "p".into(),
             pid: Some(42),
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: Default::default(),

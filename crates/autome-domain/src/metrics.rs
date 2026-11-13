@@ -455,6 +455,7 @@ mod cost_tests {
             lifecycle: SessionLifecycle::Exited { exit_code: 0 },
             log_path: "".into(),
             pid: None,
+            limit_minutes: None,
             protocol_ref: None,
             rules_hash: None,
             metrics: SessionMetrics {

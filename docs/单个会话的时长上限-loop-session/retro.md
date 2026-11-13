@@ -1,0 +1,18 @@
+设计 #1 | 无 | 设计初稿（M-01..M-04；基线 domain 427 / automed lib 794 / e2e 158 / 金样 31 / cli 24，计划新增 30） | 无证据文件（设计轮） | 无
+评审 #1 | M-01 | 退回 + 超时设计 | docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-review.md | 终止完成、轮数预算、原注入语义、Onboarding 跟踪、Intake 注入
+评审 #2 | M-01 | 退回 + 超时恢复 | docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-review.md | D2-P01：无退出标记的超时恢复与轮号复用冲突
+实现 #1 | M-01 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-01-r1-impl.md | 无
+审计 #1 | M-01 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-02-r2-impl.md | 无
+审计 #2 | M-02 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-02-r2-audit.md | 无
+
+实现 #3 | M-03 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-03-r3-impl.md | 无
+审计 #3 | M-03 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-03-r3-audit.md | 无
+实现 #4 | M-04 | 待审 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-impl.md | 无
+审计 #4 | M-04 | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r4-audit.md | 无
+实现 #5 | M-03（rebase 修复） | rebase 完成，54 用例通过，保留已审状态 | docs/单个会话的时长上限-loop-session/evidence/M-03-r5-impl.md | 无
+审计 #5 | 无（全部已完成） | 通过 | docs/单个会话的时长上限-loop-session/evidence/M-04-r5-audit.md | 无
+复盘 #2 | 无（全部已完成） | lessons.md 保留 L-01..L-04，新增 L-05（关闭后 rebase 修复无全量门禁） | docs/单个会话的时长上限-loop-session/lessons.md | 无
+实现 #6 | M-02 | 宿主门禁失败修复，17 用例通过，已审状态保留 | docs/单个会话的时长上限-loop-session/evidence/M-02-r6-impl.md | 无
+审计 #6 | 无（全部已完成） | 通过（无结论变更） | docs/单个会话的时长上限-loop-session/evidence/M-02-r6-audit.md | 无
+复盘 #3 | 无（全部已完成） | lessons.md 保留 L-01..L-05（L-05 补实现 #6 为第二次出现），新增 L-06（审计无失败原文即判偶发脆弱，宿主门禁复现为产品 EPERM） | docs/单个会话的时长上限-loop-session/lessons.md | 无

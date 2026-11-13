@@ -805,9 +805,14 @@ fn task_detail(got: &Value) {
                 s["runtime"].as_str().unwrap_or_default(),
                 render::local_time(s["started_at"].as_str().unwrap_or_default()),
                 if s["running"] == json!(true) {
-                    "  运行中"
+                    format!(
+                        "  运行中 · 已运行 {} 分钟 / 上限 {}",
+                        s["elapsed_minutes"], s["limit_minutes"]
+                    )
+                } else if s["timed_out"] == json!(true) {
+                    format!("  超时（上限 {} 分钟）", s["limit_minutes"])
                 } else {
-                    ""
+                    String::new()
                 },
                 cost
             );

@@ -381,6 +381,10 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
                 p["runtime"].as_str().unwrap_or("?")
             )
         }
+        "session.timeout" => format!(
+            "{subject} 会话运行 {} 分钟，超过上限 {}，已终止",
+            p["minutes"], p["limit"]
+        ),
         "session.retry" => {
             if p["rate_limited"].as_bool() == Some(true) {
                 format!("{subject} 会话撞到{}", s("reason"))
@@ -631,6 +635,19 @@ pub fn merge_suffix(task: &Value, compact: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timeout_visible_event_line() {
+        assert_eq!(
+            super::event_line(
+                "session.timeout",
+                "T-1",
+                &serde_json::json!({"session_id":"s1","minutes":37,"limit":5})
+            )
+            .as_deref(),
+            Some("T-1 会话运行 37 分钟，超过上限 5，已终止")
+        );
+    }
+
     #[test]
     fn gate_quick_run_lines_name_the_quick_run() {
         for (node, old, quick) in [

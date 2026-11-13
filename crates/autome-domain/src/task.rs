@@ -603,6 +603,13 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "inject", rename_all = "snake_case")]
 pub enum Inject {
+    /// The previous session exceeded its wall-clock limit.
+    SessionTimedOut {
+        minutes: u32,
+        tail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carried: Option<Box<Inject>>,
+    },
     ReproNotFailing {
         head: String,
         command: String,
@@ -629,7 +636,29 @@ pub enum Inject {
     },
 }
 
+impl Inject {
+    pub fn timed_out(minutes: u32, tail: String, carried: Option<Inject>) -> Self {
+        let carried = match carried {
+            Some(Self::SessionTimedOut { carried, .. }) => carried,
+            other => other.map(Box::new),
+        };
+        Self::SessionTimedOut {
+            minutes,
+            tail,
+            carried,
+        }
+    }
+
+    pub fn effective(&self) -> Option<&Self> {
+        match self {
+            Self::SessionTimedOut { carried, .. } => carried.as_deref(),
+            other => Some(other),
+        }
+    }
+}
+
 /// The result of applying a trigger.
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transition {
     pub next: TaskState,
@@ -4166,5 +4195,44 @@ mod tests {
                 "任务尚未开始"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod timeout_retry_tests {
+    use super::Inject;
+
+    #[test]
+    fn timeout_retry_preserves_carried_and_replaces_previous_timeout() {
+        let gate = Inject::GateFailed {
+            head: "abc".into(),
+            command: "false".into(),
+            tail: "failure".into(),
+        };
+        let first = Inject::timed_out(5, "old log".into(), Some(gate.clone()));
+        assert_eq!(first.effective(), Some(&gate));
+        let second = Inject::timed_out(u32::MAX, String::new(), Some(first));
+        assert_eq!(
+            second,
+            Inject::SessionTimedOut {
+                minutes: u32::MAX,
+                tail: String::new(),
+                carried: Some(Box::new(gate))
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<Inject>(&serde_json::to_string(&second).unwrap()).unwrap(),
+            second
+        );
+    }
+
+    #[test]
+    fn timeout_retry_effective_preserves_decisions_and_empty() {
+        assert_eq!(
+            Inject::timed_out(5, "tick".into(), Some(Inject::Decisions)).effective(),
+            Some(&Inject::Decisions)
+        );
+        assert_eq!(Inject::timed_out(5, String::new(), None).effective(), None);
+        assert_eq!(Inject::Decisions.effective(), Some(&Inject::Decisions));
     }
 }

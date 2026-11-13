@@ -9001,3 +9001,334 @@ fn regression_format_only_assertion_changes_remain_rejected() {
     }
 }
 include!("merge_queue_cases.inc");
+// Session limits use real ledger timestamps; there is no short-limit production switch.
+fn session_timeout_world(tag: &str) -> (World, rusqlite::Connection) {
+    let mut w = World::new(tag);
+    let db = w.root.join("session-timeout.sqlite");
+    w.ctx.store = Store::open(&db).unwrap();
+    let added = w.call("project.add", json!({"path": w.repo}));
+    w.project_id = ok(&added)["project"]["id"].as_str().unwrap().to_owned();
+    ok(&w.call(
+        "project.onboarding.skip",
+        json!({"project_id": w.project_id}),
+    ));
+    w.configure("[loop]\nsession_minutes = 5\n[retry]\nattempts = 1\nbackoff_seconds = 3600\n");
+    (w, rusqlite::Connection::open(db).unwrap())
+}
+
+fn session_timeout_backdate(conn: &rusqlite::Connection, id: &str) {
+    assert_eq!(conn.execute(
+        "UPDATE sessions SET started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 minutes') WHERE id = ?1",
+        [id]).unwrap(), 1);
+}
+
+fn session_timeout_block(w: &World) {
+    w.step(1, &format!(
+        "echo $$ > '{0}/timeout-cli.pid'\nsleep 1000 & echo $! > '{0}/timeout-child.pid'\ni=0; while :; do i=$((i+1)); echo \"tick $i\"; sleep 1; done\n",
+        w.root.display()));
+}
+
+fn session_timeout_wait_file(path: &std::path::Path) -> i32 {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "missing pid: {}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn session_timeout_assert_stopped(w: &World, id: &str, session: &autome_domain::session::Session) {
+    use autome_domain::session::SessionLifecycle;
+    let stored = w.ctx.store.list_sessions(id).unwrap();
+    let row = stored.iter().find(|s| s.id == session.id).unwrap();
+    assert_eq!(
+        row.lifecycle,
+        SessionLifecycle::TimedOut { limit_minutes: 5 }
+    );
+    let event = w
+        .ctx
+        .store
+        .session_event(id, &session.id, "session.timeout")
+        .unwrap()
+        .unwrap();
+    assert_eq!(event["session_id"], session.id);
+    assert_eq!(event["minutes"], 6);
+    assert_eq!(event["limit"], 5);
+    assert!(w.ctx.store.pending_retry(id).unwrap().is_some());
+    assert_eq!(w.state(id), "active");
+    for pid in [
+        session.pid.unwrap(),
+        session_timeout_wait_file(&w.root.join("timeout-cli.pid")),
+        session_timeout_wait_file(&w.root.join("timeout-child.pid")),
+    ] {
+        assert!(!automed::launcher::pid_alive(pid), "process {pid} survived");
+    }
+    #[cfg(unix)]
+    assert_ne!(unsafe { libc::kill(-session.pid.unwrap(), 0) }, 0);
+}
+
+#[test]
+fn session_timeout_stops_wrapper_cli_and_child_then_schedules_retry() {
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("timeout-group");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "timeout group");
+    session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    let node = w.node(&id);
+    assert_eq!(s.limit_minutes, Some(5));
+    // An ordinary fresh Running session must be left alone.
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(w.ctx.store.running_session(&id).unwrap().is_some());
+    session_timeout_backdate(&conn, &s.id);
+    let start = std::time::Instant::now();
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(w.node(&id), node);
+    session_timeout_assert_stopped(&w, &id, &s);
+}
+
+#[test]
+fn session_timeout_exit_marker_wins_over_elapsed_limit() {
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("timeout-exited");
+    let request = "already finished";
+    w.doc_step(1, &slug_for(request), &doc("设计中", 0, 0, &[]));
+    let id = create_task(&mut w, request);
+    w.wait_for_exit_marker(&id);
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    session_timeout_backdate(&conn, &s.id);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let rows = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(
+        rows.iter().find(|row| row.id == s.id).unwrap().lifecycle,
+        autome_domain::session::SessionLifecycle::Exited { exit_code: 0 }
+    );
+    assert!(
+        w.ctx
+            .store
+            .session_event(&id, &s.id, "session.timeout")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(w.node(&id).as_deref(), Some("design"));
+    // The normal transition launched the next session; clean it up.
+    w.call("task.stop", json!({"task_id": id}));
+}
+
+#[test]
+fn session_timeout_keeps_launch_limit_after_configuration_change() {
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("timeout-frozen");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "frozen limit");
+    session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    let config = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("session_minutes = 5", "session_minutes = 120");
+    std::fs::write(config, text).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "change limit").unwrap();
+    session_timeout_backdate(&conn, &s.id);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    session_timeout_assert_stopped(&w, &id, &s);
+}
+
+#[test]
+fn session_timeout_missing_pid_waits_and_recovers_without_duplicate_events() {
+    use autome_domain::session::SessionPaths;
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("timeout-no-pid");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "late pid");
+    session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    conn.execute("UPDATE sessions SET pid = NULL WHERE id = ?1", [&s.id])
+        .unwrap();
+    let path = w.repo.join(SessionPaths::pid(&id, &s.id));
+    let hidden = path.with_extension("hidden");
+    std::fs::rename(&path, &hidden).unwrap();
+    // Unparseable time also cannot authorize termination.
+    conn.execute("UPDATE sessions SET started_at = '' WHERE id = ?1", [&s.id])
+        .unwrap();
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(w.ctx.store.running_session(&id).unwrap().is_some());
+    assert!(
+        w.ctx
+            .store
+            .session_event(&id, &s.id, "session.timeout_unconfirmed")
+            .unwrap()
+            .is_none()
+    );
+    session_timeout_backdate(&conn, &s.id);
+    for _ in 0..2 {
+        let report = automed::scheduler::tick(&mut w.ctx);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert!(w.ctx.store.running_session(&id).unwrap().is_some());
+        assert!(
+            w.ctx
+                .store
+                .session_event(&id, &s.id, "session.timeout_unconfirmed")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            w.ctx
+                .store
+                .session_event(&id, &s.id, "session.timeout")
+                .unwrap()
+                .is_none()
+        );
+        assert!(w.ctx.store.pending_retry(&id).unwrap().is_none());
+        assert!(automed::launcher::pid_alive(s.pid.unwrap()));
+    }
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM events WHERE kind = 'session.timeout_unconfirmed' AND subject_id = ?1",
+        [&id], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+    std::fs::rename(hidden, path).unwrap();
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    session_timeout_assert_stopped(&w, &id, &s);
+    assert_eq!(w.ctx.store.list_sessions(&id).unwrap()[0].pid, s.pid);
+}
+
+fn timeout_retry_world(tag: &str) -> (World, rusqlite::Connection) {
+    let (w, conn) = session_timeout_world(tag);
+    // Library tests make current_exe() the test harness, which cannot render
+    // CLI streams. Point this temporary wrapper at the real production renderer;
+    // the wrapper body, CLI, process group and scheduler remain real.
+    let wrapper = w.repo.join(".autome/skill/run_session.sh");
+    let script = std::fs::read_to_string(&wrapper).unwrap();
+    let renderer = env!("CARGO_BIN_EXE_automed");
+    assert!(std::path::Path::new(renderer).is_file());
+    let script = script.replace(
+        "renderer=\"$1\"; shift",
+        &format!("renderer=\"{renderer}\"; shift"),
+    );
+    std::fs::write(&wrapper, script).unwrap();
+
+    let path = w.repo.join(".autome/config.toml");
+    let config = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("backoff_seconds = 3600", "backoff_seconds = 0");
+    std::fs::write(path, config).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "immediate retry").unwrap();
+    for n in 1..=2 {
+        w.step(
+            n,
+            "i=0; while :; do i=$((i+1)); echo \"tick $i\"; sleep 1; done\n",
+        );
+    }
+    (w, conn)
+}
+
+fn timeout_retry_wait_tick(w: &World, id: &str) -> autome_domain::session::Session {
+    use autome_domain::session::SessionPaths;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(s) = w.ctx.store.running_session(id).unwrap()
+            && std::fs::read_to_string(w.repo.join(SessionPaths::log(id, &s.id)))
+                .unwrap_or_default()
+                .contains("tick ")
+        {
+            return s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "session did not write tick"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn timeout_retry_full_lifecycle_exhausts_in_under_thirty_seconds() {
+    use autome_domain::session::SessionLifecycle;
+    use autome_domain::task::{FailureReason, TaskState};
+    let start = std::time::Instant::now();
+    let (mut w, conn) = timeout_retry_world("timeout-retry-full");
+    let id = create_task(&mut w, "timeout retry full");
+    let node = w.node(&id);
+    for n in 1..=2 {
+        let s = timeout_retry_wait_tick(&w, &id);
+        if n == 2 {
+            assert!(w.prompt(2).contains("超过 5 分钟"));
+            assert!(w.prompt(2).contains("tick 1"));
+        }
+        session_timeout_backdate(&conn, &s.id);
+        let report = automed::scheduler::tick(&mut w.ctx);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert!(!automed::launcher::pid_alive(s.pid.unwrap()));
+        if n == 1 {
+            assert_eq!(w.node(&id), node);
+        }
+    }
+    assert_eq!(w.sessions_run(), vec!["1", "2"]);
+    assert_eq!(w.ctx.store.count_events(&id, "session.timeout").unwrap(), 2);
+    assert_eq!(w.ctx.store.count_events(&id, "session.retry").unwrap(), 1);
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.protocol_failure")
+            .unwrap(),
+        0
+    );
+    assert!(
+        matches!(w.ctx.store.get_task(&id).unwrap().state, TaskState::Failed { reason: FailureReason::SessionCrashed { detail }, .. } if detail.contains("超时"))
+    );
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert!(
+        sessions
+            .iter()
+            .all(|s| matches!(s.lifecycle, SessionLifecycle::TimedOut { limit_minutes: 5 }))
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(30),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn timeout_retry_pause_holds_result_and_resume_keeps_timeout_prompt() {
+    let (mut w, conn) = timeout_retry_world("timeout-retry-pause");
+    let id = create_task(&mut w, "timeout retry paused");
+    let s = timeout_retry_wait_tick(&w, &id);
+    ok(&w.call("task.pause", json!({"task_id": id})));
+    session_timeout_backdate(&conn, &s.id);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(!automed::launcher::pid_alive(s.pid.unwrap()));
+    assert!(w.ctx.store.running_session(&id).unwrap().is_none());
+    assert!(w.ctx.store.pending_retry(&id).unwrap().is_none());
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.outcome_held")
+            .unwrap(),
+        1
+    );
+    ok(&w.call("task.resume", json!({"task_id": id})));
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let retry = timeout_retry_wait_tick(&w, &id);
+    assert!(w.prompt(2).contains("超过 5 分钟"));
+    assert!(w.prompt(2).contains("tick 1"));
+    assert_ne!(retry.id, s.id);
+    ok(&w.call("task.stop", json!({"task_id": id})));
+}

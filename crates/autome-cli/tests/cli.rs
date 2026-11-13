@@ -147,6 +147,70 @@ impl Drop for Sandbox {
     }
 }
 
+fn visible_status_session(tag: &str, timed_out: bool) -> String {
+    use autome_domain::role::{Role, Runtime};
+    use autome_domain::session::{Session, SessionKind, SessionLifecycle};
+    let s = Sandbox::new(tag);
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "timeout status", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let db = s.root.join("home/ledger.sqlite3");
+    let store = automed::store::Store::open(&db).unwrap();
+    store
+        .insert_session(&Session {
+            id: "visible-session".into(),
+            task_id: id.into(),
+            kind: SessionKind::Role { role: Role::Impl },
+            runtime: Runtime::Claude,
+            model: "fixture".into(),
+            effort: None,
+            skills: vec![],
+            round: 1,
+            started_at: String::new(),
+            ended_at: None,
+            lifecycle: if timed_out {
+                SessionLifecycle::TimedOut { limit_minutes: 5 }
+            } else {
+                SessionLifecycle::Running
+            },
+            limit_minutes: Some(if timed_out { 5 } else { 120 }),
+            log_path: String::new(),
+            pid: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
+        })
+        .unwrap();
+    drop(store);
+    rusqlite::Connection::open(&db).unwrap().execute("UPDATE sessions SET started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-37 minutes') WHERE id = 'visible-session'", []).unwrap();
+    // The CLI must print the kernel's launch snapshot, not this current config.
+    std::fs::write(
+        s.repo.join(".autome/config.toml"),
+        "[loop]\nsession_minutes = 30\n",
+    )
+    .unwrap();
+    s.ok(&["status", id])
+}
+
+#[test]
+fn timeout_visible_status_running() {
+    let output = visible_status_session("visible-running", false);
+    assert!(output.contains("已运行 37 分钟 / 上限 120"), "{output}");
+    assert!(!output.contains("超时（"), "{output}");
+}
+
+#[test]
+fn timeout_visible_status_timed_out() {
+    let output = visible_status_session("visible-timeout", true);
+    assert!(output.contains("超时（上限 5 分钟）"), "{output}");
+    assert!(!output.contains("已运行"), "{output}");
+}
+
 #[test]
 fn status_shows_latest_five_sessions_in_chronological_order() {
     use autome_domain::role::{Role, Runtime};
@@ -181,6 +245,7 @@ fn status_shows_latest_five_sessions_in_chronological_order() {
                 lifecycle: SessionLifecycle::Exited { exit_code: 0 },
                 log_path: String::new(),
                 pid: None,
+                limit_minutes: None,
                 protocol_ref: None,
                 rules_hash: None,
                 metrics: Default::default(),
@@ -1249,6 +1314,7 @@ fn cost_fixture(tag: &str) -> (Sandbox, String) {
                 },
                 log_path: String::new(),
                 pid: None,
+                limit_minutes: None,
                 protocol_ref: None,
                 rules_hash: None,
                 metrics: Default::default(),
