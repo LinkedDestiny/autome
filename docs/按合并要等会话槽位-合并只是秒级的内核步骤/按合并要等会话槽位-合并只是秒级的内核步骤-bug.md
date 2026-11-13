@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib merge_does_not_wait_for_a_session_slot -- --test-threads=1
 根因: 用户动作准入以 occupies_slot 判断负载，Merging 被计入会话槽位，满槽时在执行合并前被改成 Requeued；Behind 路径还会显式排队等待 Rebase。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -53,4 +53,8 @@ repos: autome-v2
 
 ## 复核意见
 
-待独立复核。
+复核通过（第 1/3 轮，独立复验）：
+- 复现命令 `merge_does_not_wait_for_a_session_slot` 通过；`merge_` 子集 61 项、autome-domain 全部 425 项、`slots_in_use`、`user_action_slot_`（3 项）、`rebase_conflict_waits_for_session_capacity`、`merge_core_steps_reacquire_capacity_for_gates` 均通过。
+- 根因站得住：`Node::occupies_slot` 把瞬时 Git 内核步骤算作会话槽位，修复只排除 Rebase/Merging/Cleanup，门禁节点口径不变；Behind 直接进 Rebase 也与根因第 5 点一致。
+- 回归测试有意义：满槽场景驱动真实合并至完成并断言无新增会话、占槽任务不变；空槽对照保留；旧的“排队”测试按新口径改写而非删除，新增冲突转实现、转门禁需重新取得容量的断言，未弱化。
+- 改动范围最小，仅 task.rs、scheduler.rs 及测试。未运行全量门禁，由宿主合并前执行。
