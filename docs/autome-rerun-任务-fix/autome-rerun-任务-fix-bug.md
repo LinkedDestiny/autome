@@ -1,7 +1,7 @@
 # rerun fix 绕过修复轮预算定位
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cargo test --offline -p automed --test end_to_end bug_loop_rerun_fix_cannot_bypass_exhausted_budget -- --exact
 根因: Bug Loop 的 RerunFrom(Fix) 直接创建修复会话，绕过 start_fix 的预算预检；调度器仍记账但未阻止超预算启动。
 复核: 待复核
@@ -42,7 +42,13 @@ fix-round: 0/3
 
 ## 修复说明
 
-定位轮未修改产品代码。仅新增回归测试及本记录；具体拒绝返回形式留给修复轮，测试允许显式拒绝或保持预算失败，但不允许启动超预算会话。
+第 1/3 轮修复：Bug Loop 的 Failed / Stopped 手动重跑 fix 在角色检查后复用 `start_fix`，按任务预算（未设时取配置）检查已启动轮数。预算耗尽时使用原节点返回 `Failed(FixBudget)`，不启动会话；预算内重跑正常启动并继续记账。其它重跑节点及需求 Loop 不变。同步 README 与技术设计中的旧行为说明。
+
+定位轮的端到端回归测试未修改。更新既有领域单测中超预算仍启动的旧预期，并新增配置预算 / 任务预算、Failed / Stopped、上限前 / 达到上限 / 超出上限的边界断言。
+
+验证：原复现命令修复前失败（会话数 3 而非 1），修复后通过（1 passed），包含连续两次重跑不启动会话及 extend 后允许再启动一轮的正向控制。Bug Loop 领域测试子集通过（33 passed）；既有 `bug_loop_fix_rounds_run_out_and_extend_adds_more` 通过（1 passed）。`cargo fmt --all -- --check` 与 `git diff --check` 通过。日志在 `.autome/output/fix-1-before.log`、`fix-1-after.log`、`fix-1-domain.log`、`fix-1-extend.log` 和 `fix-1-fmt-check.log`。
+
+未运行 `sh scripts/ci-local.sh`，全量门禁留给宿主合并前执行；未启动后续会话。
 
 ## 复核意见
 

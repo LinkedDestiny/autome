@@ -229,8 +229,8 @@ fix_rounds = 3            # the default; an integer from 1–20
   rework after a failed gate, a rejected review or a rebase conflict. Automatic
   transitions check the budget before opening the next fix round; when it is
   exhausted, the task stops. Use `autome extend <task> <n>` to add fix rounds.
-  Manual `autome rerun <task> fix` counts as a round but bypasses that budget
-  check. Both `fix_gate` and `merge_gate` run the reproduction command; when
+  Manual `autome rerun <task> fix` counts as a round and checks the same budget
+  before starting a session. Both `fix_gate` and `merge_gate` run the reproduction command; when
   `[gate]` is configured, they run `( reproduction command ) && ( gate command )`.
 - **Retries.** A session that crashes — non-zero exit, process gone — is
   started again after a backoff instead of failing the task. A session that
