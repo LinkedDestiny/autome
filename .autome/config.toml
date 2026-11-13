@@ -17,6 +17,11 @@ timeout_minutes = 30
 quick = 'cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && { [ -d apps/web/node_modules ] || (cd apps/web && npm ci); } && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web'
 quick_timeout_minutes = 10
 
+# 2026-11-13 打开（T-70 合并队列已合并）：任务过了合并前门禁就直接合并，不再停在「等你合并」。
+# 设计批准与 Bug 补充信息卡点不受影响。单个任务要停下：autome merge <任务> --cancel。
+[merge]
+auto = true
+
 [retry]
 attempts = 2
 backoff_seconds = 60
