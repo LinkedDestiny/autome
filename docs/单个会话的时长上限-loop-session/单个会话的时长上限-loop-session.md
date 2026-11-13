@@ -1,7 +1,7 @@
 # 单个会话的时长上限（`[loop] session_minutes`）：超时终止并按 `[retry]` 重派
 
-status: 设计中
-design-round: 1/15
+status: 实现中
+design-round: 2/15
 implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
@@ -139,10 +139,14 @@ TimedOut { limit_minutes: u32 },
 `reap_session` 的改动（`scheduler.rs`），顺序是关键：
 
 1. 照旧 `classify`。**已经有退出标记、或已判 `Vanished` 的会话照旧收割**——超过上限但自己已经结束的会话不算超时（C-3）。
-   唯一例外：该会话已有 `session.timeout` 事件（上一次终止到一半内核退出了，wrapper 留下的是 130 标记）。这时它**不能直接按
-   `TimedOut` 收割**：先对它的进程组再做一次「终止并确认」（第 3 步的 `terminate_group`，组已不在时立即返回）。确认了才按
-   `TimedOut` 收割；确认不了（组里有进程在 SIGKILL 之后仍在）就 `return Ok(false)`，会话保持 `Running`，下一次 tick 再试。
-   这次查询只发生在会话已有退出标记的那一次 tick，不是每个 tick。
+   唯一例外：该会话已有 `session.timeout` 事件（上一次终止到一半内核退出了）。**判据只看事件，不看有没有退出标记**：
+   wrapper 的 130 标记靠 shell 信号处理函数写，写失败、或升级 SIGKILL 打断都会让它缺席，这时恢复时 `classify` 可能给出
+   `Vanished`（无标记、组长已不在、日志静默 ≥ 600 秒）而不是 `Exited`。所以只要 `classify` 的结果**不是 `Running`**（`Exited` 或
+   `Vanished` 皆然），就先查一次 `session.timeout` 事件；有则**不能直接按 `Exited` / `Vanished` 收割**：先对它的进程组再做一次
+   「终止并确认」（第 3 步的 `terminate_group`，组已不在时立即返回 `true`）。确认了才一律按 `TimedOut` 收割（生命周期、轮号、失败理由
+   由此统一派生）；确认不了（组里有进程在 SIGKILL 之后仍在）就 `return Ok(false)`，会话保持 `Running`，下一次 tick 再试。
+   没有 `session.timeout` 事件的 `Vanished` 是普通心跳兜底，照旧，N-3 不动。这次事件查询只发生在会话将被收割的那一次 tick
+   （收割完成后会话不再出现在在跑列表里），不是每个 tick 都查。
 2. `classify` 为 `Running` 时：`limit = effective_limit(…)`，`elapsed = secs_since(&s.started_at)`；读不出时间（`None`）或
    `!over_limit(elapsed, limit)` 就照旧 `return Ok(false)`。
 3. 超限，三步，**只有第三步确认之后才算超时**：
@@ -380,8 +384,10 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
   - automed lib 4 个：③ store：`limit_minutes` 写入读回，迁移前的旧行（列为 NULL）读成 `None`，`set_session_pid` 补写后读回；
     ④ launcher：一个自成进程组、带后台子进程的 `sh`，`terminate_group` 在 1 秒内返回 `true`，组长与子进程都不在；⑤ launcher：组长
     `trap '' TERM` 时，`terminate_group` 返回 `true` 且组已不在（升级 SIGKILL）；对已不存在的组返回 `true`。④⑤ 照 `run_in_terminal`
-    用线程 `wait()` 组长，免得僵尸让断言失真。⑨ scheduler（恢复路径）：会话已有 `session.timeout` 事件与 130 退出标记，但 `s.pid`
-    指向一个自成进程组、`trap '' TERM` 的残留进程；`reap_session` 返回后该进程组已不在，生命周期为 `timed_out`（对照：残留进程杀不掉时
+    用线程 `wait()` 组长，免得僵尸让断言失真。⑨ scheduler（恢复路径，一个用例两种输入）：会话已有 `session.timeout` 事件，`s.pid`
+    指向一个自成进程组、`trap '' TERM` 的残留进程；(a) 有 130 退出标记；(b) **无退出标记**，且日志 mtime 拨到 11 分钟前使 `classify` 在
+    组长不在时给出 `Vanished`（先单独断言没有事件时同样输入得 `Vanished`，证明输入确实落在该分支）。两种输入下 `reap_session` 返回后该进程组
+    已不在、生命周期都是 `timed_out`、`read_outcome` 的 detail 含「超时」，且 `next_round` 不把该行计入（对照：残留进程杀不掉时
     不收割——不单测，靠 `terminate_group` 返回值分支的代码审查）。
   - e2e 4 个（盘上账本 + 拨 `started_at`）：⑥ `session_minutes = 5`、`[retry] attempts = 1, backoff_seconds = 3600`，永不退出的步骤，
     拨到 6 分钟前后 tick 一次：`session.timeout` 事件 `{session_id, minutes: 6, limit: 5}`、会话生命周期 `timed_out`、任务仍是同一
@@ -431,7 +437,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 
 - 验收命令：`cargo test -p autome-domain session_timeout && cargo test -p automed --lib session_timeout && cargo test -p automed --test end_to_end session_timeout && cargo test -p automed --test end_to_end -- stopping_a_task a_non_zero_exit model_not_found a_rate_limited_round && test "$(git diff "$(git merge-base HEAD main)" -- crates/automed/tests/end_to_end.rs | grep -c '^-[^-]')" = 0`
 - 预期：autome-domain 过滤 `session_timeout` 2 个通过；automed lib 过滤 `session_timeout` 4 个通过；e2e 过滤 `session_timeout` 4 个通过（三者基线均 0，新增 ①～⑩ 共 10 个）；现有 e2e 回归子集 5 个通过（`stopping_a_task_*` 2、`a_non_zero_exit_*` 1、`model_not_found_*` 1、`a_rate_limited_round_*` 1）；最后一条 `test` 成立（相对任务分支与 main 的分叉点，`end_to_end.rs` 删改行数为 0，即现有 e2e 一行未改）。用例总数 15。
-- 负向对照：判定放在 `classify` 之前（先看时间再看退出标记）时 ⑦ 失败（已退出的会话被记成超时）；每个 tick 读当前配置而不是 `limit_minutes` 时 ⑧ 失败（不被终止）；只 `kill(pid)` 不 `kill(-pid)` 时 ⑥ 失败（后台子进程还在）；`stop_session` 保留固定 3 秒睡眠时 ④ 失败（返回超过 1 秒）；`pid` 为 `None` 时跳过终止、照样收割时 ⑩ 失败（进程仍在却已记超时）；恢复路径凭 `session.timeout` 事件直接按 `TimedOut` 收割、不再终止进程组时 ⑨ 失败（残留进程还在）。
+- 负向对照：判定放在 `classify` 之前（先看时间再看退出标记）时 ⑦ 失败（已退出的会话被记成超时）；每个 tick 读当前配置而不是 `limit_minutes` 时 ⑧ 失败（不被终止）；只 `kill(pid)` 不 `kill(-pid)` 时 ⑥ 失败（后台子进程还在）；`stop_session` 保留固定 3 秒睡眠时 ④ 失败（返回超过 1 秒）；`pid` 为 `None` 时跳过终止、照样收割时 ⑩ 失败（进程仍在却已记超时）；恢复路径凭 `session.timeout` 事件直接按 `TimedOut` 收割、不再终止进程组时 ⑨ 失败（残留进程还在）；恢复路径只在有退出标记时才查 `session.timeout` 事件时 ⑨(b) 失败（生命周期是 `vanished`、不是 `timed_out`）。
 
 ### M-03 验收契约
 
@@ -453,5 +459,6 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 ## Backlog
 
 - D1-B01 Onboarding 向导会话没有时长上限：它不在会话账本里（`start_onboarding` 不登记会话行），要补需要给向导建登记与项目级归属、定义超时后「停下并提示用户」而非重派。本任务不做（见方案 §3 范围裁定）。
+- D2-B01 设计轮超时续做的人工观察：`design-round` 没有账本侧的数，H-01 只检查实现轮；人工验收时顺带用一次设计轮超时记录「重派会话是否把 design-round 又加了一」。验证更完整，不阻塞。
 
 ## 争议项
