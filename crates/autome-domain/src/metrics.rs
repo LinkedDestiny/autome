@@ -442,6 +442,7 @@ mod cost_tests {
 
     fn session(cost: Option<f64>) -> Session {
         Session {
+            project_id: None,
             id: "s".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Plan },

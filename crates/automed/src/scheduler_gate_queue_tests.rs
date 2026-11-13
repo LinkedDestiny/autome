@@ -731,6 +731,10 @@ fn gate_queue_fix_round_is_counted_once_after_setup_not_while_waiting() {
         .store
         .append_event("bug.loop_started", &b.id, json!({}))
         .unwrap();
+// A real Fix entry follows Locate's protected regression snapshot.
+// Without it the legacy fixture fails the rerun-fix guard before setup.
+w.ctx.store.append_event("bug.regression_snapshot", &b.id,
+    json!({"files":[{"repo":"", "path":"README.md", "protect":"file"}]})).unwrap();
     let blocker = queue_job(&w, &a, "gate", "held", None);
     let project = w.ctx.store.get_project(&b.project_id).unwrap();
     let mut resolved = resolve_config(&w.ctx, &project).unwrap();
@@ -747,6 +751,7 @@ fn gate_queue_fix_round_is_counted_once_after_setup_not_while_waiting() {
         },
         budget_n: None,
         consumes_decisions: false,
+        test_fix_event: None,
         grants_merge_request: false,
     };
     perform(&mut w.ctx, &b, &project, &resolved, &transition).unwrap();
@@ -1074,4 +1079,114 @@ fn merge_tail_non_reusable_gate_still_waits_for_session_capacity() {
         assert_eq!(queue_count(&w, &task, "gate.started"), started);
         assert!(wt.exists());
     }
+}
+
+fn lane_admit(w: &mut World, t: &TaskRecord, kind: &str) -> bool {
+    let project = w.ctx.store.get_project(&t.project_id).unwrap();
+    crate::gate_queue::admit(&mut w.ctx, t, &project, Node::Gate, kind, None).unwrap()
+}
+
+#[test]
+fn gate_lane_restart_recovers_both_queues() {
+    use autome_domain::gate_queue::Lane;
+    let mut w = queue_world("lane-restart");
+    let a = queue_task(&mut w, "A");
+    let b = queue_task(&mut w, "B");
+    let c = queue_task(&mut w, "C");
+    let d = queue_task(&mut w, "D");
+    let heavy = queue_job(&w, &a, "gate", "held", None);
+    let light = queue_job(&w, &b, "gate", "held", None);
+    light.set_launch(&crate::gate::Launch::Repro).unwrap();
+    assert!(!lane_admit(&mut w, &c, "full"));
+    assert!(!lane_admit(&mut w, &d, "quick"));
+    let before = crate::gate_queue::waiters(&w.ctx).unwrap();
+    let store = std::mem::replace(&mut w.ctx.store, crate::store::Store::open_in_memory().unwrap());
+    w.ctx = Ctx::new(store, &w.ctx.autome_home, &w.ctx.home).dry();
+    assert_eq!(before, crate::gate_queue::waiters(&w.ctx).unwrap());
+    assert_eq!(before.iter().map(|w| w.lane).collect::<Vec<_>>(), [Lane::Heavy, Lane::Light]);
+    heavy.clear();
+    assert!(lane_admit(&mut w, &c, "full"));
+    assert!(!lane_admit(&mut w, &d, "repro"));
+    light.clear();
+    assert!(lane_admit(&mut w, &d, "quick"));
+}
+
+#[test]
+fn gate_lane_legacy_queued_event_without_lane_is_heavy() {
+    let mut w = queue_world("lane-legacy");
+    let a = queue_task(&mut w, "A");
+    let b = queue_task(&mut w, "B");
+    w.ctx.store.append_event("gate.queued", &a.id, json!({"node":"gate"})).unwrap();
+    assert_eq!(crate::gate_queue::waiters(&w.ctx).unwrap()[0].lane, autome_domain::gate_queue::Lane::Heavy);
+    assert!(!lane_admit(&mut w, &b, "full"));
+    assert!(lane_admit(&mut w, &b, "quick"));
+}
+
+#[test]
+fn gate_lane_config_change_while_waiting_requeues_into_the_new_lane() {
+    use autome_domain::gate_queue::Lane;
+    for (old_kind, new_kind, old_lane, new_lane) in [
+        ("full", "quick", Lane::Heavy, Lane::Light),
+        ("repro", "full", Lane::Light, Lane::Heavy),
+    ] {
+        let mut w = queue_world("lane-change");
+        let a = queue_task(&mut w, "A");
+        let b = queue_task(&mut w, "B");
+        let c = queue_task(&mut w, "C");
+        w.ctx.store.append_event("gate.queued", &a.id, json!({"lane":old_lane})).unwrap();
+        w.ctx.store.append_event("gate.queued", &b.id, json!({"lane":new_lane})).unwrap();
+        assert!(lane_admit(&mut w, &a, old_kind));
+        assert!(!lane_admit(&mut w, &a, new_kind));
+        assert!(!lane_admit(&mut w, &c, new_kind));
+        let queue = crate::gate_queue::waiters(&w.ctx).unwrap();
+        assert_eq!(queue.iter().map(|w| w.task_id.as_str()).collect::<Vec<_>>(), ["B", "A", "C"]);
+        assert!(queue.iter().all(|w| w.lane == new_lane));
+        assert_eq!(queue_count(&w, &a, "gate.queued"), 2);
+        assert!(!lane_admit(&mut w, &a, new_kind));
+        assert_eq!(queue_count(&w, &a, "gate.queued"), 2);
+    }
+}
+
+#[test]
+fn gate_lane_setup_cannot_transfer_its_heavy_slot_to_light() {
+    let mut w = queue_world("lane-setup");
+    let a = queue_task(&mut w, "A");
+    let b = queue_task(&mut w, "B");
+    let blocker = queue_job(&w, &a, "gate", "held", None);
+    blocker.set_launch(&crate::gate::Launch::Repro).unwrap();
+    let path = config_io::project_config_path(&w.repo);
+    let text = std::fs::read_to_string(&path).unwrap()
+        + "run = 'before_merge'\nquick = 'true'\n[setup]\ncommand = 'true'\n";
+    std::fs::write(path, text).unwrap();
+    queue_run(&mut w, &b);
+    let setup = crate::gate::Job::at(&w.repo, &b.id, "setup", "worktree");
+    queue_wait(|| setup.exit.exists() && !setup.pid.exists());
+    queue_run(&mut w, &b);
+    assert_eq!(queue_count(&w, &b, "setup.result"), 1);
+    assert_eq!(queue_count(&w, &b, "gate.started"), 0);
+    assert_eq!(w.ctx.store.last_event(&b.id, "gate.queued").unwrap().unwrap()["lane"], "light");
+    blocker.clear();
+    queue_run(&mut w, &b);
+    let event = w.ctx.store.last_event(&b.id, "gate.started").unwrap().unwrap();
+    assert_eq!(event["lane"], "light");
+    let log = PathBuf::from(event["log"].as_str().unwrap());
+    queue_wait(|| log.with_extension("exit").exists() && !log.with_extension("pid").exists());
+}
+
+#[test]
+fn gate_lane_unreadable_inflight_jobs_fail_closed_for_light_too() {
+    let mut w = queue_world("lane-unreadable");
+    let a = queue_task(&mut w, "A");
+    let b = queue_task(&mut w, "B");
+    let mut project = w.ctx.store.get_project(&a.project_id).unwrap();
+    project.id = "missing".into();
+    project.path = w.root.join("missing").to_string_lossy().into_owned();
+    w.ctx.store.insert_project(&project).unwrap();
+    let other = TaskRecord { id: "other".into(), project_id: project.id.clone(), ..a };
+    w.ctx.store.insert_task(&other).unwrap();
+    assert!(lane_admit(&mut w, &b, "quick"));
+    w.ctx.store.append_event("gate.started", &other.id, json!({"kind":"repro"})).unwrap();
+    assert!(!lane_admit(&mut w, &b, "quick"));
+    std::fs::create_dir_all(&project.path).unwrap();
+    assert!(lane_admit(&mut w, &b, "quick"));
 }

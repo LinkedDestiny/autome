@@ -101,8 +101,20 @@ pub fn node_label(node: &str) -> &str {
     }
 }
 
-pub fn gate_queue_line(position: u64) -> String {
-    format!("排队等门禁（前面还有 {} 个）", position.saturating_sub(1))
+fn gate_lane_label(lane: &str) -> &str {
+    if lane == "light" {
+        "快检或复现检查"
+    } else {
+        "完整门禁"
+    }
+}
+
+pub fn gate_queue_line(position: u64, lane: &str) -> String {
+    format!(
+        "排队等{}（前面还有 {} 个）",
+        gate_lane_label(lane),
+        position.saturating_sub(1)
+    )
 }
 
 pub fn milestone_label(state: &str) -> &str {
@@ -186,6 +198,9 @@ fn failure(reason: &Value) -> String {
     let detail = reason["detail"].as_str().unwrap_or("");
     match reason["kind"].as_str().unwrap_or("") {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
+        "test_fix_limit" => autome_domain::bug_loop::test_fix_limit_message(
+            reason["limit"].as_u64().unwrap_or(2) as u32,
+        ),
         "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
         "gate_same_failure"
@@ -235,6 +250,9 @@ pub fn next_step(task: &Value) -> Option<String> {
         ("active", "not_a_bug") => Some(format!(
             "autome task convert {id} [--start]    或    autome cancel {id}；确认是 Bug：autome reply {id} \"理由\""
         )),
+        ("failed", _) if state["reason"]["kind"] == "test_fix_limit" => {
+            Some(format!("autome rerun {id} locate    或取消后重提"))
+        }
         ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
             Some(format!("autome extend {id} 1"))
         }
@@ -380,15 +398,145 @@ pub fn dependencies(t: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn scope_paths(p: &Value, key: &str) -> Vec<String> {
+    p["repos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|repo| {
+            if key == "patch" {
+                repo[key].as_str().map(str::to_owned).into_iter().collect()
+            } else {
+                repo[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            }
+        })
+        .collect()
+}
+
+fn scope_patch_summary(p: &Value) -> String {
+    let patches = scope_paths(p, "patch");
+    let first = patches.first().map(String::as_str).unwrap_or("");
+    if patches.len() > 1 {
+        format!("{first} 等 {} 份", patches.len())
+    } else {
+        first.into()
+    }
+}
+
+pub fn scope_status_line(scope: &Value) -> Option<String> {
+    let last = &scope["last"];
+    if !last.is_object() {
+        return None;
+    }
+    let pending = scope["pending"].as_array();
+    let waiting = scope_paths(last, "patch").iter().any(|path| {
+        pending.is_some_and(|items| items.iter().any(|item| item.as_str() == Some(path)))
+    });
+    Some(format!(
+        "  越界还原：{} {}轮 #{} 还原 {} 个文件，补丁 {}（{}）",
+        local_time(last["at"].as_str().unwrap_or("")),
+        last["label"].as_str().unwrap_or(""),
+        last["round"],
+        scope_paths(last, "paths").len(),
+        scope_patch_summary(last),
+        if waiting { "待处理" } else { "已处理" }
+    ))
+}
+
+pub fn note_budget_hint(task: &Value, notes: &Value) -> Option<String> {
+    (task["state"]["reason"]["kind"] == "fix_budget"
+        && notes
+            .as_array()
+            .is_some_and(|ns| ns.iter().any(|n| n["delivered"].is_null())))
+    .then(|| {
+        format!(
+            "有未送达的备注；请先 autome extend {} 1",
+            task["id"].as_str().unwrap_or("?")
+        )
+    })
+}
+
+pub fn note_status_lines(notes: &Value) -> Vec<String> {
+    notes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| {
+            let delivery = if n["delivered"].is_object() {
+                format!(
+                    "已送达 {} 第 {} 轮",
+                    n["delivered"]["role"].as_str().unwrap_or(""),
+                    n["delivered"]["round"]
+                )
+            } else {
+                "未送达".to_string()
+            };
+            format!(
+                "备注 #{} · {} · {}\n{}",
+                n["n"],
+                n["at"].as_str().unwrap_or(""),
+                delivery,
+                n["text"].as_str().unwrap_or("")
+            )
+        })
+        .collect()
+}
+
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
+        "task.note_added" => format!("{subject} 留下备注 #{}", p["n"]),
+        "task.note_delivered" => format!(
+            "{subject} 备注 {} 已送达 {} 第 {} 轮",
+            p["notes"],
+            s("role"),
+            p["round"]
+        ),
+        "session.scope_restored" => {
+            let paths = scope_paths(p, "paths");
+            let mut listed = paths.iter().take(3).cloned().collect::<Vec<_>>().join("、");
+            if paths.len() > 3 {
+                listed.push_str(&format!(" 等 {} 个", paths.len()));
+            }
+            let next = if s("label") == "复核" {
+                "修复"
+            } else {
+                "实现"
+            };
+            format!(
+                "{subject} {}轮 #{} 越界改动已自动还原：{} 个文件（{}），补丁 {}；交给下一个{next}轮决定是否采纳",
+                s("label"),
+                p["round"],
+                paths.len(),
+                listed,
+                scope_patch_summary(p)
+            )
+        }
+        "session.scope_restore_failed" => {
+            format!("{subject} 越界改动自动还原失败：{}", s("detail"))
+        }
+        "session.scope_patches_handled" => format!(
+            "{subject} 越界补丁已交给会话 {} 处理（{} 份）",
+            s("session_id"),
+            p["patches"].as_array().map_or(0, Vec::len)
+        ),
         "bug.loop_started" => format!("{subject} 开始 Bug Loop"),
         "bug.located" => format!("{subject} 定位：{}；{}", s("status"), s("root_cause")),
         "bug.reproduced" => format!(
             "{subject} 已复现：{}（退出码 {}）",
             s("command"),
             p["exit_code"]
+        ),
+        "bug.repro_missed" if p["paired"].is_object() => format!(
+            "{subject} 修正后的回归测试：基线上没有失败，按未复现处理；{}\n{}",
+            s("why"),
+            s("tail")
         ),
         "bug.repro_missed"
             if s("why") == "timed_out"
@@ -407,6 +555,18 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("command"),
             s("why"),
             s("tail")
+        ),
+        "bug.test_fix_requested" => format!(
+            "{subject} 回归测试被判有缺陷，退回定位轮修正（第 {} / {} 次）",
+            p["attempt"], p["limit"]
+        ),
+        "bug.test_fix_settled" => format!(
+            "{subject} 修正后的回归测试：{}",
+            match p["result"].as_str() {
+                Some("accepted") => "基线上失败、当前分支通过，接受",
+                Some("needs_fix") => "基线上失败、当前分支仍失败，回到修复轮",
+                _ => "基线上没有失败，按未复现处理",
+            }
         ),
         "bug.fix_round_started" => format!("{subject} 修复第 {} / {} 轮", p["round"], p["limit"]),
         "bug.reviewed" => format!("{subject} 复核第 {} 轮：{}", p["round"], s("verdict")),
@@ -550,7 +710,8 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         ),
         "setup.skipped" => format!("{subject} 准备命令跳过：{}", s("reason")),
         "gate.queued" => format!(
-            "{subject} 排队等门禁（{}，入队时前面还有 {} 个）",
+            "{subject} 排队等{}（{}，入队时前面还有 {} 个）",
+            gate_lane_label(&s("lane")),
             node_label(&s("node")),
             p["position"].as_u64().unwrap_or(1).saturating_sub(1)
         ),
@@ -673,6 +834,7 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("task_id")
         ),
         "project.alert" => format!("报警（{subject}）：{}  → autome alerts", s("kind")),
+        "guard.auto_fixed" => format!("{subject} {}", s("detail")),
         "guard.warning" => format!("{subject} 守卫提醒：{}", s("code")),
         "task.protocol_failure" => format!("{subject} 协议失败：{}", s("detail")),
         _ => return None,
@@ -841,8 +1003,8 @@ mod tests {
     fn gate_queue_line_counts_only_waiters_ahead() {
         for (position, ahead) in [(1, 0), (2, 1), (u64::MAX, u64::MAX - 1), (0, 0)] {
             assert_eq!(
-                gate_queue_line(position),
-                format!("排队等门禁（前面还有 {ahead} 个）")
+                gate_queue_line(position, "heavy"),
+                format!("排队等完整门禁（前面还有 {ahead} 个）")
             );
         }
     }
@@ -866,7 +1028,7 @@ mod tests {
                         &json!({"node":node,"position":position})
                     ),
                     Some(format!(
-                        "T-1 排队等门禁（{label}，入队时前面还有 {ahead} 个）"
+                        "T-1 排队等完整门禁（{label}，入队时前面还有 {ahead} 个）"
                     ))
                 );
             }
@@ -1508,4 +1670,227 @@ fn deps_cli_events() {
         short_state(&json!({"state":"active","node":"await_design_approval"})),
         "等你决定"
     );
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn payload() -> Value {
+        json!({"label":"审计", "round":3, "repos":[
+            {"paths":["a.rs", "中文 空格.rs", "x[1]*.rs"], "patch":"/tmp/a.patch"},
+            {"paths":["hidden.rs"], "patch":"/tmp/b.patch"}
+        ]})
+    }
+
+    #[test]
+    fn scope_restored_event_lists_bounded_paths_and_patches() {
+        let mut p = payload();
+        let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+        assert_eq!(
+            line,
+            "T-9 审计轮 #3 越界改动已自动还原：4 个文件（a.rs、中文 空格.rs、x[1]*.rs 等 4 个），补丁 /tmp/a.patch 等 2 份；交给下一个实现轮决定是否采纳"
+        );
+        p["repos"].as_array_mut().unwrap().pop();
+        let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+        assert!(!line.contains(" 等 "));
+        for label in ["复核", "复盘"] {
+            p["label"] = json!(label);
+            p["round"] = json!(u32::MAX);
+            p["repos"][0]["paths"] = json!(["单个"]);
+            let line = event_line("session.scope_restored", "T-9", &p).unwrap();
+            assert!(line.contains(&format!("{label}轮 #4294967295")));
+            assert!(line.contains("1 个文件（单个）"));
+            assert!(line.contains(if label == "复核" {
+                "下一个修复轮"
+            } else {
+                "下一个实现轮"
+            }));
+        }
+        assert!(event_line("session.scope_restore_begun", "T-9", &p).is_none());
+    }
+
+    #[test]
+    fn scope_failed_event_preserves_detail() {
+        for detail in [
+            "只能修改 docs/t/。先保存补丁再 rerun。上一次已自动还原",
+            "自动还原没有完成：读盘失败",
+            "",
+        ] {
+            assert_eq!(
+                event_line(
+                    "session.scope_restore_failed",
+                    "T-9",
+                    &json!({"detail":detail})
+                )
+                .unwrap(),
+                format!("T-9 越界改动自动还原失败：{detail}")
+            );
+        }
+    }
+
+    #[test]
+    fn scope_handled_event_names_session_and_count() {
+        for patches in [json!([]), json!(["a"]), json!(["a", "b"])] {
+            assert_eq!(
+                event_line(
+                    "session.scope_patches_handled",
+                    "T-9",
+                    &json!({"session_id":"S-12", "patches":patches})
+                )
+                .unwrap(),
+                format!(
+                    "T-9 越界补丁已交给会话 S-12 处理（{} 份）",
+                    patches.as_array().unwrap().len()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn scope_task_detail_distinguishes_pending_and_handled() {
+        assert!(scope_status_line(&json!({"last":null,"pending":[]})).is_none());
+        let mut p = payload();
+        p["at"] = json!("2026-11-13T00:00:00Z");
+        for (pending, expected) in [
+            (json!(["/tmp/b.patch"]), "待处理"),
+            (json!([]), "已处理"),
+            (json!(["other.patch"]), "已处理"),
+        ] {
+            let line = scope_status_line(&json!({"last":p,"pending":pending})).unwrap();
+            assert_eq!(
+                line,
+                format!(
+                    "  越界还原：{} 审计轮 #3 还原 4 个文件，补丁 /tmp/a.patch 等 2 份（{expected}）",
+                    local_time("2026-11-13T00:00:00Z")
+                )
+            );
+        }
+    }
+    #[test]
+    fn test_fix_limit_status_explains_recovery() {
+        assert_eq!(
+            failure(&json!({"kind":"test_fix_limit","limit":2})),
+            autome_domain::bug_loop::test_fix_limit_message(2)
+        );
+        assert_eq!(next_step(&json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"test_fix_limit","limit":2}}})).as_deref(), Some("autome rerun T-1 locate    或取消后重提"));
+    }
+}
+
+pub fn task_state_line(task: &Value) -> String {
+    let line = state_line(&task["state"]);
+    if task["test_fix"]["open"] == true && task["state"]["node"] == "locate" {
+        line.replace(
+            "定位",
+            &format!(
+                "定位（修正回归测试 {}/{}）",
+                task["test_fix"]["used"], task["test_fix"]["limit"]
+            ),
+        )
+    } else {
+        line
+    }
+}
+
+#[test]
+fn test_fix_events_and_status_read_plainly() {
+    use serde_json::json;
+    assert!(
+        event_line(
+            "bug.test_fix_requested",
+            "T-1",
+            &json!({"attempt":1,"limit":2})
+        )
+        .unwrap()
+        .contains("第 1 / 2 次")
+    );
+    for (result, expected) in [("accepted", "接受"), ("needs_fix", "回到修复轮")] {
+        assert!(
+            event_line("bug.test_fix_settled", "T-1", &json!({"result":result}))
+                .unwrap()
+                .contains(expected)
+        );
+    }
+    assert_eq!(
+        task_state_line(
+            &json!({"state":{"state":"active","node":"locate"},"test_fix":{"used":1,"limit":2,"open":true}})
+        ),
+        "运行中 · 定位（修正回归测试 1/2）"
+    );
+}
+
+#[test]
+fn operator_note_status_lists_notes() {
+    let task =
+        serde_json::json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"fix_budget"}}});
+    assert!(
+        note_budget_hint(&task, &serde_json::json!([{ "delivered":null }]))
+            .unwrap()
+            .contains("有未送达的备注")
+    );
+    assert!(note_budget_hint(&task, &serde_json::json!([{ "delivered":{} }])).is_none());
+    assert!(note_budget_hint(&task, &serde_json::json!([])).is_none());
+
+    let lines = note_status_lines(&serde_json::json!([
+        {"n":1,"text":"原文\n下一行","at":"now","delivered":null},
+        {"n":2,"text":"ok","at":"then","delivered":{"role":"impl","round":2}}
+    ]));
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("未送达") && lines[0].contains("原文\n下一行"));
+    assert!(lines[1].contains("已送达 impl 第 2 轮"));
+}
+
+#[test]
+fn operator_note_events_render_one_line_each() {
+    for kind in ["task.note_added", "task.note_delivered"] {
+        let line = event_line(
+            kind,
+            "T-1",
+            &serde_json::json!({"n":1,"text":"a\nb","notes":[1,2],"role":"impl","round":3}),
+        )
+        .unwrap();
+        assert_eq!(line.lines().count(), 1);
+        assert!(line.contains("T-1") && line.contains("备注"));
+    }
+}
+
+#[test]
+fn legacy_pointer_auto_fixed_event_is_readable() {
+    for detail in [
+        "该任务固定的协议 v7 没有这条规则，已自动还原",
+        "违反『已完成里程碑的最新证据不改』，已自动还原",
+    ] {
+        let line = event_line(
+            "guard.auto_fixed",
+            "T-1",
+            &serde_json::json!({"code":"impl_closed_milestone", "detail":detail}),
+        )
+        .unwrap();
+        assert_eq!(line, format!("T-1 {detail}"));
+        assert_eq!(line.lines().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod gate_lane_tests {
+    use super::*;
+    #[test]
+    fn gate_lane_waiting_line_names_the_queue() {
+        for (lane, label) in [
+            ("heavy", "完整门禁"),
+            ("light", "快检或复现检查"),
+            ("", "完整门禁"),
+        ] {
+            for position in [0, 1, 2, u64::MAX] {
+                assert_eq!(
+                    gate_queue_line(position, lane),
+                    format!(
+                        "排队等{label}（前面还有 {} 个）",
+                        position.saturating_sub(1)
+                    )
+                );
+            }
+        }
+    }
 }

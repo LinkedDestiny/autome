@@ -189,6 +189,10 @@ struct World {
 
 impl World {
     fn new(tag: &str) -> Self {
+        Self::with_store(tag, false)
+    }
+
+    fn with_store(tag: &str, on_disk: bool) -> Self {
         install_fake_cli();
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let root =
@@ -201,7 +205,11 @@ impl World {
             std::fs::create_dir_all(d).unwrap();
         }
 
-        let store = Store::open_in_memory().unwrap();
+        let store = if on_disk {
+            Store::open(autome_home.join("test.db")).unwrap()
+        } else {
+            Store::open_in_memory().unwrap()
+        };
         // Headless: the wrapper runs directly rather than being handed to a
         // terminal. Everything else is the production path; the terminal hop
         // itself has its own test.
@@ -1948,7 +1956,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v8@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v9@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -4825,7 +4833,9 @@ fn the_merge_panel_offers_the_merge_when_only_main_has_moved() {
     w.settle();
     assert_eq!(w.state(&id), "done");
     let changes = w.call("task.changes", json!({"task_id":id}));
-    assert_eq!(ok(&changes)["available"], false);
+    assert_eq!(ok(&changes)["available"], true);
+    assert_eq!(ok(&changes)["merged"], true);
+    assert!(!ok(&changes)["files"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -5989,6 +5999,10 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
             }))
         );
         if kind == "bug" {
+            assert_eq!(
+                task.remove("test_fix"),
+                Some(json!({"used":0,"limit":2,"open":false}))
+            );
             assert_eq!(task.remove("fix_round"), Some(json!(0)));
         } else {
             assert!(!task.contains_key("fix_round"));
@@ -7736,14 +7750,6 @@ fn review_scope_seed(w: &World) {
     automed::git::commit_paths(&w.repo, &[REVIEW_SCOPE_OTHER], "seed merged task").unwrap();
 }
 
-fn review_scope_assert_failure(w: &World, id: &str, slug: &str) {
-    assert_eq!(w.state(id), "failed", "out-of-scope edit was admitted");
-    let detail = failure_detail(w, id);
-    assert!(detail.contains("只能修改"), "{detail}");
-    assert!(detail.contains(&format!("docs/{slug}/")), "{detail}");
-    assert!(detail.contains(REVIEW_SCOPE_OTHER), "{detail}");
-}
-
 #[test]
 fn review_scope_wrong_bug_document_reports_the_offending_path() {
     needs_git!();
@@ -7756,7 +7762,15 @@ fn review_scope_wrong_bug_document_reports_the_offending_path() {
     bug_step(&w, 3, "other-task", &bug_doc("通过"), "");
     let id = create_bug(&mut w, request);
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(w.state(&id), "failed");
+    assert!(failure_detail(&w, &id).contains("本轮没有更新"));
+    let restored = w
+        .ctx
+        .store
+        .last_event(&id, "session.scope_restored")
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored["repos"][0]["paths"], json!([REVIEW_SCOPE_OTHER]));
 }
 
 #[test]
@@ -7775,9 +7789,18 @@ fn review_scope_valid_verdict_does_not_hide_an_outside_edit() {
         &bug_doc("通过"),
         &format!("printf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}"),
     );
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
     let id = create_bug(&mut w, request);
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
 }
 
 #[test]
@@ -7826,28 +7849,339 @@ fn review_scope_feature_retro_rejects_other_task_edits() {
 }
 
 fn review_scope_feature_round(retro: bool) {
+    scope_restore_feature_run(retro, false, Some(REVIEW_SCOPE_OTHER));
+}
+
+#[test]
+fn scope_restore_feature_audit_edit_is_reverted_and_handed_to_next_impl() {
+    scope_restore_feature_run(false, true, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_last_milestone_adds_an_impl_round_then_reaches_merge() {
+    scope_restore_feature_run(false, false, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_retro_edit_routes_through_impl_and_audit() {
+    scope_restore_feature_run(true, false, Some("product-test.rs"));
+}
+
+#[test]
+fn scope_restore_feature_clean_round_adds_nothing() {
+    scope_restore_feature_run(false, false, None);
+}
+
+fn scope_restore_feature_run(retro: bool, two: bool, outside: Option<&str>) {
     needs_git!();
-    let mut w = World::new("review-scope-feature");
+    let mut w = World::new("scope-restore-feature");
     review_scope_seed(&w);
+    std::fs::write(w.repo.join("product-test.rs"), "original test\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product-test.rs"], "seed product test").unwrap();
     let request = "review scope feature";
     let slug = slug_for(request);
+    let table = |first, second| {
+        let mut rows = vec![("M-01", first)];
+        if two {
+            rows.push(("M-02", second));
+        }
+        rows
+    };
     w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
     w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
     w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
-    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
-    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
-    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
-    w.retro_step(7, &slug);
-    let n = if retro { 7 } else { 6 };
-    let script_path = w.repo.join(format!(".autome/fake/{n}.sh"));
-    let mut script = std::fs::read_to_string(&script_path).unwrap();
-    script.push_str(&format!("\nprintf 'foreign review\\n' >> {REVIEW_SCOPE_OTHER}\ngit add {REVIEW_SCOPE_OTHER}\ngit -c user.name=fake -c user.email=f@f commit -qm 'out of scope review'\n"));
-    w.step(n, &script);
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &table("开放", "开放")));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &table("待审", "开放")));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &table("已完成", "开放")));
+    let crossing = if retro { 7 } else { 6 };
+    if retro {
+        w.retro_step(7, &slug);
+    }
+    if outside.is_some() {
+        let next = crossing + 1;
+        w.doc_step(next, &slug, &doc("实现中", 2, 2, &table("已完成", "待审")));
+        w.doc_step(
+            next + 1,
+            &slug,
+            &doc("实现中", 2, 2, &table("已完成", "已完成")),
+        );
+        // Evidence for the second milestone must be present for both rounds.
+        if two {
+            for n in [next, next + 1] {
+                let file = w.repo.join(format!(".autome/fake/{n}.sh"));
+                let mut script = std::fs::read_to_string(file).unwrap();
+                script.push_str(&format!("cp docs/{slug}/evidence/M-01-r2-impl.md docs/{slug}/evidence/M-02-r2-impl.md\ncp docs/{slug}/evidence/M-01-r2-audit.md docs/{slug}/evidence/M-02-r2-audit.md\n"));
+                w.step(n, &script);
+            }
+        }
+        w.retro_step(next + 2, &slug);
+    } else {
+        w.retro_step(7, &slug);
+    }
+    if let Some(path) = outside {
+        let script_path = w.repo.join(format!(".autome/fake/{crossing}.sh"));
+        let mut script = std::fs::read_to_string(script_path).unwrap();
+        script.push_str(&format!("\nprintf 'foreign review\\n' >> {path}\ngit add {path}\ngit -c user.name=fake -c user.email=f@f commit -qm 'out of scope review'\n"));
+        w.step(crossing, &script);
+    }
     let id = create_task(&mut w, request);
     w.settle();
     ok(&w.call("task.approve", json!({"task_id": id})));
     w.settle();
-    review_scope_assert_failure(&w, &id, &slug);
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let events: Vec<_> = events
+        .iter()
+        .filter(|(_, _, subject, _)| subject == &id)
+        .collect();
+    let count = |kind: &str| events.iter().filter(|(_, k, _, _)| k == kind).count();
+    let mut sessions = w.ctx.store.list_sessions(&id).unwrap();
+    sessions.reverse();
+    let roles: Vec<_> = sessions
+        .iter()
+        .map(|s| s.kind.role().map(|r| r.as_str()).unwrap_or("intake"))
+        .collect();
+    let expected = if outside.is_none() {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    } else if retro {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "retro",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    } else {
+        vec![
+            "intake",
+            "plan",
+            "review",
+            "adjudicate",
+            "impl",
+            "audit",
+            "impl",
+            "audit",
+            "retro",
+        ]
+    };
+    assert_eq!(roles, expected);
+    let log = automed::git::run_ok(&wt, &["log", "--format=%B"])
+        .unwrap()
+        .stdout;
+    let Some(path) = outside else {
+        for kind in [
+            "session.scope_restore_begun",
+            "session.scope_restored",
+            "session.scope_restore_failed",
+            "session.scope_patches_handled",
+        ] {
+            assert_eq!(count(kind), 0);
+        }
+        assert!(!log.contains("越界改动已还原"));
+        assert!(
+            events
+                .iter()
+                .filter(|(_, k, _, _)| k == "session.started")
+                .all(|(_, _, _, p)| p.get("scope_patches").is_none())
+        );
+        return;
+    };
+    assert_eq!(
+        std::fs::read(wt.join(path)).unwrap(),
+        std::fs::read(w.repo.join(path)).unwrap()
+    );
+    for kind in [
+        "session.scope_restore_begun",
+        "session.scope_restored",
+        "session.scope_patches_handled",
+    ] {
+        assert_eq!(count(kind), 1, "{kind}");
+    }
+    assert_eq!(count("session.scope_restore_failed"), 0);
+    assert_eq!(count("guard.failed"), 0);
+    let restored = events
+        .iter()
+        .find(|(_, k, _, _)| k == "session.scope_restored")
+        .unwrap()
+        .3
+        .clone();
+    let patch = restored["repos"][0]["patch"].as_str().unwrap();
+    assert!(std::path::Path::new(patch).exists());
+    automed::git::run_ok(&wt, &["apply", "--check", patch]).unwrap();
+    let commit = restored["repos"][0]["commit"].as_str().unwrap();
+    let message = automed::git::run_ok(&wt, &["show", "-s", "--format=%B", commit])
+        .unwrap()
+        .stdout;
+    for needle in [restored["session_id"].as_str().unwrap(), path, patch] {
+        assert!(message.contains(needle), "{message}");
+    }
+    assert!(
+        wt.join(format!("docs/{slug}/evidence/M-01-r1-audit.md"))
+            .exists()
+    );
+    let brief = std::fs::read_to_string(wt.join(format!("docs/{slug}/brief/impl-2.md"))).unwrap();
+    for needle in [
+        path,
+        patch,
+        "由你判断是否采纳",
+        "git apply --stat",
+        restored["repos"][0]["stat"].as_str().unwrap(),
+    ] {
+        assert!(brief.contains(needle), "missing {needle}: {brief}");
+    }
+    let started = events
+        .iter()
+        .filter(|(_, k, _, _)| k == "session.started")
+        .find(|(_, _, _, p)| p.get("scope_patches").is_some())
+        .unwrap();
+    assert_eq!(started.3["scope_patches"], json!([patch]));
+    let handled = events
+        .iter()
+        .find(|(_, k, _, _)| k == "session.scope_patches_handled")
+        .unwrap();
+    assert_eq!(handled.3["session_id"], started.3["session_id"]);
+    assert_eq!(handled.3["patches"], json!([patch]));
+}
+
+#[test]
+fn scope_breaker_second_consecutive_audit_crossing_fails_with_note() {
+    scope_breaker_run(false, false);
+}
+
+#[test]
+fn scope_breaker_clean_audit_between_crossings_resets_the_streak() {
+    scope_breaker_run(true, false);
+}
+
+#[test]
+fn scope_breaker_restore_failure_falls_back_to_todays_failure() {
+    scope_breaker_run(false, true);
+}
+
+fn scope_breaker_run(clean_between: bool, blocked: bool) {
+    needs_git!();
+    let mut w = World::new("scope-breaker");
+    review_scope_seed(&w);
+    let request = "scope breaker";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    let rows = |round: u32, audit: bool| {
+        (1..=if clean_between { 3 } else { 1 })
+            .map(|n| {
+                (
+                    match n {
+                        1 => "M-01",
+                        2 => "M-02",
+                        _ => "M-03",
+                    },
+                    if n < round || n == round && audit {
+                        "已完成"
+                    } else if n == round {
+                        "待审"
+                    } else {
+                        "开放"
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &rows(0, false)));
+    for round in 1..=4 {
+        for audit in [false, true] {
+            let n = 3 + 2 * round + u32::from(audit);
+            w.doc_step(n, &slug, &doc("实现中", 2, round, &rows(round, audit)));
+            if clean_between && round <= 3 {
+                let file = w.repo.join(format!(".autome/fake/{n}.sh"));
+                let mut script = std::fs::read_to_string(file).unwrap();
+                script.push_str(&format!("cp docs/{slug}/evidence/M-01-r{round}-impl.md docs/{slug}/evidence/M-0{round}-r{round}-impl.md 2>/dev/null || true\ncp docs/{slug}/evidence/M-01-r{round}-audit.md docs/{slug}/evidence/M-0{round}-r{round}-audit.md 2>/dev/null || true\n"));
+                w.step(n, &script);
+            }
+        }
+    }
+    let last_crossing = if clean_between { 10 } else { 8 };
+    for n in [6, last_crossing] {
+        let path = w.repo.join(format!(".autome/fake/{n}.sh"));
+        let mut script = std::fs::read_to_string(path).unwrap();
+        script.push_str("\nprintf 'crossed\\n' >> README.md\ngit add README.md\ngit -c user.name=fake -c user.email=f@f commit -qm crossing\nmkdir -p .autome/output\ngit rev-parse HEAD > .autome/output/session-end-head\n");
+        w.step(n, &script);
+    }
+    w.retro_step(13, &slug);
+    if blocked {
+        std::fs::create_dir_all(w.repo.join(".autome/output")).unwrap();
+        std::fs::write(w.repo.join(".autome/output/scope"), "blocked").unwrap();
+    }
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id": id})));
+    w.settle();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let count = |kind| w.ctx.store.count_events(&id, kind).unwrap();
+    if clean_between {
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "{}",
+            failure_detail(&w, &id)
+        );
+        assert_eq!(count("session.scope_restored"), 2);
+        assert_eq!(
+            std::fs::read(wt.join("README.md")).unwrap(),
+            std::fs::read(w.repo.join("README.md")).unwrap()
+        );
+    } else {
+        assert_eq!(w.state(&id), "failed");
+        let detail = failure_detail(&w, &id);
+        for needle in [
+            "只能修改",
+            "README.md",
+            "重跑前先保存需要交回实现/修复轮的改动",
+            "不要重置整个分支或丢弃其他改动",
+            if blocked {
+                "自动还原没有完成"
+            } else {
+                "上一次已自动还原"
+            },
+        ] {
+            assert!(detail.contains(needle), "{detail}");
+        }
+        assert_eq!(count("session.scope_restored"), if blocked { 0 } else { 1 });
+        assert_eq!(
+            count("session.scope_restore_failed"),
+            if blocked { 1 } else { 0 }
+        );
+        assert_eq!(
+            automed::git::head_sha(&wt).unwrap(),
+            std::fs::read_to_string(wt.join(".autome/output/session-end-head"))
+                .unwrap()
+                .trim()
+        );
+        assert!(
+            std::fs::read_to_string(wt.join("README.md"))
+                .unwrap()
+                .contains("crossed")
+        );
+    }
 }
 
 fn gate_trace(w: &World, id: &str) -> Vec<String> {
@@ -8195,6 +8529,11 @@ fn gate_queue_second_task_starts_its_gate_only_after_the_first_one_ends() {
 fn gate_queue_bug_loop_repro_check_waits_without_spending_a_fix_round() {
     needs_git!();
     let mut w = queued_gate_world("queue-bug", 30);
+    lane_config(
+        &w,
+        &format!("quick = 'sh {}'", w.root.join("queued-gate.sh").display()),
+        1,
+    );
     let a = queue_task(&mut w, "queue regular");
     let slug = slug_for("queue bug");
     bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
@@ -10097,4 +10436,2038 @@ fn kernel_adopt_new_kernel_restores_mark_without_event() {
     );
     assert_eq!(adoption_events(&old).len(), 1);
     assert!(!w.ctx.adopted_older_kernel);
+}
+
+#[test]
+fn scope_restore_bug_review_crossing_returns_to_fix_with_patch() {
+    scope_restore_bug_run(false, false);
+}
+
+#[test]
+fn scope_restore_bug_review_crossing_with_spent_fix_budget_fails_fix_budget() {
+    scope_restore_bug_run(true, false);
+}
+
+#[test]
+fn scope_restore_bug_second_consecutive_review_crossing_fails() {
+    scope_restore_bug_run(false, true);
+}
+
+fn scope_restore_bug_run(spent: bool, second_crossing: bool) {
+    needs_git!();
+    let mut w = World::new("scope-restore-bug");
+    if spent {
+        w.configure("[bug]\nfix_rounds = 1\n");
+    }
+    let request = "scope restore bug";
+    let slug = slug_for(request);
+    let crossing = "printf 'crossed\\n' >> README.md";
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), crossing);
+    if !spent {
+        bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+        bug_step(
+            &w,
+            5,
+            &slug,
+            &bug_doc("通过"),
+            if second_crossing { crossing } else { "" },
+        );
+    }
+    let id = create_bug(&mut w, request);
+    w.settle();
+    let restored = w
+        .ctx
+        .store
+        .last_event(&id, "session.scope_restored")
+        .unwrap()
+        .unwrap();
+    let patch = restored["repos"][0]["patch"].as_str().unwrap();
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_restored")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        if spent { 1 } else { 2 }
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_patches_handled")
+            .unwrap(),
+        if spent { 0 } else { 1 }
+    );
+    if second_crossing {
+        assert_eq!(w.state(&id), "failed");
+        assert!(failure_detail(&w, &id).contains("上一次已自动还原"));
+        assert!(
+            std::fs::read_to_string(wt.join("README.md"))
+                .unwrap()
+                .contains("crossed")
+        );
+    } else {
+        assert_eq!(
+            std::fs::read(wt.join("README.md")).unwrap(),
+            std::fs::read(w.repo.join("README.md")).unwrap()
+        );
+        automed::git::run_ok(&wt, &["apply", "--check", patch]).unwrap();
+        if spent {
+            assert_eq!(w.state(&id), "failed");
+            let response = w.call("task.get", json!({"task_id":id}));
+            let task = ok(&response);
+            assert!(
+                task["task"]["state"].to_string().contains("fix_budget"),
+                "{task}"
+            );
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert_eq!(w.ctx.store.count_events(&id, "guard.failed").unwrap(), 0);
+        }
+    }
+    if !spent {
+        let prompt = w.prompt(4);
+        for needle in [
+            "上一轮复核越界改动已被还原",
+            "按复核不通过退回",
+            "README.md",
+            patch,
+            "由你判断是否采纳",
+            restored["repos"][0]["stat"].as_str().unwrap(),
+        ] {
+            assert!(prompt.contains(needle), "missing {needle}: {prompt}");
+        }
+        let events = w.ctx.store.task_events(&id, "session.started").unwrap();
+        let started = events
+            .iter()
+            .find(|p| p.get("scope_patches").is_some())
+            .unwrap();
+        assert_eq!(started["scope_patches"], json!([patch]));
+        let handled = w
+            .ctx
+            .store
+            .last_event(&id, "session.scope_patches_handled")
+            .unwrap()
+            .unwrap();
+        assert_eq!(handled["session_id"], started["session_id"]);
+        assert_eq!(handled["patches"], json!([patch]));
+    }
+}
+
+#[test]
+fn handoff_e2e_last_milestone_patch_with_product_change_is_integration_audited_then_merges() {
+    needs_git!();
+    let mut w = World::new("handoff-integration");
+    let request = "handoff integration";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step_for_prelude(
+        6,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "已完成")]),
+        "printf 'review patch\\n' > product.txt\ngit add product.txt",
+    );
+    w.doc_step_for_prelude(
+        7,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "test ! -e product.txt\nprintf 'adopted patch\\n' > product.txt\ngit add product.txt",
+    );
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let range = w.ctx.store.task_events(&id, "integration.range").unwrap();
+    assert_eq!(range.len(), 1);
+    assert_eq!(range[0]["trigger"]["kind"], "scope_patch");
+    assert!(w.prompt(8).contains("本轮是**集成复验**"));
+    assert!(integration_e2e_brief(&w, &slug, 2).contains("越界补丁交接"));
+    let brief = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/impl-2.md")),
+    )
+    .unwrap();
+    assert!(brief.contains("本轮只处理补丁"));
+    assert!(brief.contains("evidence/M-01-r2-impl.md"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "session.scope_patches_handled")
+            .unwrap(),
+        1
+    );
+}
+
+fn test_fix_doc() -> String {
+    bug_doc("待复核").replacen("\n\n##", "\n回归测试: 有缺陷\n\n##", 1)
+        + "\n## 回归测试缺陷\n- 用例: regression.sh\n- 缺陷: wrong expectation\n- 证据: fixed product still fails\n- 建议: assert fixed\n"
+}
+
+fn test_fix_scenario(name: &str, correction: &str, expected: &str) -> World {
+    let mut w = World::new(name);
+    let slug = slug_for(name);
+    // Product exists on the default branch; baseline failure must be a real assertion.
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    std::fs::write(w.repo.join("lib.rs"), "product\n#[cfg(test)]\nold tests\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt", "lib.rs"], "product baseline").unwrap();
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        "printf 'wrong\\n' > expected.txt; printf 'test \"$(cat product.txt)\" = \"$(cat expected.txt)\"\\n' > regression.sh",
+    );
+    bug_step(&w, 2, &slug, &test_fix_doc(), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), correction);
+    bug_step(
+        &w,
+        4,
+        &slug,
+        &bug_doc(if expected == "await_info" {
+            "待复核"
+        } else {
+            "通过"
+        }),
+        "",
+    );
+    let id = create_bug(&mut w, name);
+    w.settle();
+    assert_eq!(
+        w.node(&id).unwrap_or_else(|| w.state(&id)),
+        expected,
+        "{:?}",
+        w.ctx.store.get_task(&id).unwrap().state
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        1
+    );
+    w
+}
+
+#[test]
+fn test_fix_e2e_defective_fixture_is_corrected_and_reaches_merge() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-accept",
+        "printf 'fixed\\n' > expected.txt; printf 'product\\n#[cfg(test)]\\ncorrected tests\\n' > lib.rs; mkdir -p tests; echo 'exit 0' > tests/added.sh",
+        "await_merge",
+    );
+    let tasks = w.ctx.store.list_tasks(&w.project_id).unwrap();
+    let id = &tasks[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.fix_round_started")
+            .unwrap(),
+        1
+    );
+    let settled = w
+        .ctx
+        .store
+        .last_event(id, "bug.test_fix_settled")
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled["result"], "accepted");
+    assert_eq!(settled["base_exit"], 1);
+    assert_eq!(settled["head_exit"], 0);
+    assert!(!w.repo.join(".autome/output/repro-base").join(id).exists());
+}
+
+#[test]
+fn test_fix_e2e_locate_touching_product_code_is_rejected() {
+    needs_git!();
+    let w = test_fix_scenario("test-fix-product", "echo tampered > product.txt", "failed");
+    assert!(format!("{:?}", w.task_states()).contains("只能改回归测试"));
+}
+
+#[test]
+fn test_fix_e2e_corrected_test_green_on_base_goes_not_reproduced() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-base-green",
+        "printf 'exit 0\\n' > regression.sh",
+        "await_info",
+    );
+    let id = &w.ctx.store.list_tasks(&w.project_id).unwrap()[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.test_fix_settled")
+            .unwrap(),
+        0
+    );
+    assert_eq!(w.ctx.store.count_events(id, "bug.repro_missed").unwrap(), 2);
+}
+
+#[test]
+fn test_fix_e2e_corrected_test_red_on_head_returns_to_fix() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-head-red",
+        "printf 'exit 1\\n' > regression.sh",
+        "failed",
+    );
+    let id = &w.ctx.store.list_tasks(&w.project_id).unwrap()[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(id, "bug.test_fix_settled")
+            .unwrap()
+            .unwrap()["result"],
+        "needs_fix"
+    );
+}
+
+#[test]
+fn test_fix_e2e_missing_defect_section_is_rejected() {
+    needs_git!();
+    for missing in ["section", "用例", "缺陷", "证据", "建议", "empty"] {
+        let mut w = World::new(&format!("test-fix-missing-{missing}"));
+        let slug = slug_for("missing defect");
+        let mut doc = test_fix_doc();
+        if missing == "section" {
+            doc = doc.split("## 回归测试缺陷").next().unwrap().to_owned();
+        } else if missing == "empty" {
+            doc = doc.replace("- 用例: regression.sh", "- 用例:  ");
+        } else {
+            doc = doc
+                .lines()
+                .filter(|s| !s.starts_with(&format!("- {missing}:")))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &doc, BUG_FIX);
+        let id = create_bug(&mut w, "missing defect");
+        w.settle();
+        assert_eq!(w.state(&id), "failed");
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "bug.test_fix_requested")
+                .unwrap(),
+            0
+        );
+        assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("回归测试缺陷"));
+    }
+}
+
+#[test]
+fn test_fix_e2e_old_protocol_task_keeps_todays_handling() {
+    needs_git!();
+    let mut w = World::new("test-fix-old");
+    let slug = slug_for("old defect");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nsed '/<!-- regression-test-defect -->/d' docs/{slug}/protocol/prompts/fix.md > old-prompt\nmv old-prompt docs/{slug}/protocol/prompts/fix.md"
+        ),
+    );
+    bug_step(&w, 2, &slug, &test_fix_doc(), BUG_FIX);
+    let id = create_bug(&mut w, "old defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn test_fix_e2e_locate_editing_a_command_named_product_script_is_rejected() {
+    needs_git!();
+    let mut w = World::new("test-fix-script");
+    std::fs::write(w.repo.join("product.sh"), "exit 1\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.sh"], "product entry").unwrap();
+    let slug = slug_for("script defect");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "sh product.sh; sh regression.sh");
+    let defect = test_fix_doc().replace("sh regression.sh", "sh product.sh; sh regression.sh");
+    bug_step(&w, 1, &slug, &doc, BUG_LOCATE);
+    bug_step(&w, 2, &slug, &defect, BUG_FIX);
+    bug_step(&w, 3, &slug, &doc, "echo 'exit 0' > product.sh");
+    let id = create_bug(&mut w, "script defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("product.sh"));
+}
+
+#[test]
+fn test_fix_e2e_limit_exceeded_fails_with_reason() {
+    needs_git!();
+    let mut w = World::new("test-fix-limit");
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt"], "baseline").unwrap();
+    let slug = slug_for("limit defect");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    for n in [2, 5, 8] {
+        bug_step(&w, n, &slug, &test_fix_doc(), BUG_FIX);
+    }
+    for n in [3, 6] {
+        bug_step(&w, n, &slug, &bug_doc("待复核"), "");
+    }
+    for n in [4, 7] {
+        bug_step(&w, n, &slug, &bug_doc("打回"), "");
+    }
+    let id = create_bug(&mut w, "limit defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        2
+    );
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("TestFixLimit"));
+}
+
+#[test]
+fn test_fix_e2e_resnapshot_keeps_earlier_tests_without_a_snapshot() {
+    needs_git!();
+    let mut w = World::new("test-fix-union");
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt"], "baseline").unwrap();
+    let slug = slug_for("union defect");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "mkdir -p tests; echo 'exit 1' > tests/early.sh",
+    );
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 3, &slug, &test_fix_doc(), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 5, &slug, &bug_doc("打回"), "");
+    bug_step(
+        &w,
+        6,
+        &slug,
+        &bug_doc("待复核"),
+        "echo 'exit 0' > tests/early.sh",
+    );
+    let id = create_bug(&mut w, "union defect");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.regression_snapshot")
+            .unwrap(),
+        0
+    );
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"reproduce again"})));
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert!(
+        format!("{:?}", w.ctx.store.get_task(&id).unwrap().state)
+            .contains("回归测试被修改、删除或重命名：/tests/early.sh")
+    );
+}
+
+#[test]
+fn test_fix_e2e_review_can_request_repair_and_stale_declaration_is_rejected() {
+    needs_git!();
+    let mut w = World::new("test-fix-review");
+    let slug = slug_for("review defect");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &test_fix_doc().replace("复核: 待复核", "复核: 打回"),
+        "",
+    );
+    bug_step(&w, 4, &slug, &test_fix_doc(), "");
+    let id = create_bug(&mut w, "review defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    let requested = w
+        .ctx
+        .store
+        .last_event(&id, "bug.test_fix_requested")
+        .unwrap()
+        .unwrap();
+    assert_eq!(requested["by"], "fix_review");
+    assert!(w.prompt(4).contains("这次是回来修测试的"));
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("必须删除"));
+}
+
+fn regression_base_relocate(mode: &str) {
+    needs_git!();
+    let mut w = World::new("regression-base");
+    let slug = slug_for("base regression");
+    let doc = bug_doc("待复核");
+    let first = if mode == "command" {
+        doc.replace("sh regression.sh", "true")
+    } else {
+        doc.replace("已定位", "无法复现")
+    };
+    bug_step(&w, 1, &slug, &first, BUG_LOCATE);
+    let fix_step = if mode == "fix" { 2 } else { 3 };
+    if mode != "fix" {
+        bug_step(&w, 2, &slug, &doc, "");
+    }
+    bug_step(&w, fix_step, &slug, &doc, "echo true > regression.sh");
+    bug_step(&w, fix_step + 1, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "base regression");
+    w.settle();
+    if mode != "command" {
+        assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+        if mode == "rebase" {
+            let wt = w.repo.join(format!(".worktree/{slug}"));
+            // Replace history while retaining the first locate's files.
+            let tree = automed::git::run_ok(&wt, &["write-tree"]).unwrap().stdout;
+            let root = automed::git::run_ok(&wt, &["rev-list", "--max-parents=0", "HEAD"])
+                .unwrap()
+                .stdout;
+            let head = automed::git::run_ok(
+                &wt,
+                &[
+                    "commit-tree",
+                    tree.trim(),
+                    "-p",
+                    root.trim(),
+                    "-m",
+                    "rebased locate",
+                ],
+            )
+            .unwrap()
+            .stdout;
+            automed::git::run_ok(&wt, &["reset", "--hard", head.trim()]).unwrap();
+        }
+        if matches!(mode, "rerun" | "fix") {
+            w.ctx
+                .store
+                .set_task_state(
+                    &id,
+                    &autome_domain::task::TaskState::Failed {
+                        at: autome_domain::task::Node::Locate,
+                        reason: autome_domain::task::FailureReason::Protocol {
+                            detail: "interrupted locate".into(),
+                        },
+                    },
+                )
+                .unwrap();
+        }
+        if matches!(mode, "rerun" | "fix") {
+            ok(&w.call(
+                "task.rerun_from",
+                json!({"task_id":id,"node":if mode == "fix" {"fix"} else {"locate"}}),
+            ));
+        } else {
+            ok(&w.call(
+                "task.reply",
+                json!({"task_id":id,"info":"retry reproduction"}),
+            ));
+        }
+        if mode == "fix" {
+            assert!(
+                w.ctx
+                    .store
+                    .last_event(&id, "bug.regression_snapshot")
+                    .unwrap()
+                    .is_some(),
+                "rerun fix must snapshot before starting the session"
+            );
+        }
+        w.settle();
+    }
+    assert_regression_rejected(&w, &id, "regression.sh");
+    let snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    assert!(
+        snapshot["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "regression.sh")
+    );
+    if mode == "fix" {
+        assert_eq!(snapshot["source"], "rerun_fix");
+    }
+}
+
+#[test]
+fn bug_regression_base_second_locate_without_test_changes_keeps_the_first_tests() {
+    regression_base_relocate("reply");
+}
+#[test]
+fn bug_regression_base_command_only_relocate_keeps_the_tests() {
+    regression_base_relocate("command");
+}
+#[test]
+fn bug_regression_base_rerun_locate_after_failure_keeps_the_tests() {
+    regression_base_relocate("rerun");
+}
+#[test]
+fn bug_regression_base_rebased_branch_falls_back_to_merge_base() {
+    regression_base_relocate("rebase");
+}
+#[test]
+fn bug_regression_base_rerun_fix_without_snapshot_computes_one() {
+    regression_base_relocate("fix");
+}
+
+#[test]
+fn bug_regression_base_rerun_fix_rejects_empty_or_unreadable_baseline() {
+    needs_git!();
+    for remove_doc in [false, true] {
+        let mut w = World::new("regression-base-empty");
+        let slug = slug_for("empty base");
+        bug_step(
+            &w,
+            1,
+            &slug,
+            &bug_doc("待复核").replace("已定位", "无法复现"),
+            "",
+        );
+        let id = create_bug(&mut w, "empty base");
+        w.settle();
+        w.ctx
+            .store
+            .set_task_state(
+                &id,
+                &autome_domain::task::TaskState::Failed {
+                    at: autome_domain::task::Node::Locate,
+                    reason: autome_domain::task::FailureReason::Protocol {
+                        detail: "interrupted locate".into(),
+                    },
+                },
+            )
+            .unwrap();
+        if remove_doc {
+            let task = w.ctx.store.get_task(&id).unwrap();
+            std::fs::remove_file(
+                w.repo
+                    .join(format!(".worktree/{slug}"))
+                    .join(task.bug_doc()),
+            )
+            .unwrap();
+        }
+        ok(&w.call("task.rerun_from", json!({"task_id":id,"node":"fix"})));
+
+        let state = w.ctx.store.get_task(&id).unwrap().state;
+        assert!(
+            matches!(
+                state,
+                autome_domain::task::TaskState::Failed {
+                    at: autome_domain::task::Node::Fix,
+                    reason: autome_domain::task::FailureReason::Protocol { .. },
+                }
+            ),
+            "{state:?}"
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "bug.fix_round_started")
+                .unwrap(),
+            0
+        );
+    }
+}
+
+fn operator_note_feature(name: &str, reject: bool) -> (World, String, String) {
+    let mut w = World::new(name);
+    let slug = slug_for(name);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(
+        6,
+        &slug,
+        &doc(
+            "实现中",
+            2,
+            1,
+            &[("M-01", if reject { "开放" } else { "已完成" })],
+        ),
+    );
+    w.doc_step(
+        7,
+        &slug,
+        &doc(
+            "实现中",
+            2,
+            2,
+            &[("M-01", if reject { "待审" } else { "已完成" })],
+        ),
+    );
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(9, &slug);
+    let id = create_task(&mut w, name);
+    w.settle();
+    (w, id, slug)
+}
+
+fn operator_note_at(w: &mut World, id: &str, node: &str) {
+    scheduling_wait(
+        w,
+        |w| {
+            if w.node(id).as_deref() == Some(node) {
+                return true;
+            }
+            automed::scheduler::tick(&mut w.ctx);
+            false
+        },
+        |w| format!("waiting for {node}: {:?}", w.task_states()),
+    );
+}
+
+fn operator_note_brief(w: &World, slug: &str, role: &str, n: u32) -> String {
+    std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/{role}-{n}.md")),
+    )
+    .unwrap()
+}
+
+#[test]
+fn operator_note_e2e_note_during_last_audit_adds_an_impl_round_then_merges() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-last-audit", false);
+    w.doc_step_for_prelude(
+        7,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+        "echo adopted > product.txt\ngit add product.txt",
+    );
+
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    operator_note_at(&mut w, &id, "audit");
+    ok(&w.call("task.note", json!({"task_id":id,"text":"唯一原文\n第二行"})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("唯一原文\n第二行"));
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(&id, "integration.range")
+            .unwrap()
+            .unwrap()["trigger"]["kind"],
+        "operator_note"
+    );
+    assert!(operator_note_brief(&w, &slug, "audit", 2).contains("操作者备注"));
+
+    assert!(!operator_note_brief(&w, &slug, "impl", 1).contains("唯一原文"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+
+#[test]
+fn operator_note_e2e_note_during_impl_reaches_the_next_impl_once() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-during-impl", false);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    operator_note_at(&mut w, &id, "implement");
+    ok(&w.call("task.note", json!({"task_id":id,"text":"during impl"})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(!operator_note_brief(&w, &slug, "impl", 1).contains("during impl"));
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("during impl"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_unhandled_note_stays_in_the_audit_brief_after_a_reject() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-rejected", true);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"must remain"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    for n in [1, 2] {
+        assert!(operator_note_brief(&w, &slug, "audit", n).contains("must remain"));
+    }
+    assert!(operator_note_brief(&w, &slug, "impl", 2).contains("must remain"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+    assert!(
+        automed::handoff::audit_notes(&w.ctx.store, &id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn operator_note_e2e_v9_audit_brief_lists_delivered_notes() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-v9", false);
+    w.retro_step(7, &slug);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"v9 note"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "audit", 1).contains("本里程碑送达的操作者备注"));
+}
+
+#[test]
+fn operator_note_e2e_old_protocol_audit_brief_has_no_note_check() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-old", false);
+    w.retro_step(7, &slug);
+    let path = w.repo.join(format!(
+        ".worktree/{slug}/docs/{slug}/protocol/prompts/audit.md"
+    ));
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.split("<!-- operator-notes -->").next().unwrap()).unwrap();
+    ok(&w.call("task.note", json!({"task_id":id,"text":"old note"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("old note"));
+    assert!(!operator_note_brief(&w, &slug, "audit", 1).contains("本里程碑送达的操作者备注"));
+}
+
+#[test]
+fn operator_note_e2e_several_notes_arrive_in_order() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-ordered", false);
+    w.retro_step(7, &slug);
+    for text in ["first note", "second note", "third note"] {
+        ok(&w.call("task.note", json!({"task_id":id,"text":text})));
+    }
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    let brief = operator_note_brief(&w, &slug, "impl", 1);
+    assert!(brief.find("first note").unwrap() < brief.find("second note").unwrap());
+    assert!(brief.find("second note").unwrap() < brief.find("third note").unwrap());
+    let delivered = w
+        .ctx
+        .store
+        .last_event(&id, "task.note_delivered")
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered["notes"], json!([1, 2, 3]));
+}
+
+#[test]
+fn operator_note_e2e_at_await_merge_needs_reopen_and_keeps_preauthorization() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-reopen", false);
+    w.retro_step(7, &slug);
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let rejected = w.call("task.note", json!({"task_id":id,"text":"reopen note"}));
+    assert!(
+        serde_json::to_string(&rejected.reply)
+            .unwrap()
+            .contains("--reopen")
+    );
+    assert_eq!(w.ctx.store.count_events(&id, "task.note_added").unwrap(), 0);
+    w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+    w.retro_step(10, &slug);
+    // Reopening must not revoke a pre-existing authorization.
+    w.ctx
+        .store
+        .append_event("merge.auto", &id, json!({"active":true,"by":"user"}))
+        .unwrap();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::AwaitMerge,
+            },
+        )
+        .unwrap();
+    ok(&w.call(
+        "task.note",
+        json!({"task_id":id,"text":"reopen note","reopen":true}),
+    ));
+    w.settle();
+    assert_eq!(w.state(&id), "done", "{}", failure_detail(&w, &id));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_queued_task_note_reaches_the_first_impl_not_design() {
+    needs_git!();
+    let mut w = World::new("note-queued");
+    let name = "note queued";
+    let slug = slug_for(name);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, name);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"queued unique"})));
+    w.settle();
+    for n in 1..=4 {
+        assert!(!w.prompt(n).contains("queued unique"));
+    }
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("queued unique"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_crashed_impl_presents_the_note_again() {
+    needs_git!();
+    let (mut w, id, slug) = operator_note_feature("note-crash", false);
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 0\n");
+    w.step(5, "exit 3\n");
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(7, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(8, &slug);
+    ok(&w.call("task.note", json!({"task_id":id,"text":"retry unchanged"})));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.wait_for_exit_marker(&id);
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        0
+    );
+    assert!(operator_note_brief(&w, &slug, "impl", 1).contains("retry unchanged"));
+    w.settle();
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let starts = w.ctx.store.task_events(&id, "session.started").unwrap();
+    assert_eq!(
+        starts.iter().filter(|v| v["notes"] == json!([1])).count(),
+        2
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "task.note_delivered")
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn operator_note_e2e_note_during_merge_gate_adds_an_impl_round_before_merge() {
+    needs_git!();
+    for auto in [false, true] {
+        let (mut w, id, slug) = operator_note_feature("note-merge-gate", false);
+        w.configure(&format!(
+            "[gate]\ncommand = 'true'\n[merge]\nauto = {auto}\n"
+        ));
+        w.retro_step(7, &slug);
+        w.doc_step(8, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+        w.doc_step(9, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+        w.retro_step(10, &slug);
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        operator_note_at(&mut w, &id, "merge_gate");
+        ok(&w.call(
+            "task.note",
+            json!({"task_id":id,"text":"before merge note"}),
+        ));
+        w.settle();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "task.note_delivered")
+                .unwrap(),
+            1,
+            "{}",
+            failure_detail(&w, &id)
+        );
+        if auto {
+            assert_eq!(w.state(&id), "done");
+        } else {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        }
+        let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+        let delivered = events
+            .iter()
+            .find(|(_, k, s, _)| s == &id && k == "task.note_delivered")
+            .unwrap()
+            .0;
+        for (seq, k, s, _) in &events {
+            if s == &id && k == "task.merged" {
+                assert!(*seq > delivered);
+            }
+        }
+    }
+}
+
+#[test]
+fn operator_note_e2e_bug_fix_rerun_fix_and_rerun_locate_carry_notes() {
+    needs_git!();
+    for target in ["fix", "locate", "fix_bad"] {
+        let mut w = World::new("note-bug-rerun");
+        let request = "note bug rerun";
+        let slug = slug_for(request);
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, request);
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        w.ctx
+            .store
+            .set_task_state(
+                &id,
+                &autome_domain::task::TaskState::Stopped {
+                    at: autome_domain::task::Node::Fix,
+                },
+            )
+            .unwrap();
+        ok(&w.call("task.note", json!({"task_id":id,"text":"bug rerun note"})));
+        assert_eq!(w.state(&id), "stopped");
+        if target == "locate" {
+            bug_step(&w, 4, &slug, &bug_doc("待复核"), BUG_LOCATE);
+            bug_step(&w, 5, &slug, &bug_doc("待复核"), BUG_FIX);
+            bug_step(&w, 6, &slug, &bug_doc("通过"), "");
+        } else {
+            bug_step(
+                &w,
+                4,
+                &slug,
+                &bug_doc("待复核"),
+                if target == "fix_bad" {
+                    "echo true > regression.sh"
+                } else {
+                    BUG_FIX
+                },
+            );
+            bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+        }
+        ok(&w.call(
+            "task.rerun_from",
+            json!({"task_id":id,"node":if target == "fix_bad" { "fix" } else { target }}),
+        ));
+        w.settle();
+        assert!(w.prompt(4).contains("bug rerun note"));
+        if target == "fix_bad" {
+            assert_eq!(w.state(&id), "failed");
+            assert!(failure_detail(&w, &id).contains("回归测试被修改"));
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events(&id, "task.note_delivered")
+                    .unwrap(),
+                0
+            );
+            continue;
+        }
+
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "{}",
+            failure_detail(&w, &id)
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "task.note_delivered")
+                .unwrap(),
+            1
+        );
+        assert!(
+            automed::handoff::audit_notes(&w.ctx.store, &id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+// Frozen audit template from 47fa384a^ (protocol/v7), before integration-audit.
+fn legacy_pointer_scenario(version: u32, dirty: bool) {
+    let mut w = World::with_store("legacy-pointer", true);
+    let command = format!("sh {}", write_gate_script(&w).display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\n"
+    ));
+    let request = "legacy pointer";
+    let slug = slug_for(request);
+    let pointer = "\n### M-01 验收契约\n最新证据：original-audit.md\n";
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(
+        6,
+        &slug,
+        &(doc("实现中", 2, 1, &[("M-01", "已完成")]) + pointer),
+    );
+    w.retro_step(7, &slug);
+    let changed = doc("实现中", 2, 2, &[("M-01", "已完成")])
+        + &pointer.replace("original-audit.md", "new-impl.md");
+    let mut script = World::doc_script(&slug, 8, &changed, "echo ok > gate-ok\ngit add gate-ok");
+    if dirty {
+        script.push_str("touch \"$(git rev-parse --git-path index.lock)\"\n");
+    }
+    w.step(8, &script);
+    if version < 8 {
+        // Legacy audit does not write fresh evidence: the new rule must warn.
+        w.step(9, "printf 'legacy audit complete\\n'\n");
+    } else {
+        w.doc_step(
+            9,
+            &slug,
+            &(doc("实现中", 2, 2, &[("M-01", "已完成")]) + pointer),
+        );
+    }
+    w.retro_step(10, &slug);
+    // Freeze the legacy protocol while parked at approval. resume_setup also
+    // launches step 5, whose git add/commit would race this fixture's commit.
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    let wt = w.repo.join(format!(".worktree/{slug}"));
+    let template = format!("docs/{slug}/protocol/prompts/audit.md");
+    assert!(
+        w.ctx.store.running_session(&id).unwrap().is_none(),
+        "freeze the legacy template before launching a session that commits docs"
+    );
+    if version < 8 {
+        std::fs::write(
+            wt.join(&template),
+            include_str!("fixtures/protocol-v7-audit.md"),
+        )
+        .unwrap();
+        automed::git::commit_paths(&wt, &[&template], "freeze v7 audit template").unwrap();
+    }
+    rusqlite::Connection::open(w.ctx.store.path())
+        .unwrap()
+        .execute(
+            "UPDATE tasks SET protocol_ref = ?1 WHERE id = ?2",
+            rusqlite::params![format!("protocol/v{version}@fixture"), id],
+        )
+        .unwrap();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    if dirty {
+        assert_eq!(w.state(&id), "failed");
+        assert!(
+            w.ctx
+                .store
+                .last_event(&id, "guard.auto_fixed")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!w.repo.join(".autome/fake/9.prompt").exists());
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&id, "guard.failed")
+                .unwrap()
+                .unwrap()["code"],
+            "impl_closed_milestone"
+        );
+        assert!(
+            std::fs::read_to_string(wt.join(format!("docs/{slug}/{slug}.md")))
+                .unwrap()
+                .contains("new-impl.md")
+        );
+        return;
+    }
+    assert_eq!(
+        w.node(&id).as_deref(),
+        Some("await_merge"),
+        "{}",
+        failure_detail(&w, &id)
+    );
+    let fixed = w
+        .ctx
+        .store
+        .last_event(&id, "guard.auto_fixed")
+        .unwrap()
+        .expect("pointer restored");
+    assert_eq!(fixed["code"], "impl_closed_milestone");
+    assert_eq!(fixed["milestones"], json!(["M-01"]));
+    let restore_commit = fixed["commit"].as_str().unwrap();
+    let restored = automed::git::run_ok(
+        &wt,
+        &["show", &format!("{restore_commit}:docs/{slug}/{slug}.md")],
+    )
+    .unwrap()
+    .stdout;
+    assert!(restored.contains("original-audit.md"));
+    assert!(!restored.contains("new-impl.md"));
+    assert!(restored.contains("implementation-round: 2/"));
+    let detail = fixed["detail"].as_str().unwrap();
+    if version < 8 {
+        assert!(detail.contains("协议 v7 没有这条规则"), "{detail}");
+        let started = w.ctx.store.task_events(&id, "session.started").unwrap();
+        assert!(started.iter().any(|e| e["integration"]["legacy"] == true));
+        let brief = integration_e2e_brief(&w, &slug, 2);
+        assert!(brief.contains("本轮是**集成复验**"));
+        assert!(brief.contains("独立复跑验收"));
+        assert!(brief.contains("gate-ok"));
+        assert!(
+            w.ctx
+                .store
+                .task_events(&id, "guard.warning")
+                .unwrap()
+                .iter()
+                .any(|e| e["code"] == "audit_made_no_progress")
+        );
+    } else {
+        assert!(
+            detail.contains("违反『已完成里程碑的最新证据不改』"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn legacy_pointer_e2e_v7_task_is_restored_and_audited() {
+    legacy_pointer_scenario(7, false);
+}
+
+#[test]
+fn legacy_pointer_e2e_v8_task_is_restored_with_the_rule_named() {
+    legacy_pointer_scenario(8, false);
+}
+
+#[test]
+fn legacy_pointer_e2e_restore_failure_keeps_todays_failure() {
+    legacy_pointer_scenario(7, true);
+}
+
+fn lane_wait(w: &mut World, mut ready: impl FnMut(&World) -> bool) {
+    scheduling_wait(
+        w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            ready(w)
+        },
+        |w| format!("{:?}", w.task_states()),
+    );
+}
+
+fn lane_task(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    w.retro_step(7, &slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&slug, 7, &retro);
+    let id = create_task(w, request);
+    lane_wait(w, |w| {
+        w.node(&id).as_deref() == Some("await_design_approval")
+    });
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    lane_wait(w, |w| {
+        !setup_events(w, &id, "gate.started").is_empty()
+            || !setup_events(w, &id, "gate.queued").is_empty()
+    });
+    id
+}
+
+fn lane_config(w: &World, quick: &str, limit: u32) {
+    let path = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let before_gate = text.split("[gate]").next().unwrap();
+    std::fs::write(&path, format!("{before_gate}[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick_concurrency = {limit}\n{quick}\n", w.root.join("queued-gate.sh").display())).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "lane config").unwrap();
+    std::fs::write(
+        w.ctx.autome_home.join("config.toml"),
+        format!("[gate]\nquick_concurrency = {limit}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn gate_lane_e2e_quick_runs_beside_a_sleeping_merge_gate() {
+    needs_git!();
+    let mut w = queued_gate_world("lane-heavy-light", 30);
+    lane_config(&w, "", 1);
+    let a = lane_task(&mut w, "lane heavy");
+    let started = setup_events(&w, &a, "gate.started");
+    assert_eq!(started[0].1["node"], "merge_gate");
+    assert_eq!(started[0].1["lane"], "heavy");
+    lane_config(&w, "quick = 'true'", 1);
+    let b = lane_task(&mut w, "lane light");
+    lane_wait(&mut w, |w| {
+        !setup_events(w, &b, "gate.result").is_empty()
+            && setup_events(w, &b, "session.started")
+                .iter()
+                .any(|(_, p)| p["kind"]["role"] == "audit")
+    });
+    assert_eq!(setup_events(&w, &b, "gate.started")[0].1["lane"], "light");
+    assert_eq!(setup_events(&w, &b, "gate.result")[0].1["ok"], true);
+    assert!(setup_events(&w, &a, "gate.result").is_empty());
+    queue_release(&w, &a);
+    queue_release(&w, &b);
+    lane_wait(&mut w, |w| !setup_events(w, &a, "gate.result").is_empty());
+    w.settle();
+    assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn gate_lane_e2e_two_quick_checks_fifo_at_one_parallel_at_two() {
+    needs_git!();
+    for limit in [1, 2] {
+        let mut w = queued_gate_world("lane-quick-fifo", 30);
+        lane_config(
+            &w,
+            &format!("quick = 'sh {}'", w.root.join("queued-gate.sh").display()),
+            limit,
+        );
+        let a = lane_task(&mut w, "lane first");
+        let b = lane_task(&mut w, "lane second");
+        if limit == 1 {
+            queue_assert_waiting(&mut w, &b, 1);
+            assert_eq!(setup_events(&w, &b, "gate.queued")[0].1["lane"], "light");
+            queue_release(&w, &a);
+            lane_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+            assert!(
+                setup_events(&w, &a, "gate.result")[0].0
+                    < setup_events(&w, &b, "gate.started")[0].0
+            );
+        } else {
+            assert!(setup_events(&w, &a, "gate.result").is_empty());
+            assert!(setup_events(&w, &b, "gate.result").is_empty());
+            assert_eq!(setup_events(&w, &b, "gate.started")[0].1["kind"], "quick");
+            assert!(setup_events(&w, &b, "gate.queued").is_empty());
+            queue_release(&w, &a);
+        }
+        queue_release(&w, &b);
+        lane_wait(&mut w, |w| {
+            !setup_events(w, &a, "gate.result").is_empty()
+                && !setup_events(w, &b, "gate.result").is_empty()
+        });
+        w.settle();
+        assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn gate_lane_e2e_bug_before_merge_light_each_round_heavy() {
+    needs_git!();
+    for (mode, quick, fix_kind, fix_lane) in [
+        ("before_merge", "", "repro", "light"),
+        ("before_merge", "quick = 'true'", "quick", "light"),
+        ("each_round", "quick = 'true'", "full", "heavy"),
+    ] {
+        let mut w = World::new("lane-bug");
+        w.configure(&format!(
+            "[gate]\nrun = '{mode}'\ncommand = 'true'\n{quick}\n"
+        ));
+        let request = "lane bug";
+        let slug = slug_for(request);
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, request);
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        let events = setup_events(&w, &id, "gate.started");
+        for (node, kind, lane) in [
+            ("repro_check", "repro", "light"),
+            ("fix_gate", fix_kind, fix_lane),
+            ("merge_gate", "full", "heavy"),
+        ] {
+            let event = events.iter().find(|(_, p)| p["node"] == node).unwrap();
+            assert_eq!(event.1["kind"], kind);
+            assert_eq!(event.1["lane"], lane);
+        }
+    }
+}
+
+#[test]
+fn task_documents_e2e_retro_adds_lessons() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions.iter().any(|s| s.kind
+            == autome_domain::session::SessionKind::Role {
+                role: autome_domain::role::Role::Retro
+            }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    let docs = ok(&got)["documents"].as_array().unwrap();
+    assert!(
+        docs.iter()
+            .any(|d| d["label"] == "复盘教训" && d["source"] == "worktree")
+    );
+}
+#[test]
+fn task_documents_e2e_merged_task_reads_default_branch_and_status_block() {
+    needs_git!();
+    let mut w = World::new("retro-loop");
+    let request = "learn something";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+
+    let task_id = create_task(&mut w, request);
+    w.settle();
+    w.call("task.approve", json!({ "task_id": task_id }));
+    w.settle();
+    assert_eq!(w.node(&task_id).as_deref(), Some("await_merge"));
+
+    // The retro round ran, as its own role, after the audit closed everything.
+    let sessions = w.ctx.store.list_sessions(&task_id).unwrap();
+    assert!(
+        sessions.iter().any(|s| s.kind
+            == autome_domain::session::SessionKind::Role {
+                role: autome_domain::role::Role::Retro
+            }),
+        "no retro session: {:?}",
+        sessions.iter().map(|s| s.kind).collect::<Vec<_>>()
+    );
+
+    // And what it wrote parsed against the schema, which is the whole point:
+    // a lesson the core cannot read never reaches a rule.
+    let lessons = w
+        .ctx
+        .store
+        .last_event(&task_id, "task.lessons")
+        .unwrap()
+        .expect("lessons were never read");
+    assert_eq!(lessons["count"], 1, "{lessons}");
+    assert_eq!(lessons["lessons"][0]["domain"], "verification", "{lessons}");
+    ok(&w.call("task.merge", json!({"task_id": task_id})));
+    w.settle();
+    assert_eq!(w.state(&task_id), "done");
+    assert!(!w.repo.join(format!(".worktree/{slug}")).exists());
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    let payload = ok(&got);
+    assert_eq!(payload["status_block"]["milestones_done"], 1);
+    assert!(!payload["documents"].as_array().unwrap().is_empty());
+    assert!(
+        payload["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+    // On-disk edits cannot replace the committed default-branch status block.
+    std::fs::write(w.repo.join(format!("docs/{slug}/{slug}.md")), "broken").unwrap();
+    let got = w.call("task.get", json!({"task_id":task_id}));
+    assert_eq!(ok(&got)["status_block"]["milestones_done"], 1);
+}
+#[test]
+fn task_documents_e2e_bug_task_lists_its_bug_document() {
+    needs_git!();
+    let mut w = World::new("documents-bug");
+    let slug = slug_for("documents bug");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, "documents bug");
+    w.settle();
+    let got = w.call("task.get", json!({"task_id":id}));
+    let payload = ok(&got);
+    let docs = payload["documents"].as_array().unwrap();
+    assert!(
+        docs.iter()
+            .any(|d| d["name"] == format!("{slug}-bug.md") && d["label"] == "Bug 文档")
+    );
+    assert_eq!(payload["status_block"]["review"], "Passed");
+    assert_eq!(payload["status_error"], false);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    let got = w.call("task.get", json!({"task_id":id}));
+    assert_eq!(ok(&got)["status_block"]["review"], "Passed");
+    assert!(
+        ok(&got)["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+}
+
+#[test]
+fn task_changes_status_e2e_before_and_after_merge() {
+    needs_git!();
+    let mut w = World::new("changes-status");
+    for name in ["delete-me", "modify-me", "rename-me"] {
+        std::fs::write(w.repo.join(name), format!("{name}\nunique\n")).unwrap();
+    }
+    automed::git::commit_paths(&w.repo, &["."], "base files").unwrap();
+    let id = wait_for_automatic_merge(&mut w, "file status");
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let wt = w.repo.join(".worktree").join(&task.slug);
+    std::fs::remove_file(wt.join("delete-me")).unwrap();
+    std::fs::write(wt.join("modify-me"), "modified\n").unwrap();
+    std::fs::write(wt.join("add-me"), "added\n").unwrap();
+    std::fs::rename(wt.join("rename-me"), wt.join("renamed-me")).unwrap();
+    automed::git::commit_paths(&wt, &["."], "four types").unwrap();
+    let before = ok(&w.call("task.changes", json!({"task_id":id}))).clone();
+    for (path, status) in [
+        ("add-me", "added"),
+        ("delete-me", "deleted"),
+        ("modify-me", "modified"),
+        ("renamed-me", "renamed"),
+    ] {
+        let f = before["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap();
+        assert_eq!(f["status"], status);
+        let keys: Vec<_> = f.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            if status == "renamed" {
+                vec!["added", "deleted", "from", "path", "status"]
+            } else {
+                vec!["added", "deleted", "path", "status"]
+            }
+        );
+        if status == "renamed" {
+            assert_eq!(f["from"], "rename-me");
+        }
+    }
+    assert_eq!(before["deleted_count"], 1);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert!(!automed::git::branch_exists(&w.repo, &task.branch()));
+    let after = ok(&w.call("task.changes", json!({"task_id":id}))).clone();
+    assert_eq!(after["merged"], true);
+    for key in ["files", "deleted_count", "total_added", "total_deleted"] {
+        assert_eq!(before[key], after[key], "{key}");
+    }
+    w.ctx.store.complete_task(&id, Some("missing")).unwrap();
+    assert_eq!(
+        ok(&w.call("task.changes", json!({"task_id":id})))["available"],
+        false
+    );
+    let first = automed::git::run_ok(&w.repo, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+    w.ctx.store.complete_task(&id, Some(first.line())).unwrap();
+    assert_eq!(
+        ok(&w.call("task.changes", json!({"task_id":id})))["available"],
+        false
+    );
+}
+
+#[test]
+fn events_by_subject_e2e_interleaved_tasks_and_project() {
+    needs_git!();
+    let mut w = World::new("subject-pages");
+    let a = wait_for_automatic_merge(&mut w, "subject a");
+    let b = wait_for_automatic_merge(&mut w, "subject b");
+    let start = w.ctx.store.latest_seq().unwrap();
+    let mut expected = Vec::new();
+    for subject in [&a, &b, &a, &w.project_id, &b, &a] {
+        let seq = w
+            .ctx
+            .store
+            .append_event("session.ended", subject, json!({"task_id":"wrong"}))
+            .unwrap();
+        if subject == &a {
+            expected.push(seq);
+        }
+    }
+    let latest = w.ctx.store.latest_seq().unwrap();
+    let mut cursor = start;
+    let mut found = Vec::new();
+    loop {
+        let page = ok(&w.call(
+            "events.since",
+            json!({"subject":a,"after_seq":cursor,"limit":1}),
+        ))
+        .clone();
+        assert_eq!(page["latest_seq"], latest);
+        let rows = page["events"].as_array().unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["subject"], a);
+        cursor = rows[0]["seq"].as_u64().unwrap();
+        found.push(cursor);
+    }
+    assert_eq!(found, expected);
+    let project = w.project_id.clone();
+    let page = ok(&w.call("events.since", json!({"subject":project,"after_seq":start}))).clone();
+    assert_eq!(page["events"].as_array().unwrap().len(), 1);
+}
+
+fn assert_session_ended(w: &mut World, id: &str, end: &str, code: Value) {
+    let events = w.ctx.store.task_events(id, "session.ended").unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    let session = w.ctx.store.list_sessions(id).unwrap().remove(0);
+    assert_eq!(event["session_id"], session.id);
+    assert_eq!(event["kind"], serde_json::to_value(session.kind).unwrap());
+    assert_eq!(event["round"], session.round);
+    assert_eq!(event["end"], end);
+    assert_eq!(event["exit_code"], code);
+    // A short CLI can exit before launch bookkeeping writes started_at.
+    // The existing metrics contract represents that negative duration as unknown.
+    if let Some(duration) = session.metrics.duration_ms {
+        assert_eq!(event["duration_ms"], duration);
+    } else if session.ended_at.as_deref().unwrap() >= session.started_at.as_str() {
+        assert!(event["duration_ms"].is_u64(), "{event:?}");
+    } else {
+        assert!(event["duration_ms"].is_null());
+    }
+    assert_eq!(
+        event["cost_usd"],
+        serde_json::to_value(session.metrics.cost_usd).unwrap()
+    );
+    assert_eq!(event.as_object().unwrap().len(), 7);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(w.ctx.store.count_events(id, "session.ended").unwrap(), 1);
+}
+
+#[test]
+fn session_ended_e2e_exited() {
+    needs_git!();
+    let mut w = World::new("ended-exit");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 3600\n");
+    w.step(1, "exit 0\n");
+    let id = create_task(&mut w, "ended exit");
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.ctx.store.count_events(&id, "session.ended").unwrap() == 1
+        },
+        |_| "waiting for normal exit".into(),
+    );
+    assert_session_ended(&mut w, &id, "exited", json!(0));
+}
+#[test]
+fn session_ended_e2e_crashed() {
+    needs_git!();
+    let mut w = World::new("ended-crash");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 3600\n");
+    w.step(1, "exit 3\n");
+    let id = create_task(&mut w, "ended crash");
+    wait_for_retry(&mut w.ctx, &id);
+    assert_session_ended(&mut w, &id, "crashed", json!(3));
+}
+#[test]
+fn session_ended_e2e_stopped() {
+    needs_git!();
+    let (mut w, _) = session_timeout_world("ended-stop");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "ended stop");
+    let pid = session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    assert_session_ended(&mut w, &id, "stopped", Value::Null);
+    assert!(!automed::launcher::pid_alive(pid));
+}
+#[test]
+fn session_ended_e2e_timed_out() {
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("ended-timeout");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "ended timeout");
+    let pid = session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    session_timeout_backdate(&conn, &s.id);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_session_ended(&mut w, &id, "timed_out", Value::Null);
+    assert!(!automed::launcher::pid_alive(pid));
+}
+
+#[test]
+fn task_changes_status_workspace_after_cleanup() {
+    needs_git!();
+    let mut w = Workspace::new("changes-workspace", &["docs", "backend"]);
+    let (id, _) = workspace_waiting_to_merge(&mut w);
+    let before = ok(&call(&mut w.ctx, "task.changes", json!({"task_id":id}))).clone();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id":id})));
+    w.settle();
+    let after = ok(&call(&mut w.ctx, "task.changes", json!({"task_id":id}))).clone();
+    assert_eq!(after["merged"], true);
+    assert_eq!(before["repos"].as_array().unwrap().len(), 2);
+    assert_eq!(before["files"], after["files"]);
+    for repo in after["repos"].as_array().unwrap() {
+        assert_eq!(repo["merged"], true);
+    }
+}
+
+#[test]
+fn onboarding_session_e2e_run_log_end_and_task_cost_isolation() {
+    needs_git!();
+    let mut w = World::new("onboarding-ledger");
+    let project = w.project_id.clone();
+    w.ctx
+        .store
+        .update_project_onboarding(
+            &project,
+            autome_domain::project::Onboarding::InProgress { step: 3 },
+        )
+        .unwrap();
+    let draft = ok(&w.call(
+        "task.create",
+        json!({"project_id":project,"title":"untouched", "request":"untouched", "draft":true}),
+    ))
+    .clone();
+    let task = draft["task"]["id"].as_str().unwrap();
+    let before = ok(&w.call("task.get", json!({"task_id":task}))).clone();
+    w.step(1, "printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"onboarding-log-marker\"}]}}'\n");
+    let run = ok(&w.call("project.onboarding.run", json!({"project_id":project}))).clone();
+    let sid = run["session_id"].as_str().unwrap();
+    let row = w.ctx.store.get_session(sid).unwrap().unwrap();
+    assert_eq!(row.project_id.as_deref(), Some(project.as_str()));
+    assert!(
+        w.ctx
+            .store
+            .session_event(&project, sid, "session.started")
+            .unwrap()
+            .is_some()
+    );
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            assert!(!report.tasks_advanced.iter().any(|id| id == "onboarding"));
+            let row = w.ctx.store.get_session(sid).unwrap().unwrap();
+            !row.is_running() && !row.pid.is_some_and(automed::launcher::pid_alive)
+        },
+        |_| "waiting for onboarding wrapper exit".into(),
+    );
+    let log = ok(&w.call("session.log", json!({"session_id":sid}))).clone();
+    assert!(log["log"].as_str().unwrap().contains(sid), "{log}");
+    let view = ok(&w.call("project.get", json!({"project_id":project}))).clone();
+    assert_eq!(view["onboarding_session"]["id"], sid);
+    assert!(view["onboarding_session"]["ended_at"].is_string());
+    let ended = w
+        .ctx
+        .store
+        .session_event(&project, sid, "session.ended")
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended["end"], "exited");
+    assert_eq!(
+        w.ctx.store.count_events(&project, "session.ended").unwrap(),
+        1
+    );
+    let after = ok(&w.call("task.get", json!({"task_id":task}))).clone();
+    assert_eq!(before, after);
+    assert!(w.ctx.store.list_sessions(task).unwrap().is_empty());
+}
+
+// Protocol identity must describe the files actually frozen for the task.
+fn integrity_world() -> (World, String, PathBuf) {
+    let mut w = World::with_store("integrity", true);
+    let request = "integrity copy";
+    let slug = slug_for(request);
+    for n in 1..=3 {
+        w.doc_step(n, &slug, &doc("设计中", 1, 0, &[]));
+    }
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.sessions_run().len(), 4);
+    let copy = w
+        .repo
+        .join(format!(".worktree/{slug}/docs/{slug}/protocol"));
+    (w, id, copy)
+}
+
+fn integrity_two_sessions(w: &mut World, id: &str) {
+    w.ctx
+        .store
+        .set_task_state(
+            id,
+            &autome_domain::task::TaskState::Stopped {
+                at: autome_domain::task::Node::Review,
+            },
+        )
+        .unwrap();
+    let slug = slug_for(&request_of(w, id));
+    let n = w.sessions_run().len() as u32;
+    w.doc_step(n + 1, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(n + 2, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    ok(&w.call("task.rerun_from", json!({"task_id": id, "node": "review"})));
+    w.settle();
+    assert_eq!(w.sessions_run().len(), n as usize + 2);
+}
+
+fn integrity_events(w: &World, id: &str, kind: &str) -> Vec<Value> {
+    w.ctx.store.task_events(id, kind).unwrap()
+}
+
+fn integrity_legacy(w: &World, id: &str, verifiable: bool) -> String {
+    let reference = autome_domain::protocol::ProtocolRef::new(
+        if verifiable {
+            automed::protocol::current().0.tag.as_str()
+        } else {
+            "protocol/v1"
+        },
+        automed::protocol::seed().hash(),
+    )
+    .to_wire();
+    // Simulate the persisted state of a pre-upgrade daemon, not a new freeze.
+    let db = rusqlite::Connection::open(w.ctx.store.path()).unwrap();
+    db.execute(
+        "UPDATE tasks SET protocol_ref = ?2 WHERE id = ?1",
+        rusqlite::params![id, reference],
+    )
+    .unwrap();
+    db.execute("DELETE FROM events WHERE subject_id = ?1 AND kind IN ('protocol.hash_scheme', 'integrity_warning')", [id]).unwrap();
+    reference
+}
+
+#[test]
+fn protocol_integrity_untouched_copy_records_no_warning() {
+    needs_git!();
+    let (w, id, _) = integrity_world();
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let task = w.ctx.store.get_task(&id).unwrap();
+    for session in w.ctx.store.list_sessions(&id).unwrap() {
+        assert_eq!(session.protocol_ref, task.protocol_ref);
+    }
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["reason"], "frozen");
+}
+
+#[test]
+fn protocol_integrity_edited_copy_warns_exactly_once_over_two_sessions() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    std::fs::write(copy.join("prompts/fix.md"), "edited\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    let actual = autome_domain::protocol::ProtocolRef::new(
+        automed::protocol::current().0.tag.clone(),
+        automed::protocol::read_dir_protocol(&copy).unwrap().hash(),
+    )
+    .to_wire();
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    assert_eq!(
+        sessions
+            .iter()
+            .filter(|s| s.protocol_ref.as_deref() == Some(&actual))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn protocol_integrity_legacy_ref_is_migrated_once_without_warning() {
+    needs_git!();
+    let (mut w, id, _) = integrity_world();
+    let previous = integrity_legacy(&w, &id, true);
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["verified"], true);
+    assert_eq!(schemes[0]["previous"], previous);
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(automed::protocol::current().0.to_wire())
+    );
+}
+
+#[test]
+fn protocol_integrity_legacy_ref_with_an_edited_copy_still_warns() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    integrity_legacy(&w, &id, true);
+    std::fs::write(copy.join("prompts/fix.md"), "edited before upgrade\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(automed::protocol::current().0.to_wire())
+    );
+}
+
+#[test]
+fn protocol_integrity_unverifiable_legacy_ref_rebuilds_the_baseline_and_says_so() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    let previous = integrity_legacy(&w, &id, false);
+    std::fs::write(copy.join("prompts/fix.md"), "unknown history\n").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    let schemes = integrity_events(&w, &id, "protocol.hash_scheme");
+    assert_eq!(schemes.len(), 1);
+    assert_eq!(schemes[0]["verified"], false);
+    assert_eq!(schemes[0]["previous"], previous);
+    assert!(
+        schemes[0]["limitation"]
+            .as_str()
+            .unwrap()
+            .contains("无法核实")
+    );
+    let expected = autome_domain::protocol::ProtocolRef::new(
+        "protocol/v1",
+        automed::protocol::read_dir_protocol(&copy).unwrap().hash(),
+    )
+    .to_wire();
+    assert_eq!(
+        w.ctx.store.get_task(&id).unwrap().protocol_ref,
+        Some(expected)
+    );
+}
+
+#[test]
+fn protocol_integrity_edit_after_migration_still_warns() {
+    needs_git!();
+    let (mut w, id, copy) = integrity_world();
+    integrity_legacy(&w, &id, false);
+    integrity_two_sessions(&mut w, &id);
+    assert!(integrity_events(&w, &id, "integrity_warning").is_empty());
+    // Empty added file, then deletion: path membership matters as well as bytes.
+    std::fs::write(copy.join("extra.md"), "").unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 1);
+    std::fs::remove_file(copy.join("prompts/fix.md")).unwrap();
+    integrity_two_sessions(&mut w, &id);
+    assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 2);
+    assert_eq!(integrity_events(&w, &id, "protocol.hash_scheme").len(), 1);
 }

@@ -195,6 +195,8 @@ impl ExitMarker {
 /// and a float has no total order worth pretending about.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub id: String,
     pub task_id: String,
     pub kind: SessionKind,
@@ -425,6 +427,7 @@ mod tests {
     #[test]
     fn session_round_trips_through_json() {
         let s = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },

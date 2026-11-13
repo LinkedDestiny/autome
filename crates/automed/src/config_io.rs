@@ -118,6 +118,76 @@ pub fn load_project(repo: &Path) -> Result<ProjectConfig> {
     })
 }
 
+/// Top-level resolved keys whose entire value comes from built-in defaults.
+/// A partially overridden aggregate is not labelled as entirely default.
+/// Read the file rather than the repaired GlobalConfig to distinguish an
+/// explicit value equal to the default from an omitted setting.
+pub fn resolved_defaults(autome_home: &Path, project: &ProjectConfig) -> Result<Vec<String>> {
+    let path = global_config_path(autome_home);
+    let raw: toml::Value = toml::from_str(&read(&path)?).map_err(|e| ConfigError::Parse {
+        path: path.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let local = serde_json::to_value(project).expect("project config is serializable");
+    let mut defaults = Vec::new();
+    for key in [
+        "bug",
+        "gate",
+        "gate_quick",
+        "gate_run",
+        "setup",
+        "merge_auto",
+        "merge_after",
+        "gate_same_failure_limit",
+        "gate_reuse_for_main_check",
+        "retry",
+    ] {
+        if local.get(key).is_none() {
+            defaults.push(key.to_string());
+        }
+    }
+    for (key, global_key) in [
+        ("gate_concurrency", "concurrency"),
+        ("gate_quick_concurrency", "quick_concurrency"),
+    ] {
+        if local.get(key).is_none() && raw.get("gate").and_then(|t| t.get(global_key)).is_none() {
+            defaults.push(key.to_string());
+        }
+    }
+    let loop_fields = [
+        "parallel",
+        "design_rounds",
+        "budget_factor",
+        "session_minutes",
+    ];
+    let omitted = |key: &str| {
+        local["loop"]
+            .get(key)
+            .is_none_or(serde_json::Value::is_null)
+            && raw.get("loop").and_then(|t| t.get(key)).is_none()
+    };
+    if loop_fields.iter().all(|key| omitted(key)) {
+        defaults.push("loop_defaults".into());
+    } else {
+        defaults.extend(
+            loop_fields
+                .iter()
+                .filter(|key| omitted(key))
+                .map(|key| format!("loop_defaults.{key}")),
+        );
+    }
+    if project.roles.is_empty()
+        && raw
+            .get("roles")
+            .and_then(toml::Value::as_table)
+            .is_none_or(|t| t.is_empty())
+    {
+        defaults.push("roles".into());
+    }
+    defaults.sort();
+    Ok(defaults)
+}
+
 fn read(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
         path: path.display().to_string(),
@@ -133,6 +203,9 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
     let mut config = GlobalConfig::default();
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        if let Some(v) = t.get("quick_concurrency") {
+            config.gate.quick_concurrency = parse_gate_quick_concurrency(v)?;
+        }
         if let Some(v) = t.get("concurrency") {
             config.gate.concurrency = parse_gate_concurrency(v)?;
         }
@@ -390,6 +463,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                     .ok_or("[gate] reuse_for_main_check 必须是 true 或 false")?,
             );
         }
+        if let Some(v) = t.get("quick_concurrency") {
+            config.gate_quick_concurrency = Some(parse_gate_quick_concurrency(v)?);
+        }
         if let Some(v) = t.get("concurrency") {
             config.gate_concurrency = Some(parse_gate_concurrency(v)?);
         }
@@ -443,7 +519,10 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
             .get("command")
             .and_then(toml::Value::as_str)
             .or_else(|| {
-                (!t.contains_key("command") && config.gate_concurrency.is_some()).then_some("")
+                (!t.contains_key("command")
+                    && (config.gate_concurrency.is_some()
+                        || config.gate_quick_concurrency.is_some()))
+                .then_some("")
             })
             .ok_or("[gate] 需要 command，例如 command = \"make check\"")?
             .trim()
@@ -825,6 +904,11 @@ pub fn skill_bindings(
     by_skill
 }
 
+fn parse_gate_quick_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
+    parse_gate_concurrency(value)
+        .map_err(|_| "[gate] quick_concurrency 必须是 1 到 10 的整数".to_string())
+}
+
 fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
     value
         .as_integer()
@@ -1154,6 +1238,69 @@ mod tests {
         write_project(dir.path(), "[gate]\nconcurrency = 7 # keep\n");
         save_project(dir.path(), &ProjectConfig::default()).unwrap();
         assert_eq!(load_project(dir.path()).unwrap().gate_concurrency, Some(7));
+    }
+
+    #[test]
+    fn gate_lane_quick_concurrency_defaults_to_one_and_rejects_out_of_range() {
+        for text in ["", "[gate]"] {
+            assert_eq!(parse_global(text).unwrap().gate.quick_concurrency, 1);
+        }
+        for n in 1..=10 {
+            let text = format!("[gate]\nquick_concurrency = {n}");
+            assert_eq!(parse_global(&text).unwrap().gate.quick_concurrency, n);
+            let project = parse_project(&text).unwrap();
+            assert_eq!(project.gate_quick_concurrency, Some(n));
+            assert!(project.gate.is_none());
+        }
+        for value in [
+            "0",
+            "11",
+            "-1",
+            "1.5",
+            "true",
+            "'2'",
+            "''",
+            "[]",
+            "9223372036854775807",
+        ] {
+            let text = format!("[gate]\nquick_concurrency = {value}");
+            let expected = "[gate] quick_concurrency 必须是 1 到 10 的整数";
+            assert_eq!(parse_global(&text).unwrap_err(), expected);
+            assert_eq!(parse_project(&text).unwrap_err(), expected);
+        }
+        for value in ["01", "9223372036854775808", ""] {
+            let text = format!("[gate]\nquick_concurrency = {value}");
+            assert!(parse_global(&text).is_err());
+            assert!(parse_project(&text).is_err());
+        }
+        assert!(parse_project("[gate]\nquick_concurrency = 1\ncommand = 2").is_err());
+        assert!(
+            parse_project("[gate]\nconcurrency = 1\nquick_concurrency = 2")
+                .unwrap()
+                .gate
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gate_lane_save_project_keeps_quick_concurrency() {
+        let dir = TempDir::new("lane-project");
+        let gate = "[gate]\nquick_concurrency = 2 # keep\nconcurrency = 1\ncommand = 'true'\n";
+        write_project(dir.path(), gate);
+        save_project(dir.path(), &ProjectConfig::default()).unwrap();
+        let text = std::fs::read_to_string(project_config_path(dir.path())).unwrap();
+        assert!(text.contains(gate));
+        assert_eq!(
+            load_project(dir.path()).unwrap().gate_quick_concurrency,
+            Some(2)
+        );
+        std::fs::write(global_config_path(dir.path()), gate).unwrap();
+        save_global(dir.path(), &GlobalConfig::default()).unwrap();
+        assert!(
+            std::fs::read_to_string(global_config_path(dir.path()))
+                .unwrap()
+                .contains(gate)
+        );
     }
 
     #[test]

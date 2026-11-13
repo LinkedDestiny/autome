@@ -219,7 +219,7 @@ pub fn current() -> &'static (ProtocolRef, ProtocolFiles) {
             .get("CHANGELOG.md")
             .and_then(newest_version_heading)
             .expect("the seed's changelog names its version; a unit test checks it");
-        (ProtocolRef::new(tag, files.hash()), files)
+        (ProtocolRef::new(tag, files.task_copy().hash()), files)
     })
 }
 
@@ -300,12 +300,7 @@ pub fn copy_into_task(
     doc_dir: &str,
 ) -> Result<Vec<String>> {
     let mut written = Vec::new();
-    for (path, content) in files.iter() {
-        // Eval fixtures are large and a task never reads them; the copy exists
-        // so the rules can be reproduced, not so the cases can be re-run.
-        if path.starts_with("evals/") {
-            continue;
-        }
+    for (path, content) in files.task_copy().iter() {
         let rel = format!("{doc_dir}/{TASK_SUBDIR}/{path}");
         let full = worktree.join(&rel);
         if let Some(parent) = full.parent() {
@@ -396,11 +391,45 @@ mod tests {
     }
 
     #[test]
+    fn protocol_integrity_version_hash_equals_a_fresh_task_copy_hash() {
+        let dir = std::env::temp_dir().join(format!("autome-integrity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (reference, files) = current();
+        copy_into_task(files, &dir, "docs/task").unwrap();
+        let copy = read_dir_protocol(&dir.join("docs/task/protocol")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(copy.contains("contract.toml"));
+        assert!(!copy.paths().any(|p| p.starts_with("evals/")));
+        assert_eq!(reference.hash, copy.hash());
+        assert!(ProtocolFiles::new().task_copy().is_empty());
+        let boundary = ProtocolFiles::from_pairs([
+            ("evals/case.md", "fixture"),
+            ("contract.toml", ""),
+            ("evals-other.md", "rule"),
+        ])
+        .task_copy();
+        assert_eq!(boundary.len(), 2);
+        assert_eq!(boundary.get("contract.toml"), Some(""));
+        assert!(boundary.contains("evals-other.md"));
+    }
+
+    #[test]
     fn the_version_in_force_is_the_newest_changelog_heading_over_the_seed() {
         let (r, files) = current();
-        assert_eq!(r.tag, "protocol/v8");
-        assert_eq!(r.hash, seed().hash());
+        assert_eq!(r.tag, "protocol/v9");
+        assert_eq!(r.hash, seed().task_copy().hash());
         assert_eq!(files.hash(), seed().hash());
+    }
+
+    #[test]
+    fn test_fix_marker_is_in_the_v9_fix_prompt() {
+        assert_eq!(current().0.tag, "protocol/v9");
+        assert!(
+            seed()
+                .prompt("fix")
+                .unwrap()
+                .contains("<!-- regression-test-defect -->")
+        );
     }
 
     #[test]

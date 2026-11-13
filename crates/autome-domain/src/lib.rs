@@ -41,7 +41,9 @@ pub mod metrics;
 pub mod project;
 pub mod protocol;
 pub mod role;
+pub mod scope;
 pub mod session;
+
 pub mod skill;
 pub mod status_block;
 pub mod task;

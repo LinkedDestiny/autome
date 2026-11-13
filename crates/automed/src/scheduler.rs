@@ -18,6 +18,8 @@
 //! All three funnel into `advance`, so there is exactly one implementation of
 //! "apply a transition and act on it".
 
+pub(crate) mod test_fix;
+
 use std::path::{Path, PathBuf};
 
 use autome_domain::bug_loop::{self, BugProgress, BugSessionOutcome};
@@ -81,6 +83,17 @@ impl From<git::GitError> for SchedulerError {
 }
 impl From<launcher::LaunchError> for SchedulerError {
     fn from(e: launcher::LaunchError) -> Self {
+        err(e.to_string())
+    }
+}
+
+impl From<crate::scope::RestoreError> for SchedulerError {
+    fn from(e: crate::scope::RestoreError) -> Self {
+        err(e.to_string())
+    }
+}
+impl From<serde_json::Error> for SchedulerError {
+    fn from(e: serde_json::Error) -> Self {
         err(e.to_string())
     }
 }
@@ -217,7 +230,9 @@ fn tick_locked(ctx: &mut Ctx) -> TickReport {
         match reap_session(ctx, &s) {
             Ok(true) => {
                 report.sessions_reaped.push(s.id.clone());
-                report.tasks_advanced.push(s.task_id.clone());
+                if s.kind != SessionKind::Onboarding {
+                    report.tasks_advanced.push(s.task_id.clone());
+                }
             }
             Ok(false) => {}
             Err(e) => {
@@ -295,7 +310,56 @@ pub(crate) fn effective_limit(ctx: &Ctx, s: &Session, project: &Project) -> u32 
     })
 }
 
+fn reap_onboarding(ctx: &mut Ctx, s: &Session) -> Result<bool> {
+    let project = ctx.store.get_project(
+        s.project_id
+            .as_deref()
+            .ok_or_else(|| err("Onboarding 会话缺少项目"))?,
+    )?;
+    let repo = PathBuf::from(&project.path);
+    let marker =
+        std::fs::read_to_string(repo.join(SessionPaths::exit(ONBOARDING_SESSION_KEY, &s.id)))
+            .ok()
+            .and_then(|text| ExitMarker::parse(&text));
+    let pid = s.pid.or_else(|| {
+        std::fs::read_to_string(repo.join(SessionPaths::pid(ONBOARDING_SESSION_KEY, &s.id)))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+    });
+    let mut lifecycle = session::classify(
+        marker.as_ref(),
+        pid.map(launcher::pid_alive).unwrap_or(false),
+        session_idle_secs(
+            &repo.join(SessionPaths::log(ONBOARDING_SESSION_KEY, &s.id)),
+            &s.started_at,
+        ),
+    );
+    let limit = effective_limit(ctx, s, &project);
+    if lifecycle.is_running() {
+        if !secs_since(&s.started_at).is_some_and(|secs| session::over_limit(secs, limit)) {
+            return Ok(false);
+        }
+        let Some(pid) = pid else {
+            return Ok(false);
+        };
+        if !launcher::terminate_group(pid)? {
+            return Ok(false);
+        }
+        lifecycle = SessionLifecycle::TimedOut {
+            limit_minutes: limit,
+        };
+    }
+    let ended_at = now_iso();
+    ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
+    record_session_ended(&ctx.store, s, &project.id, &lifecycle, &ended_at)?;
+    Ok(true)
+}
+
 fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
+    if s.kind == SessionKind::Onboarding {
+        return reap_onboarding(ctx, s);
+    }
+
     let task = ctx.store.get_task(&s.task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let repo = PathBuf::from(&project.path);
@@ -380,6 +444,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     };
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
     record_usage(ctx, s, &project, &task, &ended_at);
+    record_session_ended(&ctx.store, s, &s.task_id, &lifecycle, &ended_at)?;
 
     // Onboarding sessions are not part of a task's Loop; the project page
     // advances its own wizard.
@@ -429,7 +494,27 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
         return Ok(true);
     }
 
-    let scope_error = guard_session_scope(ctx, s, &project, &task).err();
+    let scope_error = match guard_session_scope(ctx, s, &project, &task) {
+        Ok(()) => None,
+        Err(error) => {
+            if let Some(plan) = previous_scope_restore(ctx, s)? {
+                Some(err(format!(
+                    "{error}{}（会话 {}，补丁 {}）。",
+                    autome_domain::scope::BREAKER_NOTE,
+                    plan.session_id,
+                    plan.repos
+                        .iter()
+                        .map(|r| r.patch.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )))
+            } else {
+                restore_session_scope(ctx, s, &project, &task)
+                    .err()
+                    .map(|failure| err(format!("{error}自动还原没有完成：{failure}。")))
+            }
+        }
+    };
     if detached_retro {
         if let Some(error) = scope_error {
             let detail = error.to_string();
@@ -481,6 +566,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
             other => other,
         };
         if matches!(outcome, BugSessionOutcome::Ok { .. }) {
+            mark_scope_patches_handled(ctx, s)?;
             ctx.store.settle_decisions(&s.id)?;
             ctx.store.clear_cooldown(s.runtime)?;
         } else {
@@ -515,6 +601,8 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     // Settled before the transition, which counts what is still pending: a
     // round that applied the user's decisions must not be handed them again.
     if matches!(outcome, SessionOutcome::Ok { .. }) {
+        mark_scope_patches_handled(ctx, s)?;
+        mark_operator_notes_delivered(ctx, s)?;
         ctx.store.settle_decisions(&s.id)?;
         ctx.store.clear_cooldown(s.runtime)?;
     } else {
@@ -548,48 +636,285 @@ fn guard_session_scope(ctx: &Ctx, s: &Session, project: &Project, task: &TaskRec
         .and_then(|v| v["scope_heads"].as_array())
         .ok_or_else(|| err("缺少会话开始的提交基线，无法检查文档修改范围"))?;
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
-    let allowed = format!("{}/", task.doc_dir());
+    let spec = scope_spec(s, project, task, heads)?;
     let mut outside = Vec::new();
     let mut baselines = Vec::new();
-    for slot in &layout.repos {
-        let base = heads
-            .iter()
-            .find(|v| v["repo"].as_str() == Some(slot.name.as_str()))
-            .and_then(|v| v["head"].as_str())
-            .ok_or_else(|| err(format!("缺少仓库 {} 的会话提交基线", slot.name)))?;
-        baselines.push(format!("{}: {base}", slot.worktree.display()));
-        // No rename detection: both the deleted source and added destination
-        // must satisfy the boundary. NUL delimiters preserve unusual filenames.
-        let diff = git::run_ok(
-            &slot.worktree,
-            &[
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "-z",
-                base,
-                "HEAD",
-                "--",
-            ],
-        )?;
-        for path in diff.stdout.split('\0').filter(|p| !p.is_empty()) {
-            if !slot.is_docs || !path.starts_with(&allowed) {
-                outside.push(if slot.name.is_empty() {
-                    path.to_string()
-                } else {
-                    format!("{}/{path}", slot.name)
-                });
-            }
+    for slot in &spec.repos {
+        baselines.push(format!("{}: {}", slot.worktree.display(), slot.base));
+        for path in crate::scope::outside_paths(slot, &spec.docs_prefix)? {
+            outside.push(if slot.name.is_empty() {
+                path
+            } else {
+                format!("{}/{path}", slot.name)
+            });
         }
     }
     if !outside.is_empty() {
-        return Err(err(format!(
-            "{}轮只能修改 {}/ 下的文件，本轮改了：{}。会话开始基线：{}。重跑前先保存需要交回实现/修复轮的改动，将越界文件恢复到对应基线并提交；确认基线到 HEAD 的差异仅含允许目录后再 rerun。不要重置整个分支或丢弃其他改动。",
-            s.kind.label(),
-            layout.doc_dir_from_cwd(&task.doc_dir()),
-            outside.join("、"),
-            baselines.join("；")
+        return Err(err(scope_failure_detail(
+            &s.kind.label(),
+            &layout.doc_dir_from_cwd(&task.doc_dir()),
+            &outside,
+            &baselines,
         )));
+    }
+    Ok(())
+}
+
+fn scope_failure_detail(
+    label: &str,
+    doc_dir: &str,
+    outside: &[String],
+    baselines: &[String],
+) -> String {
+    format!(
+        "{}轮只能修改 {}/ 下的文件，本轮改了：{}。会话开始基线：{}。重跑前先保存需要交回实现/修复轮的改动，将越界文件恢复到对应基线并提交；确认基线到 HEAD 的差异仅含允许目录后再 rerun。不要重置整个分支或丢弃其他改动。",
+        label,
+        doc_dir,
+        outside.join("、"),
+        baselines.join("；")
+    )
+}
+
+fn scope_spec(
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    heads: &[serde_json::Value],
+) -> Result<crate::scope::RestoreSpec> {
+    let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
+    let repos = layout
+        .repos
+        .iter()
+        .map(|slot| {
+            let base = heads
+                .iter()
+                .find(|v| v["repo"].as_str() == Some(slot.name.as_str()))
+                .and_then(|v| v["head"].as_str())
+                .ok_or_else(|| err(format!("缺少仓库 {} 的会话提交基线", slot.name)))?;
+            Ok(crate::scope::RepoSpec {
+                name: slot.name.clone(),
+                worktree: slot.worktree.clone(),
+                base: base.into(),
+                is_docs: slot.is_docs,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(crate::scope::RestoreSpec {
+        task: task.id.clone(),
+        session_id: s.id.clone(),
+        role: s.kind.role().map(|r| r.as_str()).unwrap_or_default().into(),
+        label: s.kind.label(),
+        round: s.round,
+        patch_dir: Path::new(&project.path)
+            .join(".autome/output/scope")
+            .join(&task.id),
+        docs_prefix: task.doc_dir().into(),
+        repos,
+    })
+}
+
+fn apply_scope_restore(ctx: &mut Ctx, plan: &autome_domain::scope::ScopeRestored) -> Result<()> {
+    match crate::scope::apply(plan) {
+        Ok(restored) => {
+            ctx.store.append_event(
+                "session.scope_restored",
+                &plan.task,
+                serde_json::to_value(restored)?,
+            )?;
+            Ok(())
+        }
+        Err(error) => {
+            let mut detail = error.to_string();
+            if let Err(compensation) = crate::scope::compensate(plan) {
+                detail.push_str(&format!("；补偿失败：{compensation}"));
+            }
+            ctx.store.append_event(
+                "session.scope_restore_failed",
+                &plan.task,
+                json!({"session_id": plan.session_id, "detail": detail}),
+            )?;
+            Err(err(detail))
+        }
+    }
+}
+
+fn previous_scope_restore(
+    ctx: &Ctx,
+    s: &Session,
+) -> Result<Option<autome_domain::scope::ScopeRestored>> {
+    let sessions = ctx.store.list_sessions(&s.task_id)?;
+    // Event order also distinguishes sessions started within the same timestamp.
+    let starts = ctx.store.task_events(&s.task_id, "session.started")?;
+    let Some(current) = starts
+        .iter()
+        .rposition(|v| v["session_id"].as_str() == Some(&s.id))
+    else {
+        return Ok(None);
+    };
+    let previous = starts[..current].iter().rev().find_map(|event| {
+        sessions.iter().find(|previous| {
+            event["session_id"].as_str() == Some(&previous.id)
+                && previous.id != s.id
+                && previous.ended_at.is_some()
+                && previous.kind.role() == s.kind.role()
+        })
+    });
+    let Some(previous) = previous else {
+        return Ok(None);
+    };
+    if ctx
+        .store
+        .session_event(&s.task_id, &previous.id, "session.scope_restore_failed")?
+        .is_some()
+    {
+        return Ok(None);
+    }
+    ctx.store
+        .session_event(&s.task_id, &previous.id, "session.scope_restore_begun")?
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn restore_session_scope(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+) -> Result<()> {
+    let planned = (|| {
+        let started = ctx.store.session_started_event(&task.id, &s.id)?;
+        let heads = started
+            .as_ref()
+            .and_then(|v| v["scope_heads"].as_array())
+            .ok_or_else(|| err("缺少会话开始的提交基线，无法检查文档修改范围"))?;
+        crate::scope::plan(&scope_spec(s, project, task, heads)?)
+    })();
+    let plan = match planned {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            ctx.store.append_event(
+                "session.scope_restore_failed",
+                &task.id,
+                json!({"session_id": s.id, "detail": error.to_string()}),
+            )?;
+            return Err(error.into());
+        }
+    };
+    ctx.store.append_event(
+        "session.scope_restore_begun",
+        &task.id,
+        serde_json::to_value(&plan)?,
+    )?;
+    apply_scope_restore(ctx, &plan)
+}
+
+/// Complete durable intents before any new session or recovery redispatch.
+fn resume_unfinished(ctx: &mut Ctx, task: &TaskRecord) -> Result<()> {
+    for value in ctx
+        .store
+        .task_events(&task.id, "session.scope_restore_begun")?
+    {
+        let plan: autome_domain::scope::ScopeRestored = serde_json::from_value(value)?;
+        if ctx
+            .store
+            .session_event(&task.id, &plan.session_id, "session.scope_restored")?
+            .is_some()
+            || ctx
+                .store
+                .session_event(&task.id, &plan.session_id, "session.scope_restore_failed")?
+                .is_some()
+        {
+            continue;
+        }
+        if let Err(error) = apply_scope_restore(ctx, &plan) {
+            let project = ctx.store.get_project(&task.project_id)?;
+            let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, task));
+            let outside = plan
+                .repos
+                .iter()
+                .flat_map(|r| {
+                    r.paths.iter().map(|p| {
+                        if r.repo.is_empty() {
+                            p.clone()
+                        } else {
+                            format!("{}/{p}", r.repo)
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let baselines = plan
+                .repos
+                .iter()
+                .map(|r| format!("{}: {}", r.worktree.display(), r.base))
+                .collect::<Vec<_>>();
+            let original = scope_failure_detail(
+                &plan.label,
+                &layout.doc_dir_from_cwd(&task.doc_dir()),
+                &outside,
+                &baselines,
+            );
+            let detail = format!("{original}自动还原没有完成：{error}。");
+            if let Some(node) = ctx.store.get_task(&task.id)?.state.node() {
+                let failed = TaskState::Failed {
+                    at: node,
+                    reason: FailureReason::Protocol {
+                        detail: detail.clone(),
+                    },
+                };
+                ctx.store.set_task_state(&task.id, &failed)?;
+                ctx.store.append_event(
+                    "task.updated",
+                    &task.id,
+                    json!({"state": failed, "trigger": "scope_failed"}),
+                )?;
+                ctx.store.append_event(
+                    "task.protocol_failure",
+                    &task.id,
+                    json!({"node": node, "detail": detail}),
+                )?;
+            }
+            return Err(err(detail));
+        }
+    }
+    Ok(())
+}
+
+fn mark_operator_notes_delivered(ctx: &mut Ctx, s: &Session) -> Result<()> {
+    if s.kind.role() != Some(Role::Impl) {
+        return Ok(());
+    }
+    if let Some(started) = ctx.store.session_started_event(&s.task_id, &s.id)?
+        && let Some(notes) = started["notes"].as_array()
+        && !notes.is_empty()
+        && ctx
+            .store
+            .session_event(&s.task_id, &s.id, "task.note_delivered")?
+            .is_none()
+    {
+        ctx.store.append_event("task.note_delivered", &s.task_id, json!({"notes":notes,"session_id":s.id,"role":s.kind.role().map(|r| r.as_str()),"round":s.round}))?;
+    }
+    Ok(())
+}
+
+fn mark_scope_patches_handled(ctx: &mut Ctx, s: &Session) -> Result<()> {
+    if s.kind.role() != Some(Role::Impl) {
+        return Ok(());
+    }
+    if let Some(started) = ctx.store.session_started_event(&s.task_id, &s.id)?
+        && let Some(patches) = started.get("scope_patches").and_then(|v| v.as_array())
+        && !patches.is_empty()
+        && ctx
+            .store
+            .session_event(&s.task_id, &s.id, "session.scope_patches_handled")?
+            .is_none()
+    {
+        ctx.store.append_event(
+            "session.scope_patches_handled",
+            &s.task_id,
+            json!({"session_id": s.id, "patches": patches}),
+        )?;
     }
     Ok(())
 }
@@ -798,11 +1123,54 @@ fn start_due_retries(ctx: &mut Ctx, report: &mut TickReport) {
     }
 }
 
-/// The one place a round's output is admitted (plan §4.D).
-///
-/// Only a document that parsed is checked: a round that could not produce a
-/// readable status block has already failed, and piling a second complaint on
-/// top would bury the one a person can act on.
+/// A narrow, recorded exception to the rule that guards do not rewrite documents.
+fn restore_closed_pointer_document(
+    worktree: &Path,
+    task: &TaskRecord,
+    before: &str,
+    after: &str,
+    milestones: &[(String, autome_domain::status_block::MilestoneState)],
+    version: Option<u32>,
+) -> std::result::Result<(String, serde_json::Value), String> {
+    let restored = guards::restore_closed_pointers(before, after, milestones)
+        .ok_or("无法识别需要还原的证据指针")?;
+    if !git::is_clean(worktree).map_err(|e| e.to_string())? {
+        return Err("工作区不干净，不能自动还原".into());
+    }
+    let path = worktree.join(task.design_doc());
+    std::fs::write(&path, &restored).map_err(|e| e.to_string())?;
+    let commit = git::commit_paths(
+        worktree,
+        &[&task.design_doc()],
+        &format!("chore(autome): {} 还原已完成里程碑的最新证据指针", task.id),
+    );
+    let commit = match commit {
+        Ok(Some(commit)) => commit,
+        other => {
+            // Leave the session's original document in place when the commit fails.
+            let write = std::fs::write(&path, after);
+            let reset = git::run_ok(worktree, &["reset", "--", &task.design_doc()]);
+            return Err(format!(
+                "还原提交失败：{other:?}；恢复原文：{write:?}；恢复索引：{reset:?}"
+            ));
+        }
+    };
+    let detail = match version {
+        Some(v) if v < 8 => format!("该任务固定的协议 v{v} 没有这条规则，已自动还原"),
+        Some(_) => "违反『已完成里程碑的最新证据不改』，已自动还原".to_owned(),
+        None => "无法识别任务协议版本，已自动还原已完成里程碑的最新证据指针".to_owned(),
+    };
+    let event = json!({
+        "code": "impl_closed_milestone",
+        "milestones": guards::retargeted_closed_milestones(before, after, milestones),
+        "commit": commit,
+        "protocol": task.protocol_ref,
+        "detail": detail,
+    });
+    Ok((restored, event))
+}
+
+/// The one place a parsed round output is admitted (plan §4.D).
 fn apply_guards(
     ctx: &mut Ctx,
     session: &Session,
@@ -844,7 +1212,12 @@ fn apply_guards(
     let integration_audit = started.as_ref().and_then(|v| {
         crate::integration::audit_guard(v, &worktree.join(task.doc_dir()).join("evidence"))
     });
-    let round = guards::Round {
+    let mut round = guards::Round {
+        protocol_version: task
+            .protocol_ref
+            .as_deref()
+            .and_then(ProtocolRef::parse)
+            .and_then(|p| p.version()),
         integration: integration_audit.as_ref(),
         design_before: design_before.as_deref(),
         design_after: design_after.as_deref(),
@@ -863,7 +1236,40 @@ fn apply_guards(
         ),
         repairing: is_repairing(carried_inject(ctx, &task.id, &session.id)?.as_ref()),
     };
-    let findings = guards::check(&round);
+    let mut findings = guards::check(&round);
+    let repaired;
+    if role == Role::Impl
+        && findings.iter().any(|f| f.code == "impl_closed_milestone")
+        && let (Some(old), Some(new), Some(snapshot)) = (&design_before, &design_after, &before)
+        && !guards::retargeted_closed_milestones(old, new, &snapshot.milestones).is_empty()
+    {
+        match restore_closed_pointer_document(
+            &worktree,
+            task,
+            old,
+            new,
+            &snapshot.milestones,
+            round.protocol_version,
+        ) {
+            Ok((text, event)) => {
+                ctx.store
+                    .append_event("guard.auto_fixed", &task.id, event)?;
+                repaired = text;
+                round.design_after = Some(&repaired);
+                round.design_bytes = repaired.len() as u64;
+                findings = guards::check(&round);
+            }
+            Err(detail) => {
+                for finding in findings
+                    .iter_mut()
+                    .filter(|f| f.code == "impl_closed_milestone")
+                {
+                    finding.detail.push_str(&format!(" 自动还原失败：{detail}"));
+                }
+            }
+        }
+    }
+
     // Read the range before replacing task.head: retries share the first attempt's H0.
     let integration = crate::integration::range(
         &ctx.store,
@@ -922,7 +1328,7 @@ fn apply_guards(
         json!(guards::Snapshot {
             milestones: crate::task_metrics::snapshot(status),
             retro_lines: round.retro_lines,
-            design_bytes,
+            design_bytes: round.design_bytes,
         }),
     )?;
     if let Some(integration) = integration {
@@ -942,6 +1348,27 @@ fn apply_guards(
             },
             &task.id,
             json!({ "code": f.code, "detail": f.detail, "role": role.as_str() }),
+        )?;
+    }
+
+    if role == Role::Audit
+        && !findings.iter().any(|f| f.level == guards::Level::Error)
+        && (status.all_milestones_done()
+            || before.as_ref().is_some_and(|b| {
+                status.milestones.iter().any(|m| {
+                    m.state == autome_domain::status_block::MilestoneState::Done
+                        && b.milestones.iter().any(|(id, state)| {
+                            id == &m.id
+                                && *state != autome_domain::status_block::MilestoneState::Done
+                        })
+                })
+            }))
+        && let Some(started) = &started
+    {
+        ctx.store.append_event(
+            "task.notes_audited",
+            &task.id,
+            json!({"session_id":started["session_id"],"notes":started["audit_notes"]}),
         )?;
     }
 
@@ -1150,7 +1577,45 @@ fn check_budget(ctx: &Ctx, project: &Project, task: &TaskRecord) -> Result<()> {
     Ok(())
 }
 
-fn record_usage(ctx: &mut Ctx, s: &Session, project: &Project, task: &TaskRecord, ended_at: &str) {
+/// Shared by reap and explicit stop; subject also supports project-owned sessions.
+pub(crate) fn record_session_ended(
+    store: &crate::store::Store,
+    s: &Session,
+    subject: &str,
+    lifecycle: &SessionLifecycle,
+    ended_at: &str,
+) -> Result<()> {
+    if store
+        .session_event(subject, &s.id, "session.ended")?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let (end, exit_code) = match lifecycle {
+        SessionLifecycle::Exited { exit_code: 0 } => ("exited", Some(0)),
+        SessionLifecycle::Exited { exit_code } => ("crashed", Some(*exit_code)),
+        SessionLifecycle::Killed => ("stopped", None),
+        SessionLifecycle::TimedOut { .. } => ("timed_out", None),
+        SessionLifecycle::Vanished => ("crashed", None),
+        _ => return Ok(()),
+    };
+    let stored = store.get_session(&s.id)?;
+    let metrics = stored.as_ref().map(|row| &row.metrics);
+    store.append_event("session.ended", subject, json!({
+        "session_id": s.id, "kind": s.kind, "round": s.round, "end": end, "exit_code": exit_code,
+        "duration_ms": metrics.and_then(|m| m.duration_ms).or_else(|| wall_clock_ms(&s.started_at, ended_at)),
+        "cost_usd": metrics.and_then(|m| m.cost_usd),
+    }))?;
+    Ok(())
+}
+
+pub(crate) fn record_usage(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    ended_at: &str,
+) {
     // The session's own output lives beside the project, not in the task's
     // checkout — one directory per task under `.autome/output/`, which is
     // where the wrapper script writes and where the panel reads.
@@ -1371,6 +1836,22 @@ fn deliver_bug_outcome(
     } else {
         outcome
     };
+    if matches!(outcome, BugSessionOutcome::Ok { .. }) {
+        mark_operator_notes_delivered(ctx, s)?;
+        if s.kind
+            == (SessionKind::Bug {
+                step: BugStep::FixReview,
+            })
+            && matches!(&outcome, BugSessionOutcome::Ok { doc } if doc.review == autome_domain::bug_doc::BugReview::Passed)
+            && let Some(started) = ctx.store.session_started_event(&s.task_id, &s.id)?
+        {
+            ctx.store.append_event(
+                "task.notes_audited",
+                &s.task_id,
+                json!({"session_id":s.id,"notes":started["audit_notes"]}),
+            )?;
+        }
+    }
     if s.kind
         == (SessionKind::Bug {
             step: BugStep::Locate,
@@ -1729,6 +2210,17 @@ fn guard_bug_regression(
     task: &TaskRecord,
     doc: &autome_domain::bug_doc::BugDoc,
 ) -> Result<()> {
+    let repairing = session.kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && bug_progress(ctx, task)?.test_fix_open;
+    if test_fix::enabled(project, task) {
+        test_fix::validate(doc, repairing)?;
+    }
+    if repairing {
+        return test_fix::snapshot(ctx, session, project, task, doc);
+    }
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
     if session.kind
         == (SessionKind::Bug {
@@ -1736,117 +2228,7 @@ fn guard_bug_regression(
         })
         && doc.status == autome_domain::bug_doc::BugStatus::Located
     {
-        let started = ctx.store.session_started_event(&task.id, &session.id)?;
-        let Some(heads) = started.as_ref().and_then(|v| v["locate_heads"].as_array()) else {
-            return Ok(()); // Sessions begun by older binaries have no starting snapshot.
-        };
-        let mut files = Vec::new();
-        for entry in heads {
-            let repo = entry["repo"]
-                .as_str()
-                .ok_or_else(|| err("missing locate repo"))?;
-            let slot = layout
-                .repos
-                .iter()
-                .find(|s| s.name == repo)
-                .ok_or_else(|| err(format!("missing locate repository {repo}")))?;
-            let base = entry["head"]
-                .as_str()
-                .ok_or_else(|| err("missing locate head"))?;
-            let head = git::head_sha(&slot.worktree)?;
-            let changed = git::run_ok(
-                &slot.worktree,
-                &[
-                    "diff",
-                    "--name-status",
-                    "--diff-filter=AM",
-                    "--no-renames",
-                    "-z",
-                    base,
-                    &head,
-                    "--",
-                ],
-            )?;
-            let entries: Vec<_> = changed
-                .stdout
-                .split('\0')
-                .filter(|p| !p.is_empty())
-                .collect();
-            let docs = format!("{}/", task.doc_dir());
-            for entry in entries.chunks_exact(2) {
-                let path = entry[1];
-                // The Bug doc, card and replies are the protocol's own files:
-                // the fix and review rounds are required to edit them.
-                if path.starts_with(&docs) {
-                    continue;
-                }
-                let previous = if entry[0] == "M" {
-                    git::run_ok(&slot.worktree, &["show", &format!("{base}:{path}")])?.stdout
-                } else {
-                    String::new()
-                };
-
-                let contents = git::run_ok(&slot.worktree, &["show", &format!("{head}:{path}")])?;
-                if let Some(mut protection) =
-                    regression_protection(path, &contents.stdout, &previous, &doc.repro_command)
-                {
-                    let tree = git::run_ok(&slot.worktree, &["ls-tree", "-z", &head, "--", path])?;
-                    let mut blocks = None;
-                    if protection != Protection::File {
-                        let section_line = if protection == Protection::Section {
-                            let start = test_section_start(&contents.stdout).unwrap_or(0);
-                            contents.stdout[..start].matches('\n').count() + 1
-                        } else {
-                            1
-                        };
-                        let diff = git::run_ok(
-                            &slot.worktree,
-                            &[
-                                "diff",
-                                "-U0",
-                                "--no-color",
-                                "--no-ext-diff",
-                                base,
-                                &head,
-                                "--",
-                                path,
-                            ],
-                        )?;
-                        let added = added_test_blocks(&diff.stdout, section_line);
-                        // A test file the locate round only trimmed has no
-                        // added tests to hold on to; protect all of it.
-                        if added.is_empty() && protection == Protection::Blocks {
-                            protection = Protection::File;
-                        } else {
-                            blocks = Some(added);
-                        }
-                    }
-                    let mut file = json!({
-                        "repo": repo, "path": path, "tree": tree.stdout, "head": head,
-                        "protect": protection.as_str(),
-                    });
-                    if let Some(blocks) = blocks {
-                        file["blocks"] = json!(blocks);
-                    }
-                    files.push(file);
-                }
-            }
-        }
-        if files.is_empty() {
-            // An invalid or passing command must still follow the repro-miss
-            // flow. Reject this locate result only after a genuine reproduction.
-            ctx.store.append_event(
-                "bug.regression_empty",
-                &task.id,
-                json!({"session_id": session.id}),
-            )?;
-            return Ok(());
-        }
-        ctx.store.append_event(
-            "bug.regression_snapshot",
-            &task.id,
-            json!({"session_id": session.id, "files": files}),
-        )?;
+        test_fix::regression_set(ctx, Some(session), project, task, doc, "locate")?;
     } else if session.kind == (SessionKind::Bug { step: BugStep::Fix })
         && let Some(snapshot) = ctx.store.last_event(&task.id, "bug.regression_snapshot")?
     {
@@ -1948,9 +2330,15 @@ pub(crate) fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
     ))
 }
 
-fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
+pub(crate) fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
     Ok(BugProgress {
         fix_round: ctx.store.count_events(&task.id, "bug.fix_round_started")?,
+        test_fixes: ctx.store.count_events(&task.id, "bug.test_fix_requested")?,
+        test_fix_open: ctx.store.count_events_after(
+            &task.id,
+            "bug.test_fix_requested",
+            "bug.test_fix_settled",
+        )? > 0,
         repro_misses: ctx
             .store
             .count_events_after(&task.id, "bug.repro_missed", "task.replied")?,
@@ -2132,6 +2520,8 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     let decisions = ctx.store.pending_decisions(task_id)?;
     let context = task::Context {
+        bug_test_defect: test_fix::enabled(&project, &task),
+        handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
         decisions,
@@ -2263,6 +2653,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         }
     }
     if let Trigger::ReproDone {
+        paired,
         head,
         command,
         exit_code,
@@ -2270,14 +2661,19 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         tail,
     } = trigger
     {
-        let why = if *timed_out {
+        let (checked_exit, checked_timeout) = paired
+            .as_ref()
+            .map(|p| (p.base_exit, p.base_timed_out))
+            .unwrap_or((*exit_code, *timed_out));
+        let why = if checked_timeout {
             "timed_out"
-        } else if [126, 127].contains(exit_code) {
+        } else if [126, 127].contains(&checked_exit) {
             "not_runnable"
         } else {
             "exited_zero"
         };
-        let reproduced = !timed_out && *exit_code != 0 && ![126, 127].contains(exit_code);
+        let reproduced =
+            !checked_timeout && checked_exit != 0 && ![126, 127].contains(&checked_exit);
         if reproduced
             && let Some(empty) = ctx.store.last_event(task_id, "bug.regression_empty")?
             && let Some(started) = ctx.store.last_event(task_id, "session.started")?
@@ -2293,14 +2689,18 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
                 action: Action::None,
                 budget_n: None,
                 consumes_decisions: false,
+                test_fix_event: None,
                 grants_merge_request: false,
             };
         }
-        let payload = if reproduced {
-            json!({"sha": head, "command": command, "exit_code": exit_code})
+        let mut payload = if reproduced {
+            json!({"sha": head, "command": command, "exit_code": checked_exit})
         } else {
-            json!({"sha": head, "command": command, "exit_code": exit_code, "why": why, "tail": tail})
+            json!({"sha": head, "command": command, "exit_code": checked_exit, "why": why, "tail": tail})
         };
+        if let Some(pair) = paired {
+            payload["paired"] = json!(pair);
+        }
         ctx.store.append_event(
             if reproduced {
                 "bug.reproduced"
@@ -2310,6 +2710,23 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             task_id,
             payload,
         )?;
+    }
+
+    if let Some(event) = &transition.test_fix_event {
+        match event {
+            bug_loop::TestFixEvent::Requested { by, attempt, limit } => {
+                let session = ctx
+                    .store
+                    .last_event(task_id, "session.started")?
+                    .unwrap_or_default();
+                ctx.store.append_event("bug.test_fix_requested", task_id,
+                    json!({"session_id":session["session_id"],"by":by,"attempt":attempt,"limit":limit}))?;
+            }
+            bug_loop::TestFixEvent::Settled { result, pair } => {
+                ctx.store.append_event("bug.test_fix_settled", task_id,
+                    json!({"result":if *result == bug_loop::TestFixJudgement::Accept {"accepted"} else {"needs_fix"},"base_exit":pair.base_exit,"head_exit":pair.head_exit}))?;
+            }
+        }
     }
 
     // Entering the implementation loop for the first time is when N is
@@ -2545,6 +2962,15 @@ fn record_failed_action(
     transition: &Transition,
     error: &SchedulerError,
 ) {
+    // A recovery step may already have recorded the precise protocol failure.
+    // Do not replace it with the generic "could not start" config error.
+    if ctx
+        .store
+        .get_task(task_id)
+        .is_ok_and(|task| matches!(task.state, TaskState::Failed { .. }))
+    {
+        return;
+    }
     let node = match transition.next {
         TaskState::Active { node } | TaskState::Requeued { resume: node } => node,
         _ => return,
@@ -2675,6 +3101,7 @@ fn main_gate_timeout_note(tail: &str) -> String {
 
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
+        Trigger::ReopenForNote => "reopen_for_note",
         Trigger::BugSessionEnded { .. } => "bug_session_ended",
         Trigger::ReproDone { .. } => "repro_done",
         Trigger::SetupFailed { .. } => "setup_failed",
@@ -2925,6 +3352,33 @@ fn start_session(
     };
 
     ensure_checkouts(ctx, task, project, resolved, kind)?;
+    if kind == (SessionKind::Bug { step: BugStep::Fix })
+        && ctx
+            .store
+            .last_event(&task.id, "bug.regression_snapshot")?
+            .is_none()
+    {
+        let result = (|| {
+            let text =
+                std::fs::read_to_string(task_docs_root(project, &task.slug).join(task.bug_doc()))
+                    .map_err(|e| err(e.to_string()))?;
+            let doc = autome_domain::bug_doc::parse(&text).map_err(|e| err(e.to_string()))?;
+            test_fix::regression_set(ctx, None, project, task, &doc, "rerun_fix")
+        })();
+        if let Err(error) = result {
+            ctx.store.set_task_state(
+                &task.id,
+                &TaskState::Failed {
+                    at: Node::Fix,
+                    reason: FailureReason::Protocol {
+                        detail: error.to_string(),
+                    },
+                },
+            )?;
+            return Ok(());
+        }
+    }
+
     if resolved.setup.is_some() {
         crate::setup::skip_workspace(ctx, task, project).map_err(|e| err(e.to_string()))?;
     }
@@ -3202,6 +3656,23 @@ fn launch_session(
     session_id: &str,
     decisions: &[crate::store::DecisionRecord],
 ) -> Result<()> {
+    resume_unfinished(ctx, task)?;
+    let patches = if kind.role() == Some(Role::Impl)
+        && !matches!(
+            kind,
+            SessionKind::Bug {
+                step: BugStep::Locate
+            }
+        ) {
+        crate::handoff::pending(&ctx.store, &task.id)?.scope_patches
+    } else {
+        Vec::new()
+    };
+    let notes = if kind.role() == Some(Role::Impl) {
+        crate::handoff::pending(&ctx.store, &task.id)?.notes
+    } else {
+        Vec::new()
+    };
     let repo = PathBuf::from(&project.path);
 
     // Which repositories this task works in. For a workspace it is whatever
@@ -3265,6 +3736,45 @@ fn launch_session(
     } else {
         None
     };
+    let audit_notes = if kind.role() == Some(Role::Audit)
+        && protocol
+            .prompt("audit")
+            .unwrap_or("")
+            .lines()
+            .any(|l| l == "<!-- operator-notes -->")
+    {
+        crate::handoff::audit_notes(&ctx.store, &task.id)?
+    } else {
+        Vec::new()
+    };
+    let mut presented_notes = notes.clone();
+    if kind.role() == Some(Role::Impl)
+        && protocol
+            .prompt("audit")
+            .unwrap_or("")
+            .lines()
+            .any(|l| l == "<!-- operator-notes -->")
+    {
+        let reviewed = ctx.store.task_events(&task.id, "session.started")?;
+        presented_notes.extend(
+            crate::handoff::audit_notes(&ctx.store, &task.id)?
+                .into_iter()
+                .filter(|note| {
+                    reviewed.iter().any(|s| {
+                        s["audit_notes"]
+                            .as_array()
+                            .is_some_and(|ns| ns.contains(&note["n"]))
+                    })
+                }),
+        );
+
+        presented_notes.sort_by_key(|n| n["n"].as_u64().unwrap_or(0));
+    }
+    let closed_note_instruction = if !notes.is_empty() && task.kind == TaskKind::Feature {
+        read_status(project, task).filter(|s| s.all_milestones_done()).and_then(|s| s.milestones.last().map(|m| format!("\n本轮只处理交接事项：不改里程碑表，也不改已完成里程碑的『最新证据』行；证据写 `evidence/{}-r{round}-impl.md`。\n",m.id))).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let integration_audit = if kind == (SessionKind::Role { role: Role::Audit }) {
         crate::integration::integration_for_audit(
             &ctx.store,
@@ -3295,9 +3805,37 @@ fn launch_session(
             gate_evidence,
             integration_audit.as_ref().map(|v| {
                 crate::brief::integration_section(
-                    &v["range"],
+                    &{
+                        let mut range = v["range"].clone();
+                        if v["legacy"] == true {
+                            range["legacy"] = json!(true);
+                        }
+                        range
+                    },
                     &layout.doc_dir_from_cwd(&task.doc_dir()),
                 )
+            }),
+            crate::handoff::sections(
+                &patches,
+                read_status(project, task)
+                    .as_ref()
+                    .filter(|s| s.all_milestones_done())
+                    .and_then(|s| s.milestones.last().map(|m| (m.id.as_str(), round))),
+                false,
+            )
+            .map(|s| {
+                (if notes.is_empty() {
+                    s
+                } else {
+                    s.replace("本轮只处理补丁", "本轮只处理交接事项")
+                }) + &crate::handoff::note_section(&presented_notes, false)
+                    + &crate::handoff::note_section(&audit_notes, true)
+            })
+            .or_else(|| {
+                let text = crate::handoff::note_section(&presented_notes, false)
+                    + &crate::handoff::note_section(&audit_notes, true)
+                    + &closed_note_instruction;
+                (!text.is_empty()).then_some(text)
             }),
         )?,
         None => String::new(),
@@ -3331,7 +3869,7 @@ fn launch_session(
             task.slug
         )
     });
-    let prompt = launcher::build_prompt(&launcher::PromptSpec {
+    let mut prompt = launcher::build_prompt(&launcher::PromptSpec {
         integration_audit: integration_audit.is_some(),
         kind,
         templates: &protocol,
@@ -3353,7 +3891,28 @@ fn launch_session(
         doc_refs: &task.doc_refs,
     })?;
 
+    if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
+        && let Some(section) = crate::handoff::sections(&patches, None, true)
+    {
+        prompt.push_str(&section);
+    }
+
+    if kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && bug_progress(ctx, task)?.test_fix_open
+    {
+        prompt.push_str(&crate::handoff::test_fix_section());
+    }
+
+    if matches!(kind, SessionKind::Bug { .. }) {
+        prompt.push_str(&crate::handoff::note_section(&presented_notes, false));
+        prompt.push_str(&crate::handoff::note_section(&audit_notes, true));
+    }
+
     // Capture before the process can edit a checkout, not after launch returns.
+
     let scope_heads = if matches!(kind.role(), Some(Role::Audit | Role::Retro)) {
         Some(
             layout
@@ -3403,6 +3962,7 @@ fn launch_session(
 
     let pid = read_pid(&repo, &task.id, session_id);
     ctx.store.insert_session(&Session {
+        project_id: None,
         id: session_id.to_string(),
         task_id: task.id.clone(),
         kind,
@@ -3431,11 +3991,21 @@ fn launch_session(
         // What the round was carrying, so a crash can be retried with it.
         "inject": inject,
     });
+    started["notes"] = json!(notes.iter().map(|n| &n["n"]).collect::<Vec<_>>());
+    started["audit_notes"] = json!(audit_notes.iter().map(|n| &n["n"]).collect::<Vec<_>>());
     if let Some(integration) = integration_audit {
         started["integration"] = integration;
     }
     if let Some(heads) = start_heads {
         started["start_heads"] = json!(heads);
+    }
+    if !patches.is_empty() {
+        started["scope_patches"] = json!(
+            patches
+                .iter()
+                .flat_map(|p| p.repos.iter().map(|r| &r.patch))
+                .collect::<Vec<_>>()
+        );
     }
     if let Some(heads) = locate_heads {
         started["locate_heads"] = json!(heads);
@@ -3481,7 +4051,7 @@ fn freeze_protocol(
         .join(task.doc_dir())
         .join(crate::protocol::TASK_SUBDIR);
 
-    if let Some(recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
+    if let Some(mut recorded) = task.protocol_ref.as_deref().and_then(ProtocolRef::parse)
         && dir.exists()
     {
         let files = read_task_protocol(&dir)?;
@@ -3491,16 +4061,43 @@ fn freeze_protocol(
         // attributed to a version, and this is the one moment the attribution
         // can be seen to be wrong.
         let hash = files.hash();
+        if ctx
+            .store
+            .last_event(&task.id, "protocol.hash_scheme")?
+            .is_none()
+        {
+            let previous = recorded.to_wire();
+            let verified = recorded.tag == crate::protocol::current().0.tag
+                && recorded.hash == crate::protocol::seed().hash();
+            recorded.hash = if verified {
+                crate::protocol::current().0.hash.clone()
+            } else {
+                hash.clone()
+            };
+            let mut payload = json!({
+                "ref": recorded.to_wire(), "scheme": "task_copy",
+                "reason": "migrated", "verified": verified, "previous": previous,
+            });
+            if !verified {
+                payload["limitation"] =
+                    json!("原始协议不可得，升级前的副本改动无法核实；以当前副本重建基线");
+            }
+            ctx.store
+                .record_task_protocol_scheme(&task.id, &recorded.to_wire(), payload)?;
+        }
         if hash != recorded.hash {
-            ctx.store.append_event(
-                "integrity_warning",
-                &task.id,
-                json!({
-                    "what": "protocol_copy_edited",
-                    "recorded": recorded.to_wire(),
-                    "actual_hash": hash,
-                }),
-            )?;
+            let last = ctx.store.last_event(&task.id, "integrity_warning")?;
+            if last.as_ref().and_then(|e| e["actual_hash"].as_str()) != Some(hash.as_str()) {
+                ctx.store.append_event(
+                    "integrity_warning",
+                    &task.id,
+                    json!({
+                        "what": "protocol_copy_edited",
+                        "recorded": recorded.to_wire(),
+                        "actual_hash": hash,
+                    }),
+                )?;
+            }
             return Ok((ProtocolRef::new(recorded.tag, hash), files));
         }
         return Ok((recorded, files));
@@ -3516,8 +4113,11 @@ fn freeze_protocol(
         &refs,
         &format!("chore(autome): {} 固定协议 {}", task.id, protocol_ref.tag),
     )?;
-    ctx.store
-        .set_task_protocol_ref(&task.id, &protocol_ref.to_wire())?;
+    ctx.store.record_task_protocol_scheme(
+        &task.id,
+        &protocol_ref.to_wire(),
+        json!({"ref": protocol_ref.to_wire(), "scheme": "task_copy", "reason": "frozen"}),
+    )?;
     Ok((protocol_ref, files))
 }
 
@@ -3541,6 +4141,7 @@ fn write_brief(
     decisions: &[crate::store::DecisionRecord],
     gate: Option<String>,
     integration: Option<String>,
+    scope_patches: Option<String>,
 ) -> Result<String> {
     let rel = crate::brief::path(&task.doc_dir(), role, round);
     // What the prompt names: the same file, from where the session stands.
@@ -3592,6 +4193,7 @@ fn write_brief(
             s
         }),
         gate,
+        scope_patches,
     });
 
     let full = worktree.join(&rel);
@@ -4181,8 +4783,10 @@ fn run_gate_attempt(
                 }
             }
         }
-        if !held
-            && !crate::gate_queue::admit(ctx, task, project, node, "gate", None)
+        if (!held
+            || autome_domain::gate_queue::Lane::for_kind(launch.kind())
+                == autome_domain::gate_queue::Lane::Light)
+            && !crate::gate_queue::admit(ctx, task, project, node, launch.kind(), None)
                 .map_err(|e| err(e.to_string()))?
         {
             return Ok(());
@@ -4220,10 +4824,15 @@ fn run_gate_attempt(
         }
         job.set_launch(&launch)
             .map_err(|e| err(format!("无法记录门禁种类：{e}")))?;
+        let run_command = if node == Node::ReproCheck && bug_progress(ctx, task)?.test_fix_open {
+            test_fix::prepare(ctx, project, task, layout, &gate.command, &job)?
+        } else {
+            gate.command.clone()
+        };
         crate::gate::start(
             &job,
             &cwd,
-            &gate.command,
+            &run_command,
             &[
                 ("AUTOME_TASK", task.id.as_str()),
                 ("AUTOME_HEAD", head.as_str()),
@@ -4240,6 +4849,7 @@ fn run_gate_attempt(
                 "sha": head,
                 "command": gate.command,
                 "kind": launch.kind(),
+                "lane": autome_domain::gate_queue::Lane::for_kind(launch.kind()),
                 "log": job.log.to_string_lossy(),
             }),
         )?;
@@ -4312,10 +4922,18 @@ fn run_gate_attempt(
     }
 
     if node == Node::ReproCheck {
+        let paired = if bug_progress(ctx, task)?.test_fix_open {
+            let pair = test_fix::pair(&job, exit_code);
+            test_fix::cleanup(project, task, layout)?;
+            Some(pair)
+        } else {
+            None
+        };
         advance(
             ctx,
             &task.id,
             &Trigger::ReproDone {
+                paired,
                 head,
                 command: gate.command,
                 exit_code,
@@ -4668,6 +5286,8 @@ fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()
 pub(crate) fn check_convert_cancel(ctx: &Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
     let context = task::Context {
+        bug_test_defect: false,
+        handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
         decisions: ctx.store.pending_decisions(&task.id)?,
@@ -4751,7 +5371,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Reading it fresh on every transition is what makes "改动即生效" true
 /// (requirement C-09): the next node to start picks up whatever the file says
 /// now, without any cache to invalidate.
-fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
+pub(crate) fn resolve_config(ctx: &Ctx, project: &Project) -> Result<ResolvedConfig> {
     let global = config_io::load_global(&ctx.autome_home)?;
     let project_config = config_io::load_project(Path::new(&project.path))?;
     let resolved = config::resolve(&global, &project_config);
@@ -4817,6 +5437,39 @@ fn retire_protocol_project(ctx: &mut Ctx, report: &mut TickReport) {
 /// than a task that appears to be running forever.
 pub fn recover(ctx: &mut Ctx) -> TickReport {
     let mut report = TickReport::default();
+
+    // Include terminal tasks: a detached manual retro can leave an unfinished intent.
+    let restoration = (|| -> Result<()> {
+        for project in ctx.store.list_projects()? {
+            for task in ctx.store.list_tasks(&project.id)? {
+                let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, &task));
+                let last_gate = ctx.store.last_event(&task.id, "gate.started")?;
+                let running = last_gate
+                    .as_ref()
+                    .and_then(|g| g["sha"].as_str())
+                    .is_some_and(|head| {
+                        let job = crate::gate::Job::at(
+                            Path::new(&project.path),
+                            &task.id,
+                            "repro_check",
+                            &head[..head.len().min(12)],
+                        );
+                        crate::gate::running(&job)
+                    });
+                if !running {
+                    test_fix::cleanup(&project, &task, &layout)?;
+                }
+                if let Err(error) = resume_unfinished(ctx, &task) {
+                    report.errors.push(format!("{}: {error}", task.id));
+                }
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = restoration {
+        report.errors.push(error.to_string());
+        return report;
+    }
 
     retire_protocol_project(ctx, &mut report);
 
@@ -5011,6 +5664,11 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         doc_refs: &[],
     })?;
 
+    let global = config_io::load_global(&ctx.autome_home)?;
+    let local = config_io::load_project(&repo)?;
+    let limit_minutes = config::resolve(&global, &local)
+        .loop_defaults
+        .session_minutes;
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id: &session_id,
@@ -5026,6 +5684,30 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         mode: ctx.launch_mode,
     })?;
 
+    ctx.store.insert_session(&Session {
+        id: session_id.clone(),
+        project_id: Some(project.id.clone()),
+        task_id: ONBOARDING_SESSION_KEY.into(),
+        kind: SessionKind::Onboarding,
+        runtime: role_config.runtime,
+        model: role_config.model.clone(),
+        effort: role_config.effort.clone(),
+        skills: role_config.skills.clone(),
+        round: 0,
+        started_at: now_iso(),
+        ended_at: None,
+        lifecycle: SessionLifecycle::Running,
+        log_path: launched.log_path.clone(),
+        pid: if matches!(ctx.launch_mode, launcher::LaunchMode::Dry) {
+            None
+        } else {
+            read_pid(&repo, ONBOARDING_SESSION_KEY, &session_id)
+        },
+        limit_minutes: Some(limit_minutes),
+        protocol_ref: None,
+        rules_hash: None,
+        metrics: Default::default(),
+    })?;
     ctx.store.append_event(
         "session.started",
         project_id,
@@ -5782,6 +6464,7 @@ mod tests {
             assert!(!launcher::pid_alive(pid));
             assert_eq!(unsafe { libc::kill(-pid, 0) }, 0);
             let s = Session {
+                project_id: None,
                 id: "s1".into(),
                 task_id: task.id.clone(),
                 kind: SessionKind::Role { role: Role::Plan },
@@ -6114,6 +6797,7 @@ mod tests {
             let task = queue_task(&mut w, "T-2");
             quick_host_config(&w, "before_merge", Some("echo old"));
             let held = queue_job(&w, &holder, "gate", "held", None);
+            held.set_launch(&crate::gate::Launch::Repro).unwrap();
             queue_run(&mut w, &task);
             assert_eq!(queue_count(&w, &task, "gate.queued"), 1);
             assert_eq!(queue_count(&w, &task, "gate.started"), 0);
@@ -6386,6 +7070,25 @@ mod tests {
         }
     }
 
+    // Gate/reentry tests start after Locate, so prepare its real persisted output.
+    fn seed_located_bug(w: &World, task: &TaskRecord, project: &Project, wt: &Path) {
+        let docs = wt.join("docs").join(&task.slug);
+        std::fs::create_dir_all(&docs).unwrap();
+        let text = "status: 已定位\nfix-round: 0/5\n复现命令: sh regression.sh\n根因: 已确认\n复核: 待复核\n";
+        std::fs::write(wt.join(task.bug_doc()), text).unwrap();
+        std::fs::write(wt.join("regression.sh"), "exit 1\n").unwrap();
+        git::commit_paths(wt, &["docs", "regression.sh"], "locate regression").unwrap();
+        let doc = autome_domain::bug_doc::parse(text).unwrap();
+        test_fix::regression_set(&w.ctx, None, project, task, &doc, "locate").unwrap();
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&task.id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        assert!(!snapshot["files"].as_array().unwrap().is_empty());
+    }
+
     fn repro_gate_world(
         mode: &str,
         code: i32,
@@ -6420,6 +7123,7 @@ mod tests {
             .store
             .append_event("bug.loop_started", &task.id, json!({}))
             .unwrap();
+        seed_located_bug(&w, &task, &project, &wt);
         let repro = format!("while ! test -f released; do sleep 0.01; done; exit {code}");
         w.ctx
             .store
@@ -6689,12 +7393,17 @@ mod tests {
         let project = w.ctx.store.get_project(&task.project_id).unwrap();
         let resolved = resolve_config(&w.ctx, &project).unwrap();
         for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            if step == BugStep::Fix {
+                let layout = TaskLayout::single(&project, &task.slug);
+                seed_located_bug(&w, &task, &project, &layout.cwd);
+            }
             w.set_state(&task.id, TaskState::Active { node: step.node() });
             let transition = Transition {
                 next: TaskState::Active { node: step.node() },
                 action: Action::Reenter { node: step.node() },
                 budget_n: None,
                 consumes_decisions: false,
+                test_fix_event: None,
                 grants_merge_request: false,
             };
             perform(&mut w.ctx, &task, &project, &resolved, &transition).unwrap();
@@ -7663,6 +8372,7 @@ mod tests {
         w.set_state("T-1", TaskState::Active { node: Node::Design });
         w.write_design(&task, "这不是一个状态块\n");
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Plan },
@@ -7726,6 +8436,7 @@ mod tests {
             &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -7794,6 +8505,7 @@ mod tests {
             &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -7886,6 +8598,7 @@ mod tests {
         std::fs::write(wt.join("feature.txt"), "the work\n").unwrap();
 
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8024,6 +8737,7 @@ mod tests {
         );
 
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8097,6 +8811,7 @@ mod tests {
         let after_own_commit = git::head_sha(&wt).unwrap();
 
         let session = Session {
+            project_id: None,
             id: "s2".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -8152,6 +8867,7 @@ mod tests {
             },
         );
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -9020,6 +9736,88 @@ mod tests {
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
     }
 
+    #[test]
+    fn handoff_note_timeout_keeps_notes_for_retry() {
+        let mut w = World::new("note-timeout");
+        w.ctx
+            .store
+            .append_event(
+                "task.note_added",
+                "T-1",
+                json!({"n":1,"text":"timeout note"}),
+            )
+            .unwrap();
+        let s = timeout_retry_start(&mut w, None);
+        assert_eq!(
+            w.ctx
+                .store
+                .session_started_event("T-1", &s.id)
+                .unwrap()
+                .unwrap()["notes"],
+            json!([1])
+        );
+        timeout_retry_finish(&mut w, &s);
+        timeout_retry_deliver(&mut w, &s);
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.note_delivered")
+                .unwrap(),
+            0
+        );
+        assert!(w.ctx.store.pending_retry("T-1").unwrap().is_some());
+        redispatch(&mut w.ctx, "T-1", Node::Implement).unwrap();
+        let retry = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .session_started_event("T-1", &retry.id)
+                .unwrap()
+                .unwrap()["notes"],
+            json!([1])
+        );
+    }
+
+    #[test]
+    fn handoff_note_unreadable_outcome_is_not_delivered() {
+        let mut w = World::new("note-read-failure");
+        w.ctx
+            .store
+            .append_event(
+                "task.note_added",
+                "T-1",
+                json!({"n":1,"text":"read failure note"}),
+            )
+            .unwrap();
+        let s = deferred_session(&mut w, Node::Implement);
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        std::fs::remove_file(w.with_worktree(&task).join(task.design_doc())).unwrap();
+        std::fs::write(
+            w.repo.join(SessionPaths::exit("T-1", &s.id)),
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        reap_session(&mut w.ctx, &s).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.note_delivered")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::handoff::pending(&w.ctx.store, "T-1")
+                .unwrap()
+                .notes
+                .len(),
+            1
+        );
+    }
+
     fn timeout_retry_start(w: &mut World, inject: Option<&Inject>) -> Session {
         let task = w.add_task("T-1", "a");
         w.write_design(
@@ -9423,19 +10221,97 @@ mod tests {
             },
         )
         .unwrap();
-        let failure = w
+        let fixed = w
             .ctx
             .store
-            .last_event(&task.id, "guard.failed")
+            .last_event(&task.id, "guard.auto_fixed")
             .unwrap()
             .unwrap();
-        assert_eq!(failure["code"], "impl_closed_milestone");
-        assert!(failure["detail"].as_str().unwrap().contains("new-impl.md"));
+        assert_eq!(fixed["code"], "impl_closed_milestone");
+        assert!(
+            std::fs::read_to_string(wt.join(task.design_doc()))
+                .unwrap()
+                .contains("old-audit.md")
+        );
         w.ctx
             .store
             .append_event("task.head", &task.id, json!({"sha":"missing-object"}))
             .unwrap();
         assert!(design_at_last_task_head(&w.ctx.store, &wt, &task).is_none());
+    }
+
+    #[test]
+    fn legacy_pointer_restore_io_and_commit_failures_preserve_the_document() {
+        let mut w = World::new("pointer-restore-failure");
+        let task = w.add_task("T-1", "a");
+        let wt = w.with_worktree(&task);
+        let old = "### M-01\n最新证据：old-audit.md\n";
+        let new = "### M-01\n最新证据：new-impl.md\n";
+        let milestones = vec![("M-01".into(), MilestoneState::Done)];
+        w.write_design(&task, new);
+        git::commit_paths(&wt, &[&task.design_doc()], "session pointer").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        std::fs::write(wt.join("untracked-product"), "dirty").unwrap();
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7))
+                .unwrap_err()
+                .contains("不干净")
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join(task.design_doc())).unwrap(),
+            new
+        );
+        std::fs::remove_file(wt.join("untracked-product")).unwrap();
+        let lock = git::run_ok(&wt, &["rev-parse", "--git-path", "index.lock"])
+            .unwrap()
+            .stdout;
+        let lock = wt.join(lock.trim());
+        std::fs::write(&lock, "held").unwrap();
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7)).is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join(task.design_doc())).unwrap(),
+            new
+        );
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        std::fs::remove_file(lock).unwrap();
+        assert!(git::is_clean(&wt).unwrap());
+        let path = wt.join(task.design_doc());
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        let write_failure =
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7));
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(write_failure.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), new);
+        // Unknown document shapes are rejected before touching disk.
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, "unknown", &milestones, None).is_err()
+        );
+        // Missing Git repository exercises the read failure branch.
+        assert!(
+            restore_closed_pointer_document(
+                &wt.join("missing"),
+                &task,
+                old,
+                new,
+                &milestones,
+                None
+            )
+            .is_err()
+        );
+        let (restored, event) =
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, None).unwrap();
+        assert_eq!(restored, old);
+        assert!(
+            event["detail"]
+                .as_str()
+                .unwrap()
+                .contains("无法识别任务协议版本")
+        );
     }
 
     #[test]
@@ -9556,7 +10432,7 @@ mod tests {
     }
 
     #[test]
-    fn session_scope_manual_retro_rejects_swept_product_edit() {
+    fn session_scope_manual_retro_first_crossing_is_restored() {
         needs_git!();
         let mut w = World::new("scope-manual-retro");
         let s = deferred_session(&mut w, Node::Retro);
@@ -9566,11 +10442,380 @@ mod tests {
             .unwrap();
         let task = w.ctx.store.get_task("T-1").unwrap();
         let wt = w.with_worktree(&task);
+        w.set_state("T-1", TaskState::Done);
+        let before = std::fs::read(wt.join("README.md")).unwrap();
         std::fs::write(wt.join("README.md"), "outside task docs\n").unwrap();
         assert!(reap_session(&mut w.ctx, &s).unwrap());
-        assert!(matches!(w.state("T-1"), TaskState::Failed {
-            at: Node::Retro, reason: FailureReason::Protocol { detail }
-        } if detail.contains("只能修改") && detail.contains("README.md")));
+        assert_eq!(w.state("T-1"), TaskState::Done);
+        assert_eq!(std::fs::read(wt.join("README.md")).unwrap(), before);
+        let patches = crate::scope::pending(&w.ctx.store, "T-1").unwrap();
+        assert_eq!(patches.len(), 1);
+        assert!(patches[0].repos[0].patch.exists());
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.scope_restored")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.protocol_failure")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn session_scope_manual_retro_second_crossing_fails() {
+        needs_git!();
+        let mut w = World::new("scope-retro-breaker");
+        let first = deferred_session(&mut w, Node::Retro);
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        let wt = w.with_worktree(&task);
+        w.set_state("T-1", TaskState::Done);
+        std::fs::write(wt.join("README.md"), "first\n").unwrap();
+        assert!(reap_session(&mut w.ctx, &first).unwrap());
+        w.set_state("T-1", TaskState::Active { node: Node::Retro });
+        redispatch_with(&mut w.ctx, "T-1", Node::Retro, None).unwrap();
+        let second = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        w.set_state("T-1", TaskState::Done);
+        std::fs::write(wt.join("README.md"), "second\n").unwrap();
+        let path = w.repo.join(SessionPaths::exit("T-1", &second.id));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            ExitMarker {
+                exit_code: 0,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        assert!(reap_session(&mut w.ctx, &second).unwrap());
+        let TaskState::Failed {
+            at: Node::Retro,
+            reason: FailureReason::Protocol { detail },
+        } = w.state("T-1")
+        else {
+            panic!("expected retro protocol failure")
+        };
+        assert!(detail.contains("上一次已自动还原"), "{detail}");
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.protocol_failure")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.scope_restored")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("README.md")).unwrap(),
+            "second\n"
+        );
+    }
+
+    /// A real persisted intent, with its product edit committed as a session would.
+    fn scope_patch_fixture(w: &mut World, s: &Session) -> autome_domain::scope::ScopeRestored {
+        let task = w.ctx.store.get_task("T-1").unwrap();
+        let wt = w.with_worktree(&task);
+        git::commit_paths(&wt, &["."], "baseline").unwrap();
+        let base = git::head_sha(&wt).unwrap();
+        std::fs::write(wt.join("README.md"), "crossed\n").unwrap();
+        git::commit_paths(&wt, &["README.md"], "session product edit").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let spec = scope_spec(s, &project, &task, &[json!({"repo": "", "head": base})]).unwrap();
+        let plan = crate::scope::plan(&spec).unwrap().unwrap();
+        w.ctx
+            .store
+            .append_event("session.scope_restore_begun", "T-1", json!(plan))
+            .unwrap();
+        plan
+    }
+
+    #[test]
+    fn scope_patch_ok_impl_marks_only_presented_patches_handled() {
+        needs_git!();
+        for valid in [false, true] {
+            let mut w = World::new("scope-ok");
+            let s = deferred_session(&mut w, Node::Implement);
+            let plan = scope_patch_fixture(&mut w, &s);
+            apply_scope_restore(&mut w.ctx, &plan).unwrap();
+            let patches: Vec<_> = plan.repos.iter().map(|r| r.patch.clone()).collect();
+            w.ctx
+                .store
+                .append_event(
+                    "session.started",
+                    "T-1",
+                    json!({"session_id": s.id, "scope_patches": patches}),
+                )
+                .unwrap();
+            let mut later = plan.clone();
+            later.session_id = "later".into();
+            later.repos[0].patch = "/later.patch".into();
+            w.ctx
+                .store
+                .append_event("session.scope_restore_begun", "T-1", json!(later))
+                .unwrap();
+            std::fs::write(
+                w.repo.join(SessionPaths::exit("T-1", &s.id)),
+                ExitMarker {
+                    exit_code: 0,
+                    ended_at: now_iso(),
+                }
+                .render(),
+            )
+            .unwrap();
+            if valid {
+                let task = w.ctx.store.get_task("T-1").unwrap();
+                let dir = w.with_worktree(&task).join("docs/a/evidence");
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("M-01-r1-impl.md"), "验收通过\n").unwrap();
+            }
+            reap_session(&mut w.ctx, &s).unwrap();
+            if !valid {
+                assert_eq!(
+                    w.ctx
+                        .store
+                        .count_events("T-1", "session.scope_patches_handled")
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(crate::scope::pending(&w.ctx.store, "T-1").unwrap().len(), 2);
+                continue;
+            }
+
+            let held = w
+                .ctx
+                .store
+                .last_event("T-1", "session.outcome_held")
+                .unwrap()
+                .unwrap();
+            assert_eq!(held["outcome"]["outcome"], "ok", "{held}");
+            let pending = crate::scope::pending(&w.ctx.store, "T-1").unwrap();
+            assert_eq!(pending, vec![later]);
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.scope_patches_handled")
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn scope_patch_crashed_impl_is_presented_again_on_next_launch() {
+        needs_git!();
+        let mut w = World::new("scope-crash");
+        let s = deferred_session(&mut w, Node::Implement);
+        let plan = scope_patch_fixture(&mut w, &s);
+        apply_scope_restore(&mut w.ctx, &plan).unwrap();
+        let patches: Vec<_> = plan.repos.iter().map(|r| r.patch.clone()).collect();
+        w.ctx
+            .store
+            .finish_session(&s.id, &SessionLifecycle::Vanished, &now_iso())
+            .unwrap();
+        redispatch(&mut w.ctx, "T-1", Node::Implement).unwrap();
+        let s = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .session_started_event("T-1", &s.id)
+                .unwrap()
+                .unwrap()["scope_patches"],
+            json!(patches)
+        );
+        std::fs::write(
+            w.repo.join(SessionPaths::exit("T-1", &s.id)),
+            ExitMarker {
+                exit_code: 1,
+                ended_at: now_iso(),
+            }
+            .render(),
+        )
+        .unwrap();
+        reap_session(&mut w.ctx, &s).unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "session.scope_patches_handled")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::scope::pending(&w.ctx.store, "T-1").unwrap(),
+            vec![plan]
+        );
+        redispatch(&mut w.ctx, "T-1", Node::Implement).unwrap();
+        let next = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_ne!(next.id, s.id);
+        let started = w
+            .ctx
+            .store
+            .session_started_event("T-1", &next.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(started["scope_patches"], json!(patches));
+    }
+
+    #[test]
+    fn scope_patch_restore_resumes_unfinished_begun() {
+        needs_git!();
+        // Both recovery entry points, including a terminal task's manual retro.
+        for startup in [true, false] {
+            let mut w = World::new("scope-resume");
+            let s = deferred_session(&mut w, Node::Retro);
+            let plan = scope_patch_fixture(&mut w, &s);
+            let repo = &plan.repos[0];
+            git::run_ok(
+                &repo.worktree,
+                &[
+                    "restore",
+                    &format!("--source={}", repo.base),
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    "README.md",
+                ],
+            )
+            .unwrap();
+            w.ctx
+                .store
+                .finish_session(&s.id, &SessionLifecycle::Vanished, &now_iso())
+                .unwrap();
+            if startup {
+                w.set_state("T-1", TaskState::Done);
+                let report = recover(&mut w.ctx);
+                assert!(report.errors.is_empty(), "{:?}", report.errors);
+                assert_eq!(w.state("T-1"), TaskState::Done);
+            } else {
+                redispatch(&mut w.ctx, "T-1", Node::Implement).unwrap();
+            }
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.scope_restored")
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                crate::scope::pending(&w.ctx.store, "T-1").unwrap(),
+                vec![plan.clone()]
+            );
+            assert!(
+                git::run_ok(
+                    &repo.worktree,
+                    &["diff", "--name-only", &repo.base, "HEAD", "--", "README.md"]
+                )
+                .unwrap()
+                .stdout
+                .is_empty()
+            );
+            git::run_ok(
+                &repo.worktree,
+                &["apply", "--check", repo.patch.to_str().unwrap()],
+            )
+            .unwrap();
+            let task = w.ctx.store.get_task("T-1").unwrap();
+            resume_unfinished(&mut w.ctx, &task).unwrap();
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.scope_restored")
+                    .unwrap(),
+                1
+            );
+        }
+        // A missing patch during recovery must compensate and stop an active Loop.
+        for startup in [true, false] {
+            let mut w = World::new("scope-resume-failed");
+            let s = deferred_session(&mut w, Node::Retro);
+            let plan = scope_patch_fixture(&mut w, &s);
+            let repo = &plan.repos[0];
+            git::run_ok(
+                &repo.worktree,
+                &[
+                    "restore",
+                    &format!("--source={}", repo.base),
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    "README.md",
+                ],
+            )
+            .unwrap();
+            std::fs::remove_file(&repo.patch).unwrap();
+            w.ctx
+                .store
+                .finish_session(&s.id, &SessionLifecycle::Vanished, &now_iso())
+                .unwrap();
+            w.set_state("T-1", TaskState::Active { node: Node::Retro });
+            let starts = w.ctx.store.count_events("T-1", "session.started").unwrap();
+            if startup {
+                assert!(!recover(&mut w.ctx).errors.is_empty());
+            } else {
+                w.set_state("T-1", TaskState::Stopped { at: Node::Retro });
+                assert!(
+                    advance(
+                        &mut w.ctx,
+                        "T-1",
+                        &Trigger::RerunFrom {
+                            node: Node::Implement
+                        }
+                    )
+                    .is_err()
+                );
+            }
+            assert!(
+                matches!(w.state("T-1"), TaskState::Failed { reason: FailureReason::Protocol { detail }, .. } if detail.contains("自动还原没有完成") && detail.contains("只能修改"))
+            );
+            assert_eq!(
+                w.ctx.store.count_events("T-1", "session.started").unwrap(),
+                starts
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.scope_restore_failed")
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .count_events("T-1", "session.scope_restored")
+                    .unwrap(),
+                0
+            );
+            assert!(
+                crate::scope::pending(&w.ctx.store, "T-1")
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                git::run_ok(
+                    &repo.worktree,
+                    &["diff", "--name-only", &repo.pre_head, "HEAD"]
+                )
+                .unwrap()
+                .stdout
+                .is_empty()
+            );
+            assert!(
+                git::run_ok(&repo.worktree, &["status", "--porcelain"])
+                    .unwrap()
+                    .stdout
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
@@ -10440,6 +11685,78 @@ mod tests {
     }
 
     #[test]
+    fn bug_reply_after_interruption_defers_with_budget_and_verbatim_text() {
+        needs_git!();
+        for stopped in [false, true] {
+            let mut w = World::new("bug-reply-deferred");
+            w.set_parallel(1);
+            let base = w.add_task("T-0", "blocker");
+            w.set_state(
+                "T-0",
+                TaskState::Active {
+                    node: Node::Implement,
+                },
+            );
+            let task = TaskRecord {
+                id: "T-1".into(),
+                slug: "reply".into(),
+                kind: TaskKind::Bug,
+                state: if stopped {
+                    TaskState::Stopped { at: Node::FixGate }
+                } else {
+                    TaskState::Failed {
+                        at: Node::FixGate,
+                        reason: FailureReason::FixBudget { limit: 3 },
+                    }
+                },
+                budget_n: Some(3),
+                ..base
+            };
+            w.ctx.store.insert_task(&task).unwrap();
+            let wt = w.with_worktree(&task);
+            freeze_protocol(&mut w.ctx, &task, &wt).unwrap();
+            w.ctx
+                .store
+                .append_event("bug.loop_started", &task.id, json!({}))
+                .unwrap();
+            for round in 1..=3 {
+                w.ctx
+                    .store
+                    .append_event("bug.fix_round_started", &task.id, json!({"round": round}))
+                    .unwrap();
+            }
+            let text = "决定：保留  空格\n{request}\n";
+            advance(&mut w.ctx, &task.id, &Trigger::Reply { info: text.into() }).unwrap();
+            assert_eq!(
+                w.state(&task.id),
+                TaskState::Requeued {
+                    resume: Node::Locate
+                }
+            );
+            assert_eq!(w.ctx.store.get_task(&task.id).unwrap().budget_n, Some(6));
+            assert_eq!(bug_progress(&w.ctx, &task).unwrap().fix_round, 3);
+            assert!(w.ctx.store.running_session(&task.id).unwrap().is_none());
+            assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            w.set_state("T-0", TaskState::Done);
+            assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec![task.id.clone()]);
+            assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Locate });
+            assert_eq!(
+                w.ctx.store.count_events(&task.id, "task.replied").unwrap(),
+                1
+            );
+            let replies = std::fs::read_to_string(wt.join("docs/reply/reply-replies.md")).unwrap();
+            assert_eq!(replies.matches(text).count(), 1);
+            let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+            assert_eq!(
+                session.kind,
+                SessionKind::Bug {
+                    step: BugStep::Locate
+                }
+            );
+        }
+    }
+
+    #[test]
     fn fill_slots_respects_the_projects_parallel_limit() {
         needs_git!();
         let mut w = World::new("slots");
@@ -10498,6 +11815,156 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_session_is_reaped_with_session_ended() {
+        needs_git!();
+        let mut w = World::new("onboarding-reap");
+        w.add_task("T-1", "untouched");
+        let project_id = w.ctx.store.get_task("T-1").unwrap().project_id;
+        for code in [0, 17] {
+            let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+            let s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            assert!(!reap_session(&mut w.ctx, &s).unwrap());
+            std::fs::write(
+                w.repo
+                    .join(SessionPaths::exit(ONBOARDING_SESSION_KEY, &sid)),
+                ExitMarker {
+                    exit_code: code,
+                    ended_at: now_iso(),
+                }
+                .render(),
+            )
+            .unwrap();
+            assert!(reap_session(&mut w.ctx, &s).unwrap());
+            let row = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            assert_eq!(row.lifecycle, SessionLifecycle::Exited { exit_code: code });
+            assert!(row.ended_at.is_some());
+            let event = w
+                .ctx
+                .store
+                .session_event(&project_id, &sid, "session.ended")
+                .unwrap()
+                .unwrap();
+            assert_eq!(event["exit_code"], code);
+            assert_eq!(event["end"], if code == 0 { "exited" } else { "crashed" });
+            assert!(w.ctx.store.list_sessions("T-1").unwrap().is_empty());
+        }
+        let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+        let mut s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+        let _ = std::fs::remove_file(&s.log_path);
+        s.started_at = "2000-01-01T00:00:00Z".into();
+        assert!(reap_session(&mut w.ctx, &s).unwrap());
+        assert_eq!(
+            w.ctx.store.get_session(&sid).unwrap().unwrap().lifecycle,
+            SessionLifecycle::Vanished
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let sid = start_onboarding(&mut w.ctx, &project_id).unwrap();
+            let mut s = w.ctx.store.get_session(&sid).unwrap().unwrap();
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            s.pid = Some(child.id() as i32);
+            s.started_at = "2000-01-01T00:00:00Z".into();
+            s.limit_minutes = Some(5);
+            let waiter = std::thread::spawn(move || child.wait().unwrap());
+            let result = reap_session(&mut w.ctx, &s);
+            waiter.join().unwrap();
+            assert!(result.unwrap());
+            assert_eq!(
+                w.ctx.store.get_session(&sid).unwrap().unwrap().lifecycle,
+                SessionLifecycle::TimedOut { limit_minutes: 5 }
+            );
+            assert_eq!(
+                w.ctx
+                    .store
+                    .session_event(&project_id, &sid, "session.ended")
+                    .unwrap()
+                    .unwrap()["end"],
+                "timed_out"
+            );
+        }
+    }
+
+    #[test]
+    fn session_ended_vanished_metrics_and_timestamp_boundaries() {
+        needs_git!();
+        let mut w = World::new("ended-boundaries");
+        w.add_task("T-1", "ended");
+        let mut s = Session {
+            project_id: None,
+            id: "s1".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Intake,
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 0,
+            started_at: "invalid".into(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+            limit_minutes: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
+        };
+        w.ctx.store.insert_session(&s).unwrap();
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Running, "bad").unwrap();
+        assert_eq!(w.ctx.store.count_events("T-1", "session.ended").unwrap(), 0);
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Vanished, "bad").unwrap();
+        let e = w
+            .ctx
+            .store
+            .session_event("T-1", "s1", "session.ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(e["end"], "crashed");
+        for key in ["exit_code", "duration_ms", "cost_usd"] {
+            assert!(e[key].is_null());
+        }
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Vanished, "bad").unwrap();
+        assert_eq!(w.ctx.store.count_events("T-1", "session.ended").unwrap(), 1);
+        s.id = "s2".into();
+        w.ctx.store.insert_session(&s).unwrap();
+        let metrics = autome_domain::metrics::SessionMetrics {
+            cost_usd: Some(0.25),
+            duration_ms: Some(123),
+            ..Default::default()
+        };
+        w.ctx.store.set_session_metrics(&s.id, &metrics).unwrap();
+        record_session_ended(
+            &w.ctx.store,
+            &s,
+            "T-1",
+            &SessionLifecycle::Exited { exit_code: 0 },
+            "bad",
+        )
+        .unwrap();
+        let e = w
+            .ctx
+            .store
+            .session_event("T-1", "s2", "session.ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(e["duration_ms"], 123);
+        assert_eq!(e["cost_usd"], 0.25);
+        assert_eq!(
+            wall_clock_ms("2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
+            Some(1000)
+        );
+        assert_eq!(
+            wall_clock_ms("2026-01-01T00:00:01Z", "2026-01-01T00:00:00Z"),
+            None
+        );
+    }
+
+    #[test]
     fn recovery_consumes_a_session_that_finished_while_we_were_away() {
         needs_git!();
         let mut w = World::new("recover-finished");
@@ -10505,6 +11972,7 @@ mod tests {
         w.set_state("T-1", TaskState::Active { node: Node::Design });
         w.write_design(&task, &design_doc("设计中", &[], ""));
         let session = Session {
+            project_id: None,
             id: "s1".into(),
             task_id: "T-1".into(),
             kind: SessionKind::Role { role: Role::Plan },
@@ -11179,6 +12647,182 @@ mod tests {
                     node: Node::Cleanup
                 }
             ));
+        }
+    }
+    #[test]
+    fn test_fix_overlay_takes_test_files_from_head_and_the_rest_from_base() {
+        let mut w = World::new("test-fix-overlay");
+        let task = w.add_task("T-1", "overlay");
+        std::fs::write(w.repo.join("product"), "broken").unwrap();
+        git::commit_paths(&w.repo, &["product"], "baseline").unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("product"), "fixed").unwrap();
+        std::fs::write(wt.join("test.sh"), "test product = fixed").unwrap();
+        git::commit_paths(&wt, &["product", "test.sh"], "fix and test").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"test.sh","protect":"file"}]}),
+            )
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        test_fix::prepare(&w.ctx, &project, &task, &layout, "sh test.sh", &job).unwrap();
+        let base = w.repo.join(".autome/output/repro-base/T-1/current");
+        assert_eq!(
+            std::fs::read_to_string(base.join("product")).unwrap(),
+            "broken"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("test.sh")).unwrap(),
+            "test product = fixed"
+        );
+        assert!(git::is_clean(&wt).unwrap());
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_base_checkout_is_removed_after_the_check() {
+        let mut w = World::new("test-fix-clean");
+        let task = w.add_task("T-1", "clean");
+        w.with_worktree(&task);
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event("bug.regression_snapshot", &task.id, json!({"files":[]}))
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        for command in ["true", "false", "missing-command"] {
+            test_fix::prepare(&w.ctx, &project, &task, &layout, command, &job).unwrap();
+            test_fix::cleanup(&project, &task, &layout).unwrap();
+            assert!(!w.repo.join(".autome/output/repro-base/T-1").exists());
+            assert!(
+                !git::run_ok(&w.repo, &["worktree", "list", "--porcelain"])
+                    .unwrap()
+                    .stdout
+                    .contains("repro-base")
+            );
+        }
+        let mut invalid = layout.clone();
+        invalid.repos[0].base = "missing-default-branch".into();
+        let command = test_fix::prepare(&w.ctx, &project, &task, &invalid, "true", &job).unwrap();
+        assert!(command.contains("exit 127"));
+        assert!(!w.repo.join(".autome/output/repro-base/T-1").exists());
+    }
+
+    #[test]
+    fn test_fix_overlay_splices_an_inline_test_section() {
+        let mut w = World::new("test-fix-inline");
+        let task = w.add_task("T-1", "inline");
+        std::fs::write(w.repo.join("lib.rs"), "broken\n#[cfg(test)]\nold tests\n").unwrap();
+        git::commit_paths(&w.repo, &["lib.rs"], "baseline").unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("lib.rs"), "fixed\n#[cfg(test)]\nnew tests\n").unwrap();
+        git::commit_paths(&wt, &["lib.rs"], "fix").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"lib.rs","protect":"section"}]}),
+            )
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(".autome/output/repro-base/T-1/current/lib.rs"))
+                .unwrap(),
+            "broken\n#[cfg(test)]\nnew tests\n"
+        );
+        std::fs::write(wt.join("lib.rs"), "fixed without a test marker\n").unwrap();
+        git::commit_paths(&wt, &["lib.rs"], "missing section").unwrap();
+        let failed = test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert!(failed.contains("识别不出测试段 lib.rs"));
+        assert!(failed.contains("exit 127"));
+        std::fs::write(wt.join("new.rs"), "#[test]\nnew test\n").unwrap();
+        git::commit_paths(&wt, &["new.rs"], "new inline file").unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"new.rs","protect":"section"}]}),
+            )
+            .unwrap();
+        let failed = test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert!(failed.contains("基线无法构造 new.rs"));
+        assert!(failed.contains("exit 127"));
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_overlay_brings_support_files_and_flags_missing_dependencies() {
+        let mut w = World::new("test-fix-support");
+        let task = w.add_task("T-1", "support");
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("fixture.bin"), [0, 255, 1]).unwrap();
+        git::commit_paths(&wt, &["fixture.bin"], "fixture").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        w.ctx
+            .store
+            .append_event("bug.regression_snapshot", &task.id, json!({"files":[]}))
+            .unwrap();
+        let command =
+            test_fix::prepare(&w.ctx, &project, &task, &layout, "cat fixture.bin", &job).unwrap();
+        assert!(command.contains("依赖缺失 fixture.bin"));
+        assert!(command.contains("exit 127"));
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[],"support":[{"repo":"","path":"fixture.bin"}]}),
+            )
+            .unwrap();
+        let command =
+            test_fix::prepare(&w.ctx, &project, &task, &layout, "cat fixture.bin", &job).unwrap();
+        assert!(!command.contains("exit 127"));
+        assert_eq!(
+            std::fs::read(
+                w.repo
+                    .join(".autome/output/repro-base/T-1/current/fixture.bin")
+            )
+            .unwrap(),
+            [0, 255, 1]
+        );
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_task_get_reports_used_limit_and_open() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        assert_eq!(
+            test_fix::view(&store, "T").unwrap(),
+            json!({"used":0,"limit":2,"open":false})
+        );
+        for n in 1..=2 {
+            store
+                .append_event("bug.test_fix_requested", "T", json!({"attempt":n}))
+                .unwrap();
+            assert_eq!(
+                test_fix::view(&store, "T").unwrap(),
+                json!({"used":n,"limit":2,"open":true})
+            );
+            store
+                .append_event("bug.test_fix_settled", "T", json!({"result":"accepted"}))
+                .unwrap();
+            assert_eq!(
+                test_fix::view(&store, "T").unwrap(),
+                json!({"used":n,"limit":2,"open":false})
+            );
         }
     }
 }

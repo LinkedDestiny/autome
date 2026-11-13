@@ -441,6 +441,7 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
                 feedback: str_param(p, "feedback")?.to_string(),
             },
         ),
+        "task.note" => task_note(ctx, p),
         "task.reply" => {
             let id = str_param(p, "task_id")?;
             let info = str_param(p, "info")?.to_string();
@@ -622,11 +623,17 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let costs = project_costs(ctx, project_id)?;
     let (total, missing) = project_cost_json(&tasks, &costs);
     let global = config_io::load_global(&ctx.autome_home)?;
-    let project_config = config_io::load_project(std::path::Path::new(&project.path))?;
-    let resolved = config::resolve(&global, &project_config);
+    let (resolved, config_error) =
+        match config_io::load_project(std::path::Path::new(&project.path)) {
+            Ok(local) => (Some(config::resolve(&global, &local)), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let home = ctx.home.to_string_lossy().into_owned();
     let inventory = skills::scan(&home, &project.path);
-    let violations = config::validate(&resolved, &inventory);
+    let violations = resolved
+        .as_ref()
+        .map(|r| config::validate(r, &inventory))
+        .unwrap_or_default();
 
     let positions: std::collections::BTreeMap<_, _> = ctx
         .store
@@ -638,20 +645,32 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let tasks_json = tasks
         .iter()
         .map(|t| {
-            let mut value = task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))?;
+            let mut value = task_json_with_config(
+                ctx,
+                t,
+                costs.get(&t.id).unwrap_or(&CostSummary::default()),
+                config_error.is_none(),
+            )?;
             value["queue_position"] = json!(positions.get(&t.id));
             Ok(value)
         })
         .collect::<Result<Vec<_>, DispatchError>>()?;
 
+    let onboarding_session = ctx.store.latest_onboarding_session(project_id)?.map(|s| {
+        json!({
+            "id": s.id, "lifecycle": s.lifecycle, "started_at": s.started_at, "ended_at": s.ended_at
+        })
+    });
     Ok((
         json!({
+            "onboarding_session": onboarding_session,
             "project": project,
             "cost_usd_total": total,
             "cost_sessions_without_cost": missing,
             "tasks": tasks_json,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
+            "config_error": config_error,
             "violations": violations,
             "rules": rule_files(&project.path),
         }),
@@ -663,6 +682,15 @@ fn task_json(
     ctx: &Ctx,
     t: &crate::store::TaskRecord,
     cost: &CostSummary,
+) -> Result<Value, DispatchError> {
+    task_json_with_config(ctx, t, cost, true)
+}
+
+fn task_json_with_config(
+    ctx: &Ctx,
+    t: &crate::store::TaskRecord,
+    cost: &CostSummary,
+    config_ok: bool,
 ) -> Result<Value, DispatchError> {
     let after = ctx.store.task_after(&t.id)?;
     let mut blocked_by = Vec::new();
@@ -698,9 +726,10 @@ fn task_json(
         // Where this task's documents live inside the repository holding
         // them, frozen when it was created. The panel opens paths under it.
         "doc_dir": t.doc_dir(),
-        "merge": crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))?,
+        "merge": if config_ok { crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))? } else { Value::Null },
     });
     if t.kind == TaskKind::Bug {
+        value["test_fix"] = crate::scheduler::test_fix::view(&ctx.store, &t.id)?;
         value["fix_round"] = json!(ctx.store.count_events(&t.id, "bug.fix_round_started")?);
     }
     Ok(value)
@@ -739,7 +768,7 @@ fn project_add(
     let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
 
     if path.exists() && !path.is_dir() {
-        return Err(rejected(format!("{} 不是目录", path.display())));
+        return Err(rejected(add_rejection(&ctx.store, &path)?.unwrap().message));
     }
 
     let existed = path.exists();
@@ -752,34 +781,10 @@ fn project_add(
         .map_err(|e| internal(format!("无法解析路径：{e}")))?;
     let canonical_str = canonical.to_string_lossy().into_owned();
 
-    // A directory that was removed from the registry can be added again: P-08
-    // says removal touches nothing on disk, so there is nothing to stop the
-    // user changing their mind — but `projects.path` is UNIQUE, so the row is
-    // still sitting on the path and the insert used to come back as "该目录已
-    // 经是一个项目" about a project that is not there any more.
-    //
-    // The old row is reused rather than replaced. Its id is what the removed
-    // project's tasks still point at, and dropping it would orphan their
-    // history to make room for a project at the same path.
-    let readding = match ctx.store.project_by_path(&canonical_str)? {
-        Some(existing) if existing.is_active() => {
-            return Err(rejected("该目录已经是一个项目".to_string()));
-        }
-        Some(removed) => Some(removed.id),
-        None => None,
-    };
-
-    // Nested projects would make `.worktree/` and `.autome/` ambiguous.
-    for other in ctx.store.list_projects()? {
-        let other_path = std::path::Path::new(&other.path);
-        if canonical.starts_with(other_path) || other_path.starts_with(&canonical) {
-            return Err(rejected(format!(
-                "{} 与已有项目「{}」嵌套，不能同时管理",
-                canonical.display(),
-                other.display_name
-            )));
-        }
+    if let Some(reason) = add_rejection(&ctx.store, &path)? {
+        return Err(rejected(reason.message));
     }
+    let readding = ctx.store.project_by_path(&canonical_str)?.map(|p| p.id);
 
     let was_repo = git::is_repo_root(&canonical);
     let members = discover_members(&canonical);
@@ -925,6 +930,84 @@ fn discover_members(dir: &std::path::Path) -> Vec<project::Member> {
 /// and *also* holds several — which is exactly what a wrongly-initialised
 /// workspace looks like — is reported as both, because only the user knows
 /// which one they meant.
+#[derive(serde::Serialize)]
+struct Rejection {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+}
+
+fn add_rejection(
+    store: &Store,
+    path: &std::path::Path,
+) -> Result<Option<Rejection>, DispatchError> {
+    if path.exists() && !path.is_dir() {
+        return Ok(Some(Rejection {
+            kind: "not_a_directory",
+            message: format!("{} 不是目录", path.display()),
+            project_id: None,
+        }));
+    }
+    // Resolve the existing ancestor too, so probing a not-yet-created child
+    // gives the same answer as add after create_dir_all, without writing it.
+    let canonical = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| internal(format!("无法解析路径：{e}")))?
+    } else {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| internal(e.to_string()))?
+                .join(path)
+        };
+        let ancestor = absolute.ancestors().find(|p| p.exists()).unwrap();
+        let mut resolved = ancestor
+            .canonicalize()
+            .map_err(|e| internal(e.to_string()))?;
+        for component in absolute.strip_prefix(ancestor).unwrap().components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => resolved.push(other.as_os_str()),
+            }
+        }
+        resolved
+    };
+    if let Some(existing) = store.project_by_path(&canonical.to_string_lossy())?
+        && existing.is_active()
+    {
+        return Ok(Some(Rejection {
+            kind: "already_project",
+            message: "该目录已经是一个项目".into(),
+            project_id: Some(existing.id),
+        }));
+    }
+    for other in store.list_projects()? {
+        let other_path = std::path::Path::new(&other.path);
+        let kind = if canonical.starts_with(other_path) {
+            "nested_in_project"
+        } else if other_path.starts_with(&canonical) {
+            "contains_project"
+        } else {
+            continue;
+        };
+        return Ok(Some(Rejection {
+            kind,
+            message: format!(
+                "{} 与已有项目「{}」嵌套，不能同时管理",
+                canonical.display(),
+                other.display_name
+            ),
+            project_id: Some(other.id),
+        }));
+    }
+    Ok(None)
+}
+
 fn project_probe(ctx: &Ctx, raw_path: &str) -> DispatchResult {
     let path = std::path::PathBuf::from(shellexpand_home(raw_path, &ctx.home));
     let exists = path.is_dir();
@@ -942,6 +1025,7 @@ fn project_probe(ctx: &Ctx, raw_path: &str) -> DispatchResult {
             "is_repo_root": is_repo_root,
             "members": members,
             "suggest_workspace": suggest_workspace,
+            "rejection": add_rejection(&ctx.store, &path)?,
             "suggested_docs_repo": members
                 .iter()
                 .find(|m| m.name == project::DEFAULT_DOC_ROOT_REPO)
@@ -1002,13 +1086,18 @@ fn onboarding_step(ctx: &mut Ctx, project_id: &str, advance: bool) -> DispatchRe
     } else {
         Onboarding::Skipped
     };
-    ctx.store.update_project_onboarding(project_id, next)?;
 
     let mut committed = None;
     if next.is_settled() && !project.onboarding.is_settled() {
-        committed = init_commit(&project)?;
+        committed = init_commit(&project).map_err(|e| {
+            rejected(format!(
+                "Onboarding 结束时提交失败：{}。状态没有改，处理后可以重试",
+                e.message
+            ))
+        })?;
     }
 
+    ctx.store.update_project_onboarding(project_id, next)?;
     let seq = ctx.store.append_event(
         "project.onboarding",
         project_id,
@@ -1096,12 +1185,35 @@ fn init_commit(project: &Project) -> std::result::Result<Option<String>, Dispatc
     // Stage only the wizard's artefacts, never the user's entire docs tree.
     paths.extend(ONBOARDING_FILES.iter().map(|path| (*path).to_string()));
     paths.retain(|p| repo.join(p).exists());
-    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
-    Ok(git::commit_paths(
-        repo,
-        &refs,
-        "chore(autome): initialise project",
-    )?)
+    let mut committed = None;
+    let repos = if project.kind == autome_domain::project::ProjectKind::Workspace {
+        project
+            .members
+            .iter()
+            .map(|m| repo.join(&m.name))
+            .collect::<Vec<_>>()
+    } else {
+        vec![repo.to_path_buf()]
+    };
+    for member in repos {
+        let relative = paths
+            .iter()
+            .filter_map(|p| {
+                repo.join(p)
+                    .strip_prefix(&member)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .collect::<Vec<_>>();
+        if relative.is_empty() {
+            continue;
+        }
+        let refs = relative.iter().map(String::as_str).collect::<Vec<_>>();
+        if let Some(sha) = git::commit_paths(&member, &refs, "chore(autome): initialise project")? {
+            committed = Some(sha);
+        }
+    }
+    Ok(committed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1257,11 @@ fn config_get(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
         None => (ProjectConfig::default(), None),
     };
     let resolved = config::resolve(&global, &project_config);
+    let mut resolved_json = json!(resolved);
+    resolved_json["gate_run"] = json!(resolved.gate_run);
+    resolved_json["gate_quick"] = json!(resolved.gate_quick);
+    resolved_json["setup"] = json!(resolved.setup);
+    let defaults = config_io::resolved_defaults(&ctx.autome_home, &project_config)?;
     let home = ctx.home.to_string_lossy().into_owned();
     let inventory = match &repo {
         Some(path) => skills::scan(&home, path),
@@ -1154,7 +1271,8 @@ fn config_get(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
     Ok((
         json!({
             "global": global,
-            "resolved": resolved,
+            "resolved": resolved_json,
+            "defaults": defaults,
             "violations": violations,
             "scope": project_id,
         }),
@@ -1893,6 +2011,79 @@ fn project_warnings(ctx: &Ctx, project: &Project) -> Result<Vec<String>, Dispatc
     Ok(config::warnings(&config::resolve(&global, &local)))
 }
 
+fn task_note(ctx: &mut Ctx, p: &Value) -> DispatchResult {
+    let id = str_param(p, "task_id")?;
+    let text = str_param(p, "text")?;
+    if p.get("reopen").is_some_and(|v| !v.is_boolean()) {
+        return Err(bad_params("reopen 必须是布尔值"));
+    }
+    if text.trim().is_empty() {
+        return Err(rejected("备注不能为空"));
+    }
+    // Match the web gateway's JavaScript string length (UTF-16 code units).
+    if text.encode_utf16().count() > 8000 {
+        return Err(rejected("备注不能超过 8000 字符"));
+    }
+    let task = ctx.store.get_task(id)?;
+    match task.state {
+        TaskState::Done => {
+            return Err(rejected(
+                "任务已经完成，备注不会再被任何一轮读到；有新问题请新建任务",
+            ));
+        }
+        TaskState::Cancelled => {
+            return Err(rejected(
+                "任务已经取消，备注不会再被任何一轮读到；有新问题请新建任务",
+            ));
+        }
+        _ => {}
+    }
+    let reopen = matches!(
+        task.state,
+        TaskState::Active {
+            node: Node::AwaitMerge
+        }
+    );
+    if reopen && p["reopen"] != true {
+        return Err(rejected(if task.kind == TaskKind::Bug {
+            "任务已在等你合并；加 --reopen 会把它送回修复轮处理这条备注，之后重新复核与过门禁"
+        } else {
+            "任务已在等你合并；加 --reopen 会把它送回实现轮处理这条备注，之后重新审计与过门禁"
+        }));
+    }
+    if reopen && task.kind == TaskKind::Bug {
+        let project = ctx.store.get_project(&task.project_id)?;
+        let config = scheduler::resolve_config(ctx, &project)?;
+        if scheduler::bug_progress(ctx, &task)?.fix_round
+            >= task.budget_n.unwrap_or(config.bug.fix_rounds)
+        {
+            return Err(rejected("修复预算已用完，请先 autome extend"));
+        }
+    }
+    let late = matches!(
+        task.state,
+        TaskState::Active {
+            node: Node::Merging | Node::MainCheck | Node::Cleanup
+        }
+    );
+    let n = ctx.store.count_events(id, "task.note_added")? + 1;
+    let mut payload = json!({"n":n, "text":text});
+    if late {
+        payload["late"] = json!(true);
+    }
+    let seq = ctx
+        .store
+        .append_event("task.note_added", id, payload.clone())?;
+    if reopen {
+        scheduler::apply_trigger(ctx, id, &Trigger::ReopenForNote)?;
+    }
+    let mut out = json!({"n":n});
+    if late {
+        out["warning"] = json!("任务已经在合并，这条备注不会被任何一轮读到；要处理请新建任务");
+    }
+    Ok((out, vec![event(seq, "task.note_added", id, payload)]))
+}
+
 fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
@@ -1906,19 +2097,38 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     // document that was right there.
     let layout = crate::layout::TaskLayout::of(&project, &task.slug, &[]);
 
-    let doc = read_status_block(&layout.docs_root, &task);
+    let source = DocumentSource::for_task(&project, &task);
+    let doc = source.status(&task);
     let status = doc.block();
     let sessions = ctx.store.list_sessions(task_id)?;
     let decisions = ctx.store.list_decisions(task_id)?;
+    let mut last = Value::Null;
+    if let Some((seq, _, mut payload)) = ctx
+        .store
+        .last_event_of(task_id, &["session.scope_restore_begun"])?
+    {
+        if let Some(event) = ctx.store.events_since_with_at(seq - 1, 1)?.first() {
+            payload["at"] = json!(event.at);
+        }
+        last = payload;
+    }
+    let pending = crate::scope::pending(&ctx.store, task_id)
+        .map_err(|e| internal(e.to_string()))?
+        .into_iter()
+        .flat_map(|plan| plan.repos.into_iter().map(|repo| repo.patch))
+        .collect::<Vec<_>>();
 
     Ok((
         json!({
             "task": task_json(ctx, &task, &CostSummary::of(&sessions))?,
             "project": { "id": project.id, "name": project.display_name, "default_branch": project.default_branch },
+            "scope_restore": {"last": last, "pending": pending},
+            "notes": ctx.store.operator_notes(task_id)?,
             "brief": ctx.store.task_brief(task_id)?,
+            "gate_queue_lane": crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?.iter().find(|w| w.task_id == task_id).map(|w| w.lane),
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
-            "status_block": status.map(status_json),
+            "status_block": doc.json(),
             "status_error": doc.error().is_some(),
             "status_error_detail": doc.error(),
             "sessions": sessions.iter().map(|s| session_json(ctx, &project, s)).collect::<Vec<_>>(),
@@ -1928,7 +2138,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
                 .map(|d| decision_json(d, status))
                 .collect::<Vec<_>>(),
             "pending_decisions": ctx.store.pending_decisions(task_id)?,
-            "documents": documents(&layout.docs_root, &task),
+            "documents": source.documents(&task),
             // What "打开 worktree" opens: the session's working directory,
             // which for a workspace is the directory the member checkouts sit
             // in rather than a checkout itself.
@@ -1966,9 +2176,18 @@ enum DocRead {
     /// `ParseError`, which names the field or the row and line number.
     Unreadable(String),
     Ok(Box<StatusBlock>),
+    Bug(autome_domain::bug_doc::BugDoc),
 }
 
 impl DocRead {
+    fn json(&self) -> Value {
+        match self {
+            Self::Ok(block) => status_json(block),
+            Self::Bug(block) => json!(block),
+            _ => Value::Null,
+        }
+    }
+
     fn block(&self) -> Option<&StatusBlock> {
         match self {
             DocRead::Ok(b) => Some(b),
@@ -1986,16 +2205,82 @@ impl DocRead {
     }
 }
 
-/// Reads the design document from the task's worktree. The panel shows the
-/// node flow whatever this returns; a parse failure has already failed the
-/// task through the normal path, and this is how the panel explains it.
-fn read_status_block(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> DocRead {
-    let Ok(text) = std::fs::read_to_string(worktree.join(task.design_doc())) else {
-        return DocRead::Absent;
-    };
-    match status_block::parse(&text) {
-        Ok(block) => DocRead::Ok(Box::new(block)),
-        Err(error) => DocRead::Unreadable(error.to_string()),
+/// After cleanup, membership and content come from the default branch, never HEAD.
+struct DocumentSource {
+    root: std::path::PathBuf,
+    branch: Option<String>,
+}
+
+impl DocumentSource {
+    fn for_task(project: &Project, task: &crate::store::TaskRecord) -> Self {
+        let worktree = std::path::PathBuf::from(project.docs_worktree(&task.slug));
+        if worktree.join(task.doc_dir()).is_dir() {
+            return Self {
+                root: worktree,
+                branch: None,
+            };
+        }
+        let root = project.docs_repo.as_ref().map_or_else(
+            || project.path.clone(),
+            |member| project.member_path(member),
+        );
+        Self {
+            root: root.into(),
+            branch: Some(project.default_branch.clone()),
+        }
+    }
+
+    fn status(&self, task: &crate::store::TaskRecord) -> DocRead {
+        let path = if task.kind == TaskKind::Bug {
+            task.bug_doc()
+        } else {
+            task.design_doc()
+        };
+        let text = match &self.branch {
+            Some(branch) => git::run_ok(&self.root, &["show", &format!("{branch}:{path}")])
+                .ok()
+                .map(|out| out.stdout),
+            None => std::fs::read_to_string(self.root.join(path)).ok(),
+        };
+        let Some(text) = text else {
+            return DocRead::Absent;
+        };
+        if task.kind == TaskKind::Bug {
+            return match autome_domain::bug_doc::parse(&text) {
+                Ok(block) => DocRead::Bug(block),
+                Err(error) => DocRead::Unreadable(error.to_string()),
+            };
+        }
+        match status_block::parse(&text) {
+            Ok(block) => DocRead::Ok(Box::new(block)),
+            Err(error) => DocRead::Unreadable(error.to_string()),
+        }
+    }
+
+    fn documents(&self, task: &crate::store::TaskRecord) -> Vec<Value> {
+        let mut docs = documents(&self.root, task);
+        if let Some(branch) = &self.branch {
+            let Ok(tree) = git::run_ok(
+                &self.root,
+                &[
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "-z",
+                    branch,
+                    "--",
+                    &format!("{}/", task.doc_dir()),
+                ],
+            ) else {
+                return vec![];
+            };
+            let paths: std::collections::HashSet<_> = tree.stdout.split('\0').collect();
+            docs.retain(|doc| paths.contains(doc["path"].as_str().unwrap_or_default()));
+            for doc in &mut docs {
+                doc["source"] = json!("default_branch");
+            }
+        }
+        docs
     }
 }
 
@@ -2119,24 +2404,40 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
     let dir = task.doc_dir();
     let slug = &task.slug;
     let names = [
-        (format!("{slug}.md"), "设计文档"),
+        (format!("{slug}-card.md"), "任务卡"),
+        (
+            if task.kind == TaskKind::Bug {
+                format!("{slug}-bug.md")
+            } else {
+                format!("{slug}.md")
+            },
+            if task.kind == TaskKind::Bug {
+                "Bug 文档"
+            } else {
+                "设计文档"
+            },
+        ),
         (format!("{slug}-task.md"), "任务文件"),
         (format!("{slug}-review.md"), "评审"),
         (format!("{slug}-adjudication.md"), "裁决"),
         (format!("{slug}-audit.md"), "审计"),
         ("retro.md".to_string(), "运行记录"),
+        ("lessons.md".to_string(), "复盘教训"),
     ];
     let mut out: Vec<Value> = names
         .iter()
         .filter_map(|(name, label)| {
             let path = worktree.join(&dir).join(name);
             let meta = std::fs::metadata(&path).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
             Some(json!({
                 "name": name,
                 "label": label,
                 "path": format!("{dir}/{name}"),
                 "absolute": path.to_string_lossy(),
-                "size": meta.len(),
+                "size": meta.len(), "source": "worktree",
             }))
         })
         .collect();
@@ -2157,7 +2458,11 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
                 if !name.ends_with(".md") {
                     return None;
                 }
-                let size = entry.metadata().ok()?.len();
+                let meta = entry.metadata().ok()?;
+                if !meta.is_file() {
+                    return None;
+                }
+                let size = meta.len();
                 Some((name, size, entry.path().to_string_lossy().into_owned()))
             })
             .collect();
@@ -2170,7 +2475,7 @@ fn documents(worktree: &std::path::Path, task: &crate::store::TaskRecord) -> Vec
                 "label": "证据",
                 "path": format!("{dir}/evidence/{name}"),
                 "absolute": absolute,
-                "size": size,
+                "size": size, "source": "worktree",
             })
         }));
     }
@@ -2383,6 +2688,13 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
         && let Ok(project) = ctx.store.get_project(&task.project_id)
     {
         crate::gate::stop_all(std::path::Path::new(&project.path), task_id);
+        let layout = crate::layout::TaskLayout::of(
+            &project,
+            &task.slug,
+            &scheduler::working_repos(&project, &task),
+        );
+        scheduler::test_fix::cleanup(&project, &task, &layout)
+            .map_err(|e| internal(e.to_string()))?;
         crate::gate::discard_node(std::path::Path::new(&project.path), task_id, "setup")
             .map_err(|e| internal(e.to_string()))?;
         crate::gate::discard_node(std::path::Path::new(&project.path), task_id, "after_merge")
@@ -2392,11 +2704,14 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
         if let Some(pid) = session.pid {
             let _ = crate::launcher::stop_session(pid);
         }
-        ctx.store.finish_session(
-            &session.id,
-            &autome_domain::session::SessionLifecycle::Killed,
-            &now_iso(),
-        )?;
+        let ended_at = now_iso();
+        let lifecycle = autome_domain::session::SessionLifecycle::Killed;
+        ctx.store
+            .finish_session(&session.id, &lifecycle, &ended_at)?;
+        let task = ctx.store.get_task(task_id)?;
+        let project = ctx.store.get_project(&task.project_id)?;
+        scheduler::record_usage(ctx, &session, &project, &task, &ended_at);
+        scheduler::record_session_ended(&ctx.store, &session, task_id, &lifecycle, &ended_at)?;
         // The round never finished, so whatever it carried was not applied.
         ctx.store.release_decisions(&session.id)?;
     }
@@ -2502,26 +2817,54 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
 fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
-    let layout = crate::layout::TaskLayout::of(
-        &project,
-        &task.slug,
-        &crate::scheduler::working_repos(&project, &task),
-    );
+    let merge_records = ctx.store.task_events(task_id, "merge.repo")?;
+    let mut working = crate::scheduler::working_repos(&project, &task);
+    if project.is_workspace() {
+        // Cleanup removes the worktrees and their repos declaration. The merge
+        // ledger still identifies every member whose history must be shown.
+        for record in &merge_records {
+            if record["commit"].is_string()
+                && let Some(name) = record["repo"].as_str()
+                && !working.iter().any(|n| n == name)
+            {
+                working.push(name.to_owned());
+            }
+        }
+    }
+    let layout = crate::layout::TaskLayout::of(&project, &task.slug, &working);
 
     // One row per repository the task worked in, in the order the merge will
     // take them. A single-repository project has exactly one, which is what
     // the panel drew before workspaces existed.
     let mut repos: Vec<Value> = Vec::new();
     for slot in &layout.repos {
-        if !git::branch_exists(&slot.repo_root, &slot.branch) {
-            continue;
-        }
-        let summary = git::change_summary(&slot.repo_root, &slot.base, &slot.branch)?;
-        let subjects = git::commit_subjects(&slot.repo_root, &slot.base, &slot.branch)?;
+        let archived = !git::branch_exists(&slot.repo_root, &slot.branch);
+        let merge_commit = if archived && project.is_workspace() {
+            merge_records
+                .iter()
+                .rev()
+                .find(|e| e["repo"] == slot.name && e["commit"].is_string())
+                .and_then(|e| e["commit"].as_str().map(str::to_owned))
+        } else {
+            task.merge_commit.clone()
+        };
+        let (base, branch) = if archived {
+            let Some(commit) =
+                merge_commit.filter(|c| git::second_parent(&slot.repo_root, c).is_ok())
+            else {
+                continue;
+            };
+            (format!("{commit}^1"), commit)
+        } else {
+            (slot.base.clone(), slot.branch.clone())
+        };
+        let summary = git::change_summary(&slot.repo_root, &base, &branch)?;
+        let subjects = git::commit_subjects(&slot.repo_root, &base, &branch)?;
         // Already in, from an earlier press or because the task changed
         // nothing here. `merge_all` skips exactly this case, so the panel has
         // to show it rather than offering to merge nothing.
-        let merged = git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false);
+        let merged = archived
+            || git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false);
         // The same judgement `merge_task_branch` makes, not a stricter one:
         // the panel must not tell the user a merge is blocked that the core
         // would happily perform, nor the reverse.
@@ -2533,9 +2876,10 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "branch": slot.branch,
             "into": slot.base,
             "commits": summary.commits,
-            "files": summary.files.iter().map(|f| json!({
-                "path": f.path, "added": f.added, "deleted": f.deleted
-            })).collect::<Vec<_>>(),
+            "files": summary.files.iter().map(|f| { let mut row = json!({
+                "path": f.path, "added": f.added, "deleted": f.deleted, "status": f.status
+            }); if let Some(from) = &f.from { row["from"] = json!(from); } row }).collect::<Vec<_>>(),
+            "deleted_count": summary.files.iter().filter(|f| f.status == "deleted").count(),
             "total_added": summary.total_added,
             "total_deleted": summary.total_deleted,
             "subjects": subjects,
@@ -2569,10 +2913,14 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
         .map(|r| r["blocked_by"].clone())
         .unwrap_or(Value::Null);
 
+    let archived = layout
+        .repos
+        .iter()
+        .all(|slot| !git::branch_exists(&slot.repo_root, &slot.branch));
     let total = |key: &str| -> i64 {
         repos
             .iter()
-            .filter(|r| r["merged"] != json!(true))
+            .filter(|r| archived || r["merged"] != json!(true))
             .filter_map(|r| r[key].as_i64())
             .sum()
     };
@@ -2591,6 +2939,8 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "files": repos.iter().flat_map(|r| r["files"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
             "total_added": total("total_added"),
             "total_deleted": total("total_deleted"),
+            "deleted_count": repos.iter().filter_map(|r| r["deleted_count"].as_u64()).sum::<u64>(),
+            "merged": repos.iter().all(|r| r["merged"] == true),
             "subjects": repos.iter().flat_map(|r| r["subjects"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
             "mergeable": mergeable,
             "rebase_first": outstanding.iter().any(|r| r["behind"] == json!(true)),
@@ -2609,30 +2959,24 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
 /// The tail of a session's log (requirement T-14). Bounded, because a long
 /// implementation round can produce megabytes and the panel only shows a tail.
 fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
-    let mut found = None;
-    for task in ctx.store.list_unfinished()?.into_iter().chain(
-        ctx.store
-            .list_projects()?
-            .into_iter()
-            .flat_map(|p| ctx.store.list_tasks(&p.id).unwrap_or_default()),
-    ) {
-        if let Some(s) = ctx
-            .store
-            .list_sessions(&task.id)?
-            .into_iter()
-            .find(|s| s.id == session_id)
-        {
-            found = Some(s);
-            break;
-        }
-    }
-    let session = found.ok_or_else(|| DispatchError {
-        code: ReplyErrorCode::NotFound,
-        message: format!("找不到会话 {session_id}"),
-    })?;
-
-    let task = ctx.store.get_task(&session.task_id)?;
-    let project = ctx.store.get_project(&task.project_id)?;
+    let session = ctx
+        .store
+        .get_session(session_id)?
+        .ok_or_else(|| DispatchError {
+            code: ReplyErrorCode::NotFound,
+            message: format!("找不到会话 {session_id}"),
+        })?;
+    let project = if session.kind == autome_domain::session::SessionKind::Onboarding {
+        ctx.store.get_project(
+            session
+                .project_id
+                .as_deref()
+                .ok_or_else(|| rejected("Onboarding 会话缺少项目"))?,
+        )?
+    } else {
+        let task = ctx.store.get_task(&session.task_id)?;
+        ctx.store.get_project(&task.project_id)?
+    };
     const MAX_BYTES: usize = 256 * 1024;
     let text = std::fs::read_to_string(&session.log_path).unwrap_or_default();
     let truncated = text.len() > MAX_BYTES;
@@ -2662,15 +3006,21 @@ fn session_log(ctx: &mut Ctx, session_id: &str) -> DispatchResult {
 /// The dashboard: everything waiting on the user, and everything running,
 /// across every project (requirement U-02).
 fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
-    let gate_waiters = crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?;
+    let gate_waiters =
+        crate::gate_queue::display_waiters(ctx).map_err(|e| internal(e.to_string()))?;
     let mut waiting = Vec::new();
     let mut running = Vec::new();
     let mut queued = Vec::new();
     let mut config_warnings = Vec::new();
+    let mut projects = Vec::new();
 
     for project in ctx.store.list_projects()? {
         let costs = project_costs(ctx, &project.id)?;
-        let warnings = project_warnings(ctx, &project)?;
+        let (warnings, config_error) = match project_warnings(ctx, &project) {
+            Ok(warnings) => (warnings, None),
+            Err(error) => (Vec::new(), Some(error.message)),
+        };
+        projects.push(json!({"project": project, "config_error": config_error}));
         if !warnings.is_empty() {
             config_warnings.push(json!({"project_id":project.id,"project_name":project.display_name,"warnings":warnings}));
         }
@@ -2679,8 +3029,9 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "project_id": project.id,
                 "project_name": project.display_name,
                 "queue_position": index + 1,
+                "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
-                "task": task_json(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
+                "task": task_json_with_config(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()), config_error.is_none())?,
                 "pending_decisions": ctx.store.pending_decisions(&task.id)?,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2694,8 +3045,9 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
             let entry = json!({
                 "project_id": project.id,
                 "project_name": project.display_name,
+                "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
-                "task": task_json(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
+                "task": task_json_with_config(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()), config_error.is_none())?,
                 "pending_decisions": pending,
                 "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
                 "retry": retry_json(ctx, &task.id)?,
@@ -2740,6 +3092,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
 
     Ok((
         json!({
+            "projects": projects,
             "config_warnings": config_warnings,
             "waiting": waiting,
             "running": running,
@@ -2967,7 +3320,11 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         .and_then(Value::as_u64)
         .unwrap_or(200)
         .min(1000) as u32;
-    let events = ctx.store.events_since_with_at(after, limit)?;
+    let events = match params.get("subject") {
+        None => ctx.store.events_since_with_at(after, limit)?,
+        Some(Value::String(subject)) => ctx.store.events_by_subject(subject, after, limit)?,
+        Some(_) => return Err(bad_params("subject 必须是字符串")),
+    };
     Ok((
         json!({
             "events": events.iter().map(|e| json!({
@@ -3827,6 +4184,267 @@ mod tests {
         ok_payload(&out).clone()
     }
 
+    fn note_fixture() -> (Sandbox, String) {
+        let mut sb = Sandbox::new("operator-note");
+        let project = sb.add_project("repo");
+        let id = gate_queue_fixture(&mut sb, &project, "note");
+        (sb, id)
+    }
+
+    #[test]
+    fn operator_note_is_recorded_in_order_without_changing_state() {
+        let (mut sb, id) = note_fixture();
+        let mut states = vec![
+            TaskState::Draft,
+            TaskState::Queued,
+            TaskState::Requeued {
+                resume: Node::Implement,
+            },
+            TaskState::Paused {
+                resume: Node::Implement,
+            },
+            TaskState::Stopped { at: Node::Fix },
+            TaskState::Failed {
+                at: Node::Implement,
+                reason: autome_domain::task::FailureReason::DesignBudget { limit: 1 },
+            },
+        ];
+        for node in Node::ALL
+            .into_iter()
+            .chain(Node::BUG)
+            .filter(|n| *n != Node::AwaitMerge)
+        {
+            states.push(TaskState::Active { node });
+        }
+        for (i, state) in states.into_iter().enumerate() {
+            sb.ctx.store.set_task_state(&id, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":" 原样\n备注 "})),
+            );
+            assert_eq!(ok_payload(&out)["n"], i + 1);
+            assert!(sb.ctx.store.list_sessions(&id).unwrap().is_empty());
+            assert_eq!(sb.ctx.store.get_task(&id).unwrap().state, state);
+        }
+        let notes = sb.ctx.store.operator_notes(&id).unwrap();
+        assert!(
+            notes
+                .iter()
+                .all(|n| n["text"] == " 原样\n备注 " && n["delivered"].is_null())
+        );
+    }
+
+    #[test]
+    fn operator_note_after_merge_started_is_recorded_with_a_warning() {
+        let (mut sb, id) = note_fixture();
+        for node in [
+            Node::Rebase,
+            Node::MergeGate,
+            Node::Merging,
+            Node::MainCheck,
+            Node::Cleanup,
+        ] {
+            sb.ctx
+                .store
+                .set_task_state(&id, &TaskState::Active { node })
+                .unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":"备注"})),
+            );
+            let late = matches!(node, Node::Merging | Node::MainCheck | Node::Cleanup);
+            assert_eq!(ok_payload(&out)["warning"].is_string(), late);
+            let event = sb
+                .ctx
+                .store
+                .last_event(&id, "task.note_added")
+                .unwrap()
+                .unwrap();
+            assert_eq!(event["late"] == true, late);
+            assert_eq!(out.events.len(), 1);
+            sb.ctx
+                .store
+                .append_event(
+                    "task.note_delivered",
+                    &id,
+                    json!({"notes":[event["n"]],"session_id":"s","role":"impl","round":1}),
+                )
+                .unwrap();
+            let notes = sb.ctx.store.operator_notes(&id).unwrap();
+            assert_eq!(notes.last().unwrap()["delivered"].is_null(), late);
+        }
+    }
+
+    #[test]
+    fn operator_note_rejects_done_and_cancelled_plainly() {
+        let (mut sb, id) = note_fixture();
+        for (state, message) in [
+            (TaskState::Done, "已经完成"),
+            (TaskState::Cancelled, "已经取消"),
+        ] {
+            sb.ctx.store.set_task_state(&id, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":"备注"})),
+            );
+            assert!(err_message(&out).contains(message));
+            assert_eq!(sb.ctx.store.get_task(&id).unwrap().state, state);
+        }
+        assert!(sb.ctx.store.operator_notes(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn operator_note_rejects_blank_and_over_8000_chars() {
+        let (mut sb, id) = note_fixture();
+        for text in [
+            "".into(),
+            " \n\t".into(),
+            "中".repeat(8001),
+            "😀".repeat(4001),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            assert!(err_message(&out).contains("备注"));
+        }
+        for params in [
+            json!({"task_id":id,"text":7}),
+            json!({"task_id":id,"text":"x","reopen":"yes"}),
+            json!({"text":"x"}),
+        ] {
+            let out = handle_command(sb.ctx(), &cmd("task.note", params));
+            assert!(!err_message(&out).is_empty());
+        }
+        assert!(sb.ctx.store.operator_notes(&id).unwrap().is_empty());
+        for text in ["中".repeat(8000), "😀".repeat(4000), "x".into()] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            ok_payload(&out);
+        }
+    }
+
+    #[test]
+    fn operator_note_task_get_lists_notes_with_delivery() {
+        let (mut sb, id) = note_fixture();
+        for text in ["first", "second"] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.note", json!({"task_id":id,"text":text})),
+            );
+            ok_payload(&out);
+        }
+        sb.ctx
+            .store
+            .append_event(
+                "task.note_delivered",
+                &id,
+                json!({"notes":[1],"session_id":"s1","role":"impl","round":3}),
+            )
+            .unwrap();
+        let got = gate_queue_get(&mut sb, &id);
+        assert_eq!(got["notes"].as_array().unwrap().len(), 2);
+        assert_eq!(got["notes"][0]["text"], "first");
+        assert_eq!(got["notes"][0]["delivered"]["session_id"], "s1");
+        assert_eq!(got["notes"][0]["delivered"]["role"], "impl");
+        assert_eq!(got["notes"][0]["delivered"]["round"], 3);
+        assert!(got["notes"][0]["at"].is_string());
+        assert!(got["notes"][0]["delivered"]["at"].is_string());
+        assert!(got["notes"][1]["delivered"].is_null());
+    }
+
+    #[test]
+    fn task_get_scope_restore_reports_last_and_pending() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("scope-get");
+        let project = sb.add_project("repo");
+        let id = gate_queue_fixture(&mut sb, &project, "scope");
+        assert_eq!(
+            gate_queue_get(&mut sb, &id)["scope_restore"],
+            json!({"last":null,"pending":[]})
+        );
+        let plan = json!({"task":id,"session_id":"S-1","role":"audit","label":"审计","round":3,"repos":[{"repo":"repo","worktree":"/tmp/repo","base":"base","pre_head":"head","commit":null,"paths":["a.rs"],"patch":"/tmp/a.patch","stat":"1 file"}]});
+        sb.ctx
+            .store
+            .append_event("session.scope_restore_begun", &id, plan.clone())
+            .unwrap();
+        let first = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(first["pending"], json!(["/tmp/a.patch"]));
+        assert!(
+            first["last"]["at"]
+                .as_str()
+                .is_some_and(|at| !at.is_empty())
+        );
+        let mut without_at = first["last"].clone();
+        without_at.as_object_mut().unwrap().remove("at");
+        assert_eq!(without_at, plan);
+        sb.ctx
+            .store
+            .append_event(
+                "session.scope_restore_failed",
+                &id,
+                json!({"session_id":"S-1","detail":"failed"}),
+            )
+            .unwrap();
+        assert_eq!(
+            gate_queue_get(&mut sb, &id)["scope_restore"]["pending"],
+            json!([])
+        );
+        let mut second = plan.clone();
+        second["session_id"] = json!("S-2");
+        second["repos"][0]["patch"] = json!("/tmp/b.patch");
+        sb.ctx
+            .store
+            .append_event("session.scope_restore_begun", &id, second.clone())
+            .unwrap();
+        sb.ctx
+            .store
+            .append_event("session.scope_restored", &id, second)
+            .unwrap();
+        let before = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(before["last"]["session_id"], "S-2");
+        assert_eq!(before["pending"], json!(["/tmp/b.patch"]));
+        sb.ctx
+            .store
+            .append_event(
+                "session.scope_patches_handled",
+                &id,
+                json!({"session_id":"S-3","patches":["/tmp/b.patch"]}),
+            )
+            .unwrap();
+        let after = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
+        assert_eq!(after["pending"], json!([]));
+        assert_eq!(after["last"], before["last"]);
+    }
+
+    #[test]
+    fn gate_lane_task_get_reports_lane_and_same_lane_position() {
+        let mut sb = Sandbox::new("lane-get");
+        let project = sb.add_project("repo");
+        let a = gate_queue_fixture(&mut sb, &project, "a");
+        let b = gate_queue_fixture(&mut sb, &project, "b");
+        let c = gate_queue_fixture(&mut sb, &project, "c");
+        for (id, lane) in [(&a, "heavy"), (&b, "light"), (&c, "light")] {
+            sb.ctx
+                .store
+                .append_event("gate.queued", id, json!({"lane":lane,"position":99}))
+                .unwrap();
+        }
+        for (id, lane, position) in [(&a, "heavy", 1), (&b, "light", 1), (&c, "light", 2)] {
+            let got = gate_queue_get(&mut sb, id);
+            assert_eq!(got["gate_queue_lane"], lane);
+            assert_eq!(got["gate_queue_position"], position);
+        }
+        sb.ctx
+            .store
+            .append_event("gate.started", &b, json!({}))
+            .unwrap();
+        assert!(gate_queue_get(&mut sb, &b)["gate_queue_lane"].is_null());
+        assert_eq!(gate_queue_get(&mut sb, &c)["gate_queue_position"], 1);
+    }
+
     #[test]
     fn gate_queue_task_get_reports_live_rank_without_reusing_slot_position() {
         assert!(git_available());
@@ -4652,6 +5270,264 @@ mod tests {
         assert!(ok_payload(&last).get("init_commit").unwrap().is_string());
     }
 
+    fn onboarding_start(sb: &mut Sandbox, id: &str) -> String {
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.run", json!({"project_id": id})),
+        );
+        ok_payload(&out)["session_id"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn onboarding_session_writes_a_row_and_start_event() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-row");
+        let id = sb.add_project("p");
+        let sid = onboarding_start(&mut sb, &id);
+        let row = sb.ctx.store.get_session(&sid).unwrap().unwrap();
+        assert_eq!(row.project_id.as_deref(), Some(id.as_str()));
+        assert_eq!(row.task_id, scheduler::ONBOARDING_SESSION_KEY);
+        assert_eq!(row.round, 0);
+        assert!(row.is_running());
+        assert!(
+            sb.ctx
+                .store
+                .session_event(&id, &sid, "session.started")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn onboarding_session_log_is_readable() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-log");
+        let (id, _) = onboarding_workspace(&mut sb);
+        let sid = onboarding_start(&mut sb, &id);
+        let row = sb.ctx.store.get_session(&sid).unwrap().unwrap();
+        std::fs::write(&row.log_path, "会话日志\n").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("session.log", json!({"session_id":sid})));
+        assert_eq!(ok_payload(&out)["log"], "会话日志\n");
+        std::fs::remove_file(&row.log_path).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("session.log", json!({"session_id":sid})));
+        assert_eq!(ok_payload(&out)["log"], "");
+    }
+
+    #[test]
+    fn onboarding_session_project_get_reports_latest() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-latest");
+        let id = sb.add_project("p");
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert_eq!(ok_payload(&out)["onboarding_session"], Value::Null);
+        let first = onboarding_start(&mut sb, &id);
+        sb.ctx
+            .store
+            .finish_session(
+                &first,
+                &autome_domain::session::SessionLifecycle::Exited { exit_code: 0 },
+                &crate::store::now_iso(),
+            )
+            .unwrap();
+        let last = onboarding_start(&mut sb, &id);
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert_eq!(ok_payload(&out)["onboarding_session"]["id"], last);
+        assert_eq!(
+            ok_payload(&out)["onboarding_session"]
+                .as_object()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn onboarding_session_costs_stay_out_of_tasks() {
+        needs_git!();
+        let mut sb = Sandbox::new("onboarding-cost");
+        let id = sb.add_project("p");
+        let task = cost_task(&mut sb, &id, "task", TaskState::Draft);
+        cost_session(&sb, &task, "task-session", Some(2.0), false);
+        let before = project_costs(&sb.ctx, &id).unwrap_or_else(|e| panic!("{}", e.message));
+        let sid = onboarding_start(&mut sb, &id);
+        sb.ctx
+            .store
+            .set_session_metrics(
+                &sid,
+                &autome_domain::metrics::SessionMetrics {
+                    cost_usd: Some(999.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(sb.ctx.store.list_sessions(&task).unwrap().len(), 1);
+        assert_eq!(sb.ctx.store.sessions_in_project(&id).unwrap().len(), 1);
+        assert_eq!(
+            serde_json::to_value(
+                project_costs(&sb.ctx, &id).unwrap_or_else(|e| panic!("{}", e.message))
+            )
+            .unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+
+    fn onboarding_workspace(sb: &mut Sandbox) -> (String, std::path::PathBuf) {
+        let root = sb.path("ws");
+        workspace_at(&root, &[("docs", "main"), ("app", "main")]);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "project.add",
+                json!({
+                    "path": root, "workspace": true, "docs_repo": "docs"
+                }),
+            ),
+        );
+        let id = ok_payload(&out)["project"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        std::fs::write(root.join("docs/agent-project-profile.md"), "profile\n").unwrap();
+        (id, root)
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_skip_succeeds_without_a_root_repo() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-skip");
+        let (id, root) = onboarding_workspace(&mut sb);
+        let before = git::head_sha(&root.join("docs")).unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert!(ok_payload(&out)["init_commit"].is_string());
+        assert_ne!(before, git::head_sha(&root.join("docs")).unwrap());
+        assert!(!root.join(".git").exists());
+        let mut empty = Sandbox::new("ws-empty");
+        let (id, root) = onboarding_workspace(&mut empty);
+        std::fs::remove_file(root.join("docs/agent-project-profile.md")).unwrap();
+        let before = git::head_sha(&root.join("docs")).unwrap();
+        let out = handle_command(
+            empty.ctx(),
+            &cmd("project.onboarding.skip", json!({"project_id":id})),
+        );
+        assert_eq!(ok_payload(&out)["init_commit"], Value::Null);
+        assert_eq!(before, git::head_sha(&root.join("docs")).unwrap());
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_finish_succeeds_and_records_the_event() {
+        needs_git!();
+        let mut sb = Sandbox::new("ws-finish");
+        let (id, root) = onboarding_workspace(&mut sb);
+        for _ in 0..3 {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.advance", json!({"project_id":id})),
+            );
+            ok_payload(&out);
+        }
+        assert!(
+            sb.ctx
+                .store
+                .get_project(&id)
+                .unwrap()
+                .onboarding
+                .is_settled()
+        );
+        assert!(!root.join(".git").exists());
+        assert!(
+            sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .any(|e| e.1 == "project.onboarding" && e.2["init_commit"].is_string())
+        );
+        let head = git::head_sha(&root.join("docs")).unwrap();
+        for _ in 0..2 {
+            let rejected_advance = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.advance", json!({"project_id":id})),
+            );
+            assert!(format!("{:?}", rejected_advance.reply).contains("Onboarding 已经结束"));
+            let skipped = handle_command(
+                sb.ctx(),
+                &cmd("project.onboarding.skip", json!({"project_id":id})),
+            );
+            assert_eq!(ok_payload(&skipped)["init_commit"], Value::Null);
+        }
+        assert_eq!(head, git::head_sha(&root.join("docs")).unwrap());
+    }
+
+    fn onboarding_locked_commit(workspace: bool, advance: bool) {
+        let mut sb = Sandbox::new("onboarding-lock");
+        let (id, root) = if workspace {
+            onboarding_workspace(&mut sb)
+        } else {
+            let id = sb.add_project("p");
+            (id, sb.path("p"))
+        };
+        if advance {
+            for _ in 0..2 {
+                let out = handle_command(
+                    sb.ctx(),
+                    &cmd("project.onboarding.advance", json!({"project_id":id})),
+                );
+                ok_payload(&out);
+            }
+        }
+        let method = if advance {
+            "project.onboarding.advance"
+        } else {
+            "project.onboarding.skip"
+        };
+        let repo = if workspace { root.join("docs") } else { root };
+        let event_count = sb
+            .ctx
+            .store
+            .events_since(0, 100)
+            .unwrap()
+            .iter()
+            .filter(|e| e.1 == "project.onboarding")
+            .count();
+        let before = sb.ctx.store.get_project(&id).unwrap().onboarding;
+        std::fs::write(repo.join(".git/index.lock"), "locked").unwrap();
+        let out = handle_command(sb.ctx(), &cmd(method, json!({"project_id":id})));
+        assert_eq!(sb.ctx.store.get_project(&id).unwrap().onboarding, before);
+        assert!(format!("{:?}", out.reply).contains("状态没有改"));
+        assert_eq!(
+            sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .filter(|e| e.1 == "project.onboarding")
+                .count(),
+            event_count
+        );
+        std::fs::remove_file(repo.join(".git/index.lock")).unwrap();
+        let out = handle_command(sb.ctx(), &cmd(method, json!({"project_id":id})));
+        assert!(ok_payload(&out)["init_commit"].is_string());
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_failure_keeps_state_and_can_retry() {
+        needs_git!();
+        for advance in [false, true] {
+            onboarding_locked_commit(true, advance);
+        }
+    }
+
+    #[test]
+    fn workspace_onboarding_commit_single_repo_index_lock_keeps_state() {
+        needs_git!();
+        for advance in [false, true] {
+            onboarding_locked_commit(false, advance);
+        }
+    }
+
     fn cost_task(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
         let out = handle_command(
             sb.ctx(),
@@ -4818,6 +5694,7 @@ mod tests {
     fn cost_session(sb: &Sandbox, task: &str, suffix: &str, cost: Option<f64>, running: bool) {
         use autome_domain::session::{Session, SessionKind, SessionLifecycle};
         let session = Session {
+            project_id: None,
             id: format!("{task}-{suffix}"),
             task_id: task.into(),
             kind: SessionKind::Intake,
@@ -5019,6 +5896,160 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn documents_fixture_task() -> crate::store::TaskRecord {
+        crate::store::TaskRecord {
+            kind: autome_domain::task::TaskKind::Feature,
+            id: "T-1".into(),
+            project_id: "p".into(),
+            slug: "cart".into(),
+            title: "t".into(),
+            request: "r".into(),
+            attachments: vec![],
+            doc_refs: vec![],
+            state: autome_domain::task::TaskState::Queued,
+            budget_n: None,
+            created_at: now_iso(),
+            completed_at: None,
+            merge_commit: None,
+            archived_at: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: None,
+            doc_root: None,
+        }
+    }
+
+    #[test]
+    fn task_documents_lists_card_bug_doc_and_lessons_in_order() {
+        let sb = Sandbox::new("documents-order");
+        let mut task = documents_fixture_task();
+        task.kind = TaskKind::Bug;
+        let dir = sb.root.join(task.doc_dir());
+        std::fs::create_dir_all(dir.join("evidence")).unwrap();
+        for name in [
+            "cart-card.md",
+            "cart-bug.md",
+            "cart.md",
+            "cart-task.md",
+            "cart-review.md",
+            "cart-adjudication.md",
+            "cart-audit.md",
+            "retro.md",
+            "lessons.md",
+            "evidence/z.md",
+            "evidence/a.md",
+            "evidence/raw.log",
+        ] {
+            std::fs::write(dir.join(name), "内容").unwrap();
+        }
+        std::fs::create_dir(dir.join("evidence/directory.md")).unwrap();
+        let docs = documents(&sb.root, &task);
+        assert_eq!(
+            docs.iter()
+                .map(|d| d["label"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "任务卡",
+                "Bug 文档",
+                "任务文件",
+                "评审",
+                "裁决",
+                "审计",
+                "运行记录",
+                "复盘教训",
+                "证据",
+                "证据"
+            ]
+        );
+        assert_eq!(docs[8]["name"], "a.md");
+        assert_eq!(docs[9]["name"], "z.md");
+    }
+
+    #[test]
+    fn task_documents_carry_source_worktree() {
+        let mut sb = Sandbox::new("documents-source");
+        let id = sb.add_project("repo");
+        let project = sb.ctx.store.get_project(&id).unwrap();
+        let task = documents_fixture_task();
+        let root = std::path::PathBuf::from(project.docs_worktree(&task.slug));
+        std::fs::create_dir_all(root.join(task.doc_dir())).unwrap();
+        std::fs::write(root.join(task.design_doc()), "malformed").unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        assert_eq!(source.documents(&task)[0]["source"], "worktree");
+        assert!(source.status(&task).error().is_some());
+        std::fs::remove_file(root.join(task.design_doc())).unwrap();
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
+        // An existing, empty task directory must not fall back to the main checkout.
+        assert!(DocumentSource::for_task(&project, &task).branch.is_none());
+    }
+
+    fn check_documents_default_branch(workspace: bool) {
+        let mut sb = Sandbox::new("documents-default");
+        let id = sb.add_project("repo");
+        let mut project = sb.ctx.store.get_project(&id).unwrap();
+        let mut task = documents_fixture_task();
+        task.doc_root = Some("任务 文档".into());
+        if workspace {
+            project.path = sb.root.to_string_lossy().into_owned();
+            project.docs_repo = Some("repo".into());
+            project.kind = autome_domain::project::ProjectKind::Workspace;
+        }
+        let repo = sb.path("repo");
+        let dir = repo.join(task.doc_dir());
+        std::fs::create_dir_all(dir.join("evidence")).unwrap();
+        std::fs::write(dir.join("cart-card.md"), "card").unwrap();
+        std::fs::write(dir.join("lessons.md"), "lessons").unwrap();
+        std::fs::write(dir.join("evidence/a.md"), "evidence").unwrap();
+        std::fs::write(dir.join("cart.md"), "malformed from default").unwrap();
+        git::commit_paths(&repo, &[&task.doc_dir()], "documents").unwrap();
+        // HEAD and disk diverge from the default branch: no untracked/other-branch leakage.
+        git::run_ok(&repo, &["checkout", "-b", "other"]).unwrap();
+        std::fs::write(dir.join("cart.md"), "").unwrap();
+        std::fs::write(dir.join("retro.md"), "untracked").unwrap();
+        std::fs::remove_file(dir.join("lessons.md")).unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        let docs = source.documents(&task);
+        assert_eq!(docs.len(), 3);
+        assert_eq!(docs[0]["name"], "cart-card.md");
+        assert!(docs.iter().all(|d| d["source"] == "default_branch"));
+        assert_eq!(
+            std::fs::canonicalize(docs[0]["absolute"].as_str().unwrap()).unwrap(),
+            std::fs::canonicalize(dir.join("cart-card.md")).unwrap()
+        );
+        assert!(source.status(&task).error().is_some());
+        // Default branch read is distinct from the empty file on disk.
+        assert!(matches!(source.status(&task), DocRead::Unreadable(_)));
+    }
+
+    #[test]
+    fn task_documents_after_cleanup_come_from_the_default_branch() {
+        check_documents_default_branch(false);
+    }
+
+    #[test]
+    fn task_documents_workspace_reads_the_docs_repo_default_branch() {
+        check_documents_default_branch(true);
+    }
+
+    #[test]
+    fn task_documents_cancelled_unmerged_task_is_empty() {
+        let mut sb = Sandbox::new("documents-cancelled");
+        let id = sb.add_project("repo");
+        let project = sb.ctx.store.get_project(&id).unwrap();
+        let task = documents_fixture_task();
+        let dir = sb.path("repo").join(task.doc_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cart-card.md"), "not committed").unwrap();
+        let source = DocumentSource::for_task(&project, &task);
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
+        // Missing repository/read failure preserves the empty response.
+        std::fs::remove_dir_all(sb.path("repo")).unwrap();
+        assert!(source.documents(&task).is_empty());
+        assert!(source.status(&task).json().is_null());
     }
 
     #[test]
@@ -5247,6 +6278,259 @@ mod tests {
     }
 
     // ---- config ----------------------------------------------------------
+
+    #[test]
+    fn probe_rejection_matches_project_add_for_each_kind() {
+        let mut sb = Sandbox::new("probe-rejections");
+        let id = sb.add_project("parent/repo");
+        let file = sb.path("file");
+        std::fs::write(&file, "x").unwrap();
+        for (path, kind) in [
+            (file, "not_a_directory"),
+            (sb.path("parent/repo"), "already_project"),
+            (sb.path("parent/repo/missing/.."), "already_project"),
+            (sb.path("parent/repo/new/child"), "nested_in_project"),
+            (sb.path("parent"), "contains_project"),
+        ] {
+            let existed = path.exists();
+            let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+            let rejection = ok_payload(&out)["rejection"].clone();
+            assert_eq!(rejection["kind"], kind);
+            assert_eq!(path.exists(), existed, "probe must not create paths");
+            if kind != "not_a_directory" {
+                assert_eq!(rejection["project_id"], id);
+            }
+            let out = handle_command(sb.ctx(), &cmd("project.add", json!({"path":path})));
+            assert_eq!(rejection["message"], err_message(&out));
+        }
+        // Existing symlink aliases use the same canonical identity.
+        let alias = sb.path("alias");
+        std::os::unix::fs::symlink(sb.path("parent/repo"), &alias).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":alias})));
+        assert_eq!(ok_payload(&out)["rejection"]["kind"], "already_project");
+        sb.ctx.store.remove_project(&id).unwrap();
+        let path = sb.path("parent/repo");
+        let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+        assert!(ok_payload(&out)["rejection"].is_null());
+        let out = handle_command(sb.ctx(), &cmd("project.add", json!({"path":path})));
+        assert_eq!(ok_payload(&out)["project"]["id"], id);
+    }
+
+    #[test]
+    fn probe_rejection_normal_directory_is_null() {
+        let mut sb = Sandbox::new("probe-normal");
+        for path in [sb.path("中文 空目录"), sb.path("missing/deep")] {
+            if path.file_name().unwrap() != "deep" {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+            let existed = path.exists();
+            let out = handle_command(sb.ctx(), &cmd("project.probe", json!({"path":path})));
+            assert_eq!(ok_payload(&out).get("rejection"), Some(&Value::Null));
+            assert_eq!(path.exists(), existed);
+        }
+    }
+
+    #[test]
+    fn config_get_reports_every_resolved_key_and_marks_defaults() {
+        let mut sb = Sandbox::new("config-complete");
+        let id = sb.add_project("repo");
+        let local = sb.path("repo/.autome/config.toml");
+        let global = sb.ctx.autome_home.join("config.toml");
+        std::fs::write(&local, "").unwrap();
+        std::fs::write(&global, "").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        let keys = [
+            "bug",
+            "gate",
+            "gate_concurrency",
+            "gate_quick",
+            "gate_quick_concurrency",
+            "gate_reuse_for_main_check",
+            "gate_run",
+            "gate_same_failure_limit",
+            "loop_defaults",
+            "merge_after",
+            "merge_auto",
+            "retry",
+            "roles",
+            "setup",
+        ];
+        assert_eq!(
+            got["resolved"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            keys
+        );
+        assert_eq!(got["defaults"], json!(keys));
+        assert_eq!(got["resolved"]["gate_run"], "each_round");
+        assert_eq!(got["resolved"].get("gate_quick"), Some(&Value::Null));
+        assert_eq!(got["resolved"].get("setup"), Some(&Value::Null));
+        assert_eq!(
+            got.as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["defaults", "global", "resolved", "scope", "violations"]
+        );
+        // Explicit values equal to built-ins must not be called defaults;
+        // project concurrency remains bounded by the global limit.
+        std::fs::write(
+            &local,
+            "[gate]\nrun = 'each_round'\nconcurrency = 10\n[merge]\nauto = false\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &global,
+            "[gate]\nconcurrency = 1\nquick_concurrency = 10\n[loop]\nparallel = 3\n",
+        )
+        .unwrap();
+        let out = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        for key in [
+            "gate_run",
+            "gate_concurrency",
+            "gate_quick_concurrency",
+            "merge_auto",
+            "loop_defaults",
+            "loop_defaults.parallel",
+        ] {
+            assert!(
+                !got["defaults"].as_array().unwrap().contains(&json!(key)),
+                "{key}"
+            );
+        }
+        assert!(
+            got["defaults"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("loop_defaults.session_minutes"))
+        );
+        assert_eq!(got["resolved"]["gate_concurrency"], 1);
+        assert_eq!(got["resolved"]["gate_quick_concurrency"], 10);
+        let resolved = config::resolve(&Default::default(), &Default::default());
+        assert!(
+            json!(resolved).get("gate_run").is_none(),
+            "shared serde must stay sparse"
+        );
+    }
+
+    #[test]
+    fn dashboard_tolerates_a_broken_project_config() {
+        let mut sb = Sandbox::new("dashboard-config");
+        let bad = sb.add_project("bad");
+        let good = sb.add_project("good");
+        let bad_task = cost_task(
+            &mut sb,
+            &bad,
+            "bad-task",
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+        );
+        let good_task = cost_task(&mut sb, &good, "good-task", TaskState::Queued);
+        let bad_queued = cost_task(&mut sb, &bad, "bad-queued", TaskState::Queued);
+        let bad_waiting = cost_task(
+            &mut sb,
+            &bad,
+            "bad-waiting",
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+        );
+
+        sb.ctx
+            .store
+            .append_event("gate.queued", &bad_task, json!({"lane":"heavy"}))
+            .unwrap();
+        let path = sb.path("bad/.autome/config.toml");
+        for broken in ["[", "[gate]\nconcurrency = 0\n"] {
+            std::fs::write(&path, broken).unwrap();
+            let expected = config_io::load_project(&sb.path("bad").canonicalize().unwrap())
+                .unwrap_err()
+                .to_string();
+            let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+            let got = ok_payload(&out);
+            assert_eq!(
+                got.as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [
+                    "alerts",
+                    "config_warnings",
+                    "cooldowns",
+                    "environment",
+                    "projects",
+                    "queued",
+                    "running",
+                    "waiting"
+                ]
+            );
+            let rows = got["projects"].as_array().unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows.iter().find(|p| p["project"]["id"] == bad).unwrap()["config_error"],
+                expected
+            );
+            assert!(
+                rows.iter().find(|p| p["project"]["id"] == good).unwrap()["config_error"].is_null()
+            );
+            assert_eq!(got["running"][0]["task"]["id"], bad_task);
+            assert!(got["running"][0]["task"]["merge"].is_null());
+            assert_eq!(got["waiting"][0]["task"]["id"], bad_waiting);
+            let queued = got["queued"].as_array().unwrap();
+            assert_eq!(queued.len(), 2);
+            assert!(
+                queued
+                    .iter()
+                    .find(|r| r["task"]["id"] == bad_queued)
+                    .unwrap()["task"]["merge"]
+                    .is_null()
+            );
+            let healthy = queued
+                .iter()
+                .find(|r| r["task"]["id"] == good_task)
+                .unwrap();
+            assert!(healthy["task"]["merge"].is_object());
+        }
+        std::fs::write(path, "").unwrap();
+        let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+        assert!(ok_payload(&out)["running"][0]["task"]["merge"].is_object());
+    }
+
+    #[test]
+    fn dashboard_tolerates_project_get_with_config_error() {
+        let mut sb = Sandbox::new("project-config");
+        let id = sb.add_project("repo");
+        let task = cost_task(&mut sb, &id, "task", TaskState::Queued);
+        let path = sb.path("repo/.autome/config.toml");
+        // A directory at the file path exercises an actual read failure.
+        if path.exists() {
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::create_dir(&path).unwrap();
+        let expected = config_io::load_project(&sb.path("repo").canonicalize().unwrap())
+            .unwrap_err()
+            .to_string();
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        let got = ok_payload(&out);
+        assert!(got["config"].is_null());
+        assert_eq!(got["config_error"], expected);
+        assert_eq!(got["tasks"][0]["id"], task);
+        assert!(got["rules"].is_array());
+        let out = handle_command(sb.ctx(), &cmd("project.list", json!({})));
+        assert_eq!(ok_payload(&out)["projects"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir(&path).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("project.get", json!({"project_id":id})));
+        assert!(ok_payload(&out)["config"].is_object());
+        assert!(ok_payload(&out)["config_error"].is_null());
+    }
 
     #[test]
     fn config_get_without_a_project_returns_the_global_defaults() {
@@ -5690,6 +6974,79 @@ mod tests {
         assert_eq!(entry["bound_roles"], json!(["impl"]));
         assert!(entry["conflicts"].as_array().unwrap().is_empty());
         assert_eq!(entry["project_scoped"], json!(true));
+    }
+
+    #[test]
+    fn events_by_subject_filters_before_pagination_and_validates_type() {
+        let mut sb = Sandbox::new("subject");
+        for subject in ["a", "b", "a", "project"] {
+            sb.ctx()
+                .store
+                .append_event("session.started", subject, json!({"task_id":"wrong"}))
+                .unwrap();
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("events.since", json!({"subject":"a","limit":1})),
+        );
+        let first = ok_payload(&out)["events"][0]["seq"].as_u64().unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "events.since",
+                json!({"subject":"a","after_seq":first,"limit":1}),
+            ),
+        );
+        assert_eq!(ok_payload(&out)["events"].as_array().unwrap().len(), 1);
+        assert!(ok_payload(&out)["events"][0]["seq"].as_u64().unwrap() > first);
+        for params in [
+            json!({"subject":""}),
+            json!({"subject":"a","limit":0}),
+            json!({"subject":"missing"}),
+        ] {
+            let out = handle_command(sb.ctx(), &cmd("events.since", params));
+            assert_eq!(ok_payload(&out)["events"], json!([]));
+            assert_eq!(
+                ok_payload(&out)["latest_seq"],
+                sb.ctx().store.latest_seq().unwrap()
+            );
+        }
+        for _ in 0..1001 {
+            sb.ctx()
+                .store
+                .append_event("test", "large", json!({}))
+                .unwrap();
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("events.since", json!({"subject":"large","limit":u64::MAX})),
+        );
+        assert_eq!(ok_payload(&out)["events"].as_array().unwrap().len(), 1000);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "events.since",
+                json!({"subject":"large","after_seq":u64::MAX}),
+            ),
+        );
+        assert_eq!(ok_payload(&out)["events"], json!([]));
+        let out = handle_command(sb.ctx(), &cmd("events.since", json!({"subject":123})));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    }
+    #[test]
+    fn events_by_subject_omitted_preserves_original_bytes() {
+        let mut sb = Sandbox::new("subject-compat");
+        sb.ctx()
+            .store
+            .append_event("test", "a", json!({"text":"中文\n"}))
+            .unwrap();
+        let rows = sb.ctx().store.events_since_with_at(0, 200).unwrap();
+        let expected = json!({"events":rows.iter().map(|e|json!({"seq":e.seq,"kind":e.kind,"subject":e.subject,"payload":e.payload,"at":e.at})).collect::<Vec<_>>(),"latest_seq":sb.ctx().store.latest_seq().unwrap()});
+        let out = handle_command(sb.ctx(), &cmd("events.since", json!({})));
+        assert_eq!(
+            serde_json::to_vec(&ok_payload(&out)).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
     }
 
     // ---- events ----------------------------------------------------------

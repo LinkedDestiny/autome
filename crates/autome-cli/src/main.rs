@@ -66,7 +66,8 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   queue move <任务> --before X | --after X | --top
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
-  reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
+  reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定、失败或已停止时用；需求任务等同 reject
+  note <任务> [内容] [--file <路径|->] [--reopen]  留下操作者备注
   merge <任务> [--cancel]        合并到默认分支；未到卡点时预先同意，--cancel 撤销
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
@@ -134,6 +135,7 @@ fn run(argv: &[String]) -> Result<()> {
     let allowed: &[&str] = match verb {
         "doctor" | "ls" | "alerts" | "rpc" | "approve" | "pause" | "resume" | "stop" | "cancel"
         | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
+        "note" => &["--json", "--file", "--reopen"],
         "after" => &["--json", "--none"],
         "queue" => &["--json", "--before", "--after", "--top"],
         "status" => &["--json"],
@@ -203,6 +205,15 @@ fn run(argv: &[String]) -> Result<()> {
             let feedback = a.need(2, "补充信息")?;
             trigger(&mut c, &a, "task.reply", json!({ "info": feedback }))
         }
+        "note" => {
+            let text = note_text(&a, &mut std::io::stdin())?;
+            trigger(
+                &mut c,
+                &a,
+                "task.note",
+                json!({"text":text, "reopen":a.has("--reopen")}),
+            )
+        }
         "rerun" => {
             let node = a
                 .need(2, "节点（如 design、implement、audit）")?
@@ -225,6 +236,26 @@ fn run(argv: &[String]) -> Result<()> {
         "alerts" => alerts(&mut c, &a),
         "rpc" => rpc(&mut c, &a),
         _ => unreachable!("checked above"),
+    }
+}
+
+fn note_text(a: &Args, stdin: &mut impl Read) -> Result<String> {
+    if let Some(path) = a.value("--file") {
+        if a.positional.len() > 2 {
+            return Err(CliError::Usage("内容与 --file 只能指定一个".into()));
+        }
+        let mut text = String::new();
+        if path == "-" {
+            stdin
+                .read_to_string(&mut text)
+                .map_err(|e| CliError::Failed(format!("读取备注：{e}")))?;
+        } else {
+            text = std::fs::read_to_string(path)
+                .map_err(|e| CliError::Failed(format!("读取备注 {path}：{e}")))?;
+        }
+        Ok(text)
+    } else {
+        Ok(a.need(2, "备注内容或 --file")?.to_string())
     }
 }
 
@@ -570,7 +601,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                     "{}  {}  {}",
                     t["id"].as_str().unwrap_or_default(),
                     t["slug"].as_str().unwrap_or_default(),
-                    render::state_line(&t["state"])
+                    render::task_state_line(t)
                 );
                 if t["state"]["state"] == "draft" {
                     println!(
@@ -599,7 +630,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                     "{}  {}  {}",
                     new_id,
                     t["slug"].as_str().unwrap_or_default(),
-                    render::state_line(&t["state"])
+                    render::task_state_line(t)
                 );
                 println!("由 {id} 改建，{id} 已取消。");
                 if t["state"]["state"] == "draft" {
@@ -617,7 +648,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                 print_json(&out);
             } else {
                 let t = &out["task"];
-                println!("{}  {}", id, render::state_line(&t["state"]));
+                println!("{}  {}", id, render::task_state_line(t));
                 if let Some(next) = render::next_step(t) {
                     println!("→ {next}");
                 }
@@ -662,7 +693,7 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, true),
             render::cost_cell(t),
             render::blocked_suffix(t)
@@ -697,6 +728,14 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
     if a.has("--json") {
         print_json(&d);
         return Ok(());
+    }
+    for row in d["projects"].as_array().into_iter().flatten() {
+        if let Some(error) = row["config_error"].as_str() {
+            println!(
+                "{} 配置有误：{error}",
+                row["project"]["display_name"].as_str().unwrap_or("")
+            );
+        }
     }
     for project in d["config_warnings"].as_array().into_iter().flatten() {
         print_config_warnings(
@@ -736,7 +775,7 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             "  {}  {:<28} {}{}  ·  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, false),
             e["project_name"].as_str().unwrap_or_default()
         );
@@ -754,7 +793,7 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             "  {}  {:<28} {}{}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, false)
         );
         let cost = render::cost_cell(t);
@@ -775,7 +814,10 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             ));
         }
         if let Some(position) = e["gate_queue_position"].as_u64() {
-            line.push_str(&format!("  · {}", render::gate_queue_line(position)));
+            line.push_str(&format!(
+                "  · {}",
+                render::gate_queue_line(position, e["gate_queue_lane"].as_str().unwrap_or("heavy"))
+            ));
         }
         println!("{line}");
     }
@@ -823,7 +865,7 @@ fn task_detail(got: &Value) {
     );
     println!(
         "  状态      {}{}",
-        render::state_line(&t["state"]),
+        render::task_state_line(t),
         render::merge_suffix(t, false)
     );
 
@@ -845,10 +887,24 @@ fn task_detail(got: &Value) {
         t["branch"].as_str().unwrap_or_default()
     );
     if let Some(position) = got["gate_queue_position"].as_u64() {
-        println!("  门禁排队  {}", render::gate_queue_line(position));
+        println!(
+            "  门禁排队  {}",
+            render::gate_queue_line(position, got["gate_queue_lane"].as_str().unwrap_or("heavy"))
+        );
     }
     println!("  需求      {}", t["request"].as_str().unwrap_or_default());
-    if let Some(sb) = got["status_block"].as_object() {
+    if let Some(document) = got["documents"]
+        .as_array()
+        .and_then(|docs| docs.iter().find(|doc| doc["label"] == "Bug 文档"))
+    {
+        println!(
+            "  Bug 文档  {}",
+            document["absolute"].as_str().unwrap_or_default()
+        );
+    }
+    if let Some(sb) = got["status_block"].as_object()
+        && sb.contains_key("milestones")
+    {
         let ms: Vec<String> = sb
             .get("milestones")
             .and_then(Value::as_array)
@@ -895,6 +951,15 @@ fn task_detail(got: &Value) {
             render::node_label(r.get("node").and_then(Value::as_str).unwrap_or("?")),
             render::local_time(r.get("not_before").and_then(Value::as_str).unwrap_or("")),
         );
+    }
+    if let Some(hint) = render::note_budget_hint(t, &got["notes"]) {
+        println!("{hint}");
+    }
+    for line in render::note_status_lines(&got["notes"]) {
+        println!("{line}");
+    }
+    if let Some(line) = render::scope_status_line(&got["scope_restore"]) {
+        println!("{line}");
     }
     let decisions = got["decisions"].as_array().cloned().unwrap_or_default();
     let open: Vec<&Value> = decisions
@@ -1258,6 +1323,9 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
         print_json(&out);
         return Ok(());
     }
+    if let Some(warning) = out["warning"].as_str() {
+        println!("{warning}");
+    }
     if let Some(request) = out["merge_request"].as_str() {
         println!(
             "{} {}",
@@ -1274,7 +1342,7 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
     } else {
         c.call("task.get", json!({ "task_id": id }))?["task"].clone()
     };
-    println!("{}  {}", id, render::state_line(&task["state"]));
+    println!("{}  {}", id, render::task_state_line(&task));
     if let Some(next) = render::next_step(&task) {
         println!("→ {next}");
     }
@@ -1410,6 +1478,19 @@ mod idle_tests {
     }
 
     #[test]
+    fn session_ended_run_json_prints_the_event() {
+        let payload = json!({"session_id":"s1","kind":{"kind":"role","role":"impl"},"round":2,"end":"exited","exit_code":0,"duration_ms":123,"cost_usd":0.2});
+        let event = json!({"seq":9,"at":"2026-11-14T00:00:00Z","subject":"T-1","kind":"session.ended","payload":payload});
+        let printed = serde_json::to_string(&run_event(&event, true)).unwrap();
+        let row: Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(row["kind"], "session.ended");
+        assert_eq!(row["payload"], payload);
+        assert_eq!(row["task_id"], "T-1");
+        assert_eq!(row["seq"], 9);
+        assert!(render::event_line("session.ended", "T-1", &payload).is_none());
+    }
+
+    #[test]
     fn run_event_task_identity() {
         let c = client();
         insert(&c, "not-a-prefix", TaskState::Queued);
@@ -1531,7 +1612,10 @@ mod bug_usage_tests {
     #[test]
     fn bug_loop_usage_no_longer_says_reply_equals_reject() {
         assert!(!super::USAGE.contains("Bug Loop 上线前"));
-        assert!(super::USAGE.contains("Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject"));
+        assert!(
+            super::USAGE
+                .contains("Bug 任务在等你补充信息/等你决定、失败或已停止时用；需求任务等同 reject")
+        );
     }
 }
 
@@ -1544,4 +1628,28 @@ fn deps_cli_usage() {
     ] {
         assert!(USAGE.contains(text));
     }
+}
+
+#[test]
+fn operator_note_reads_text_from_file_and_stdin() {
+    let file = std::env::temp_dir().join(format!("autome-note-{}", std::process::id()));
+    std::fs::write(&file, " 原文\n第二行 ").unwrap();
+    let args =
+        |path: &str| Args::parse(&["note", "T-1", "--file", path].map(String::from)).unwrap();
+    assert_eq!(
+        note_text(&args(file.to_str().unwrap()), &mut &b""[..]).unwrap(),
+        " 原文\n第二行 "
+    );
+    assert_eq!(
+        note_text(&args("-"), &mut " 原文\n第二行 ".as_bytes()).unwrap(),
+        " 原文\n第二行 "
+    );
+    std::fs::remove_file(&file).unwrap();
+    assert!(note_text(&args(file.to_str().unwrap()), &mut &b""[..]).is_err());
+    assert!(note_text(&args("-"), &mut &b"\xff"[..]).is_err());
+    let a = Args::parse(&["note", "T-1", "直接内容", "--reopen"].map(String::from)).unwrap();
+    assert_eq!(note_text(&a, &mut &b""[..]).unwrap(), "直接内容");
+    assert!(a.has("--reopen"));
+    let a = Args::parse(&["note", "T-1", "内容", "--file", "-"].map(String::from)).unwrap();
+    assert!(note_text(&a, &mut &b""[..]).is_err());
 }

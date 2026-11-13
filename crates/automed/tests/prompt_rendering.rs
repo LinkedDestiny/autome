@@ -161,7 +161,11 @@ fn every_role_prompt_renders_exactly_what_the_constants_did() {
         if maybe_update_golden(
             name,
             &autome_domain::protocol::select_gate_run(
-                automed::protocol::seed().prompt(name).unwrap(),
+                &automed::launcher::select_integration_audit(
+                    automed::protocol::seed().prompt(name).unwrap(),
+                    false,
+                )
+                .unwrap(),
                 autome_domain::config::GateRun::EachRound,
             )
             .unwrap(),
@@ -457,6 +461,7 @@ fn before_merge_audit_brief_matches_its_golden() {
         budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
         decisions: None,
         gate: brief::gate_evidence(&config, Some(&old), Some("<head>")),
+        scope_patches: None,
     });
     maybe_update_brief_golden("audit-before-merge", &got);
     assert_eq!(got, brief_golden("audit-before-merge"));
@@ -704,6 +709,7 @@ fn gate_quick_audit_brief_matches_golden() {
         budget_line: Some("本轮是第 2 轮，实现预算 N = 40。分母由 Autome 计算。\n".into()),
         decisions: None,
         gate: brief::gate_evidence(&config, Some(&result), Some("<head>")),
+        scope_patches: None,
     });
     maybe_update_brief_golden("audit-before-merge-quick", &got);
     assert_eq!(got, brief_golden("audit-before-merge-quick"));
@@ -849,6 +855,7 @@ fn integration_brief(trigger: serde_json::Value, name: &str) {
     let event = serde_json::json!({"impl_round":9,"evidence":"M-08-r9-audit.md","trigger":trigger,"repos":[{"repo":"","start":"3f2a1c0123456789","end":"9e81b77123456789","base":"55d0e12123456789","commits":[{"sha":"a1b2c3d123456789","subject":"fix: resolve launcher conflict","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 +-"},{"sha":"e4f5a6b123456789","subject":"test: keep old template compatible","paths":["crates/automed/tests/end_to_end.rs"],"stat":"crates/automed/tests/end_to_end.rs | 2 +-"}],"dropped":[{"sha":"0c9d8e7123456789","subject":"feat: launcher change","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 ++"}],"test_files":["crates/automed/tests/end_to_end.rs"],"commits_omitted":0,"dropped_omitted":0}]});
     let got = brief::build(&Inputs {
         integration: Some(brief::integration_section(&event, "docs/example")),
+        scope_patches: None,
         role: Role::Audit,
         slug: "example",
         doc_dir: "docs/example",
@@ -879,4 +886,31 @@ fn integration_audit_brief_after_a_gate_failure_matches_its_golden() {
         serde_json::json!({"kind":"gate_failed","command":"make check","tail":"error: lint failed"}),
         "audit-integration-gate",
     );
+}
+
+fn operator_note_golden(name: &str, audit: bool, bug: bool) {
+    let notes =
+        [serde_json::json!({"n":1,"at":"2026-11-14T00:00:00Z","text":"保留原文\n检查空输入"})];
+    let section = automed::handoff::note_section(&notes, audit);
+    let text = if bug {
+        bug_rendered(autome_domain::session::BugStep::Fix, false) + &section
+    } else {
+        section
+    };
+    if !maybe_update_golden(name, &text) {
+        assert_eq!(text, golden(name));
+    }
+}
+
+#[test]
+fn operator_note_impl_brief_golden() {
+    operator_note_golden("operator-note-impl", false, false);
+}
+#[test]
+fn operator_note_audit_brief_golden() {
+    operator_note_golden("operator-note-audit", true, false);
+}
+#[test]
+fn operator_note_bug_fix_prompt_golden() {
+    operator_note_golden("operator-note-bug", false, true);
 }

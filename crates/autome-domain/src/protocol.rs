@@ -113,8 +113,16 @@ impl ProtocolRef {
         }
     }
 
-    /// The single-column form stored in `tasks.protocol_ref` and
-    /// `sessions.protocol_ref`: `protocol/v7@3f9a…`.
+    /// Numeric tag version, independent of the content hash.
+    pub fn version(&self) -> Option<u32> {
+        let digits = self.tag.strip_prefix("protocol/v")?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse().ok()
+    }
+
+    /// The single-column form stored in tasks and sessions: `protocol/v7@3f9a…`.
     pub fn to_wire(&self) -> String {
         format!("{}@{}", self.tag, self.hash)
     }
@@ -185,6 +193,11 @@ impl ProtocolFiles {
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.files.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// The rules frozen into a task; eval fixtures are only used by developers.
+    pub fn task_copy(&self) -> Self {
+        Self::from_pairs(self.iter().filter(|(path, _)| !path.starts_with("evals/")))
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &str> {
@@ -698,5 +711,25 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn protocol_ref_version_reads_the_tag_number() {
+    for (tag, expected) in [
+        ("protocol/v7", Some(7)),
+        ("protocol/v8", Some(8)),
+        ("protocol/v9", Some(9)),
+        ("protocol/v0", Some(0)),
+        ("protocol/v007", Some(7)),
+        ("protocol/v4294967295", Some(u32::MAX)),
+        ("protocol/v4294967296", None),
+        ("protocol/v", None),
+        ("protocol/v+7", None),
+        ("v7", None),
+        ("", None),
+        ("protocol/v7x", None),
+    ] {
+        assert_eq!(ProtocolRef::new(tag, "hash").version(), expected, "{tag}");
     }
 }

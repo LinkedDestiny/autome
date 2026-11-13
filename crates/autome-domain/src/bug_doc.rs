@@ -23,6 +23,10 @@ pub struct BugDoc {
     pub root_cause: String,
     pub review: BugReview,
     pub repos: Vec<String>,
+    #[serde(default)]
+    pub regression_defect: bool,
+    #[serde(default)]
+    pub regression_defect_section: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BugDocError {
@@ -55,7 +59,16 @@ pub fn parse(text: &str) -> Result<BugDoc, BugDocError> {
             break;
         }
         if let Some((key, value)) = line.split_once([':', '：'])
-            && ["status", "fix-round", "复现命令", "根因", "复核", "repos"].contains(&key)
+            && [
+                "status",
+                "fix-round",
+                "复现命令",
+                "根因",
+                "复核",
+                "repos",
+                "回归测试",
+            ]
+            .contains(&key)
             && fields.insert(key, value.trim()).is_some()
         {
             return Err(error(&format!("{key}（第 {} 行）", index + 1)));
@@ -92,7 +105,37 @@ pub fn parse(text: &str) -> Result<BugDoc, BugDocError> {
             }
         }
     }
+    let regression_defect = match fields.get("回归测试") {
+        None => false,
+        Some(&"有缺陷") => true,
+        _ => return Err(error("回归测试")),
+    };
+    let mut section = None;
+    let mut in_section = false;
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        }
+        if !fenced && line.starts_with("## ") {
+            if in_section {
+                break;
+            }
+            if line == "## 回归测试缺陷" {
+                section = Some(String::new());
+                in_section = true;
+            }
+            continue;
+        }
+        if in_section {
+            let body = section.as_mut().unwrap();
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
     Ok(BugDoc {
+        regression_defect,
+        regression_defect_section: section.map(|s| s.trim().to_string()),
         status,
         fix_round: number(round)?,
         fix_limit: number(limit)?,
@@ -229,6 +272,73 @@ mod tests {
                 .unwrap_err()
                 .detail
                 .contains("repos")
+        );
+    }
+    #[test]
+    fn test_fix_bug_doc_parses_the_defect_key_and_section() {
+        let body = "- 用例：case\n- 缺陷：fixture\n- 证据：failure\n- 建议：repair";
+        for colon in [":", "："] {
+            let doc = parse(&format!(
+                "{VALID}回归测试{colon} 有缺陷\n## 回归测试缺陷\n{body}\n## 后续\nignored"
+            ))
+            .unwrap();
+            assert!(doc.regression_defect);
+            assert_eq!(doc.regression_defect_section.as_deref(), Some(body));
+        }
+        let doc = parse(&format!(
+            "{VALID}回归测试: 有缺陷\n## 回归测试缺陷\n```\n## example\n```\n- 用例: a"
+        ))
+        .unwrap();
+        assert!(
+            doc.regression_defect_section
+                .unwrap()
+                .contains("## example")
+        );
+    }
+    #[test]
+    fn test_fix_bug_doc_rejects_an_unknown_defect_value() {
+        for value in ["", "无", "通过", "defective"] {
+            assert!(
+                parse(&format!("{VALID}回归测试: {value}\n"))
+                    .unwrap_err()
+                    .detail
+                    .contains("回归测试")
+            );
+        }
+        assert!(parse(&format!("{VALID}回归测试: 有缺陷\n回归测试: 有缺陷\n")).is_err());
+    }
+    #[test]
+    fn test_fix_bug_doc_without_the_key_parses_as_before() {
+        for text in [
+            VALID.to_string(),
+            format!("{VALID}## 正文\n回归测试: 有缺陷\n"),
+            format!("```\n回归测试: 有缺陷\n## 回归测试缺陷\n```\n{VALID}"),
+        ] {
+            let doc = parse(&text).unwrap();
+            assert!(!doc.regression_defect);
+            assert_eq!(doc.regression_defect_section, None);
+        }
+        assert_eq!(
+            parse(&format!("{VALID}回归测试: 有缺陷\n"))
+                .unwrap()
+                .regression_defect_section,
+            None
+        );
+        assert_eq!(
+            parse(&format!("{VALID}## 回归测试缺陷\n"))
+                .unwrap()
+                .regression_defect_section,
+            Some(String::new())
+        );
+        let mut legacy = serde_json::to_value(parse(VALID).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("regression_defect");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("regression_defect_section");
+        assert_eq!(
+            serde_json::from_value::<BugDoc>(legacy).unwrap(),
+            parse(VALID).unwrap()
         );
     }
 }

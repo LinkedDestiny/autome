@@ -5,7 +5,19 @@
 //! than walked at build time so that a case which stops being embedded fails
 //! here rather than on a user's machine.
 
-pub const SEED: [(&str, &str); 128] = [
+pub const SEED: [(&str, &str); 136] = [
+    (
+        "evals/audit-checks-operator-notes/case.yaml",
+        include_str!("../../../../protocol/evals/audit-checks-operator-notes/case.yaml"),
+    ),
+    (
+        "evals/audit-checks-operator-notes/graders/behavior.md",
+        include_str!("../../../../protocol/evals/audit-checks-operator-notes/graders/behavior.md"),
+    ),
+    (
+        "evals/audit-checks-operator-notes/scaffold.sh",
+        include_str!("../../../../protocol/evals/audit-checks-operator-notes/scaffold.sh"),
+    ),
     (
         "evals/audit-integration-review/case.yaml",
         include_str!("../../../../protocol/evals/audit-integration-review/case.yaml"),
@@ -702,6 +714,36 @@ pub const SEED: [(&str, &str); 128] = [
         "evals/plan-before-merge-keeps-the-full-gate-out-of-milestones/scaffold.sh",
         include_str!(
             "../../../../protocol/evals/plan-before-merge-keeps-the-full-gate-out-of-milestones/scaffold.sh"
+        ),
+    ),
+    (
+        "evals/fix-declares-a-defective-regression-test/scaffold.sh",
+        include_str!(
+            "../../../../protocol/evals/fix-declares-a-defective-regression-test/scaffold.sh"
+        ),
+    ),
+    (
+        "evals/fix-declares-a-defective-regression-test/fixture/eval-case/eval-case-bug.md",
+        include_str!(
+            "../../../../protocol/evals/fix-declares-a-defective-regression-test/fixture/eval-case/eval-case-bug.md"
+        ),
+    ),
+    (
+        "evals/fix-declares-a-defective-regression-test/fixture/eval-case/eval-case-card.md",
+        include_str!(
+            "../../../../protocol/evals/fix-declares-a-defective-regression-test/fixture/eval-case/eval-case-card.md"
+        ),
+    ),
+    (
+        "evals/fix-declares-a-defective-regression-test/case.yaml",
+        include_str!(
+            "../../../../protocol/evals/fix-declares-a-defective-regression-test/case.yaml"
+        ),
+    ),
+    (
+        "evals/fix-declares-a-defective-regression-test/graders/behavior.md",
+        include_str!(
+            "../../../../protocol/evals/fix-declares-a-defective-regression-test/graders/behavior.md"
         ),
     ),
 ];

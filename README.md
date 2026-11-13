@@ -106,6 +106,10 @@ repository by repository.
 
 ### Host gate, retries and cooldowns
 
+**Review scope recovery.** Audit, retrospective and Bug review sessions may still only change their task documents. On the first crossing, the core saves a binary patch under the main checkout's `.autome/output/scope/<task>/<session>.patch` (one per repository in a workspace), restores only the out-of-scope paths to the session baseline and commits the restoration, keeping document edits. `session.scope_restored` appears in `autome run`; `autome status` shows the latest attempt and whether its patches remain pending. The next implementation/fix session decides whether to adopt the patch; the core never applies it automatically. A final audit or retrospective can trigger an extra implementation → audit cycle; Bug review returns to fixing within its fix budget. A detached retrospective leaves the patch pending for manual handling or a later rerun.
+
+The second consecutive crossing by the same role stops with the existing protocol-failure instructions plus “上一次已自动还原”. An intervening implementation/fix session does not reset the streak; a clean session of that same role does. Restoration failure also stops with the existing manual recovery instructions and `session.scope_restore_failed`. Save useful changes, restore only offending paths to the recorded baseline and commit, then rerun; do not reset the whole branch. Durable intent is recorded before restoration, so restart can resume interrupted work.
+
 Things the core does on its own, none of which needs a prompt to
 cooperate. Configure commands and retry policy in the project's `.autome/config.toml`:
 
@@ -115,7 +119,8 @@ session_minutes = 120     # the default, at least 5; a session running longer is
 
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
-concurrency = 1            # optional project limit, capped by the global limit
+concurrency = 1            # optional heavy-lane project limit, capped globally
+quick_concurrency = 1      # light lane; recommend 1–2 according to CPU capacity
 run = "each_round"          # the default; "before_merge" runs the full gate only once, before the merge
 quick = "make lint"         # optional; only active with before_merge
 quick_timeout_minutes = 5  # optional quick timeout (positive minutes); FixGate uses timeout_minutes
@@ -144,22 +149,24 @@ timeout_minutes = 30       # optional; preparation timeout
 fix_rounds = 3            # the default; an integer from 1–20
 ```
 
-- **Host job queue.** Global `~/.autome/config.toml` accepts `[gate] concurrency = 1`
-  (default 1, integers 1–10). Gate, MergeGate, MainCheck, ReproCheck, FixGate and
-  preparation commands share this limit across projects in one Autome ledger/core;
-  separate homes/ledgers are independent. A project may lower the limit; a larger
-  value is clamped to the global value. Its effective limit applies to the total
-  running host jobs at admission, not just that project's jobs; it does not
-  reserve exclusive capacity after a job starts. A project can set only
-  `concurrency` without enabling a gate command. Jobs wait in strict FIFO order,
-  with no MergeGate/MainCheck priority. Waiting leaves the task at its current node
-  and consumes no rounds, failure counts or crash retries; timeout starts only
-  when the job actually starts. `autome status` shows “排队等门禁（前面还有 k 个）”.
-  `task.get` and `dashboard.get` expose the live, one-based `gate_queue_position`
-  (null when not queued), separate from the project-slot `queue_position`.
-  `autome run` reports `gate.queued` with the position at enqueue time. Ledger
-  events restore FIFO order after a core restart. This does not limit commands
-  launched inside agent sessions, such as their own `cargo test`.
+- **Host job queues.** Host jobs use two independent FIFO lanes across projects
+  in one ledger. Full gates (`full`) and preparation commands use the heavy lane,
+  controlled by `[gate] concurrency`. Quick checks (`quick`) and reproduction
+  checks (`repro`) use the light lane, controlled by `[gate] quick_concurrency`.
+  Both global limits default to 1 and accept integers 1–10; project overrides
+  are capped by the global value. Set `quick_concurrency` to 1–2 according to
+  available CPU capacity. Either concurrency key alone does not enable a gate.
+  Admission counts only jobs and waiters in the same lane, with no node priority.
+  Separate homes/ledgers are independent. Waiting consumes no rounds, failure
+  counts or crash retries; timeout starts when the job actually starts.
+  `task.get` and `dashboard.get` expose `gate_queue_lane` (`heavy`/`light`) and
+  the live one-based `gate_queue_position`, both null when not queued.
+  `autome status`/`run` distinguish “排队等完整门禁” from “排队等快检或复现检查”.
+  `gate.queued` records the lane and enqueue position; ledger events restore both
+  queues after restart. Legacy events and jobs without a recorded kind are heavy.
+  Changing configuration while waiting moves a job to the new lane's tail;
+  running jobs retain their launch kind. Preparation cannot transfer its heavy
+  slot to a light check. This does not limit commands inside agent sessions.
 - **Merge queue.** The regular Rebase step remains; when MergeGate leaves the
   host queue, it rebases again if the default branch has advanced. A cached gate
   result is reused only when the branch is also up to date. Authorized tasks
@@ -225,8 +232,8 @@ fix_rounds = 3            # the default; an integer from 1–20
   the full command: projects decide whether the full gate includes those checks.
   `each_round` ignores quick. Quick requires a project gate `command`; these
   options are not global settings. Scripts receive `AUTOME_GATE_KIND` as
-  `quick`, `full` or `repro`. Quick shares the gate concurrency queue, so it
-  may wait behind another task's full gate.
+  `quick`, `full` or `repro`. Quick and reproduction checks use the independent
+  light lane and do not wait behind full gates.
 
 - **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
   sessions and gates, in the merge verification checkout, and in the main
@@ -375,6 +382,12 @@ Use `--kind bug` for a Bug Loop task; the default kind is `feature`. The Bug
 Loop goes through locate → reproduce → fix → fix gate → review → rebase →
 merge gate → merge, and requires the audit role to be enabled.
 
+Bug Loop 支持「修正回归测试」：修复轮或复核轮声明 `回归测试: 有缺陷`，
+并在 `## 回归测试缺陷` 中写明用例、缺陷、证据、建议。内核最多退回定位轮 2 次，
+该定位轮只能修测试和任务文档，不增加修复轮次。修正后的测试在隔离基线检出和当前
+分支各跑一次：基线失败且当前分支通过才进入复核；当前分支仍失败回修复轮；基线
+不失败按未复现处理。旧协议没有声明标记时保持原行为。
+
 `--brief <file>` reads a UTF-8 task card; `--brief -` reads it from standard
 input. With no request argument, the first `# ` heading supplies the title
 (or the first non-empty line with leading whitespace and `#` removed if there
@@ -387,6 +400,7 @@ result containing `task`, `started` and `queue_position`; a draft has
 ```sh
 autome task new --kind bug --brief - --draft --json < card.md
 autome task start <task>
+autome note <task> "A note for the next implementation/fix round" [--reopen]
 autome reply <task> "Additional reproduction details"
 autome extend <task> <n>
 autome rerun <task> <node>
@@ -606,3 +620,8 @@ Not done: signing and notarisation have configuration but have never been run
 without verifying its signature. Two drivers (the app and `autome run`) take
 turns on a lock rather than one being refused, and the CLI is packaged for
 Apple silicon only, because that is what CI builds on.
+
+### 操作者备注
+
+`autome note <任务> "内容"`（或 `--file <路径|->`）给下一需求实现轮、Bug 定位或修复轮捎话，不打断当前会话。成功收尾后标记送达，崩溃重试会再次呈现；状态页可查内容和收件轮。
+没有后续实现轮时会补轮，再审计并过门禁。在合并卡点必须加 `--reopen`，预先合并授权保留；Bug 修复预算耗尽须先 `autome extend`。失败或停止时备注只记录，`rerun` 后送达。合并已经开始后只收下并警告，不再送达。备注与冻结设计冲突时须在证据说明，不能悄悄改范围。

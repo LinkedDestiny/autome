@@ -295,6 +295,8 @@ pub struct ProjectConfig {
     pub gate_reuse_for_main_check: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_concurrency: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_quick_concurrency: Option<u32>,
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
@@ -453,6 +455,8 @@ pub struct ResolvedConfig {
     pub gate_reuse_for_main_check: bool,
     #[serde(default = "default_gate_concurrency")]
     pub gate_concurrency: u32,
+    #[serde(default = "default_gate_concurrency")]
+    pub gate_quick_concurrency: u32,
     pub retry: RetryPolicy,
 }
 
@@ -543,6 +547,10 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         roles,
         bug: project.bug.unwrap_or_default(),
         gate: project.gate.clone(),
+        gate_quick_concurrency: project
+            .gate_quick_concurrency
+            .unwrap_or(global.gate.quick_concurrency)
+            .min(global.gate.quick_concurrency),
         gate_concurrency: project
             .gate_concurrency
             .unwrap_or(global.gate.concurrency)
@@ -1433,11 +1441,14 @@ fn default_gate_concurrency() -> u32 {
 pub struct GlobalGateConfig {
     #[serde(default = "default_gate_concurrency")]
     pub concurrency: u32,
+    #[serde(default = "default_gate_concurrency")]
+    pub quick_concurrency: u32,
 }
 impl Default for GlobalGateConfig {
     fn default() -> Self {
         Self {
             concurrency: DEFAULT_GATE_CONCURRENCY,
+            quick_concurrency: DEFAULT_GATE_CONCURRENCY,
         }
     }
 }
@@ -1474,7 +1485,10 @@ mod gate_concurrency_tests {
     #[test]
     fn gate_concurrency_project_override() {
         let global = GlobalConfig {
-            gate: GlobalGateConfig { concurrency: 10 },
+            gate: GlobalGateConfig {
+                concurrency: 10,
+                ..Default::default()
+            },
             ..Default::default()
         };
         assert_eq!(
@@ -1528,6 +1542,53 @@ mod merge_auth_tests {
                 if expected {
                     assert!(warnings(&resolved)[0].contains("没有门禁把关"));
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod gate_lane_tests {
+    use super::*;
+    #[test]
+    fn gate_lane_quick_concurrency_defaults_to_one() {
+        assert_eq!(
+            resolve(&GlobalConfig::default(), &ProjectConfig::default()).gate_quick_concurrency,
+            1
+        );
+        let mut value =
+            serde_json::to_value(resolve(&GlobalConfig::default(), &ProjectConfig::default()))
+                .unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("gate_quick_concurrency");
+        assert_eq!(
+            serde_json::from_value::<ResolvedConfig>(value)
+                .unwrap()
+                .gate_quick_concurrency,
+            1
+        );
+    }
+    #[test]
+    fn gate_lane_project_value_is_capped_by_global() {
+        for global_limit in [1, 2, 10] {
+            let global = GlobalConfig {
+                gate: GlobalGateConfig {
+                    quick_concurrency: global_limit,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            for project_limit in [None, Some(1), Some(2), Some(10)] {
+                let project = ProjectConfig {
+                    gate_quick_concurrency: project_limit,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    resolve(&global, &project).gate_quick_concurrency,
+                    project_limit.unwrap_or(global_limit).min(global_limit)
+                );
             }
         }
     }

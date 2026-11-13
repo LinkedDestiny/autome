@@ -262,6 +262,7 @@ pub struct Inputs<'a> {
     /// round is looking at, already rendered. For the audit round: the full
     /// suite has been run once by someone other than the round being audited.
     pub gate: Option<String>,
+    pub scope_patches: Option<String>,
 }
 
 /// The milestone this round is about: the current one if the status block
@@ -371,6 +372,9 @@ pub fn build(input: &Inputs<'_>) -> String {
         s.push_str("\n## 宿主门禁\n\n");
         s.push_str(g);
     }
+    if let Some(patches) = &input.scope_patches {
+        s.push_str(patches);
+    }
     s
 }
 
@@ -446,6 +450,7 @@ pub fn path(doc_dir: &str, role: Role, round: u32) -> String {
     format!("{doc_dir}/brief/{}-{round}.md", role.as_str())
 }
 
+/// Render saved facts; launching a session never has to recompute patch stats.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +588,7 @@ session-protocol = []
             budget_line: Some("本轮是实现轮第 3 轮，N = 35。\n".into()),
             decisions: None,
             gate: None,
+            scope_patches: None,
         }
     }
 
@@ -784,6 +790,7 @@ session-protocol = []
         // Exercise the actual admission guard: changing only the evidence
         // filename from the audit ordinal to the implementation round fixes it.
         let mut round = crate::guards::Round {
+            protocol_version: None,
             role: Role::Audit,
             status: &s,
             before: None,
@@ -956,6 +963,10 @@ pub fn integration_section(event: &serde_json::Value, doc_dir: &str) -> String {
         "\n## 本轮要审的集成改动\n\n本轮是**集成复验**：实现 #{} 开始时里程碑表没有 `开放` / `待审`，却在 `{doc_dir}/` 之外留下了提交。规则见 `{doc_dir}/protocol/loop-protocol.md` 的「集成复验」一节。\n\n触发原因：",
         event["impl_round"]
     );
+    if event["legacy"] == true {
+        out = out.replace(&format!("规则见 `{doc_dir}/protocol/loop-protocol.md` 的「集成复验」一节。"),
+            "冻结的旧协议没有集成复验规则；本节由内核补充。请核对下列目录外提交，独立复跑验收并记录结论；未写证据时内核只提醒。");
+    }
     let trigger = &event["trigger"];
     match trigger["kind"].as_str() {
         Some("rebase_conflict") => {
@@ -972,6 +983,7 @@ pub fn integration_section(event: &serde_json::Value, doc_dir: &str) -> String {
             string(&trigger["tail"])
         )),
         Some("decisions") => out.push_str("用户表态。\n"),
+        Some("scope_patch") => out.push_str("越界补丁交接。\n"),
         _ => out.push_str("没有注入：手动重跑或续跑。\n"),
     }
     if let Some(repos) = event["repos"].as_array() {
@@ -1037,6 +1049,7 @@ mod integration_section_tests {
     fn integration_section_none_preserves_the_brief() {
         let map = BriefMap::default();
         let mut input = Inputs {
+            scope_patches: None,
             integration: None,
             role: Role::Audit,
             slug: "x",
@@ -1062,6 +1075,10 @@ mod integration_section_tests {
         let new = build(&input);
         assert_eq!(new.replacen(&section, "", 1), old);
         assert!(new.find("## 本轮要审").unwrap() < new.find("## 上一轮").unwrap());
+        input.scope_patches = Some("补丁交接回归标记".to_string());
+        let combined = build(&input);
+        assert!(combined.contains(&section));
+        assert!(combined.contains("补丁交接回归标记"));
     }
     #[test]
     fn integration_section_contains_facts_and_seven_character_shas() {

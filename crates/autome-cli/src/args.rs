@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 /// Flags that take a value. Everything else starting with `-` is a switch.
-const VALUED: [&str; 12] = [
+const VALUED: [&str; 13] = [
     "-p",
     "--project",
     "--session",
@@ -17,6 +17,7 @@ const VALUED: [&str; 12] = [
     "--doc",
     "--tag",
     "--brief",
+    "--file",
     "--kind",
     "--after",
     "--before",

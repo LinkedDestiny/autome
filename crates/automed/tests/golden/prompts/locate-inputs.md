@@ -4,6 +4,8 @@
 先读 `{doc_dir}/protocol/bug-protocol.md`。用户需求：{request}
 如有 `{doc_dir}/{slug}-card.md` 与 `{doc_dir}/{slug}-replies.md`，完整读取任务卡和补充信息。
 
+prompt 带「修正回归测试」一节时，按该节边界修正测试与任务文档，不改产品代码；该模式下以宿主的基线与 HEAD 成对检查为准。
+
 用户提供的附件（已复制到任务目录）：
 - {doc_dir}/attachments/crash.log
 - {doc_dir}/attachments/screen.png

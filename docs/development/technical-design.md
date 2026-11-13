@@ -221,6 +221,8 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 
 ### 5.6 Bug Loop（kind = bug）
 
+失败或已停止的 Bug 任务接受 `autome reply`，补充文字原样追加到 replies 文档并回到定位轮；满槽时按现有准入排队。已用修复轮次保留，上限设为 `max(原预算或配置 fix_rounds, 已用轮次 + 配置 fix_rounds)`，加法溢出拒绝并提示新建任务。`AwaitInfo` / `NotABug` 的 reply 不改变预算，需求任务的 reply 仍等同 reject。
+
 任务类型 `kind` 为 `feature`（默认）或 `bug`。只有 kind 为 bug，且已记过 `bug.loop_started` 或仍处于 `Draft` / `Queued` 的任务走 Bug Loop；需求任务和已经停在需求节点、尚无该事件的旧 bug 任务继续走 §5.3。Bug 任务在 `Start` 或分到槽位时要求审计角色开启，否则拒绝「Bug 任务需要独立复核，请启用审计角色后启动」。出处：`crates/autome-domain/src/task.rs` 的 `TaskKind`；`crates/autome-domain/src/bug_loop.rs` 的 `uses_bug_loop`、`apply_for`、`bug_loop_legacy_bug_tasks_already_in_feature_nodes_keep_the_feature_table`。
 
 | 节点 | 线上名 | 界面标签 | 执行方 | 占槽位 |
@@ -273,6 +275,26 @@ Queued 首次进入定位时记录 `bug.loop_started`。出处：`crates/automed
 
 Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-round`、`复现命令`、`根因`、`复核`（待复核 / 通过 / 打回）。会话模板为 `protocol/prompts/locate.md`、`protocol/prompts/fix.md`、`protocol/prompts/fix-review.md`，规则为 `protocol/bug-protocol.md`，编译进 automed。出处：`crates/autome-domain/src/bug_doc.rs` 的 `parse`；`crates/automed/src/protocol/mod.rs` 的 `SEED`。
 
+**定位阶段累计保护。** 普通定位和修测试共用 `scheduler/test_fix.rs` 的 `regression_set`：
+以任务最早定位会话的各仓库 `locate_heads` 为基线，非 HEAD 祖先时回退到与默认分支的 merge-base；
+累计测试、当前会话测试与上一快照路径取并集。普通定位仍只冻结新增测试块，不冻结产品辅助代码。
+未定位会话留下的测试即使没有快照也会纳入。普通定位为空时先走复现判定，真正复现后才拒绝；
+直接重跑 fix 而无快照时，启动会话前现算 `source: rerun_fix` 快照，空集或读盘失败转 `Failed(Fix, Protocol)`，不启动修复会话。
+
+**修正回归测试。**
+
+冻结的 `prompts/fix.md` 含 `<!-- regression-test-defect -->` 时启用修测试路径。
+`bug.test_fix_requested` 记录声明会话、来源轮次、次数与上限（2）；
+`bug.test_fix_settled` 记录 accepted / needs_fix 和基线、HEAD 退出码。
+`task.get.task.test_fix` 暴露 used、limit、open；CLI 事件流与定位状态显示此模式。
+声明轮不能改受保护测试；修测试定位轮只允许任务文档、既有整文件测试与支持文件、
+新增测试及源文件的测试段，命令点名既有产品脚本不授予写权限。缺陷四项必须非空，
+定位结束必须删除声明。新的保护快照包含先前快照和定位阶段累计测试改动。
+成对检查仍占用一个 repro 作业，基线取 merge-base，覆盖修正后的测试和 support，
+内联测试保留基线产品部分。缺少显式命令依赖或无法构造基线按未复现处理，
+不能借无关构建失败接受测试。基线红、HEAD 绿进入 FixGate / FixReview；HEAD 红
+正常计修复轮；基线不红沿用两次未复现转 AwaitInfo 的规则。临时检出检查结束后移除。
+
 ## 6. Git 工作区操作
 
 所有 Git 命令由 automed 以固定二进制、净化环境执行，禁用 credential helper，不触碰远端。
@@ -321,7 +343,25 @@ rebase 用 patch-id 等价比较列出改写或新增提交，另列原分支中
 
 退出标记出现后：读取 exit code；exit 非零或日志空白判 `crashed`；否则解析状态块（§5.4）并按转换表推进。日志路径写入 Session，界面按需读取。
 
+### 7.4 会话写入范围与越界还原
+
+审计、复盘、Bug 复核只允许修改本任务文档目录。`sweep_commit` 后按会话 `scope_heads` 基线计算越界路径；首次越界先存 binary 补丁到主检出 `.autome/output/scope/<任务>/<会话>.patch`，工作区项目每仓库一份 `<会话>--<成员>.patch`。先持久登记 `session.scope_restore_begun`，再只还原越界路径、核对 `git apply --check`、提交并记 `session.scope_restored`；文档改动保持不变，不 reset 分支。启动恢复与会话启动前接续未完成意图；失败时路径级补偿到会话结束的树，记 `session.scope_restore_failed`，沿用协议失败与手工步骤并补「自动还原没有完成」。
+
+熔断只看本任务最近一个已结束的同角色会话：有 begun 且无 failed 即为生效的还原，连续第二次越界不再还原，原失败详情追加「上一次已自动还原」。需求审计和 Bug 复核角色均为 audit，手动与流程内复盘均为 retro；实现/修复轮不打断，同角色一次干净会话打断。判断来自持久账本，重启与 extend 不清零；熔断轮没有 begun，因此手工处理后 rerun 的下一次越界重新算首次。
+
+待处理由 begun 排除 failed 与 scope_patches_handled 推出，每次启动实现/修复轮写入简报或 prompt，并在 session.started 的 scope_patches 列出；会话正常结束且过守卫才记 session.scope_patches_handled，崩溃不消费。是否采纳由会话判断。需求最后审计/复盘仍有补丁时补实现 → 审计，不受实现预算拦截；Bug 复核按不通过退回修复，仍遵守修复预算。手动复盘不改变已终结任务状态，补丁留待人处理或 rerun 后交接。补丁轮沿用现有审计路径，与 T-68 的衔接标记为 session.started.scope_patches。
+
+CLI run 展示还原、失败、已处理三种事件，begun 不打印；还原行含角色、轮次、总文件数、前 3 个路径及首份补丁（多份带份数），Bug 指向修复轮。task.get 顶层 scope_restore 返回最近 begun 载荷与账本时间 at、待处理补丁路径 pending；无记录 last 为 null，不改变 task 对象键。status 以本地时间显示最近还原记录与待处理/已处理；失败详情保留手工恢复步骤。prompt 与协议正文不变，边界不放宽。
+
+
+### 里程碑关闭之后的交接轮
+
+域上下文 `handoff_pending` 由 `handoff::pending` 从账本计算；目前来源是未处理的越界补丁，操作者备注接入后成为第二类来源。交接文案统一由 `handoff::sections` 写入需求实现轮简报或 Bug 修复 prompt。审计全部关闭里程碑、复盘结束时仍有交接工作则补实现 → 审计；Bug 复核通过时仍有补丁则按复核不通过退回修复，遵守修复预算。熔断仍按 §7.4 的同角色已结束会话口径计算。
+
+全部里程碑已完成时，补丁轮只处理补丁，不改里程碑表或已完成里程碑的最新证据指针；证据写最后一个里程碑本实现轮的文件。产生目录外产品提交则由 T-68 记录 `integration.range`，触发标签 `scope_patch`（越界补丁交接），随后集成复验；仅文档改动仍走普通审计。会话正常收尾才记已处理，崩溃重试继续交接。
+
 ## 8. 调度器
+
 
 - 每个项目一个信号量，容量为 `parallel_limit`。占用槽位的状态：Intake、Design、Review、Adjudicate、Implement、Audit、Rebase、Merging、Cleanup。AwaitDesignApproval、AwaitMerge、Paused、Stopped、Failed 不占槽位。
 - 排队按 `queued_seq`、`created_at` 顺序，可用 `task.move` 调整；槽位释放后依次检查，跳过依赖尚未全部到 `Done` 的受约束任务，保留其队列位置，让后面的任务先走。约束适用于 `Queued`，以及需求任务在设计批准前节点的 `Requeued`；实现期和 Bug 的 `Requeued` 不受依赖约束。依赖取消或失败时任务继续排队，用户可修改或清空依赖。
@@ -331,18 +371,24 @@ rebase 用 patch-id 等价比较列出改写或新增提交，另列原分支中
 
 **集成复验。** `apply_guards` 在兜底提交与会话范围检查后记录 `integration.range`，携带首次实现
 会话 ID、实现轮号、触发原因和各仓库提交范围。仅紧随该实现会话的审计使用它；后续实现会话使旧范围失效。
-任务固定协议的审计模板含 `<!-- integration-audit -->` 成对标记时才启用简报段、prompt 分支及集成审计守卫，
-旧模板维持原行为。首次审计尝试记录指定证据路径的存在、mtime_ns 与长度，收尾比较是否更新，
+任务固定协议的审计模板含 `<!-- integration-audit -->` 标记时启用简报段、prompt 分支及强制集成审计守卫。
+旧模板缺标记但已有 `integration.range` 时载荷带 `legacy: true`，内核在简报补充目录外提交范围、独立复跑验收与证据要求，
+不改冻结的 prompt；此时缺证据的 `audit_made_no_progress` / `evidence_missing` 只提醒，v8 模板的强制行为不变。首次审计尝试记录指定证据路径的存在、mtime_ns 与长度，收尾比较是否更新，
 防止实现轮预写证据绕过复验。无证据且表不动报 `audit_made_no_progress`；退回也必须有证据。
 通过时表不动，沿原状态机进入复盘 / rebase / 合并卡点；退回则计 reopen，按原预算返回实现轮，
-不新增节点或回边。所有需求实现轮另检查已完成里程碑的最新证据指针，改指向实现证据时报
-`impl_closed_milestone`；此检查不受模板版本门限制。Bug Loop 不进入此路径。
+不新增节点或回边。所有需求实现轮另检查已完成里程碑的最新证据指针：改指向新的实现证据时，内核仅还原受影响里程碑的指针行
+（保留其它正文、开放里程碑与代码围栏，多出的指针删除），做独立提交并记 `guard.auto_fixed {code, milestones, commit, protocol, detail}`，
+`autome run` 显示一行说明。v8 之前说明旧协议没有这条规则，v8 及以后说明违反指针规则；无法解析版本时也自动还原并明确说明。
+文档无法识别、工作区不干净、读写或提交失败时仍报 `impl_closed_milestone`，提交失败尝试恢复会话原文和索引。
+这是内核不改写会话文档的窄例外；实现轮擅自把里程碑关闭仍为错误，Bug Loop 不进入此路径。
+
+新增 error 级守卫若依赖某协议版本才写进 prompt 的规则，对更早版本的任务只能是提醒或自动修正。
 
 ### 8.1 驱动锁、门禁、重试与冷却、表态租约
 
 **谁能推进账本。** 构建标识为祖先提交数（7 位）、提交时间与短 SHA；只按祖先数比较，时间不排序。同一提交的 CLI 与内核共用标识；无 Git 或浅克隆为 unknown。未知不能覆盖已知，两个不同 unknown 或同计数不同 SHA 按旧内核拒绝。所有 READ_METHODS 之外的方法都算推进。tick 与写命令先无锁只读比较，再在驱动锁内 claim，锁覆盖比较到最后一个副作用；取锁 I/O 失败不推进。检查先于 reclaim、recover、固定协议和启动会话。旧内核只读，拒绝不改变任务或新增 task.updated。AUTOME_ALLOW_OLDER_KERNEL=1 是显式逃生口，每进程最多一次，事务内降低标记并记 kernel.adopted（from/to/via/method）；新内核再来会抬高标记，旧进程随后被拒。
 
-**宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。准备命令与门禁共用 `[gate] concurrency` 名额，任务检出、verify 检出、主检出均计入；指纹未变、未配置或工作区跳过准备时不排队。门禁前准备与随后的门禁在持续占位、期间无 task.updated 且退出标记未过占位期限时连占同一名额，否则后续进程重新准入。会话前准备排队不计崩溃重试或 Bug Loop 修复轮次，Fix 轮次到真正启动会话才记录。主检出准备先检查指纹和其它任务的主检出准备互斥，再申请名额，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
+**宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。准备命令与门禁共用 `[gate] concurrency` 名额，任务检出、verify 检出、主检出均计入；指纹未变、未配置或工作区跳过准备时不排队。门禁前准备与随后的完整门禁在持续占位、期间无 task.updated 且退出标记未过占位期限时连占同一名额，否则后续进程重新准入；轻车道检查始终重新准入，不能继承准备命令的重车道名额。会话前准备排队不计崩溃重试或 Bug Loop 修复轮次，Fix 轮次到真正启动会话才记录。主检出准备先检查指纹和其它任务的主检出准备互斥，再申请名额，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
 
 **合并后命令。** 项目 `[merge] after` 是 Cleanup 的前置子阶段，不新增节点：合并成功、MainCheck（若配置）通过、主检出准备处理完后，在清理任务 worktree / 分支之前，由宿主在 `project.path` 用 `sh -c` 执行；准备失败仍运行钩子。命令获得 `AUTOME_TASK` 与 `AUTOME_MERGE_COMMIT`（本任务完整合并 SHA），主检出可能已有后续合并。工作区、无单一合并提交、MainCheck 失败或跳过时只写一次 `merge.after_skipped`；Bug Loop 同样适用。
 
@@ -352,9 +398,9 @@ rebase 用 patch-id 等价比较列出改写或新增提交，另列原分支中
 
 **宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同且分支不落后才可沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。默认 `[gate] reuse_for_main_check = true`：合并提交与最近通过 MergeGate 的提交树相同，且被合并的 head 与实际启动命令均匹配时，沿用该结果并写 `gate.reused`，不创建验证检出、不启动 MainCheck 作业；设为 `false` 则始终照常运行。无法确认通过记录、命令或树时也照常运行。同一任务同一 `gate` / `merge_gate` / `fix_gate` 节点连续相同失败指纹达到 `[gate] same_failure_limit`（默认 3，整数 1–10）时熔断，任务失败并附原因摘要与最近日志路径；同节点通过或指纹变化打断连续计数，修复环境后可用 `rerun` / `extend` 重跑，熔断后的新运行从零计数；`repro_check` 与 `main_check` 不参与熔断。每次实际执行的门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
 
-宿主门禁与准备共享全局 `~/.autome/config.toml` 的 `[gate] concurrency`（缺省 1，整数 1–10）；项目覆盖取与全局的较小值，仅配置 concurrency 不启用门禁命令。按一个账本内所有项目的在途作业总数与当前项目有效限额比较，不扫描全机进程，也不限制会话内的命令。Gate / MergeGate / MainCheck / ReproCheck / FixGate 严格 FIFO，无优先级；排队保留原节点及项目并行槽位，不写作业文件或 started 事件、不消耗预算与失败/重试计数，超时从真正启动的 `.started` 算起。`gate.queued.position` 是入队时从 1 起的快照，`task.get` 与 `dashboard.get` 的 `gate_queue_position` 是实时名次（非排队为 null），不复用 `queue_position`；CLI 显示「排队等门禁（前面还有 k 个）」，k = 名次 − 1。有效排队项按事件 seq 恢复，启动、状态变化、会话冷却或 `gate.queue_dropped` 使其失效，再来排队尾；准入前出错的队首退队并报告错误。正常结束、失败、超时或作废后释放名额；暂停的活作业继续占位，每 tick 全任务超时回收，已退出未收作业有 tick 期限，避免永久占位。无法读作业目录且账本不能证明无在途作业时保守暂停新准入并报告恢复目录或取消任务的提示。升级时已有超额作业正常收取，不为限额杀掉它们。内核超时终止行在注入、警报与 CLI 中明确显示「门禁超时」；命令自行返回 124 而无终止行不使用该文案，但保留既有熔断指纹将任何 124 视为超时的兼容行为，其摘要仍按超时显示。
+宿主作业按实际启动种类分两条独立 FIFO 车道：`full` 与准备命令走重车道（`[gate] concurrency`），`quick` / `repro` 走轻车道（`[gate] quick_concurrency`）。两键全局缺省均为 1、整数 1–10，项目覆盖由全局封顶；只写任一并发键不启用门禁命令。推荐按机器核数设置 quick_concurrency 为 1–2。按一个账本内所有项目同车道的在途作业数与当前项目有效限额比较，不扫描全机进程，也不限制会话内的命令。各车道内严格 FIFO，无节点优先级；排队保留原节点及项目并行槽位，不写作业文件或 started 事件、不消耗预算与失败/重试计数，超时从真正启动的 `.started` 算起。`gate.queued.position` 是入队时从 1 起的快照，`task.get` 与 `dashboard.get` 的 `gate_queue_position` 是同车道实时名次（非排队为 null），`gate_queue_lane` 为 heavy / light 或 null，不复用 `queue_position`；CLI 区分「排队等完整门禁（前面还有 k 个）」与「排队等快检或复现检查（前面还有 k 个）」，k = 名次 − 1。`gate.queued.lane` 持久化车道，缺字段的旧事件归重车道；占位按 `.started` 旁 `.kind` 的启动种类判定，未知归重车道。排队期间重算车道改变时重新进新车道队尾，已经启动的作业不换车道。有效排队项按事件 seq 恢复，启动、状态变化、会话冷却或 `gate.queue_dropped` 使其失效，再来排队尾；准入前出错的队首退队并报告错误。正常结束、失败、超时或作废后释放名额；暂停的活作业继续占位，每 tick 全任务超时回收，已退出未收作业有 tick 期限，避免永久占位。无法读作业目录且账本不能证明无在途作业时保守暂停新准入并报告恢复目录或取消任务的提示。升级时已有超额作业正常收取，不为限额杀掉它们。内核超时终止行在注入、警报与 CLI 中明确显示「门禁超时」；命令自行返回 124 而无终止行不使用该文案，但保留既有熔断指纹将任何 124 视为超时的兼容行为，其摘要仍按超时显示。
 
-**两级门禁。** 项目 `[gate] quick` 在 `before_merge` 下于每个实现轮后运行，Bug 修复轮跑复现命令和快检；`each_round` 忽略 quick。快检建议只放格式、lint、类型检查并控制在 1 分钟内，测试留给合并前完整门禁。完整命令是否包含快检内容由项目决定，Autome 不拼接；快检结果永不替代 MergeGate。`quick_timeout_minutes` 缺省 5 分钟（正整数），Bug FixGate 使用完整门禁超时。脚本通过 `AUTOME_GATE_KIND=quick|full|repro` 区分运行种类。快检共用门禁并发队列，可能等待其它任务的完整门禁。
+**两级门禁。** 项目 `[gate] quick` 在 `before_merge` 下于每个实现轮后运行，Bug 修复轮跑复现命令和快检；`each_round` 忽略 quick。快检建议只放格式、lint、类型检查并控制在 1 分钟内，测试留给合并前完整门禁。完整命令是否包含快检内容由项目决定，Autome 不拼接；快检结果永不替代 MergeGate。`quick_timeout_minutes` 缺省 5 分钟（正整数），Bug FixGate 使用完整门禁超时。脚本通过 `AUTOME_GATE_KIND=quick|full|repro` 区分运行种类。快检使用独立轻车道，不等待其它任务的完整门禁。
 
 **合并前门禁模式。** 项目 `[gate] run = "before_merge"` 把完整门禁次数从「每轮一次」降到「每个任务一次」，由宿主在 MergeGate 统一运行；代价是门禁问题与回归到合并前才暴露，失败会多退回一次实现轮，修好后再过 MergeGate。会话不再各自兜底：plan、impl、audit、fix、fix-review 五份模板按 `before_merge` 选段，宿主通过 `gate_line` 注入完整门禁命令及本轮不要自行运行的提示；设计轮不把全量门禁列为里程碑验收，实现、审计、修复、复核轮只运行里程碑验收或复现命令与直接相关的测试子集。未配 quick 时需求实现轮跳过 Gate，直接进入审计或无审计时的下一步；配了 quick 则进入 Gate 跑快检。Bug 修复轮在 FixGate 跑复现命令，配了 quick 时再跑快检；Bug MergeGate 仍跑复现命令与项目门禁。审计简报没有本轮完整门禁结果时，以及 Bug 复核 prompt 中，明确写「本项目门禁只在合并前运行，本轮没有宿主门禁结果」，不把旧结果或仅复现通过当成本轮门禁证据；有快检结果时明确注明本轮只跑快检及命令、退出码，不能当作完整门禁证据。任务停在 Gate 时切换到此模式且未配 quick，宿主清理该节点作业并写 `gate.skipped` 后继续；MergeGate 的失败重跑与合并后的 MainCheck 保持上述行为。缺省及显式 `each_round` 的行为不变。
 
@@ -403,7 +449,7 @@ MergeGate 出队冲突复用 RebaseConflict，需求回 Implement、Bug 回 fix�
 
 初始化（幂等）：创建 `.autome/` 骨架与 `config.toml`（仅 `[loop]` 空节，全部继承全局）；追加 .gitignore；AGENTS.md 不存在时创建含规则段的最小版本，存在时只追加标记段。
 
-Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过后 automed 创建 init commit。
+Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为项目根，不建 worktree）：调研仓库、起草 `docs/agent-project-profile.md` 与 AGENTS.md；空目录时向用户提问。退出标记出现后界面进入第 4 步，在应用内展示两个文件供编辑（文本框），保存即写回。第 5 步从全局默认复制全量到 `config.toml` 供修改。完成或跳过时 automed 先提交初始化产物，再写结束状态和事件；提交失败保持原状态并可重试。工作区只在包含产物的成员仓库提交，根目录文件不提交，无产物不报错。Onboarding 会话写入 sessions（schema 9，task_id 为 NULL、project_id 指向项目），由收割器记录 session.ended；session.log 可读取日志，project.get 的 onboarding_session 返回最新会话的 id、lifecycle、started_at、ended_at。它不进入任务费用与轮次统计。
 
 ## 11. 环境探测与安装
 
@@ -436,17 +482,29 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 启动恢复：加载 projects → 校验路径与 worktree 存在 → 对每个非终态 task 扫描会话目录（§2）→ 推进或标记失败 → 重建调度队列。
 
+schema v9 重建 sessions（v8 的 kernel_mark 保留）：task_id 可空且保留外键，project_id 外键引用 projects；只有 onboarding 会话使用 NULL task_id，且必须有项目归属。旧行与任务索引原样保留。
+
 ## 14. IPC 接口
 
 沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。`autome core` 与 `automed` 共用 stdio 入口，stdout 只写帧。
 
 `env.get.kernel` 含 build_id、origin（git/unknown）、ledger_build_id、may_advance、message，只读不更新标记。tick 保留布尔 skipped，新增 older_kernel（null 或 {message,kernel,ledger}）；锁忙与旧内核可区分。写命令拒绝码为 older_kernel，消息与 tick 相同；Web 映射 409。面板 outdated 状态保持可读、横幅显示原话并禁写，tick 降为每 10 个间隔一次，状态不变不重复日志。常驻 autome run 被拒时保持进程，只在原因变化时输出；恢复继续推进；--once/--until-idle 被拒退出 1。
 
+`task.get.documents` 按任务卡、设计文档 / Bug 文档、任务文件、评审、裁决、审计、运行记录、复盘教训、证据的顺序列出存在的文件，证据按文件名排序。每项保留 name、label、path、absolute、size，并带 source（worktree / default_branch）。任务文档目录存在时从任务检出读取；目录不存在时，从项目主检出（工作区为文档仓库）的默认分支树过滤文件，且仅列磁盘上存在的文件。此时 status_block 从默认分支的 Git 内容解析，不受主检出的未提交内容影响；未合并且默认分支无文档时返回空清单和 null。Bug 文档使用 BugDoc 解析器。CLI status 显示合并后的里程碑及 Bug 文档路径。
+
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
 
 补充命令：`task.start {task_id}` 是写命令，不在 `READ_METHODS` 中，语义见 §8.2；`task.create` 另收 `kind`、`brief`、`draft`（§8.2）。出处：`crates/automed/src/dispatch.rs` 的 `task_start`、`task_create`、测试 `a_draft_is_refused_a_retro_and_task_start_is_not_a_read_method`。
 
 `task.merge {task_id, cancel?: bool}`：cancel 缺省 false，非布尔拒绝。在 AwaitMerge 走合并入口；其它未完成且未失败状态（含 Draft、排队、暂停、停止和设计卡点）记录预先同意，不跳过卡点。Failed 要先重跑；Active Merging / MainCheck / Cleanup 以及 Done / Cancelled 拒绝再次授权。`cancel: true` 对应 CLI `autome merge cart --cancel`，撤销有效授权；无授权、已终结或合并已开始时拒绝，Failed 可撤销。成功返回 task.get 投影加 `merge_request: "merging" | "authorized" | "already_authorized" | "revoked"`；`merging` 表示已执行合并入口，仍可能因纳入表态回实现轮，不保证已落地。出处：`dispatch::task_merge`、领域层 `merge_press` / `cancel_press`。
+
+`project.get.onboarding_session` 为 null 或最新会话的 `{id, lifecycle, started_at, ended_at}`；`session.log` 可按会话 id 读取 Onboarding 日志，开始与结束事件的 subject 为项目 id。
+
+`project.probe.rejection` 为 null 或 `{kind, message, project_id?}`，与 project.add 共用拒绝判定，kind 为 not_a_directory / already_project / nested_in_project / contains_project；正常或可重新添加的已移除项目不拒绝。probe 不创建目录，别名按规范路径判定。
+
+`config.get.resolved` 始终给出全部 14 个生效顶层字段，包括 gate_run=each_round、gate_quick=null、setup=null；不改变 ResolvedConfig 在其它接口的稀疏序列化。并列 defaults 列表标记项目与全局都未指定而使用内置值的键；整个聚合字段皆缺省时用顶层键，loop_defaults 部分覆盖时用 loop_defaults.<字段>。显式填写的值即使等于内置值也不标缺省，角色聚合有覆盖时不标为整体缺省。
+
+`dashboard.get.projects` 列出所有 `{project, config_error}`，项目配置解析或读取失败时携带原始错误，其任务、其它项目及全局视图仍返回；健康项目 config_error=null。`project.get` 同样容错，坏配置时 config=null、config_error 为原始错误，其余字段保留。坏配置项目的任务 merge 投影为 null，避免推断未知授权；修复配置后恢复投影。容错仅用于展示，调度准入仍严格报告配置错误。`project.list` 仍不读配置；CLI `autome status` 在项目名旁显示「配置有误：<原文>」。
 
 `task.get`、`dashboard.get`、`project.get.tasks` 的任务投影包含 `merge: {authorized, authorized_by, holds_section, waiting_for, stale}`，终结任务为 null。authorized_by 为 user/project/behind/null，waiting_for 为任务 ID 或 null。stale 只在 Active AwaitMerge 且落后时为 `{behind, gated, repos: [{repo, base, behind}]}`；工作区 behind 为各成员落后数之和，gated 表示配了项目门禁或为 Bug。Git 读取失败记 warning 并返回 stale=null，不阻断列表，也不代表已确认最新。`status` / `ls` 显示授权、等待与过期状态，有门禁时提示「合并时会重新 rebase 并再跑一次门禁」，无门禁则提示先 rebase。task.get 与 dashboard.get 另带 config_warnings（后者按项目），status 打印配置警告。
 
@@ -457,6 +515,12 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 `task.get`、`project.get` 和 `dashboard.get` 的任务对象带 `after` 与 `blocked_by`，后者列出未完成依赖的编号、状态和阻塞原因；`dashboard.get` 的 `queued` 组按出队顺序排列。这里的 `blocked_by` 表示任务依赖，与 `task.changes` 中表示文件变更阻塞的同名字段不同。`task.convert` 不继承或改指依赖，依赖原任务者会继续等待已取消的原任务，需用户清空或改指。
 
 `task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
+
+`task.changes` 的文件项包含 `path`、`added`、`deleted`、`status`（`added|deleted|modified|renamed`）；改名另带 `from`，顶层与各仓库提供 `deleted_count`。Git 使用 `-M` 和 NUL 分隔，保留特殊路径与二进制零行数。分支清理后用记录的双亲合并提交第一父提交到合并提交的差异恢复清单，`merged: true`；工作区按 `merge.repo` 的各成员提交恢复。缺失或非合并提交返回 `available: false`。
+
+`events.since {after_seq?, limit?, subject?}`：subject 是账本 `subject_id`，任务事件含所属会话事件；项目会话按项目 ID 查询。先过滤再分页，`latest_seq` 始终为全账本游标；省略 subject 保留旧回包。浏览器读网关仍拒绝该方法，服务端可调用。
+
+`session.ended` 在收割与显式停止时记录一次，subject 与开始事件一致。载荷为 `{session_id, kind, round, end, exit_code, duration_ms, cost_usd}`；`end` 为 `exited|stopped|timed_out|crashed`，非零退出和失踪归崩溃。未知退出码、时长、花费为 null，收割先记录 usage 再读取指标。CLI `run --json` 原样输出，人读模式不增加输出或通知。
 
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
 
@@ -485,7 +549,7 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 ## 17. 风险与对策
 
-- **会话墙钟时长上限**。`[loop] session_minutes` 默认 120、至少 5 分钟，启动时冻结；旧会话按当前配置回退。tick 超限终止整个进程组，确认不了就保持运行、不重派；重试用尽才失败。电脑睡眠时间也计入，醒来可能立即超时。Onboarding 不登记会话、不受此上限约束；既有心跳兜底保持不变。
+- **会话墙钟时长上限**。`[loop] session_minutes` 默认 120、至少 5 分钟，启动时冻结；旧会话按当前配置回退。tick 超限终止整个进程组，确认不了就保持运行、不重派；重试用尽才失败。电脑睡眠时间也计入，醒来可能立即超时。Onboarding 同样登记会话并冻结上限，超时终止后只记录项目会话结束，不推进任务；既有心跳兜底保持不变。
 
 
 - **退出感知依赖包装脚本**。用户手动关闭终端标签会丢失退出标记。对策：pid 探活 + 日志 mtime 心跳，超过 10 分钟无心跳判崩溃。
@@ -516,3 +580,9 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 | 测试基础设施与 CI 配置 | `playbooks/`、`profiles/`、`skill-policies/`、capability broker |
 
 处置完成后更新 autome-v2 的 README 与 `docs/development/plan.md` 镜像，指向本文与需求文档。
+
+### 操作者备注交接
+
+`task.note` 在事件账本按序记 `task.note_added`；需求实现、Bug 定位及修复为收件轮。启动时 `session.started.notes` 固定本次编号集合，只有 Ok 收尾写 `task.note_delivered`，期间新来的备注留给下一轮。失败、超时和崩溃不标送达。
+未送达备注与越界补丁共用 `handoff_pending`，末次审计/复核、复盘及合并前门禁通过时补实现/修复轮。`AwaitMerge` 要显式 `--reopen`，保留合并预授权；Bug 预算不足拒绝 reopen。已开始合并只记备注并警告。停止和失败任务由 rerun 的下一收件轮消费。
+冻结审计模板含 `operator-notes` 标记才强制核对备注；审计启动固定待核对编号，通过关闭里程碑或集成复验后写 `task.notes_audited`。退回不确认，之后的审计仍列出。旧协议保持送达但不加强审计要求。

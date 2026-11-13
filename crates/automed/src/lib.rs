@@ -56,6 +56,7 @@ pub mod gate;
 pub mod gate_queue;
 pub mod git;
 pub mod guards;
+pub mod handoff;
 pub mod init;
 mod integration;
 pub mod ipc;
@@ -65,6 +66,8 @@ pub mod merge_after;
 pub mod merge_queue;
 pub mod protocol;
 pub mod scheduler;
+pub mod scope;
+
 pub mod setup;
 pub mod skills;
 pub mod store;

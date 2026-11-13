@@ -218,6 +218,9 @@ pub enum FailureReason {
     ImplBudget {
         limit: u32,
     },
+    TestFixLimit {
+        limit: u32,
+    },
     FixBudget {
         limit: u32,
     },
@@ -426,6 +429,7 @@ impl PendingDecisions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "trigger", rename_all = "snake_case")]
 pub enum Trigger {
+    ReopenForNote,
     SetupFailed {
         command: String,
         exit_code: i32,
@@ -435,6 +439,8 @@ pub enum Trigger {
         outcome: crate::bug_loop::BugSessionOutcome,
     },
     ReproDone {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paired: Option<crate::bug_loop::ReproPair>,
         head: String,
         command: String,
         exit_code: i32,
@@ -571,6 +577,9 @@ pub struct Context<'a> {
     /// design is approved.
     pub budget_n: Option<u32>,
     pub decisions: PendingDecisions,
+    /// Whether restored scope patches still need an implementation round.
+    pub handoff_pending: bool,
+    pub bug_test_defect: bool,
 }
 
 /// A side effect `automed` must perform as part of applying a transition.
@@ -670,6 +679,9 @@ pub struct Transition {
     pub consumes_decisions: bool,
     /// True only when this transition grants authorization after a behind merge.
     pub grants_merge_request: bool,
+    /// Event to persist atomically with this transition (Bug Loop only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_fix_event: Option<crate::bug_loop::TestFixEvent>,
 }
 
 impl Transition {
@@ -680,6 +692,7 @@ impl Transition {
             budget_n: None,
             consumes_decisions: false,
             grants_merge_request: false,
+            test_fix_event: None,
         }
     }
 
@@ -1193,7 +1206,11 @@ fn apply_inner(
                 Node::Audit => {
                     let budget = ctx.budget_n.unwrap_or(status.impl_round_limit);
                     if status.all_milestones_done() {
-                        Ok(after_the_loop(ctx.config))
+                        Ok(if ctx.handoff_pending {
+                            start_impl(ctx, None)
+                        } else {
+                            after_the_loop(ctx.config)
+                        })
                     } else if status.impl_round >= budget {
                         Ok(Transition::fail(
                             node,
@@ -1203,9 +1220,8 @@ fn apply_inner(
                         Ok(start_impl(ctx, None))
                     }
                 }
-                // The retro round produces `lessons.md` and nothing the
-                // transition table reads; whatever it concluded, the next
-                // step is the rebase.
+                // Restored retro patches must pass through implementation and audit.
+                Node::Retro if ctx.handoff_pending => Ok(start_impl(ctx, None)),
                 Node::Retro => Ok(Transition::active(
                     Node::Rebase,
                     Action::RunCoreStep { node: Node::Rebase },
@@ -1262,6 +1278,13 @@ fn apply_inner(
             ))
         }
 
+        (
+            TaskState::Active {
+                node: Node::AwaitMerge,
+            },
+            Trigger::ReopenForNote,
+        ) => Ok(start_impl(ctx, None)),
+
         // ---- Merge stopping point ----------------------------------------
         (
             TaskState::Active {
@@ -1288,6 +1311,9 @@ fn apply_inner(
                                 node: Node::MergeGate,
                             },
                         ));
+                    }
+                    if ctx.handoff_pending {
+                        return Ok(start_impl(ctx, None));
                     }
                     Ok(if merge_requested {
                         press_merge(ctx)
@@ -1374,6 +1400,9 @@ fn apply_inner(
             let node = *node;
             if node != *done || !node.is_gate() {
                 return Err(reject("门禁结果与当前节点不符"));
+            }
+            if node == Node::MergeGate && *outcome == GateOutcome::Passed && ctx.handoff_pending {
+                return Ok(start_impl(ctx, None));
             }
             if node == Node::MergeGate && *outcome == GateOutcome::Passed && merge_requested {
                 return Ok(press_merge(ctx));
@@ -2261,6 +2290,8 @@ mod tests {
 
     fn ctx<'a>(config: &'a ResolvedConfig) -> Context<'a> {
         Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config,
             budget_n: Some(25),
             decisions: PendingDecisions::default(),
@@ -2439,7 +2470,9 @@ mod tests {
     fn gate_quick_resolved_json_is_unchanged_without_quick() {
         let c = before_merge_config();
         let json = serde_json::to_string(&c).unwrap();
-        assert!(!json.contains("gate_quick"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("gate_quick").is_none());
+        assert_eq!(value["gate_quick_concurrency"], 1);
         let old: ResolvedConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(old.gate_quick, None);
         assert_eq!(serde_json::to_string(&old).unwrap(), json);
@@ -3230,6 +3263,8 @@ mod tests {
     fn approving_with_pending_decisions_runs_one_more_design_round() {
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config: &c,
             budget_n: None,
             decisions: PendingDecisions {
@@ -3259,6 +3294,8 @@ mod tests {
     /// A context with `included` Backlog items waiting to be absorbed.
     fn with_included(c: &ResolvedConfig, included: u32, budget: u32) -> Context<'_> {
         Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config: c,
             budget_n: Some(budget),
             decisions: PendingDecisions { included, ruled: 0 },
@@ -3384,6 +3421,8 @@ mod tests {
         // while the task sits here has no later round to be picked up by.
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config: &c,
             budget_n: Some(25),
             decisions: PendingDecisions {
@@ -3402,6 +3441,8 @@ mod tests {
     fn merging_with_only_ignored_items_proceeds_to_merge() {
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config: &c,
             budget_n: Some(25),
             decisions: PendingDecisions {
@@ -4195,6 +4236,182 @@ mod tests {
                 "任务尚未开始"
             );
         }
+    }
+
+    fn scope_patch_transition(
+        config: &ResolvedConfig,
+        node: Node,
+        pending: bool,
+        round: u32,
+        states: &[MilestoneState],
+    ) -> Transition {
+        let context = Context {
+            bug_test_defect: false,
+            handoff_pending: pending,
+            ..ctx(config)
+        };
+        let mut status = block(DocStatus::Implementing, states);
+        status.impl_round = round;
+        apply(&active(node), &ended(status), &context).unwrap()
+    }
+
+    fn assert_scope_patch_impl(t: Transition) {
+        assert_eq!(t.next, active(Node::Implement));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Impl,
+                inject: None
+            }
+        );
+    }
+
+    #[test]
+    fn scope_patch_last_audit_starts_implementation() {
+        assert_scope_patch_impl(scope_patch_transition(
+            &cfg(),
+            Node::Audit,
+            true,
+            1,
+            &[MilestoneState::Done],
+        ));
+    }
+
+    #[test]
+    fn scope_patch_last_audit_bypasses_spent_budget() {
+        for round in [25, 26, u32::MAX] {
+            assert_scope_patch_impl(scope_patch_transition(
+                &cfg(),
+                Node::Audit,
+                true,
+                round,
+                &[MilestoneState::Done],
+            ));
+        }
+    }
+
+    #[test]
+    fn scope_patch_last_audit_with_retro_disabled_starts_implementation() {
+        assert_scope_patch_impl(scope_patch_transition(
+            &cfg_without(Role::Retro),
+            Node::Audit,
+            true,
+            25,
+            &[MilestoneState::Done],
+        ));
+    }
+
+    #[test]
+    fn scope_patch_clean_audit_keeps_retro_or_rebase() {
+        let t = scope_patch_transition(&cfg(), Node::Audit, false, 25, &[MilestoneState::Done]);
+        assert_eq!(t.next, active(Node::Retro));
+        assert_eq!(
+            t.action,
+            Action::StartRole {
+                role: Role::Retro,
+                inject: None
+            }
+        );
+        let t = scope_patch_transition(
+            &cfg_without(Role::Retro),
+            Node::Audit,
+            false,
+            25,
+            &[MilestoneState::Done],
+        );
+        assert_eq!(t.next, active(Node::Rebase));
+        assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
+    }
+
+    #[test]
+    fn scope_patch_open_milestone_still_obeys_budget() {
+        for pending in [false, true] {
+            for round in [0, 24, 25, 26, u32::MAX] {
+                let t = scope_patch_transition(
+                    &cfg(),
+                    Node::Audit,
+                    pending,
+                    round,
+                    &[MilestoneState::Done, MilestoneState::Open],
+                );
+                if round < 25 {
+                    assert_scope_patch_impl(t);
+                } else {
+                    assert_eq!(
+                        t.next,
+                        TaskState::Failed {
+                            at: Node::Audit,
+                            reason: FailureReason::ImplBudget { limit: 25 }
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scope_patch_retro_starts_implementation() {
+        for round in [1, 25, u32::MAX] {
+            assert_scope_patch_impl(scope_patch_transition(
+                &cfg(),
+                Node::Retro,
+                true,
+                round,
+                &[MilestoneState::Done],
+            ));
+        }
+    }
+
+    #[test]
+    fn scope_patch_clean_retro_rebases() {
+        let t = scope_patch_transition(&cfg(), Node::Retro, false, 25, &[MilestoneState::Done]);
+        assert_eq!(t.next, active(Node::Rebase));
+        assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
+    }
+    #[test]
+    fn operator_note_feature_merge_edges_return_to_impl_with_authorization() {
+        let c = cfg();
+        for pending in [false, true] {
+            let mut context = ctx(&c);
+            context.handoff_pending = pending;
+            for requested in [false, true] {
+                let t = apply_with_merge_request(
+                    &active(Node::MergeGate),
+                    &gate_done(Node::MergeGate, GateOutcome::Passed, None),
+                    &context,
+                    requested,
+                )
+                .unwrap();
+                let mut no_gate = c.clone();
+                no_gate.gate = None;
+                let mut rebase_context = ctx(&no_gate);
+                rebase_context.handoff_pending = pending;
+                let rebased = apply_with_merge_request(
+                    &active(Node::Rebase),
+                    &Trigger::CoreStepDone {
+                        node: Node::Rebase,
+                        result: CoreStepResult::Ok,
+                    },
+                    &rebase_context,
+                    requested,
+                )
+                .unwrap();
+                assert_eq!(rebased.next.node(), t.next.node());
+                assert_eq!(
+                    t.next.node(),
+                    Some(if pending {
+                        Node::Implement
+                    } else if requested {
+                        Node::Merging
+                    } else {
+                        Node::AwaitMerge
+                    })
+                );
+            }
+        }
+        let t = apply(&active(Node::AwaitMerge), &Trigger::ReopenForNote, &ctx(&c)).unwrap();
+        assert_eq!(t.next, active(Node::Implement));
+        assert!(apply(&active(Node::Merging), &Trigger::ReopenForNote, &ctx(&c)).is_err());
     }
 }
 

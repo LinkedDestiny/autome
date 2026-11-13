@@ -19,10 +19,11 @@
 //! - A loop round with no evidence file has left nothing for the next round to
 //!   read, and the audit has nothing to check against.
 //!
-//! **The core does not rewrite a session's document.** It would be easy to
+//! **The core does not rewrite a session's document except for evidence pointers.** It would be easy to
 //! flip the cell back and carry on, and it would leave the commit history and
 //! the session log saying different things about what happened. The task stops
-//! and a person looks.
+//! and a person looks. Closed evidence pointers have a narrow exception: the
+//! scheduler restores only those lines in a recorded kernel commit.
 
 use autome_domain::role::Role;
 use autome_domain::status_block::{MilestoneState, StatusBlock};
@@ -81,6 +82,7 @@ pub struct Snapshot {
 /// The selected integration audit and whether it wrote its assigned evidence.
 #[derive(Debug)]
 pub struct IntegrationAudit {
+    pub legacy: bool,
     pub impl_round: u32,
     pub evidence: String,
     pub summary: String,
@@ -90,6 +92,7 @@ pub struct IntegrationAudit {
 /// Everything a check needs, gathered by the caller so this module does no I/O
 /// and stays testable without a repository.
 pub struct Round<'a> {
+    pub protocol_version: Option<u32>,
     pub integration: Option<&'a IntegrationAudit>,
     pub design_before: Option<&'a str>,
     pub design_after: Option<&'a str>,
@@ -167,7 +170,11 @@ fn integration_audit_concluded(
     let unchanged = round
         .before
         .is_some_and(|before| crate::task_metrics::snapshot(round.status) == before.milestones);
-    Some(Finding::error(
+    Some((if integration.legacy {
+        Finding::warn
+    } else {
+        Finding::error
+    })(
         if unchanged {
             "audit_made_no_progress"
         } else {
@@ -180,11 +187,11 @@ fn integration_audit_concluded(
     ))
 }
 
-fn evidence_pointers(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
-    let mut pointers = std::collections::BTreeMap::<String, Vec<String>>::new();
+fn pointer_lines(text: &str) -> Vec<(usize, String, String)> {
+    let mut pointers = Vec::new();
     let mut owner = None;
     let mut fence: Option<(char, usize)> = None;
-    for line in text.lines().map(str::trim) {
+    for (index, line) in text.lines().map(str::trim).enumerate() {
         let marker = line.chars().next().unwrap_or(' ');
         let count = line.chars().take_while(|c| *c == marker).count();
         if let Some((open, len)) = fence {
@@ -213,13 +220,74 @@ fn evidence_pointers(text: &str) -> std::collections::BTreeMap<String, Vec<Strin
         if pointer.starts_with("最新证据")
             && let Some(id) = &owner
         {
-            pointers
-                .entry(id.clone())
-                .or_default()
-                .push(pointer.to_string());
+            pointers.push((index, id.clone(), pointer.to_string()));
         }
     }
     pointers
+}
+
+fn evidence_pointers(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut pointers = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (_, id, pointer) in pointer_lines(text) {
+        pointers.entry(id).or_default().push(pointer);
+    }
+    pointers
+}
+
+pub(crate) fn retargeted_closed_milestones(
+    before: &str,
+    after: &str,
+    milestones: &[(String, MilestoneState)],
+) -> Vec<String> {
+    let old = evidence_pointers(before);
+    let new = evidence_pointers(after);
+    milestones
+        .iter()
+        .filter(|(id, state)| {
+            *state == MilestoneState::Done
+                && new.get(id).into_iter().flatten().any(|line| {
+                    line.contains("-impl.md")
+                        && !old.get(id).is_some_and(|lines| lines.contains(line))
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Replace only offending milestones' pointer lines, retaining every other byte.
+/// Return None when there is no identified repair; never guess missing sections.
+pub(crate) fn restore_closed_pointers(
+    before: &str,
+    after: &str,
+    milestones: &[(String, MilestoneState)],
+) -> Option<String> {
+    let changed = retargeted_closed_milestones(before, after, milestones);
+    if changed.is_empty() {
+        return None;
+    }
+    let old_lines: Vec<_> = before.split_inclusive('\n').collect();
+    let old = pointer_lines(before);
+    let new = pointer_lines(after);
+    let mut inserted = std::collections::BTreeSet::new();
+    let mut result = String::new();
+    for (index, line) in after.split_inclusive('\n').enumerate() {
+        if let Some((_, id, _)) = new
+            .iter()
+            .find(|(at, id, _)| *at == index && changed.contains(id))
+        {
+            if inserted.insert(id) {
+                for (at, _, _) in old.iter().filter(|(_, owner, _)| owner == id) {
+                    result.push_str(old_lines[*at]);
+                    if !old_lines[*at].ends_with('\n') && line.ends_with('\n') {
+                        result.push('\n');
+                    }
+                }
+            }
+        } else {
+            result.push_str(line);
+        }
+    }
+    Some(result)
 }
 
 fn no_retargeting_closed_evidence(round: &Round<'_>) -> Option<Finding> {
@@ -243,7 +311,7 @@ fn no_retargeting_closed_evidence(round: &Round<'_>) -> Option<Finding> {
     Some(Finding::error(
         "impl_closed_milestone",
         format!(
-            "实现轮把已完成里程碑验收契约的「最新证据」改指向了实现证据：{}。已完成里程碑的最新证据是审计复验留下的结论，实现证据替代不了它。本轮证据写进自己的 M-xx-r{}-impl.md 即可；集成改动由紧随其后的集成复验审计。Autome 不会替你改回去。",
+            "实现轮把已完成里程碑验收契约的「最新证据」改指向了实现证据：{}。已完成里程碑的最新证据是审计复验留下的结论，实现证据替代不了它。本轮证据写进自己的 M-xx-r{}-impl.md 即可；集成改动由紧随其后的集成复验审计。自动还原未完成，请检查文档、工作区与提交错误。",
             changed.join("；"),
             round.status.impl_round
         ),
@@ -531,6 +599,7 @@ mod tests {
         evidence: &[&str],
     ) -> Round<'a> {
         Round {
+            protocol_version: None,
             role,
             status,
             before: Some(before),
@@ -562,6 +631,7 @@ mod tests {
             )],
         );
         let integration = IntegrationAudit {
+            legacy: false,
             impl_round: 3,
             evidence: "M-01-r3-audit.md".into(),
             summary: "rebase 冲突 abc1234..def5678".into(),
@@ -664,6 +734,91 @@ mod tests {
     #[test]
     fn closed_pointer_without_a_baseline_is_not_guessed() {
         assert!(pointer_findings(None, "### M-01\n最新证据：a-impl.md").is_empty());
+    }
+
+    #[test]
+    fn closed_pointer_restore_rewrites_only_the_pointer_lines() {
+        let milestones = vec![
+            ("M-01".into(), MilestoneState::Done),
+            ("M-02".into(), MilestoneState::Open),
+        ];
+        let old = "# title\nstatus: old\n### M-01\n  - 最新证据：old-audit.md\ntext old\n### M-02\n最新证据：open-audit.md\n";
+        let new = "# title\nstatus: new\n### M-01\n* 最新证据：new-impl.md\ntext new\n### M-02\n最新证据：open-impl.md\n";
+        assert_eq!(
+            restore_closed_pointers(old, new, &milestones).unwrap(),
+            new.replace("* 最新证据：new-impl.md", "  - 最新证据：old-audit.md")
+        );
+        assert!(restore_closed_pointers(old, old, &milestones).is_none());
+        assert!(restore_closed_pointers(old, "unrecognizable", &milestones).is_none());
+        assert!(restore_closed_pointers("", "", &milestones).is_none());
+    }
+
+    #[test]
+    fn closed_pointer_restore_handles_an_added_line_and_fences() {
+        let milestones = vec![("M-01".into(), MilestoneState::Done)];
+        for newline in ["\n", "\r\n"] {
+            let old = "### M-01\n````md\n```\n最新证据：fenced-impl.md\n````\n~~~\n最新证据：tilde-impl.md\n~~~\nbody\n".replace('\n', newline);
+            let new = format!(
+                "{old}- 最新证据：added-impl.md{newline}* 最新证据：another-impl.md{newline}"
+            );
+            assert_eq!(
+                restore_closed_pointers(&old, &new, &milestones).unwrap(),
+                old
+            );
+        }
+        assert_eq!(
+            restore_closed_pointers(
+                "### M-01\n最新证据：old-audit.md",
+                "### M-01\n最新证据：new-impl.md",
+                &milestones
+            )
+            .unwrap(),
+            "### M-01\n最新证据：old-audit.md"
+        );
+    }
+
+    #[test]
+    fn legacy_pointer_integration_guard_warns_for_both_missing_evidence_branches() {
+        for reopened in [false, true] {
+            for touched in [false, true] {
+                let before = snapshot(&[("M-01", MilestoneState::Done)], 4, 20_000);
+                let s = status(
+                    3,
+                    &[(
+                        "M-01",
+                        if reopened {
+                            MilestoneState::Open
+                        } else {
+                            MilestoneState::Done
+                        },
+                    )],
+                );
+                let integration = IntegrationAudit {
+                    legacy: true,
+                    impl_round: 3,
+                    evidence: "M-01-r3-audit.md".into(),
+                    summary: "legacy range".into(),
+                    evidence_touched: touched,
+                };
+                let mut r = round(Role::Audit, &s, &before, &[]);
+                r.integration = Some(&integration);
+                let f = integration_audit_concluded(&r, &integration);
+                if touched {
+                    assert!(f.is_none());
+                } else {
+                    let f = f.unwrap();
+                    assert_eq!(f.level, Level::Warning);
+                    assert_eq!(
+                        f.code,
+                        if reopened {
+                            "evidence_missing"
+                        } else {
+                            "audit_made_no_progress"
+                        }
+                    );
+                }
+            }
+        }
     }
 
     fn codes(findings: &[Finding]) -> Vec<&str> {
@@ -808,6 +963,8 @@ mod tests {
             },
         );
         let ctx = Context {
+            bug_test_defect: false,
+            handoff_pending: false,
             config: &config,
             budget_n: Some(35),
             decisions: PendingDecisions::default(),
@@ -1047,6 +1204,7 @@ mod tests {
     fn the_first_round_has_nothing_to_compare_against_and_is_not_penalised() {
         let s = status(1, &[("M-01", MilestoneState::Pending)]);
         let r = Round {
+            protocol_version: None,
             role: Role::Impl,
             status: &s,
             before: None,

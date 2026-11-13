@@ -32,6 +32,7 @@ pub(crate) fn audit_guard(
     let evidence = integration["evidence"].as_str()?;
     let current = evidence_stamp(&evidence_dir.join(evidence));
     Some(guards::IntegrationAudit {
+        legacy: integration["legacy"].as_bool().unwrap_or(false),
         impl_round: integration["impl_round"].as_u64()?.try_into().ok()?,
         evidence: evidence.to_owned(),
         summary: integration["summary"].as_str()?.to_owned(),
@@ -47,12 +48,9 @@ pub(crate) fn integration_for_audit(
     template: &str,
     evidence_dir: &Path,
 ) -> Result<Option<Value>> {
-    if !template
+    let legacy = !template
         .lines()
-        .any(|line| line == "<!-- integration-audit -->")
-    {
-        return Ok(None);
-    }
+        .any(|line| line == "<!-- integration-audit -->");
     let Some(range) = store
         .last_event(task, "integration.range")
         .map_err(|e| e.to_string())?
@@ -113,6 +111,8 @@ pub(crate) fn integration_for_audit(
         Some("rebase_conflict") => "rebase 冲突",
         Some("gate_failed") => "合并前门禁失败",
         Some("decisions") => "用户表态",
+        Some("scope_patch") => "越界补丁交接",
+        Some("operator_note") => "操作者备注",
         _ => "没有注入：手动重跑或续跑",
     };
     let mut summary = vec![trigger.to_string()];
@@ -135,14 +135,18 @@ pub(crate) fn integration_for_audit(
             ));
         }
     }
-    Ok(Some(json!({
+    let mut payload = json!({
         "impl_session": first_impl,
         "impl_round": range["impl_round"],
         "evidence": evidence,
         "summary": summary.join("；"),
         "range": range,
         "evidence_stamp": evidence_stamp(&evidence_dir.join(evidence)),
-    })))
+    });
+    if legacy {
+        payload["legacy"] = json!(true);
+    }
+    Ok(Some(payload))
 }
 
 fn read(repo: &Path, args: &[&str]) -> Result<String> {
@@ -228,14 +232,7 @@ pub(crate) fn range(
     if repos.is_empty() {
         return Ok(None);
     }
-    let trigger = match inject {
-        Some(Inject::RebaseConflict { files }) => json!({"kind":"rebase_conflict", "files":files}),
-        Some(Inject::GateFailed { command, tail, .. }) => {
-            json!({"kind":"gate_failed", "command":command, "tail":tail})
-        }
-        Some(Inject::Decisions) => json!({"kind":"decisions"}),
-        _ => json!({"kind":"none"}),
-    };
+    let trigger = integration_trigger(inject, &attempt);
     Ok(Some(
         json!({"session_id": attempt["session_id"], "impl_round":status.impl_round,
         "evidence":format!("{}-r{}-audit.md", status.milestones.last().unwrap().id, status.impl_round),
@@ -440,6 +437,37 @@ fn repo_range(
     )
 }
 
+fn integration_trigger(inject: Option<&Inject>, attempt: &Value) -> Value {
+    match inject {
+        Some(Inject::RebaseConflict { files }) => json!({"kind":"rebase_conflict", "files":files}),
+        Some(Inject::GateFailed { command, tail, .. }) => {
+            json!({"kind":"gate_failed", "command":command, "tail":tail})
+        }
+        Some(Inject::Decisions) => json!({"kind":"decisions"}),
+        _ if attempt["scope_patches"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty()) =>
+        {
+            json!({"kind":"scope_patch"})
+        }
+        _ if attempt["notes"].as_array().is_some_and(|n| !n.is_empty()) => {
+            json!({"kind":"operator_note"})
+        }
+        _ => json!({"kind":"none"}),
+    }
+}
+
+#[test]
+fn handoff_integration_trigger_names_the_scope_patch() {
+    assert_eq!(
+        integration_trigger(None, &json!({"scope_patches":["patch"]}))["kind"],
+        "scope_patch"
+    );
+    for attempt in [json!({}), json!({"scope_patches":[]})] {
+        assert_eq!(integration_trigger(None, &attempt)["kind"], "none");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,7 +604,7 @@ mod tests {
         );
     }
     #[test]
-    fn integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit() {
+    fn legacy_pointer_integration_payload_is_legacy_when_the_marker_is_missing() {
         let w = World::new();
         assert!(
             integration_for_audit(
@@ -588,6 +616,11 @@ mod tests {
             .unwrap()
             .is_none()
         );
+        assert!(
+            integration_for_audit(&w.store, "T", "old audit", &w.slot.worktree)
+                .unwrap()
+                .is_none()
+        );
         audit_fixture(&w);
         for template in [
             "",
@@ -598,9 +631,11 @@ mod tests {
             assert!(
                 integration_for_audit(&w.store, "T", template, &w.slot.worktree)
                     .unwrap()
-                    .is_none()
+                    .unwrap()["legacy"]
+                    == true
             );
         }
+        assert!(select_audit(&w).get("legacy").is_none());
         assert_eq!(
             select_audit(&w)["summary"],
             "rebase 冲突； abcdef0..1234567，1 个提交"

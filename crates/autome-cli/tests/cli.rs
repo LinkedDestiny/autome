@@ -163,6 +163,7 @@ fn visible_status_session(tag: &str, timed_out: bool) -> String {
     let store = automed::store::Store::open(&db).unwrap();
     store
         .insert_session(&Session {
+            project_id: None,
             id: "visible-session".into(),
             task_id: id.into(),
             kind: SessionKind::Role { role: Role::Impl },
@@ -232,6 +233,7 @@ fn status_shows_latest_five_sessions_in_chronological_order() {
     for n in [4, 1, 7, 2, 6, 3, 5] {
         store
             .insert_session(&Session {
+                project_id: None,
                 id: format!("history-{n}"),
                 task_id: id.into(),
                 kind: SessionKind::Role { role: Role::Impl },
@@ -698,6 +700,72 @@ fn bug_loop_reply_returns_a_bug_to_locate_with_the_text_verbatim() {
     assert!(automed::git::is_clean(&s.repo.join(format!(".worktree/{slug}"))).unwrap());
     let prompt = std::fs::read_to_string(s.repo.join(".autome/fake/2.prompt")).unwrap();
     assert!(prompt.contains("bug-reply-replies.md"));
+}
+
+#[test]
+fn bug_loop_reply_after_failure() {
+    bug_reply_after_interruption(false);
+}
+
+#[test]
+fn bug_loop_reply_after_stop() {
+    bug_reply_after_interruption(true);
+}
+
+fn bug_reply_after_interruption(stopped: bool) {
+    let slug = if stopped {
+        "bug-reply-stop"
+    } else {
+        "bug-reply-failure"
+    };
+    let s = Sandbox::new(slug);
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    std::fs::write(s.repo.join(".autome/fake/1.sh"), "exit 0\n").unwrap();
+    let created = s.json(&["task", "new", slug, "--kind", "bug"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    // Missing the required artifact fails deterministically without crash retries.
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    let failed = s.task_state(id);
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["at"], "locate");
+    if stopped {
+        std::fs::write(s.repo.join(".autome/fake/2.sh"), "exec sleep 60\n").unwrap();
+        s.ok(&["rerun", id, "locate"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !s.repo.join(".autome/fake/2.prompt").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rerun did not start session 2"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        s.ok(&["stop", id]);
+        let state = s.task_state(id);
+        assert_eq!(state["state"], "stopped");
+        assert_eq!(state["at"], "locate");
+    }
+    let reply_session = if stopped { 3 } else { 2 };
+    bug_wait_step(&s, reply_session, slug, "无法复现");
+    let text = "产品决定：保留  双空格\n{request} 与中文原文。\n";
+    s.ok(&["reply", id, text]);
+    assert_eq!(s.task_state(id)["node"], "locate");
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(id)["node"], "await_info");
+    let worktree = s.repo.join(format!(".worktree/{slug}"));
+    let replies =
+        std::fs::read_to_string(worktree.join(format!("docs/{slug}/{slug}-replies.md"))).unwrap();
+    assert!(replies.ends_with(&format!("\n\n{text}\n\n")), "{replies}");
+    assert_eq!(replies.matches(text).count(), 1);
+    assert!(automed::git::is_clean(&worktree).unwrap());
+    let prompt =
+        std::fs::read_to_string(s.repo.join(format!(".autome/fake/{reply_session}.prompt")))
+            .unwrap();
+    assert!(prompt.contains(&format!("{slug}-replies.md")), "{prompt}");
 }
 
 #[test]
@@ -1297,6 +1365,7 @@ fn cost_fixture(tag: &str) -> (Sandbox, String) {
         let running = n == 3;
         store
             .insert_session(&Session {
+                project_id: None,
                 id: format!("cost-{n}"),
                 task_id: id.clone(),
                 kind: SessionKind::Role { role: Role::Impl },
@@ -1992,4 +2061,131 @@ fn kernel_guard_test_override_cannot_raise_the_id() {
         assert!(String::from_utf8_lossy(&out.stdout).contains(automed::build_id::BUILD_ID));
         assert!(String::from_utf8_lossy(&out.stderr).contains("忽略 AUTOME_TEST_BUILD_ID"));
     }
+}
+
+#[test]
+fn operator_note_cli_records_and_status_displays_verbatim() {
+    let s = Sandbox::new("operator-note");
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    let created = s.json(&["task", "new", "note target", "--draft"]);
+    let id = created["task"]["id"].as_str().unwrap();
+    let file = s.root.join("note.txt");
+    std::fs::write(&file, " 原文\n第二行 ").unwrap();
+    let out = s.json(&["note", id, "--file", file.to_str().unwrap()]);
+    assert_eq!(out["n"], 1);
+    s.ok(&["note", id, "second"]);
+    let got = s.json(&["status", id]);
+    assert_eq!(got["notes"][0]["text"], " 原文\n第二行 ");
+    assert_eq!(got["notes"][1]["n"], 2);
+    assert_eq!(got["task"]["state"]["state"], "draft");
+    let human = s.ok(&["status", id]);
+    assert!(human.contains("原文\n第二行") && human.contains("未送达"));
+}
+
+#[test]
+fn task_documents_status_shows_milestones_after_merge_and_bug_doc_path() {
+    let s = Sandbox::new("documents-status");
+    let request = "add cart checkout";
+    let slug = autome_domain::project::slugify(request);
+    // intake, design, review, adjudicate, implement, audit, retro — the same
+    // seven rounds as the core's happy path.
+    s.step(1, &slug, &doc("设计中", 0, 0, &[]));
+    s.step(2, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(3, &slug, &doc("设计中", 1, 0, &[]));
+    s.step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    s.step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    s.step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    s.retro(7, &slug);
+
+    let repo = s.repo.to_str().unwrap();
+    s.ok(&["project", "add", repo, "--skip-onboarding"]);
+    assert!(s.ok(&["project", "ls"]).contains(repo));
+
+    // No `-p`: the working directory names the project.
+    let created = s.json(&["task", "new", request]);
+    let id = created["task"]["id"].as_str().unwrap().to_string();
+
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(&id)["node"], "await_design_approval");
+    // The dashboard view tells the person what to type next.
+    assert!(s.ok(&["status"]).contains(&format!("autome approve {id}")));
+
+    s.ok(&["approve", &slug]); // a slug works as well as an id
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+    assert_eq!(s.task_state(&id)["node"], "await_merge");
+
+    let before = head(&s.repo);
+    s.ok(&["merge", &id]);
+    s.ok(&["run", "--until-idle", "--interval", "0.05"]);
+
+    assert_eq!(s.task_state(&id)["state"], "done");
+    assert_ne!(head(&s.repo), before, "the default branch moved");
+    assert!(s.repo.join(format!("docs/{slug}/{slug}.md")).exists());
+    // Every round's log is reachable from the command line.
+    s.ok(&["logs", &id]);
+    let status = s.ok(&["status", &id]);
+    assert!(status.contains("M-01 已完成"), "{status}");
+    assert!(
+        s.json(&["status", &id])["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["source"] == "default_branch")
+    );
+    let created = s.json(&["task", "new", "document path", "--kind", "bug", "--draft"]);
+    let bug_id = created["task"]["id"].as_str().unwrap();
+    let bug_slug = created["task"]["slug"].as_str().unwrap();
+    let dir = s.repo.join(format!("docs/{bug_slug}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bug_path = dir.join(format!("{bug_slug}-bug.md"));
+    std::fs::write(
+        &bug_path,
+        "status: 已定位\nfix-round: 1/5\n复现命令: false\n根因: test\n复核: 通过\n",
+    )
+    .unwrap();
+    automed::git::commit_paths(&s.repo, &[&format!("docs/{bug_slug}")], "bug document").unwrap();
+    let status = s.ok(&["status", bug_id]);
+    assert!(
+        status.contains(bug_path.canonicalize().unwrap().to_str().unwrap()),
+        "{status}"
+    );
+}
+
+#[test]
+fn dashboard_tolerates_broken_config_in_autome_status() {
+    let sb = Sandbox::new("dashboard-bad-config");
+    sb.ok(&["project", "add", sb.repo.to_str().unwrap()]);
+    let good = sb.root.join("healthy");
+    std::fs::create_dir_all(&good).unwrap();
+    sb.ok(&["project", "add", good.to_str().unwrap()]);
+    sb.ok(&[
+        "task",
+        "new",
+        "healthy-task",
+        "--project",
+        good.to_str().unwrap(),
+    ]);
+    std::fs::write(
+        sb.repo.join(".autome/config.toml"),
+        "[gate]\nconcurrency = 0\n",
+    )
+    .unwrap();
+    let out = sb.ok(&["status"]);
+    assert!(out.contains("healthy-task"), "{out}");
+    assert!(out.contains("配置有误："), "{out}");
+    assert!(out.contains("concurrency"), "{out}");
+    let got = sb.json(&["status"]);
+    assert_eq!(got["projects"].as_array().unwrap().len(), 2);
+    assert!(
+        got["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["config_error"].is_null())
+    );
 }
