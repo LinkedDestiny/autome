@@ -43,6 +43,7 @@
 //!   changes did what they said they would.
 
 pub mod brief;
+pub mod build_id;
 pub mod config_io;
 pub mod curation;
 pub mod dispatch;

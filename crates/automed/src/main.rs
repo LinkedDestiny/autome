@@ -52,7 +52,7 @@ fn main() {
             return;
         }
         Some("--version" | "-V") => {
-            println!("automed {}", automed::entry::VERSION);
+            println!("{}", automed::entry::version_line("automed"));
             return;
         }
         _ => {}
@@ -77,7 +77,11 @@ fn main() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let mut ctx = Ctx::new(store, autome_home, home);
 
-    tracing::info!(db_path, "automed core starting, reading commands on stdin");
+    tracing::info!(
+        db_path,
+        build_id = automed::build_id::BUILD_ID,
+        "automed core starting, reading commands on stdin"
+    );
 
     let stdin = io::stdin();
     let mut stdin_lock = stdin.lock();

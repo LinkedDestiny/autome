@@ -120,7 +120,7 @@ fn run(argv: &[String]) -> Result<()> {
         return Ok(());
     }
     if a.has("--version") || verb == Some("version") {
-        println!("autome {}", automed::entry::VERSION);
+        println!("{}", automed::entry::version_line("autome"));
         return Ok(());
     }
     if verb.is_none() {

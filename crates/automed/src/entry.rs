@@ -86,3 +86,8 @@ pub fn protocol_eval_main(args: &[String]) -> i32 {
 
 /// The version both binaries report.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The CLI and standalone kernel share one compiled identity.
+pub fn version_line(name: &str) -> String {
+    format!("{name} {VERSION} ({})", crate::build_id::BUILD_ID)
+}

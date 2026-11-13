@@ -1627,3 +1627,66 @@ fn deps_cli_status() {
         .unwrap();
     assert!(s.ok(&["status", "T-2"]).contains("依赖      T-1（已完成）"));
 }
+
+#[test]
+fn build_id_version_line_matches_head() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env("TZ", "UTC")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let count: u64 = git(&["rev-list", "--count", "HEAD"]).parse().unwrap();
+    let date = git(&[
+        "show",
+        "-s",
+        "--date=format-local:%Y%m%dT%H%M%SZ",
+        "--format=%cd",
+        "HEAD",
+    ]);
+    let sha = git(&["rev-parse", "--short=12", "HEAD"]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_autome"))
+        .arg("--version")
+        .env(
+            "AUTOME_HOME",
+            std::env::temp_dir().join(format!("autome-version-{}", std::process::id())),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        format!(
+            "autome {} ({count:07}-{date}-{sha})",
+            automed::entry::VERSION
+        )
+    );
+}
+
+#[test]
+fn build_id_cli_and_kernel_agree() {
+    let cli = std::path::Path::new(env!("CARGO_BIN_EXE_autome"));
+    let version = |path: &std::path::Path| {
+        let out = std::process::Command::new(path)
+            .arg("--version")
+            .env(
+                "AUTOME_HOME",
+                std::env::temp_dir().join(format!("autome-version-{}", std::process::id())),
+            )
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split_once(' ')
+            .unwrap()
+            .1
+            .to_owned()
+    };
+    assert_eq!(version(cli), version(&cli.with_file_name("automed")));
+}
