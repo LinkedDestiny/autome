@@ -4833,7 +4833,9 @@ fn the_merge_panel_offers_the_merge_when_only_main_has_moved() {
     w.settle();
     assert_eq!(w.state(&id), "done");
     let changes = w.call("task.changes", json!({"task_id":id}));
-    assert_eq!(ok(&changes)["available"], false);
+    assert_eq!(ok(&changes)["available"], true);
+    assert_eq!(ok(&changes)["merged"], true);
+    assert!(!ok(&changes)["files"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -11611,9 +11613,21 @@ fn legacy_pointer_scenario(version: u32, dirty: bool) {
         );
     }
     w.retro_step(10, &slug);
-    let id = resume_setup(&mut w, request);
+    // Freeze the legacy protocol while parked at approval. resume_setup also
+    // launches step 5, whose git add/commit would race this fixture's commit.
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    let id = create_task(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
     let wt = w.repo.join(format!(".worktree/{slug}"));
     let template = format!("docs/{slug}/protocol/prompts/audit.md");
+    assert!(
+        w.ctx.store.running_session(&id).unwrap().is_none(),
+        "freeze the legacy template before launching a session that commits docs"
+    );
     if version < 8 {
         std::fs::write(
             wt.join(&template),
@@ -11629,6 +11643,7 @@ fn legacy_pointer_scenario(version: u32, dirty: bool) {
             rusqlite::params![format!("protocol/v{version}@fixture"), id],
         )
         .unwrap();
+    ok(&w.call("task.approve", json!({"task_id":id})));
     w.settle();
     if dirty {
         assert_eq!(w.state(&id), "failed");
