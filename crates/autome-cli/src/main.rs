@@ -66,7 +66,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   queue move <任务> --before X | --after X | --top
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
-  reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
+  reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定、失败或已停止时用；需求任务等同 reject
   merge <任务> [--cancel]        合并到默认分支；未到卡点时预先同意，--cancel 撤销
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
@@ -1534,7 +1534,10 @@ mod bug_usage_tests {
     #[test]
     fn bug_loop_usage_no_longer_says_reply_equals_reject() {
         assert!(!super::USAGE.contains("Bug Loop 上线前"));
-        assert!(super::USAGE.contains("Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject"));
+        assert!(
+            super::USAGE
+                .contains("Bug 任务在等你补充信息/等你决定、失败或已停止时用；需求任务等同 reject")
+        );
     }
 }
 

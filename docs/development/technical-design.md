@@ -221,6 +221,8 @@ automed 解析设计文档头部的固定字段：`status`、`design-round`、`i
 
 ### 5.6 Bug Loop（kind = bug）
 
+失败或已停止的 Bug 任务接受 `autome reply`，补充文字原样追加到 replies 文档并回到定位轮；满槽时按现有准入排队。已用修复轮次保留，上限设为 `max(原预算或配置 fix_rounds, 已用轮次 + 配置 fix_rounds)`，加法溢出拒绝并提示新建任务。`AwaitInfo` / `NotABug` 的 reply 不改变预算，需求任务的 reply 仍等同 reject。
+
 任务类型 `kind` 为 `feature`（默认）或 `bug`。只有 kind 为 bug，且已记过 `bug.loop_started` 或仍处于 `Draft` / `Queued` 的任务走 Bug Loop；需求任务和已经停在需求节点、尚无该事件的旧 bug 任务继续走 §5.3。Bug 任务在 `Start` 或分到槽位时要求审计角色开启，否则拒绝「Bug 任务需要独立复核，请启用审计角色后启动」。出处：`crates/autome-domain/src/task.rs` 的 `TaskKind`；`crates/autome-domain/src/bug_loop.rs` 的 `uses_bug_loop`、`apply_for`、`bug_loop_legacy_bug_tasks_already_in_feature_nodes_keep_the_feature_table`。
 
 | 节点 | 线上名 | 界面标签 | 执行方 | 占槽位 |

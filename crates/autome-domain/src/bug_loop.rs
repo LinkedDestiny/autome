@@ -215,6 +215,17 @@ pub fn apply_for(
             }
             Ok(session(step, None, ctx))
         }
+        (TaskState::Failed { .. } | TaskState::Stopped { .. }, Trigger::Reply { info }) => {
+            if info.trim().is_empty() {
+                return Err(rejected("补充信息不能为空"));
+            }
+            let limit = progress
+                .fix_round
+                .checked_add(ctx.config.bug.fix_rounds)
+                .ok_or_else(|| rejected("修复轮次预算溢出，请用 autome task new 新建 Bug 任务"))?
+                .max(ctx.budget_n.unwrap_or(ctx.config.bug.fix_rounds));
+            Ok(session(BugStep::Locate, None, ctx).with_budget(limit))
+        }
         (
             TaskState::Active {
                 node: Node::AwaitInfo | Node::NotABug,
@@ -226,6 +237,20 @@ pub fn apply_for(
             }
             Ok(session(BugStep::Locate, None, ctx))
         }
+        (_, Trigger::Reply { .. }) => Err(rejected(match state {
+            TaskState::Draft => "Bug 任务尚未开始，请先用 autome task start <任务>",
+            TaskState::Queued | TaskState::Requeued { .. } => {
+                "Bug 任务正在排队，请用 autome status <任务> 查看进度，等待定位结果后再补充信息"
+            }
+            TaskState::Paused { .. } => {
+                "Bug 任务已暂停，请用 autome resume <任务> 恢复，或用 autome stop <任务> 停止后再 reply"
+            }
+            TaskState::Done => "Bug 任务已完成，请用 autome task new --kind bug 新建任务",
+            TaskState::Cancelled => "Bug 任务已取消，请用 autome task new --kind bug 新建任务",
+            _ => {
+                "Bug 任务正在处理，请用 autome status <任务> 查看进度，或用 autome stop <任务> 停止后再 reply"
+            }
+        })),
         (
             TaskState::Active {
                 node: node @ (Node::Locate | Node::Fix | Node::FixReview),
@@ -1723,7 +1748,14 @@ mod tests {
                             BugProgress::default(),
                             requested
                         ),
-                        apply_with_merge_request(&active(node), &trigger, &context, requested)
+                        if matches!(trigger, Trigger::Reply { .. }) {
+                            // Reply is still rejected, now with Bug-specific recovery guidance.
+                            Err(rejected(
+                                "Bug 任务正在处理，请用 autome status <任务> 查看进度，或用 autome stop <任务> 停止后再 reply",
+                            ))
+                        } else {
+                            apply_with_merge_request(&active(node), &trigger, &context, requested)
+                        }
                     );
                 }
             }
