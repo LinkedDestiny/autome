@@ -168,3 +168,16 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-merge-progress li { padding: 8px; border-radius: var(--animal-radius-sm); }
 .task-merge-progress .is-complete { color: var(--animal-text-muted); }
 .task-delete-warning { border-left: 3px solid var(--animal-error-active); padding: 12px; font-weight: 800; }
+.sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 16px; flex-shrink: 0; }
+.add-project { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 24px; }
+.add-project h1 { margin: 0; }
+.add-project-body { min-height: 0; overflow-y: auto; max-width: 840px; padding: 24px; background: var(--animal-bg-content); border-radius: var(--animal-radius); }
+.add-project form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.add-project input:not([type="checkbox"]):not([type="hidden"]), .add-project select { min-width: 0; padding: 10px; font: inherit; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); }
+.add-project input[name="path"] { flex: 1; }
+.path-suggestions { overflow-y: auto; min-height: 0; max-height: 160px; list-style: none; padding: 0; }
+.path-suggestions button { width: 100%; text-align: left; }
+.probe-members { overflow-y: auto; min-height: 0; max-height: 160px; overflow-wrap: anywhere; }
+.probe-path { overflow-wrap: anywhere; }
+.project-confirm { flex-direction: column; align-items: flex-start !important; }
+.add-project [role="alert"] { overflow-wrap: anywhere; }

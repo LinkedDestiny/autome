@@ -3,3 +3,4 @@
 
 实现 #1 | M-01 | 保持开放 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-01-r1-impl.md | HTTP 验收 listen EPERM；106/120 通过
 审计 #1 | M-01 | 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 保持开放：55/59 通过 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-02-r2-impl.md | 4 个 HTTP 用例监听 EPERM

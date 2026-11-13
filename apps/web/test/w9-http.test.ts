@@ -41,3 +41,10 @@ test('remove 坏头保留项目，合法头能够取消注册且文件仍在', a
   expect(await s.gateway.core.call('project.list', {})).toMatchObject({ projects: [] });
   expect(existsSync(join(s.userHome, 'single', '.git'))).toBe(true);
 });
+test('添加页 action 与 single fetch 坏 Host/Origin 拒绝且无注册', async () => {
+  const s = await setup(); s.repo('single'); const before = await s.gateway.core.call('project.list', {});
+  for (const path of ['/projects/new', '/projects/new.data']) for (const headers of [{ Host: 'evil.example' }, { Origin: 'http://evil.example' }] as Record<string, string>[]) {
+    expect((await s.post(path, { intent: 'confirm', path: '~/single' }, headers)).status).toBe(403);
+  }
+  expect(await s.gateway.core.call('project.list', {})).toEqual(before);
+});
