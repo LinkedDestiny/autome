@@ -1,13 +1,26 @@
+import { relative, isAbsolute, join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { createOnboardingWatch } from './onboarding-watch.ts';
 import { createPathGuard } from './paths.ts';
 import { LocalOpError, type createGateway } from './gateway.ts';
 import type { CoreSupervisor } from './core/supervisor.ts';
 
 type Project = { id: string; onboarding: unknown; [key: string]: unknown };
-export function createAdmin({ core, userHome, publish }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
+export function createAdmin({ core, userHome, automeHome, publish }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
   const paths = createPathGuard({ home: userHome });
   const onboarding = createOnboardingWatch(publish);
   return {
+    configPaths(projectPath: string) {
+      const display = (path: string) => {
+        let home = userHome;
+        try { home = realpathSync(userHome); } catch { /* Preserve lexical paths when HOME is unavailable. */ }
+        const local = relative(userHome, path), canonical = relative(home, path);
+        const inside = (value: string) => value !== '..' && !value.startsWith('../') && !isAbsolute(value);
+        const part = inside(local) ? local : inside(canonical) ? canonical : null;
+        return part === null ? path : part ? '~/' + part : '~';
+      };
+      return [display(join(automeHome, 'config.toml')), display(join(projectPath, '.autome/config.toml'))];
+    },
     onboarding,
     paths,
     register(gateway: ReturnType<typeof createGateway>) {

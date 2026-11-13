@@ -1,19 +1,28 @@
 import { useState } from 'react';
-import { Form, useLoaderData, useActionData, useNavigation, type LoaderFunctionArgs, type ActionFunctionArgs } from 'react-router';
+import { Form, redirect, useLoaderData, useActionData, useNavigation, type LoaderFunctionArgs, type ActionFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
 import { loadSettings, artefactPaths, type SettingsData, type Artefact, type OnboardingResult } from '../components/settings-data.ts';
-import { ADMIN, ONBOARDING } from '../lib/admin-labels.ts';
+import { ADMIN, ONBOARDING, SETTINGS } from '../lib/admin-labels.ts';
 import { MAX_DOCUMENT_LENGTH } from '../../server/gates/write-gate.ts';
 import { useWriteGate } from '../lib/live.tsx';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 export const shouldRevalidate = liveShouldRevalidate(byKind('project.', 'session.'));
 export function loader({ context, params }: LoaderFunctionArgs) { return loadSettings(context.get(servicesContext), params.id ?? ''); }
-export async function action({ request, context, params }: ActionFunctionArgs): Promise<OnboardingResult> {
+export async function action({ request, context, params }: ActionFunctionArgs): Promise<OnboardingResult | Response> {
   const form = await request.formData();
   const intent = form.get('intent');
   const { gateway, admin } = context.get(servicesContext);
   if (!gateway) return { error: ADMIN.offline };
   const project_id = params.id ?? '';
+  if (intent === 'remove') {
+    const listed = await gateway.read({ method: 'project.list' });
+    if (!listed.body.ok) return { error: listed.body.error };
+    const project = (listed.body.payload as { projects: { project: { id: string; display_name: string } }[] }).projects.find(p => p.project.id === project_id)?.project;
+    if (!project) return { error: ONBOARDING.missing };
+    if (form.get('name') !== project.display_name) return { error: SETTINGS.mismatch };
+    const removed = await gateway.write({ op: 'project.remove', params: { project_id } });
+    return removed.body.ok ? redirect('/') : { error: removed.body.error };
+  }
   if (intent === 'save') {
     const path = form.get('path');
     if (typeof path !== 'string' || !artefactPaths.includes(path)) return { error: ONBOARDING.invalidPath };
@@ -45,6 +54,7 @@ function Editor({ file, disabled, reason }: { file: Artefact; disabled: boolean;
 }
 export function SettingsView({ data, result, busy = false }: { data: SettingsData; result?: OnboardingResult; busy?: boolean }) {
   const gate = useWriteGate();
+  const [name, setName] = useState('');
   if (!data.project) return <p role="alert">{data.error}</p>;
   const state = data.project.onboarding;
   const active = state.onboarding === 'in_progress';
@@ -60,6 +70,19 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
       {data.artefactsError && <p role="alert">{data.artefactsError}</p>}
       {data.files.map(file => <Editor key={file.path + file.content} file={file} disabled={disabled} reason={gate.reason} />)}
       <Form method="post"><button name="intent" value="finish" disabled={disabled} title={gate.reason}>{ONBOARDING.finish}</button><button name="intent" value="skip" disabled={disabled} title={gate.reason}>{ONBOARDING.skip}</button></Form></>}
+  </section>
+  <section className="settings-card-body"><h2>{SETTINGS.config}</h2>
+    {data.config?.error ? <p role="alert">{data.config.error}</p> : <>
+      {data.config?.paths.map(path => <p key={path}><code>{path}</code></p>)}
+      <dl className="config-rows">{data.config?.rows.map(row => <div key={row.key} data-config-key={row.key}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+      {data.config?.warnings.map((warning, i) => <pre key={i}>{JSON.stringify(warning)}</pre>)}
+    </>}
+  </section>
+  <section className="settings-card-body"><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>
+    <Form method="post"><input type="hidden" name="intent" value="remove" /><label htmlFor="remove-name">{SETTINGS.name}（{data.project.display_name}）</label>
+      <input id="remove-name" name="name" value={name} onChange={event => setName(event.target.value)} autoComplete="off" />
+      <button disabled={disabled || name !== data.project.display_name} title={gate.reason}>{SETTINGS.remove}</button>
+    </Form>
   </section></div>;
 }
-export default function Settings() { return <SettingsView data={useLoaderData<typeof loader>()} result={useActionData<typeof action>()} busy={useNavigation().state !== 'idle'} />; }
+export default function Settings() { return <SettingsView data={useLoaderData<typeof loader>()} result={useActionData<OnboardingResult>()} busy={useNavigation().state !== 'idle'} />; }

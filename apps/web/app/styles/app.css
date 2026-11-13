@@ -190,3 +190,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .project-settings h1 { margin: 0; }
 .settings-card-body { background: var(--animal-bg-content); border-radius: var(--animal-radius); max-width: 960px; overflow-wrap: anywhere; }
 .onboarding-editor textarea { font: inherit; padding: 12px; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); }
+.settings-card-body { flex: 1 1 0; }
+.config-rows { min-height: 0; overflow-y: auto; }
+.config-rows > div { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 16px; padding-block: 8px; }
+.config-rows dd { margin: 0; white-space: pre-wrap; }

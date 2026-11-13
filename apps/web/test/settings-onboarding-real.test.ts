@@ -6,7 +6,7 @@ import { RouterContextProvider, createMemoryRouter } from 'react-router';
 import { w9Kernel } from './fixtures/w9-replies.ts';
 import { createAdmin } from '../server/admin.ts';
 import { servicesContext } from '../app/load-context.ts';
-import { action, loader, shouldRevalidate } from '../app/routes/projects.$id.settings.tsx';
+import { action as routeAction, loader, shouldRevalidate } from '../app/routes/projects.$id.settings.tsx';
 import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
 const closes: (() => Promise<void>)[] = [];
@@ -53,3 +53,5 @@ test('账本事件刷新持久 router 的步骤', async () => {
     await revalidateForEvents(events, () => router.revalidate()); expect((router.state.loaderData['0'] as Awaited<ReturnType<typeof loader>>).project?.onboarding.step).toBe(4);
   } finally { router.dispose(); }
 });
+
+async function action(args: Parameters<typeof routeAction>[0]) { const result = await routeAction(args); if (result instanceof Response) throw new Error('Unexpected redirect during onboarding'); return result; }

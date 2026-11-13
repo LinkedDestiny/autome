@@ -21,3 +21,16 @@ export const ONBOARDING = {
   exit: (code?: number) => `会话已结束，退出码 ${code ?? '未知'}`,
   commit: (sha: string) => `已生成 init commit ${sha.slice(0, 8)}`,
 };
+
+export const SETTINGS = {
+  config: '配置（只读）', unset: '未配置', role: '角色', enabled: '已启用', disabled: '已禁用',
+  remove: '移除项目', warning: '移除只是取消注册，不会删除任何文件；目录原样保留，之后可以重新添加。',
+  name: '输入项目名以确认移除', mismatch: '已拒绝：输入的项目名不一致',
+};
+export const CONFIG_LABELS: Record<string, string> = {
+  'bug.fix_rounds': '修复轮数', gate: '门禁命令', gate_run: '门禁运行时机', gate_quick: '快检', setup: '初始化命令',
+  gate_concurrency: '门禁并行数', gate_reuse_for_main_check: '复用主分支检查', gate_same_failure_limit: '相同失败上限',
+  'loop_defaults.parallel': '并行数', 'loop_defaults.session_minutes': '会话时长上限（分钟）',
+  'loop_defaults.budget_factor': '预算系数', 'loop_defaults.design_rounds': '设计轮数',
+  merge_after: '合并后命令', merge_auto: '自动合并', 'retry.attempts': '重试次数', 'retry.backoff_seconds': '重试等待（秒）',
+};

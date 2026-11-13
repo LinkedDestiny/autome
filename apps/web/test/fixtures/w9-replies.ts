@@ -38,7 +38,8 @@ export async function captureReplies() {
     const probe = await s.core.call('project.probe', { path });
     const add = await s.core.call('project.add', { path }) as { project: { id: string } };
     const skip = await s.core.call('project.onboarding.skip', { project_id: add.project.id });
-    return { probe, add, skip };
+    const config = await s.core.call('config.get', { project_id: add.project.id });
+    return { probe, add, skip, config };
   } finally { await s.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
