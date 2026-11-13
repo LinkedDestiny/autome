@@ -387,7 +387,7 @@ fn discard_except(
     Ok(())
 }
 
-/// The fingerprint window: at most 400 complete lines from the last 256 KiB.
+/// The fingerprint window: all complete lines from the last 256 KiB.
 pub fn log_window(log: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let read = || -> std::io::Result<String> {
@@ -402,8 +402,7 @@ pub fn log_window(log: &Path) -> String {
         } else {
             &text
         };
-        let lines: Vec<_> = text.lines().rev().take(400).collect();
-        Ok(lines.into_iter().rev().collect::<Vec<_>>().join("\n"))
+        Ok(text.lines().collect::<Vec<_>>().join("\n"))
     };
     read().unwrap_or_default()
 }
@@ -482,7 +481,18 @@ mod tests {
         assert_eq!(log_window(&log), "单行");
         let lines = (0..500).map(|i| format!("line {i}")).collect::<Vec<_>>();
         std::fs::write(&log, lines.join("\n")).unwrap();
-        assert_eq!(log_window(&log), lines[100..].join("\n"));
+        assert_eq!(log_window(&log), lines.join("\n"));
+        let failure = |case| {
+            std::fs::write(
+                &log,
+                format!("==> Rust\ntest {case} ... FAILED\nFAILED (1s)\n==> Web\n{}\nError: unrelated\nFAILED Rust\n", lines.join("\n")),
+            )
+            .unwrap();
+            autome_domain::gate_failure::fingerprint(&log_window(&log), 1, false)
+        };
+        let first = failure("alpha");
+        assert_eq!(first.summary, "Rust：test alpha ... FAILED");
+        assert_ne!(first.id, failure("beta").id);
         std::fs::write(&log, format!("{}\nlast\n", "中".repeat(100_000))).unwrap();
         assert_eq!(log_window(&log), "last");
         std::fs::write(&log, "x".repeat(300_000)).unwrap();

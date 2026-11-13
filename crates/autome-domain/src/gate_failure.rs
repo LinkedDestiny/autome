@@ -65,7 +65,8 @@ fn error_word(word: &str) -> bool {
 }
 
 fn key_line(line: &str) -> bool {
-    line.split(|c| !word_char(c)).any(error_word)
+    (line.starts_with("test ") && line.ends_with(" FAILED"))
+        || line.split(|c| !word_char(c)).any(error_word)
         || ["Cannot find", "cannot find", "not found", "No such file"]
             .iter()
             .any(|s| line.contains(s))
@@ -158,8 +159,7 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
     if timed_out {
         return identity("timeout", TIMEOUT_SUMMARY.to_owned());
     }
-    let mut lines: Vec<_> = log.split('\n').rev().take(400).map(clean).collect();
-    lines.reverse();
+    let lines: Vec<_> = log.lines().map(clean).collect();
     let mut steps = Vec::new();
     let mut keys = Vec::new();
     for line in &lines {
@@ -168,12 +168,22 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
             .filter(|s| s.starts_with(char::is_whitespace))
             .map(str::trim)
             .filter(|s| !s.is_empty() && !s.starts_with('('))
+            && !steps.contains(&name)
         {
-            let name = normalize(name);
-            if !steps.contains(&name) {
-                steps.push(name);
-            }
-        } else if key_line(line) {
+            steps.push(name);
+        }
+    }
+    // ci-local runs successful steps after failures. Only use diagnostics from
+    // failed sections when their headers are available; keep generic logs working.
+    let scoped = lines.iter().any(|line| {
+        line.strip_prefix("==> ")
+            .is_some_and(|name| steps.contains(&name))
+    });
+    let mut failed_section = false;
+    for line in &lines {
+        if let Some(name) = line.strip_prefix("==> ") {
+            failed_section = steps.contains(&name);
+        } else if (!scoped || failed_section) && key_line(line) {
             keys.push(line.as_str());
         }
     }
@@ -194,6 +204,9 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
         .copied()
         .or_else(|| keys.last().copied())
         .or_else(|| {
+            if scoped {
+                return None;
+            }
             lines
                 .iter()
                 .rev()
@@ -212,7 +225,9 @@ pub fn fingerprint(log: &str, exit_code: i32, timed_out: bool) -> Fingerprint {
     } else {
         summary
     };
+    let mut steps: Vec<_> = steps.into_iter().map(normalize).collect();
     steps.sort();
+    steps.dedup();
     let mut keys: Vec<_> = keys.into_iter().map(normalize).collect();
     keys.sort();
     keys.dedup();
@@ -351,11 +366,29 @@ mod tests {
         assert_eq!(fp("Error: ws\nan_error_not_a_panic").id, fp("Error: ws").id);
     }
     #[test]
-    fn window_is_last_400_lines() {
+    fn early_errors_survive_later_output() {
         let suffix = vec!["noise"; 400].join("\n");
-        assert_eq!(fp(&format!("Error: old\n{suffix}")).id, fp(&suffix).id);
+        assert_ne!(fp(&format!("Error: old\n{suffix}")).id, fp(&suffix).id);
         let suffix = vec!["noise"; 399].join("\n");
         assert_ne!(fp(&format!("Error: boundary\n{suffix}")).id, fp(&suffix).id);
+    }
+    #[test]
+    fn failed_sections_exclude_successful_diagnostics() {
+        let log = |case, noise| {
+            format!(
+                "==> Rust\ntest {case} ... FAILED\nFAILED (1s)\n==> Web\nError: {noise}\nok (1s)\nFAILED Rust"
+            )
+        };
+        assert_eq!(fp(&log("alpha", "one")), fp(&log("alpha", "two")));
+        assert_ne!(fp(&log("alpha", "one")).id, fp(&log("beta", "one")).id);
+        assert_eq!(
+            fp(&log("alpha", "one")).summary,
+            "Rust：test alpha ... FAILED"
+        );
+        assert_eq!(
+            fp("==> Rust\nFAILED (1s)\n==> Web\nError: unrelated\nFAILED Rust").summary,
+            "Rust："
+        );
     }
     #[test]
     fn summary_contains_steps_and_last_error_with_character_limit() {
