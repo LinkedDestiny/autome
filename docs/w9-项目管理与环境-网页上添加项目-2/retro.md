@@ -23,3 +23,5 @@
 
 实现 #9 | M-01 | 退回 + rebase 接线验收环境受限 | docs/w9-项目管理与环境-网页上添加项目-2/evidence/M-01-r9-impl.md | listen/ps EPERM；rebase 已完成
 审计 #8 | 无 | 无待审里程碑，未改动里程碑表 | 无 | 表内 M-01..M-06 均已完成；M-01 的 r9 集成复验因监听 EPERM 未取证，见 evidence/M-01-r9-impl.md
+
+实现 #10 | M-02 | 待审：修复 Web test 三处集成问题 | evidence/M-02-r10-impl.md | HTTP 单例 listen EPERM，待宿主复验

@@ -3,9 +3,12 @@ import { Form, Link, redirect, useActionData, useLoaderData, useNavigation, type
 import { servicesContext } from '../load-context.ts';
 import { ADMIN } from '../lib/admin-labels.ts';
 import { useWriteGate } from '../lib/live.tsx';
+import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 import { canConfirm, confirmDefaults, probeView, type AddResult, type CheckedProject, type Probe } from '../components/add-project-model.ts';
 import { nativePicker, type PickerWindow } from '../components/native-picker.ts';
 import { pathCompleteClient, type Suggestions } from '../components/path-complete-client.ts';
+
+export const shouldRevalidate = liveShouldRevalidate(byKind('project.'));
 
 export async function loader({ request, context }: LoaderFunctionArgs): Promise<CheckedProject> {
   const input = new URL(request.url).searchParams.get('path');
