@@ -4662,8 +4662,10 @@ fn run_gate_attempt(
                 }
             }
         }
-        if !held
-            && !crate::gate_queue::admit(ctx, task, project, node, "gate", None)
+        if (!held
+            || autome_domain::gate_queue::Lane::for_kind(launch.kind())
+                == autome_domain::gate_queue::Lane::Light)
+            && !crate::gate_queue::admit(ctx, task, project, node, launch.kind(), None)
                 .map_err(|e| err(e.to_string()))?
         {
             return Ok(());
@@ -4726,6 +4728,7 @@ fn run_gate_attempt(
                 "sha": head,
                 "command": gate.command,
                 "kind": launch.kind(),
+                "lane": autome_domain::gate_queue::Lane::for_kind(launch.kind()),
                 "log": job.log.to_string_lossy(),
             }),
         )?;
@@ -6643,6 +6646,7 @@ mod tests {
             let task = queue_task(&mut w, "T-2");
             quick_host_config(&w, "before_merge", Some("echo old"));
             let held = queue_job(&w, &holder, "gate", "held", None);
+            held.set_launch(&crate::gate::Launch::Repro).unwrap();
             queue_run(&mut w, &task);
             assert_eq!(queue_count(&w, &task, "gate.queued"), 1);
             assert_eq!(queue_count(&w, &task, "gate.started"), 0);

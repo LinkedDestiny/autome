@@ -806,7 +806,10 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             ));
         }
         if let Some(position) = e["gate_queue_position"].as_u64() {
-            line.push_str(&format!("  · {}", render::gate_queue_line(position)));
+            line.push_str(&format!(
+                "  · {}",
+                render::gate_queue_line(position, e["gate_queue_lane"].as_str().unwrap_or("heavy"))
+            ));
         }
         println!("{line}");
     }
@@ -876,7 +879,10 @@ fn task_detail(got: &Value) {
         t["branch"].as_str().unwrap_or_default()
     );
     if let Some(position) = got["gate_queue_position"].as_u64() {
-        println!("  门禁排队  {}", render::gate_queue_line(position));
+        println!(
+            "  门禁排队  {}",
+            render::gate_queue_line(position, got["gate_queue_lane"].as_str().unwrap_or("heavy"))
+        );
     }
     println!("  需求      {}", t["request"].as_str().unwrap_or_default());
     if let Some(sb) = got["status_block"].as_object() {

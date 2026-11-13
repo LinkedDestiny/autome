@@ -8527,6 +8527,11 @@ fn gate_queue_second_task_starts_its_gate_only_after_the_first_one_ends() {
 fn gate_queue_bug_loop_repro_check_waits_without_spending_a_fix_round() {
     needs_git!();
     let mut w = queued_gate_world("queue-bug", 30);
+    lane_config(
+        &w,
+        &format!("quick = 'sh {}'", w.root.join("queued-gate.sh").display()),
+        1,
+    );
     let a = queue_task(&mut w, "queue regular");
     let slug = slug_for("queue bug");
     bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
@@ -11712,4 +11717,154 @@ fn legacy_pointer_e2e_v8_task_is_restored_with_the_rule_named() {
 #[test]
 fn legacy_pointer_e2e_restore_failure_keeps_todays_failure() {
     legacy_pointer_scenario(7, true);
+}
+
+fn lane_wait(w: &mut World, mut ready: impl FnMut(&World) -> bool) {
+    scheduling_wait(
+        w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            ready(w)
+        },
+        |w| format!("{:?}", w.task_states()),
+    );
+}
+
+fn lane_task(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    w.retro_step(7, &slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&slug, 7, &retro);
+    let id = create_task(w, request);
+    lane_wait(w, |w| {
+        w.node(&id).as_deref() == Some("await_design_approval")
+    });
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    lane_wait(w, |w| {
+        !setup_events(w, &id, "gate.started").is_empty()
+            || !setup_events(w, &id, "gate.queued").is_empty()
+    });
+    id
+}
+
+fn lane_config(w: &World, quick: &str, limit: u32) {
+    let path = w.repo.join(".autome/config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let before_gate = text.split("[gate]").next().unwrap();
+    std::fs::write(&path, format!("{before_gate}[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick_concurrency = {limit}\n{quick}\n", w.root.join("queued-gate.sh").display())).unwrap();
+    automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "lane config").unwrap();
+    std::fs::write(
+        w.ctx.autome_home.join("config.toml"),
+        format!("[gate]\nquick_concurrency = {limit}\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn gate_lane_e2e_quick_runs_beside_a_sleeping_merge_gate() {
+    needs_git!();
+    let mut w = queued_gate_world("lane-heavy-light", 30);
+    lane_config(&w, "", 1);
+    let a = lane_task(&mut w, "lane heavy");
+    let started = setup_events(&w, &a, "gate.started");
+    assert_eq!(started[0].1["node"], "merge_gate");
+    assert_eq!(started[0].1["lane"], "heavy");
+    lane_config(&w, "quick = 'true'", 1);
+    let b = lane_task(&mut w, "lane light");
+    lane_wait(&mut w, |w| {
+        !setup_events(w, &b, "gate.result").is_empty()
+            && setup_events(w, &b, "session.started")
+                .iter()
+                .any(|(_, p)| p["kind"]["role"] == "audit")
+    });
+    assert_eq!(setup_events(&w, &b, "gate.started")[0].1["lane"], "light");
+    assert_eq!(setup_events(&w, &b, "gate.result")[0].1["ok"], true);
+    assert!(setup_events(&w, &a, "gate.result").is_empty());
+    queue_release(&w, &a);
+    queue_release(&w, &b);
+    lane_wait(&mut w, |w| !setup_events(w, &a, "gate.result").is_empty());
+    w.settle();
+    assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn gate_lane_e2e_two_quick_checks_fifo_at_one_parallel_at_two() {
+    needs_git!();
+    for limit in [1, 2] {
+        let mut w = queued_gate_world("lane-quick-fifo", 30);
+        lane_config(
+            &w,
+            &format!("quick = 'sh {}'", w.root.join("queued-gate.sh").display()),
+            limit,
+        );
+        let a = lane_task(&mut w, "lane first");
+        let b = lane_task(&mut w, "lane second");
+        if limit == 1 {
+            queue_assert_waiting(&mut w, &b, 1);
+            assert_eq!(setup_events(&w, &b, "gate.queued")[0].1["lane"], "light");
+            queue_release(&w, &a);
+            lane_wait(&mut w, |w| !setup_events(w, &b, "gate.started").is_empty());
+            assert!(
+                setup_events(&w, &a, "gate.result")[0].0
+                    < setup_events(&w, &b, "gate.started")[0].0
+            );
+        } else {
+            assert!(setup_events(&w, &a, "gate.result").is_empty());
+            assert!(setup_events(&w, &b, "gate.result").is_empty());
+            assert_eq!(setup_events(&w, &b, "gate.started")[0].1["kind"], "quick");
+            assert!(setup_events(&w, &b, "gate.queued").is_empty());
+            queue_release(&w, &a);
+        }
+        queue_release(&w, &b);
+        lane_wait(&mut w, |w| {
+            !setup_events(w, &a, "gate.result").is_empty()
+                && !setup_events(w, &b, "gate.result").is_empty()
+        });
+        w.settle();
+        assert!(w.ctx.store.all_running_sessions().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn gate_lane_e2e_bug_before_merge_light_each_round_heavy() {
+    needs_git!();
+    for (mode, quick, fix_kind, fix_lane) in [
+        ("before_merge", "", "repro", "light"),
+        ("before_merge", "quick = 'true'", "quick", "light"),
+        ("each_round", "quick = 'true'", "full", "heavy"),
+    ] {
+        let mut w = World::new("lane-bug");
+        w.configure(&format!(
+            "[gate]\nrun = '{mode}'\ncommand = 'true'\n{quick}\n"
+        ));
+        let request = "lane bug";
+        let slug = slug_for(request);
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+        bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+        let id = create_bug(&mut w, request);
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        let events = setup_events(&w, &id, "gate.started");
+        for (node, kind, lane) in [
+            ("repro_check", "repro", "light"),
+            ("fix_gate", fix_kind, fix_lane),
+            ("merge_gate", "full", "heavy"),
+        ] {
+            let event = events.iter().find(|(_, p)| p["node"] == node).unwrap();
+            assert_eq!(event.1["kind"], kind);
+            assert_eq!(event.1["lane"], lane);
+        }
+    }
 }

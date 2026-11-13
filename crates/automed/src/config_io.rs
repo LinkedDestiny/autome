@@ -133,6 +133,9 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
     let mut config = GlobalConfig::default();
     if let Some(t) = doc.get("gate") {
         let t = t.as_table().ok_or("[gate] 不是一个表")?;
+        if let Some(v) = t.get("quick_concurrency") {
+            config.gate.quick_concurrency = parse_gate_quick_concurrency(v)?;
+        }
         if let Some(v) = t.get("concurrency") {
             config.gate.concurrency = parse_gate_concurrency(v)?;
         }
@@ -390,6 +393,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                     .ok_or("[gate] reuse_for_main_check 必须是 true 或 false")?,
             );
         }
+        if let Some(v) = t.get("quick_concurrency") {
+            config.gate_quick_concurrency = Some(parse_gate_quick_concurrency(v)?);
+        }
         if let Some(v) = t.get("concurrency") {
             config.gate_concurrency = Some(parse_gate_concurrency(v)?);
         }
@@ -443,7 +449,10 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
             .get("command")
             .and_then(toml::Value::as_str)
             .or_else(|| {
-                (!t.contains_key("command") && config.gate_concurrency.is_some()).then_some("")
+                (!t.contains_key("command")
+                    && (config.gate_concurrency.is_some()
+                        || config.gate_quick_concurrency.is_some()))
+                .then_some("")
             })
             .ok_or("[gate] 需要 command，例如 command = \"make check\"")?
             .trim()
@@ -825,6 +834,11 @@ pub fn skill_bindings(
     by_skill
 }
 
+fn parse_gate_quick_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
+    parse_gate_concurrency(value)
+        .map_err(|_| "[gate] quick_concurrency 必须是 1 到 10 的整数".to_string())
+}
+
 fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, String> {
     value
         .as_integer()
@@ -1154,6 +1168,69 @@ mod tests {
         write_project(dir.path(), "[gate]\nconcurrency = 7 # keep\n");
         save_project(dir.path(), &ProjectConfig::default()).unwrap();
         assert_eq!(load_project(dir.path()).unwrap().gate_concurrency, Some(7));
+    }
+
+    #[test]
+    fn gate_lane_quick_concurrency_defaults_to_one_and_rejects_out_of_range() {
+        for text in ["", "[gate]"] {
+            assert_eq!(parse_global(text).unwrap().gate.quick_concurrency, 1);
+        }
+        for n in 1..=10 {
+            let text = format!("[gate]\nquick_concurrency = {n}");
+            assert_eq!(parse_global(&text).unwrap().gate.quick_concurrency, n);
+            let project = parse_project(&text).unwrap();
+            assert_eq!(project.gate_quick_concurrency, Some(n));
+            assert!(project.gate.is_none());
+        }
+        for value in [
+            "0",
+            "11",
+            "-1",
+            "1.5",
+            "true",
+            "'2'",
+            "''",
+            "[]",
+            "9223372036854775807",
+        ] {
+            let text = format!("[gate]\nquick_concurrency = {value}");
+            let expected = "[gate] quick_concurrency 必须是 1 到 10 的整数";
+            assert_eq!(parse_global(&text).unwrap_err(), expected);
+            assert_eq!(parse_project(&text).unwrap_err(), expected);
+        }
+        for value in ["01", "9223372036854775808", ""] {
+            let text = format!("[gate]\nquick_concurrency = {value}");
+            assert!(parse_global(&text).is_err());
+            assert!(parse_project(&text).is_err());
+        }
+        assert!(parse_project("[gate]\nquick_concurrency = 1\ncommand = 2").is_err());
+        assert!(
+            parse_project("[gate]\nconcurrency = 1\nquick_concurrency = 2")
+                .unwrap()
+                .gate
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gate_lane_save_project_keeps_quick_concurrency() {
+        let dir = TempDir::new("lane-project");
+        let gate = "[gate]\nquick_concurrency = 2 # keep\nconcurrency = 1\ncommand = 'true'\n";
+        write_project(dir.path(), gate);
+        save_project(dir.path(), &ProjectConfig::default()).unwrap();
+        let text = std::fs::read_to_string(project_config_path(dir.path())).unwrap();
+        assert!(text.contains(gate));
+        assert_eq!(
+            load_project(dir.path()).unwrap().gate_quick_concurrency,
+            Some(2)
+        );
+        std::fs::write(global_config_path(dir.path()), gate).unwrap();
+        save_global(dir.path(), &GlobalConfig::default()).unwrap();
+        assert!(
+            std::fs::read_to_string(global_config_path(dir.path()))
+                .unwrap()
+                .contains(gate)
+        );
     }
 
     #[test]

@@ -2008,6 +2008,7 @@ fn task_get(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "scope_restore": {"last": last, "pending": pending},
             "notes": ctx.store.operator_notes(task_id)?,
             "brief": ctx.store.task_brief(task_id)?,
+            "gate_queue_lane": crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?.iter().find(|w| w.task_id == task_id).map(|w| w.lane),
             "gate_queue_position": autome_domain::gate_queue::position(&crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?, task_id),
             "queue_position": queue_position(ctx, &task)?,
             "status_block": status.map(status_json),
@@ -2778,6 +2779,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
                 "project_id": project.id,
                 "project_name": project.display_name,
                 "queue_position": index + 1,
+                "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
                 "task": task_json(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
                 "pending_decisions": ctx.store.pending_decisions(&task.id)?,
@@ -2793,6 +2795,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
             let entry = json!({
                 "project_id": project.id,
                 "project_name": project.display_name,
+                "gate_queue_lane": gate_waiters.iter().find(|w| w.task_id == task.id).map(|w| w.lane),
                 "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
                 "task": task_json(ctx, &task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
                 "pending_decisions": pending,
@@ -4159,6 +4162,32 @@ mod tests {
         let after = gate_queue_get(&mut sb, &id)["scope_restore"].clone();
         assert_eq!(after["pending"], json!([]));
         assert_eq!(after["last"], before["last"]);
+    }
+
+    #[test]
+    fn gate_lane_task_get_reports_lane_and_same_lane_position() {
+        let mut sb = Sandbox::new("lane-get");
+        let project = sb.add_project("repo");
+        let a = gate_queue_fixture(&mut sb, &project, "a");
+        let b = gate_queue_fixture(&mut sb, &project, "b");
+        let c = gate_queue_fixture(&mut sb, &project, "c");
+        for (id, lane) in [(&a, "heavy"), (&b, "light"), (&c, "light")] {
+            sb.ctx
+                .store
+                .append_event("gate.queued", id, json!({"lane":lane,"position":99}))
+                .unwrap();
+        }
+        for (id, lane, position) in [(&a, "heavy", 1), (&b, "light", 1), (&c, "light", 2)] {
+            let got = gate_queue_get(&mut sb, id);
+            assert_eq!(got["gate_queue_lane"], lane);
+            assert_eq!(got["gate_queue_position"], position);
+        }
+        sb.ctx
+            .store
+            .append_event("gate.started", &b, json!({}))
+            .unwrap();
+        assert!(gate_queue_get(&mut sb, &b)["gate_queue_lane"].is_null());
+        assert_eq!(gate_queue_get(&mut sb, &c)["gate_queue_position"], 1);
     }
 
     #[test]

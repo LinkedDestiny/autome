@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::{config_io, dispatch::Ctx, gate, store::TaskRecord};
 use autome_domain::{
     config,
-    gate_queue::{self, Admission, Waiter},
+    gate_queue::{self, Admission, Lane, Waiter},
     project::Project,
     task::{Node, TaskState},
 };
@@ -21,12 +21,15 @@ const QUEUE_EVENTS: &[&str] = &[
     "gate.queue_dropped",
 ];
 
-fn limit(ctx: &Ctx, project: &Project) -> Result<u32> {
-    Ok(config::resolve(
+fn limit(ctx: &Ctx, project: &Project, lane: Lane) -> Result<u32> {
+    let resolved = config::resolve(
         &config_io::load_global(&ctx.autome_home)?,
         &config_io::load_project(Path::new(&project.path))?,
-    )
-    .gate_concurrency)
+    );
+    Ok(match lane {
+        Lane::Heavy => resolved.gate_concurrency,
+        Lane::Light => resolved.gate_quick_concurrency,
+    })
 }
 
 pub fn queued_seq(ctx: &Ctx, task: &str) -> Result<Option<u64>> {
@@ -40,7 +43,7 @@ pub fn queued_seq(ctx: &Ctx, task: &str) -> Result<Option<u64>> {
 pub fn waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
     let mut queue = Vec::new();
     for task in ctx.store.list_unfinished()? {
-        if let Some((seq, kind, _)) = ctx.store.last_event_of(&task.id, QUEUE_EVENTS)?
+        if let Some((seq, kind, payload)) = ctx.store.last_event_of(&task.id, QUEUE_EVENTS)?
             && kind == "gate.queued"
         {
             if task.state
@@ -53,10 +56,12 @@ pub fn waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
             }
             let project = ctx.store.get_project(&task.project_id)?;
 
+            let lane = serde_json::from_value(payload["lane"].clone()).unwrap_or_default();
             queue.push(Waiter {
                 task_id: task.id,
                 seq: seq as i64,
-                limit: limit(ctx, &project).unwrap_or(1),
+                limit: limit(ctx, &project, lane).unwrap_or(1),
+                lane,
             });
         }
     }
@@ -161,14 +166,25 @@ fn possibly_inflight(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
 }
 
 /// None means unknown occupancy: fail closed, without failing the waiting task.
+#[cfg(test)]
 pub fn held(ctx: &Ctx) -> Result<Option<usize>> {
+    held_in_lane(ctx, None)
+}
+
+fn held_in_lane(ctx: &Ctx, lane: Option<Lane>) -> Result<Option<usize>> {
     let mut held = 0;
     for task in ctx.store.list_unfinished()? {
         let project = ctx.store.get_project(&task.project_id)?;
         match jobs(Path::new(&project.path), &task.id) {
             Ok(jobs) => {
                 for (stem, job) in jobs {
-                    held += usize::from(occupies(ctx, &task, &stem, &job)?);
+                    let job_lane = job
+                        .launch()
+                        .map(|l| Lane::for_kind(l.kind()))
+                        .unwrap_or_default();
+                    if lane.is_none_or(|lane| lane == job_lane) {
+                        held += usize::from(occupies(ctx, &task, &stem, &job)?);
+                    }
                 }
             }
             Err(_) if possibly_inflight(ctx, &task)? => return Ok(None),
@@ -186,18 +202,28 @@ pub fn admit(
     job: &str,
     checkout: Option<&str>,
 ) -> Result<bool> {
-    let limit = limit(ctx, project)?;
+    let lane = Lane::for_kind(job);
+    let limit = limit(ctx, project, lane)?;
+    let old_queue = waiters(ctx)?;
+    if old_queue
+        .iter()
+        .any(|w| w.task_id == task.id && w.lane != lane)
+    {
+        ctx.store.append_event("gate.queued", &task.id, json!({"node": node.as_str(), "job": if job == "setup" { "setup" } else { "gate" }, "checkout": checkout, "lane": lane, "position": old_queue.iter().filter(|w| w.lane == lane).count() + 1}))?;
+    }
+
     let waiters = waiters(ctx)?;
     match gate_queue::admission(
-        held(ctx)?.unwrap_or(limit as usize),
+        held_in_lane(ctx, Some(lane))?.unwrap_or(limit as usize),
         &waiters,
         &task.id,
         limit,
+        lane,
     ) {
         Admission::Go => Ok(true),
         Admission::Wait { position } => {
             if gate_queue::position(&waiters, &task.id).is_none() {
-                ctx.store.append_event("gate.queued", &task.id, json!({"node": node.as_str(), "job": job, "checkout": checkout, "position": position}))?;
+                ctx.store.append_event("gate.queued", &task.id, json!({"node": node.as_str(), "job": if job == "setup" { "setup" } else { "gate" }, "checkout": checkout, "position": position, "lane": lane}))?;
             }
             Ok(false)
         }

@@ -101,8 +101,20 @@ pub fn node_label(node: &str) -> &str {
     }
 }
 
-pub fn gate_queue_line(position: u64) -> String {
-    format!("排队等门禁（前面还有 {} 个）", position.saturating_sub(1))
+fn gate_lane_label(lane: &str) -> &str {
+    if lane == "light" {
+        "快检或复现检查"
+    } else {
+        "完整门禁"
+    }
+}
+
+pub fn gate_queue_line(position: u64, lane: &str) -> String {
+    format!(
+        "排队等{}（前面还有 {} 个）",
+        gate_lane_label(lane),
+        position.saturating_sub(1)
+    )
 }
 
 pub fn milestone_label(state: &str) -> &str {
@@ -698,7 +710,8 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
         ),
         "setup.skipped" => format!("{subject} 准备命令跳过：{}", s("reason")),
         "gate.queued" => format!(
-            "{subject} 排队等门禁（{}，入队时前面还有 {} 个）",
+            "{subject} 排队等{}（{}，入队时前面还有 {} 个）",
+            gate_lane_label(&s("lane")),
             node_label(&s("node")),
             p["position"].as_u64().unwrap_or(1).saturating_sub(1)
         ),
@@ -990,8 +1003,8 @@ mod tests {
     fn gate_queue_line_counts_only_waiters_ahead() {
         for (position, ahead) in [(1, 0), (2, 1), (u64::MAX, u64::MAX - 1), (0, 0)] {
             assert_eq!(
-                gate_queue_line(position),
-                format!("排队等门禁（前面还有 {ahead} 个）")
+                gate_queue_line(position, "heavy"),
+                format!("排队等完整门禁（前面还有 {ahead} 个）")
             );
         }
     }
@@ -1015,7 +1028,7 @@ mod tests {
                         &json!({"node":node,"position":position})
                     ),
                     Some(format!(
-                        "T-1 排队等门禁（{label}，入队时前面还有 {ahead} 个）"
+                        "T-1 排队等完整门禁（{label}，入队时前面还有 {ahead} 个）"
                     ))
                 );
             }
@@ -1856,5 +1869,28 @@ fn legacy_pointer_auto_fixed_event_is_readable() {
         .unwrap();
         assert_eq!(line, format!("T-1 {detail}"));
         assert_eq!(line.lines().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod gate_lane_tests {
+    use super::*;
+    #[test]
+    fn gate_lane_waiting_line_names_the_queue() {
+        for (lane, label) in [
+            ("heavy", "完整门禁"),
+            ("light", "快检或复现检查"),
+            ("", "完整门禁"),
+        ] {
+            for position in [0, 1, 2, u64::MAX] {
+                assert_eq!(
+                    gate_queue_line(position, lane),
+                    format!(
+                        "排队等{label}（前面还有 {} 个）",
+                        position.saturating_sub(1)
+                    )
+                );
+            }
+        }
     }
 }

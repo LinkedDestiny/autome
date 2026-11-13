@@ -119,7 +119,8 @@ session_minutes = 120     # the default, at least 5; a session running longer is
 
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
-concurrency = 1            # optional project limit, capped by the global limit
+concurrency = 1            # optional heavy-lane project limit, capped globally
+quick_concurrency = 1      # light lane; recommend 1–2 according to CPU capacity
 run = "each_round"          # the default; "before_merge" runs the full gate only once, before the merge
 quick = "make lint"         # optional; only active with before_merge
 quick_timeout_minutes = 5  # optional quick timeout (positive minutes); FixGate uses timeout_minutes
@@ -148,22 +149,24 @@ timeout_minutes = 30       # optional; preparation timeout
 fix_rounds = 3            # the default; an integer from 1–20
 ```
 
-- **Host job queue.** Global `~/.autome/config.toml` accepts `[gate] concurrency = 1`
-  (default 1, integers 1–10). Gate, MergeGate, MainCheck, ReproCheck, FixGate and
-  preparation commands share this limit across projects in one Autome ledger/core;
-  separate homes/ledgers are independent. A project may lower the limit; a larger
-  value is clamped to the global value. Its effective limit applies to the total
-  running host jobs at admission, not just that project's jobs; it does not
-  reserve exclusive capacity after a job starts. A project can set only
-  `concurrency` without enabling a gate command. Jobs wait in strict FIFO order,
-  with no MergeGate/MainCheck priority. Waiting leaves the task at its current node
-  and consumes no rounds, failure counts or crash retries; timeout starts only
-  when the job actually starts. `autome status` shows “排队等门禁（前面还有 k 个）”.
-  `task.get` and `dashboard.get` expose the live, one-based `gate_queue_position`
-  (null when not queued), separate from the project-slot `queue_position`.
-  `autome run` reports `gate.queued` with the position at enqueue time. Ledger
-  events restore FIFO order after a core restart. This does not limit commands
-  launched inside agent sessions, such as their own `cargo test`.
+- **Host job queues.** Host jobs use two independent FIFO lanes across projects
+  in one ledger. Full gates (`full`) and preparation commands use the heavy lane,
+  controlled by `[gate] concurrency`. Quick checks (`quick`) and reproduction
+  checks (`repro`) use the light lane, controlled by `[gate] quick_concurrency`.
+  Both global limits default to 1 and accept integers 1–10; project overrides
+  are capped by the global value. Set `quick_concurrency` to 1–2 according to
+  available CPU capacity. Either concurrency key alone does not enable a gate.
+  Admission counts only jobs and waiters in the same lane, with no node priority.
+  Separate homes/ledgers are independent. Waiting consumes no rounds, failure
+  counts or crash retries; timeout starts when the job actually starts.
+  `task.get` and `dashboard.get` expose `gate_queue_lane` (`heavy`/`light`) and
+  the live one-based `gate_queue_position`, both null when not queued.
+  `autome status`/`run` distinguish “排队等完整门禁” from “排队等快检或复现检查”.
+  `gate.queued` records the lane and enqueue position; ledger events restore both
+  queues after restart. Legacy events and jobs without a recorded kind are heavy.
+  Changing configuration while waiting moves a job to the new lane's tail;
+  running jobs retain their launch kind. Preparation cannot transfer its heavy
+  slot to a light check. This does not limit commands inside agent sessions.
 - **Merge queue.** The regular Rebase step remains; when MergeGate leaves the
   host queue, it rebases again if the default branch has advanced. A cached gate
   result is reused only when the branch is also up to date. Authorized tasks
@@ -229,8 +232,8 @@ fix_rounds = 3            # the default; an integer from 1–20
   the full command: projects decide whether the full gate includes those checks.
   `each_round` ignores quick. Quick requires a project gate `command`; these
   options are not global settings. Scripts receive `AUTOME_GATE_KIND` as
-  `quick`, `full` or `repro`. Quick shares the gate concurrency queue, so it
-  may wait behind another task's full gate.
+  `quick`, `full` or `repro`. Quick and reproduction checks use the independent
+  light lane and do not wait behind full gates.
 
 - **Preparation.** Optional `[setup]` runs on the host with `sh -c` before
   sessions and gates, in the merge verification checkout, and in the main
