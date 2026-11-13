@@ -78,7 +78,7 @@ test('缺口 1000 补发，1001 只 reload', async () => {
   for (const gap of [1000, 1001]) {
     const f = fixture(gap); await f.bus.pull(); const c = f.connect(); c.resume(0); await f.bus.pull();
     if (gap === 1000) expect(c.seqs()).toEqual(Array.from({ length: 1000 }, (_, i) => i + 1));
-    else expect(c.messages).toEqual([{ type: 'hello', seq: gap, core: 'offline' }, { type: 'reload' }]);
+    else expect(c.messages).toEqual([{ type: 'hello', seq: gap, core: 'offline', reason: '服务正在关闭' }, { type: 'reload' }]);
     f.setLatest(gap + 1); await f.bus.pull(); expect(c.seqs().at(-1)).toBe(gap + 1);
   }
 });

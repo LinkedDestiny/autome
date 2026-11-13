@@ -43,6 +43,7 @@
 //!   changes did what they said they would.
 
 pub mod brief;
+pub mod build_id;
 pub mod config_io;
 pub mod curation;
 pub mod dispatch;
@@ -71,3 +72,5 @@ pub mod stream_render;
 pub mod task_metrics;
 pub mod usage;
 pub mod version_page;
+
+pub mod kernel_guard;

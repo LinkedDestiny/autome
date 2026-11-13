@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { expect, test } from 'vitest';
@@ -54,4 +56,52 @@ test('本地门禁在 Web test 之前已构建内核', () => {
   const build = local.indexOf('cargo test --workspace --all-targets');
   expect(build).toBeGreaterThanOrEqual(0);
   expect(build).toBeLessThan(local.indexOf("run 'Web test'"));
+});
+
+test('CLI package 隔离 home 与 prefix，成功和安装失败均清理并保留退出码', () => {
+  const fragment = local.match(/run 'CLI package' (sh -c '[\s\S]*?\n {2}')/)?.[1];
+  expect(fragment).toBeDefined();
+  const sandbox = mkdtempSync(resolve(tmpdir(), 'cli package 测试-'));
+  try {
+    mkdirSync(resolve(sandbox, 'scripts'));
+    mkdirSync(resolve(sandbox, 'tmp'));
+    writeFileSync(resolve(sandbox, 'scripts/package-cli.sh'), 'exit 0\n');
+    writeFileSync(resolve(sandbox, 'scripts/install-cli.sh'), `
+set -eu
+printf '%s\\n%s\\n' "$PREFIX" "$AUTOME_HOME" > paths
+test -d "$PREFIX"
+test -d "$AUTOME_HOME"
+printf installed > "$AUTOME_HOME/marker"
+test "$1" = --from
+if [ "$INSTALL_EXIT" -ne 0 ]; then exit "$INSTALL_EXIT"; fi
+printf '#!/bin/sh\\nprintf version > version-ran\\n' > "$PREFIX/autome"
+chmod +x "$PREFIX/autome"
+`);
+    for (const status of [0, 37]) {
+      rmSync(resolve(sandbox, 'version-ran'), { force: true });
+      const result = spawnSync('sh', ['-c', fragment!], {
+        cwd: sandbox,
+        env: { ...process.env, TMPDIR: resolve(sandbox, 'tmp'),
+          AUTOME_HOME: resolve(sandbox, 'caller-home'), PREFIX: resolve(sandbox, 'caller-prefix'),
+          INSTALL_EXIT: String(status) },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(status);
+      const paths = readFileSync(resolve(sandbox, 'paths'), 'utf8').trim().split('\n');
+      expect(paths).toHaveLength(2);
+      expect(paths[0]).not.toBe(paths[1]);
+      for (const path of paths) {
+        expect(path).not.toBe(resolve(sandbox, 'caller-home'));
+        expect(path).not.toBe(resolve(sandbox, 'caller-prefix'));
+        expect(existsSync(path)).toBe(false);
+      }
+      expect(readdirSync(resolve(sandbox, 'tmp'))).toEqual([]);
+      expect(existsSync(resolve(sandbox, 'version-ran'))).toBe(status === 0);
+      expect(existsSync(resolve(sandbox, 'caller-home'))).toBe(false);
+      expect(existsSync(resolve(sandbox, 'caller-prefix'))).toBe(false);
+    }
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });

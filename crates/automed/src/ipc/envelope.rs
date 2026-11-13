@@ -95,6 +95,7 @@ pub enum ReplyErrorCode {
     /// `Internal`: this is an expected, well-formed rejection, not a bug —
     /// collapsing the two would make real internal failures harder to spot.
     TransitionRejected,
+    OlderKernel,
     Internal,
 }
 

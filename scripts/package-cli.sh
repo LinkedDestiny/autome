@@ -14,8 +14,27 @@
 # lie. CI builds on macos-14, which is Apple silicon.
 set -eu
 
+binary=''
+out=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --binary | --out)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "package-cli: $1 需要一个非空路径" >&2; exit 2; }
+      case "$1" in
+        --binary) binary=$2 ;;
+        --out) out=$2 ;;
+      esac
+      shift 2
+      ;;
+    *) echo "package-cli: 不认识的参数 $1" >&2; exit 2 ;;
+  esac
+done
+# Resolve supplied paths before changing directory.
+case "$binary" in '' | /*) ;; *) binary="$PWD/$binary" ;; esac
+case "$out" in '' | /*) ;; *) out="$PWD/$out" ;; esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+out=${out:-$root/dist}
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/autome-cli/Cargo.toml | head -1)
 [ -n "$version" ] || { echo "package-cli: 读不到 crates/autome-cli/Cargo.toml 的版本号" >&2; exit 1; }
@@ -27,16 +46,20 @@ esac
 target="$arch-apple-darwin"
 name="autome-$version-$target"
 
-echo "==> cargo build --release -p autome-cli"
-cargo build --release -p autome-cli
+if [ -z "$binary" ]; then
+  echo "==> cargo build --release -p autome-cli"
+  cargo build --release -p autome-cli
+  binary="$root/target/release/autome"
+fi
+[ -f "$binary" ] && [ -x "$binary" ] || { echo "package-cli: 不是可执行文件：$binary" >&2; exit 1; }
 
-stage="$root/dist/$name"
+stage="$out/$name"
 rm -rf "$stage"
 mkdir -p "$stage"
 # Copied, never renamed in place: the linker's ad-hoc signature belongs to the
 # file it wrote, and a binary rewritten under a running process's feet is one
 # macOS kills.
-cp "$root/target/release/autome" "$stage/autome"
+cp "$binary" "$stage/autome"
 chmod 755 "$stage/autome"
 cat > "$stage/README.md" <<EOF
 # autome $version ($target)
@@ -58,13 +81,15 @@ Autome 的命令行：一句话需求，经设计、评审、实现、审计，�
     autome help
 
 状态在 \$AUTOME_HOME（默认 ~/.autome），与桌面端共用。
+\`autome core\` 是面板用的 stdio 内核，与 CLI 来自同一个文件。
+\`autome --version\` 的括号内是构建标识，\`env.get.kernel.build_id\` 返回相同标识。
 EOF
 
 echo "==> tar"
-tarball="$root/dist/$name.tar.gz"
-tar -C "$root/dist" -czf "$tarball" "$name"
+tarball="$out/$name.tar.gz"
+tar -C "$out" -czf "$tarball" "$name"
 rm -rf "$stage"
-(cd "$root/dist" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+(cd "$out" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 
 echo "==> done: $tarball"
 cat "$tarball.sha256"

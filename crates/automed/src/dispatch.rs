@@ -38,6 +38,9 @@ pub struct Outcome {
 /// this point is then a pure function of the context, which is what lets the
 /// test suite run commands against throwaway directories in parallel.
 pub struct Ctx {
+    pub build_id: String,
+    pub allow_older_kernel: bool,
+    pub adopted_older_kernel: bool,
     pub store: Store,
     /// `~/.autome` — where the global config lives.
     pub autome_home: std::path::PathBuf,
@@ -77,6 +80,9 @@ impl Ctx {
         home: impl Into<std::path::PathBuf>,
     ) -> Self {
         Self {
+            build_id: crate::build_id::BUILD_ID.into(),
+            allow_older_kernel: false,
+            adopted_older_kernel: false,
             store,
             autome_home: autome_home.into(),
             home: home.into(),
@@ -235,11 +241,18 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
     // A write command holds the driver lock for its whole length: it may
     // advance a task and start a session, and another driver must not do the
     // same thing in between. The tick takes the lock itself, without waiting.
+    let writing =
+        command.method != "scheduler.tick" && !READ_METHODS.contains(&command.method.as_str());
+    if writing {
+        match crate::kernel_guard::check(ctx) {
+            Ok(Some(old)) => return fail(command, ReplyErrorCode::OlderKernel, old.message),
+            Err(e) => return fail(command, ReplyErrorCode::Internal, e.to_string()),
+            Ok(None) => {}
+        }
+    }
     let mut took_lock = false;
-    if command.method != "scheduler.tick"
-        && !READ_METHODS.contains(&command.method.as_str())
-        && ctx.driver_lock.is_none()
-    {
+
+    if writing && ctx.driver_lock.is_none() {
         match crate::driver_lock::acquire_with_notice(
             ctx.store.path(),
             DRIVER_LOCK_WAIT,
@@ -256,10 +269,30 @@ pub fn handle_command(ctx: &mut Ctx, command: &Command) -> Outcome {
                     "另一个 Autome（桌面端或命令行）正占着状态库，稍后再试".into(),
                 );
             }
-            Err(e) => tracing::warn!(error = %e, "driver lock unavailable, proceeding without it"),
+            Err(e) => {
+                return fail(
+                    command,
+                    ReplyErrorCode::Internal,
+                    format!("无法取得驱动锁：{e}"),
+                );
+            }
+        }
+    }
+    if writing {
+        let rejection = match crate::kernel_guard::claim(ctx, &command.method) {
+            Ok(Some(old)) => Some((ReplyErrorCode::OlderKernel, old.message)),
+            Err(e) => Some((ReplyErrorCode::Internal, e.to_string())),
+            Ok(None) => None,
+        };
+        if let Some((code, message)) = rejection {
+            if took_lock {
+                ctx.driver_lock = None;
+            }
+            return fail(command, code, message);
         }
     }
     let result = dispatch(ctx, command);
+
     if took_lock {
         ctx.driver_lock = None;
     }
@@ -2768,6 +2801,7 @@ fn scheduler_tick(ctx: &mut Ctx) -> DispatchResult {
             "errors": report.errors,
             // Another driver held the ledger for this tick; nothing ran.
             "skipped": report.skipped,
+            "older_kernel": report.older_kernel,
             "latest_seq": ctx.store.latest_seq()?,
             // The UI polls this; a change means a background probe finished
             // and `env.get` now has something new to say.
@@ -2788,7 +2822,17 @@ fn env_get(ctx: &mut Ctx) -> DispatchResult {
     if ctx.environment.snapshot().is_none() {
         ctx.environment.start_probe();
     }
-    Ok((env_json(&ctx.environment), vec![]))
+    let mut payload = env_json(&ctx.environment);
+    let ledger = ctx.store.kernel_mark()?;
+    let old = crate::kernel_guard::check_recorded(ctx, ledger.clone());
+    payload["kernel"] = json!({
+        "build_id": ctx.build_id,
+        "origin": if ctx.build_id.starts_with("unknown-") { "unknown" } else { "git" },
+        "ledger_build_id": ledger,
+        "may_advance": old.is_none(),
+        "message": old.map(|o| o.message),
+    });
+    Ok((payload, vec![]))
 }
 
 /// Asks for a fresh probe. Returns immediately with what is currently known;

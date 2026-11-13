@@ -1,16 +1,21 @@
 import type { TickReport } from './core/supervisor.ts';
 
-export function createTicker({ call, isConnected, isBusy, intervalMs = 3000, log, onTick }: {
+export function createTicker({ call, isConnected, canTick = isConnected, isSlow = () => false, isBusy, intervalMs = 3000, log, onTick }: {
   call: () => Promise<TickReport>;
-  isConnected: () => boolean;
+  isConnected?: () => boolean;
+  canTick?: () => boolean;
+  isSlow?: () => boolean;
   isBusy: () => boolean;
   intervalMs?: number;
   log: (line: string) => void;
   onTick?: (report: TickReport) => void;
 }) {
   let pending = false;
+  let slowIntervals = 0;
   const timer = setInterval(async () => {
-    if (!isConnected() || pending || isBusy()) return;
+    if (!canTick?.() || pending || isBusy()) return;
+    if (isSlow()) { if (++slowIntervals < 10) return; }
+    slowIntervals = 0;
     pending = true;
     try {
       const report = await call();

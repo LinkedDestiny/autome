@@ -1627,3 +1627,369 @@ fn deps_cli_status() {
         .unwrap();
     assert!(s.ok(&["status", "T-2"]).contains("依赖      T-1（已完成）"));
 }
+
+#[test]
+fn build_id_version_line_matches_head() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .env("TZ", "UTC")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let count: u64 = git(&["rev-list", "--count", "HEAD"]).parse().unwrap();
+    let date = git(&[
+        "show",
+        "-s",
+        "--date=format-local:%Y%m%dT%H%M%SZ",
+        "--format=%cd",
+        "HEAD",
+    ]);
+    let sha = git(&["rev-parse", "--short=12", "HEAD"]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_autome"))
+        .arg("--version")
+        .env(
+            "AUTOME_HOME",
+            std::env::temp_dir().join(format!("autome-version-{}", std::process::id())),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap().trim(),
+        format!(
+            "autome {} ({count:07}-{date}-{sha})",
+            automed::entry::VERSION
+        )
+    );
+}
+
+#[test]
+fn build_id_cli_and_kernel_agree() {
+    let cli = std::path::Path::new(env!("CARGO_BIN_EXE_autome"));
+    let version = |path: &std::path::Path| {
+        let out = std::process::Command::new(path)
+            .arg("--version")
+            .env(
+                "AUTOME_HOME",
+                std::env::temp_dir().join(format!("autome-version-{}", std::process::id())),
+            )
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split_once(' ')
+            .unwrap()
+            .1
+            .to_owned()
+    };
+    assert_eq!(version(cli), version(&cli.with_file_name("automed")));
+}
+
+const OLD_KERNEL: &str = "0000001-20200101T000000Z-000000000000";
+
+fn kernel_command(s: &Sandbox, args: &[&str], old: bool) -> std::process::Command {
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_autome"));
+    c.args(args)
+        .current_dir(&s.repo)
+        .env("AUTOME_HOME", s.root.join("home"))
+        .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+        .env("AUTOMED_CLAUDE_BINARY", &s.fake_cli)
+        .env("AUTOMED_CODEX_BINARY", &s.fake_cli)
+        .env_remove("AUTOME_ALLOW_OLDER_KERNEL")
+        .env_remove("AUTOME_TEST_BUILD_ID");
+    if old {
+        c.env("AUTOME_TEST_BUILD_ID", OLD_KERNEL);
+    }
+    c
+}
+
+fn kernel_seed(s: &Sandbox) -> String {
+    let out = kernel_command(s, &["run", "--once"], false)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    automed::build_id::older_kernel_message(OLD_KERNEL, automed::build_id::BUILD_ID)
+}
+
+struct KernelRun {
+    child: std::process::Child,
+    out: PathBuf,
+    err: PathBuf,
+}
+impl KernelRun {
+    fn start(s: &Sandbox, json: bool) -> Self {
+        let out = s.root.join("run.out");
+        let err = s.root.join("run.err");
+        let mut c = kernel_command(s, &["run", "--interval", "0.05"], true);
+        if json {
+            c.arg("--json");
+        }
+        let child = c
+            .stdout(std::fs::File::create(&out).unwrap())
+            .stderr(std::fs::File::create(&err).unwrap())
+            .spawn()
+            .unwrap();
+        Self { child, out, err }
+    }
+    fn text(&self, json: bool) -> String {
+        std::fs::read_to_string(if json { &self.out } else { &self.err }).unwrap()
+    }
+    fn wait_for(&mut self, json: bool, text: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !self.text(json).contains(text) {
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "driver exited: {}",
+                self.text(false)
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {text}: {}",
+                self.text(json)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    fn stop(&mut self) {
+        assert!(self.child.try_wait().unwrap().is_none());
+        assert_eq!(
+            unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) },
+            0
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "SIGINT timeout");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+impl Drop for KernelRun {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn kernel_guard_run_says_it_once_and_stays_up() {
+    let s = Sandbox::new("kernel-quiet");
+    let message = kernel_seed(&s);
+    let mut run = KernelRun::start(&s, false);
+    run.wait_for(false, &message);
+    // Observe many ticks: this duration is the behavior being measured.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    run.stop();
+    let text = run.text(false);
+    assert_eq!(text.matches(&message).count(), 1, "{text}");
+    assert!(text.lines().count() <= 3, "{text}");
+    assert!(!text.contains("另一个驱动"));
+}
+
+#[test]
+fn kernel_guard_run_once_and_until_idle_exit_nonzero() {
+    let s = Sandbox::new("kernel-once");
+    let message = kernel_seed(&s);
+    for mode in ["--once", "--until-idle"] {
+        let out = kernel_command(&s, &["run", mode], true).output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(err.matches(&message).count(), 1);
+        assert!(!err.contains("另一个驱动"));
+    }
+}
+
+#[test]
+fn kernel_guard_run_json_reports_older_kernel() {
+    let s = Sandbox::new("kernel-json");
+    let message = kernel_seed(&s);
+    for mode in ["--once", "--until-idle"] {
+        let out = kernel_command(&s, &["run", mode, "--json"], true)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["older_kernel"]["message"], message);
+        assert_eq!(v["older_kernel"]["kernel"], OLD_KERNEL);
+        assert_eq!(v["older_kernel"]["ledger"], automed::build_id::BUILD_ID);
+        assert!(out.stderr.is_empty());
+    }
+    let mut run = KernelRun::start(&s, true);
+    run.wait_for(true, &message);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    run.stop();
+    assert_eq!(run.text(true).lines().count(), 1);
+    assert!(run.text(false).is_empty());
+}
+
+#[test]
+fn kernel_guard_run_resumes_when_the_ledger_allows_it() {
+    for json in [false, true] {
+        let s = Sandbox::new(if json {
+            "kernel-resume-json"
+        } else {
+            "kernel-resume"
+        });
+        let message = kernel_seed(&s);
+        let mut run = KernelRun::start(&s, json);
+        run.wait_for(json, &message);
+        let newer = "9999999-29991231T000000Z-ffffffffffff";
+        let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+        assert_eq!(store.claim_kernel_mark(newer).unwrap(), None);
+        drop(store);
+        let changed = automed::build_id::older_kernel_message(OLD_KERNEL, newer);
+        run.wait_for(json, &changed);
+        let out = kernel_command(&s, &["run", "--once"], true)
+            .env("AUTOME_ALLOW_OLDER_KERNEL", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let resumed = if json {
+            "\"older_kernel\":null"
+        } else {
+            "账本已允许本内核推进，继续驱动"
+        };
+        run.wait_for(json, resumed);
+        // A new kernel raises the mark again; the same process must stop again.
+        kernel_seed(&s);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while run.text(json).matches(&message).count() < 2 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        run.stop();
+        assert_eq!(run.text(json).matches(resumed).count(), 1);
+        assert_eq!(run.text(json).matches(&changed).count(), 1);
+        assert_eq!(run.text(json).matches(&message).count(), 2);
+    }
+}
+
+#[test]
+fn kernel_guard_write_commands_refused_with_the_sentence() {
+    let s = Sandbox::new("kernel-write");
+    s.ok(&["project", "add", ".", "--skip-onboarding"]);
+    s.ok(&["task", "new", "anchor", "--draft"]);
+    let message = kernel_seed(&s);
+    let before = s.json(&["ls"]);
+    for args in [
+        vec!["task", "new", "blocked", "--draft"],
+        vec!["approve", "anchor"],
+        vec!["merge", "anchor"],
+        vec!["rerun", "anchor", "impl"],
+    ] {
+        let out = kernel_command(&s, &args, true).output().unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("autome：{message}\n")
+        );
+    }
+    assert_eq!(s.json(&["ls"]), before);
+}
+
+#[test]
+fn kernel_guard_core_subcommand_serves_stdio() {
+    use automed::ipc::{read_frame, write_frame};
+    use std::process::Stdio;
+    let s = Sandbox::new("kernel-core");
+    for old in [false, true] {
+        let mut child = kernel_command(&s, &["core"], old)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let command = serde_json::json!({"request_id":"test", "command_id":"test", "protocol_version":automed::ipc::PROTOCOL_VERSION, "method":"env.get", "params":{}});
+        write_frame(
+            &mut child.stdin.take().unwrap(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let frame = read_frame(&mut output.stdout.as_slice(), 8 * 1024 * 1024).unwrap();
+        let reply: Value = serde_json::from_slice(&frame).unwrap();
+        let version = kernel_command(&s, &["--version"], old).output().unwrap();
+        let id = if old {
+            OLD_KERNEL
+        } else {
+            automed::build_id::BUILD_ID
+        };
+        assert!(String::from_utf8_lossy(&version.stdout).contains(id));
+        assert_eq!(
+            reply["outcome"]["payload"]["kernel"]["build_id"], id,
+            "{reply}"
+        );
+    } // EOF is clean, malformed commands receive an error frame, and opening
+    // an unreadable ledger fails without contaminating the frame channel.
+    let out = kernel_command(&s, &["core"], false).output().unwrap();
+    assert!(out.status.success() && out.stdout.is_empty());
+    let mut child = kernel_command(&s, &["core"], false)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    write_frame(&mut child.stdin.take().unwrap(), b"{}").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let frame = read_frame(&mut out.stdout.as_slice(), 8 * 1024 * 1024).unwrap();
+    let reply: Value = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(reply["outcome"]["status"], "error");
+    let out = kernel_command(&s, &["core"], false)
+        .env("AUTOMED_DB_PATH", &s.repo)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn kernel_guard_doctor_shows_both_ids() {
+    let s = Sandbox::new("kernel-doctor");
+    let empty = kernel_command(&s, &["doctor", "--json"], false)
+        .output()
+        .unwrap();
+    let empty: Value = serde_json::from_slice(&empty.stdout).unwrap();
+    assert!(empty["kernel"]["ledger_build_id"].is_null());
+    let message = kernel_seed(&s);
+    let current = kernel_command(&s, &["doctor"], false).output().unwrap();
+    let old = kernel_command(&s, &["doctor"], true).output().unwrap();
+    assert_eq!(current.status.code(), old.status.code());
+    let text = String::from_utf8_lossy(&old.stdout);
+    assert!(
+        text.contains(OLD_KERNEL)
+            && text.contains(automed::build_id::BUILD_ID)
+            && text.contains(&message)
+    );
+    let out = kernel_command(&s, &["doctor", "--json"], true)
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kernel"]["build_id"], OLD_KERNEL);
+    assert_eq!(v["kernel"]["ledger_build_id"], automed::build_id::BUILD_ID);
+    assert_eq!(v["kernel"]["may_advance"], false);
+    assert_eq!(v["kernel"]["message"], message);
+}
+
+#[test]
+fn kernel_guard_test_override_cannot_raise_the_id() {
+    let s = Sandbox::new("kernel-override");
+    for candidate in ["9999999-29991231T000000Z-ffffffffffff", "", "invalid"] {
+        let out = kernel_command(&s, &["--version"], false)
+            .env("AUTOME_TEST_BUILD_ID", candidate)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains(automed::build_id::BUILD_ID));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("忽略 AUTOME_TEST_BUILD_ID"));
+    }
+}

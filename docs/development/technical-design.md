@@ -340,6 +340,8 @@ rebase 用 patch-id 等价比较列出改写或新增提交，另列原分支中
 
 ### 8.1 驱动锁、门禁、重试与冷却、表态租约
 
+**谁能推进账本。** 构建标识为祖先提交数（7 位）、提交时间与短 SHA；只按祖先数比较，时间不排序。同一提交的 CLI 与内核共用标识；无 Git 或浅克隆为 unknown。未知不能覆盖已知，两个不同 unknown 或同计数不同 SHA 按旧内核拒绝。所有 READ_METHODS 之外的方法都算推进。tick 与写命令先无锁只读比较，再在驱动锁内 claim，锁覆盖比较到最后一个副作用；取锁 I/O 失败不推进。检查先于 reclaim、recover、固定协议和启动会话。旧内核只读，拒绝不改变任务或新增 task.updated。AUTOME_ALLOW_OLDER_KERNEL=1 是显式逃生口，每进程最多一次，事务内降低标记并记 kernel.adopted（from/to/via/method）；新内核再来会抬高标记，旧进程随后被拒。
+
 **宿主准备。** 项目 `[setup]` 在任务检出建好后的会话前、各门禁前和合并后 Cleanup 前检查准备指纹；MainCheck 的 detached 检出单独准备。指纹包含命令与 watch 文件内容（不可读取记 absent），成功才原子保存到 `.autome/output/setup/`，任务检出、verify 检出、主检出分别记录，主检出记录跨任务共享；新建检出清除旧记录。空 watch 只比较命令。复用门禁 wrapper、独立进程组与 pid/exit/started/log，tick 只轮询，重启接续，超时退出码 124。先收在途作业并记录启动指纹，再按最新输入判断。准备命令与门禁共用 `[gate] concurrency` 名额，任务检出、verify 检出、主检出均计入；指纹未变、未配置或工作区跳过准备时不排队。门禁前准备与随后的门禁在持续占位、期间无 task.updated 且退出标记未过占位期限时连占同一名额，否则后续进程重新准入。会话前准备排队不计崩溃重试或 Bug Loop 修复轮次，Fix 轮次到真正启动会话才记录。主检出准备先检查指纹和其它任务的主检出准备互斥，再申请名额，包含尚无 pid 的启动空窗。任务检出准备失败进入 Failed（命令、退出码、日志），不退回实现轮；verify 失败跳过 MainCheck 并报警，主检出失败报警后照常清理完成，均不撤销合并。暂停后恢复收同一作业，停止/取消杀进程并清准备标记。写 setup.started/result；工作区三个时机都跳过，每任务只写一次 setup.skipped；未配置时无准备事件或等待。
 
 **合并后命令。** 项目 `[merge] after` 是 Cleanup 的前置子阶段，不新增节点：合并成功、MainCheck（若配置）通过、主检出准备处理完后，在清理任务 worktree / 分支之前，由宿主在 `project.path` 用 `sh -c` 执行；准备失败仍运行钩子。命令获得 `AUTOME_TASK` 与 `AUTOME_MERGE_COMMIT`（本任务完整合并 SHA），主检出可能已有后续合并。工作区、无单一合并提交、MainCheck 失败或跳过时只写一次 `merge.after_skipped`；Bug Loop 同样适用。
@@ -422,6 +424,10 @@ Onboarding 第 3 步以专用 prompt 启动 Claude Code 会话（工作目录为
 
 ## 13. 持久化与恢复
 
+迁移 v8 新增单行 kernel_mark（id=1、build_id、updated_at）。BEGIN IMMEDIATE 内比较并按需更新；同标识不写，没有记录时首次推进写入。原迁移不改。v8 会拒绝之后新连接的旧 schema 内核，但不能撤销迁移前已经打开的连接。首次上线必须先退出桌面端、面板、手动驱动并 bootout 常驻驱动，确认无旧进程，再安装 CLI（doctor 会迁移），随后 bootstrap 新驱动、重新打包桌面端并重启面板。
+
+回退不得把 SCHEMA_VERSION 降回 7；回退行为须保留 v8 迁移与 kernel_mark。临时接管用 AUTOME_ALLOW_OLDER_KERNEL=1，不绕过 schema 检查。本任务之前的内核不能靠此开关打开 v8 账本。
+
 SQLite 表：`projects`、`tasks`、`sessions`、`decisions`（用户对 Backlog 与争议项的表态，及携带 / 消费它的会话）、`events`（append-only，界面事件流与审计用）、`session_retries`（等待重派的崩溃轮次）、`runtime_cooldowns`（限流中的 CLI）、`project_alerts`（项目级报警，如合并后 main 门禁失败）。
 
 schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务编号均外键引用 `tasks(id)`，联合主键为 `(task_id, after_id)`；`ord` 保留声明顺序，`notified` 记录已通知的阻塞原因。旧任务迁移后无依赖，原队列顺序不变；创建任务与依赖在同一事务内提交。
@@ -432,7 +438,9 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 ## 14. IPC 接口
 
-沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。
+沿用 autome-v2 的 framed JSON-RPC stdio 与版本协商。`autome core` 与 `automed` 共用 stdio 入口，stdout 只写帧。
+
+`env.get.kernel` 含 build_id、origin（git/unknown）、ledger_build_id、may_advance、message，只读不更新标记。tick 保留布尔 skipped，新增 older_kernel（null 或 {message,kernel,ledger}）；锁忙与旧内核可区分。写命令拒绝码为 older_kernel，消息与 tick 相同；Web 映射 409。面板 outdated 状态保持可读、横幅显示原话并禁写，tick 降为每 10 个间隔一次，状态不变不重复日志。常驻 autome run 被拒时保持进程，只在原因变化时输出；恢复继续推进；--once/--until-idle 被拒退出 1。
 
 命令：`project.add / list / get / remove / onboarding.step / onboarding.skip`、`task.create / list / get / approve / reject / merge / pause / resume / stop / cancel / decide / extend_budget / rerun_from / archive / restore`、`config.get / set / reset_field / validate`、`env.detect / install / login`、`skills.list / bind`、`session.log`。
 

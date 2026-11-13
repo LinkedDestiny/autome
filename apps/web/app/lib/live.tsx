@@ -30,12 +30,14 @@ export function useLiveEvents() {
 type LiveStatus = { connection: ConnectionState; core?: CoreMessage; kernelError?: string };
 export function liveBanner({ connection, core, kernelError }: LiveStatus) {
   if (connection === 'reconnecting') return { tone: 'status' as const, text: '连接中断，正在重连' };
+  if (core?.status === 'outdated') return { tone: 'alert' as const, text: core.reason ?? '' };
   const error = core?.status === 'offline' ? (core.reason ?? '内核已离线') : !core ? kernelError : undefined;
   return error === undefined ? null : { tone: 'alert' as const, text: `内核离线：${error}，写操作暂不可用` };
 }
 export function writeGate({ connection, core }: LiveStatus) {
   if (connection === 'connecting') return { allowed: false, reason: '正在连接服务' };
   if (connection === 'reconnecting') return { allowed: false, reason: '连接中断，正在重连' };
+  if (core?.status === 'outdated') return { allowed: false, reason: core.reason ?? '' };
   if (core?.status === 'connected') return { allowed: true, reason: '' };
   return { allowed: false, reason: core ? `内核离线：${core.reason ?? '内核已离线'}` : '正在连接服务' };
 }

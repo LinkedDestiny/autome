@@ -15,7 +15,8 @@ export async function w9Kernel() {
   mkdirSync(userHome);
   const oldHome = process.env.HOME;
   process.env.HOME = userHome;
-  const core = new CoreSupervisor({ home: automeHome, binaryPath: process.env.AUTOMED_BIN || resolve(import.meta.dirname, '../../../../target/debug/automed') });
+  const binaryPath = process.env.AUTOMED_BIN || resolve(import.meta.dirname, '../../../../target/debug/automed');
+  const core = new CoreSupervisor({ home: automeHome, binaryPath });
   const close = async () => {
     await core.stop();
     if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
@@ -31,7 +32,7 @@ export async function w9Kernel() {
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.name', 'fixture'], ['config', 'user.email', 'fixture@example.com'], ['commit', '--allow-empty', '-qm', 'init']]) execFileSync('git', args, { cwd: path });
     return path;
   }
-  return { root, userHome, automeHome, core, admin, gateway, repo, close };
+  return { root, userHome, automeHome, binaryPath, core, admin, gateway, repo, close };
 }
 export async function captureReplies() {
   const s = await w9Kernel();

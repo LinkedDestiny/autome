@@ -2,11 +2,12 @@ import { isAbsolute, normalize } from 'node:path';
 import type { CoreStatus } from './core/supervisor.ts';
 
 export type LedgerEvent = { seq: number; kind: string; subject: string; payload: unknown };
-export type CoreMessage = { type: 'core'; status: 'connected' | 'offline'; reason?: string };
-export type ServerMessage = { type: 'hello'; seq: number; core: CoreMessage['status'] } | ({ type: 'event' } & LedgerEvent) | CoreMessage | { type: 'reload' } | LogServerMessage;
+export type CoreMessage = { type: 'core'; status: 'connected' | 'offline' | 'outdated'; reason?: string };
+export type ServerMessage = { type: 'hello'; seq: number; core: CoreMessage['status']; reason?: string } | ({ type: 'event' } & LedgerEvent) | CoreMessage | { type: 'reload' } | LogServerMessage;
 export function encodeMessage(message: ServerMessage | ExtensionMessage) { return JSON.stringify(message); }
 export function mapCoreStatus(status: CoreStatus): CoreMessage {
   switch (status.state) {
+    case 'outdated': return { type: 'core', status: 'outdated', reason: status.reason };
     case 'connected': return { type: 'core', status: 'connected' };
     case 'starting': return { type: 'core', status: 'offline', reason: '内核正在启动' };
     case 'restarting': return { type: 'core', status: 'offline', reason: `内核已退出，正在重启：${status.reason ?? '内核已退出'}` };

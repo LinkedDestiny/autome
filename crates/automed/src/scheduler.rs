@@ -94,6 +94,7 @@ pub struct TickReport {
     pub errors: Vec<String>,
     /// Another driver held the ledger, so this pass did nothing at all.
     pub skipped: bool,
+    pub older_kernel: Option<crate::kernel_guard::OlderKernel>,
 }
 
 impl TickReport {
@@ -125,6 +126,24 @@ impl TickReport {
 /// tick that finds another process holding it skips rather than waits. The
 /// other driver is doing exactly this work.
 pub fn tick(ctx: &mut Ctx) -> TickReport {
+    match crate::kernel_guard::check(ctx) {
+        Ok(Some(old)) => {
+            return TickReport {
+                skipped: true,
+                older_kernel: Some(old),
+                ..TickReport::default()
+            };
+        }
+        Err(e) => {
+            return TickReport {
+                skipped: true,
+                errors: vec![e.to_string()],
+                ..TickReport::default()
+            };
+        }
+        Ok(None) => {}
+    }
+
     let took_lock = if ctx.driver_lock.is_some() {
         false
     } else {
@@ -140,12 +159,28 @@ pub fn tick(ctx: &mut Ctx) -> TickReport {
                 };
             }
             Err(e) => {
-                tracing::warn!(error = %e, "driver lock unavailable, ticking without it");
-                false
+                return TickReport {
+                    skipped: true,
+                    errors: vec![format!("无法取得驱动锁：{e}，本次不推进")],
+                    ..TickReport::default()
+                };
             }
         }
     };
-    let report = tick_locked(ctx);
+    let report = match crate::kernel_guard::claim(ctx, "scheduler.tick") {
+        Ok(None) => tick_locked(ctx),
+        Ok(Some(old)) => TickReport {
+            skipped: true,
+            older_kernel: Some(old),
+            ..TickReport::default()
+        },
+        Err(e) => TickReport {
+            skipped: true,
+            errors: vec![e.to_string()],
+            ..TickReport::default()
+        },
+    };
+
     if took_lock {
         ctx.driver_lock = None;
     }

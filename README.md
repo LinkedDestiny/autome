@@ -294,6 +294,57 @@ cargo install --path crates/autome-cli  # or plainly, with Rust
 `PREFIX` picks the directory. The installer checks the tarball's `.sha256`,
 refuses an unverified download, and finishes with `autome doctor`.
 
+### Upgrading, and which build may drive the ledger
+
+`autome --version` and `automed --version` include a build ID in parentheses:
+`0004213-20261113T042058Z-7715d8ed0a1b` (ancestor count, commit time, short SHA).
+Only the ancestor count orders commits; time is informational. Builds without
+usable Git history, including shallow clones, report `unknown-<version>-<UTC time>`.
+The CLI and its embedded kernel share one ID. Unknown builds cannot supersede
+a known Git build; different unknown IDs and equal counts with different SHAs
+are refused conservatively. Counts order descendants, not unrelated branches.
+
+The ledger records the latest kernel to advance it. An older kernel can read
+but cannot tick or write; it does not fail tasks or freeze their protocol.
+The dashboard shows the reason and disables writes. Persistent `autome run`
+stays alive and reports a refusal only when its reason changes; `--once` and
+`--until-idle` exit with status 1. The diagnostic is:
+
+> 这个内核（<标识>）比推进过账本的内核（<标识>）旧，已停止推进；请重新安装或设置 AUTOMED_BIN
+
+For a deliberate rollback, `AUTOME_ALLOW_OLDER_KERNEL=1 autome run --once`
+adopts the current kernel and records a `kernel.adopted` event. Only the literal
+`1` works, once per process. A newer kernel can raise the mark again; an already
+adopted old process then stops advancing. This does not bypass schema checks.
+
+The dashboard uses `autome core`, the stdio kernel in the installed CLI file.
+Resolution order: `AUTOMED_BIN`, bundled `automed`, the first `autome` on PATH,
+`~/.local/bin/autome`, then a cargo build. Custom PREFIX installs must be on PATH
+or selected with `AUTOMED_BIN=<PREFIX>/autome`. Startup logs show the path and
+build ID, explicitly identifying cargo builds.
+
+For the first upgrade to schema v8, after merging:
+
+1. Quit every old desktop app and dashboard, stop manually launched `autome run`,
+   and unload the persistent driver with `launchctl bootout gui/$(id -u)/com.autome.loop`.
+   Check `pgrep -fl 'autome|automed'` and continue only when no old kernel remains.
+   Killing a KeepAlive process alone would let launchd restart the old executable.
+2. Run `sh scripts/install-cli.sh`. Its final `doctor` opens and migrates the ledger.
+3. Reload the driver with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.autome.loop.plist`.
+4. Repackage the desktop app before launching it, and restart the dashboard.
+
+Migration rejects new connections from pre-v8 kernels, but cannot revoke old
+connections that are already open: stopping all old processes must come first.
+The Loop pauses during these steps without losing tasks. Do not start old apps
+after migration. For later compatible reinstalls, use
+`launchctl kickstart -k gui/$(id -u)/com.autome.loop` to replace the running driver,
+and restart the dashboard kernel or dashboard.
+
+Never test a worktree build against the real ledger or install location. Set
+both `PREFIX` and `AUTOME_HOME` to temporary directories for installation tests.
+
+### Using the CLI
+
 ```sh
 autome doctor                            # Git, Claude Code, Codex, logins; where state lives
 autome project add ~/code/shop --skip-onboarding
