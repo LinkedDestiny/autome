@@ -3,12 +3,25 @@ import type { LogSession } from './session-log.tsx';
 import type { TaskEvent } from '../../server/task-events.ts';
 import { DOC_LIMIT_BYTES, pickDocument, type TaskDocument } from '../../server/task-docs.ts';
 export type TaskPayload = {
-  task: { id: string; title: string; request?: string; state?: { state: string; node?: string }; merge?: { authorized?: boolean } };
-  project?: { id: string };
+  cost?: { usd_total: number; sessions: number; sessions_without_cost: number };
+  gate?: { ok: boolean; node: string; exit_code: number } | null;
+  gate_queue_position?: number | null;
+  queue_position?: number | null;
+  status_error?: boolean;
+  status_error_detail?: string | null;
+  status_block?: {
+    milestones_done: number; milestones_total: number; current_milestone?: string | null;
+    milestones?: { id: string; state: string; title?: string }[];
+    design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
+  } | null;
+  task: { id: string; title: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+    state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
+    merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
+  project?: { id: string; name?: string; display_name?: string };
   sessions: LogSession[];
   documents?: TaskDocument[];
   brief?: string | null;
-  retry?: unknown;
+  retry?: { attempts: number; not_before: string } | null;
 };
 export async function loadTaskDetail(services: WebServices, id: string, url: URL) {
   const offline = '内核离线，暂时拿不到任务';

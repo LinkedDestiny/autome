@@ -102,3 +102,17 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .session-log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .session-log-text { font-family: ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; overflow-anchor: none; padding: 16px; background: var(--animal-bg-input); border-radius: var(--animal-radius-sm); }
 .session-log-status { color: var(--animal-text-muted); font-size: 14px; }
+
+.task-detail-header h1 { margin: 12px 0; color: var(--animal-text); font-size: 24px; overflow-wrap: anywhere; }
+.task-detail-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; font-size: 14px; overflow-wrap: anywhere; }
+.task-detail-meta a { text-decoration: underline; }
+.task-stage { padding: 16px 0; border-bottom: 1px solid var(--animal-border-light); }
+.task-stage-list, .task-milestones { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 12px; list-style: none; }
+.task-stage-list li { padding: 6px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
+.task-stage-list [aria-current="step"], .task-milestones .is-current { color: var(--animal-text); background: var(--animal-primary); font-weight: 800; }
+.task-stage-mark { color: var(--animal-text-body); }
+.task-milestones { margin: 12px 0 0; font-size: 13px; }
+.task-milestones li { padding: 4px 8px; border-radius: var(--animal-radius-sm); }
+.task-notice { margin: 12px 0; padding: 12px 16px; background: var(--animal-bg-content); border-left: 3px solid var(--animal-primary); max-height: 180px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-notice.is-error { border-color: var(--animal-error-active); }
+.task-notice p { margin: 4px 0; }

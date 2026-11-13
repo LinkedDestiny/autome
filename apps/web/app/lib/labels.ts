@@ -60,3 +60,25 @@ export function gatePhrase(gate?: { ok: boolean; node: string; exit_code: number
   return !gate ? '门禁未跑过' : gate.ok === true ? `门禁通过 · ${nodeLabel(gate.node)}` : `门禁未通过 · 退出码 ${gate.exit_code}`;
 }
 export function mergedPhrase(sha: string) { return `已合并 · ${sha.slice(0, 7)}`; }
+
+// Detail pages retain the complete core reason; notification snippets stay short.
+export function failureText(reason?: Record<string, unknown>): string {
+  if (!reason) return '';
+  const detail = reason.detail ?? '';
+  switch (reason.kind) {
+    case 'design_budget': return `设计轮用完（上限 ${reason.limit}）`;
+    case 'impl_budget': return `实现预算用完（N = ${reason.limit}）`;
+    case 'fix_budget': return `修复轮次用完（上限 ${reason.limit}）`;
+    case 'gate_same_failure': return reason.summary === '门禁运行超时，被内核终止'
+      ? `门禁超时：连续 ${reason.count} 次运行超过时限被内核终止（日志：${reason.log ?? ''}）`
+      : `门禁连续 ${reason.count} 次因同一原因失败：${reason.summary ?? ''}（日志：${reason.log ?? ''}）`;
+    case 'infeasible': return '设计文档判定不可实现';
+    case 'protocol': return `协议失败：${detail}`;
+    case 'session_crashed': return `会话崩溃：${detail}`;
+    case 'rebase_conflict': return `rebase 冲突：${detail}`;
+    case 'config': return `配置问题：${detail}`;
+    case 'core_step': return `${nodeLabel(String(reason.node ?? '?'))} 失败：${detail}`;
+    case 'setup': return `准备命令失败（退出码 ${reason.exit_code}）：${reason.command ?? ''}（日志：${reason.log ?? ''}）`;
+    default: return String(reason.kind ?? '');
+  }
+}
