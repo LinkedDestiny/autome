@@ -705,3 +705,55 @@ fn gate_quick_audit_brief_matches_golden() {
     maybe_update_brief_golden("audit-before-merge-quick", &got);
     assert_eq!(got, brief_golden("audit-before-merge-quick"));
 }
+
+#[test]
+fn regression_format_only_locate_requires_precommit_check() {
+    use autome_domain::session::BugStep;
+    for quick in [None, Some("cargo fmt --all -- --check")] {
+        let mut s = spec(
+            SessionKind::Bug {
+                step: BugStep::Locate,
+            },
+            automed::protocol::seed(),
+        );
+        s.budget = Some(automed::launcher::BudgetLine { round: 0, limit: 3 });
+        s.gate_quick = quick;
+        let prompt = build_prompt(&s).unwrap();
+        for term in ["提交前", "格式化", "复现"] {
+            assert!(prompt.contains(term), "定位提示词缺少 {term}");
+        }
+        if let Some(command) = quick {
+            assert!(prompt.contains(command), "定位提示词未提供 quick 命令");
+        } else {
+            assert!(prompt.contains("lint"), "无 quick 时缺少项目检查指引");
+        }
+    }
+}
+
+#[test]
+fn regression_format_only_fix_and_review_explain_exception() {
+    use autome_domain::session::BugStep;
+    for step in [BugStep::Fix, BugStep::FixReview] {
+        for gate in [None, Some("make check")] {
+            let mut s = spec(SessionKind::Bug { step }, automed::protocol::seed());
+            s.budget = Some(automed::launcher::BudgetLine { round: 1, limit: 3 });
+            s.gate_before_merge = gate;
+            let prompt = build_prompt(&s).unwrap();
+            for term in [
+                "空白",
+                "换行",
+                "行尾逗号",
+                "不算修改回归测试",
+                "断言",
+                "输入",
+                "用例名",
+                "跳过标记",
+            ] {
+                assert!(
+                    prompt.contains(term),
+                    "{step:?} 提示词缺少格式化边界：{term}"
+                );
+            }
+        }
+    }
+}

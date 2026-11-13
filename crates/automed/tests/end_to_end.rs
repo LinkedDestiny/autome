@@ -1774,7 +1774,7 @@ fn every_round_is_handed_a_brief_and_the_protocol_is_frozen_once_per_task() {
     let task = w.ctx.store.get_task(&task_id).unwrap();
     let protocol_ref = task.protocol_ref.expect("no protocol_ref");
     assert_eq!(protocol_ref, automed::protocol::current().0.to_wire());
-    assert!(protocol_ref.starts_with("protocol/v6@"), "{protocol_ref}");
+    assert!(protocol_ref.starts_with("protocol/v7@"), "{protocol_ref}");
     // Taken from the binary: nothing on this machine holds the protocol.
     assert!(
         !w.ctx.autome_home.join("protocol").exists(),
@@ -8842,4 +8842,132 @@ fn budget_alert_fires_once_and_the_task_keeps_going() {
 fn budget_alert_without_a_budget_section_raises_nothing() {
     needs_git!();
     run_budget_alert_task(false);
+}
+
+// Formatting must have the same outcome for new files, added blocks, inline
+// sections and persisted section-digest snapshots from older releases.
+fn regression_format_only_case(path: &str, existing: bool, legacy: bool, weaken: bool) {
+    assert!(git_available(), "this regression requires git");
+    let mut w = World::new("regression-format-only");
+    let request = "regression format only";
+    let slug = slug_for(request);
+    if existing {
+        let full = w.repo.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "// existing suite\n").unwrap();
+        automed::git::commit_paths(&w.repo, &[path], "existing suite").unwrap();
+    }
+    let original = "#[test]\nfn regression() { assert_eq!(1, 1); }\n";
+    let formatted =
+        "#[test]\nfn regression() {\n    assert_eq!(\n        1,\n        1,\n    );\n}\n";
+    let changed = if weaken {
+        formatted.replace("        1,", "        2,")
+    } else {
+        formatted.to_string()
+    };
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_LOCATE}\nmkdir -p tests src\ncat > {path} <<'RUST'\n{original}RUST"),
+    );
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!("{BUG_FIX}\ncat > {path} <<'RUST'\n{changed}RUST"),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    resume_wait(&mut w, |w| {
+        w.ctx
+            .store
+            .last_event(&id, "bug.regression_snapshot")
+            .unwrap()
+            .is_some()
+    });
+    let mut snapshot = w
+        .ctx
+        .store
+        .last_event(&id, "bug.regression_snapshot")
+        .unwrap()
+        .unwrap();
+    let file = snapshot["files"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|file| file["path"] == path)
+        .unwrap();
+    assert_eq!(
+        file["protect"],
+        if path.starts_with("src/") {
+            "section"
+        } else if existing {
+            "blocks"
+        } else {
+            "file"
+        }
+    );
+    if legacy {
+        use sha2::{Digest, Sha256};
+        file.as_object_mut().unwrap().remove("blocks");
+        file["section"] = json!(format!("{:x}", Sha256::digest(original.as_bytes())));
+        w.ctx
+            .store
+            .append_event("bug.regression_snapshot", &id, snapshot)
+            .unwrap();
+    }
+    w.settle();
+    if weaken {
+        let task = w.ctx.store.get_task(&id).unwrap();
+        assert!(
+            matches!(task.state, autome_domain::task::TaskState::Failed {
+            at: autome_domain::task::Node::Fix,
+            reason: autome_domain::task::FailureReason::Protocol { ref detail }, ..
+        } if detail.contains(path)),
+            "{:?}",
+            task.state
+        );
+    } else {
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "{:?}",
+            w.ctx.store.get_task(&id).unwrap().state
+        );
+    }
+}
+
+#[test]
+fn regression_format_only_file_accepts_formatting() {
+    regression_format_only_case("tests/regression.rs", false, false, false);
+}
+
+#[test]
+fn regression_format_only_blocks_accept_formatting() {
+    regression_format_only_case("tests/regression.rs", true, false, false);
+}
+
+#[test]
+fn regression_format_only_section_accepts_formatting() {
+    regression_format_only_case("src/lib.rs", true, false, false);
+}
+
+#[test]
+fn regression_format_only_legacy_section_accepts_formatting() {
+    regression_format_only_case("src/lib.rs", true, true, false);
+}
+
+#[test]
+fn regression_format_only_assertion_changes_remain_rejected() {
+    for (path, existing, legacy) in [
+        ("tests/regression.rs", false, false),
+        ("tests/regression.rs", true, false),
+        ("src/lib.rs", true, false),
+        ("src/lib.rs", true, true),
+    ] {
+        regression_format_only_case(path, existing, legacy, true);
+    }
 }

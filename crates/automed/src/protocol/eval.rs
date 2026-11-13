@@ -413,9 +413,10 @@ fn layer_one_cases(files: &ProtocolFiles, r: &mut Report) {
 }
 
 /// Placeholders a template may use.
-const KNOWN_PLACEHOLDERS: [&str; 11] = [
+const KNOWN_PLACEHOLDERS: [&str; 12] = [
     "gate_line",
     "fix_gate_note",
+    "locate_format_check",
     "slug",
     // The task's document directory as the round sees it. Not the same string
     // for every project: a workspace session starts beside its member
