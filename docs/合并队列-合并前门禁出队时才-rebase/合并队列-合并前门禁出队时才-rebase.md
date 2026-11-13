@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 3/25
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 审计 M-02 的授权寿命、预先同意与撤销及配置警告；通过后推进 M-03
+next-action: 推进 M-03：出队 rebase 冲突回实现 / 修复轮并让位
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -401,7 +401,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 合并队列核心：`[merge] auto` 读取、出队对齐、项目合并临界区 | 0 | merge-queue |
-| M-02 | 待审 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
+| M-02 | 已完成 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
 | M-03 | 开放 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
 | M-04 | 开放 | 过期显示与合并队列的输出 | 0 | merge-view |
 | M-05 | 开放 | README 与技术设计文档 | 0 | docs |
@@ -423,7 +423,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 
 ### M-02 范围
 
-最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-02-r3-impl.md · 验收通过，待审 · 实现 #3
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-02-r3-audit.md · 通过 · 审计 #2
 
 - 结果：任意未完成未失败的任务可预先同意合并并在合并卡点不停；`--cancel` 后停；设计卡点不跳过；授权不再随离开尾段丢失；
   无门禁时有配置警告；`save_project` 保留 `[merge]`。
