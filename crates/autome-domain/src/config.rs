@@ -27,6 +27,12 @@ pub const PARALLEL_MAX: u32 = 5;
 pub const DEFAULT_PARALLEL: u32 = 3;
 pub const DEFAULT_DESIGN_ROUNDS: u32 = 15;
 pub const DEFAULT_BUDGET_FACTOR: u32 = 5;
+pub const DEFAULT_SESSION_MINUTES: u32 = 120;
+pub const SESSION_MINUTES_MIN: u32 = 5;
+
+fn default_session_minutes() -> u32 {
+    DEFAULT_SESSION_MINUTES
+}
 
 /// Loop-wide numeric settings. Every field is overridable per project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +40,8 @@ pub struct LoopDefaults {
     pub parallel: u32,
     pub design_rounds: u32,
     pub budget_factor: u32,
+    #[serde(default = "default_session_minutes")]
+    pub session_minutes: u32,
 }
 
 impl Default for LoopDefaults {
@@ -42,6 +50,7 @@ impl Default for LoopDefaults {
             parallel: DEFAULT_PARALLEL,
             design_rounds: DEFAULT_DESIGN_ROUNDS,
             budget_factor: DEFAULT_BUDGET_FACTOR,
+            session_minutes: DEFAULT_SESSION_MINUTES,
         }
     }
 }
@@ -55,6 +64,8 @@ pub struct LoopOverrides {
     pub design_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_factor: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_minutes: Option<u32>,
 }
 
 /// One role's fully-resolved execution profile (requirement C-04).
@@ -524,6 +535,10 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             parallel,
             design_rounds,
             budget_factor,
+            session_minutes: project
+                .loop_overrides
+                .session_minutes
+                .unwrap_or(global.loop_defaults.session_minutes),
         },
         roles,
         bug: project.bug.unwrap_or_default(),
@@ -577,6 +592,10 @@ pub enum ConfigViolation {
     },
     DesignRoundsOutOfRange {
         value: u32,
+    },
+    SessionMinutesOutOfRange {
+        value: u32,
+        min: u32,
     },
     BudgetFactorOutOfRange {
         value: u32,
@@ -641,6 +660,12 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
     if loop_cfg.design_rounds == 0 {
         violations.push(ConfigViolation::DesignRoundsOutOfRange {
             value: loop_cfg.design_rounds,
+        });
+    }
+    if loop_cfg.session_minutes < SESSION_MINUTES_MIN {
+        violations.push(ConfigViolation::SessionMinutesOutOfRange {
+            value: loop_cfg.session_minutes,
+            min: SESSION_MINUTES_MIN,
         });
     }
     if loop_cfg.budget_factor == 0 {
@@ -709,6 +734,47 @@ pub fn warnings(config: &ResolvedConfig) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_minutes_defaults_and_overrides() {
+        let mut global = GlobalConfig::default();
+        let mut project = ProjectConfig::default();
+        assert_eq!(
+            resolve(&global, &project).loop_defaults.session_minutes,
+            120
+        );
+        global.loop_defaults.session_minutes = 600;
+        assert_eq!(
+            resolve(&global, &project).loop_defaults.session_minutes,
+            600
+        );
+        project.loop_overrides.session_minutes = Some(30);
+        assert_eq!(resolve(&global, &project).loop_defaults.session_minutes, 30);
+        let old: LoopDefaults =
+            serde_json::from_str(r#"{"parallel":3,"design_rounds":15,"budget_factor":5}"#).unwrap();
+        assert_eq!(old.session_minutes, 120);
+    }
+
+    #[test]
+    fn session_minutes_rejects_below_minimum() {
+        for value in [0, 1, 4] {
+            let mut global = GlobalConfig::default();
+            global.loop_defaults.session_minutes = value;
+            assert_eq!(
+                validate(&resolve(&global, &ProjectConfig::default()), &NoSkills),
+                vec![ConfigViolation::SessionMinutesOutOfRange { value, min: 5 }]
+            );
+        }
+    }
+
+    #[test]
+    fn session_minutes_accepts_minimum_default_and_maximum() {
+        for value in [5, DEFAULT_SESSION_MINUTES, u32::MAX] {
+            let mut global = GlobalConfig::default();
+            global.loop_defaults.session_minutes = value;
+            assert!(validate(&resolve(&global, &ProjectConfig::default()), &NoSkills).is_empty());
+        }
+    }
+
     #[test]
     fn merge_after_config_is_carried_into_the_resolved_config() {
         let mut project: ProjectConfig = serde_json::from_str("{}").unwrap();

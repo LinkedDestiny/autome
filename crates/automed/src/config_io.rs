@@ -145,6 +145,9 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
         if let Some(v) = t.get("design_rounds").and_then(toml::Value::as_integer) {
             config.loop_defaults.design_rounds = v.clamp(0, u32::MAX as i64) as u32;
         }
+        if let Some(v) = t.get("session_minutes").and_then(toml::Value::as_integer) {
+            config.loop_defaults.session_minutes = v.clamp(0, u32::MAX as i64) as u32;
+        }
         if let Some(v) = t.get("budget_factor").and_then(toml::Value::as_integer) {
             config.loop_defaults.budget_factor = v.clamp(0, u32::MAX as i64) as u32;
         }
@@ -285,6 +288,10 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                 .map(|v| v.clamp(0, u32::MAX as i64) as u32),
             design_rounds: t
                 .get("design_rounds")
+                .and_then(toml::Value::as_integer)
+                .map(|v| v.clamp(0, u32::MAX as i64) as u32),
+            session_minutes: t
+                .get("session_minutes")
                 .and_then(toml::Value::as_integer)
                 .map(|v| v.clamp(0, u32::MAX as i64) as u32),
             budget_factor: t
@@ -552,6 +559,7 @@ pub fn save_global(autome_home: &Path, config: &GlobalConfig) -> Result<()> {
     let loop_table = ensure_table(doc.as_table_mut(), "loop");
     loop_table["parallel"] = value(config.loop_defaults.parallel as i64);
     loop_table["design_rounds"] = value(config.loop_defaults.design_rounds as i64);
+    loop_table["session_minutes"] = value(config.loop_defaults.session_minutes as i64);
     loop_table["budget_factor"] = value(config.loop_defaults.budget_factor as i64);
 
     let ui_table = ensure_table(doc.as_table_mut(), "ui");
@@ -604,6 +612,11 @@ pub fn save_project(repo: &Path, config: &ProjectConfig) -> Result<()> {
             loop_table,
             "budget_factor",
             config.loop_overrides.budget_factor,
+        );
+        set_or_remove_int(
+            loop_table,
+            "session_minutes",
+            config.loop_overrides.session_minutes,
         );
         // A protocol pin from before the protocol was built in. Nothing reads
         // it any more; dropping it on the next save keeps the file honest.
@@ -822,6 +835,83 @@ fn parse_gate_concurrency(value: &toml::Value) -> std::result::Result<u32, Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_minutes_reads_global_and_project() {
+        for value in [5, 30, u32::MAX] {
+            let text = format!("[loop]\nsession_minutes = {value}\n");
+            assert_eq!(
+                parse_global(&text).unwrap().loop_defaults.session_minutes,
+                value
+            );
+            assert_eq!(
+                parse_project(&text).unwrap().loop_overrides.session_minutes,
+                Some(value)
+            );
+        }
+        assert_eq!(parse_global("").unwrap().loop_defaults.session_minutes, 120);
+        assert_eq!(
+            parse_project("").unwrap().loop_overrides.session_minutes,
+            None
+        );
+    }
+
+    #[test]
+    fn session_minutes_save_global_preserves_handwritten_value() {
+        let dir = TempDir::new("session-minutes-global");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[loop]\nsession_minutes = 30\n",
+        )
+        .unwrap();
+        let config = load_global(dir.path()).unwrap();
+        save_global(dir.path(), &config).unwrap();
+        let fresh = TempDir::new("session-minutes-global-copy");
+        save_global(fresh.path(), &config).unwrap();
+        assert_eq!(
+            load_global(fresh.path())
+                .unwrap()
+                .loop_defaults
+                .session_minutes,
+            30
+        );
+        assert_eq!(
+            load_global(dir.path())
+                .unwrap()
+                .loop_defaults
+                .session_minutes,
+            30
+        );
+    }
+
+    #[test]
+    fn session_minutes_save_project_preserves_and_removes_override() {
+        let dir = TempDir::new("session-minutes-project");
+        std::fs::create_dir_all(dir.path().join(".autome")).unwrap();
+        std::fs::write(
+            dir.path().join(".autome/config.toml"),
+            "[loop]\nsession_minutes = 30\n",
+        )
+        .unwrap();
+        let mut config = load_project(dir.path()).unwrap();
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(
+            load_project(dir.path())
+                .unwrap()
+                .loop_overrides
+                .session_minutes,
+            Some(30)
+        );
+        config.loop_overrides.session_minutes = None;
+        save_project(dir.path(), &config).unwrap();
+        assert_eq!(
+            load_project(dir.path())
+                .unwrap()
+                .loop_overrides
+                .session_minutes,
+            None
+        );
+    }
+
     #[test]
     fn merge_after_section_is_read_with_command_and_timeout() {
         for (value, expected) in [

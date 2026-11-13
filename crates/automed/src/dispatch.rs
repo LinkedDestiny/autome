@@ -1255,6 +1255,10 @@ fn config_set_loop(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         .get("design_rounds")
         .and_then(Value::as_u64)
         .map(|v| v as u32);
+    let session_minutes = params
+        .get("session_minutes")
+        .and_then(Value::as_u64)
+        .map(|v| v as u32);
     let budget_factor = params
         .get("budget_factor")
         .and_then(Value::as_u64)
@@ -1269,6 +1273,9 @@ fn config_set_loop(ctx: &mut Ctx, params: &Value) -> DispatchResult {
             }
             if let Some(v) = design_rounds {
                 next.loop_defaults.design_rounds = v;
+            }
+            if let Some(v) = session_minutes {
+                next.loop_defaults.session_minutes = v;
             }
             if let Some(v) = budget_factor {
                 next.loop_defaults.budget_factor = v;
@@ -1286,6 +1293,9 @@ fn config_set_loop(ctx: &mut Ctx, params: &Value) -> DispatchResult {
             }
             if params.get("design_rounds").is_some() {
                 project_config.loop_overrides.design_rounds = design_rounds;
+            }
+            if params.get("session_minutes").is_some() {
+                project_config.loop_overrides.session_minutes = session_minutes;
             }
             if params.get("budget_factor").is_some() {
                 project_config.loop_overrides.budget_factor = budget_factor;
@@ -1355,6 +1365,9 @@ fn describe_violation(v: &ConfigViolation) -> String {
         }
         ConfigViolation::DesignRoundsOutOfRange { value } => {
             format!("设计轮次上限 {value} 必须大于 0")
+        }
+        ConfigViolation::SessionMinutesOutOfRange { value, min } => {
+            format!("会话时长上限 {value} 分钟太短，至少 {min} 分钟")
         }
         ConfigViolation::BudgetFactorOutOfRange { value } => {
             format!("预算系数 {value} 必须大于 0")
@@ -2794,6 +2807,85 @@ pub const READ_METHODS: [&str; 17] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_minutes_config_validate() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("session-minutes-validate");
+        let id = sb.add_project("p");
+        let out = handle_command(sb.ctx(), &cmd("config.validate", json!({"project_id": id})));
+        assert_eq!(ok_payload(&out)["ok"], true);
+        std::fs::write(
+            sb.path("p/.autome/config.toml"),
+            "[loop]\nsession_minutes = 1\n",
+        )
+        .unwrap();
+        let out = handle_command(sb.ctx(), &cmd("config.validate", json!({"project_id": id})));
+        let payload = ok_payload(&out);
+        assert_eq!(payload["ok"], false);
+        assert_eq!(
+            payload["violations"][0]["kind"],
+            "session_minutes_out_of_range"
+        );
+    }
+
+    #[test]
+    fn session_minutes_set_loop_round_trip_and_rejection() {
+        assert!(git_available());
+        let mut sb = Sandbox::new("session-minutes-set");
+        let id = sb.add_project("p");
+        for project in [None, Some(id.as_str())] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "config.set_loop",
+                    json!({"project_id": project, "session_minutes": 30}),
+                ),
+            );
+            assert_eq!(
+                ok_payload(&out)["resolved"]["loop_defaults"]["session_minutes"],
+                30
+            );
+            let out = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id": project})));
+            assert_eq!(
+                ok_payload(&out)["resolved"]["loop_defaults"]["session_minutes"],
+                30
+            );
+            let path = if project.is_some() {
+                sb.path("p/.autome/config.toml")
+            } else {
+                config_io::global_config_path(&sb.ctx.autome_home)
+            };
+            let before = std::fs::read(&path).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "config.set_loop",
+                    json!({"project_id": project, "session_minutes": 4}),
+                ),
+            );
+            assert!(err_message(&out).contains("至少 5 分钟"));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "config.set_loop",
+                json!({"project_id": id, "session_minutes": null}),
+            ),
+        );
+        assert_eq!(
+            ok_payload(&out)["resolved"]["loop_defaults"]["session_minutes"],
+            30
+        );
+        assert_eq!(
+            config_io::load_project(&sb.path("p"))
+                .unwrap()
+                .loop_overrides
+                .session_minutes,
+            None
+        );
+    }
+
     use super::*;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};

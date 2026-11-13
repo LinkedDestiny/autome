@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 2/15
-implementation-round: 0/0
-current-milestone: 无
+implementation-round: 1/20
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01：在 autome-domain 的 LoopDefaults / LoopOverrides / resolve / validate 加 session_minutes（默认 120，≥ 5），config_io 四处读写与 config.set_loop 带上它，README 配置样例加一行
+next-action: M-01 待审；独立审计通过后推进 M-02：实现 TimedOut 生命周期、启动时上限与进程组终止
 
 任务文件：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-task.md`
 
@@ -362,12 +362,14 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
-| M-01 | 开放 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
+| M-01 | 待审 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
 | M-02 | 开放 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
 | M-03 | 开放 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
 | M-04 | 开放 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
 
 ## 里程碑说明
+
+最新证据：docs/单个会话的时长上限-loop-session/evidence/M-01-r1-impl.md · 验收通过，待审 · 实现 #1
 
 - **M-01**（覆盖：R-1、A-5、开放问题 11；C-6。前置：无）。方案 §1。新增用例名都含 `session_minutes`：
   - autome-domain 3 个：① 默认 120、项目覆盖胜出、未覆盖时继承全局；② `1` 与 `4` 各产生 `SessionMinutesOutOfRange { value, min: 5 }`；

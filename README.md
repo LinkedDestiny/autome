@@ -110,6 +110,9 @@ Things the core does on its own, none of which needs a prompt to
 cooperate. Configure commands and retry policy in the project's `.autome/config.toml`:
 
 ```toml
+[loop]
+session_minutes = 120     # the default, at least 5; a session running longer is stopped and retried like a crash
+
 [gate]
 command = "make check"     # run with sh -c in the task's worktree
 concurrency = 1            # optional project limit, capped by the global limit
