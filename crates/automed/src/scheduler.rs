@@ -2150,15 +2150,6 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             json!({"node": node, "inject": inject}),
         )?;
     }
-    if ctx
-        .store
-        .last_event(task_id, "merge.auto")?
-        .is_some_and(|p| p["active"] == true)
-        && !transition.merge_requested
-    {
-        ctx.store
-            .append_event("merge.auto", task_id, json!({"active": false}))?;
-    }
     if crate::merge_queue::holds(ctx, &task).map_err(|e| err(e.to_string()))?
         && autome_domain::merge_queue::releases(true, &transition.next)
     {
@@ -2181,7 +2172,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     ctx.store.set_task_state(task_id, &transition.next)?;
 
     if !before
-        && transition.merge_requested
+        && transition.grants_merge_request
         && let Trigger::CoreStepDone {
             result: CoreStepResult::Behind { repos, detail },
             ..
@@ -6275,7 +6266,7 @@ mod tests {
                 action: Action::Reenter { node: step.node() },
                 budget_n: None,
                 consumes_decisions: false,
-                merge_requested: false,
+                grants_merge_request: false,
             };
             perform(&mut w.ctx, &task, &project, &resolved, &transition).unwrap();
             let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
@@ -7865,7 +7856,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicting_requested_rebase_goes_back_to_implement_and_clears_the_request() {
+    fn merge_auth_a_conflicting_requested_rebase_keeps_the_request() {
         needs_git!();
         let mut w = World::new("auto-conflict");
         let (task, wt) = stale_merge(&mut w);
@@ -7891,7 +7882,7 @@ mod tests {
                 .last_event(&task.id, "merge.auto")
                 .unwrap()
                 .unwrap()["active"],
-            false
+            true
         );
         assert_eq!(
             w.ctx.store.count_events(&task.id, "merge.rebased").unwrap(),
@@ -8252,7 +8243,7 @@ mod tests {
                 node: Node::Merging
             }
         );
-        assert!(!merge_requested(&w.ctx, &task.id).unwrap());
+        assert!(merge_requested(&w.ctx, &task.id).unwrap());
         let task = w.ctx.store.get_task(&task.id).unwrap();
         run_core_step(&mut w.ctx, &task, Node::Merging).unwrap();
         assert_eq!(

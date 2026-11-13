@@ -65,7 +65,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
   reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
-  merge <任务>                   合并到默认分支
+  merge <任务> [--cancel]        合并到默认分支；未到卡点时预先同意，--cancel 撤销
   decide <任务> backlog|dispute <条目> include|ignore|ruled|none
   pause | resume | stop | cancel <任务>
   rerun <任务> <节点>            从某个节点重跑（失败或已停止的任务）
@@ -128,8 +128,8 @@ fn run(argv: &[String]) -> Result<()> {
 
     let verb = verb.unwrap_or_default();
     let allowed: &[&str] = match verb {
-        "doctor" | "ls" | "alerts" | "rpc" | "approve" | "merge" | "pause" | "resume" | "stop"
-        | "cancel" | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
+        "doctor" | "ls" | "alerts" | "rpc" | "approve" | "pause" | "resume" | "stop" | "cancel"
+        | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
         "status" => &["--json"],
         "project" => &[
             "--json",
@@ -138,6 +138,7 @@ fn run(argv: &[String]) -> Result<()> {
             "--skip-onboarding",
             "--finish",
         ],
+        "merge" => &["--json", "--cancel"],
         "task" => &[
             "--json",
             "--project",
@@ -175,7 +176,12 @@ fn run(argv: &[String]) -> Result<()> {
         "run" => drive(&mut c, &a),
         "logs" => logs(&mut c, &a),
         "approve" => trigger(&mut c, &a, "task.approve", json!({})),
-        "merge" => trigger(&mut c, &a, "task.merge", json!({})),
+        "merge" => trigger(
+            &mut c,
+            &a,
+            "task.merge",
+            json!({"cancel": a.has("--cancel")}),
+        ),
         "pause" => trigger(&mut c, &a, "task.pause", json!({})),
         "resume" => trigger(&mut c, &a, "task.resume", json!({})),
         "stop" => trigger(&mut c, &a, "task.stop", json!({})),
@@ -1070,6 +1076,17 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
     if a.has("--json") {
         print_json(&out);
         return Ok(());
+    }
+    if let Some(request) = out["merge_request"].as_str() {
+        println!(
+            "{} {}",
+            id,
+            match request {
+                "authorized" | "already_authorized" => "已预先同意合并",
+                "revoked" => "已撤销预先同意合并",
+                _ => "开始合并",
+            }
+        );
     }
     let task = if out["task"].is_object() {
         out["task"].clone()

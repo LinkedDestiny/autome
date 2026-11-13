@@ -57,6 +57,36 @@ pub fn turn<'a>(
         .map(|(id, _)| id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergePress {
+    Merge,
+    Authorize,
+}
+
+pub fn merge_press(state: &TaskState) -> Result<MergePress, &'static str> {
+    match state {
+        TaskState::Active {
+            node: Node::AwaitMerge,
+        } => Ok(MergePress::Merge),
+        TaskState::Active {
+            node: Node::Merging | Node::MainCheck | Node::Cleanup,
+        } => Err("已在合并"),
+        TaskState::Failed { .. } => Err("任务已失败：先重跑，再同意合并"),
+        TaskState::Done | TaskState::Cancelled => Err("任务已终结"),
+        _ => Ok(MergePress::Authorize),
+    }
+}
+
+pub fn cancel_press(state: &TaskState) -> Result<(), &'static str> {
+    match state {
+        TaskState::Active {
+            node: Node::Merging | Node::MainCheck | Node::Cleanup,
+        } => Err("合并已经开始，无法撤销"),
+        TaskState::Done | TaskState::Cancelled => Err("任务已终结"),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +178,51 @@ mod tests {
             assert_eq!(turn(None, Some(("A", 2)), authorized, "B", Some(1)), None);
             assert_eq!(turn(None, None, authorized, "B", None), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    #[test]
+    fn merge_auth_merge_press_by_state() {
+        for node in Node::ALL.into_iter().chain(Node::BUG) {
+            let state = TaskState::Active { node };
+            let merging = matches!(node, Node::Merging | Node::MainCheck | Node::Cleanup);
+            assert_eq!(merge_press(&state).is_err(), merging, "{node:?}");
+            assert_eq!(cancel_press(&state).is_err(), merging, "{node:?}");
+            if !merging {
+                assert_eq!(
+                    merge_press(&state),
+                    Ok(if node == Node::AwaitMerge {
+                        MergePress::Merge
+                    } else {
+                        MergePress::Authorize
+                    })
+                );
+            }
+            for state in [
+                TaskState::Paused { resume: node },
+                TaskState::Stopped { at: node },
+                TaskState::Requeued { resume: node },
+            ] {
+                assert_eq!(merge_press(&state), Ok(MergePress::Authorize));
+                assert_eq!(cancel_press(&state), Ok(()));
+            }
+        }
+        for state in [TaskState::Draft, TaskState::Queued] {
+            assert_eq!(merge_press(&state), Ok(MergePress::Authorize));
+            assert_eq!(cancel_press(&state), Ok(()));
+        }
+        for state in [TaskState::Done, TaskState::Cancelled] {
+            assert!(merge_press(&state).is_err());
+            assert!(cancel_press(&state).is_err());
+        }
+        let failed: TaskState = serde_json::from_value(serde_json::json!({
+            "state":"failed","at":"merge_gate","reason":{"kind":"protocol","detail":"bad"}
+        }))
+        .unwrap();
+        assert!(merge_press(&failed).is_err());
+        assert!(cancel_press(&failed).is_ok());
     }
 }

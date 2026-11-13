@@ -70,7 +70,31 @@ fn mq_e2e_wait(w: &mut World, ids: &[String], mut ready: impl FnMut(&World) -> b
     });
 }
 fn mq_e2e_three(slots: u32, restart: bool) {
+    mq_e2e_three_with_auth(slots, restart, false);
+}
+fn mq_e2e_three_with_auth(slots: u32, restart: bool, user: bool) {
     let (mut w, ids) = mq_e2e_world("mq-three", slots, restart);
+    if user {
+        let path = w.repo.join(".autome/config.toml");
+        let config = std::fs::read_to_string(&path).unwrap().replace("auto = true", "auto = false");
+        std::fs::write(path, config).unwrap();
+        automed::git::commit_paths(&w.repo, &[".autome/config.toml"], "disable auto").unwrap();
+        // Authorize all tasks before any gate is allowed to start.
+        for id in &ids {
+            w.ctx.store.set_task_state(id, &autome_domain::task::TaskState::Paused {
+                resume: autome_domain::task::Node::MergeGate,
+            }).unwrap();
+        }
+        for id in &ids {
+            assert_eq!(ok(&w.call("task.merge", json!({"task_id":id})))["merge_request"], "authorized");
+        }
+        for id in &ids {
+            w.ctx.store.set_task_state(id, &autome_domain::task::TaskState::Active {
+                node: autome_domain::task::Node::MergeGate,
+            }).unwrap();
+        }
+    }
+
     mq_e2e_wait(&mut w, &ids, |w| {
         !setup_events(w, &ids[0], "gate.started").is_empty()
     });
@@ -106,7 +130,8 @@ fn mq_e2e_three(slots: u32, restart: bool) {
         assert_eq!(fields[0], "merge_gate");
         assert_eq!(fields[1], id);
         assert!(automed::git::is_ancestor(&w.repo, fields[2], fields[3]).unwrap());
-        assert_eq!(setup_events(&w, id, "merge.auto").len(), 0);
+        assert_eq!(setup_events(&w, id, "merge.auto").len(), usize::from(user));
+        assert!(setup_events(&w, id, "merge.auto").iter().all(|(_, p)| p["by"] == "user"));
         let starts = setup_events(&w, id, "gate.started");
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0].1["node"], "merge_gate");
@@ -188,4 +213,62 @@ fn merge_queue_a_press_during_the_section_waits_and_continues_after_a_gate_failu
     });
     assert_eq!(setup_events(&w, &a, "gate.result")[0].1["ok"], false);
     assert!(setup_events(&w, &a, "merge.unlocked")[0].0 < setup_events(&w, &b, "merge.repo")[0].0);
+}
+
+#[test]
+fn merge_auth_three_preauthorized_tasks_run_the_gate_exactly_three_times() {
+    mq_e2e_three_with_auth(1, true, true);
+}
+
+fn ma_design(w: &mut World, request: &str) -> String {
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&slug, n, &body, "");
+    }
+    w.retro_step(7, &slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&slug, 7, &retro);
+    let id = create_task(w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    id
+}
+#[test]
+fn merge_auth_preauthorizing_before_design_approval_does_not_skip_it() {
+    let mut w = World::new("ma-design");
+    let id = ma_design(&mut w, "design permission");
+    assert_eq!(ok(&w.call("task.merge", json!({"task_id":id})))["merge_request"], "authorized");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_design_approval"));
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+}
+#[test]
+fn merge_auth_a_preauthorized_task_merges_without_stopping_and_a_cancelled_one_stops() {
+    for cancel in [false, true] {
+        let mut w = World::new("ma-flow");
+        w.configure("[gate]\nrun = 'before_merge'\ncommand = 'true'\n");
+        let id = ma_design(&mut w, "authorized flow");
+        ok(&w.call("task.merge", json!({"task_id":id})));
+        if cancel {
+            assert_eq!(ok(&w.call("task.merge", json!({"task_id":id,"cancel":true})))["merge_request"], "revoked");
+        }
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        w.settle();
+        if cancel {
+            assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+            assert!(setup_events(&w, &id, "merge.direct").is_empty());
+        } else {
+            assert_eq!(w.state(&id), "done");
+            assert_eq!(setup_events(&w, &id, "merge.direct").len(), 1);
+        }
+    }
 }

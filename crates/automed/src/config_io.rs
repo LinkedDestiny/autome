@@ -885,14 +885,16 @@ mod tests {
     }
 
     #[test]
-    fn merge_after_section_survives_save_project() {
+    fn merge_auth_auto_and_after_survive_save_project() {
         let dir = TempDir::new("merge-after");
-        let section = "[merge]\n# keep this command\nafter = \"  make deploy  \"\nafter_timeout_minutes = 3\nunknown = true\n";
+        let section = "[merge]\n# keep this command\nauto = true\nafter = \"  make deploy  \"\nafter_timeout_minutes = 3\nunknown = true\n";
         write_project(dir.path(), section);
         let mut project = load_project(dir.path()).unwrap();
+        assert_eq!(project.merge_auto, Some(true));
         let expected = project.merge_after.clone();
         project.loop_overrides.parallel = Some(2);
         save_project(dir.path(), &project).unwrap();
+        assert_eq!(load_project(dir.path()).unwrap().merge_auto, Some(true));
         assert_eq!(load_project(dir.path()).unwrap().merge_after, expected);
         assert!(
             std::fs::read_to_string(project_config_path(dir.path()))

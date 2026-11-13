@@ -698,6 +698,15 @@ pub fn validate(resolved: &ResolvedConfig, skills: &impl SkillVisibility) -> Vec
     violations
 }
 
+/// Non-blocking project warnings, computed from the current configuration.
+pub fn warnings(config: &ResolvedConfig) -> Vec<String> {
+    if config.merge_auto && config.gate.is_none() {
+        vec!["[merge] auto = true 但没有配置 [gate]：需求任务 rebase 后直接合并，没有门禁把关（Bug 任务仍会跑复现命令）".into()]
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1424,5 +1433,36 @@ mod gate_concurrency_tests {
             resolve(&GlobalConfig::default(), &project).gate_concurrency,
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_auth_tests {
+    use super::*;
+    #[test]
+    fn merge_auth_config_warns_when_auto_has_no_gate() {
+        for auto in [false, true] {
+            for gate in [
+                None,
+                Some(GateConfig {
+                    command: "true".into(),
+                    timeout_minutes: 1,
+                }),
+            ] {
+                let expected = auto && gate.is_none();
+                let resolved = resolve(
+                    &GlobalConfig::default(),
+                    &ProjectConfig {
+                        merge_auto: Some(auto),
+                        gate,
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(warnings(&resolved).len(), usize::from(expected));
+                if expected {
+                    assert!(warnings(&resolved)[0].contains("没有门禁把关"));
+                }
+            }
+        }
     }
 }

@@ -312,11 +312,7 @@ pub fn apply_for(
                 result,
             },
         ) => match result {
-            CoreStepResult::Ok => {
-                let mut t = core(Node::MergeGate);
-                t.merge_requested = merge_requested;
-                Ok(t)
-            }
+            CoreStepResult::Ok => Ok(core(Node::MergeGate)),
             CoreStepResult::Conflict { files, .. } => Ok(start_fix(
                 Node::Rebase,
                 Some(Inject::RebaseConflict {
@@ -1270,7 +1266,7 @@ mod tests {
                     node: Node::MergeGate
                 }
             );
-            assert_eq!(t.merge_requested, requested);
+            assert!(!t.grants_merge_request);
         }
     }
     #[test]

@@ -412,3 +412,187 @@ fn merge_queue_a_reusable_gate_does_not_jump_an_earlier_queued_task() {
     assert!(mq_seq(&w, &b, "merge.locked") < mq_seq(&w, &c, "merge.locked"));
     assert!(mq_seq(&w, &b, "merge.locked") < mq_seq(&w, &c, "gate.reused"));
 }
+
+fn ma_call(w: &mut World, id: &str, cancel: bool) -> crate::ipc::ReplyOutcome {
+    ma_params(w, json!({"task_id":id,"cancel":cancel}))
+}
+fn ma_params(w: &mut World, params: serde_json::Value) -> crate::ipc::ReplyOutcome {
+    crate::dispatch::handle_command(
+        &mut w.ctx,
+        &crate::ipc::Command {
+            request_id: "merge-auth".into(),
+            command_id: crate::store::new_id("auth"),
+            expected_revision: None,
+            protocol_version: crate::ipc::PROTOCOL_VERSION,
+            method: "task.merge".into(),
+            params,
+        },
+    )
+    .reply
+    .outcome
+}
+fn ma_ok(out: crate::ipc::ReplyOutcome, expected: &str) {
+    match out {
+        crate::ipc::ReplyOutcome::Ok { payload, .. } => {
+            assert_eq!(payload["merge_request"], expected)
+        }
+        other => panic!("{other:?}"),
+    }
+}
+#[test]
+fn merge_auth_cancel_is_rejected_once_the_merge_has_started() {
+    let mut w = mq_world("ma-started");
+    let t = mq_task(&mut w, "T-1");
+    assert!(crate::merge_queue::enter(&mut w.ctx, &t).unwrap());
+    ma_ok(ma_call(&mut w, &t.id, true), "revoked");
+    assert!(!crate::merge_queue::holds(&w.ctx, &w.ctx.store.get_task(&t.id).unwrap()).unwrap());
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(&t.id, "merge.unlocked")
+            .unwrap()
+            .unwrap()["reason"],
+        "cancel"
+    );
+    // Complete the revoked gate: it must stop at the card.
+    mq_complete(&mut w, &t);
+    assert_eq!(
+        w.state(&t.id),
+        TaskState::Active {
+            node: Node::AwaitMerge
+        }
+    );
+    w.ctx
+        .store
+        .append_event("merge.auto", &t.id, json!({"active":true,"by":"user"}))
+        .unwrap();
+    w.set_state(
+        &t.id,
+        TaskState::Active {
+            node: Node::Merging,
+        },
+    );
+    let count = queue_count(&w, &t, "merge.auto");
+    assert!(matches!(
+        ma_call(&mut w, &t.id, true),
+        crate::ipc::ReplyOutcome::Error { .. }
+    ));
+    assert_eq!(queue_count(&w, &t, "merge.auto"), count);
+    let t = w.ctx.store.get_task(&t.id).unwrap();
+    run_core_step(&mut w.ctx, &t, Node::Merging).unwrap();
+    assert!(w.ctx.store.get_task(&t.id).unwrap().merge_commit.is_some());
+}
+#[test]
+fn merge_auth_cancel_overrides_the_project_switch() {
+    let mut w = mq_world("ma-cancel");
+    let t = mq_task(&mut w, "T-1");
+    w.set_state(
+        &t.id,
+        TaskState::Paused {
+            resume: Node::MergeGate,
+        },
+    );
+    ma_ok(ma_call(&mut w, &t.id, false), "already_authorized");
+    assert_eq!(queue_count(&w, &t, "merge.auto"), 0);
+    ma_ok(ma_call(&mut w, &t.id, true), "revoked");
+    assert!(
+        crate::merge_queue::authorization(&w.ctx, &t)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        ma_call(&mut w, &t.id, true),
+        crate::ipc::ReplyOutcome::Error { .. }
+    ));
+    ma_ok(ma_call(&mut w, &t.id, false), "authorized");
+    ma_ok(ma_call(&mut w, &t.id, false), "already_authorized");
+    assert_eq!(queue_count(&w, &t, "merge.auto"), 2);
+    assert_eq!(
+        crate::merge_queue::authorization(&w.ctx, &t).unwrap(),
+        Some(autome_domain::merge_queue::AuthSource::User)
+    );
+}
+#[test]
+fn merge_auth_task_merge_rejects_failed_and_finished_tasks() {
+    let mut w = mq_world("ma-terminal");
+    let t = mq_task(&mut w, "T-1");
+    for params in [
+        json!({}),
+        json!({"task_id":""}),
+        json!({"task_id":"missing"}),
+        json!({"task_id":t.id,"cancel":"true"}),
+        json!({"task_id":t.id,"cancel":null}),
+    ] {
+        assert!(matches!(
+            ma_params(&mut w, params),
+            crate::ipc::ReplyOutcome::Error { .. }
+        ));
+        assert_eq!(queue_count(&w, &t, "merge.auto"), 0);
+    }
+    for state in [
+        TaskState::Failed {
+            at: Node::MergeGate,
+            reason: autome_domain::task::FailureReason::ImplBudget { limit: 1 },
+        },
+        TaskState::Done,
+        TaskState::Cancelled,
+        TaskState::Active {
+            node: Node::MainCheck,
+        },
+        TaskState::Active {
+            node: Node::Cleanup,
+        },
+    ] {
+        w.set_state(&t.id, state);
+        assert!(matches!(
+            ma_call(&mut w, &t.id, false),
+            crate::ipc::ReplyOutcome::Error { .. }
+        ));
+        assert_eq!(queue_count(&w, &t, "merge.auto"), 0);
+    }
+}
+#[test]
+fn merge_auth_leaving_the_merge_tail_writes_no_revocation() {
+    for trigger in [
+        Trigger::Pause,
+        Trigger::Stop,
+        Trigger::Cancel,
+        Trigger::GateSameFailure {
+            node: Node::MergeGate,
+            count: 3,
+            summary: "same".into(),
+            log: "test".into(),
+        },
+        Trigger::GateDone {
+            status: None,
+            node: Node::MergeGate,
+            outcome: GateOutcome::Failed {
+                head: "head".into(),
+                command: "false".into(),
+                tail: "test".into(),
+            },
+        },
+        Trigger::SetupFailed {
+            command: "sleep 60".into(),
+            exit_code: 124,
+            log: "timeout".into(),
+        },
+    ] {
+        let mut w = mq_world("ma-lifetime");
+        let t = mq_task(&mut w, "T-1");
+        w.ctx
+            .store
+            .append_event("merge.auto", &t.id, json!({"active":true,"by":"user"}))
+            .unwrap();
+        advance(&mut w.ctx, &t.id, &trigger).unwrap();
+        assert_eq!(queue_count(&w, &t, "merge.auto"), 1);
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&t.id, "merge.auto")
+                .unwrap()
+                .unwrap()["active"],
+            true
+        );
+    }
+}

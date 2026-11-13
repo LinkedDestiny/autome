@@ -170,3 +170,18 @@ mod task_card {
         assert!(a.has("--draft"));
     }
 }
+
+#[cfg(test)]
+mod merge_auth_tests {
+    use super::*;
+    #[test]
+    fn merge_auth_merge_cancel_is_parsed() {
+        for args in [["merge", "cart", "--cancel"], ["--cancel", "merge", "cart"]] {
+            let a = Args::parse(&args.map(String::from)).unwrap();
+            assert_eq!(a.positional, ["merge", "cart"]);
+            assert!(a.has("--cancel"));
+        }
+        let a = Args::parse(&["merge", "cart"].map(String::from)).unwrap();
+        assert!(!a.has("--cancel"));
+    }
+}
