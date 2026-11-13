@@ -47,9 +47,15 @@ set -eu
 cat >/dev/null
 root=$(dirname "$0")
 printf '第一行\\n'
-while [ ! -e "$root/go" ]; do sleep 0.05; done
+while [ ! -e "$root/go" ]; do
+  [ -d "$root" ] || exit 0
+  sleep 0.05
+done
 printf '%s\\n' '${marker}'
-while [ ! -e "$root/stop" ]; do sleep 0.05; done
+while [ ! -e "$root/stop" ]; do
+  [ -d "$root" ] || exit 0
+  sleep 0.05
+done
 printf '最后一行\\n'
 `, { mode: 0o755 });
   writeFileSync(wrapper, `#!/bin/sh
