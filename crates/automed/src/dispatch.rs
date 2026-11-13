@@ -3026,7 +3026,10 @@ mod tests {
             assert!(err_message(&out).contains(message), "{}", err_message(&out));
             assert!(!err_message(&out).contains('\n'));
             assert!(sb.ctx.store.task_after(&a).unwrap().is_empty());
-            assert_eq!(sb.ctx.store.task_after(&b).unwrap(), [a.clone()]);
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
             assert_eq!(sb.ctx.store.count_events(&a, "task.after_set").unwrap(), 0);
         }
         let out = handle_command(sb.ctx(), &cmd("task.set_after", json!({"task_id": a})));
@@ -3044,7 +3047,10 @@ mod tests {
                 &cmd("task.set_after", json!({"task_id": b, "after": []})),
             );
             assert!(!err_message(&out).is_empty());
-            assert_eq!(sb.ctx.store.task_after(&b).unwrap(), [a.clone()]);
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
         }
         cost_session(&sb, &b, "seed", None, false);
         let mut session = sb.ctx.store.list_sessions(&b).unwrap().remove(0);
@@ -3063,7 +3069,10 @@ mod tests {
                 &cmd("task.set_after", json!({"task_id": b, "after": []})),
             );
             assert!(err_message(&out).contains("已经开始实现轮"));
-            assert_eq!(sb.ctx.store.task_after(&b).unwrap(), [a.clone()]);
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
             assert_eq!(sb.ctx.store.count_events(&b, "task.after_set").unwrap(), 0);
         }
         assert!(!READ_METHODS.contains(&"task.set_after"));

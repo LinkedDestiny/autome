@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/30
+implementation-round: 4/30
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-03；通过后推进 M-04 task.move 调整队列顺序
+next-action: 宿主重跑快检后独立复验 M-03；通过后推进 M-04 task.move 调整队列顺序
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -404,7 +404,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-03 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r3-impl.md · 待审 · 实现 #3
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r4-impl.md · 快检修复，保持待审 · 实现 #4
 
 - 验收命令：`cargo test -p automed after_blocked_ && cargo test -p automed after_create_`
 - 预期：`after_blocked_` 7 个通过（lib 6 个、end_to_end 1 个），`after_create_` 6 个仍然通过。
