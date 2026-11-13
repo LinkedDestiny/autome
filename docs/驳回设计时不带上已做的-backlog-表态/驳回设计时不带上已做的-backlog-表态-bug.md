@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cargo test --offline -p automed --test end_to_end rejecting_design_carries_pending_decisions_and_approval_starts_implementation -- --exact --nocapture
 根因: Reject 原先未携带和租用表态，第 1 轮已修复；另有 task_trigger 在启动会话后立即 tick 的时序竞争，快速完成的实现会话会在批准命令返回前被收割并推进到 audit。
-复核: 待复核
+复核: 通过
 repos: .
 
 ## 现象
@@ -60,8 +60,20 @@ missing decision text in rejection prompt: ["B-01", "B-02", "B-03"]; unconsumed 
 - 定位轮回归测试保持原样。修复前执行原复现命令，退出码 101，仍报告三条表态缺失、未消费及批准后进入 design；修复后相同命令通过（1 passed）。日志为 `.autome/output/fix-round-1-before.log` 和 `.autome/output/fix-round-1-repro.log`。
 - 直接相关子集全部通过：`cargo test --offline -p automed --lib decision`（7 passed）；`cargo test --offline -p automed --lib rejecting`（2 passed）；`cargo test --offline -p automed --lib design_feedback_is_injected_verbatim`（1 passed）；`cargo test --offline -p automed --test end_to_end rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim -- --exact`（1 passed）。日志分别为 `.autome/output/fix-round-1-{decisions,rejecting,feedback,control}.log`。
 - `git diff --check` 和修改源码的 `rustfmt --edition 2024 --check crates/automed/src/launcher.rs crates/automed/src/scheduler.rs` 通过。`cargo fmt --all -- --check` 未通过，仅报告定位轮回归测试 `end_to_end.rs:2631` 已有格式差异；遵照不得修改回归测试的要求保留原样，详情见 `.autome/output/fix-round-1-fmt.log`。
-- 未运行全量门禁 `sh scripts/ci-local.sh`，留由宿主合并前执行；待独立复核。
+- 未运行全量门禁 `sh scripts/ci-local.sh`，留由宿主合并前执行；复核: 通过（第 2/3 轮，独立复核）。
+
+- 复现命令连续独立运行 4 次全部通过（1 passed），此前宿主出现的时序失败未再现。
+- 额外跑 automed 端到端全量 146 passed、lib 全量 761 passed，均 0 失败。
+- 差异检查：自定位提交 d4a3f0f 起，回归测试文件无改动，未删除、跳过或弱化；产品改动仅 dispatch.rs、launcher.rs、scheduler.rs 共 +18/-5。
+- 根因成立：task_trigger 启动会话后无条件 tick，快速完成的会话在命令返回前被收割，节点由 implement 变为 audit。修复仅在本次命令新启动会话时跳过 tick，由下一次调度收割；未启动会话时行为不变，范围最小。
+- 说明：全量门禁（ci-local.sh）未运行，由宿主合并前执行。
 
 ## 复核意见
 
-待独立复核。
+复核: 通过（第 2/3 轮，独立复核）。
+
+- 复现命令连续独立运行 4 次全部通过（1 passed），此前宿主出现的时序失败未再现。
+- 额外跑 automed 端到端全量 146 passed、lib 全量 761 passed，均 0 失败。
+- 差异检查：自定位提交 d4a3f0f 起，回归测试文件无改动，未删除、跳过或弱化；产品改动仅 dispatch.rs、launcher.rs、scheduler.rs 共 +18/-5。
+- 根因成立：task_trigger 启动会话后无条件 tick，快速完成的会话在命令返回前被收割，节点由 implement 变为 audit。修复仅在本次命令新启动会话时跳过 tick，由下一次调度收割；未启动会话时行为不变，范围最小。
+- 说明：全量门禁（ci-local.sh）未运行，由宿主合并前执行。
