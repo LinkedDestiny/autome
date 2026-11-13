@@ -84,3 +84,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-card-stages li[aria-current="step"] { border-color: var(--animal-text); color: var(--animal-text); font-weight: 700; }
 .task-card-badge { display: inline-block; padding: 4px 8px; border-radius: var(--animal-radius-sm); background: var(--tile-yellow); }
 .task-card-gate { font-size: 13px; }
+
+.task-new { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.task-new header { display: flex; align-items: center; gap: 16px; }
+.task-new h1 { margin: 0; }
+.task-new fieldset { border: 0; padding: 0; display: flex; gap: 16px; }
+.task-new textarea { flex: 1; min-height: 0; overflow-y: auto; resize: none; padding: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius); background: var(--animal-bg-input); color: var(--animal-text); font: inherit; }
+.task-new-attachments { max-height: 160px; min-height: 0; overflow-y: auto; }
+.task-new footer { display: flex; gap: 16px; }
+.task-new :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 2px; }

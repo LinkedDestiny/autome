@@ -44,3 +44,8 @@ it('看板高度受限且四列各自滚动，页面不增加滚动容器', () =
   expect(rule('.board-column-body')).toContain('overflow-y: auto'); expect(rule('.board-column-body')).toContain('min-height: 0');
   for (const r of rules.filter(r => /^(html|body)$/.test(r.selector))) expect(r.body).not.toMatch(/overflow(?:-y)?:\s*(auto|scroll)/);
 });
+it('新建页正文和附件内部滚动', () => {
+  expect(rule('.task-new')).toContain('height: 100%'); expect(rule('.task-new')).toContain('overflow: hidden');
+  expect(rule('.task-new textarea')).toContain('min-height: 0'); expect(rule('.task-new textarea')).toContain('overflow-y: auto');
+  expect(rule('.task-new-attachments')).toContain('overflow-y: auto');
+});
