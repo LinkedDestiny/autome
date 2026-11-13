@@ -12,3 +12,4 @@
 审计 #4 | M-04 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-04-r5-audit.md | 无
 
 实现 #6 | M-05 | 开放 | evidence/M-05-r6-impl.md | HTTP/ps EPERM；真实状态矩阵待补强
+审计 #5 | M-05 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-05-r6-audit.md | 无（验证缺口记 B-08）
