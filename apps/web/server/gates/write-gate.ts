@@ -1,6 +1,7 @@
 const ALLOWED_WRITE_OPS = Object.freeze([
   'project.pick',
   'project.confirm',
+  'project.remove',
   'project.onboarding.advance',
   'project.onboarding.skip',
   'project.onboarding.run',
@@ -265,7 +266,18 @@ function validateOpSpecific(op: string, params: Record<string, unknown>): { ok: 
       return { ok: false, message: 'path 必须是项目档案或 AGENTS.md' };
     }
   }
+  if (op === 'project.remove') {
+    if (Object.keys(params).some(key => key !== 'project_id') || typeof params.project_id !== 'string' || !params.project_id || looksLikeAPath(params.project_id)) {
+      return { ok: false, message: 'project.remove 只接受非空的 project_id，不能是路径' };
+    }
+  }
   if (op === 'project.confirm') {
+    if (Object.keys(params).some(key => !['path', 'workspace', 'docs_repo', 'skip_onboarding'].includes(key))) return { ok: false, message: 'project.confirm 含不允许的字段' };
+    if (typeof params.path !== 'string' || !params.path || params.path.includes('..')) return { ok: false, message: 'path 必填且不能含 ..' };
+    for (const key of ['workspace', 'skip_onboarding']) {
+      if (params[key] !== undefined && typeof params[key] !== 'boolean') return { ok: false, message: key + ' 必须是布尔值' };
+    }
+    if (params.docs_repo !== undefined && (typeof params.docs_repo !== 'string' || !params.docs_repo)) return { ok: false, message: 'docs_repo 必须是名称' };
     // A member repository is a directory name directly under the workspace,
     // so a path-shaped one is either a mistake or an attempt to walk out.
     if (typeof params.docs_repo === 'string' && looksLikeAPath(params.docs_repo)) {

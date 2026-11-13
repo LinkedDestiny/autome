@@ -1,5 +1,6 @@
 import type { createTaskEvents } from '../server/task-events.ts';
 import type { createTaskDocs } from '../server/task-docs.ts';
+import type { AdminServices } from '../server/admin.ts';
 import { createContext, RouterContextProvider, type RouterContext } from 'react-router';
 import type { GetLoadContextFunction } from '@react-router/express';
 import type { createGateway } from '../server/gateway.ts';
@@ -14,6 +15,7 @@ export type WebServices = {
   taskEvents?: TaskEventSource | null;
   taskDocs?: TaskDocReader | null;
   gateway: KernelGateway | null;
+  admin?: AdminServices | null;
   unread?: UnreadSource | null;
   uploads?: UploadService | null;
 };

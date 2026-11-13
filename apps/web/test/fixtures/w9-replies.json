@@ -1,0 +1,60 @@
+{
+  "probe": {
+    "exists": true,
+    "is_repo_root": true,
+    "members": [],
+    "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-i1s4Um/home/single",
+    "suggest_workspace": false,
+    "suggested_docs_repo": null
+  },
+  "add": {
+    "init": [
+      {
+        "action": "created",
+        "path": ".autome/skill/run_session.sh"
+      },
+      {
+        "action": "created",
+        "path": ".autome/rules/README.md"
+      },
+      {
+        "action": "created",
+        "path": ".gitignore"
+      },
+      {
+        "action": "created",
+        "path": "AGENTS.md"
+      }
+    ],
+    "pending_commit": [
+      ".autome/skill/run_session.sh",
+      ".autome/rules/README.md",
+      ".gitignore",
+      "AGENTS.md"
+    ],
+    "project": {
+      "added_at": "2026-11-13T13:30:01Z",
+      "default_branch": "main",
+      "display_name": "single",
+      "disposition": "adopted_existing",
+      "docs_repo": null,
+      "id": "prj-f27711ac4e9d4175af05b0e3440618c2",
+      "kind": "repo",
+      "members": [],
+      "onboarding": {
+        "onboarding": "in_progress",
+        "step": 3
+      },
+      "parallel_limit": 3,
+      "path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-i1s4Um/home/single",
+      "removed_at": null
+    },
+    "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf"
+  },
+  "skip": {
+    "init_commit": "0e9d6eede0e124e3161d724ca4f9eba83489e5cf",
+    "onboarding": {
+      "onboarding": "skipped"
+    }
+  }
+}
