@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 6/25
+implementation-round: 7/25
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 独立复验本轮 rebase 集成改动及 M-03/M-04/M-05 验收，证据见 evidence/M-05-r7-impl.md
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -67,7 +67,7 @@ next-action: 无
    「无待审 + 无证据」。
 3. 实现轮把已完成里程碑的「最新证据」改指向 `-impl.md` 时守卫失败（code 沿用 `impl_closed_milestone`）。
 4. rebase 冲突轮的提交范围有确定、可测试的口径，不要求审计重审整条分支。
-5. 协议源 `protocol/` 发布 `protocol/v7`：`prompts/audit.md` 分支、`loop-protocol.md` 新增 `## 集成复验` 与检查表两行、
+5. 协议源 `protocol/` 发布 `protocol/v8`：`prompts/audit.md` 分支、`loop-protocol.md` 新增 `## 集成复验` 与检查表两行、
    `CHANGELOG.md` 条目与 eval 用例。
 6. `docs/development/technical-design.md` §6、§8 各补一段。
 
@@ -344,7 +344,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
   `brief-map.toml` 给审计摘的是 `实现循环`，写进 `### 审计轮` 会改变所有普通审计简报（约束 1）。「Autome 会检查什么」
   表加两行（集成复验轮留下证据或退回里程碑｜停下等人；实现轮没有把已完成里程碑的「最新证据」改指向 `-impl.md`｜停下
   等人），表前的「五条…前两条」改成「七条…前四条」。`brief-map.toml` 不改（集成复验的规则由简报段里的指针引过去）。
-- `protocol/CHANGELOG.md`：末尾新增 `## protocol/v7`，两条：
+- `protocol/CHANGELOG.md`：末尾新增 `## protocol/v8`，两条：
   - `J-1` `kind: behavioral`，`clause: prompts/audit.md`，`evidence: [T-61 L-05（docs/门禁只在合并前跑一次-gate-run/lessons.md）, T-61 L-06 实现 #9/#10 之后的空转审计, T-68 任务卡]`，
     `predicted_impact: {metric: impl_defects, direction: up, scope: task, horizon: 3}`，`eval: evals/audit-integration-review/`。
   - `J-2` `kind: clarify`，`clause: loop-protocol.md`，同样的证据，`predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}`，`eval: null`。
@@ -368,7 +368,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | `brief.rs` 测试 helper 的 `Inputs { … }` | 加 `integration: None` | `Inputs` 加字段 |
 | `tests/prompt_rendering.rs` 两处 `Inputs { … }` | 加 `integration: None` | 同上 |
 | `protocol/eval_run.rs` 测试 helper 的 `Case { … }` | 加 `integration_audit: false` | `Case` 加字段 |
-| `protocol/mod.rs` 的 `the_version_in_force_is_the_newest_changelog_heading_over_the_seed` | 精确版本期望 v6 同步为 v7，哈希断言不变 | §10 明确发布 v7，版本元数据须同步；不是普通审计行为或测试前提变化 |
+| `protocol/mod.rs` 的 `the_version_in_force_is_the_newest_changelog_heading_over_the_seed` | 精确版本期望 v7 同步为 v8，哈希断言不变 | §10 明确发布 v8，版本元数据须同步；不是普通审计行为或测试前提变化 |
 | `tests/prompt_rendering.rs` `spec()` 与 `launcher.rs` 测试 helper 的 `PromptSpec { … }` | 加 `integration_audit: false` | `PromptSpec` 加字段 |
 
 其余既有测试（含 §「背景与现状」点名的两个 e2e）一行不改。断言、前提、替身脚本都不动；若实现期发现别的既有测试
@@ -380,16 +380,14 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 |---|---|---|---|---|
 | M-01 | 已完成 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
 | M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
-| M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
+| M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v8 J-1 与 eval 用例 | 0 | |
 | M-04 | 已完成 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
 | M-05 | 已完成 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
 
 ## 测试与验收
 
 依赖顺序：M-01 → M-02 → M-03 → M-04 → M-05。M-01 先做，因为最大的技术不确定性是 rebase 之后的范围口径与 H0 的取法；
-它在临时仓库的单元测试里就能钉住。每个实现轮还要在会话里跑 `cargo fmt --all -- --check` 与
-`cargo clippy --all-targets -- -D warnings` 并把命令与退出码写进证据（验收 7、任务 §3 补充）；它们不区分里程碑对错，
-不写进验收契约。全量门禁由宿主在合并前运行。
+它在临时仓库的单元测试里就能钉住。快检与全量门禁按本轮用户指令由宿主运行；会话只运行本里程碑验收及直接相关测试子集。
 
 | 验收（任务 §3） | 由谁覆盖 |
 |---|---|
@@ -399,7 +397,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | 4 改已关闭里程碑最新证据 → 守卫失败 | M-02 `closed_pointer_*` 单测 |
 | 5 无目录外提交 → 行为与今天相同 | M-01 `integration_range_doc_only_commits_are_not_integration`；M-04 `integration_e2e_doc_only_repair_keeps_todays_audit` 与回归子集 |
 | 6 金样更新、现有金样与 e2e 不改就通过 | M-03 新金样与「既有金样未改」检查；M-04 回归子集与「e2e 只增不改」检查 |
-| 7 fmt / clippy / ci-local | 各实现轮记录 fmt、clippy 退出码；`ci-local.sh` 由合并前门禁 |
+| 7 fmt / clippy / ci-local | 宿主运行 fmt、clippy 快检及合并前 `ci-local.sh`，会话不自行运行 |
 
 ### M-01 验收契约
 
@@ -423,7 +421,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-03-r4-audit.md · 通过 · 审计 #4
 
 - 验收命令：`cargo test -p automed --test prompt_rendering && cargo test -p automed --lib integration_section && cargo run -p automed -- protocol eval protocol/ && git diff --quiet --diff-filter=MD "$(git merge-base HEAD main)" -- crates/automed/tests/golden/`
-- 预期：`prompt_rendering` 35 个通过，比基线 31 个多 4 个（`integration_audit_prompt_matches_its_golden`、`integration_audit_prompt_before_merge_matches_its_golden`、`integration_audit_brief_after_a_rebase_conflict_matches_its_golden`、`integration_audit_brief_after_a_gate_failure_matches_its_golden`，对应新增金样 `golden/prompts/audit-integration.md`、`audit-integration-before-merge.md`、`golden/briefs/audit-integration-rebase.md`、`audit-integration-gate.md`）；`integration_section` 6 个通过，基线 0（简报 3：无段时逐字不变、段内容齐全且 SHA 为 7 位且不含失败提交 SHA 与「未通过」、证据路径确切；launcher 2：标记去掉 / 保留、不配对标记报错；eval_run 1：`integration_audit` 字段决定取舍）；静态门退出码 0；最后一条退出码 0（`tests/golden/` 下没有被修改或删除的既有文件，只有新增）。
+- 预期：`prompt_rendering` 40 个通过，比主分支基线 36 个多 4 个（`integration_audit_prompt_matches_its_golden`、`integration_audit_prompt_before_merge_matches_its_golden`、`integration_audit_brief_after_a_rebase_conflict_matches_its_golden`、`integration_audit_brief_after_a_gate_failure_matches_its_golden`，对应新增金样 `golden/prompts/audit-integration.md`、`audit-integration-before-merge.md`、`golden/briefs/audit-integration-rebase.md`、`audit-integration-gate.md`）；`integration_section` 6 个通过，基线 0（简报 3：无段时逐字不变、段内容齐全且 SHA 为 7 位且不含失败提交 SHA 与「未通过」、证据路径确切；launcher 2：标记去掉 / 保留、不配对标记报错；eval_run 1：`integration_audit` 字段决定取舍）；静态门退出码 0；最后一条退出码 0（`tests/golden/` 下没有被修改或删除的既有文件，只有新增）。
 - 负向对照：去掉模式漏删块后的空行时 `before_merge_role_prompts_match_their_goldens` 与 `every_role_prompt_renders_exactly_what_the_constants_did` 在 `audit` 金样上失败；`integration` 为 `None` 也输出段标题时 `before_merge_audit_brief_matches_its_golden` 失败；SHA 用 `--short` 渲染时简报那条 `integration_section` 用例失败。
 
 ### M-04 验收契约
@@ -438,9 +436,9 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r6-audit.md · 通过 · 审计 #5
 
-- 验收命令：`cargo run -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && test "$(grep -c '^## protocol/v' protocol/CHANGELOG.md)" = 7 && grep -q '^## 集成复验$' protocol/loop-protocol.md && grep -q '集成复验' docs/development/technical-design.md`
-- 预期：静态门退出码 0；`prompt_rendering` 35 个通过，与 M-03 结束时相同（证明新增的协议正文没有流进普通审计、实现简报的金样）；`## protocol/v1..v7` 恰 7 个标题；两条 grep 命中。
-- 负向对照：把「集成复验」写成 `实现循环` 之下的小节（如 `#### 集成复验`，位于 `### 审计轮` 内）时，`## 集成复验$` 的 grep 失败，验收命令退出码非 0（审计 #5 实测：`prompt_rendering` 的金样用空协议文本，不会因此失败，所以拦下它的是 grep 而不是金样；真实简报会因 `section("实现循环")` 把新文字摘进去）；rebase 丢掉任一版本标题时标题计数不等于 7；CHANGELOG 条目的 `metric` 写成不在 `TaskMetrics::METRIC_NAMES` 里的名字时静态门失败。
+- 验收命令：`cargo run -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && test "$(grep -c '^## protocol/v' protocol/CHANGELOG.md)" = 8 && grep -q '^## 集成复验$' protocol/loop-protocol.md && grep -q '集成复验' docs/development/technical-design.md`
+- 预期：静态门退出码 0；`prompt_rendering` 40 个通过，与当前 M-03 契约相同（证明新增的协议正文没有流进普通审计、实现简报的金样）；`## protocol/v1..v8` 恰 8 个标题；两条 grep 命中。
+- 负向对照：把「集成复验」写成 `实现循环` 之下的小节（如 `#### 集成复验`，位于 `### 审计轮` 内）时，`## 集成复验$` 的 grep 失败，验收命令退出码非 0（审计 #5 实测：`prompt_rendering` 的金样用空协议文本，不会因此失败，所以拦下它的是 grep 而不是金样；真实简报会因 `section("实现循环")` 把新文字摘进去）；rebase 丢掉任一版本标题时标题计数不等于 8；CHANGELOG 条目的 `metric` 写成不在 `TaskMetrics::METRIC_NAMES` 里的名字时静态门失败。
 
 ## Backlog
 
@@ -464,7 +462,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 - **R4 并行任务改同一批文件。** 本仓库 `parallel = 3`，其他任务也改 `scheduler.rs`、`guards.rs`、`protocol/`。新逻辑放进
   新函数（`integration_*`、`no_retargeting_closed_evidence`、`select_integration_audit`），对既有函数只做插入调用，减少
   冲突面；本任务被 rebase 时按约束 14 在证据里记录逐提交冲突标记扫描结果，`CHANGELOG.md` 冲突时两侧版本标题都保留，
-  若 main 先发布了 v7，本任务顺延为 v8 并相应修改 M-05 契约里的标题计数（这是事实变化，不是放宽验收）。
+  main 已发布 v7，本任务使用 v8，M-05 契约核对八个连续标题（这是版本事实变化，不是放宽验收）。
 - **R5 事件体积。** 提交数与 stat 行数有上限（§3）；门禁尾部沿用注入里已有的尾部，不另取。
 - **R6 范围算不出来。** 判定所需事实读取失败时失败关闭（§3 ①），不当作空轮也不放行；已确认集成轮后只有展示信息缺失时，
   事件与简报段照常（§3 ②）。
