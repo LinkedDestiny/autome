@@ -72,3 +72,5 @@ pub mod stream_render;
 pub mod task_metrics;
 pub mod usage;
 pub mod version_page;
+
+pub mod kernel_guard;

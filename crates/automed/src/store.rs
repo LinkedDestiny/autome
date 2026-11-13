@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// The schema version this binary writes. Bump it and add a `if version < N`
 /// block in `migrate`; never edit an earlier block, because a database that
 /// already ran it will not run it again.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// One task as the store holds it. Progress fields (rounds, milestones) are
 /// deliberately absent — they come from the design document at read time.
@@ -190,6 +190,39 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn kernel_mark(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT build_id FROM kernel_mark WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// The driver lock must cover this claim and all subsequent side effects.
+    pub fn claim_kernel_mark(&self, current: &str) -> Result<Option<String>> {
+        use crate::build_id::{Verdict, verdict};
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let recorded: Option<String> = tx
+            .query_row("SELECT build_id FROM kernel_mark WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let rejected = match verdict(current, recorded.as_deref()) {
+            Verdict::Advance => {
+                tx.execute("INSERT INTO kernel_mark (id, build_id, updated_at) VALUES (1, ?1, ?2) ON CONFLICT(id) DO UPDATE SET build_id = excluded.build_id, updated_at = excluded.updated_at", rusqlite::params![current, now_iso()])?;
+                None
+            }
+            Verdict::Same => None,
+            Verdict::Older | Verdict::Incomparable => recorded,
+        };
+        tx.commit()?;
+        Ok(rejected)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Store> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -497,6 +530,18 @@ impl Store {
                      PRIMARY KEY (task_id, after_id)
                  );
                  PRAGMA user_version = 7;
+                 COMMIT;",
+            )?;
+        }
+        if version < 8 {
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE IF NOT EXISTS kernel_mark (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     build_id TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 8;
                  COMMIT;",
             )?;
         }
@@ -2439,7 +2484,7 @@ mod tests {
     /// WAL mode leaves `-wal` and `-shm` siblings next to the database.
     /// Removing only the `.sqlite3` leaves two files behind per run, which is
     /// how a test suite quietly fills a temp directory.
-    fn remove_db(path: &std::path::Path) {
+    pub(super) fn remove_db(path: &std::path::Path) {
         for suffix in ["", "-wal", "-shm"] {
             let mut p = path.as_os_str().to_os_string();
             p.push(suffix);
@@ -2567,6 +2612,42 @@ mod tests {
     }
 
     #[test]
+    fn kernel_mark_migration_preserves_queue() {
+        let fixture = deps_fixture();
+        let path = std::env::temp_dir().join(format!("kernel-mark-{}.db", new_id("test")));
+        let s = Store::open(&path).unwrap();
+        s.insert_project(&fixture.get_project("p").unwrap())
+            .unwrap();
+        for task in fixture.list_tasks("p").unwrap() {
+            s.create_task(&task, None).unwrap();
+        }
+        let before = s.queued_tasks("p").unwrap();
+        assert!(!before.is_empty());
+        let seqs: Vec<_> = before
+            .iter()
+            .map(|t| s.queued_seq(&t.id).unwrap())
+            .collect();
+        s.conn
+            .execute_batch("DROP TABLE kernel_mark; PRAGMA user_version = 7;")
+            .unwrap();
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.kernel_mark().unwrap(), None);
+        assert_eq!(
+            s.conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        assert_eq!(s.queued_tasks("p").unwrap(), before);
+        for (task, seq) in before.iter().zip(seqs) {
+            assert_eq!(s.queued_seq(&task.id).unwrap(), seq);
+        }
+        drop(s);
+        remove_db(&path);
+    }
+
+    #[test]
     fn deps_store_migration_preserves_queue() {
         let s = deps_fixture();
         let mut existing = session("existing", "A", SessionKind::Intake, 1);
@@ -2588,7 +2669,7 @@ mod tests {
             s.conn
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            7
+            SCHEMA_VERSION
         );
         assert_eq!(s.list_sessions("A").unwrap()[0].limit_minutes, Some(42));
         assert_eq!(s.queued_tasks("p").unwrap(), before);
@@ -2947,7 +3028,7 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap(),
             serde_json::json!({"state":"queued","resume":"implement"})
         );
-        assert_eq!(SCHEMA_VERSION, 7);
+        assert_eq!(SCHEMA_VERSION, 8);
     }
 
     #[test]
@@ -3804,5 +3885,85 @@ mod tests {
         drop(observer);
         drop(s);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod kernel_mark_tests {
+    use super::*;
+    const OLD: &str = "0000001-20200101T000000Z-000000000001";
+    const NEW: &str = "0000002-20200101T000000Z-000000000002";
+
+    #[test]
+    fn kernel_mark_claim_matrix() {
+        let unknown = "unknown-0.1.0-20200101T000000Z";
+        let other = "unknown-0.1.0-20210101T000000Z";
+        for (current, recorded, accepted, changed) in [
+            (OLD, None, true, true),
+            (OLD, Some(OLD), true, false),
+            (NEW, Some(OLD), true, true),
+            (OLD, Some(NEW), false, false),
+            (
+                "0000001-20200101T000000Z-000000000003",
+                Some(OLD),
+                false,
+                false,
+            ),
+            (NEW, Some(unknown), true, true),
+            (unknown, Some(NEW), false, false),
+            (unknown, Some(other), false, false),
+            (NEW, Some(""), false, false),
+            (NEW, Some("future-format"), false, false),
+            (unknown, None, true, true),
+            (unknown, Some(unknown), true, false),
+            (
+                "9999999-29991231T235959Z-ffffffffffff",
+                Some(OLD),
+                true,
+                true,
+            ),
+            ("0000000-20200229T000000Z-000000000000", None, true, true),
+        ] {
+            let s = Store::open_in_memory().unwrap();
+            if let Some(m) = recorded {
+                s.conn
+                    .execute("INSERT INTO kernel_mark VALUES (1, ?1, 'sentinel')", [m])
+                    .unwrap();
+            }
+            assert_eq!(
+                s.claim_kernel_mark(current).unwrap().is_none(),
+                accepted,
+                "{current} / {recorded:?}"
+            );
+            assert_eq!(
+                s.kernel_mark().unwrap().as_deref(),
+                if changed { Some(current) } else { recorded }
+            );
+            let time: String = s
+                .conn
+                .query_row("SELECT updated_at FROM kernel_mark", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(time != "sentinel", changed);
+            assert_eq!(s.latest_seq().unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn kernel_mark_reserved_lock_prevents_stale_claim() {
+        let path = std::env::temp_dir().join(format!("kernel-mark-{}.db", new_id("test")));
+        let s = Store::open(&path).unwrap();
+        s.claim_kernel_mark(OLD).unwrap();
+        let other = Store::open(&path).unwrap();
+        other.conn.pragma_update(None, "busy_timeout", 0).unwrap();
+        s.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        s.conn
+            .execute("UPDATE kernel_mark SET build_id = ?1", [NEW])
+            .unwrap();
+        assert!(other.claim_kernel_mark(OLD).is_err());
+        s.conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(other.claim_kernel_mark(OLD).unwrap().as_deref(), Some(NEW));
+        drop(other);
+        drop(s);
+        super::tests::remove_db(&path);
     }
 }

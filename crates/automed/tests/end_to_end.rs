@@ -9778,3 +9778,241 @@ fn integration_e2e_doc_only_repair_keeps_todays_audit() {
     assert!(!w.prompt(9).contains("本轮是**集成复验**"));
     assert!(!integration_e2e_brief(&w, &slug, 2).contains("本轮要审的集成改动"));
 }
+
+const GUARD_NEW: &str = "0000002-20200101T000000Z-000000000002";
+const GUARD_OLD: &str = "0000001-20200101T000000Z-000000000001";
+
+impl World {
+    fn second_kernel(&self, build_id: &str) -> Ctx {
+        let mut ctx = Ctx::new(
+            Store::open(self.ctx.store.path()).unwrap(),
+            &self.ctx.autome_home,
+            &self.ctx.home,
+        )
+        .dry();
+        ctx.build_id = build_id.into();
+        ctx
+    }
+}
+
+fn guard_world(tag: &str) -> (World, String) {
+    let mut w = World::new(tag);
+    let project = w.ctx.store.get_project(&w.project_id).unwrap();
+    w.ctx.store = Store::open(w.root.join("ledger.db")).unwrap();
+    w.ctx.store.insert_project(&project).unwrap();
+    w.ctx.build_id = GUARD_NEW.into();
+    let out = w.call(
+        "task.create",
+        json!({"project_id":w.project_id,"request":"guard queue","draft":true}),
+    );
+    let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
+    w.ctx
+        .store
+        .set_task_state(&id, &autome_domain::task::TaskState::Queued)
+        .unwrap();
+    (w, id)
+}
+
+fn guard_sentence() -> String {
+    format!(
+        "这个内核（{GUARD_OLD}）比推进过账本的内核（{GUARD_NEW}）旧，已停止推进；请重新安装或设置 AUTOMED_BIN"
+    )
+}
+
+#[test]
+fn older_kernel_tick_skips_with_the_sentence() {
+    let (w, _) = guard_world("guard-tick");
+    let mut old = w.second_kernel(GUARD_OLD);
+    let out = call(&mut old, "scheduler.tick", json!({}));
+    assert_eq!(ok(&out)["skipped"], true);
+    assert_eq!(
+        ok(&out)["older_kernel"],
+        json!({"message":guard_sentence(),"kernel":GUARD_OLD,"ledger":GUARD_NEW})
+    );
+    assert!(!old.recovered);
+}
+
+#[test]
+fn older_kernel_refuses_every_write_with_the_same_sentence() {
+    let (w, id) = guard_world("guard-writes");
+    let mut old = w.second_kernel(GUARD_OLD);
+    let before = old.store.latest_seq().unwrap();
+    // Even a held lock must not delay the read-only precheck.
+    let _lock = automed::driver_lock::try_acquire(w.ctx.store.path())
+        .unwrap()
+        .unwrap();
+    for method in [
+        "task.create",
+        "task.approve",
+        "task.merge",
+        "task.rerun_from",
+        "config.set_loop",
+        "project.add",
+        "task.archive",
+    ] {
+        let out = call(
+            &mut old,
+            method,
+            json!({"task_id":id,"project_id":w.project_id,"request":"forbidden","path":w.repo}),
+        );
+        let wire = serde_json::to_value(&out.reply).unwrap();
+        assert_eq!(wire["outcome"]["code"], "older_kernel", "{wire}");
+        assert_eq!(wire["outcome"]["message"], guard_sentence());
+    }
+    assert_eq!(old.store.latest_seq().unwrap(), before);
+}
+
+#[test]
+fn older_kernel_reads_still_answer() {
+    let (w, id) = guard_world("guard-reads");
+    let mut old = w.second_kernel(GUARD_OLD);
+    for (method, params) in [
+        ("task.get", json!({"task_id":id})),
+        ("dashboard.get", json!({})),
+        ("events.since", json!({"after_seq":0})),
+    ] {
+        ok(&call(&mut old, method, params));
+    }
+    let out = call(&mut old, "env.get", json!({}));
+    assert_eq!(
+        ok(&out)["kernel"],
+        json!({"build_id":GUARD_OLD,"origin":"git","ledger_build_id":GUARD_NEW,"may_advance":false,"message":guard_sentence()})
+    );
+}
+
+#[test]
+fn older_kernel_leaves_no_trace() {
+    let (w, id) = guard_world("guard-trace");
+    let mut old = w.second_kernel(GUARD_OLD);
+    let before = old.store.latest_seq().unwrap();
+    let task = old.store.get_task(&id).unwrap();
+    let session: autome_domain::session::Session = serde_json::from_value(json!({
+        "id":"orphan", "task_id":id, "kind":{"kind":"intake"}, "runtime":"claude", "model":"m", "effort":null,
+        "skills":[], "round":1,"started_at":"2020-01-01T00:00:00Z", "ended_at":null,
+        "lifecycle":{"state":"running"}, "log_path":w.root.join("missing.log"), "pid":null,
+        "limit_minutes":null,"protocol_ref":null,"rules_hash":null,"metrics":{}
+    })).unwrap();
+    old.store.insert_session(&session).unwrap();
+    for _ in 0..3 {
+        assert!(automed::scheduler::tick(&mut old).skipped);
+    }
+    assert_eq!(old.store.latest_seq().unwrap(), before);
+    assert_eq!(old.store.get_task(&id).unwrap(), task);
+    assert_eq!(old.store.list_sessions(&id).unwrap(), vec![session]);
+    assert!(!old.recovered);
+    assert!(!w.repo.join(".worktree").join(&task.slug).exists());
+    assert!(!w.repo.join(task.doc_dir()).join("protocol").exists());
+    assert!(task.protocol_ref.is_none());
+}
+
+#[test]
+fn older_kernel_does_not_fail_a_task_over_unknown_placeholders() {
+    let (w, id) = guard_world("guard-placeholder");
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let rel = format!(".worktree/{}", task.slug);
+    automed::git::worktree_add(&w.repo, &rel, &task.slug, "HEAD").unwrap();
+    let wt = w.repo.join(&rel);
+    let (reference, files) = automed::protocol::current();
+    automed::protocol::copy_into_task(files, &wt, &task.doc_dir()).unwrap();
+    std::fs::write(
+        wt.join(task.doc_dir()).join("protocol/prompts/impl.md"),
+        "{unrecognized_guard_placeholder}",
+    )
+    .unwrap();
+    w.ctx
+        .store
+        .set_task_protocol_ref(&id, &reference.to_wire())
+        .unwrap();
+    w.ctx
+        .store
+        .set_task_state(
+            &id,
+            &autome_domain::task::TaskState::Requeued {
+                resume: autome_domain::task::Node::Implement,
+            },
+        )
+        .unwrap();
+    let mut old = w.second_kernel(GUARD_OLD);
+    let before = old.store.get_task(&id).unwrap();
+    for _ in 0..3 {
+        assert!(automed::scheduler::tick(&mut old).skipped);
+    }
+    assert_eq!(old.store.get_task(&id).unwrap(), before);
+    let mut same = w.second_kernel(GUARD_NEW);
+    automed::scheduler::tick(&mut same);
+    let state = serde_json::to_value(same.store.get_task(&id).unwrap().state).unwrap();
+    assert!(state.to_string().contains("占位符"), "{state}");
+}
+
+#[test]
+fn older_kernel_busy_skip_is_distinguishable() {
+    let (w, id) = guard_world("guard-busy");
+    w.ctx
+        .store
+        .set_task_state(&id, &autome_domain::task::TaskState::Draft)
+        .unwrap();
+    let mut same = w.second_kernel(GUARD_NEW);
+    let conn = rusqlite::Connection::open(w.ctx.store.path()).unwrap();
+    conn.execute("UPDATE kernel_mark SET updated_at = 'sentinel'", [])
+        .unwrap();
+    let lock = automed::driver_lock::try_acquire(w.ctx.store.path())
+        .unwrap()
+        .unwrap();
+    let out = call(&mut same, "scheduler.tick", json!({}));
+    assert_eq!(ok(&out)["skipped"], true);
+    assert!(ok(&out)["older_kernel"].is_null());
+    drop(lock);
+    let before = same.store.latest_seq().unwrap();
+    for _ in 0..3 {
+        assert!(!automed::scheduler::tick(&mut same).skipped);
+    }
+    assert_eq!(same.store.latest_seq().unwrap(), before);
+    assert_eq!(
+        conn.query_row("SELECT updated_at FROM kernel_mark", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "sentinel"
+    );
+}
+
+#[test]
+fn older_kernel_lock_error_stops_all_advancing() {
+    let (w, _) = guard_world("guard-lock-error");
+    let path = automed::driver_lock::lock_path(w.ctx.store.path()).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let mut newer = w.second_kernel("0000003-20200101T000000Z-000000000003");
+    let before = newer.store.latest_seq().unwrap();
+    let report = automed::scheduler::tick(&mut newer);
+    assert!(report.skipped && report.errors[0].contains("无法取得驱动锁"));
+    let out = call(
+        &mut newer,
+        "task.create",
+        json!({"project_id":w.project_id,"request":"forbidden"}),
+    );
+    let wire = serde_json::to_value(out.reply).unwrap();
+    assert_eq!(wire["outcome"]["code"], "internal", "{wire}");
+    assert_eq!(newer.store.latest_seq().unwrap(), before);
+    assert_eq!(
+        newer.store.kernel_mark().unwrap().as_deref(),
+        Some(GUARD_NEW)
+    );
+    assert!(!newer.recovered);
+    // A broken/unreadable mark must fail closed before either entry point writes.
+    std::fs::remove_dir(&path).unwrap();
+    let conn = rusqlite::Connection::open(w.ctx.store.path()).unwrap();
+    conn.execute_batch("DROP TABLE kernel_mark").unwrap();
+    let report = automed::scheduler::tick(&mut newer);
+    assert!(report.skipped && !report.errors.is_empty());
+    let out = call(
+        &mut newer,
+        "task.create",
+        json!({"project_id":w.project_id,"request":"forbidden"}),
+    );
+    assert_eq!(
+        serde_json::to_value(out.reply).unwrap()["outcome"]["code"],
+        "internal"
+    );
+    assert_eq!(newer.store.latest_seq().unwrap(), before);
+    assert!(!newer.recovered);
+}
