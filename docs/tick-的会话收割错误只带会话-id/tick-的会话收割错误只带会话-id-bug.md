@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p autome-cli --test cli run_json_tick_error
 根因: scheduler::tick_locked 的会话收割错误分支只用 s.id 包装错误，遗漏已有的 s.task_id；CLI 原样输出该错误。
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -50,4 +50,9 @@ fix-round: 1/3
 
 ## 复核意见
 
-待独立复核。第 1/3 修复轮已通过产品代码修改使原回归转绿，回归测试保持不变。
+复核通过（第 1/3 轮）。
+- 独立复验：复现命令 `cargo test --offline -p autome-cli --test cli run_json_tick_error` 退出正常，2 通过、0 失败（含新用例 `run_json_tick_error_reaped_session_identifies_task` 与原草稿用例）。
+- 差异检查（4dd3653..860c4bb，crates/ 下）：仅 `crates/automed/src/scheduler.rs` 收割错误分支 +7/-1；`crates/autome-cli` 无任何改动，回归测试未删除、跳过或弱化，仍断言精确前缀 `T-… ses-…:`。
+- 根因成立：该分支只用 `s.id` 包装错误，丢了已有的 `s.task_id`；修复在此处补任务 ID，查询任务失败时回退为原 `会话 ID: 原因`，不吞原错误。
+- 范围最小：未触及内核步骤格式、错误顺序和 CLI 输出链路。
+- 未跑全量门禁，留给宿主合并前执行。
