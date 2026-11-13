@@ -6,34 +6,370 @@ implementation-round: 0/0
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: M-01：在 autome-domain 的 LoopDefaults / LoopOverrides / resolve / validate 加 session_minutes（默认 120，≥ 5），config_io 四处读写与 config.set_loop 带上它，README 配置样例加一行
 
 任务文件：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-task.md`
 
 任务卡：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-card.md`
 
-> 本文档目前只有骨架。各节内容由设计轮填写；任务整理轮不做设计。
+下文 R-n、N-n、C-n、A-n 指任务文件第 3～6 节的编号；「开放问题 n」指任务文件第 7 节第 n 条。代码位置以符号名为准，行号只是 2026-11-13 读代码时的近似值。
 
 ## 背景与现状
 
-（待设计轮填写）
+内核今天怎么发现一个会话结束（`scheduler.rs` 的 `tick_locked` 第 1 步 → `reap_session`）：
+
+- 读退出标记 `.autome/output/sessions/<task>/<session>.exit`、看 wrapper 的 pid 是否还活着、看日志多久没动，交给纯函数
+  `autome_domain::session::classify` 得出 `SessionLifecycle`（`Running / Exited / Killed / Vanished`）。
+- 不是 `Running` 就 `finish_session` → 记用量 → `sweep_commit`（把会话没提交的改动提交掉）→ 范围守卫 → `read_outcome`
+  （非 `Exited{0}` 一律 `SessionOutcome::Crashed { detail }`）→ `deliver_outcome`。
+- `deliver_outcome` 对 `Crashed` 先调 `schedule_retry`：流日志里认出「模型不存在」就按配置失败；认出限流就进冷却、不计次；
+  否则 `retry_attempts < [retry] attempts` 时计一次、按 `backoff_seconds` 翻倍退避，把 `carried_inject`（从该会话的
+  `session.started` 事件读回的原注入）写进 `session_retries` 一行，记 `session.retry` 事件；用尽则 `advance(SessionEnded{Crashed})`，
+  状态机给出 `Failed { reason: SessionCrashed { detail } }`。Bug Loop 的 `deliver_bug_outcome` 走同一个 `schedule_retry`。
+- 任务处于 `Paused` / `Requeued` 时，会话照跑，结果作为 `session.outcome_held` 事件挂起，恢复时原样交给 `deliver_outcome`。
+- 唯一的兜底是 `classify` 里「pid 没了且日志 600 秒没动」判 `Vanished`（`VANISHED_AFTER_SECS`）。一个 pid 活着、一直在输出的会话
+  永远是 `Running`。
+
+人叫停（`dispatch.rs` 的 `stop_running_session`）：`launcher::stop_session(pid)` 对 `-pid` 发 SIGTERM、**固定睡 3000 毫秒**、
+组还在就 SIGKILL；然后直接 `finish_session(Killed)`，不经过 `reap_session`。wrapper（`.autome/skill/run_session.sh`）是进程组
+组长（`run_in_terminal` 里 `process_group(0)`），trap 了 INT/TERM/HUP，收到后写退出标记 `exit_code=130` 再退出；headless 模式下
+由一个线程 `wait()` 它，不留僵尸。现有 e2e `stopping_a_task_kills_the_cli_the_wrapper_started` 断言叫停后 CLI 进程不在。
+
+会话只在一处登记：`scheduler.rs` 里启动会话的函数 `ctx.store.insert_session(&Session { … started_at: now_iso(), … })`，
+同一个函数里已经拿着该项目的 `resolved` 配置（读 `resolved.loop_defaults.design_rounds`）。所有会话类型——任务 Loop 各角色、
+任务整理、Bug 三步、复盘、手动复盘、Onboarding——都从这里进来。
+
+调度没有自己的定时器以外的依赖：`autome run` 按间隔循环 `scheduler::tick`，桌面端与 web 服务端定时调 `scheduler.tick`。
+所以一个一声不吭的会话也会被按时检查。
+
+配置：`LoopDefaults { parallel, design_rounds, budget_factor }` 与稀疏的 `LoopOverrides`；`resolve()` 逐字段覆盖；
+`validate()` 产出 `ConfigViolation`（`DesignRoundsOutOfRange` 等）；`config_io.rs` 有全局读、项目读、全局写、项目写四处
+`[loop]` 代码；`dispatch.rs` 的 `config_set_loop` 按参数逐字段改、写前 `validate`；`describe_violation` 给出中文句子。
+
+e2e 已有「改账本里的时间而不是真等」的先例：门禁排队超时用例把 `w.ctx.store` 换成盘上 SQLite（`Store::open(&db)`），再用
+`rusqlite` 直接 `UPDATE events SET at = …` 往前拨（注释：Backdate real job clocks, never wait a minute in the suite）。
 
 ## 目标与非目标
 
-（待设计轮填写）
+**目标**（R-1～R-5，A-1～A-6）
+
+1. `[loop] session_minutes`：全局与项目两级，默认 120，`config.validate` 要求 ≥ 5（R-1、A-5）。
+2. tick 发现在跑的会话从 `started_at` 起超过它启动时的上限，就用人叫停的同一个函数终止整个进程组，记
+   `session.timeout { session_id, minutes, limit }`，会话行记为超时（R-2、C-4、A-3）。
+3. 超时按崩溃的同一套 `[retry]` 处理：计一次、退避、原节点重派，用尽才失败，失败理由写明超时；不是协议失败，不动任何轮数
+   （R-3、C-5、A-1）。
+4. 重派的会话收到新的注入：上一个会话因超过 N 分钟被终止、最后 40 行日志、先把进度写进文档并缩小本轮目标；原来携带的注入
+   一起带上（R-4、A-4）。
+5. `autome status <任务>` 显示「已运行 37 分钟 / 上限 120」；`task.get`、`session.log` 的会话条目带 `timed_out: true`；
+   `dashboard.get` 等你处理的失败理由里有「超时」（R-5）。
+6. 上限之前结束的会话行为不变，现有 e2e 一行不改（C-3、A-2）。
+
+**非目标**
+
+- 按角色分别设上限（N-1）、按费用设上限（N-2）、改心跳兜底 `Vanished` 那条路径（N-3）。
+- 生产里任何测试专用开关（C-1）：上限只有分钟、最小 5；测试用改账本时间的办法缩短（见方案 §8）。
+- 桌面端与 web 界面的新展示：`apps/desktop/renderer/screens/task.js` 对未知生命周期显示原始 `state`（会显示 `timed_out`），
+  `labels.js` 对未知违规显示原始 `kind`——都不坏，不在 R-5 清单里，本任务不改界面代码。失败理由仍是 `session_crashed`，
+  桌面端与 web 通知器显示「会话异常退出（…超时）」，两处按名映射无需改动。
+- 不改协议源 `protocol/`，也不改任务目录下的 `protocol/` 副本：注入文案按任务卡放在 `launcher.rs`。
+- 不改 `.autome/` 下任何东西（含本仓库自己的 `.autome/config.toml`）。
 
 ## 方案
 
-（待设计轮填写）
+### 1. 配置（R-1、A-5；开放问题 11）
+
+`autome-domain/src/config.rs`：
+
+- `pub const DEFAULT_SESSION_MINUTES: u32 = 120;`、`pub const SESSION_MINUTES_MIN: u32 = 5;`
+- `LoopDefaults` 加 `#[serde(default = "default_session_minutes")] pub session_minutes: u32`（`Default` 给 120）；
+  `LoopOverrides` 加 `pub session_minutes: Option<u32>`（同另外三个字段的 serde 写法）；`resolve()` 照 `budget_factor` 覆盖。
+- `ConfigViolation::SessionMinutesOutOfRange { value: u32, min: u32 }`；`validate()` 在 `value < SESSION_MINUTES_MIN` 时报。
+  没有上界：上限是安全线，用户愿意给 600 分钟就给。
+
+`automed`：
+
+- `config_io.rs` 四处都带上 `session_minutes`：全局读、项目读（同 `design_rounds` 的解析写法）、全局写（`loop_table["session_minutes"]`）、
+  项目写（同 `budget_factor` 的 `Option` 写法）。写路径必须带，否则桌面端保存设置会把手写值抹掉。
+- `config_set_loop` 接受可选参数 `session_minutes`，全局 / 项目两支都照 `budget_factor` 处理；写前的 `validate` 自然拒绝 < 5。
+  界面不发这个参数，但 IPC 开放它，CLI 与以后的界面可用。
+- `describe_violation`：`会话时长上限 {value} 分钟太短，至少 {min} 分钟`。
+- README「Host gate, retries and cooldowns」的 TOML 样例加 `[loop]` 表与一行
+  `session_minutes = 120     # the default, at least 5; a session running longer is stopped and retried like a crash`。
+
+### 2. 上限取哪一刻的值（开放问题 9、12）
+
+README 写着「配置修改对下一个启动的会话生效，在跑的会话不被打断」。所以上限在**会话启动时**定下来，跟着会话走：
+
+- `Session` 加 `#[serde(default, skip_serializing_if = "Option::is_none")] pub limit_minutes: Option<u32>`；
+  `sessions` 表照 `protocol_ref` 的迁移写法加列 `limit_minutes INTEGER`，`insert_session` 写、读出时为 NULL 则 `None`。
+- 唯一的登记点 `insert_session(&Session { … })` 填 `Some(resolved.loop_defaults.session_minutes)`。
+- `automed` 里一个函数 `effective_limit(ctx, s, project) -> u32`：`s.limit_minutes` 有值用它；`None`（升级前启动的会话）
+  用该项目当前生效配置；项目配置读不出来时用 `DEFAULT_SESSION_MINUTES`。tick 的判定与 `task.get` 的显示都只调这一个函数，
+  不会出现「判定用一个数、显示另一个数」。
+- 事件里的 `limit` 就是这个数。
+
+### 3. 判定与终止（R-2、C-4、A-3；开放问题 1、7、8）
+
+纯函数放 `autome-domain/src/session.rs`：
+
+```rust
+/// Whether a session that has run `elapsed_secs` has reached its limit.
+pub fn over_limit(elapsed_secs: u64, limit_minutes: u32) -> bool {
+    elapsed_secs >= u64::from(limit_minutes) * 60
+}
+```
+
+`SessionLifecycle` 加一个变体：
+
+```rust
+/// `automed` stopped it because it ran past `[loop] session_minutes`.
+TimedOut { limit_minutes: u32 },
+```
+
+序列化为 `{"state":"timed_out","limit_minutes":120}`；`is_running()` 为假，`should_parse_document()` 为假。账本里的旧行没有这个
+值，照旧解析。选新变体而不是 `Killed` 加标记：A-1 要求「会话行是超时」，生命周期本身就说清楚，`timed_out: true` 直接由它派生，
+不需要第二个来源。
+
+`reap_session` 的改动（`scheduler.rs`），顺序是关键：
+
+1. 照旧 `classify`。**已经有退出标记、或已判 `Vanished` 的会话照旧收割**——超过上限但自己已经结束的会话不算超时（C-3）。
+   唯一例外：该会话已有 `session.timeout` 事件（上一次终止到一半内核退出了，wrapper 留下的是 130 标记），按 `TimedOut` 收割。
+   这次查询只发生在会话结束的那一次 tick，不是每个 tick。
+2. `classify` 为 `Running` 时：`limit = effective_limit(…)`，`elapsed = secs_since(&s.started_at)`；读不出时间（`None`）或
+   `!over_limit(elapsed, limit)` 就照旧 `return Ok(false)`。
+3. 超限：先记 `session.timeout { session_id, minutes: elapsed / 60, limit }`（已有就不重记），再 `launcher::stop_session(pid)`
+   （出错只记 warn，pid 为 `None` 时跳过），生命周期定为 `TimedOut { limit_minutes: limit }`，`ended_at = now_iso()`。
+   先记事件后杀：内核在两步之间退出时，下一次 tick 凭事件认得出它（见第 1 步）。
+4. 然后走**现有收割路径的剩余部分**，一行不改：`finish_session`、记用量、预算告警、`sweep_commit`、范围守卫、`read_outcome`、
+   挂起或 `deliver_outcome`。
+
+`read_outcome` 与 `read_bug_outcome` 的 `match lifecycle` 加一支：
+`TimedOut { limit_minutes } => format!("会话运行超过 {limit_minutes} 分钟，已被 Autome 终止（超时）")`。
+
+**终止方式（C-4，开放问题 1）。** 用 `launcher::stop_session` 本身，与人叫停同一个函数、同一组信号。把它的「固定睡 3 秒」改成
+「每 50 毫秒查一次 `kill(-pid, 0)`，组没了就返回，3 秒到了还在才 SIGKILL」。信号顺序与宽限上限不变，人叫停也因此变快。
+wrapper 收到 TERM 后几十毫秒内写完 130 标记退出，所以一次超时通常只让持锁的 tick 多花不到 0.1 秒；最坏（进程忽略 TERM）3 秒，
+与今天人叫停相同。超时每个会话最多一次，不会叠加成持续卡顿。`stop_running_session` 里的门禁清理（`gate::stop_all`、
+`discard_node`）**不**用于超时：任务没有停，只是这一轮重来。
+
+**覆盖哪些会话（开放问题 7）。** 所有 `all_running_sessions()` 一视同仁地判定与终止；终止之后，每种会话走它**崩溃时本来就走**
+的那条路，不新增分支：
+
+| 会话 | 超时之后 |
+|---|---|
+| 任务 Loop 各角色、任务整理（`Active` 的会话节点） | `deliver_outcome` → `schedule_retry`，原节点重派 |
+| Bug Loop 三步 | `deliver_bug_outcome` → 同一个 `schedule_retry` |
+| 任务处于 `Paused` / `Requeued` | 结果挂起为 `session.outcome_held`；恢复时交给 `deliver_outcome`，再走重试 |
+| 失败面板手动发起的复盘、终态任务上的复盘 | 照现有 `detached_retro` 分支：只记录，任务留在原终态 |
+| Onboarding | 照现有分支：记完会话即返回，项目页的向导自己处理 |
+
+**起点（开放问题 8）。** 从 `started_at` 算。它比 wrapper 真正启动早一个终端拉起的空窗（毫秒到几秒），与 ≥ 5 分钟的上限相比
+可以忽略，而且偏向「早停」而不是「漏停」。暂停 / 重新排队的任务若还有在跑的会话，照样计时——进程仍在占产能和花钱。
+墙钟语义：电脑睡眠后醒来，睡眠时间也算进去；这是任务卡写明的「墙钟时长上限」，记入风险。
+
+### 4. 接到崩溃重试上（R-3、C-5；开放问题 3、5、6）
+
+超时会话在 `read_outcome` 里就是一个 `Crashed { detail }`，`deliver_outcome` 原样调 `schedule_retry`，所以「计一次重试、
+退避、原节点重派、用尽才失败」都是现成的。`schedule_retry` 只多一件事：认出超时。
+
+- 判据是该会话有没有 `session.timeout` 事件（`ctx.store.session_event(task, s.id, "session.timeout")`）。用事件而不是传参，是因为
+  挂起后恢复的那条路（`outcome_held` → `deliver_outcome`）拿到的只有会话与结果；事件在账本里，内核重启后仍在。
+- 超时时**跳过**「模型不存在」与「限流」两个流日志判定，直接走计次重试（开放问题 6）。理由：上限是失控会话的安全线；若一个在
+  CLI 里反复撞限流的会话超时后被当成限流处理（不计次、立即重派），它可以无限循环，R-3「重试用尽才进入失败」就不成立。
+  真正的限流会让 CLI 自己退出，那时会话没有超时，照旧进冷却。
+- 计次、退避、`session.retry` 事件、`reason = detail` 都不变。用尽时 `schedule_retry` 返回 `false`，`advance` 给出
+  `Failed { reason: SessionCrashed { detail: "会话运行超过 120 分钟，已被 Autome 终止（超时）" } }`。
+
+**失败理由复用 `SessionCrashed`（开放问题 5）。** 不新增 `FailureReason` 变体：超时与崩溃在状态机里是同一个事件
+（`SessionEnded { Crashed }`），新变体要改 `task.rs` / `bug_loop.rs` 两张迁移表、`render.rs`、`labels.js`、`notifier-rules.ts`，
+换来的只是一个机器可读的名字；而 R-5 要的是「能看出是超时」，`detail` 里的「（超时）」在 CLI（`会话崩溃：…（超时）`）、
+桌面端与 web 通知器（`会话异常退出（…（超时））`）、`dashboard.get` 的 `task.state.reason.detail` 里都原样可见。
+
+**不是协议失败，不动轮数（C-5）。** 超时结果是 `Crashed`，不解析文档、不进守卫的协议判定，不会产生 `task.protocol_failure`；
+`schedule_retry` 不碰任何预算字段；`fix_rounds` 也只在 Bug 复核结果上计，不在崩溃上计。范围守卫（审计 / 复盘越界改文件）照旧
+先于超时生效——越界是另一个事实，今天崩溃时也是这样。
+
+**没提交的改动（开放问题 3）。** 照走 `sweep_commit`：进程组已经没了，没有并发写者，工作区里的半成品被提交进任务分支。下一轮
+的注入因此可以说「改动已提交，从那里接着做」。
+
+### 5. 注入（R-4、A-4；开放问题 4、10）
+
+`autome-domain/src/task.rs` 的 `Inject` 加一个变体：
+
+```rust
+/// The previous session ran past `[loop] session_minutes` and was stopped.
+SessionTimedOut {
+    minutes: u32,
+    /// The last lines of its readable log, verbatim.
+    tail: String,
+    /// What that session itself was carrying — a gate failure, a rebase
+    /// conflict, the user's decisions — so the retry does not lose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    carried: Option<Box<Inject>>,
+},
+```
+
+并配一个构造函数 `Inject::timed_out(minutes, tail, carried: Option<Inject>) -> Inject`：`carried` 本身是 `SessionTimedOut` 时取
+它里面的 `carried`，**不嵌套**——连续两次超时，第二次的注入仍只有一段超时说明加最初的那份注入。`session_retries.inject` 仍是一个
+`Option<Inject>`，表结构不变，旧行照旧解析（开放问题 4）。
+
+`schedule_retry` 在超时时：`tail = gate::tail(&repo.join(SessionPaths::log(task, session)), 40)`（可读日志，不是 `.jsonl`
+流日志；`gate::tail` 已按 6000 字节封顶），`inject = Inject::timed_out(limit, tail, carried_inject(…))`，写进
+`session_retries`——随重试持久化，内核重启后仍在（开放问题 10）。
+
+`launcher.rs`：把 `match spec.inject { … }` 抽成 `fn render_inject(p: &mut String, spec: &PromptSpec, inject: &Inject)`，
+现有分支逐字不变；新分支先写超时说明，再对 `carried` 递归调用一次。文案（中文，`{minutes}`、`{tail}` 为实参）：
+
+```text
+上一个会话运行超过 {minutes} 分钟，被 Autome 终止（超时）。它留在工作区里的改动已由 Autome 提交到本分支。日志最后 40 行（原文）：
+
+（围栏包住的 {tail}）
+
+本轮先把已有进度写进文档（设计文档、证据文件或 Bug 文档里本轮该写的地方）并提交，再缩小本轮目标：只做能在上限内完成的部分，
+其余写进 next-action 留给下一轮。本轮是被中断那一轮的续做，不是新的一轮：状态块里的 design-round / implementation-round
+如果上一个会话已经加过一，保持现值，不要再加。
+```
+
+最后一句是 C-5 在文档侧的那一半：内核不计轮数，但轮数写在会话自己维护的状态块里，被中断的会话可能已经加过。
+
+金样：`crates/automed/tests/golden/prompts/impl-timeout.md`（实现轮、无携带注入）与 `impl-timeout-gate.md`（携带
+`GateFailed`），由 `prompt_rendering.rs` 新增的两个用例逐字节对比，`tests/golden/README.md` 补一句说明。
+
+### 6. 可见（R-5；开放问题 12）
+
+- `dispatch.rs` 的 `session_json` 加 `"timed_out": matches!(lifecycle, TimedOut{..})` 与 `"limit_minutes"`。后者与运行中会话
+  的 `"elapsed_minutes"`（`secs_since(started_at) / 60`）需要账本与时钟，所以 `session_json` 改为接收 `ctx` / 项目，或由调用方
+  在 `session_json(s)` 的结果上补字段——实现轮二选一，但三处调用（`task.get`、`session.log`、`dashboard.get` 的 running 条目）
+  必须都带上，且 `limit_minutes` 只经 `effective_limit` 得出。
+- `autome status <任务>`（`autome-cli/src/main.rs` 的 `task_detail`「会话（最近 5 个）」）：运行中的行把「运行中」换成
+  `运行中 · 已运行 {elapsed_minutes} 分钟 / 上限 {limit_minutes}`；`timed_out` 为真的行加 `超时（上限 {limit_minutes} 分钟）`。
+  CLI 只读字段、拼字符串，不读配置、不算时间（C-6）。
+- `autome-cli/src/render.rs` 的事件行加 `session.timeout`：`{subject} 会话运行 {minutes} 分钟，超过上限 {limit}，已终止`。
+- `dashboard.get`：失败任务在 `waiting` 里，`task.state.reason` 为 `{kind: session_crashed, detail: "…（超时）"}`，无需改代码，
+  只加测试钉住。
+- `docs/development/technical-design.md`：§7.3 的生命周期列表加 `TimedOut`，§17 的兜底一节加一段「时长上限」，各几行，不是验收项。
+
+### 7. 分层（C-6）
+
+| 层 | 本任务放什么 |
+|---|---|
+| `autome-domain` | `session_minutes` 字段、默认值、校验与违规；`SessionLifecycle::TimedOut`；`over_limit`；`Inject::SessionTimedOut` 与 `Inject::timed_out` |
+| `automed` | 配置读写、`limit_minutes` 列、`effective_limit`、tick 里的判定与 `stop_session`、事件、`schedule_retry` 的超时分支、日志尾、注入文案、JSON 字段 |
+| `autome-cli` | 读字段、打印 |
+
+### 8. 测试怎么把上限缩短（C-1、C-2、C-7）
+
+不给生产留任何开关：上限只有 `session_minutes`，最小 5。e2e 把**账本里会话的 `started_at` 往前拨**：照门禁排队超时用例，
+`w.ctx.store = Store::open(&db)` 换成盘上账本，会话起来后用 `rusqlite` 执行
+`UPDATE sessions SET started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 minutes') WHERE id = ?1`，然后 tick。内核看到的就是一个
+真实跑了 6 分钟的会话，判定、终止、重试走的全是生产代码。任务卡认可的「秒做内部单位」不需要了——那仍要在测试里配出一个低于
+5 分钟的值，等于另开一个口子。
+
+真实的 git worktree、真实 wrapper、真实进程组，只替换模型 CLI（`World` + `FAKE_CLI` + `.autome/fake/<n>.sh`），满足 C-7。
+永不退出的假 CLI 步骤：`echo $$ > cli.pid; sleep 1000 & echo $! > child.pid; i=0; while :; do i=$((i+1)); echo "tick $i"; sleep 1; done`。
+
+A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后各几十毫秒、`backoff_seconds = 0`、每次 tick 毫秒级，预计 5 秒以内；
+用例自己用 `Instant` 断言 < 30 秒（C-2）。
+
+## 风险与验证安排
+
+- **轮数在文档侧被加两次（C-5 的文档一半）。** 内核侧不计轮数可测；被中断的会话是否已改状态块、重派的会话是否照注入不再加，
+  取决于模型。缓解：注入文案明说；验证：人工验收 H-01。
+- **`stop_session` 改为轮询后的行为差异。** 风险在「组判空」：已退出但未被收的进程会让 `kill(-pid, 0)` 仍成功，于是等满 3 秒再
+  SIGKILL——与今天一样慢，不会更糟。headless 下 wrapper 有专门的 `wait()` 线程、其余进程由 launchd 收养回收。验证：M-02 的
+  launcher 单测分别覆盖「TERM 后立即返回」与「忽略 TERM 时升级 SIGKILL」；现有 `stopping_a_task_*` 两个 e2e 回归。
+- **tick 持锁时间。** 每次超时最多 3 秒（进程忽略 TERM 时），每个会话至多一次。接受。
+- **墙钟与睡眠。** 笔记本睡眠两小时醒来，在跑的会话会在下一次 tick 被判超时并重派一次。这是「墙钟上限」的直接含义，重派计一次
+  重试；接受，在技术设计 §17 写一句。
+- **升级时正在跑的旧会话。** `limit_minutes` 为 `None`，按当前配置（默认 120）判定；一个升级前已跑了三小时的会话会在升级后第一次
+  tick 被终止并重派。接受：这正是要拦的会话。
+- **超时说明与原注入同时出现时 prompt 变长。** `tail` 6000 字节封顶，`carried` 不嵌套，最多一段超时说明加一份原注入。
+- **桌面端显示原始 `timed_out` 字样。** 不坏，不在范围，见非目标。
+
+各里程碑的验收只跑能区分对错的子集；现有 e2e 是否「一行不改」用 `git diff` 的删除行数核对（C-3）；全量回归由宿主在合并前跑
+`sh scripts/ci-local.sh`（含 `cargo fmt --check`、`clippy -D warnings`，A-6）。
 
 ## 里程碑
 
-（待设计轮填写）
+| ID | 状态 | 标题 | reopen | 领域 |
+|---|---|---|---|---|
+| M-01 | 开放 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
+| M-02 | 开放 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
+| M-03 | 开放 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
+| M-04 | 开放 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
 
-## 测试与验收
+## 里程碑说明
 
-（待设计轮填写）
+- **M-01**（覆盖：R-1、A-5、开放问题 11；C-6。前置：无）。方案 §1。新增用例名都含 `session_minutes`：
+  - autome-domain 3 个：① 默认 120、项目覆盖胜出、未覆盖时继承全局；② `1` 与 `4` 各产生 `SessionMinutesOutOfRange { value, min: 5 }`；
+    ③ `5` 与缺省值校验无违规。
+  - automed lib 5 个：config_io ④ 全局与项目都能读出；⑤ `save_global` 保留手写的 `session_minutes`；⑥ `save_project` 保留项目覆盖；
+    dispatch ⑦ `config.validate` 对项目 `session_minutes = 1` 返回 `ok: false` 且违规 kind 为 `session_minutes_out_of_range`，
+    缺省配置 `ok: true`；⑧ `config.set_loop` 写入 `session_minutes = 30` 后 `config.get` 读回 30，写 `4` 被拒绝且文件不变。
+- **M-02**（覆盖：R-2、A-3、C-1、C-3、C-4、C-7、开放问题 1、2、7、8、9。前置：M-01）。方案 §2、§3。`stop_session` 改轮询；
+  `read_outcome` / `read_bug_outcome` 加 `TimedOut` 文案；本里程碑结束时超时会话已经能经由现有 `schedule_retry` 被重派（带原注入、
+  尚无超时说明）。新增用例名都含 `session_timeout`：
+  - autome-domain 2 个：① `over_limit` 在 `limit*60` 为真、`limit*60 - 1` 为假；② `TimedOut` 序列化为
+    `{"state":"timed_out","limit_minutes":5}` 且能读回，`is_running` 与 `should_parse_document` 均为假。
+  - automed lib 3 个：③ store：`limit_minutes` 写入读回，迁移前的旧行（列为 NULL）读成 `None`；④ launcher：一个自成进程组、带后台
+    子进程的 `sh`，`stop_session` 在 1 秒内返回，组长与子进程都不在；⑤ launcher：组长 `trap '' TERM` 时，`stop_session` 返回后组已
+    不在（升级 SIGKILL）。④⑤ 照 `run_in_terminal` 用线程 `wait()` 组长，免得僵尸让断言失真。
+  - e2e 3 个（盘上账本 + 拨 `started_at`）：⑥ `session_minutes = 5`、`[retry] attempts = 1, backoff_seconds = 3600`，永不退出的步骤，
+    拨到 6 分钟前后 tick 一次：`session.timeout` 事件 `{session_id, minutes: 6, limit: 5}`、会话生命周期 `timed_out`、任务仍是同一
+    节点、`pending_retry` 存在、wrapper / CLI / 后台子进程三者在 10 秒内都不在且 `kill(-wrapper, 0) != 0`（A-3，照
+    `stopping_a_task_kills_the_cli_the_wrapper_started`）；⑦ 步骤立即 `exit 0` 写好文档，等退出标记出现后再拨时间、再 tick：
+    照常收割，没有 `session.timeout` 事件，生命周期 `exited`；⑧ 以 `session_minutes = 5` 启动后把配置改成 120 并提交，拨到 6 分钟
+    前：仍被终止，事件 `limit` 为 5。
+- **M-03**（覆盖：R-3、R-4、A-1、A-4、C-2、C-5、开放问题 3、4、5、6、10。前置：M-02）。方案 §4、§5。新增用例名都含 `timeout_retry`：
+  - autome-domain 1 个：① `Inject::timed_out` 携带 `GateFailed` 时原样保留；携带一个 `SessionTimedOut` 时取其内层，不嵌套；JSON 读回相等。
+  - automed lib 3 个：② scheduler：超时会话的 `.jsonl` 里有一条限流记录，`schedule_retry` 仍计次（`session.retry` 的
+    `rate_limited: false`、`attempt: 1`），不写冷却；③ scheduler：重试已用尽的超时会话让任务 `Failed`，理由 `session_crashed`，
+    `detail` 含「超时」与上限分钟数，且没有 `task.protocol_failure` 事件；④ launcher：带 `carried: GateFailed` 的注入先渲染超时
+    说明、后渲染门禁失败段，两段各出现一次。
+  - prompt_rendering 2 个：⑤ `impl-timeout.md`、⑥ `impl-timeout-gate.md` 金样逐字节相等。
+  - e2e 2 个：⑦ A-1 全程：`session_minutes = 5`、`attempts = 1`、`backoff_seconds = 0`，步骤 1、2 都永不退出（每秒一行
+    `tick N`）；每有一个在跑的会话就拨时间再 tick；结束时 `sessions_run == ["1","2"]`、两条 `session.timeout`、一条 `session.retry`、
+    任务 `failed` 且 `reason.detail` 含「超时」、第 2 个 prompt 含「超过 5 分钟」与 `tick` 行、没有 `task.protocol_failure` 事件、
+    整条用时 < 30 秒；⑧ 会话在跑时 `task.pause`，拨时间后 tick：进程被终止、结果挂起；`task.resume` 后重派，第 2 个 prompt 含超时说明。
+- **M-04**（覆盖：R-5、开放问题 12、13；C-6。前置：M-03）。方案 §6。新增用例名都含 `timeout_visible`：
+  - automed lib 3 个：① `task.get` 与 `session.log` 的超时会话条目 `timed_out: true`、`limit_minutes: 5`，正常结束的会话
+    `timed_out: false`；② 运行中会话（`started_at` 为 37 分钟前、`limit_minutes` 120）的条目 `elapsed_minutes: 37`、`limit_minutes: 120`，
+    `limit_minutes` 为 `None` 的旧会话按项目当前配置给出；③ `dashboard.get` 的 `waiting` 里失败任务的 `reason.detail` 含「超时」。
+  - autome-cli 3 个：④ render：`session.timeout` 事件行；⑤ cli 集成：`autome status <任务>` 输出含「已运行 37 分钟 / 上限 120」；
+    ⑥ cli 集成：超时会话的行含「超时（上限 5 分钟）」。
+  - `technical-design.md` §7.3、§17 各补几行（不计入验收）。
 
-## 风险与未决问题
+## 验收契约
 
-（待设计轮填写）
+### M-01 验收契约
+
+- 验收命令：`cargo test -p autome-domain session_minutes && cargo test -p automed --lib session_minutes && grep -c 'session_minutes' README.md`
+- 预期：autome-domain 过滤 `session_minutes` 共 3 个通过（基线 0，新增 ①②③）；automed lib 过滤 `session_minutes` 共 5 个通过（基线 0，新增 ④～⑧）；README 计数 ≥ 1。用例总数 8。
+- 负向对照：`validate` 照 `design_rounds` 写成 `== 0` 时 ② 失败（`1`、`4` 没有违规）；`save_global` 不写 `session_minutes` 时 ⑤ 失败（手写的 30 被写回 120）；`resolve` 忽略项目覆盖时 ① 失败。
+
+### M-02 验收契约
+
+- 验收命令：`cargo test -p autome-domain session_timeout && cargo test -p automed --lib session_timeout && cargo test -p automed --test end_to_end session_timeout && cargo test -p automed --test end_to_end -- stopping_a_task a_non_zero_exit model_not_found a_rate_limited_round && test "$(git diff "$(git merge-base HEAD main)" -- crates/automed/tests/end_to_end.rs | grep -c '^-[^-]')" = 0`
+- 预期：autome-domain 过滤 `session_timeout` 2 个通过；automed lib 过滤 `session_timeout` 3 个通过；e2e 过滤 `session_timeout` 3 个通过（三者基线均 0，新增 ①～⑧ 共 8 个）；现有 e2e 回归子集 5 个通过（`stopping_a_task_*` 2、`a_non_zero_exit_*` 1、`model_not_found_*` 1、`a_rate_limited_round_*` 1）；最后一条 `test` 成立（相对任务分支与 main 的分叉点，`end_to_end.rs` 删改行数为 0，即现有 e2e 一行未改）。用例总数 13。
+- 负向对照：判定放在 `classify` 之前（先看时间再看退出标记）时 ⑦ 失败（已退出的会话被记成超时）；每个 tick 读当前配置而不是 `limit_minutes` 时 ⑧ 失败（不被终止）；只 `kill(pid)` 不 `kill(-pid)` 时 ⑥ 失败（后台子进程还在）；`stop_session` 保留固定 3 秒睡眠时 ④ 失败（返回超过 1 秒）。
+
+### M-03 验收契约
+
+- 验收命令：`cargo test -p autome-domain timeout_retry && cargo test -p automed --lib timeout_retry && cargo test -p automed --test prompt_rendering timeout_retry && cargo test -p automed --test end_to_end timeout_retry && cargo test -p automed --test end_to_end -- paused_running_session paused_then_stopped a_rate_limited_round a_non_zero_exit model_not_found && test "$(git diff "$(git merge-base HEAD main)" -- crates/automed/tests/end_to_end.rs | grep -c '^-[^-]')" = 0`
+- 预期：autome-domain 1 个、automed lib 3 个、prompt_rendering 2 个、e2e 2 个过滤 `timeout_retry` 通过（基线均 0，新增 ①～⑧ 共 8 个）；现有 e2e 回归子集 5 个通过；最后一条 `test` 成立（`end_to_end.rs` 删改行数为 0）。用例总数 13。⑦ 的用例内断言整条用时 < 30 秒。
+- 负向对照：`schedule_retry` 不认超时、照旧先做限流判定时 ② 失败（`rate_limited: true`、写了冷却）；注入只放超时说明、丢掉 `carried` 时 ④ 与 ⑥ 失败；超时判据用传参而不是 `session.timeout` 事件时 ⑧ 失败（恢复后挂起结果走重试，第 2 个 prompt 没有超时说明）；`Inject::timed_out` 不展开内层时 ① 失败。
+
+### M-04 验收契约
+
+- 验收命令：`cargo test -p automed --lib timeout_visible && cargo test -p autome-cli timeout_visible`
+- 预期：automed lib 过滤 `timeout_visible` 3 个通过；autome-cli 过滤 `timeout_visible` 3 个通过（render 单测 1、cli 集成 2）；基线均 0。用例总数 6。
+- 负向对照：`session_json` 只给 `task.get` 补字段、漏了 `session.log` 时 ① 失败；`limit_minutes` 不经 `effective_limit`、旧会话给出 `null` 时 ② 失败；CLI 自己读配置算上限（或不读 `elapsed_minutes`）时 ⑤ 的「已运行 37 分钟 / 上限 120」对不上。
+
+## 人工验收清单
+
+- H-01 合并前，在一个测试项目的 `.autome/config.toml` 写 `[loop] session_minutes = 5`，用真实模型跑一个实现轮会超过 5 分钟的任务（要花钱）：会话在约 5 分钟时被终止，`autome status <任务>` 运行中显示「已运行 N 分钟 / 上限 5」、结束后该行显示「超时」；重派的会话 prompt 里有超时说明与日志尾；重派会话结束后设计文档的 implementation-round 只比超时前多一。
+- H-02 在桌面端打开 H-01 那个任务：会话列表里超时那一行显示 `timed_out`（原始字样，本任务不加中文标签），没有报错或空白卡片。
+
+## Backlog
+
+## 争议项
