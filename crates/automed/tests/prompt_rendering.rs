@@ -50,6 +50,7 @@ fn maybe_update_golden(name: &str, got: &str) -> bool {
 
 fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
     PromptSpec {
+        integration_audit: false,
         kind,
         templates,
         gate_before_merge: None,
@@ -442,6 +443,7 @@ fn before_merge_audit_brief_matches_its_golden() {
         "ok":false, "exit_code":1, "log":"gate.log"
     });
     let got = brief::build(&Inputs {
+        integration: None,
         role: Role::Audit,
         slug: "example",
         doc_dir: "docs/example",
@@ -688,6 +690,7 @@ fn gate_quick_audit_brief_matches_golden() {
     });
     let result = serde_json::json!({"sha":"<head>","kind":"quick","command":"make lint","ok":true,"exit_code":0,"log":"gate.log"});
     let got = brief::build(&Inputs {
+        integration: None,
         role: Role::Audit,
         slug: "example",
         doc_dir: "docs/example",
@@ -814,4 +817,66 @@ fn timeout_retry_gate_golden() {
 #[test]
 fn timeout_retry_intake_golden() {
     timeout_retry_golden("intake-timeout", SessionKind::Intake, false);
+}
+fn integration_prompt(before_merge: bool, name: &str) {
+    let templates = automed::protocol::seed().clone();
+    let mut spec = spec(SessionKind::Role { role: Role::Audit }, &templates);
+    spec.integration_audit = true;
+    spec.gate_before_merge = before_merge.then_some("make check");
+    let got = build_prompt(&spec)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(BRIEF, "{brief_path}");
+    assert!(got.contains("本轮是**集成复验**"));
+    assert!(got.contains("git grep -nE"));
+    assert!(!got.contains("<!-- integration-audit -->"));
+    maybe_update_golden(name, &got);
+    assert_eq!(got, golden(name));
+}
+
+#[test]
+fn integration_audit_prompt_matches_its_golden() {
+    integration_prompt(false, "audit-integration");
+}
+#[test]
+fn integration_audit_prompt_before_merge_matches_its_golden() {
+    integration_prompt(true, "audit-integration-before-merge");
+}
+
+fn integration_brief(trigger: serde_json::Value, name: &str) {
+    use automed::brief::{self, BriefMap, Inputs};
+    let event = serde_json::json!({"impl_round":9,"evidence":"M-08-r9-audit.md","trigger":trigger,"repos":[{"repo":"","start":"3f2a1c0123456789","end":"9e81b77123456789","base":"55d0e12123456789","commits":[{"sha":"a1b2c3d123456789","subject":"fix: resolve launcher conflict","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 +-"},{"sha":"e4f5a6b123456789","subject":"test: keep old template compatible","paths":["crates/automed/tests/end_to_end.rs"],"stat":"crates/automed/tests/end_to_end.rs | 2 +-"}],"dropped":[{"sha":"0c9d8e7123456789","subject":"feat: launcher change","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 ++"}],"test_files":["crates/automed/tests/end_to_end.rs"],"commits_omitted":0,"dropped_omitted":0}]});
+    let got = brief::build(&Inputs {
+        integration: Some(brief::integration_section(&event, "docs/example")),
+        role: Role::Audit,
+        slug: "example",
+        doc_dir: "docs/example",
+        round: 9,
+        status: None,
+        audit_doc: None,
+        evidence: &[],
+        loop_protocol: "",
+        session_protocol: "",
+        map: &BriefMap::default(),
+        budget_line: None,
+        decisions: None,
+        gate: None,
+    });
+    maybe_update_brief_golden(name, &got);
+    assert_eq!(got, brief_golden(name));
+}
+#[test]
+fn integration_audit_brief_after_a_rebase_conflict_matches_its_golden() {
+    integration_brief(
+        serde_json::json!({"kind":"rebase_conflict","files":["crates/automed/src/launcher.rs"]}),
+        "audit-integration-rebase",
+    );
+}
+#[test]
+fn integration_audit_brief_after_a_gate_failure_matches_its_golden() {
+    integration_brief(
+        serde_json::json!({"kind":"gate_failed","command":"make check","tail":"error: lint failed"}),
+        "audit-integration-gate",
+    );
 }

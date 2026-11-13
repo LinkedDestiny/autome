@@ -239,7 +239,10 @@ pub fn run_case(plan: &Plan<'_>, case: &Case, runner: &dyn Runner) -> CaseResult
         ));
         return result;
     };
-    let prompt = match render_prompt(template, &plan.slug, case.gate_command.as_deref()) {
+    let prompt = match crate::launcher::select_integration_audit(template, case.integration_audit)
+        .map_err(|e| e.to_string())
+        .and_then(|t| render_prompt(&t, &plan.slug, case.gate_command.as_deref()))
+    {
         Ok(prompt) => prompt,
         Err(e) => {
             result.errors.push(e);
@@ -524,6 +527,7 @@ mod tests {
     /// suite runs in parallel.
     fn case(name: &str, runs: u32, max_turns: u32) -> Case {
         Case {
+            integration_audit: false,
             prompt: None,
             gate_command: None,
             name: name.into(),
@@ -755,5 +759,27 @@ mod tests {
         let got = render_prompt(template, "demo", Some("echo {slug} {fix_gate_note}")).unwrap();
         assert!(got.contains(crate::launcher::BUG_REVIEW_GATE_NOTE));
         assert!(got.contains("`echo {slug} {fix_gate_note}`"));
+    }
+
+    #[test]
+    fn integration_section_case_flag_selects_the_eval_prompt() {
+        let yaml = "name: integration-selection\nrole: audit\nruns: 1\nscaffold: scaffold.sh\ngraders:\n  - graders/a.md\n";
+        let template = "old\n<!-- integration-audit -->\nreview\n<!-- /integration-audit -->\n";
+        let mut files = crate::protocol::seed().clone();
+        files.insert("prompts/audit.md", template);
+        let dir = case_dir("integration-selection");
+        for (field, expected) in [
+            ("", "old\n"),
+            ("integration_audit: false\n", "old\n"),
+            ("integration_audit: true\n", "old\nreview\n"),
+        ] {
+            let case = super::super::case::parse(&format!("{yaml}{field}")).unwrap();
+            let fake = Fake::new(vec![], vec![]);
+            let result = run_case(&plan(&files, &dir), &case, &fake);
+            assert!(result.passed(), "{result:?}");
+            assert_eq!(&*fake.seen.borrow(), &[expected.to_string()]);
+        }
+        assert!(super::super::case::parse(&format!("{yaml}integration_audit: yes\n")).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

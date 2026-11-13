@@ -140,6 +140,7 @@ pub(crate) fn integration_for_audit(
         "impl_round": range["impl_round"],
         "evidence": evidence,
         "summary": summary.join("；"),
+        "range": range,
         "evidence_stamp": evidence_stamp(&evidence_dir.join(evidence)),
     })))
 }

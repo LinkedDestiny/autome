@@ -321,6 +321,7 @@ pub struct BudgetLine {
 
 /// Everything needed to write a session's prompt.
 pub struct PromptSpec<'a> {
+    pub integration_audit: bool,
     pub gate_before_merge: Option<&'a str>,
     pub gate_quick: Option<&'a str>,
     pub last_gate: Option<&'a serde_json::Value>,
@@ -764,7 +765,8 @@ fn role_prompt(role: Role, spec: &PromptSpec<'_>) -> Result<String> {
         ))
     })?;
 
-    let template = select_prompt(template, spec.gate_before_merge)?;
+    let template = select_integration_audit(template, spec.integration_audit)?;
+    let template = select_prompt(&template, spec.gate_before_merge)?;
 
     // The denominator comes from here or it comes from a guess. See BudgetLine.
     let budget_line = match (role, spec.budget.as_ref()) {
@@ -1506,6 +1508,7 @@ mod tests {
         templates: &'a autome_domain::protocol::ProtocolFiles,
     ) -> PromptSpec<'a> {
         PromptSpec {
+            integration_audit: false,
             kind,
             templates,
             gate_before_merge: None,
@@ -3104,5 +3107,61 @@ mod tests {
         assert!(build_prompt(&s).unwrap().contains(BUG_REVIEW_GATE_NOTE));
         s.last_gate = Some(&serde_json::Value::Null);
         assert!(build_prompt(&s).unwrap().contains(BUG_REVIEW_GATE_NOTE));
+    }
+}
+
+/// Select an exclusive-line integration block without changing legacy bytes.
+pub fn select_integration_audit(template: &str, keep: bool) -> Result<String> {
+    let mut inside = false;
+    let mut out = String::new();
+    for raw in template.split_inclusive('\n') {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        match line {
+            "<!-- integration-audit -->" if !inside => inside = true,
+            "<!-- /integration-audit -->" if inside => inside = false,
+            _ if line.contains("<!-- integration-audit")
+                || line.contains("<!-- /integration-audit") =>
+            {
+                return Err(err("集成复验标记必须独占一行、配对且不能嵌套"));
+            }
+            _ if !inside || keep => out.push_str(raw),
+            _ => {}
+        }
+    }
+    if inside {
+        return Err(err("集成复验标记未闭合"));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod integration_section_tests {
+    use super::select_integration_audit;
+    #[test]
+    fn integration_section_selects_without_changing_surrounding_bytes() {
+        let t = "old\n\n<!-- integration-audit -->\n\nnew\n\n<!-- /integration-audit -->\nend\n";
+        assert_eq!(select_integration_audit(t, false).unwrap(), "old\n\nend\n");
+        assert_eq!(
+            select_integration_audit(t, true).unwrap(),
+            "old\n\n\nnew\n\nend\n"
+        );
+        for t in ["", "plain", "plain\n"] {
+            assert_eq!(select_integration_audit(t, false).unwrap(), t);
+        }
+    }
+    #[test]
+    fn integration_section_rejects_malformed_markers() {
+        for t in [
+            "<!-- integration-audit -->",
+            "<!-- /integration-audit -->",
+            "<!-- integration-audit -->\n<!-- integration-audit -->\n<!-- /integration-audit -->",
+            "x<!-- integration-audit -->",
+            " <!-- /integration-audit -->",
+            "<!-- integration-audit --> trailing",
+        ] {
+            for keep in [true, false] {
+                assert!(select_integration_audit(t, keep).is_err(), "{t}");
+            }
+        }
     }
 }

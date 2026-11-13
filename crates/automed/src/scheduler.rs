@@ -3258,6 +3258,12 @@ fn launch_session(
             budget.as_ref(),
             decisions,
             gate_evidence,
+            integration_audit.as_ref().map(|v| {
+                crate::brief::integration_section(
+                    &v["range"],
+                    &layout.doc_dir_from_cwd(&task.doc_dir()),
+                )
+            }),
         )?,
         None => String::new(),
     };
@@ -3291,6 +3297,7 @@ fn launch_session(
         )
     });
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
+        integration_audit: integration_audit.is_some(),
         kind,
         templates: &protocol,
         gate_before_merge: resolved.gate_before_merge(),
@@ -3498,6 +3505,7 @@ fn write_brief(
     budget: Option<&launcher::BudgetLine>,
     decisions: &[crate::store::DecisionRecord],
     gate: Option<String>,
+    integration: Option<String>,
 ) -> Result<String> {
     let rel = crate::brief::path(&task.doc_dir(), role, round);
     // What the prompt names: the same file, from where the session stands.
@@ -3524,6 +3532,7 @@ fn write_brief(
     let evidence = evidence_filenames(worktree, &task.doc_dir());
 
     let text = crate::brief::build(&crate::brief::Inputs {
+        integration,
         role,
         slug: &task.slug,
         doc_dir: session_doc_dir,
@@ -4943,6 +4952,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
     // to a protocol version.
     let (_, protocol) = crate::protocol::current();
     let prompt = launcher::build_prompt(&launcher::PromptSpec {
+        integration_audit: false,
         kind: SessionKind::Onboarding,
         templates: protocol,
         gate_before_merge: None,

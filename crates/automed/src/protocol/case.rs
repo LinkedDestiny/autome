@@ -23,6 +23,7 @@ use autome_domain::role::Role;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Case {
+    pub integration_audit: bool,
     pub name: String,
     pub role: Role,
     pub prompt: Option<String>,
@@ -89,6 +90,7 @@ pub fn parse(text: &str) -> Result<Case, String> {
         "role",
         "prompt",
         "gate_command",
+        "integration_audit",
         "description",
         "runs",
         "max_turns",
@@ -123,7 +125,13 @@ pub fn parse(text: &str) -> Result<Case, String> {
         return Err(format!("{name} 一个 grader 都没有，跑了也不会得出结论"));
     }
 
+    let integration_audit = match get("integration_audit") {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(v) => return Err(format!("integration_audit `{v}` 不是布尔值")),
+    };
     Ok(Case {
+        integration_audit,
         name,
         role,
         prompt: get("prompt").map(str::to_string),
