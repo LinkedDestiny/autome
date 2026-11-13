@@ -16,11 +16,14 @@ const services={gateway:createGateway({core,home})};
 const ids=()=>existsSync(join(root,'task-ids'))?readFileSync(join(root,'task-ids'),'utf8').trim().split('\n'):[];
 const cleanup=()=>teardown({root,core,taskIds:ids()});
 let names:Record<string,string>={};
+// w7-states first runs the full w7-flow fixture (150 s in its other callers),
+// then builds the operation matrix. Budget both phases, not just the latter.
+const fixtureTimeout = 150_000 + 170_000;
 beforeAll(async()=>{try{
-  await promisify(execFile)('bash',[join(wt,'apps/web/test/fixtures/w7-states.sh'),root,wt],{timeout:170_000,maxBuffer:1024*1024});
+  await promisify(execFile)('bash',[join(wt,'apps/web/test/fixtures/w7-states.sh'),root,wt],{timeout:fixtureTimeout,maxBuffer:1024*1024});
   names=Object.fromEntries(readFileSync(join(root,'state-ids'),'utf8').trim().split('\n').map(l=>l.split(' ')));
   await core.start({timeoutMs:30_000});
-}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],`setup: ${String(error)}; cleanup: ${String(cleanupError)}`,{cause:cleanupError});}throw error;}},180_000);
+}catch(error){try{await cleanup();}catch(cleanupError){throw new AggregateError([error,cleanupError],`setup: ${String(error)}; cleanup: ${String(cleanupError)}`,{cause:cleanupError});}throw error;}},fixtureTimeout + 60_000);
 afterAll(cleanup);
 const get=async(id:string)=>{const r=await services.gateway.read({method:'task.get',params:{task_id:id}});expect(r.body.ok).toBe(true);return r.body.payload as TaskPayload;};
 const fields:Partial<Record<Intent,Record<string,string>>>={reject:{feedback:'意见'},reply:{info:'补充'},cancel:{confirm:'yes'},rerun:{node:'intake'},extend:{extra_rounds:'1'},convert:{start:'no'}};
