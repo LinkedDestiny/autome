@@ -15,3 +15,4 @@
 复盘 #2 | 无（全部已完成） | lessons.md 保留 L-01..L-04，新增 L-05（关闭后 rebase 修复无全量门禁） | docs/单个会话的时长上限-loop-session/lessons.md | 无
 实现 #6 | M-02 | 宿主门禁失败修复，17 用例通过，已审状态保留 | docs/单个会话的时长上限-loop-session/evidence/M-02-r6-impl.md | 无
 审计 #6 | 无（全部已完成） | 通过（无结论变更） | docs/单个会话的时长上限-loop-session/evidence/M-02-r6-audit.md | 无
+复盘 #3 | 无（全部已完成） | lessons.md 保留 L-01..L-05（L-05 补实现 #6 为第二次出现），新增 L-06（审计无失败原文即判偶发脆弱，宿主门禁复现为产品 EPERM） | docs/单个会话的时长上限-loop-session/lessons.md | 无
