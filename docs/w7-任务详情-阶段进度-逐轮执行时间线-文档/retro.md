@@ -6,3 +6,4 @@
 实现 #3 | M-02 | 待审 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-02-r3-impl.md | 无
 审计 #2 | M-02 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-02-r3-audit.md | 无
 实现 #4 | M-03 | 开放，验收受环境阻塞 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-03-r4-impl.md | localhost 与 ps EPERM
+审计 #3 | M-03 | 通过 | docs/w7-任务详情-阶段进度-逐轮执行时间线-文档/evidence/M-03-r4-audit.md | 无
