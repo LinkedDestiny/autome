@@ -397,6 +397,8 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         // ---- tasks -------------------------------------------------------
         "task.create" => task_create(ctx, p),
         "task.start" => task_start(ctx, str_param(p, "task_id")?),
+        "task.set_after" => task_set_after(ctx, p),
+        "task.move" => task_move(ctx, p),
         "task.get" => task_get(ctx, str_param(p, "task_id")?),
         "task.approve" => task_trigger(ctx, str_param(p, "task_id")?, Trigger::Approve),
         "task.reject" => task_trigger(
@@ -593,12 +595,28 @@ fn project_get(ctx: &mut Ctx, project_id: &str) -> DispatchResult {
     let inventory = skills::scan(&home, &project.path);
     let violations = config::validate(&resolved, &inventory);
 
+    let positions: std::collections::BTreeMap<_, _> = ctx
+        .store
+        .queued_tasks(project_id)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, i + 1))
+        .collect();
+    let tasks_json = tasks
+        .iter()
+        .map(|t| {
+            let mut value = task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))?;
+            value["queue_position"] = json!(positions.get(&t.id));
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, DispatchError>>()?;
+
     Ok((
         json!({
             "project": project,
             "cost_usd_total": total,
             "cost_sessions_without_cost": missing,
-            "tasks": tasks.iter().map(|t| task_json(ctx, t, costs.get(&t.id).unwrap_or(&CostSummary::default()))).collect::<Result<Vec<_>, _>>()?,
+            "tasks": tasks_json,
             "counts": crate::store::task_counts(&tasks),
             "config": resolved,
             "violations": violations,
@@ -613,8 +631,22 @@ fn task_json(
     t: &crate::store::TaskRecord,
     cost: &CostSummary,
 ) -> Result<Value, DispatchError> {
+    let after = ctx.store.task_after(&t.id)?;
+    let mut blocked_by = Vec::new();
+    for id in &after {
+        let dependency = ctx.store.get_task(id)?;
+        if !autome_domain::deps::is_satisfied(&dependency.state) {
+            blocked_by.push(json!({
+                "id": id,
+                "state": dependency.state,
+                "reason": autome_domain::deps::block_reason(&dependency.state),
+            }));
+        }
+    }
     let mut value = json!({
         "id": t.id,
+        "after": after,
+        "blocked_by": blocked_by,
         "cost_usd": cost.usd_total,
         "cost_sessions_without_cost": cost.sessions_without_cost,
         "kind": t.kind,
@@ -1405,6 +1437,11 @@ fn role_label(role: Role) -> &'static str {
 /// would only add friction.
 fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
     let project_id = str_param(params, "project_id")?;
+    let after: Vec<String> = match params.get("after") {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| bad_params("after 必须是任务编号列表"))?,
+    };
     let kind = match params.get("kind") {
         None | Some(Value::Null) => autome_domain::task::TaskKind::Feature,
         Some(value) => value
@@ -1504,6 +1541,7 @@ fn task_create(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         attachments,
         doc_refs,
         (kind, brief, draft),
+        &after,
     )
 }
 
@@ -1580,6 +1618,7 @@ fn create(
     attachments: Vec<String>,
     doc_refs: Vec<String>,
     card: (autome_domain::task::TaskKind, Option<&str>, bool),
+    proposed_after: &[String],
 ) -> DispatchResult {
     let (kind, brief, draft) = card;
     let task = prepare_task(
@@ -1591,10 +1630,13 @@ fn create(
         (kind, draft),
     )?;
     let id = task.id.clone();
-    ctx.store.create_task(&task, brief)?;
-    let seq = ctx
-        .store
-        .append_event("task.created", &id, json!({ "project_id": project_id }))?;
+    let after = validate_after(ctx, &id, project_id, proposed_after)?;
+    ctx.store.create_task_after(&task, brief, &after)?;
+    let mut created = json!({ "project_id": project_id });
+    if !after.is_empty() {
+        created["after"] = json!(after);
+    }
+    let seq = ctx.store.append_event("task.created", &id, created)?;
 
     // Start it immediately if the project has a free slot.
     let report = if draft {
@@ -1615,9 +1657,142 @@ fn create(
     ))
 }
 
+fn validate_after(
+    ctx: &Ctx,
+    id: &str,
+    project_id: &str,
+    proposed_after: &[String],
+) -> Result<Vec<String>, DispatchError> {
+    let mut lookup = std::collections::BTreeMap::new();
+    if !proposed_after.is_empty() {
+        for (id, edges) in ctx.store.project_after(project_id)? {
+            lookup.insert(id, (project_id.to_string(), edges));
+        }
+        for id in proposed_after {
+            if !lookup.contains_key(id) {
+                match ctx.store.get_task(id) {
+                    Ok(task) => {
+                        lookup.insert(id.clone(), (task.project_id, Vec::new()));
+                    }
+                    Err(crate::store::StoreError::NotFound { .. }) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
+    autome_domain::deps::check_after(id, project_id, proposed_after, |id| lookup.get(id).cloned())
+        .map_err(|e| rejected(e.to_string()))
+}
+
+fn task_set_after(ctx: &mut Ctx, p: &Value) -> DispatchResult {
+    let id = str_param(p, "task_id")?;
+    let proposed: Vec<String> =
+        serde_json::from_value(p.get("after").cloned().unwrap_or(Value::Null))
+            .map_err(|_| bad_params("after 必须是任务编号列表"))?;
+    let task = ctx.store.get_task(id)?;
+    autome_domain::deps::check_editable(
+        id,
+        task.kind,
+        &task.state,
+        ctx.store.has_impl_session(id)?,
+    )
+    .map_err(|e| rejected(e.to_string()))?;
+    let after = validate_after(ctx, id, &task.project_id, &proposed)?;
+    ctx.store.set_task_after(id, &after)?;
+    let payload = json!({"after": after});
+    let seq = ctx
+        .store
+        .append_event("task.after_set", id, payload.clone())?;
+    let report = scheduler::tick(ctx);
+    let task = ctx.store.get_task(id)?;
+    Ok((
+        json!({
+            "task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(id)?))?,
+            "started": report.tasks_started.iter().any(|started| started == id),
+            "queue_position": queue_position(ctx, &task)?,
+        }),
+        vec![event(seq, "task.after_set", id, payload)],
+    ))
+}
+
+fn task_move(ctx: &mut Ctx, p: &Value) -> DispatchResult {
+    use autome_domain::deps::{Placement, reposition};
+    let id = str_param(p, "task_id")?;
+    let invalid = || bad_params("before、after、top 必须且只能给一个");
+    let before = p
+        .get("before")
+        .map(|v| v.as_str().ok_or_else(invalid))
+        .transpose()?;
+    let after = p
+        .get("after")
+        .map(|v| v.as_str().ok_or_else(invalid))
+        .transpose()?;
+    let top = p
+        .get("top")
+        .map(|v| v.as_bool().ok_or_else(invalid))
+        .transpose()?
+        .unwrap_or(false);
+    if usize::from(before.is_some()) + usize::from(after.is_some()) + usize::from(top) != 1 {
+        return Err(invalid());
+    }
+    let movable = |state: &TaskState| {
+        matches!(
+            state,
+            TaskState::Draft | TaskState::Queued | TaskState::Requeued { .. }
+        )
+    };
+    let task = ctx.store.get_task(id)?;
+    if !movable(&task.state) {
+        return Err(rejected("只有排队或待开始的任务可以移动"));
+    }
+    let reference = before.or(after);
+    if let Some(reference) = reference {
+        if reference == id {
+            return Err(rejected("不能以任务自己为参照移动"));
+        }
+        let missing = || {
+            rejected(format!(
+                "{reference} 不在队列里：只能参照同项目排队中或待开始的任务"
+            ))
+        };
+        match ctx.store.get_task(reference) {
+            Ok(other) if other.project_id == task.project_id && movable(&other.state) => {}
+            Ok(_) | Err(crate::store::StoreError::NotFound { .. }) => return Err(missing()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut order: Vec<String> = ctx
+        .store
+        .queue_order(&task.project_id)?
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
+    for candidate in reference.into_iter().chain(std::iter::once(id)) {
+        if !order.iter().any(|item| item == candidate) {
+            order.push(candidate.into());
+        }
+    }
+    let placement = match (before, after) {
+        (Some(id), _) => Placement::Before(id),
+        (_, Some(id)) => Placement::After(id),
+        _ => Placement::Top,
+    };
+    let order = reposition(&order, id, placement).map_err(|e| rejected(e.to_string()))?;
+    ctx.store.reorder_queue(&task.project_id, &order)?;
+    let position = queue_position(ctx, &task)?;
+    let payload = json!({"task": id, "project_id": task.project_id, "before": before, "after": after, "top": top, "queue_position": position});
+    let seq = ctx.store.append_event("task.moved", id, payload.clone())?;
+    Ok((
+        json!({"task": task_json(ctx, &task, &CostSummary::of(&ctx.store.list_sessions(id)?))?, "queue_position": position, "order": order}),
+        vec![event(seq, "task.moved", id, payload)],
+    ))
+}
+
 fn task_start(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     scheduler::apply_trigger(ctx, task_id, &Trigger::Start)?;
-    ctx.store.mark_queued(task_id)?;
+    if ctx.store.queued_seq(task_id)?.is_none() {
+        ctx.store.mark_queued(task_id)?;
+    }
     let task = ctx.store.get_task(task_id)?;
     let seq = ctx.store.append_event(
         "task.started",
@@ -2457,6 +2632,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
     let gate_waiters = crate::gate_queue::waiters(ctx).map_err(|e| internal(e.to_string()))?;
     let mut waiting = Vec::new();
     let mut running = Vec::new();
+    let mut queued = Vec::new();
     let mut config_warnings = Vec::new();
 
     for project in ctx.store.list_projects()? {
@@ -2464,6 +2640,18 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
         let warnings = project_warnings(ctx, &project)?;
         if !warnings.is_empty() {
             config_warnings.push(json!({"project_id":project.id,"project_name":project.display_name,"warnings":warnings}));
+        }
+        for (index, task) in ctx.store.queued_tasks(&project.id)?.iter().enumerate() {
+            queued.push(json!({
+                "project_id": project.id,
+                "project_name": project.display_name,
+                "queue_position": index + 1,
+                "gate_queue_position": autome_domain::gate_queue::position(&gate_waiters, &task.id),
+                "task": task_json(ctx, task, costs.get(&task.id).unwrap_or(&CostSummary::default()))?,
+                "pending_decisions": ctx.store.pending_decisions(&task.id)?,
+                "session": ctx.store.running_session(&task.id)?.as_ref().map(|s| session_json(ctx, &project, s)),
+                "retry": retry_json(ctx, &task.id)?,
+            }));
         }
         for task in ctx.store.list_tasks(&project.id)? {
             if task.state.is_terminal() {
@@ -2522,6 +2710,7 @@ fn dashboard_get(ctx: &mut Ctx) -> DispatchResult {
             "config_warnings": config_warnings,
             "waiting": waiting,
             "running": running,
+            "queued": queued,
             "alerts": alerts,
             "cooldowns": cooldowns,
             "environment": environment,
@@ -2896,6 +3085,587 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn move_fixture(sb: &mut Sandbox, project: &str, name: &str, state: TaskState) -> String {
+        let id = cost_task(sb, project, name, state.clone());
+        if matches!(state, TaskState::Queued | TaskState::Requeued { .. }) {
+            sb.ctx.store.mark_queued(&id).unwrap();
+        }
+        id
+    }
+
+    fn move_call(sb: &mut Sandbox, id: &str, mut params: Value) -> Value {
+        params["task_id"] = json!(id);
+        let out = handle_command(sb.ctx(), &cmd("task.move", params));
+        ok_payload(&out).clone()
+    }
+
+    #[test]
+    fn queue_move_positions_and_event() {
+        use autome_domain::task::Node;
+        let mut sb = Sandbox::new("move-positions");
+        let p = sb.add_project("repo");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Queued);
+        let c = move_fixture(
+            &mut sb,
+            &p,
+            "c",
+            TaskState::Requeued {
+                resume: Node::Design,
+            },
+        );
+        for (params, order, position) in [
+            (json!({"top":true}), json!([c, a, b]), 1),
+            (json!({"after":b}), json!([a, b, c]), 3),
+            (json!({"before":b}), json!([a, c, b]), 2),
+        ] {
+            let out = move_call(&mut sb, &c, params.clone());
+            assert_eq!(out["order"], order);
+            assert_eq!(out["queue_position"], position);
+            let events = sb.ctx.store.events_since(0, 100).unwrap();
+            let (_, _, payload) = events.iter().rfind(|(_, k, _)| k == "task.moved").unwrap();
+            assert_eq!(
+                *payload,
+                json!({"task":c,"project_id":p,"before":params.get("before"),"after":params.get("after"),"top":params.get("top").and_then(Value::as_bool).unwrap_or(false),"queue_position":position})
+            );
+            assert_eq!(
+                sb.ctx.store.get_task(&c).unwrap().state,
+                TaskState::Requeued {
+                    resume: Node::Design
+                }
+            );
+            assert!(sb.ctx.store.all_running_sessions().unwrap().is_empty());
+        }
+        assert!(!READ_METHODS.contains(&"task.move"));
+    }
+
+    #[test]
+    fn queue_move_rejects_without_changes() {
+        use autome_domain::task::{FailureReason, Node};
+        let mut sb = Sandbox::new("move-reject");
+        let p = sb.add_project("repo");
+        let q = sb.add_project("other");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let foreign = move_fixture(&mut sb, &q, "foreign", TaskState::Draft);
+        let invalid_states = [
+            TaskState::Active { node: Node::Design },
+            TaskState::Paused {
+                resume: Node::Design,
+            },
+            TaskState::Stopped { at: Node::Design },
+            TaskState::Failed {
+                at: Node::Design,
+                reason: FailureReason::SessionCrashed {
+                    detail: "test".into(),
+                },
+            },
+            TaskState::Done,
+            TaskState::Cancelled,
+        ];
+        let seq = sb.ctx.store.queued_seq(&a).unwrap();
+
+        for params in [
+            json!({}),
+            json!({"top":false}),
+            json!({"top":true,"before":a}),
+            json!({"before":a,"after":foreign}),
+            json!({"before":a}),
+            json!({"after":foreign}),
+            json!({"before":"T-99999"}),
+            json!({"before":""}),
+            json!({"before":"T-0001"}),
+            json!({"top":"true"}),
+            json!({"before":null}),
+            json!({"after":1}),
+        ] {
+            let mut params = params;
+            params["task_id"] = json!(a);
+            let out = handle_command(sb.ctx(), &cmd("task.move", params));
+            match out.reply.outcome {
+                ReplyOutcome::Error { message, .. } => assert!(
+                    !message.contains('\n')
+                        && message
+                            .chars()
+                            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+                ),
+                _ => panic!("must reject"),
+            }
+        }
+        for state in invalid_states {
+            sb.ctx.store.set_task_state(&foreign, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.move", json!({"task_id":foreign,"top":true})),
+            );
+            assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+            let local = move_fixture(&mut sb, &p, "invalid", state);
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.move", json!({"task_id":a,"after":local})),
+            );
+            assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+        }
+        assert_eq!(sb.ctx.store.queued_seq(&a).unwrap(), seq);
+        assert!(
+            !sb.ctx
+                .store
+                .events_since(0, 100)
+                .unwrap()
+                .iter()
+                .any(|(_, kind, _)| kind == "task.moved")
+        );
+    }
+
+    #[test]
+    fn queue_move_unpositioned_draft_reference() {
+        for before in [true, false] {
+            let mut sb = Sandbox::new("move-reference");
+            let p = sb.add_project("repo");
+            let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+            let a = move_fixture(&mut sb, &p, "a", TaskState::Draft);
+            let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+            for id in [&a, &b] {
+                sb.ctx
+                    .store
+                    .set_task_after(id, std::slice::from_ref(&blocker))
+                    .unwrap();
+            }
+            let params = if before {
+                json!({"before":a})
+            } else {
+                json!({"after":a})
+            };
+            let expected = if before { json!([b, a]) } else { json!([a, b]) };
+            assert_eq!(move_call(&mut sb, &b, params)["order"], expected);
+            for id in [&a, &b] {
+                let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":id})));
+                ok_payload(&out);
+            }
+            let ids: Vec<_> = sb
+                .ctx
+                .store
+                .queued_tasks(&p)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+            assert_eq!(json!(ids), expected);
+        }
+    }
+
+    #[test]
+    fn queue_move_other_project_unchanged() {
+        let mut sb = Sandbox::new("move-isolation");
+        let p = sb.add_project("repo");
+        let q = sb.add_project("other");
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let foreign = move_fixture(&mut sb, &q, "foreign", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Queued);
+        let seq = sb.ctx.store.queued_seq(&foreign).unwrap();
+        assert_eq!(
+            move_call(&mut sb, &b, json!({"top":true}))["order"],
+            json!([b, a])
+        );
+        assert_eq!(sb.ctx.store.queued_seq(&foreign).unwrap(), seq);
+    }
+
+    #[test]
+    fn queue_move_draft_keeps_position_on_start() {
+        let mut sb = Sandbox::new("move-draft");
+        let p = sb.add_project("repo");
+        let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+        for id in [&a, &b] {
+            sb.ctx
+                .store
+                .set_task_after(id, std::slice::from_ref(&blocker))
+                .unwrap();
+        }
+        let out = move_call(&mut sb, &b, json!({"top":true}));
+        assert!(out["queue_position"].is_null());
+        let seq = sb.ctx.store.queued_seq(&b).unwrap();
+        let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":b})));
+        assert_eq!(ok_payload(&out)["queue_position"], 1);
+        assert_eq!(sb.ctx.store.queued_seq(&b).unwrap(), seq);
+    }
+
+    #[test]
+    fn queue_move_unmoved_draft_starts_at_tail_and_singleton() {
+        let mut sb = Sandbox::new("move-tail");
+        let p = sb.add_project("repo");
+        let blocker = move_fixture(&mut sb, &p, "block", TaskState::Draft);
+        let b = move_fixture(&mut sb, &p, "b", TaskState::Draft);
+        let a = move_fixture(&mut sb, &p, "a", TaskState::Queued);
+        for id in [&a, &b] {
+            sb.ctx
+                .store
+                .set_task_after(id, std::slice::from_ref(&blocker))
+                .unwrap();
+        }
+        assert_eq!(
+            move_call(&mut sb, &a, json!({"top":true}))["order"],
+            json!([a])
+        );
+        assert!(sb.ctx.store.queued_seq(&b).unwrap().is_none());
+        let out = handle_command(sb.ctx(), &cmd("task.start", json!({"task_id":b})));
+        assert_eq!(ok_payload(&out)["queue_position"], 2);
+    }
+
+    #[test]
+    fn after_blocked_set_rejects_without_side_effects() {
+        use autome_domain::{role::Role, session::SessionKind, task::Node};
+        let mut sb = Sandbox::new("after-set-reject");
+        let project = sb.add_project("repo");
+        let other = sb.add_project("other");
+        let a = cost_task(&mut sb, &project, "a", TaskState::Draft);
+        let b = cost_task(&mut sb, &project, "b", TaskState::Draft);
+        let foreign = cost_task(&mut sb, &other, "foreign", TaskState::Draft);
+        sb.ctx
+            .store
+            .set_task_after(&b, std::slice::from_ref(&a))
+            .unwrap();
+        for (after, message) in [
+            (json!([a]), "自己"),
+            (json!([b]), "依赖环"),
+            (json!([foreign]), "另一个项目"),
+            (json!(["T-99999"]), "不存在"),
+            (json!([""]), "不存在"),
+            (json!(["T-0001"]), "不存在"),
+            (json!(vec![b.clone(); 9]), "最多 8"),
+            (json!(null), "任务编号列表"),
+            (json!([1]), "任务编号列表"),
+            (json!("T-1"), "任务编号列表"),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.set_after", json!({"task_id": a, "after": after})),
+            );
+            assert!(err_message(&out).contains(message), "{}", err_message(&out));
+            assert!(!err_message(&out).contains('\n'));
+            assert!(sb.ctx.store.task_after(&a).unwrap().is_empty());
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
+            assert_eq!(sb.ctx.store.count_events(&a, "task.after_set").unwrap(), 0);
+        }
+        let out = handle_command(sb.ctx(), &cmd("task.set_after", json!({"task_id": a})));
+        assert!(err_message(&out).contains("任务编号列表"));
+        for state in [
+            TaskState::Active {
+                node: Node::Implement,
+            },
+            TaskState::Done,
+            TaskState::Cancelled,
+        ] {
+            sb.ctx.store.set_task_state(&b, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.set_after", json!({"task_id": b, "after": []})),
+            );
+            assert!(!err_message(&out).is_empty());
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
+        }
+        cost_session(&sb, &b, "seed", None, false);
+        let mut session = sb.ctx.store.list_sessions(&b).unwrap().remove(0);
+        session.id = "historical-impl".into();
+        session.kind = SessionKind::Role { role: Role::Impl };
+        sb.ctx.store.insert_session(&session).unwrap();
+        for state in [
+            TaskState::Stopped {
+                at: Node::Implement,
+            },
+            TaskState::Active { node: Node::Design },
+        ] {
+            sb.ctx.store.set_task_state(&b, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd("task.set_after", json!({"task_id": b, "after": []})),
+            );
+            assert!(err_message(&out).contains("已经开始实现轮"));
+            assert_eq!(
+                sb.ctx.store.task_after(&b).unwrap(),
+                std::slice::from_ref(&a)
+            );
+            assert_eq!(sb.ctx.store.count_events(&b, "task.after_set").unwrap(), 0);
+        }
+        assert!(!READ_METHODS.contains(&"task.set_after"));
+    }
+
+    #[test]
+    fn after_blocked_set_accepts_design_states_and_clears() {
+        use autome_domain::task::{FailureReason, Node};
+        let mut sb = Sandbox::new("after-set-ok");
+        let project = sb.add_project("repo");
+        let a = cost_task(&mut sb, &project, "a", TaskState::Draft);
+        let b = cost_task(&mut sb, &project, "b", TaskState::Draft);
+        for state in [
+            TaskState::Draft,
+            TaskState::Queued,
+            TaskState::Active { node: Node::Design },
+            TaskState::Active {
+                node: Node::AwaitDesignApproval,
+            },
+            TaskState::Paused {
+                resume: Node::Design,
+            },
+            TaskState::Stopped { at: Node::Design },
+            TaskState::Failed {
+                at: Node::Design,
+                reason: FailureReason::Config {
+                    detail: "test".into(),
+                },
+            },
+            TaskState::Requeued {
+                resume: Node::Design,
+            },
+        ] {
+            sb.ctx.store.set_task_state(&b, &state).unwrap();
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.set_after",
+                    json!({"task_id": b, "after": vec![a.clone(); 8]}),
+                ),
+            );
+            assert_eq!(ok_payload(&out)["task"]["after"], json!([a]));
+            assert_eq!(sb.ctx.store.get_task(&b).unwrap().state, state);
+            assert_eq!(
+                sb.ctx
+                    .store
+                    .last_event(&b, "task.after_set")
+                    .unwrap()
+                    .unwrap(),
+                json!({"after": [a]})
+            );
+        }
+        sb.ctx.store.set_task_state(&b, &TaskState::Draft).unwrap();
+        let mut ids = vec![a.clone()];
+        for n in 0..7 {
+            ids.push(cost_task(
+                &mut sb,
+                &project,
+                &format!("dep-{n}"),
+                TaskState::Draft,
+            ));
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("task.set_after", json!({"task_id": b, "after": ids})),
+        );
+        assert_eq!(ok_payload(&out)["task"]["after"], json!(ids));
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("task.set_after", json!({"task_id": b, "after": []})),
+        );
+        assert_eq!(ok_payload(&out)["task"]["after"], json!([]));
+        assert_eq!(ok_payload(&out)["started"], false);
+        assert_eq!(
+            sb.ctx
+                .store
+                .last_event(&b, "task.after_set")
+                .unwrap()
+                .unwrap(),
+            json!({"after": []})
+        );
+    }
+
+    #[test]
+    fn after_blocked_dashboard_preserves_project_queue_order() {
+        use autome_domain::task::Node;
+        let mut sb = Sandbox::new("after-dashboard");
+        let p = sb.add_project("repo");
+        let q = sb.add_project("other");
+        for project in [&p, &q] {
+            let a = cost_task(&mut sb, project, "a", TaskState::Cancelled);
+            let b = cost_task(&mut sb, project, "b", TaskState::Queued);
+            let c = cost_task(
+                &mut sb,
+                project,
+                "c",
+                TaskState::Requeued {
+                    resume: Node::Design,
+                },
+            );
+            sb.ctx.store.mark_queued(&c).unwrap();
+            sb.ctx.store.mark_queued(&b).unwrap();
+            sb.ctx
+                .store
+                .set_task_after(&b, std::slice::from_ref(&a))
+                .unwrap();
+            sb.ctx.store.set_task_after(&c, &[a]).unwrap();
+        }
+        let out = handle_command(sb.ctx(), &cmd("dashboard.get", json!({})));
+        let payload = ok_payload(&out);
+        assert_eq!(payload["running"], json!([]));
+        assert_eq!(payload["waiting"], json!([]));
+        let entries = payload["queued"].as_array().unwrap();
+        assert_eq!(entries.len(), 4);
+        let mut offset = 0;
+        for project in sb.ctx.store.list_projects().unwrap() {
+            for (index, task) in sb
+                .ctx
+                .store
+                .queued_tasks(&project.id)
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                let entry = &entries[offset];
+                offset += 1;
+                assert_eq!(entry["task"]["id"], task.id);
+                assert_eq!(entry["project_id"], project.id);
+                assert_eq!(entry["queue_position"], index + 1);
+                assert_eq!(entry["task"]["blocked_by"][0]["reason"], "cancelled");
+                assert_eq!(
+                    entry["task"]["blocked_by"][0]["state"]["state"],
+                    "cancelled"
+                );
+                assert!(entry.get("session").is_some());
+                assert!(entry.get("pending_decisions").is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn after_create_rejects_invalid_dependencies_without_writing() {
+        let mut sb = Sandbox::new("after-invalid");
+        let project = sb.add_project("repo");
+        let other = sb.add_project("other");
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "task.create",
+                json!({
+                    "project_id": other, "request": "foreign", "draft": true
+                }),
+            ),
+        );
+        let foreign = ok_payload(&out)["task"]["id"].clone();
+        let next = sb.ctx.store.next_task_id(&project).unwrap();
+        for (after, message) in [
+            (json!([next]), "任务不能依赖自己"),
+            (json!(["T-9999"]), "不存在"),
+            (json!([foreign]), "另一个项目"),
+            (json!(vec!["T-9999"; 9]), "依赖最多 8 个"),
+            (json!(null), "after 必须是任务编号列表"),
+            (json!("T-1"), "after 必须是任务编号列表"),
+            (json!([1]), "after 必须是任务编号列表"),
+            (json!([""]), "不存在"),
+            (json!(["T-0001"]), "不存在"),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": "invalid", "after": after
+                    }),
+                ),
+            );
+            assert!(err_message(&out).contains(message), "{}", err_message(&out));
+            assert!(!err_message(&out).contains('\n'));
+            assert!(sb.ctx.store.list_tasks(&project).unwrap().is_empty());
+            assert_eq!(sb.ctx.store.count_events(&next, "task.created").unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn after_create_reads_dependencies_and_input_boundaries() {
+        let mut sb = Sandbox::new("after-read");
+        let project = sb.add_project("repo");
+        let mut ids = Vec::new();
+        for i in 0..8 {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": format!("dependency {i}"), "draft": true
+                    }),
+                ),
+            );
+            assert_eq!(ok_payload(&out)["task"]["after"], json!([]));
+            assert_eq!(ok_payload(&out)["task"]["blocked_by"], json!([]));
+            ids.push(ok_payload(&out)["task"]["id"].as_str().unwrap().to_string());
+        }
+        sb.ctx
+            .store
+            .set_task_state(&ids[0], &TaskState::Done)
+            .unwrap();
+        sb.ctx
+            .store
+            .set_task_state(&ids[1], &TaskState::Cancelled)
+            .unwrap();
+        for after in [
+            vec![],
+            vec![ids[0].clone()],
+            vec![ids[1].clone(); 8],
+            ids.clone(),
+        ] {
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "task.create",
+                    json!({
+                        "project_id": project, "request": "dependent", "draft": true, "after": after
+                    }),
+                ),
+            );
+            let task = &ok_payload(&out)["task"];
+            let mut expected = after.clone();
+            expected.dedup();
+            assert_eq!(task["after"], json!(expected));
+            let created = sb
+                .ctx
+                .store
+                .last_event(task["id"].as_str().unwrap(), "task.created")
+                .unwrap()
+                .unwrap();
+            if expected.is_empty() {
+                assert_eq!(created, json!({"project_id": project}));
+            } else {
+                assert_eq!(created, json!({"project_id": project, "after": expected}));
+            }
+            let blocked: Vec<_> = expected.iter().filter(|id| *id != &ids[0]).collect();
+            assert_eq!(task["blocked_by"].as_array().unwrap().len(), blocked.len());
+            for (entry, id) in task["blocked_by"].as_array().unwrap().iter().zip(blocked) {
+                assert_eq!(entry["id"], json!(id));
+                assert_eq!(
+                    entry["state"],
+                    json!(sb.ctx.store.get_task(id).unwrap().state)
+                );
+                assert_eq!(
+                    entry["reason"],
+                    if id == &ids[1] {
+                        json!("cancelled")
+                    } else {
+                        Value::Null
+                    }
+                );
+            }
+            let get = handle_command(sb.ctx(), &cmd("task.get", json!({"task_id": task["id"]})));
+            assert_eq!(ok_payload(&get)["task"], *task);
+            let get = handle_command(
+                sb.ctx(),
+                &cmd("project.get", json!({"project_id": project})),
+            );
+            let found = ok_payload(&get)["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["id"] == task["id"])
+                .unwrap();
+            let mut expected_project_task = task.clone();
+            expected_project_task["queue_position"] = Value::Null;
+            assert_eq!(found, &expected_project_task);
+        }
+    }
 
     /// A throwaway world: its own store, its own `~/.autome` and its own
     /// `$HOME`. Nothing here touches process-global state, so the whole

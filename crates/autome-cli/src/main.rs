@@ -49,8 +49,9 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   doctor                         检查 Git、Claude Code、Codex 与登录状态
   project add <路径> [--workspace] [--docs-repo 仓] [--skip-onboarding]
   project ls | rm <项目> | onboard <项目> [--finish]
-  task new [需求] [--kind feature|bug] [--brief <文件|->] [--draft] [-p 项目] [--attach 文件]... [--doc 路径]...
+  task new [需求] [--kind feature|bug] [--brief <文件|->] [--draft] [--after 任务,…] [-p 项目] [--attach 文件]... [--doc 路径]...
 
+  after <任务> <任务,…> | --none  修改或清空依赖
   task start <任务>              开始待开始任务
   task convert <任务> [--start]  把判定为「不是 Bug」的任务改建成需求（原任务取消）
 
@@ -62,6 +63,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   logs <任务> [--session 会话] [-f] [--json]
 
 卡点与控制
+  queue move <任务> --before X | --after X | --top
   approve <任务>                 批准设计
   reject <任务> \"意见\"           驳回设计，意见原样交给下一轮设计
   reply <任务> \"补充信息\"       Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject
@@ -130,6 +132,8 @@ fn run(argv: &[String]) -> Result<()> {
     let allowed: &[&str] = match verb {
         "doctor" | "ls" | "alerts" | "rpc" | "approve" | "pause" | "resume" | "stop" | "cancel"
         | "reject" | "reply" | "rerun" | "extend" | "decide" => &["--json"],
+        "after" => &["--json", "--none"],
+        "queue" => &["--json", "--before", "--after", "--top"],
         "status" => &["--json"],
         "project" => &[
             "--json",
@@ -147,6 +151,7 @@ fn run(argv: &[String]) -> Result<()> {
             "--kind",
             "--brief",
             "--draft",
+            "--after",
             "--start",
         ],
         "run" => &[
@@ -171,6 +176,8 @@ fn run(argv: &[String]) -> Result<()> {
         "doctor" => doctor(&mut c, &a),
         "project" => project(&mut c, &a),
         "task" => task(&mut c, &a),
+        "after" => set_after(&mut c, &a),
+        "queue" => queue_move(&mut c, &a),
         "status" => status(&mut c, &a),
         "ls" => list(&mut c, &a),
         "run" => drive(&mut c, &a),
@@ -416,7 +423,82 @@ fn project(c: &mut Client, a: &Args) -> Result<()> {
     }
 }
 
+fn resolve_after(c: &mut Client, lists: &[String]) -> Result<Vec<String>> {
+    lists
+        .iter()
+        .flat_map(|s| s.split(','))
+        .map(|name| {
+            if name.trim().is_empty() {
+                return Err(CliError::Usage("依赖列表不能包含空任务名".into()));
+            }
+            c.resolve_task(name.trim())
+        })
+        .collect()
+}
+
+fn set_after(c: &mut Client, a: &Args) -> Result<()> {
+    let list = a.positional.get(2);
+    if a.positional.len() > 3 || list.is_some() == a.has("--none") {
+        return Err(CliError::Usage("依赖列表和 --none 必须且只能给一个".into()));
+    }
+    let id = c.resolve_task(a.need(1, "任务")?)?;
+    let after = match list {
+        Some(list) => resolve_after(c, std::slice::from_ref(list))?,
+        None => vec![],
+    };
+    let out = c.call("task.set_after", json!({"task_id":id,"after":after}))?;
+    if a.has("--json") {
+        print_json(&out);
+    } else {
+        println!(
+            "{}",
+            render::event_line("task.after_set", &id, &json!({"after":after})).unwrap()
+        );
+    }
+    Ok(())
+}
+
+fn queue_move(c: &mut Client, a: &Args) -> Result<()> {
+    let count =
+        a.values("--before").len() + a.values("--after").len() + usize::from(a.has("--top"));
+    if a.positional.get(1).map(String::as_str) != Some("move")
+        || a.positional.len() != 3
+        || count != 1
+    {
+        return Err(CliError::Usage(
+            "用法：queue move <任务> --before X | --after X | --top".into(),
+        ));
+    }
+    let id = c.resolve_task(a.need(2, "任务")?)?;
+    let mut params = json!({"task_id":id});
+    for flag in ["--before", "--after"] {
+        if let Some(name) = a.value(flag) {
+            if name.trim().is_empty() {
+                return Err(CliError::Usage("参照任务不能为空".into()));
+            }
+            params[&flag[2..]] = json!(c.resolve_task(name)?);
+        }
+    }
+    if a.has("--top") {
+        params["top"] = json!(true);
+    }
+    let out = c.call("task.move", params.clone())?;
+    if a.has("--json") {
+        print_json(&out);
+    } else {
+        println!(
+            "{}",
+            render::event_line("task.moved", &id, &params).unwrap()
+        );
+    }
+    Ok(())
+}
+
 fn task(c: &mut Client, a: &Args) -> Result<()> {
+    if a.has("--after") && a.positional.get(1).map(String::as_str) != Some("new") {
+        return Err(CliError::Usage("--after 只用于 task new".into()));
+    }
+
     match a.positional.get(1).map(String::as_str) {
         Some("new") => {
             let request = a.positional[2..].join(" ");
@@ -463,6 +545,9 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
             }
             if a.has("--draft") {
                 params["draft"] = json!(true);
+            }
+            if a.has("--after") {
+                params["after"] = json!(resolve_after(c, &a.values("--after"))?);
             }
             let out = c.call("task.create", params)?;
             if a.has("--json") {
@@ -542,15 +627,33 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
     if tasks.is_empty() {
         println!("还没有任务。`autome task new \"一句话需求\"` 新建一个。");
     }
-    for (p, t) in &tasks {
+    let mut queued: Vec<_> = tasks.iter().filter(|(_, t)| render::is_queued(t)).collect();
+    queued.sort_by_key(|(p, t)| {
+        (
+            p["id"].as_str().unwrap_or_default(),
+            t["queue_position"].as_u64().unwrap_or(u64::MAX),
+        )
+    });
+    let ordered = tasks
+        .iter()
+        .filter(|(_, t)| !render::is_queued(t))
+        .chain(queued);
+    let mut queue_heading = false;
+    for (p, t) in ordered {
+        if render::is_queued(t) && !queue_heading {
+            println!("\n排队（按出队顺序）");
+            queue_heading = true;
+        }
+
         println!(
-            "{}  {:<28} {:<16} {}{}  {}",
+            "{}  {:<28} {:<16} {}{}  {}{}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
             render::state_line(&t["state"]),
             render::merge_suffix(t, true),
-            render::cost_cell(t)
+            render::cost_cell(t),
+            render::blocked_suffix(t)
         );
     }
     if tasks
@@ -664,6 +767,19 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
         }
         println!("{line}");
     }
+    if let Some(queued) = d["queued"].as_array().filter(|q| !q.is_empty()) {
+        println!("\n排队");
+        for e in queued {
+            let t = &e["task"];
+            println!(
+                "  {} {} 排队 · 第 {} 位{}",
+                t["id"].as_str().unwrap_or_default(),
+                t["slug"].as_str().unwrap_or_default(),
+                e["queue_position"],
+                render::blocked_suffix(t)
+            );
+        }
+    }
     if !cooldowns.is_empty() {
         println!("\nCLI 冷却");
         for cd in &cooldowns {
@@ -699,6 +815,10 @@ fn task_detail(got: &Value) {
         render::merge_suffix(t, false)
     );
 
+    let dependencies = render::dependencies(t);
+    if !dependencies.is_empty() {
+        println!("  依赖      {dependencies}");
+    }
     if let Some(cost) = got.get("cost") {
         println!(
             "  费用      {}（{} 个会话，其中 {} 个无计费数据）",
@@ -1374,5 +1494,16 @@ mod bug_usage_tests {
     fn bug_loop_usage_no_longer_says_reply_equals_reject() {
         assert!(!super::USAGE.contains("Bug Loop 上线前"));
         assert!(super::USAGE.contains("Bug 任务在等你补充信息/等你决定时用；需求任务等同 reject"));
+    }
+}
+
+#[test]
+fn deps_cli_usage() {
+    for text in [
+        "[--after 任务,…]",
+        "after <任务> <任务,…> | --none",
+        "queue move <任务> --before X | --after X | --top",
+    ] {
+        assert!(USAGE.contains(text));
     }
 }

@@ -1,0 +1,24 @@
+设计 #1 | 无 | 设计初稿（M-01..M-06；task_after 表 v6、仅首次排队受依赖约束、notified 列去重 task.blocked，计划新增 46 个用例） | 无证据文件（设计轮） | 无
+评审 #1 | M-01 | 提出 4 项问题、2 项非阻塞建议 | 排队任务可以调整顺序并声明依赖-task-review.md | D1-P01～D1-P04 待裁决
+裁决 #1 | 无 | 采纳 D1-P01～P04 与 N1/N2；设计定稿（status→实现中，design-round 1/15；M-04 用例 6→7） | 排队任务可以调整顺序并声明依赖-task-adjudication.md | 无
+实现 #1 | M-01 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-impl.md | 无
+审计 #1 | M-01 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r1-audit.md | 无
+实现 #2 | M-02 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-02-r2-impl.md | 无
+审计 #2 | M-02 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-02-r2-audit.md | 无
+实现 #3 | M-03 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r3-impl.md | 无
+实现 #4 | M-03 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r4-impl.md | 无
+审计 #3 | M-03 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r4-audit.md | 无
+实现 #5 | M-04 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r5-impl.md | 无
+实现 #6 | M-04 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-impl.md | 无
+审计 #4 | M-04 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-audit.md | 无
+实现 #7 | M-05 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r7-impl.md | 无
+审计 #5 | M-05 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r7-audit.md | 无
+
+实现 #8 | M-06 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-impl.md | 无
+审计 #6 | M-06 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-audit.md | 无
+实现 #9 | M-05（rebase 集成复验） | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r9-impl.md | 无
+审计 #7 | 无 | 无待审里程碑，未改动里程碑表 | docs/排队任务可以调整顺序并声明依赖-task/brief/audit-7.md | 无
+实现 #10 | M-06 | 通过（原失败用例；保留关闭） | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r10-impl.md | 3 个 notifier-live 用例受沙箱监听权限阻塞，待宿主复验
+审计 #8 | 无 | 无待审里程碑（M-01~M-06 均已完成），未改动里程碑表 | docs/排队任务可以调整顺序并声明依赖-task/brief/audit-8.md | 无
+实现 #11 | M-01 | rebase 集成复验通过，保留审计关闭 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r11-impl.md | 无
+审计 #9 | 无 | 无待审里程碑（M-01~M-06 均已完成），未改动里程碑表 | docs/排队任务可以调整顺序并声明依赖-task/brief/audit-9.md | 无

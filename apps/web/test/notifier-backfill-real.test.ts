@@ -56,6 +56,7 @@ test('真实账本一个 await_merge 任务，空面板库首次启动恰 1 条'
   const double = dashboardDouble(events.events);
   expect(Object.keys(snapshot).sort()).toEqual(Object.keys(double).sort());
   expect(snapshot.config_warnings).toEqual([]);
+  expect(snapshot.queued).toEqual([]);
   expect(snapshot.waiting).toHaveLength(1);
   expect(Object.keys(snapshot.waiting[0]).sort()).toEqual(Object.keys(double.waiting[0]).sort());
   for (const key of Object.keys(double.waiting[0].task)) expect(snapshot.waiting[0].task).toHaveProperty(key);

@@ -316,6 +316,70 @@ pub fn short(s: &str) -> &str {
 
 /// One line about an event from the ledger, or `None` for the ones that only
 /// matter to the desktop's resync. `subject` is the task (or project) id.
+pub fn short_state(state: &Value) -> &str {
+    match state["state"].as_str().unwrap_or_default() {
+        "draft" => "待开始",
+        "queued" | "requeued" => "排队",
+        "active" if next_step(&serde_json::json!({"id":"", "state":state})).is_some() => "等你决定",
+        "active" => "运行中",
+        "paused" => "已暂停",
+        "stopped" => "已停止",
+        "failed" => "失败",
+        "done" => "已完成",
+        "cancelled" => "已取消",
+        _ => "未知",
+    }
+}
+
+pub fn is_queued(t: &Value) -> bool {
+    matches!(t["state"]["state"].as_str(), Some("queued" | "requeued"))
+}
+
+pub fn blocked_suffix(t: &Value) -> String {
+    let blocked = t["blocked_by"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}（{}）",
+                        d["id"].as_str().unwrap_or_default(),
+                        short_state(&d["state"])
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default();
+    if is_queued(t) && !blocked.is_empty() {
+        format!("  ← 等 {blocked}")
+    } else {
+        String::new()
+    }
+}
+
+pub fn dependencies(t: &Value) -> String {
+    t["after"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    let state = t["blocked_by"]
+                        .as_array()
+                        .and_then(|items| items.iter().find(|d| d["id"] == *id));
+                    format!(
+                        "{}（{}）",
+                        id.as_str().unwrap_or_default(),
+                        state.map_or("已完成", |d| short_state(&d["state"]))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default()
+}
+
 pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
     let s = |key: &str| p[key].as_str().unwrap_or("").to_string();
     let line = match kind {
@@ -354,6 +418,40 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             p["added_count"],
             p["added_paths"]
         ),
+        "task.blocked" => format!(
+            "{subject} 被阻塞：等 {}（{}）",
+            s("on"),
+            if p["reason"] == "cancelled" {
+                "已取消"
+            } else {
+                "失败"
+            }
+        ),
+        "task.moved" => {
+            if p["top"] == true {
+                format!("{subject} 移到队首")
+            } else if p["before"].is_string() {
+                format!("{subject} 移到 {} 之前", s("before"))
+            } else {
+                format!("{subject} 移到 {} 之后", s("after"))
+            }
+        }
+        "task.after_set" => {
+            let ids = p["after"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("、")
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                format!("{subject} 依赖已清空")
+            } else {
+                format!("{subject} 依赖改为 {ids}")
+            }
+        }
         "task.created" => format!("{subject} 新任务"),
         "task.updated" => format!("{subject} → {}", state_line(&p["state"])),
         "session.started" => {
@@ -1365,4 +1463,49 @@ mod merge_view_tests {
             ""
         );
     }
+}
+
+#[test]
+fn deps_cli_events() {
+    use serde_json::json;
+    for (kind, payload, expected) in [
+        (
+            "task.blocked",
+            json!({"on":"T-2","reason":"cancelled"}),
+            "T-1 被阻塞：等 T-2（已取消）",
+        ),
+        (
+            "task.blocked",
+            json!({"on":"T-2","reason":"failed"}),
+            "T-1 被阻塞：等 T-2（失败）",
+        ),
+        ("task.moved", json!({"top":true}), "T-1 移到队首"),
+        ("task.moved", json!({"before":"T-2"}), "T-1 移到 T-2 之前"),
+        ("task.moved", json!({"after":"T-2"}), "T-1 移到 T-2 之后"),
+        (
+            "task.after_set",
+            json!({"after":["T-2","T-3"]}),
+            "T-1 依赖改为 T-2、T-3",
+        ),
+        ("task.after_set", json!({"after":[]}), "T-1 依赖已清空"),
+    ] {
+        assert_eq!(event_line(kind, "T-1", &payload).as_deref(), Some(expected));
+    }
+    for (state, expected) in [
+        ("draft", "待开始"),
+        ("queued", "排队"),
+        ("requeued", "排队"),
+        ("active", "运行中"),
+        ("paused", "已暂停"),
+        ("stopped", "已停止"),
+        ("failed", "失败"),
+        ("done", "已完成"),
+        ("cancelled", "已取消"),
+    ] {
+        assert_eq!(short_state(&json!({"state":state})), expected);
+    }
+    assert_eq!(
+        short_state(&json!({"state":"active","node":"await_design_approval"})),
+        "等你决定"
+    );
 }

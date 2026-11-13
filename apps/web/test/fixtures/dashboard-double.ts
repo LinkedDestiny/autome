@@ -12,6 +12,6 @@ export function dashboardDouble(events: LedgerEvent[]) {
       task: { id: event.subject, title: '任务正文', state: (event.payload as { state: unknown }).state },
       gate_queue_position: null, pending_decisions: [], session: null, retry: null,
     })),
-    running: [], alerts: [], cooldowns: [], config_warnings: [], environment: { probed: false, problems: [] },
+    running: [], queued: [], alerts: [], cooldowns: [], config_warnings: [], environment: { probed: false, problems: [] },
   };
 }

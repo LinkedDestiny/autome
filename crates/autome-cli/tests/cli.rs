@@ -1439,3 +1439,191 @@ fn cost_cli_running_row_shows_cost() {
     );
     assert_eq!(s.json(&["status"])["running"][0]["task"]["cost_usd"], 3.75);
 }
+
+fn deps_sandbox(tag: &str) -> Sandbox {
+    let s = Sandbox::new(tag);
+    s.ok(&[
+        "project",
+        "add",
+        s.repo.to_str().unwrap(),
+        "--skip-onboarding",
+    ]);
+    s.ok(&["task", "new", "dependency-anchor", "--draft"]);
+    s
+}
+
+fn deps_error(s: &Sandbox, args: &[&str], code: i32) {
+    let out = s.autome(args);
+    assert_eq!(
+        out.status.code(),
+        Some(code),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("autome："));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .chars()
+            .any(|c| ('一'..='龥').contains(&c))
+    );
+}
+
+#[test]
+fn deps_cli_create() {
+    let s = deps_sandbox("deps-create");
+    for name in ["T-1", "dependency-"] {
+        let t = s.json(&["task", "new", &format!("wait-{name}"), "--after", name]);
+        assert_eq!(t["task"]["state"]["state"], "queued");
+        let id = t["task"]["id"].as_str().unwrap();
+        let list = s.json(&["ls"]);
+        let row = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap();
+        assert_eq!(row["after"], serde_json::json!(["T-1"]));
+        assert_eq!(row["blocked_by"][0]["id"], "T-1");
+        assert_eq!(row["blocked_by"][0]["state"]["state"], "draft");
+        let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+        assert_eq!(store.count_events(id, "task.after_set").unwrap(), 0);
+    }
+    deps_error(&s, &["task", "new", "self", "--after", "T-4"], 1);
+    deps_error(&s, &["task", "new", "missing", "--after", "T-999"], 1);
+    assert_eq!(s.json(&["ls"]).as_array().unwrap().len(), 3);
+    for list in ["", ",T-1", "T-1,"] {
+        deps_error(&s, &["task", "new", "empty", "--after", list], 2);
+    }
+    let eight = ["T-1"; 8].join(",");
+    let t = s.json(&["task", "new", "eight", "--draft", "--after", &eight]);
+    assert_eq!(t["task"]["after"], serde_json::json!(["T-1"]));
+    deps_error(
+        &s,
+        &["task", "new", "nine", "--after", &["T-1"; 9].join(",")],
+        1,
+    );
+    let t = s.json(&[
+        "task",
+        "new",
+        "repeat",
+        "--draft",
+        "--after",
+        "T-1",
+        "--after",
+        "dependency-",
+    ]);
+    assert_eq!(t["task"]["after"], serde_json::json!(["T-1"]));
+}
+
+#[test]
+fn deps_cli_after() {
+    let s = deps_sandbox("deps-after");
+    s.ok(&["task", "new", "dependent", "--draft", "--after", "T-1"]);
+    for args in [
+        vec!["after", "T-2"],
+        vec!["after", "T-2", "T-1", "--none"],
+        vec!["after", "T-2", "T-1", "extra"],
+    ] {
+        deps_error(&s, &args, 2);
+    }
+    assert_eq!(
+        s.json(&["status", "T-2"])["task"]["after"],
+        serde_json::json!(["T-1"])
+    );
+    s.ok(&["after", "T-2", "--none"]);
+    assert_eq!(
+        s.json(&["status", "T-2"])["task"]["after"],
+        serde_json::json!([])
+    );
+    s.ok(&["after", "T-2", "dependency-"]);
+    assert_eq!(
+        s.json(&["status", "T-2"])["task"]["after"],
+        serde_json::json!(["T-1"])
+    );
+    deps_error(&s, &["after", "T-2", "T-2"], 1);
+    deps_error(&s, &["after", "T-1", "T-2"], 1);
+    s.ok(&["task", "start", "T-2"]);
+    s.ok(&["after", "T-2", "--none"]);
+    assert_ne!(s.task_state("T-2")["state"], "queued");
+    s.ok(&["cancel", "T-2"]);
+}
+
+#[test]
+fn deps_cli_queue() {
+    let s = deps_sandbox("deps-queue");
+    for name in ["first", "second", "third"] {
+        s.ok(&["task", "new", name, "--after", "T-1"]);
+    }
+    for args in [
+        vec!["queue", "move", "T-4"],
+        vec!["queue", "move", "T-4", "--top", "--before", "T-2"],
+        vec!["queue", "bad", "T-4", "--top"],
+        vec!["queue", "move", "T-4", "--after", "T-2", "--after", "T-3"],
+    ] {
+        deps_error(&s, &args, 2);
+    }
+    for (args, order) in [
+        (
+            vec!["queue", "move", "T-4", "--top"],
+            vec!["T-4", "T-2", "T-3"],
+        ),
+        (
+            vec!["queue", "move", "T-4", "--after", "T-2"],
+            vec!["T-2", "T-4", "T-3"],
+        ),
+        (
+            vec!["queue", "move", "T-3", "--before", "T-2"],
+            vec!["T-3", "T-2", "T-4"],
+        ),
+    ] {
+        s.ok(&args);
+        let list = s.json(&["ls"]);
+        for (i, id) in order.iter().enumerate() {
+            let t = list
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["id"] == *id)
+                .unwrap();
+            assert_eq!(t["queue_position"], i + 1);
+        }
+        let text = s.ok(&["ls"]);
+
+        let section = text.split("排队（按出队顺序）").nth(1).unwrap();
+        let lines: Vec<_> = section.lines().filter(|l| l.starts_with("T-")).collect();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|l| l.split_whitespace().next().unwrap())
+                .collect::<Vec<_>>(),
+            order
+        );
+        assert!(lines.iter().all(|l| l.ends_with("← 等 T-1（待开始）")));
+    }
+    deps_error(&s, &["queue", "move", "T-2", "--before", "T-2"], 1);
+    s.ok(&["cancel", "T-1"]);
+    assert!(s.ok(&["ls"]).contains("← 等 T-1（已取消）"));
+}
+
+#[test]
+fn deps_cli_status() {
+    let s = deps_sandbox("deps-status");
+    assert!(!s.ok(&["status", "T-1"]).contains("依赖"));
+    assert!(!s.ok(&["status"]).contains("\n排队"));
+    s.ok(&["task", "new", "waiting", "--after", "T-1"]);
+    assert!(s.ok(&["status", "T-2"]).contains("依赖      T-1（待开始）"));
+    let status = s.ok(&["status"]);
+    assert!(status.contains("\n排队"));
+    assert!(status.contains("排队 · 第 1 位  ← 等 T-1（待开始）"));
+    assert_eq!(
+        s.json(&["status"])["queued"][0]["task"]["after"],
+        serde_json::json!(["T-1"])
+    );
+    s.ok(&["cancel", "T-1"]);
+    assert!(s.ok(&["status", "T-2"]).contains("依赖      T-1（已取消）"));
+    let store = automed::store::Store::open(s.root.join("home/ledger.sqlite3")).unwrap();
+    store
+        .set_task_state("T-1", &autome_domain::task::TaskState::Done)
+        .unwrap();
+    assert!(s.ok(&["status", "T-2"]).contains("依赖      T-1（已完成）"));
+}

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 /// Flags that take a value. Everything else starting with `-` is a switch.
-const VALUED: [&str; 10] = [
+const VALUED: [&str; 12] = [
     "-p",
     "--project",
     "--session",
@@ -18,6 +18,8 @@ const VALUED: [&str; 10] = [
     "--tag",
     "--brief",
     "--kind",
+    "--after",
+    "--before",
 ];
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -183,5 +185,29 @@ mod merge_auth_tests {
         }
         let a = Args::parse(&["merge", "cart"].map(String::from)).unwrap();
         assert!(!a.has("--cancel"));
+    }
+}
+
+#[test]
+fn deps_cli_args() {
+    let a = Args::parse(
+        &[
+            "queue",
+            "move",
+            "T-1",
+            "--before=T-2",
+            "--after",
+            "T-3",
+            "--after",
+            "T-4,T-5",
+        ]
+        .map(String::from),
+    )
+    .unwrap();
+    assert_eq!(a.positional, ["queue", "move", "T-1"]);
+    assert_eq!(a.value("--before"), Some("T-2"));
+    assert_eq!(a.values("--after"), ["T-3", "T-4,T-5"]);
+    for flag in ["--before", "--after"] {
+        assert!(Args::parse(&[flag.to_string()]).is_err());
     }
 }

@@ -942,6 +942,180 @@ fn rejecting_a_design_re_runs_it_carrying_the_feedback_verbatim() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn queue_move_the_third_task_moved_to_top_starts_first() {
+    needs_git!();
+    let mut w = World::new("queue-move");
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id":w.project_id,"parallel":1}),
+    ));
+    for request in ["slot holder", "queue first", "queue second", "queue third"] {
+        w.doc_step_for(&slug_for(request), 1, &doc("设计中", 0, 0, &[]), "sleep 60");
+    }
+    let holder = create_task(&mut w, "slot holder");
+    let a = create_task(&mut w, "queue first");
+    let b = create_task(&mut w, "queue second");
+    let c = create_task(&mut w, "queue third");
+    for id in [&a, &b, &c] {
+        assert_eq!(w.state(id), "queued");
+    }
+    let out = w.call("task.move", json!({"task_id":c,"top":true}));
+    assert_eq!(ok(&out)["order"], json!([c, a, b]));
+    ok(&w.call("task.cancel", json!({"task_id":holder})));
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.state(&c) == "active"
+        },
+        |_| "moved third task starts".into(),
+    );
+    assert_eq!(w.state(&a), "queued");
+    assert_eq!(w.state(&b), "queued");
+    assert!(w.ctx.store.list_sessions(&a).unwrap().is_empty());
+    assert!(w.ctx.store.list_sessions(&b).unwrap().is_empty());
+    assert_eq!(w.ctx.store.list_sessions(&c).unwrap().len(), 1);
+}
+
+#[test]
+fn after_blocked_cancelled_dependency_holds_b_until_cleared() {
+    needs_git!();
+    let mut w = World::new("after-blocked");
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id": w.project_id, "parallel": 2}),
+    ));
+    for request in ["cancel dependency", "blocked dependent"] {
+        w.doc_step_for(&slug_for(request), 1, &doc("设计中", 0, 0, &[]), "sleep 60");
+    }
+    let a = create_task(&mut w, "cancel dependency");
+    let out = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "blocked dependent", "after": [a]}),
+    );
+    let b = ok(&out)["task"]["id"].as_str().unwrap().to_string();
+    let position = w.ctx.store.queued_seq(&b).unwrap();
+    assert_eq!(w.state(&b), "queued");
+    ok(&w.call("task.cancel", json!({"task_id": a})));
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.ctx.store.all_running_sessions().unwrap().is_empty() && w.state(&b) == "queued"
+        },
+        |w| format!("B={}", w.state(&b)),
+    );
+    let out = w.call("task.get", json!({"task_id": b}));
+    assert_eq!(
+        ok(&out)["task"]["blocked_by"],
+        json!([{"id": a, "state": {"state": "cancelled"}, "reason": "cancelled"}])
+    );
+    assert_eq!(w.ctx.store.count_events(&b, "task.blocked").unwrap(), 1);
+    assert_eq!(w.ctx.store.queued_seq(&b).unwrap(), position);
+    let out = w.call("task.set_after", json!({"task_id": b, "after": []}));
+    assert_eq!(ok(&out)["started"], true);
+    assert_eq!(ok(&out)["queue_position"], Value::Null);
+    assert_eq!(ok(&out)["task"]["after"], json!([]));
+    assert!(w.ctx.store.running_session(&b).unwrap().is_some());
+    assert_eq!(w.state(&b), "active");
+    ok(&w.call("task.cancel", json!({"task_id": b})));
+}
+
+#[test]
+fn after_create_b_waits_for_a_and_starts_once_a_is_done() {
+    needs_git!();
+    let mut w = World::new("after-create");
+    ok(&w.call(
+        "config.set_loop",
+        json!({"project_id": w.project_id, "parallel": 2}),
+    ));
+    let a_slug = slug_for("dependency alpha");
+    let release = w.repo.join(".autome/fake/release");
+    let hold = format!(
+        "n=0; while [ ! -f '{}' ]; do n=$((n+1)); [ $n -lt 3000 ] || exit 93; sleep 0.02; done",
+        release.display()
+    );
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step_for(&a_slug, n, &body, if n == 1 { &hold } else { "" });
+    }
+    w.retro_step(7, &a_slug);
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/7.sh")).unwrap();
+    w.step_for(&a_slug, 7, &retro);
+    for request in ["dependent beta", "independent gamma"] {
+        w.doc_step_for(&slug_for(request), 1, &doc("设计中", 0, 0, &[]), "sleep 60");
+    }
+    let a = create_task(&mut w, "dependency alpha");
+    let out = w.call(
+        "task.create",
+        json!({"project_id": w.project_id, "request": "dependent beta", "after": [a]}),
+    );
+    let b = ok(&out)["task"]["id"].as_str().unwrap().to_string();
+    assert_eq!(ok(&out)["started"], false);
+    assert_eq!(ok(&out)["queue_position"], 1);
+    assert_eq!(w.state(&b), "queued");
+    let c = create_task(&mut w, "independent gamma");
+    assert_eq!(
+        ok(&w.call("task.get", json!({"task_id": b})))["queue_position"],
+        1
+    );
+    assert!(w.ctx.store.running_session(&a).unwrap().is_some());
+    assert!(w.ctx.store.running_session(&c).unwrap().is_some());
+    assert!(w.ctx.store.running_session(&b).unwrap().is_none());
+    let queued_seq = w.ctx.store.queued_seq(&b).unwrap();
+    std::fs::write(release, "go").unwrap();
+    for target in ["await_design_approval", "await_merge", "done"] {
+        scheduling_wait(
+            &mut w,
+            |w| {
+                let report = automed::scheduler::tick(&mut w.ctx);
+                assert!(report.errors.is_empty(), "{report:?}");
+                if target != "done" {
+                    assert_eq!(w.state(&b), "queued");
+                    assert_eq!(w.ctx.store.queued_seq(&b).unwrap(), queued_seq);
+                    w.node(&a).as_deref() == Some(target)
+                } else {
+                    w.state(&a) == "done" && w.ctx.store.running_session(&b).unwrap().is_some()
+                }
+            },
+            |w| format!("A={} {:?}, B={}", w.state(&a), w.node(&a), w.state(&b)),
+        );
+        if target == "await_design_approval" {
+            ok(&w.call("task.approve", json!({"task_id": a})));
+        } else if target == "await_merge" {
+            ok(&w.call("task.merge", json!({"task_id": a})));
+        }
+    }
+    assert!(w.ctx.store.get_task(&a).unwrap().merge_commit.is_some());
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let done = events
+        .iter()
+        .find(|(_, kind, id, p)| {
+            kind == "task.updated" && id == &a && p["state"]["state"] == "done"
+        })
+        .expect("A done event")
+        .0;
+    let active = events
+        .iter()
+        .find(|(_, kind, id, p)| {
+            kind == "task.updated" && id == &b && p["state"]["state"] == "active"
+        })
+        .expect("B active event")
+        .0;
+    assert!(done < active);
+    ok(&w.call("task.cancel", json!({"task_id": b})));
+    ok(&w.call("task.cancel", json!({"task_id": c})));
+}
+
+#[test]
 fn the_parallel_limit_queues_the_fourth_task_and_releases_it_on_completion() {
     needs_git!();
     let mut w = World::new("parallel");
@@ -5802,6 +5976,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
         let out = w.call("task.get", json!({"task_id":id}));
         let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        assert_eq!(task.get("after"), Some(&json!([])));
+        assert_eq!(task.get("blocked_by"), Some(&json!([])));
         assert_eq!(
             task.get("merge"),
             Some(&json!({
@@ -5824,6 +6000,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
     }
     assert_eq!(keys[0], keys[1]);
     let mut baseline = [
+        "after",
+        "blocked_by",
         "id",
         "cost_usd",
         "cost_sessions_without_cost",

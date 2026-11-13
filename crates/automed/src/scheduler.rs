@@ -1933,9 +1933,43 @@ fn fill_slots_reporting_errors(ctx: &mut Ctx, errors: &mut Vec<String>) -> Resul
         };
         let limit = config.loop_defaults.parallel.max(1);
         let mut in_use = ctx.store.slots_in_use(&project.id)?;
-        for task in ctx.store.queued_tasks(&project.id)? {
+        let queued = ctx.store.queued_tasks(&project.id)?;
+        let mut blocked = std::collections::BTreeSet::new();
+        // Notice failures even when every execution slot is occupied.
+        for task in &queued {
+            let after = ctx.store.task_after(&task.id)?;
+            if after.is_empty() {
+                continue;
+            }
+            let impl_started = matches!(task.state, TaskState::Requeued { .. })
+                && ctx.store.has_impl_session(&task.id)?;
+            if autome_domain::deps::check_editable(&task.id, task.kind, &task.state, impl_started)
+                .is_err()
+            {
+                continue;
+            }
+            for id in after {
+                let state = ctx.store.get_task(&id)?.state;
+                if !autome_domain::deps::is_satisfied(&state) {
+                    blocked.insert(task.id.clone());
+                }
+                let reason = autome_domain::deps::block_reason(&state).map(|r| r.as_str());
+                if ctx.store.blocked_notice(&task.id, &id)?.as_deref() != reason {
+                    if let Some(reason) = reason {
+                        ctx.store.append_event("task.blocked", &task.id, json!({
+                            "task": task.id, "on": id, "reason": reason, "project_id": project.id,
+                        }))?;
+                    }
+                    ctx.store.set_blocked_notice(&task.id, &id, reason)?;
+                }
+            }
+        }
+        for task in queued {
             if in_use >= limit {
                 break;
+            }
+            if blocked.contains(&task.id) {
+                continue;
             }
             match advance(ctx, &task.id, &Trigger::SlotAvailable) {
                 Ok(true) => {
@@ -9801,6 +9835,241 @@ mod tests {
                 assert!(report.errors.is_empty(), "{report:?}");
                 assert!(report.tasks_started.contains(&"T-broken".to_string()));
                 assert!(w.ctx.store.running_session("T-broken").unwrap().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn after_blocked_cancelled_is_notified_once_even_with_full_slots() {
+        needs_git!();
+        for state in [
+            TaskState::Queued,
+            TaskState::Requeued {
+                resume: Node::Design,
+            },
+        ] {
+            let mut w = World::new("blocked-cancelled");
+            w.set_parallel(1);
+            for id in ["A", "B", "C", "busy"] {
+                w.add_task(id, &id.to_lowercase());
+            }
+            w.set_state("A", TaskState::Cancelled);
+            w.set_state("C", TaskState::Draft);
+            w.set_state("busy", TaskState::Active { node: Node::Design });
+            w.set_state("B", state.clone());
+            w.ctx.store.set_task_after("B", &["A".into()]).unwrap();
+            let seq = w.ctx.store.queued_seq("B").unwrap();
+            for _ in 0..3 {
+                assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            }
+            assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 1);
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event("B", "task.blocked")
+                    .unwrap()
+                    .unwrap(),
+                json!({
+                    "task": "B", "on": "A", "reason": "cancelled", "project_id": w.project_id,
+                })
+            );
+            for after in [
+                json!(["A"]),
+                json!(["A", "C"]),
+                json!(["C", "A"]),
+                json!(["A"]),
+            ] {
+                let out = crate::dispatch::handle_command(
+                    &mut w.ctx,
+                    &crate::ipc::Command {
+                        request_id: "r".into(),
+                        command_id: "c".into(),
+                        expected_revision: None,
+                        protocol_version: crate::ipc::PROTOCOL_VERSION,
+                        method: "task.set_after".into(),
+                        params: json!({"task_id": "B", "after": after}),
+                    },
+                );
+                assert!(
+                    matches!(out.reply.outcome, crate::ipc::ReplyOutcome::Ok { .. }),
+                    "{:?}",
+                    out.reply
+                );
+                fill_slots(&mut w.ctx).unwrap();
+                assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 1);
+            }
+            assert_eq!(w.state("B"), state);
+            assert_eq!(w.ctx.store.queued_seq("B").unwrap(), seq);
+        }
+    }
+
+    #[test]
+    fn after_blocked_failure_resets_on_rerun_and_notifies_again() {
+        needs_git!();
+        let mut w = World::new("blocked-failed");
+        w.set_parallel(1);
+        for id in ["A", "B", "busy"] {
+            w.add_task(id, &id.to_lowercase());
+        }
+        w.set_state("busy", TaskState::Active { node: Node::Design });
+        w.ctx.store.set_task_after("B", &["A".into()]).unwrap();
+        let failed = TaskState::Failed {
+            at: Node::Design,
+            reason: autome_domain::task::FailureReason::Config {
+                detail: "test".into(),
+            },
+        };
+        w.set_state("A", failed.clone());
+        fill_slots(&mut w.ctx).unwrap();
+        assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 1);
+        w.set_state("A", TaskState::Active { node: Node::Design });
+        fill_slots(&mut w.ctx).unwrap();
+        assert_eq!(w.ctx.store.blocked_notice("B", "A").unwrap(), None);
+        w.set_state("A", failed);
+        for _ in 0..3 {
+            fill_slots(&mut w.ctx).unwrap();
+        }
+        assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 2);
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event("B", "task.blocked")
+                .unwrap()
+                .unwrap()["reason"],
+            "failed"
+        );
+        w.set_state("A", TaskState::Cancelled);
+        fill_slots(&mut w.ctx).unwrap();
+        assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 3);
+        w.set_state("A", TaskState::Done);
+        fill_slots(&mut w.ctx).unwrap();
+        assert_eq!(w.ctx.store.blocked_notice("B", "A").unwrap(), None);
+        assert_eq!(w.state("B"), TaskState::Queued);
+    }
+
+    #[test]
+    fn after_blocked_passive_dependencies_do_not_emit_notices() {
+        needs_git!();
+        let mut w = World::new("blocked-passive");
+        w.add_task("A", "a");
+        w.add_task("B", "b");
+        w.ctx.store.set_task_after("B", &["A".into()]).unwrap();
+        for state in [
+            TaskState::Draft,
+            TaskState::Active { node: Node::Design },
+            TaskState::Paused {
+                resume: Node::Design,
+            },
+            TaskState::Stopped { at: Node::Design },
+        ] {
+            w.set_state("A", state);
+            assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            assert_eq!(w.ctx.store.count_events("B", "task.blocked").unwrap(), 0);
+            assert_eq!(w.state("B"), TaskState::Queued);
+        }
+    }
+
+    #[test]
+    fn after_create_skips_blocked_without_changing_position() {
+        needs_git!();
+        let mut w = World::new("after-skip");
+        w.set_parallel(1);
+        for id in ["A", "B", "C"] {
+            w.add_task(id, &id.to_lowercase());
+            w.ctx.store.mark_queued(id).unwrap();
+        }
+        w.set_state("A", TaskState::Draft);
+        w.ctx.store.set_task_after("B", &["A".into()]).unwrap();
+        let seq = w.ctx.store.queued_seq("B").unwrap();
+        assert_eq!(w.ctx.store.queued_tasks(&w.project_id).unwrap()[0].id, "B");
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), ["C"]);
+        assert_eq!(w.state("B"), TaskState::Queued);
+        assert_eq!(w.ctx.store.queued_seq("B").unwrap(), seq);
+        assert_eq!(w.ctx.store.queued_tasks(&w.project_id).unwrap()[0].id, "B");
+    }
+
+    #[test]
+    fn after_create_done_is_the_only_satisfied_dependency() {
+        needs_git!();
+        let mut w = World::new("after-done");
+        w.add_task("A", "a");
+        w.add_task("B", "b");
+        w.ctx.store.set_task_after("B", &["A".into()]).unwrap();
+        for state in [
+            TaskState::Draft,
+            TaskState::Active { node: Node::Design },
+            TaskState::Paused {
+                resume: Node::Design,
+            },
+            TaskState::Stopped { at: Node::Design },
+            TaskState::Failed {
+                at: Node::Design,
+                reason: autome_domain::task::FailureReason::Config {
+                    detail: "test".into(),
+                },
+            },
+            TaskState::Cancelled,
+        ] {
+            w.set_state("A", state);
+            assert!(fill_slots(&mut w.ctx).unwrap().is_empty());
+            assert_eq!(w.state("B"), TaskState::Queued);
+        }
+        w.set_state("A", TaskState::Done);
+        w.ctx.store.set_task_archived("A", true).unwrap();
+        assert_eq!(fill_slots(&mut w.ctx).unwrap(), ["B"]);
+    }
+
+    #[test]
+    fn after_create_requeued_checks_design_and_implementation_history() {
+        needs_git!();
+        for (kind, node, implemented, blocked) in [
+            (TaskKind::Feature, Node::Design, false, true),
+            (TaskKind::Feature, Node::Implement, false, false),
+            (TaskKind::Feature, Node::Design, true, false),
+            (TaskKind::Bug, Node::Locate, false, false),
+        ] {
+            let mut w = World::new("after-requeued");
+            w.add_task("A", "a");
+            w.set_state("A", TaskState::Draft);
+            let mut task = w.add_task("B", "b");
+            w.write_design(
+                &task,
+                &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+            );
+            // A real implementation session supplies the persistent history.
+            if implemented {
+                w.set_state(
+                    "B",
+                    TaskState::Requeued {
+                        resume: Node::Implement,
+                    },
+                );
+                assert_eq!(fill_slots(&mut w.ctx).unwrap(), ["B"]);
+                assert!(w.ctx.store.has_impl_session("B").unwrap());
+                let session = w.ctx.store.running_session("B").unwrap().unwrap();
+                w.ctx
+                    .store
+                    .finish_session(&session.id, &SessionLifecycle::Killed, &now_iso())
+                    .unwrap();
+            }
+            if kind == TaskKind::Bug {
+                task.id = "bug".into();
+                task.slug = "bug".into();
+                task.kind = kind;
+                w.ctx.store.insert_task(&task).unwrap();
+                w.set_state("B", TaskState::Done);
+            }
+            let id = task.id.as_str();
+            w.ctx.store.set_task_after(id, &["A".into()]).unwrap();
+            w.set_state(id, TaskState::Requeued { resume: node });
+            let started = fill_slots(&mut w.ctx).unwrap();
+            assert_eq!(
+                started.contains(&id.to_string()),
+                !blocked,
+                "{kind:?} {node:?} implemented={implemented}"
+            );
+            if blocked {
+                assert_eq!(w.state(id), TaskState::Requeued { resume: node });
             }
         }
     }
