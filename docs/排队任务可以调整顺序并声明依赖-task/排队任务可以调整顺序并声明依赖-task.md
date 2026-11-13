@@ -2,7 +2,7 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 9/30
+implementation-round: 10/30
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
@@ -299,8 +299,10 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 | store.rs `assert_eq!(SCHEMA_VERSION, 5)` | 5 → 6 | 任务文件点名的版本钉 |
 | store.rs v4→v5 迁移测试 `assert_eq!(version, 5)` | 5 → 6 | 同上；降级语句不改，靠 `IF NOT EXISTS` |
 | write-gate.test.ts「全部 op 正路径可达」的 `specific` 表 | 加 `'task.set_after': {task_id:'T-1', after:[]}`、`'task.move': {task_id:'T-1', top:true}` | 这条测试的设计就是「每个放行的 op 在表里登记正路径」。新 op 有必填参数，用 `{}` 走不通。这是登记新 op，不是迁就旧断言 |
+| end_to_end.rs `bug_loop_task_get_reports_the_fix_round_for_bugs_only` | 完整字段清单加入 `after`、`blocked_by`，并断言 feature/bug 默认均为空数组 | §6 明确新增这两个字段；保留原有字段、fix_round 差异和错误状态无副作用断言，不能用旧字段全集拒绝已约定的加法接口 |
+| Web `dashboard-double.ts` 与 `notifier-backfill-real.test.ts` | 替身加入 `queued: []`，真实空队列断言为空 | §6 明确 dashboard 新增 queued；保留完整顶层键比较和通知数量、重启去重断言 |
 
-除此之外，现有的需求与 Bug e2e、CLI 测试、调度单测一行不改。
+除此之外，现有的需求与 Bug e2e、CLI 测试、调度单测一行不改；以上字段契约更新不改变原有行为验收。
 
 ### 11. 否决的做法
 
@@ -442,7 +444,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-06 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-audit.md · 通过 · 审计 #6
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r10-impl.md · 门禁失败用例修复复验（保留审计关闭） · 实现 #10
 
 - 验收命令：`npm test --prefix apps/web -- write-gate && ! grep -n "排队按 created_at 升序" docs/development/technical-design.md && grep -q "queue move" README.md && grep -q "task.set_after" docs/development/technical-design.md`
   （`apps/web/node_modules` 不存在时先执行 `cd apps/web && npm ci`）

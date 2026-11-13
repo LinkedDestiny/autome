@@ -5976,6 +5976,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
         let id = ok(&out)["task"]["id"].as_str().unwrap().to_owned();
         let out = w.call("task.get", json!({"task_id":id}));
         let mut task = ok(&out)["task"].as_object().unwrap().clone();
+        assert_eq!(task.get("after"), Some(&json!([])));
+        assert_eq!(task.get("blocked_by"), Some(&json!([])));
         assert_eq!(
             task.get("merge"),
             Some(&json!({
@@ -5998,6 +6000,8 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
     }
     assert_eq!(keys[0], keys[1]);
     let mut baseline = [
+        "after",
+        "blocked_by",
         "id",
         "cost_usd",
         "cost_sessions_without_cost",

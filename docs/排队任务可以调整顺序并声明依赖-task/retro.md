@@ -18,3 +18,4 @@
 审计 #6 | M-06 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r8-audit.md | 无
 实现 #9 | M-05（rebase 集成复验） | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-05-r9-impl.md | 无
 审计 #7 | 无 | 无待审里程碑，未改动里程碑表 | docs/排队任务可以调整顺序并声明依赖-task/brief/audit-7.md | 无
+实现 #10 | M-06 | 通过（原失败用例；保留关闭） | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-06-r10-impl.md | 3 个 notifier-live 用例受沙箱监听权限阻塞，待宿主复验
