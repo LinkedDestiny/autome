@@ -1,3 +1,3 @@
-# 审计结论（第 5 轮）
+# 审计结论（第 6 轮）
 
-M-05：**通过**。验收命令 3 个文件 16/16、0 跳过（监听可用，board-live-listen 2 例实跑，stop→websocket 实测 4253 ms < 4500 ms）；契约五类负向对照全部被拦住并已还原（git status 干净）。详见 `evidence/M-05-r6-audit.md`。
+无 `待审` 里程碑（M-01..M-05 均已完成）。对实现 #7 的门禁修复做了抽检：M-05 验收命令 20/20 通过（监听实跑），shouldRevalidate 恒 false 的负向对照被拦住并已还原。里程碑表无需变动。详见 `evidence/M-05-r7-audit.md`。
