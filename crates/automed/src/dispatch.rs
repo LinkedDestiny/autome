@@ -3108,11 +3108,7 @@ mod tests {
             assert_eq!(out["order"], order);
             assert_eq!(out["queue_position"], position);
             let events = sb.ctx.store.events_since(0, 100).unwrap();
-            let (_, _, payload) = events
-                .iter()
-                .filter(|(_, k, _)| k == "task.moved")
-                .next_back()
-                .unwrap();
+            let (_, _, payload) = events.iter().rfind(|(_, k, _)| k == "task.moved").unwrap();
             assert_eq!(
                 *payload,
                 json!({"task":c,"project_id":p,"before":params.get("before"),"after":params.get("after"),"top":params.get("top").and_then(Value::as_bool).unwrap_or(false),"queue_position":position})

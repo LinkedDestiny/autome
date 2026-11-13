@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/30
+implementation-round: 6/30
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-04 task.move；通过后推进 M-05 CLI
+next-action: 宿主重跑快检后独立审计 M-04 task.move；通过后推进 M-05 CLI
 
 任务文件：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-task.md`
 任务卡：`docs/排队任务可以调整顺序并声明依赖-task/排队任务可以调整顺序并声明依赖-task-card.md`
@@ -417,7 +417,7 @@ CLI 的 `trigger` 路径都用 `task_id`，多一个 `task` 会让网关和面�
 
 ### M-04 验收契约
 
-最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r5-impl.md · 验收通过，待审 · 实现 #5
+最新证据：docs/排队任务可以调整顺序并声明依赖-task/evidence/M-04-r6-impl.md · 快检修复及验收通过，保持待审 · 实现 #6
 
 - 验收命令：`cargo test -p automed queue_move_ && cargo test -p automed task_start_queues_a_draft && cargo test -p automed --test end_to_end task_card_a_started_draft_waits_behind_the_parallel_limit`
 - 预期：`queue_move_` 7 个通过（lib 6 个、end_to_end 1 个），另外两条命令各 1 个现有用例通过。
