@@ -1,8 +1,8 @@
 # 教训
 
-本任务没有记录到指标，下面只引用证据文件和 git 记录里写明的事实。整轮运行：设计 1 轮，实现 10 轮，6 个里程碑全部关闭，reopen 0 次；审计 8 次，前 6 次各对应一个里程碑、均一次通过，审计 #7、#8 时已无待审里程碑。10 个实现轮里有 4 轮不推进里程碑：#4、#6 修宿主快检报的 Clippy 问题，#9 做 rebase 集成复验并修好一个在已关闭里程碑里一直红着的测试，#10 修合并前全量门禁（merge_gate，提交 fa9d68c9，退出码 1）报出的 3 个失败用例。
+本任务没有记录到指标，下面只引用证据文件和 git 记录里写明的事实。整轮运行：设计 1 轮，实现 11 轮，6 个里程碑全部关闭，reopen 0 次；审计 9 次，前 6 次各对应一个里程碑、均一次通过，审计 #7～#9 时已无待审里程碑。11 个实现轮里有 5 轮不推进里程碑：#4、#6 修宿主快检报的 Clippy 问题，#9 做 rebase 集成复验并修好一个在已关闭里程碑里一直红着的测试，#10 修合并前全量门禁（merge_gate，提交 fa9d68c9，退出码 1）报出的 3 个失败用例，#11 按用户追加的 rebase 指令把分支接到 main 02a05496 上，并解决与并行任务 T-54 的迁移版本冲突。
 
-本轮（复盘 #3）在复盘 #2 的 L-01～L-03 之外补了 L-04。L-03 与 L-04 是同一类现象：给共用的返回对象加字段后，按整对象或整键集比较的断言变红。区别在于 L-03 是本任务自己的测试、缺的是复验范围，L-04 是设计时就该点名的已有测试、缺的是设计清单。
+本轮（复盘 #4）保留 L-01～L-04，补 L-05。实现 #11 的证据又一次写着「未运行全量门禁、cargo fmt/clippy 或 Web lint/typecheck 宿主快检」，和 L-01 说的是同一个缺口，没有另立条目。L-05 来自实现 #11：本任务和 T-54 在各自的 worktree 里同时开发，都把账本迁移写成 v6。
 
 ```yaml
 - id: L-01
@@ -46,4 +46,15 @@
   level: brief
   proposal: 设计给任何 RPC 返回对象（如 task_json、dashboard.get）新增字段时，「现有测试的必要改动」一节必须写出对该对象做整对象或整键集比较的检索命令（覆盖 Rust 测试与 Web/桌面测试替身）和全部命中项，并把命中用例放进引入该字段的那个里程碑的验收命令；没写检索命令的，评审轮按「里程碑不可执行」提出
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+```
+
+```yaml
+- id: L-05
+  domain: design
+  symptom: M-01 按设计「store v6」实现，并于审计 #1 关闭（3b023206，11-13 12:23）。并行任务 T-54 也把 v6 用在 sessions.limit_minutes 上（e0f6537a，12:58），并于 19:09 合进 main 02a05496。实现 #11 rebase 时 store.rs 冲突，依赖表只能顺延到 v7，设计文档和技术设计里的 v6 全部改成 v7（788adc42），已关闭的 M-01 标题、用例说明和负向对照也跟着改
+  root_cause: 任务文件约束 5 写的是相对规则「SCHEMA_VERSION 加一（现为 5）」，设计 #1（17fbb986，09:23）把它定成了绝对版本号 v6，把 v6 当作本任务独占。可是 Autome 的多个任务在各自 worktree 里并行开发，下一个迁移版本号是它们共用的资源，谁先合进 main 谁拿到；设计、M-01 的验收和审计都只看本分支，没有核对 main 和其它在途任务有没有占用同一个版本
+  evidence: docs/排队任务可以调整顺序并声明依赖-task/evidence/M-01-r11-impl.md
+  level: rule
+  proposal: 新增账本迁移的任务，每个 rebase 或合并前的集成轮都要在证据里记下 `git show main:crates/automed/src/store.rs | grep 'const SCHEMA_VERSION'` 的输出，并确认本分支的新迁移块版本号大于它；设计文档在里程碑表和验收命令里不写死迁移版本号，只写「main 当前版本 + 1」
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
