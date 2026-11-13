@@ -7,3 +7,4 @@
 审计 #2 | M-02 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-02-r2-audit.md | 无
 实现 #3 | M-03 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r3-impl.md | 无
 实现 #4 | M-03 | 待审 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r4-impl.md | 无
+审计 #3 | M-03 | 通过 | docs/排队任务可以调整顺序并声明依赖-task/evidence/M-03-r4-audit.md | 无
