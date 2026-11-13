@@ -8986,3 +8986,4 @@ fn regression_format_only_assertion_changes_remain_rejected() {
         regression_format_only_case(path, existing, legacy, true);
     }
 }
+include!("merge_queue_cases.inc");

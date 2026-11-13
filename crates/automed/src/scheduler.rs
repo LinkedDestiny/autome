@@ -1862,10 +1862,11 @@ pub fn apply_trigger(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<
 }
 
 fn merge_requested(ctx: &Ctx, task_id: &str) -> Result<bool> {
-    Ok(ctx
-        .store
-        .last_event(task_id, "merge.auto")?
-        .is_some_and(|event| event["active"] == true))
+    Ok(
+        crate::merge_queue::authorization(ctx, &ctx.store.get_task(task_id)?)
+            .map_err(|e| err(e.to_string()))?
+            .is_some(),
+    )
 }
 
 /// The single implementation of "apply a transition and act on it".
@@ -1897,7 +1898,9 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         decisions,
     };
 
-    let before = merge_requested(ctx, task_id)?;
+    let authorization =
+        crate::merge_queue::authorization(ctx, &task).map_err(|e| err(e.to_string()))?;
+    let before = authorization.is_some();
     let bug = uses_bug_loop(ctx, &task)?;
     let progress = if bug {
         bug_progress(ctx, &task)?
@@ -2147,11 +2150,36 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             json!({"node": node, "inject": inject}),
         )?;
     }
-    if before && !transition.merge_requested {
+    if ctx
+        .store
+        .last_event(task_id, "merge.auto")?
+        .is_some_and(|p| p["active"] == true)
+        && !transition.merge_requested
+    {
         ctx.store
             .append_event("merge.auto", task_id, json!({"active": false}))?;
     }
+    if crate::merge_queue::holds(ctx, &task).map_err(|e| err(e.to_string()))?
+        && autome_domain::merge_queue::releases(true, &transition.next)
+    {
+        ctx.store.append_event(
+            "merge.unlocked",
+            task_id,
+            json!({"reason":trigger_name(trigger)}),
+        )?;
+    }
+    if transition.next
+        == (TaskState::Active {
+            node: Node::Merging,
+        })
+        && matches!(task.state.node(), Some(Node::MergeGate | Node::Rebase))
+        && let Some(source) = authorization
+    {
+        ctx.store
+            .append_event("merge.direct", task_id, json!({"by":source.as_str()}))?;
+    }
     ctx.store.set_task_state(task_id, &transition.next)?;
+
     if !before
         && transition.merge_requested
         && let Trigger::CoreStepDone {
@@ -2162,7 +2190,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         ctx.store.append_event(
             "merge.auto",
             task_id,
-            json!({"active": true, "repos": repos, "detail": detail}),
+            json!({"active": true, "by":"behind", "repos": repos, "detail": detail}),
         )?;
     }
 
@@ -3480,7 +3508,18 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
 
     let result = match node {
         Node::Rebase => rebase_all(&layout),
-        Node::Merging => merge_all(ctx, task, &layout)?,
+        Node::Merging => {
+            if let Some(holder) =
+                crate::merge_queue::holder(ctx, &task.project_id).map_err(|e| err(e.to_string()))?
+                && holder != task.id
+            {
+                crate::merge_queue::wait(ctx, task, node, &holder)
+                    .map_err(|e| err(e.to_string()))?;
+                return Ok(());
+            }
+            merge_all(ctx, task, &layout)?
+        }
+
         n if n.is_gate() => return run_gate(ctx, task, &project, &layout, n),
         Node::Cleanup => match cleanup(&layout) {
             Ok(()) => CoreStepResult::Ok,
@@ -3610,12 +3649,32 @@ fn reusable_main_check(
     main_check_reuse(&ctx.store, &task.id, repo, commit, &gate.command, bug)
 }
 
+fn merge_gate_up_to_date(layout: &TaskLayout) -> Result<bool> {
+    for slot in &layout.repos {
+        if !git::is_ancestor(&slot.worktree, &slot.base, "HEAD")? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn run_gate(
     ctx: &mut Ctx,
     task: &TaskRecord,
     project: &Project,
     layout: &TaskLayout,
     node: Node,
+) -> Result<()> {
+    run_gate_attempt(ctx, task, project, layout, node, false)
+}
+
+fn run_gate_attempt(
+    ctx: &mut Ctx,
+    task: &TaskRecord,
+    project: &Project,
+    layout: &TaskLayout,
+    node: Node,
+    realigned: bool,
 ) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
     if resolved.setup.is_some() {
@@ -3750,9 +3809,16 @@ fn run_gate(
     let job = crate::gate::Job::at(&repo, &task.id, node.as_str(), key);
 
     if !job.exists() {
+        if node == Node::MergeGate
+            && !crate::merge_queue::enter(ctx, task).map_err(|e| err(e.to_string()))?
+        {
+            return Ok(());
+        }
+
         // The commit the user would merge is the one the implementation loop
         // already gated, when the rebase had nothing to move: no second run.
         if node == Node::MergeGate
+            && merge_gate_up_to_date(layout)?
             && let Some(last) = ctx.store.last_event(&task.id, "gate.result")?
             && last["kind"] != "quick"
             && last.get("ok").and_then(Value::as_bool) == Some(true)
@@ -3848,6 +3914,29 @@ fn run_gate(
                 .map_err(|e| err(e.to_string()))?
         {
             return Ok(());
+        }
+        if node == Node::MergeGate && !merge_gate_up_to_date(layout)? {
+            // An external writer can move main again; retry next tick instead
+            // of recursing without a bound. The project section stays held.
+            if realigned {
+                return Ok(());
+            }
+            let result = rebase_all(layout);
+            if result != CoreStepResult::Ok {
+                advance(ctx, &task.id, &Trigger::CoreStepDone { node, result })?;
+                return Ok(());
+            }
+            let repos = layout.repos.iter().map(|slot| {
+                Ok(json!({"repo":slot.name, "onto":slot.base,
+                    "base_sha":git::run_ok(&slot.worktree, &["rev-parse", &slot.base])?.stdout.trim(),
+                    "head":git::head_sha(&slot.worktree)?}))
+            }).collect::<Result<Vec<_>>>()?;
+            ctx.store.append_event(
+                "merge.rebased",
+                &task.id,
+                json!({"at":"dequeue", "repos":repos}),
+            )?;
+            return run_gate_attempt(ctx, task, project, layout, node, true);
         }
         if bug && node == Node::FixGate {
             job.set_repro_only(
@@ -5133,6 +5222,7 @@ mod tests {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     include!("scheduler_gate_queue_tests.rs");
+    include!("scheduler_merge_queue_tests.rs");
 
     /// A real repository, a real store, and a fake CLI that writes whatever
     /// design document the test wants. This is as close to the production path

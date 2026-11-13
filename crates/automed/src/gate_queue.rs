@@ -29,13 +29,30 @@ fn limit(ctx: &Ctx, project: &Project) -> Result<u32> {
     .gate_concurrency)
 }
 
+pub fn queued_seq(ctx: &Ctx, task: &str) -> Result<Option<u64>> {
+    Ok(ctx
+        .store
+        .last_event_of(task, QUEUE_EVENTS)?
+        .filter(|(_, kind, _)| kind == "gate.queued")
+        .map(|(seq, _, _)| seq))
+}
+
 pub fn waiters(ctx: &Ctx) -> Result<Vec<Waiter>> {
     let mut queue = Vec::new();
     for task in ctx.store.list_unfinished()? {
         if let Some((seq, kind, _)) = ctx.store.last_event_of(&task.id, QUEUE_EVENTS)?
             && kind == "gate.queued"
         {
+            if task.state
+                == (TaskState::Active {
+                    node: Node::MergeGate,
+                })
+                && crate::merge_queue::waiting_for(ctx, &task)?.is_some()
+            {
+                continue;
+            }
             let project = ctx.store.get_project(&task.project_id)?;
+
             queue.push(Waiter {
                 task_id: task.id,
                 seq: seq as i64,

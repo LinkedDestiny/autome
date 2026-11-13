@@ -349,6 +349,9 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
 
     if let Some(t) = doc.get("merge") {
         let t = t.as_table().ok_or("[merge] 不是一个表")?;
+        if let Some(auto) = t.get("auto") {
+            config.merge_auto = Some(auto.as_bool().ok_or("[merge] auto 必须是 true 或 false")?);
+        }
         let command = match t.get("after") {
             None => "",
             Some(v) => v
@@ -2083,5 +2086,35 @@ effort = ""
             global_config_path(Path::new("/tmp/somewhere")),
             PathBuf::from("/tmp/somewhere/config.toml")
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_queue_tests {
+    use super::*;
+    #[test]
+    fn merge_queue_auto_is_read_and_defaults_false() {
+        for (text, expected) in [
+            ("", false),
+            ("[merge]\nauto = false", false),
+            ("[merge]\nauto = true\nafter = 'true'", true),
+        ] {
+            let project = parse_project(text).unwrap();
+            assert_eq!(
+                autome_domain::config::resolve(&Default::default(), &project).merge_auto,
+                expected
+            );
+        }
+    }
+    #[test]
+    fn merge_queue_auto_rejects_non_booleans() {
+        for value in ["0", "1", "''", "'true'", "[]", "{}", "1.0"] {
+            assert!(
+                parse_project(&format!("[merge]\nauto = {value}"))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("auto 必须是 true 或 false")
+            );
+        }
     }
 }

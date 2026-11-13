@@ -277,6 +277,8 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_after: Option<MergeAfterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_auto: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_same_failure_limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_reuse_for_main_check: Option<bool>,
@@ -433,6 +435,8 @@ pub struct ResolvedConfig {
     pub setup: Option<SetupConfig>,
     #[serde(default, skip_serializing_if = "GateRun::is_each_round")]
     pub gate_run: GateRun,
+    #[serde(default)]
+    pub merge_auto: bool,
     pub merge_after: Option<MergeAfterConfig>,
     pub gate_same_failure_limit: u32,
     pub gate_reuse_for_main_check: bool,
@@ -532,6 +536,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
         gate_quick: project.gate_quick.clone(),
         setup: project.setup.clone(),
         merge_after: project.merge_after.clone(),
+        merge_auto: project.merge_auto.unwrap_or(false),
         gate_same_failure_limit: project
             .gate_same_failure_limit
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
