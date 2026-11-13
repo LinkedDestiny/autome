@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 4/25
+implementation-round: 5/25
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-04 集成复验 e2e
+next-action: 审计复验 M-04；通过后推进 M-05 协议与技术文档
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -380,7 +380,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | M-01 | 已完成 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
 | M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
 | M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
-| M-04 | 开放 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
+| M-04 | 待审 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
 | M-05 | 开放 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
 
 ## 测试与验收
@@ -426,6 +426,8 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 - 负向对照：去掉模式漏删块后的空行时 `before_merge_role_prompts_match_their_goldens` 与 `every_role_prompt_renders_exactly_what_the_constants_did` 在 `audit` 金样上失败；`integration` 为 `None` 也输出段标题时 `before_merge_audit_brief_matches_its_golden` 失败；SHA 用 `--short` 渲染时简报那条 `integration_section` 用例失败。
 
 ### M-04 验收契约
+
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-04-r5-impl.md · 验收通过，待审 · 实现 #5
 
 - 验收命令：`cargo test -p automed --test end_to_end integration_e2e && cargo test -p automed --test end_to_end before_merge && cargo test -p automed --test end_to_end a_gate_failing_after_the_automatic_rebase && cargo test -p automed --test end_to_end a_failing_gate_sends_the_work_back && ! git diff -U0 "$(git merge-base HEAD main)" -- crates/automed/tests/end_to_end.rs | grep -q '^-[^-]'`
 - 预期：`integration_e2e` 4 个通过，基线 0（`integration_e2e_rebase_conflict_after_all_done_is_reviewed_then_reaches_await_merge`：审计 prompt 含集成块、简报含「本轮要审的集成改动」与冲突文件名和改到的测试文件，节点序列 `implement, audit, retro, rebase, await_merge`；`integration_e2e_merge_gate_fix_reopened_by_the_audit_returns_to_implement`：简报含门禁命令与尾部，审计退回后下一节点 `implement`、状态块 reopen 1、有 `milestone.contradicted`，最终到 `await_merge`；`integration_e2e_audit_without_evidence_stops_with_a_readable_reason`：实现步骤用 `World::EVIDENCE`（预写同 k 的 `M-01-r$k-audit.md`，正是评审的绕过场景），审计步骤什么都不写；任务 `failed`，`guard.failed` 的 code 为 `audit_made_no_progress`，detail 含「集成复验」、提交范围与「开放」；`integration_e2e_doc_only_repair_keeps_todays_audit`：里程碑全 `已完成` 时的修复轮只提交文档目录内的文件，没有 `integration.range` 事件，其后审计的 prompt 不含集成块、简报不含该段，审计不写证据也照常继续）；`before_merge` 11 个与另两个各 1 个既有用例全部通过，数量不变；最后一条退出码 0（`end_to_end.rs` 只有新增行，没有删除或改动的既有行）。
