@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/25
+implementation-round: 6/25
 current-milestone: M-05
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-05 协议正文与技术设计（loop-protocol 集成复验、CHANGELOG J-2、technical-design §6/§8）
+next-action: 独立审计 M-05 协议正文与技术设计，复验验收命令及负向对照
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -348,6 +348,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
   - `J-1` `kind: behavioral`，`clause: prompts/audit.md`，`evidence: [T-61 L-05（docs/门禁只在合并前跑一次-gate-run/lessons.md）, T-61 L-06 实现 #9/#10 之后的空转审计, T-68 任务卡]`，
     `predicted_impact: {metric: impl_defects, direction: up, scope: task, horizon: 3}`，`eval: evals/audit-integration-review/`。
   - `J-2` `kind: clarify`，`clause: loop-protocol.md`，同样的证据，`predicted_impact: {metric: protocol_failures, direction: flat, scope: task, horizon: 3}`，`eval: null`。
+- 为满足协议正文 24KB 静态预算，精简 `protocol/session-protocol.md` 未被简报摘录的会话起止、读文件开销、协议失败说明及 Loop 引言；保留固定短语、规则含义和内核契约，CHANGELOG J-3 记录为 clarify，普通金样不改。
 - `protocol/evals/audit-integration-review/`：`case.yaml`（`role: audit`、`integration_audit: true`）、`scaffold.sh`
   （复用 `auditor-rerun` 的骨架：表全 `已完成`，最后一个提交把某个测试的 `assert_eq!` 改成更弱的 `assert!`，并写好
   `docs/eval-case/brief/audit-1.md` 的集成段）、`graders/`（审计必须：退回该里程碑或写出带复验内容的
@@ -381,7 +382,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
 | M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
 | M-04 | 已完成 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
-| M-05 | 开放 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
+| M-05 | 待审 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
 
 ## 测试与验收
 
@@ -434,6 +435,8 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 - 负向对照：`apply_guards` 不把审计 `session.started` 的 `integration` 传进 `Round` 时 `integration_e2e_audit_without_evidence_stops_with_a_readable_reason` 失败（任务继续到 `retro`）；集成简报段在门禁失败触发原因里写出「：未通过」时既有的 `brief_before_merge_audit_brief_never_shows_a_stale_result` 失败（审计 #4 实测：原写法「SHA 改 10 位以上」不能使它失败，因为该段的范围起点是简报提交而不是失败提交，SHA 位数由 M-03 的 `integration_section_contains_facts_and_seven_character_shas` 拦）；判定不要求轮后表仍全 `已完成` 时不影响这四个用例，但 M-01 的 `…all_done_table_that_stays_done` 会红（由 M-01 契约拦）。
 
 ### M-05 验收契约
+
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r6-impl.md · 验收通过，待审 · 实现 #6
 
 - 验收命令：`cargo run -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && test "$(grep -c '^## protocol/v' protocol/CHANGELOG.md)" = 7 && grep -q '^## 集成复验$' protocol/loop-protocol.md && grep -q '集成复验' docs/development/technical-design.md`
 - 预期：静态门退出码 0；`prompt_rendering` 35 个通过，与 M-03 结束时相同（证明新增的协议正文没有流进普通审计、实现简报的金样）；`## protocol/v1..v7` 恰 7 个标题；两条 grep 命中。
