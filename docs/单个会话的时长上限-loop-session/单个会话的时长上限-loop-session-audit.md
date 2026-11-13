@@ -15,3 +15,8 @@
 
 - 验收命令全绿（18 个用例，e2e 删改行 0）；契约九类负向对照（含修复守卫、Intake）均能让验收失败，已还原。
 - 无实现缺陷、无验证缺口。证据：docs/单个会话的时长上限-loop-session/evidence/M-03-r3-audit.md
+
+## 审计 #4 · M-04 · 通过
+
+- 验收命令全绿（6 个用例）；负向对照（旧会话上限为 null、timed_out 字段缺失、CLI 不读 elapsed）均能让验收失败，已还原。
+- 无实现缺陷、无验证缺口。证据：docs/单个会话的时长上限-loop-session/evidence/M-04-r4-audit.md

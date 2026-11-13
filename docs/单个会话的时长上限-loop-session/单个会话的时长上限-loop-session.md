@@ -1,12 +1,12 @@
 # 单个会话的时长上限（`[loop] session_minutes`）：超时终止并按 `[retry]` 重派
 
-status: 实现中
+status: 已完成
 design-round: 2/15
 implementation-round: 4/20
-current-milestone: M-04
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-04，复验可见性验收命令与负向对照
+next-action: 无
 
 任务文件：`docs/单个会话的时长上限-loop-session/单个会话的时长上限-loop-session-task.md`
 
@@ -366,7 +366,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
 | M-01 | 已完成 | session_minutes 配置：默认、覆盖、校验、读写与 README | 0 | |
 | M-02 | 已完成 | 超时判定与终止：TimedOut 生命周期、启动时上限、进程组终止 | 0 | |
 | M-03 | 已完成 | 超时走重试：跳过限流判定、超时注入与金样、用尽后失败 | 0 | |
-| M-04 | 待审 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
+| M-04 | 已完成 | 可见：会话条目、autome status、事件行与技术设计 | 0 | |
 
 ## 里程碑说明
 
@@ -424,7 +424,7 @@ A-1 整条（两次超时、一次重试、失败）的耗时：两次 TERM 后�
     `tick N`）；每有一个在跑的会话就拨时间再 tick；结束时 `sessions_run == ["1","2"]`、两条 `session.timeout`、一条 `session.retry`、
     任务 `failed` 且 `reason.detail` 含「超时」、第 2 个 prompt 含「超过 5 分钟」与 `tick` 行、没有 `task.protocol_failure` 事件、
     整条用时 < 30 秒；⑬ 会话在跑时 `task.pause`，拨时间后 tick：进程被终止、结果挂起；`task.resume` 后重派，第 2 个 prompt 含超时说明。
-最新证据：docs/单个会话的时长上限-loop-session/evidence/M-04-r4-impl.md · 验收通过，待审 · 实现 #4
+最新证据：docs/单个会话的时长上限-loop-session/evidence/M-04-r4-audit.md · 通过 · 审计 #4
 
 - **M-04**（覆盖：R-5、开放问题 12、13；C-6。前置：M-03）。方案 §6。新增用例名都含 `timeout_visible`：
   - automed lib 3 个：① `task.get` 与 `session.log` 的超时会话条目 `timed_out: true`、`limit_minutes: 5`，正常结束的会话
