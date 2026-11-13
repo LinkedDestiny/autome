@@ -1,17 +1,11 @@
+import { loadTaskDetail } from '../components/task-detail-data.ts';
 import { useLoaderData, type LoaderFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
 import { bySubjectParam, liveShouldRevalidate } from '../lib/live-routes.ts';
-import { SessionLog, type LogSession } from '../components/session-log.tsx';
+import { SessionLog } from '../components/session-log.tsx';
 
-type TaskData = { task: { id: string; title: string }; sessions: LogSession[] };
-export async function loader({ context, params }: LoaderFunctionArgs): Promise<{ data?: TaskData; error?: string }> {
-  const { gateway } = context.get(servicesContext);
-  const offline = '内核离线，暂时拿不到任务';
-  if (!gateway) return { error: offline };
-  const result = await gateway.read({ method: 'task.get', params: { task_id: params.id } });
-  if (!result.body.ok) return { error: result.status === 503 || result.status === 504 ? offline
-    : result.status === 404 || result.body.code === 'not_found' ? `找不到任务 ${params.id}` : `无法读取任务：${result.body.error}` };
-  return { data: result.body.payload as TaskData };
+export async function loader({ context, params, request }: LoaderFunctionArgs) {
+  return loadTaskDetail(context.get(servicesContext), params.id!, new URL(request.url));
 }
 export const shouldRevalidate = liveShouldRevalidate(bySubjectParam(['task.', 'session.'], 'id'));
 export default function TaskPage() {

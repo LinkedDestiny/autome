@@ -1,5 +1,5 @@
 import { UploadError, type UploadService } from './uploads.ts';
-import { type UnreadSource, createLoadContext } from '../app/load-context.ts';
+import { type TaskEventSource, type TaskDocReader, type UnreadSource, createLoadContext } from '../app/load-context.ts';
 import type { createNotificationApi } from './notifier-api.ts';
 import type { createGateway } from './gateway.ts';
 import express from 'express';
@@ -13,7 +13,7 @@ import type { ServerBuild } from 'react-router';
 export type Mode = 'development' | 'production';
 const root = resolve(import.meta.dirname, '..');
 
-export async function createHttpServer({ mode, gateway, notifications, store, uploads }: { mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
+export async function createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs }: { taskEvents?: TaskEventSource; taskDocs?: TaskDocReader; mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
   const app = express();
   const server = createServer(app);
   const port = () => {
@@ -72,13 +72,13 @@ export async function createHttpServer({ mode, gateway, notifications, store, up
     app.use(createRequestHandler({
       build: () => vite.ssrLoadModule('virtual:react-router/server-build') as Promise<ServerBuild>,
       mode,
-      getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads }),
+      getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs }),
     }));
   } else {
     app.use('/assets', express.static(resolve(root, 'build/client/assets'), { immutable: true, maxAge: '1y' }));
     app.use(express.static(resolve(root, 'build/client'), { maxAge: '1h' }));
     const build = await import(pathToFileURL(resolve(root, 'build/server/index.js')).href);
-    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads }) }));
+    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs }) }));
   }
   const registerUpgrade = installUpgradeGuard(server, port);
   return { server, closeMiddleware, registerUpgrade };

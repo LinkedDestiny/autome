@@ -1,0 +1,445 @@
+{
+  "brief": "# 卡\n<b>raw</b> [x](javascript:alert(1))\n",
+  "cost": {
+    "by_role": {
+      "adjudicate": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "audit": {
+        "sessions": 2,
+        "sessions_without_cost": 2,
+        "usd_total": 0.0
+      },
+      "impl": {
+        "sessions": 2,
+        "sessions_without_cost": 2,
+        "usd_total": 0.0
+      },
+      "intake": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "plan": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "retro": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      },
+      "review": {
+        "sessions": 1,
+        "sessions_without_cost": 1,
+        "usd_total": 0.0
+      }
+    },
+    "sessions": 9,
+    "sessions_without_cost": 9,
+    "usd_total": 0.0
+  },
+  "decisions": [
+    {
+      "carried": false,
+      "consumed": false,
+      "disposition": "none",
+      "item_id": "B-01",
+      "kind": "backlog",
+      "ruling": null,
+      "text": "以后再做的事"
+    },
+    {
+      "carried": false,
+      "consumed": false,
+      "disposition": "none",
+      "item_id": "D-01",
+      "kind": "dispute",
+      "ruling": null,
+      "text": "有争议的事"
+    }
+  ],
+  "documents": [
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/feat.md",
+      "label": "设计文档",
+      "name": "feat.md",
+      "path": "docs/feat/feat.md",
+      "size": 403
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/retro.md",
+      "label": "运行记录",
+      "name": "retro.md",
+      "path": "docs/feat/retro.md",
+      "size": 297
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r0-audit.md",
+      "label": "证据",
+      "name": "M-01-r0-audit.md",
+      "path": "docs/feat/evidence/M-01-r0-audit.md",
+      "size": 30
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r0-impl.md",
+      "label": "证据",
+      "name": "M-01-r0-impl.md",
+      "path": "docs/feat/evidence/M-01-r0-impl.md",
+      "size": 30
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r1-audit.md",
+      "label": "证据",
+      "name": "M-01-r1-audit.md",
+      "path": "docs/feat/evidence/M-01-r1-audit.md",
+      "size": 30
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r1-impl.md",
+      "label": "证据",
+      "name": "M-01-r1-impl.md",
+      "path": "docs/feat/evidence/M-01-r1-impl.md",
+      "size": 30
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r2-audit.md",
+      "label": "证据",
+      "name": "M-01-r2-audit.md",
+      "path": "docs/feat/evidence/M-01-r2-audit.md",
+      "size": 30
+    },
+    {
+      "absolute": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat/docs/feat/evidence/M-01-r2-impl.md",
+      "label": "证据",
+      "name": "M-01-r2-impl.md",
+      "path": "docs/feat/evidence/M-01-r2-impl.md",
+      "size": 30
+    }
+  ],
+  "gate": {
+    "command": "sh /var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/gate.sh",
+    "exit_code": 0,
+    "kind": "full",
+    "log": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/gates/T-1/merge_gate-bfd8fe44d668.log",
+    "node": "merge_gate",
+    "ok": true,
+    "sha": "bfd8fe44d66885c3462d3cdc79356359964542c9",
+    "tail": ""
+  },
+  "gate_queue_position": null,
+  "next_role": null,
+  "pending_decisions": {
+    "included": 0,
+    "ruled": 0
+  },
+  "project": {
+    "default_branch": "main",
+    "id": "prj-b6b2ef67865449b0b265f56e6a34f89c",
+    "name": "repo"
+  },
+  "queue_position": null,
+  "retry": null,
+  "sessions": [
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:49Z",
+      "id": "ses-2527d00eaceb409187e8c27ec243d7de",
+      "kind": {
+        "kind": "role",
+        "role": "retro"
+      },
+      "label": "复盘",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-2527d00eaceb409187e8c27ec243d7de.log",
+      "metrics": {
+        "design_doc_bytes": 403,
+        "duration_ms": 0,
+        "evidence_files": 6
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "codex",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:49Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:49Z",
+      "id": "ses-d5d2832ba4614b93a40e94f3eedd6326",
+      "kind": {
+        "kind": "role",
+        "role": "audit"
+      },
+      "label": "审计",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-d5d2832ba4614b93a40e94f3eedd6326.log",
+      "metrics": {
+        "design_doc_bytes": 403,
+        "duration_ms": 0,
+        "evidence_files": 6
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 2,
+      "running": false,
+      "runtime": "codex",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:49Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:48Z",
+      "id": "ses-3d43fdcd02c149bda8ed17f1794ba206",
+      "kind": {
+        "kind": "role",
+        "role": "impl"
+      },
+      "label": "实现",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-3d43fdcd02c149bda8ed17f1794ba206.log",
+      "metrics": {
+        "design_doc_bytes": 400,
+        "evidence_files": 6
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 2,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:48Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:47Z",
+      "id": "ses-7d73347515f749118e2971a7632f5077",
+      "kind": {
+        "kind": "role",
+        "role": "audit"
+      },
+      "label": "审计",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-7d73347515f749118e2971a7632f5077.log",
+      "metrics": {
+        "design_doc_bytes": 400,
+        "duration_ms": 0,
+        "evidence_files": 4
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "codex",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:47Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:46Z",
+      "id": "ses-6dd465f5338a4fbd9f1a7ad4473358e9",
+      "kind": {
+        "kind": "role",
+        "role": "impl"
+      },
+      "label": "实现",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-6dd465f5338a4fbd9f1a7ad4473358e9.log",
+      "metrics": {
+        "design_doc_bytes": 397,
+        "evidence_files": 4
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:46Z"
+    },
+    {
+      "effort": null,
+      "ended_at": "2026-11-13T11:53:39Z",
+      "id": "ses-e44dfba87c85471ca5a15e1803d32224",
+      "kind": {
+        "kind": "role",
+        "role": "adjudicate"
+      },
+      "label": "裁决",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-e44dfba87c85471ca5a15e1803d32224.log",
+      "metrics": {
+        "design_doc_bytes": 397,
+        "evidence_files": 2
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:44Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:39Z",
+      "id": "ses-90412ceb2af2473abb4b02f8fe80b16d",
+      "kind": {
+        "kind": "role",
+        "role": "review"
+      },
+      "label": "评审",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-90412ceb2af2473abb4b02f8fe80b16d.log",
+      "metrics": {
+        "design_doc_bytes": 397,
+        "duration_ms": 0,
+        "evidence_files": 2
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "codex",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:39Z"
+    },
+    {
+      "effort": "high",
+      "ended_at": "2026-11-13T11:53:38Z",
+      "id": "ses-c0ba39e6a2f848b8a315d81c4d9f3991",
+      "kind": {
+        "kind": "role",
+        "role": "plan"
+      },
+      "label": "设计",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-c0ba39e6a2f848b8a315d81c4d9f3991.log",
+      "metrics": {
+        "design_doc_bytes": 397,
+        "evidence_files": 2
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@6b49d55187cfc757fac1a0372ccc2e0055033f27a5652025d0d59aadb6767f28",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:38Z"
+    },
+    {
+      "effort": null,
+      "ended_at": "2026-11-13T11:53:38Z",
+      "id": "ses-6b6ae1abf95c4046a7b752c996f18346",
+      "kind": {
+        "kind": "intake"
+      },
+      "label": "任务整理",
+      "lifecycle": {
+        "exit_code": 0,
+        "state": "exited"
+      },
+      "log_path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.autome/output/sessions/T-1/ses-6b6ae1abf95c4046a7b752c996f18346.log",
+      "metrics": {
+        "design_doc_bytes": 397,
+        "evidence_files": 2
+      },
+      "model": "",
+      "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf",
+      "round": 1,
+      "running": false,
+      "runtime": "claude",
+      "skills": [],
+      "started_at": "2026-11-13T11:53:38Z"
+    }
+  ],
+  "so_far": {
+    "sessions_measured": 9,
+    "total_cost_usd": null,
+    "total_tokens": 0,
+    "total_turns": 0
+  },
+  "status_block": {
+    "convergence_mode": "normal",
+    "current_milestone": "M-02",
+    "current_milestone_reopens": 0,
+    "design_round": 2,
+    "design_round_limit": 15,
+    "impl_round": 2,
+    "impl_round_limit": 25,
+    "milestones": [
+      {
+        "id": "M-01",
+        "reopen_count": 0,
+        "reopen_domains": [],
+        "state": "done",
+        "title": "M-01 标题"
+      },
+      {
+        "id": "M-02",
+        "reopen_count": 0,
+        "reopen_domains": [],
+        "state": "done",
+        "title": "M-02 标题"
+      }
+    ],
+    "milestones_done": 2,
+    "milestones_total": 2,
+    "next_action": "无",
+    "status": "done"
+  },
+  "status_error": false,
+  "status_error_detail": null,
+  "task": {
+    "archived": false,
+    "branch": "autome/feat",
+    "budget_n": 10,
+    "completed_at": null,
+    "cost_sessions_without_cost": 9,
+    "cost_usd": 0.0,
+    "created_at": "2026-11-13T11:53:37Z",
+    "doc_dir": "docs/feat",
+    "id": "T-1",
+    "kind": "feature",
+    "merge_commit": null,
+    "metrics": null,
+    "protocol_ref": "protocol/v7@8522fab842e5505267bba7fb5e24cdd9e95ca798719974cb4197d99e31a9d5bf",
+    "request": "feat",
+    "slug": "feat",
+    "state": {
+      "node": "await_merge",
+      "state": "active"
+    },
+    "title": "feat"
+  },
+  "worktree": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w7-detail-hXEDYA/repo/.worktree/feat"
+}
