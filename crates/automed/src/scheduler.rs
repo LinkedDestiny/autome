@@ -803,7 +803,16 @@ fn apply_guards(
         .map(|m| m.len())
         .unwrap_or(0);
 
+    let design_before = design_at_last_task_head(&ctx.store, &worktree, task);
+    let design_after = std::fs::read_to_string(worktree.join(task.design_doc())).ok();
+    let started = ctx.store.session_started_event(&task.id, &session.id)?;
+    let integration_audit = started.as_ref().and_then(|v| {
+        crate::integration::audit_guard(v, &worktree.join(task.doc_dir()).join("evidence"))
+    });
     let round = guards::Round {
+        integration: integration_audit.as_ref(),
+        design_before: design_before.as_deref(),
+        design_after: design_after.as_deref(),
         role,
         status,
         before: before.as_ref(),
@@ -971,6 +980,19 @@ fn evidence_filenames(worktree: &Path, doc_dir: &str) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+
+/// Read the previous admitted design even when HEAD was rewritten by rebase.
+fn design_at_last_task_head(
+    store: &crate::store::Store,
+    worktree: &Path,
+    task: &TaskRecord,
+) -> Option<String> {
+    let head = store.last_event(&task.id, "task.head").ok()??;
+    let revision = format!("{}:{}", head["sha"].as_str()?, task.design_doc());
+    git::run_ok(worktree, &["show", &revision])
+        .ok()
+        .map(|o| o.stdout)
 }
 
 /// Whether the session changed the design beyond its protocol bookkeeping.
@@ -3208,6 +3230,17 @@ fn launch_session(
     } else {
         None
     };
+    let integration_audit = if kind == (SessionKind::Role { role: Role::Audit }) {
+        crate::integration::integration_for_audit(
+            &ctx.store,
+            &task.id,
+            protocol.prompt("audit").unwrap_or(""),
+            &worktree.join(task.doc_dir()).join("evidence"),
+        )
+        .map_err(err)?
+    } else {
+        None
+    };
     let brief_path = match kind
         .role()
         .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
@@ -3356,6 +3389,9 @@ fn launch_session(
         // What the round was carrying, so a crash can be retried with it.
         "inject": inject,
     });
+    if let Some(integration) = integration_audit {
+        started["integration"] = integration;
+    }
     if let Some(heads) = start_heads {
         started["start_heads"] = json!(heads);
     }
@@ -9198,6 +9234,163 @@ mod tests {
         )
         .unwrap();
         s
+    }
+
+    #[test]
+    fn integration_wiring_audit_after_a_recorded_range_is_marked() {
+        let mut w = World::new("integration-audit-start");
+        let task = w.add_task("T-1", "a");
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Done)], ""),
+        );
+        let wt = w.with_worktree(&task);
+        freeze_protocol(&mut w.ctx, &task, &wt).unwrap();
+        let template_path = wt.join(task.doc_dir()).join("protocol/prompts/audit.md");
+        let mut template = std::fs::read_to_string(&template_path).unwrap();
+        template.push_str("\n<!-- integration-audit -->\n<!-- /integration-audit -->\n");
+        std::fs::write(template_path, template).unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "session.started",
+                &task.id,
+                json!({"session_id":"repair", "kind":SessionKind::Role { role:Role::Impl }}),
+            )
+            .unwrap();
+        w.ctx.store.append_event("integration.range", &task.id, json!({"session_id":"repair", "impl_round":3,"evidence":"M-01-r3-audit.md","trigger":{"kind":"gate_failed"},"repos":[{"repo":"", "start":"abcdef0123", "end":"1234567890", "commits":[{}]}]})).unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "task.head",
+                &task.id,
+                json!({"sha":git::head_sha(&wt).unwrap()}),
+            )
+            .unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "task.snapshot",
+                &task.id,
+                json!(guards::Snapshot {
+                    milestones: vec![("M-01".into(), MilestoneState::Done)],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        w.ctx.store.set_task_budget(&task.id, 25).unwrap();
+        w.set_state(&task.id, TaskState::Active { node: Node::Audit });
+        redispatch_with(&mut w.ctx, &task.id, Node::Audit, None).unwrap();
+        let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+        let started = w
+            .ctx
+            .store
+            .session_started_event(&task.id, &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(started["integration"]["impl_session"], "repair");
+        assert_eq!(started["integration"]["evidence_stamp"]["exists"], false);
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let status = autome_domain::status_block::parse(
+            &std::fs::read_to_string(wt.join(task.design_doc())).unwrap(),
+        )
+        .unwrap();
+        let result = apply_guards(
+            &mut w.ctx,
+            &session,
+            &project,
+            &task,
+            SessionOutcome::Ok {
+                status: Box::new(status),
+            },
+        )
+        .unwrap();
+        assert!(!matches!(result, SessionOutcome::Ok { .. }));
+        let failure = w
+            .ctx
+            .store
+            .last_event(&task.id, "guard.failed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(failure["code"], "audit_made_no_progress");
+        assert!(
+            failure["detail"]
+                .as_str()
+                .unwrap()
+                .contains("abcdef0..1234567")
+        );
+    }
+
+    #[test]
+    fn integration_wiring_impl_guard_reads_the_design_at_the_last_task_head() {
+        let mut w = World::new("integration-pointer-baseline");
+        let task = w.add_task("T-1", "a");
+        let old = design_doc(
+            "实现中",
+            &[("M-01", MilestoneState::Done)],
+            "\n### M-01 验收契约\n最新证据：old-audit.md\n",
+        );
+        w.write_design(&task, &old);
+        let wt = w.with_worktree(&task);
+        assert!(design_at_last_task_head(&w.ctx.store, &wt, &task).is_none());
+        git::commit_paths(&wt, &[&task.design_doc()], "audited baseline").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        w.ctx
+            .store
+            .append_event("task.head", &task.id, json!({"sha":head}))
+            .unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "task.snapshot",
+                &task.id,
+                json!(guards::Snapshot {
+                    milestones: vec![("M-01".into(), MilestoneState::Done)],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let new = old.replace("old-audit.md", "new-impl.md");
+        w.write_design(&task, &new);
+        git::commit_paths(&wt, &[&task.design_doc()], "retarget closed evidence").unwrap();
+        assert_eq!(
+            design_at_last_task_head(&w.ctx.store, &wt, &task),
+            Some(old)
+        );
+        w.ctx.store.set_task_budget(&task.id, 25).unwrap();
+        w.set_state(
+            &task.id,
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        redispatch_with(&mut w.ctx, &task.id, Node::Implement, None).unwrap();
+        let session = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let status = autome_domain::status_block::parse(&new).unwrap();
+        let _ = apply_guards(
+            &mut w.ctx,
+            &session,
+            &project,
+            &task,
+            SessionOutcome::Ok {
+                status: Box::new(status),
+            },
+        )
+        .unwrap();
+        let failure = w
+            .ctx
+            .store
+            .last_event(&task.id, "guard.failed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(failure["code"], "impl_closed_milestone");
+        assert!(failure["detail"].as_str().unwrap().contains("new-impl.md"));
+        w.ctx
+            .store
+            .append_event("task.head", &task.id, json!({"sha":"missing-object"}))
+            .unwrap();
+        assert!(design_at_last_task_head(&w.ctx.store, &wt, &task).is_none());
     }
 
     #[test]

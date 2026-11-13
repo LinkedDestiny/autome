@@ -12,6 +12,138 @@ use crate::{git, guards, layout::TaskLayout, store::Store};
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Filesystem state is captured before launch and reused by audit retries.
+pub(crate) fn evidence_stamp(path: &Path) -> Value {
+    match std::fs::metadata(path) {
+        Ok(meta) => json!({
+            "exists": true,
+            "mtime_ns": meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos().to_string()),
+            "len": meta.len(),
+        }),
+        Err(_) => json!({"exists": false, "mtime_ns": null, "len": null}),
+    }
+}
+
+pub(crate) fn audit_guard(
+    started: &Value,
+    evidence_dir: &Path,
+) -> Option<guards::IntegrationAudit> {
+    let integration = started.get("integration")?;
+    let evidence = integration["evidence"].as_str()?;
+    let current = evidence_stamp(&evidence_dir.join(evidence));
+    Some(guards::IntegrationAudit {
+        impl_round: integration["impl_round"].as_u64()?.try_into().ok()?,
+        evidence: evidence.to_owned(),
+        summary: integration["summary"].as_str()?.to_owned(),
+        evidence_touched: current["exists"] == true && current != integration["evidence_stamp"],
+    })
+}
+
+/// Locate the latest implementation attempt group relative to its preceding
+/// task.head, never relative to a later audit's task.head.
+pub(crate) fn integration_for_audit(
+    store: &Store,
+    task: &str,
+    template: &str,
+    evidence_dir: &Path,
+) -> Result<Option<Value>> {
+    if !template
+        .lines()
+        .any(|line| line == "<!-- integration-audit -->")
+    {
+        return Ok(None);
+    }
+    let Some(range) = store
+        .last_event(task, "integration.range")
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut seq = 0;
+    let mut head = 0;
+    let mut last_impl = 0;
+    let mut first_impl = None;
+    let mut first_audit = None;
+    loop {
+        let events = store
+            .events_since_with_subject(seq, 256)
+            .map_err(|e| e.to_string())?;
+        if events.is_empty() {
+            break;
+        }
+        for (at, kind, subject, value) in events {
+            seq = at;
+            if subject != task {
+                continue;
+            }
+            if kind == "task.head" {
+                head = at;
+            }
+            if kind != "session.started" {
+                continue;
+            }
+            match serde_json::from_value::<SessionKind>(value["kind"].clone()).ok() {
+                Some(SessionKind::Role { role: Role::Impl }) => {
+                    if first_impl.is_none() || head > last_impl {
+                        first_impl = value["session_id"].as_str().map(str::to_owned);
+                    }
+                    last_impl = at;
+                    first_audit = None;
+                }
+                Some(SessionKind::Role { role: Role::Audit }) if first_audit.is_none() => {
+                    first_audit = Some(value);
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some(first_impl) = first_impl else {
+        return Ok(None);
+    };
+    if range["session_id"].as_str() != Some(&first_impl) {
+        return Ok(None);
+    }
+    if let Some(first) = first_audit
+        && first["integration"]["impl_session"].as_str() == Some(&first_impl)
+    {
+        return Ok(Some(first["integration"].clone()));
+    }
+    let evidence = range["evidence"].as_str().ok_or("集成复验缺少证据路径")?;
+    let trigger = match range["trigger"]["kind"].as_str() {
+        Some("rebase_conflict") => "rebase 冲突",
+        Some("gate_failed") => "合并前门禁失败",
+        Some("decisions") => "用户表态",
+        _ => "没有注入：手动重跑或续跑",
+    };
+    let mut summary = vec![trigger.to_string()];
+    if let Some(repos) = range["repos"].as_array() {
+        for repo in repos {
+            let short = |field: &str| {
+                repo[field]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(7)
+                    .collect::<String>()
+            };
+            summary.push(format!(
+                "{} {}..{}，{} 个提交",
+                repo["repo"].as_str().unwrap_or(""),
+                short("start"),
+                short("end"),
+                repo["commits"].as_array().map_or(0, Vec::len)
+            ));
+        }
+    }
+    Ok(Some(json!({
+        "impl_session": first_impl,
+        "impl_round": range["impl_round"],
+        "evidence": evidence,
+        "summary": summary.join("；"),
+        "evidence_stamp": evidence_stamp(&evidence_dir.join(evidence)),
+    })))
+}
+
 fn read(repo: &Path, args: &[&str]) -> Result<String> {
     git::run_ok(repo, args)
         .map(|o| o.stdout)
@@ -317,6 +449,161 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn audit_fixture(w: &World) {
+        w.store
+            .append_event("task.head", "T", json!({"sha":"before"}))
+            .unwrap();
+        w.store
+            .append_event(
+                "session.started",
+                "T",
+                json!({"session_id":"impl-first", "kind": SessionKind::Role { role: Role::Impl }}),
+            )
+            .unwrap();
+        w.store
+            .append_event(
+                "session.started",
+                "T",
+                json!({"session_id":"impl-retry", "kind": SessionKind::Role { role: Role::Impl }}),
+            )
+            .unwrap();
+        w.store.append_event("integration.range", "T", json!({
+            "session_id":"impl-first", "impl_round":3, "evidence":"M-01-r3-audit.md", "trigger":{"kind":"rebase_conflict"},
+            "repos":[{"repo":"", "start":"abcdef0123", "end":"1234567890", "commits":[{}]}]
+        })).unwrap();
+        w.store
+            .append_event("task.head", "T", json!({"sha":"after-impl"}))
+            .unwrap();
+    }
+    fn select_audit(w: &World) -> Value {
+        integration_for_audit(
+            &w.store,
+            "T",
+            "<!-- integration-audit -->",
+            &w.slot.worktree,
+        )
+        .unwrap()
+        .unwrap()
+    }
+    #[test]
+    fn integration_wiring_evidence_stamp_is_taken_at_the_first_audit_attempt_and_detects_a_rewrite()
+    {
+        let w = World::new();
+        audit_fixture(&w);
+        let path = w.slot.worktree.join("M-01-r3-audit.md");
+        std::fs::write(&path, "prewritten").unwrap();
+        let first = select_audit(&w);
+        let started = json!({"session_id":"audit-first", "kind":SessionKind::Role { role: Role::Audit }, "integration":first});
+        assert!(
+            !audit_guard(&started, &w.slot.worktree)
+                .unwrap()
+                .evidence_touched
+        );
+        // Set a deterministic older timestamp, so even rewriting identical bytes
+        // proves the mtime arm without sleeping or relying on clock resolution.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        let first = select_audit(&w);
+        let started = json!({"session_id":"audit-first", "kind":SessionKind::Role { role: Role::Audit }, "integration":first});
+        w.store
+            .append_event("session.started", "T", started.clone())
+            .unwrap();
+        std::fs::write(&path, "prewritten").unwrap();
+        assert!(
+            audit_guard(&started, &w.slot.worktree)
+                .unwrap()
+                .evidence_touched
+        );
+        w.store
+            .append_event("task.head", "T", json!({"sha":"after-audit"}))
+            .unwrap();
+        assert_eq!(
+            select_audit(&w),
+            first,
+            "audit completion must not move the implementation baseline or evidence stamp"
+        );
+        let retry = json!({"session_id":"audit-retry", "kind":SessionKind::Role { role: Role::Audit }, "integration":select_audit(&w)});
+        w.store
+            .append_event("session.started", "T", retry.clone())
+            .unwrap();
+        assert!(
+            audit_guard(&retry, &w.slot.worktree)
+                .unwrap()
+                .evidence_touched
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !audit_guard(&retry, &w.slot.worktree)
+                .unwrap()
+                .evidence_touched
+        );
+        let absent = json!({"integration": {"impl_round":3,"evidence":"M-01-r3-audit.md","summary":"range", "evidence_stamp":evidence_stamp(&path)}});
+        std::fs::write(&path, "new").unwrap();
+        assert!(
+            audit_guard(&absent, &w.slot.worktree)
+                .unwrap()
+                .evidence_touched
+        );
+    }
+    #[test]
+    fn integration_wiring_a_later_impl_session_supersedes_the_range() {
+        let w = World::new();
+        audit_fixture(&w);
+        assert_eq!(select_audit(&w)["impl_session"], "impl-first");
+        w.store
+            .append_event(
+                "session.started",
+                "T",
+                json!({"session_id":"next-impl", "kind":SessionKind::Role { role: Role::Impl }}),
+            )
+            .unwrap();
+        assert!(
+            integration_for_audit(
+                &w.store,
+                "T",
+                "<!-- integration-audit -->",
+                &w.slot.worktree
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+    #[test]
+    fn integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit() {
+        let w = World::new();
+        assert!(
+            integration_for_audit(
+                &w.store,
+                "T",
+                "<!-- integration-audit -->",
+                &w.slot.worktree
+            )
+            .unwrap()
+            .is_none()
+        );
+        audit_fixture(&w);
+        for template in [
+            "",
+            "old audit",
+            "inline <!-- integration-audit -->",
+            " <!-- integration-audit -->",
+        ] {
+            assert!(
+                integration_for_audit(&w.store, "T", template, &w.slot.worktree)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            select_audit(&w)["summary"],
+            "rebase 冲突； abcdef0..1234567，1 个提交"
+        );
     }
 
     struct World {

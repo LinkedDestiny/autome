@@ -788,6 +788,9 @@ session-protocol = []
             evidence_files: vec!["M-03-r3-audit.md".into()],
             design_changed_outside_milestones: None,
             repairing: false,
+            integration: None,
+            design_before: None,
+            design_after: None,
         };
         assert!(
             crate::guards::check(&round)

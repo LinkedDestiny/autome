@@ -78,9 +78,21 @@ pub struct Snapshot {
     pub design_bytes: u64,
 }
 
+/// The selected integration audit and whether it wrote its assigned evidence.
+#[derive(Debug)]
+pub struct IntegrationAudit {
+    pub impl_round: u32,
+    pub evidence: String,
+    pub summary: String,
+    pub evidence_touched: bool,
+}
+
 /// Everything a check needs, gathered by the caller so this module does no I/O
 /// and stays testable without a repository.
 pub struct Round<'a> {
+    pub integration: Option<&'a IntegrationAudit>,
+    pub design_before: Option<&'a str>,
+    pub design_after: Option<&'a str>,
     pub role: Role,
     /// The status block the session just wrote.
     pub status: &'a StatusBlock,
@@ -109,25 +121,30 @@ pub fn check(round: &Round<'_>) -> Vec<Finding> {
         Role::Impl => {
             out.extend(evidence_file(round, "impl"));
             out.extend(no_closing_a_milestone(round));
+            out.extend(no_retargeting_closed_evidence(round));
             out.extend(impl_had_a_target(round));
             out.extend(retro_one_line(round));
         }
         Role::Audit => {
-            // Conflict repair can leave an already completed table unchanged.
-            // Use the starting snapshot so closing the last pending milestone
-            // in this audit still requires current evidence.
-            let unchanged_completed_table = round.before.is_some_and(|before| {
-                !before.milestones.is_empty()
-                    && before
-                        .milestones
-                        .iter()
-                        .all(|(_, state)| *state == MilestoneState::Done)
-                    && crate::task_metrics::snapshot(round.status) == before.milestones
-            });
-            if !unchanged_completed_table {
-                out.extend(evidence_file(round, "audit"));
+            if let Some(integration) = round.integration {
+                out.extend(integration_audit_concluded(round, integration));
+            } else {
+                // Conflict repair can leave an already completed table unchanged.
+                // Use the starting snapshot so closing the last pending milestone
+                // in this audit still requires current evidence.
+                let unchanged_completed_table = round.before.is_some_and(|before| {
+                    !before.milestones.is_empty()
+                        && before
+                            .milestones
+                            .iter()
+                            .all(|(_, state)| *state == MilestoneState::Done)
+                        && crate::task_metrics::snapshot(round.status) == before.milestones
+                });
+                if !unchanged_completed_table {
+                    out.extend(evidence_file(round, "audit"));
+                }
+                out.extend(audit_moved_the_table(round));
             }
-            out.extend(audit_moved_the_table(round));
             out.extend(retro_one_line(round));
             out.extend(audit_stayed_in_its_column(round));
         }
@@ -138,6 +155,99 @@ pub fn check(round: &Round<'_>) -> Vec<Finding> {
     }
     out.extend(design_doc_size(round));
     out
+}
+
+fn integration_audit_concluded(
+    round: &Round<'_>,
+    integration: &IntegrationAudit,
+) -> Option<Finding> {
+    if integration.evidence_touched {
+        return None;
+    }
+    let unchanged = round
+        .before
+        .is_some_and(|before| crate::task_metrics::snapshot(round.status) == before.milestones);
+    Some(Finding::error(
+        if unchanged {
+            "audit_made_no_progress"
+        } else {
+            "evidence_missing"
+        },
+        format!(
+            "本轮是集成复验轮（实现 #{}；{}），没有写入本轮证据 evidence/{}。请逐项复验后写证据、表不动；或退回受影响里程碑 `开放`、`reopen` 加 1 并写证据。",
+            integration.impl_round, integration.summary, integration.evidence
+        ),
+    ))
+}
+
+fn evidence_pointers(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut pointers = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let mut owner = None;
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.lines().map(str::trim) {
+        let marker = line.chars().next().unwrap_or(' ');
+        let count = line.chars().take_while(|c| *c == marker).count();
+        if let Some((open, len)) = fence {
+            if marker == open && count >= len && line[count..].trim().is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+        if matches!(marker, '`' | '~') && count >= 3 {
+            fence = Some((marker, count));
+            continue;
+        }
+        if marker == '#' && (2..=6).contains(&count) && line[count..].starts_with(' ') {
+            owner = line.match_indices("M-").find_map(|(at, _)| {
+                let digits = line[at + 2..]
+                    .bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .count();
+                (digits > 0).then(|| line[at..at + 2 + digits].to_string())
+            });
+        }
+        let pointer = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .unwrap_or(line);
+        if pointer.starts_with("最新证据")
+            && let Some(id) = &owner
+        {
+            pointers
+                .entry(id.clone())
+                .or_default()
+                .push(pointer.to_string());
+        }
+    }
+    pointers
+}
+
+fn no_retargeting_closed_evidence(round: &Round<'_>) -> Option<Finding> {
+    let before = round.before?;
+    let old = evidence_pointers(round.design_before?);
+    let new = evidence_pointers(round.design_after?);
+    let mut changed = Vec::new();
+    for (id, state) in &before.milestones {
+        if *state != MilestoneState::Done {
+            continue;
+        }
+        for line in new.get(id).into_iter().flatten() {
+            if line.contains("-impl.md") && !old.get(id).is_some_and(|lines| lines.contains(line)) {
+                changed.push(format!("{id}：{line}"));
+            }
+        }
+    }
+    if changed.is_empty() {
+        return None;
+    }
+    Some(Finding::error(
+        "impl_closed_milestone",
+        format!(
+            "实现轮把已完成里程碑验收契约的「最新证据」改指向了实现证据：{}。已完成里程碑的最新证据是审计复验留下的结论，实现证据替代不了它。本轮证据写进自己的 M-xx-r{}-impl.md 即可；集成改动由紧随其后的集成复验审计。Autome 不会替你改回去。",
+            changed.join("；"),
+            round.status.impl_round
+        ),
+    ))
 }
 
 /// A loop round must leave a file the next one can read.
@@ -432,7 +542,128 @@ mod tests {
             evidence_files: evidence.iter().map(|s| s.to_string()).collect(),
             design_changed_outside_milestones: Some(false),
             repairing: false,
+            integration: None,
+            design_before: None,
+            design_after: None,
         }
+    }
+
+    fn integration_findings(touched: bool, reopened: bool, files: &[&str]) -> Vec<Finding> {
+        let before = snapshot(&[("M-01", MilestoneState::Done)], 4, 20_000);
+        let s = status(
+            99,
+            &[(
+                "M-01",
+                if reopened {
+                    MilestoneState::Open
+                } else {
+                    MilestoneState::Done
+                },
+            )],
+        );
+        let integration = IntegrationAudit {
+            impl_round: 3,
+            evidence: "M-01-r3-audit.md".into(),
+            summary: "rebase 冲突 abc1234..def5678".into(),
+            evidence_touched: touched,
+        };
+        let mut r = round(Role::Audit, &s, &before, files);
+        r.integration = Some(&integration);
+        check(&r)
+    }
+
+    #[test]
+    fn integration_audit_with_a_prewritten_evidence_file_and_no_new_write_made_no_progress() {
+        let f = integration_findings(false, false, &["M-01-r3-audit.md"]);
+        assert_eq!(codes(&f), vec!["audit_made_no_progress"]);
+    }
+    #[test]
+    fn integration_audit_with_a_still_table_and_no_evidence_made_no_progress() {
+        let f = integration_findings(false, false, &[]);
+        assert_eq!(codes(&f), vec!["audit_made_no_progress"]);
+        for text in [
+            "集成复验",
+            "abc1234..def5678",
+            "M-01-r3-audit.md",
+            "开放",
+            "reopen",
+        ] {
+            assert!(f[0].detail.contains(text));
+        }
+    }
+    #[test]
+    fn integration_audit_with_evidence_and_a_still_table_passes() {
+        assert!(integration_findings(true, false, &["M-01-r3-audit.md"]).is_empty());
+    }
+    #[test]
+    fn integration_audit_that_reopens_without_evidence_is_missing_evidence() {
+        let f = integration_findings(false, true, &[]);
+        assert_eq!(codes(&f), vec!["evidence_missing"]);
+        assert!(f[0].detail.contains("M-01-r3-audit.md"));
+    }
+    #[test]
+    fn integration_audit_that_reopens_with_evidence_passes() {
+        assert!(integration_findings(true, true, &["M-01-r3-audit.md"]).is_empty());
+    }
+    #[test]
+    fn integration_audit_evidence_of_an_earlier_round_does_not_count() {
+        assert_eq!(
+            codes(&integration_findings(false, false, &["M-01-r2-audit.md"])),
+            vec!["audit_made_no_progress"]
+        );
+    }
+
+    fn pointer_findings(old: Option<&str>, new: &str) -> Vec<Finding> {
+        let before = snapshot(
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Open),
+            ],
+            4,
+            20_000,
+        );
+        let s = status(
+            3,
+            &[
+                ("M-01", MilestoneState::Done),
+                ("M-02", MilestoneState::Pending),
+            ],
+        );
+        let mut r = round(Role::Impl, &s, &before, &["M-02-r3-impl.md"]);
+        r.design_before = old;
+        r.design_after = Some(new);
+        check(&r)
+    }
+    #[test]
+    fn closed_pointer_retargeted_to_impl_evidence_fails() {
+        let old = "### M-01 验收契约\n最新证据：a-audit.md";
+        let new = "### M-01 验收契约\n最新证据：a-impl.md";
+        let f = pointer_findings(Some(old), new);
+        assert_eq!(codes(&f), vec!["impl_closed_milestone"]);
+        assert!(f[0].detail.contains("M-01"));
+        assert!(pointer_findings(Some(old), "### M-01 验收契约\n最新证据：b-audit.md").is_empty());
+        assert!(pointer_findings(Some(new), new).is_empty());
+    }
+    #[test]
+    fn closed_pointer_added_under_a_closed_milestone_fails() {
+        for prefix in ["", "- ", "* "] {
+            assert_eq!(
+                codes(&pointer_findings(
+                    Some(""),
+                    &format!("## M-01\n{prefix}最新证据：a-impl.md")
+                )),
+                vec!["impl_closed_milestone"]
+            );
+        }
+    }
+    #[test]
+    fn closed_pointer_rules_leave_open_milestones_and_fences_alone() {
+        let new = "最新证据：unowned-impl.md\n### M-01\n````markdown\n```\n最新证据：fenced-impl.md\n````\n~~~\n### M-01\n最新证据：fenced-impl.md\n~~~\n### unrelated\n最新证据：unowned-impl.md\n### M-02\n最新证据：open-impl.md";
+        assert!(pointer_findings(Some(""), new).is_empty());
+    }
+    #[test]
+    fn closed_pointer_without_a_baseline_is_not_guessed() {
+        assert!(pointer_findings(None, "### M-01\n最新证据：a-impl.md").is_empty());
     }
 
     fn codes(findings: &[Finding]) -> Vec<&str> {
@@ -825,6 +1056,9 @@ mod tests {
             evidence_files: vec!["M-01-r1-impl.md".into()],
             design_changed_outside_milestones: None,
             repairing: false,
+            integration: None,
+            design_before: None,
+            design_after: None,
         };
         assert_eq!(check(&r), vec![]);
     }
