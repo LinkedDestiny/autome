@@ -1,7 +1,4 @@
-# 审计 · 第 5 轮 · M-04
+# 审计 #6 · M-05 通过
 
-结论：**通过**，M-04 标 `已完成`。
-证据：docs/w8-实时会话日志/evidence/M-04-r5-audit.md
-- 验收命令 28/28 通过、skipped 0；lint、typecheck 退出码 0。
-- 契约的 5 个负向对照全部变红，已还原，git status 为空。
-- 自造检查（大历史日志暂停追加、翻页拼接、ended 后 close）通过，已丢弃。
+M-05 负向对照 5 条全部变红并已还原，验收命令 29 用例通过，lint/typecheck/build 退出码 0。详见 evidence/M-05-r6-audit.md。
+人工验收 H-01–H-05 留待合并前用户确认。无新增 Backlog。
