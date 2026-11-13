@@ -262,7 +262,7 @@ Queued 首次进入定位时记录 `bug.loop_started`。出处：`crates/automed
 
 **合并前门禁总带复现命令。** `fix_gate` 和 `MergeGate` 选取 `bug.reproduced` 事件中的复现命令；配置了项目 `[gate]` 时组合为 `( 复现命令 ) && ( 门禁命令 )`，否则只跑复现命令。`before_merge` 下 FixGate 未配 quick 时只跑复现，配了 quick 时跑 `( 复现命令 ) && ( quick 命令 )`。`MainCheck` 只选择项目门禁。出处：`crates/automed/src/scheduler.rs` 的 `run_gate`。
 
-**修复轮预算。** 每开一个 fix 会话（含手动重跑）记一条 `bug.fix_round_started`。上限取任务预算，未设时取 `[bug] fix_rounds`；首次复现成功和门禁失败、复核打回、rebase 冲突、合并门禁失败等自动转换，均在开下一轮前检查，已开轮数达到上限即 `Failed(FixBudget)`。追加轮次增加上限并恢复 fix。手动 `rerun … fix` 直接启动会话，不经这个预算检查，即使已因 FixBudget 失败也能重跑，只计入已开轮数。出处：`crates/automed/src/scheduler.rs` 的 `bug_progress`、`perform`；`crates/autome-domain/src/bug_loop.rs` 的 `start_fix`、`apply_for`、`bug_loop_extend_resumes_fix_with_a_larger_limit`。
+**修复轮预算。** 每开一个 fix 会话（含手动重跑）记一条 `bug.fix_round_started`。上限取任务预算，未设时取 `[bug] fix_rounds`；首次复现成功和门禁失败、复核打回、rebase 冲突、合并门禁失败等自动转换，均在开下一轮前检查，已开轮数达到上限即 `Failed(FixBudget)`。追加轮次增加上限并恢复 fix。手动 `rerun … fix` 同样经 `start_fix` 检查预算；已开轮数达到上限时保持 `Failed(FixBudget)`，不启动会话，须用 `autome extend <任务> <n>` 追加修复轮。预算内重跑仍计入已开轮数。出处：`crates/automed/src/scheduler.rs` 的 `bug_progress`、`perform`；`crates/autome-domain/src/bug_loop.rs` 的 `start_fix`、`apply_for`、`bug_loop_extend_resumes_fix_with_a_larger_limit`。
 
 Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-round`、`复现命令`、`根因`、`复核`（待复核 / 通过 / 打回）。会话模板为 `protocol/prompts/locate.md`、`protocol/prompts/fix.md`、`protocol/prompts/fix-review.md`，规则为 `protocol/bug-protocol.md`，编译进 automed。出处：`crates/autome-domain/src/bug_doc.rs` 的 `parse`；`crates/automed/src/protocol/mod.rs` 的 `SEED`。
 

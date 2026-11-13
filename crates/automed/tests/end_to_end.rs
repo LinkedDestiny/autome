@@ -5719,6 +5719,73 @@ fn bug_loop_fix_rounds_run_out_and_extend_adds_more() {
 }
 
 #[test]
+fn bug_loop_rerun_fix_cannot_bypass_exhausted_budget() {
+    assert!(git_available(), "git is required for this regression test");
+    let mut w = World::new("rerun-fix-budget");
+    // Keep the independent same-failure circuit breaker out of this budget test.
+    w.configure("[bug]\nfix_rounds = 1\n[gate]\ncommand = \"true\"\nsame_failure_limit = 10\n");
+    let slug = slug_for("rerun fix budget");
+    // Locate creates a failing regression. Every fix leaves it broken.
+    for n in 1..=4 {
+        bug_step(
+            &w,
+            n,
+            &slug,
+            &bug_doc("待复核"),
+            if n == 1 { BUG_LOCATE } else { "" },
+        );
+    }
+    let id = create_bug(&mut w, "rerun fix budget");
+    w.settle();
+    let before = w.ctx.store.get_task(&id).unwrap();
+    assert!(matches!(
+        before.state,
+        autome_domain::task::TaskState::Failed {
+            reason: autome_domain::task::FailureReason::FixBudget { limit: 1 },
+            ..
+        }
+    ));
+    assert_eq!(before.budget_n, Some(1));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        1
+    );
+
+    // Exercise the public command twice, allowing either explicit rejection
+    // or a budget-failed transition, but never another paid fix session.
+    for _ in 0..2 {
+        let _ = w.call("task.rerun_from", json!({"task_id":id,"node":"fix"}));
+        w.settle();
+        let after = w.ctx.store.get_task(&id).unwrap();
+        assert_eq!(after.state, before.state);
+        assert_eq!(after.budget_n, before.budget_n);
+    }
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        1,
+        "rerun fix must not start sessions after the fix budget is exhausted"
+    );
+
+    // Positive control: an explicit extension authorizes exactly one more fix.
+    ok(&w.call("task.extend_budget", json!({"task_id":id,"extra_rounds":1})));
+    w.settle();
+    assert_eq!(w.ctx.store.get_task(&id).unwrap().budget_n, Some(2));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
     needs_git!();
     let mut w = World::new("fix-json");

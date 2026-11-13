@@ -145,7 +145,7 @@ pub fn apply_for(
                 .ok_or_else(|| rejected("追加轮次必须大于 0 且不溢出"))?;
             Ok(session(BugStep::Fix, None, ctx).with_budget(limit))
         }
-        (TaskState::Failed { .. } | TaskState::Stopped { .. }, Trigger::RerunFrom { node }) => {
+        (TaskState::Failed { at, .. } | TaskState::Stopped { at }, Trigger::RerunFrom { node }) => {
             let step = match node {
                 Node::Locate => BugStep::Locate,
                 Node::Fix => BugStep::Fix,
@@ -155,6 +155,9 @@ pub fn apply_for(
             };
             if !ctx.config.is_enabled(step.role()) {
                 return Err(rejected("该角色当前已关闭，无法从这里重跑"));
+            }
+            if step == BugStep::Fix {
+                return Ok(start_fix(*at, None, ctx, progress));
             }
             Ok(session(step, None, ctx))
         }
@@ -1412,7 +1415,70 @@ mod tests {
                     )
                 );
                 if let Ok(t) = t {
-                    assert_eq!(t.next, active(node));
+                    if node == Node::Fix {
+                        assert_eq!(
+                            t.next,
+                            TaskState::Failed {
+                                at: Node::Fix,
+                                reason: FailureReason::FixBudget {
+                                    limit: config().bug.fix_rounds,
+                                },
+                            }
+                        );
+                        assert_eq!(t.action, Action::None);
+                    } else {
+                        assert_eq!(t.next, active(node));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn bug_loop_rerun_fix_checks_configured_and_extended_budgets() {
+        let mut cfg = config();
+        cfg.bug.fix_rounds = 1;
+        for budget in [None, Some(3)] {
+            let limit = budget.unwrap_or(cfg.bug.fix_rounds);
+            let mut context = ctx(&cfg);
+            context.budget_n = budget;
+            for state in [
+                TaskState::Stopped { at: Node::Fix },
+                TaskState::Failed {
+                    at: Node::Fix,
+                    reason: FailureReason::FixBudget { limit },
+                },
+            ] {
+                for fix_round in [limit - 1, limit, limit + 1] {
+                    let t = run(
+                        &state,
+                        &Trigger::RerunFrom { node: Node::Fix },
+                        &context,
+                        BugProgress {
+                            fix_round,
+                            repro_misses: 0,
+                        },
+                    )
+                    .unwrap();
+                    if fix_round < limit {
+                        assert_eq!(t.next, active(Node::Fix));
+                        assert_eq!(t.budget_n, Some(limit));
+                        assert_eq!(
+                            t.action,
+                            Action::StartBugSession {
+                                step: BugStep::Fix,
+                                inject: None,
+                            }
+                        );
+                    } else {
+                        assert_eq!(
+                            t.next,
+                            TaskState::Failed {
+                                at: Node::Fix,
+                                reason: FailureReason::FixBudget { limit },
+                            }
+                        );
+                        assert_eq!(t.action, Action::None);
+                    }
                 }
             }
         }
