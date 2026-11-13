@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: cargo test --offline -p automed --test end_to_end rejecting_design_carries_pending_decisions_and_approval_starts_implementation -- --exact --nocapture
 根因: Reject 原先未携带和租用表态，第 1 轮已修复；另有 task_trigger 在启动会话后立即 tick 的时序竞争，快速完成的实现会话会在批准命令返回前被收割并推进到 audit。
-复核: 待复核
+复核: 打回
 repos: .
 
 ## 现象
@@ -84,3 +84,11 @@ missing decision text in rejection prompt: ["B-01", "B-02", "B-03"]; unconsumed 
 - 差异检查：自定位提交 d4a3f0f 起，回归测试文件无改动，未删除、跳过或弱化；产品改动仅 dispatch.rs、launcher.rs、scheduler.rs 共 +18/-5。
 - 根因成立：task_trigger 启动会话后无条件 tick，快速完成的会话在命令返回前被收割，节点由 implement 变为 audit。修复仅在本次命令新启动会话时跳过 tick，由下一次调度收割；未启动会话时行为不变，范围最小。
 - 说明：全量门禁（ci-local.sh）未运行，由宿主合并前执行。
+
+### 第 3/3 轮独立复核
+
+复核: 打回（第 3/3 轮）。
+
+- 产品修复无问题：原复现命令本轮独立运行 2 次均通过（1 passed）；根因（Reject 未携带表态、task_trigger 启动会话后立即 tick 的时序竞争）成立，回归测试保持有意义，未被删除、跳过或弱化；第 3 轮未改动任何产品代码。
+- 阻塞项：`cargo fmt --all -- --check` 本轮复验仍退出 1，唯一差异为 `crates/automed/tests/end_to_end.rs:2631` 的单行 `if/else` 需展开为多行。这是纯格式差异，不改变测试语义，修复轮因“不得修改回归测试”而未处理，格式门禁因此仍会失败。
+- 建议：允许仅做 rustfmt 格式化该处（不改断言与逻辑）后，其余无需再改；这需要用户追加轮次或明确放行。本轮按规则不代修，未运行全量门禁。
