@@ -41,13 +41,16 @@ it('需求真实事件只含本任务且升序，快检、rebase、合并前门�
   expect(events.some(e => e.kind === 'gate.result' && e.payload.node === 'merge_gate')).toBe(true);
   expect(result.changes?.payload).toMatchObject({ rebase_first: true });
 });
-it('Bug 真实事件含定位、复现、修复门禁、复核且不伪造文档清单', async () => {
+it('Bug 真实事件含定位、复现、修复门禁、复核且可读取清单中的 Bug 文档', async () => {
   const result = await load('T-2'); expect(result.data?.task.state).toMatchObject({ node: 'await_merge' });
   const events = result.history!.events;
   for (const kind of ['bug.located', 'bug.reproduced', 'bug.reviewed']) expect(events.some(e => e.kind === kind)).toBe(true);
   expect(events.some(e => e.kind === 'gate.result' && e.payload.node === 'fix_gate')).toBe(true);
   expect(events.every(e => e.subject === 'T-2')).toBe(true);
-  expect(result.data?.documents?.some(d => d.name.endsWith('-bug.md'))).toBe(false);
+  const document = result.data?.documents?.find(d => d.name.endsWith('-bug.md'));
+  expect(document).toBeDefined();
+  const content = await load('T-2', document!.name);
+  expect(content.document?.text).toContain('复现命令: sh regression.sh');
 });
 it('按本次清单名称读取真实设计文档', async () => {
   const result = await load('T-1', 'feat.md');

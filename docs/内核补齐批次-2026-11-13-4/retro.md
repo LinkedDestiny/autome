@@ -35,3 +35,4 @@
 复盘 #1 | 无 | 教训 3 条 | docs/内核补齐批次-2026-11-13-4/lessons.md | HEAD 上 automed --lib protocol:: 8 败（D-1 eval 未进 seed，M-09 引入），合并前门禁会红；H-01 未确认
 实现 #18 | M-16（集成） | rebase 完成，待集成复验 | evidence/M-16-r18-impl.md | 无；宿主快检待跑
 审计 #17 | M-16（集成复验） | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-16-r18-audit.md | 无；H-01 未确认
+实现 #19 | M-16（门禁修复） | 修复待复验，82 例中 81 通过 | evidence/M-16-r19-impl.md | ps EPERM 阻塞 1 例及清理；宿主门禁待跑

@@ -5,7 +5,8 @@
     "members": [],
     "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-i1s4Um/home/single",
     "suggest_workspace": false,
-    "suggested_docs_repo": null
+    "suggested_docs_repo": null,
+    "rejection": null
   },
   "add": {
     "init": [
@@ -60,7 +61,8 @@
   "config": {
     "global": {
       "gate": {
-        "concurrency": 1
+        "concurrency": 1,
+        "quick_concurrency": 1
       },
       "loop_defaults": {
         "budget_factor": 5,
@@ -122,7 +124,10 @@
       },
       "gate": null,
       "gate_concurrency": 1,
+      "gate_quick": null,
+      "gate_quick_concurrency": 1,
       "gate_reuse_for_main_check": true,
+      "gate_run": "each_round",
       "gate_same_failure_limit": 3,
       "loop_defaults": {
         "budget_factor": 5,
@@ -203,10 +208,25 @@
           "provenance": "global",
           "role": "retro"
         }
-      ]
+      ],
+      "setup": null
     },
     "scope": "prj-1ca1a7903d884889a22f1c8bd8858c8c",
-    "violations": []
+    "violations": [],
+    "defaults": [
+      "bug",
+      "gate",
+      "gate_concurrency",
+      "gate_quick",
+      "gate_quick_concurrency",
+      "gate_reuse_for_main_check",
+      "gate_run",
+      "gate_same_failure_limit",
+      "merge_after",
+      "merge_auto",
+      "retry",
+      "setup"
+    ]
   },
   "alert": {
     "created_at": "2026-11-13T14:34:11Z",

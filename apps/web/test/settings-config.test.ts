@@ -25,7 +25,10 @@ test('1 真实配置逐行、null、未知键和省略字段', () => {
   resolved.roles.forEach((r,i) => { const row = rows.find(row => row.key === `roles.${i}`)!; expect(row.label).toBe('角色 ' + r.role); expect(row.value).toContain(r.config.runtime); expect(row.value).toContain(r.config.effort ?? '未配置'); expect(row.value).toContain('已启用'); });
   expect(rows).toHaveLength(Object.keys(expected).length + resolved.roles.length);
   const extra = configRows({ ...resolved, x_new: 1, toString: 0 }); expect(extra).toContainEqual({ key: 'x_new', label: 'x_new', value: '1' }); expect(extra).toContainEqual({ key: 'toString', label: 'toString', value: '0' });
-  for (const key of ['gate_run','gate_quick','setup']) expect(rows.some(r => r.key === key)).toBe(false);
+  for (const key of ['gate_run','gate_quick','setup']) {
+    expect(rows.some(r => r.key === key)).toBe(true);
+    expect(configRows({ gate: null }).some(r => r.key === key)).toBe(false);
+  }
   expect(configRows({ empty: '', zero: 0, flag: false })).toEqual([{ key:'empty',label:'empty',value:'' },{key:'zero',label:'zero',value:'0'},{key:'flag',label:'flag',value:'false'}]);
 });
 test('2 validate 警告原文逐条显示', async () => {

@@ -40,10 +40,17 @@ test('运行、结束通知、读取编辑两份产物与完成 init commit', as
   expect((await loader(s.args)).project?.onboarding.onboarding).toBe('completed');
   expect(await s.submit({ intent: 'finish' })).toHaveProperty('error', 'Onboarding 已经结束'); expect(await s.submit({ intent: 'run' })).toHaveProperty('error', 'Onboarding 已经结束');
 });
-test('跳过生成 init commit；工作区内核失败原样显示且状态重读', async () => {
+test('单仓库跳过生成提交；无产物工作区跳过不创建提交且状态重读', async () => {
   const s = await setup(); expect(await s.submit({ intent: 'skip' })).toHaveProperty('init_commit'); expect(s.git('log', '-1', '--format=%s')).toBe('chore(autome): initialise project'); expect((await loader(s.args)).project?.onboarding.onboarding).toBe('skipped');
-  s.repo('workspace/docs'); const added = await s.gateway.write({ op: 'project.confirm', params: { path: '~/workspace', workspace: true, docs_repo: 'docs' } }); const id = (added.body.payload as { project: { id: string } }).project.id;
-  const args = { ...s.args, params: { id } }; const result = await action({ ...args, request: new Request(args.request.url, { method: 'POST', body: new URLSearchParams({ intent: 'skip' }) }) }); expect(result.error).toContain('not a git repository'); expect((await loader(args)).project?.onboarding.onboarding).toBe('skipped');
+  const docs = s.repo('workspace/docs');
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: docs, encoding: 'utf8' }).trim();
+  const added = await s.gateway.write({ op: 'project.confirm', params: { path: '~/workspace', workspace: true, docs_repo: 'docs' } }); const id = (added.body.payload as { project: { id: string } }).project.id;
+  const args = { ...s.args, params: { id } }; const result = await action({ ...args, request: new Request(args.request.url, { method: 'POST', body: new URLSearchParams({ intent: 'skip' }) }) });
+  const committed = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: docs, encoding: 'utf8' }).trim();
+  expect(result.error).toBeUndefined();
+  expect(result).toHaveProperty('init_commit', null);
+  expect(committed).toBe(head);
+  expect((await loader(args)).project?.onboarding.onboarding).toBe('skipped');
 });
 test('超长保存不改变磁盘内容', async () => { const s = await setup(); const before = readFileSync(join(s.path, 'AGENTS.md'), 'utf8'); expect((await s.submit({ intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) })).error).toMatch(/^已拒绝：.*字符上限/); expect(readFileSync(join(s.path, 'AGENTS.md'), 'utf8')).toBe(before); });
 test('账本事件刷新持久 router 的步骤', async () => {

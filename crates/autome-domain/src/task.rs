@@ -2470,7 +2470,9 @@ mod tests {
     fn gate_quick_resolved_json_is_unchanged_without_quick() {
         let c = before_merge_config();
         let json = serde_json::to_string(&c).unwrap();
-        assert!(!json.contains("gate_quick"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("gate_quick").is_none());
+        assert_eq!(value["gate_quick_concurrency"], 1);
         let old: ResolvedConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(old.gate_quick, None);
         assert_eq!(serde_json::to_string(&old).unwrap(), json);
