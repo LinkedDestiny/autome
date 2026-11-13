@@ -937,6 +937,95 @@ fn merge_does_not_wait_for_a_session_slot() {
     merge_with_session_capacity(1);
 }
 
+fn merge_tail_with_session_capacity(parallel: u32) {
+    assert!(
+        git_available(),
+        "Git is required; this regression must not skip"
+    );
+    let mut w = queue_world("merge-tail-capacity");
+    w.set_parallel(parallel);
+    let task = w.add_task("T-target", "target");
+    w.write_design(
+        &task,
+        &design_doc("等你合并", &[("M-01", MilestoneState::Done)], ""),
+    );
+    let wt = w.with_worktree(&task);
+    git::commit_paths(&wt, &[&task.design_doc()], "ready to merge").unwrap();
+    let project = w.ctx.store.get_project(&w.project_id).unwrap();
+    let layout = TaskLayout::of(&project, &task.slug, &[]);
+    w.set_state(
+        &task.id,
+        TaskState::Active {
+            node: Node::MergeGate,
+        },
+    );
+    let ready = w.ctx.store.get_task(&task.id).unwrap();
+    reuse_collect(&mut w, &ready, &project, &layout, Node::MergeGate);
+    assert_eq!(
+        w.state(&task.id),
+        TaskState::Active {
+            node: Node::AwaitMerge
+        }
+    );
+    let started = queue_count(&w, &task, "gate.started");
+    w.add_task("T-busy", "busy");
+    let busy = TaskState::Active {
+        node: Node::Implement,
+    };
+    w.set_state("T-busy", busy.clone());
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+
+    apply_trigger(&mut w.ctx, &task.id, &Trigger::Merge).unwrap();
+    for _ in 0..4 {
+        let current = w.ctx.store.get_task(&task.id).unwrap();
+        if let TaskState::Active { node } = current.state {
+            assert!(node.is_core_step());
+            run_core_step(&mut w.ctx, &current, node).unwrap();
+        }
+    }
+    let merged = w.ctx.store.get_task(&task.id).unwrap();
+    let commit = merged
+        .merge_commit
+        .as_ref()
+        .expect("merge must already have succeeded");
+    assert_eq!(git::head_sha(&w.repo).unwrap(), *commit);
+    assert!(
+        main_check_reuse(&w.ctx.store, &task.id, &w.repo, commit, "true", false)
+            .unwrap()
+            .is_some(),
+        "the merge must qualify for reuse"
+    );
+    assert_eq!(
+        merged.state,
+        TaskState::Done,
+        "reusable merge tail must finish while the other session holds its slot"
+    );
+    assert!(merged.completed_at.is_some());
+    assert!(!wt.exists());
+    assert!(
+        !git::run_ok(&w.repo, &["branch", "--list", &task.branch()])
+            .unwrap()
+            .stdout
+            .contains(&task.branch())
+    );
+    assert_eq!(queue_count(&w, &task, "gate.reused"), 1);
+    assert_eq!(queue_count(&w, &task, "gate.started"), started);
+    assert!(!w.repo.join(verify_dir(commit)).exists());
+    assert!(w.ctx.store.list_sessions(&task.id).unwrap().is_empty());
+    assert_eq!(w.state("T-busy"), busy);
+    assert_eq!(w.ctx.store.slots_in_use(&w.project_id).unwrap(), 1);
+}
+
+#[test]
+fn merge_tail_reaches_done_without_a_session_slot() {
+    merge_tail_with_session_capacity(1);
+}
+
+#[test]
+fn merge_tail_free_session_capacity_control() {
+    merge_tail_with_session_capacity(2);
+}
+
 #[test]
 fn merge_session_slot_free_capacity_control() {
     merge_with_session_capacity(2);
