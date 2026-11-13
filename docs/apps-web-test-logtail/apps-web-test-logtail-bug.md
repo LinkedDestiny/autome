@@ -3,7 +3,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts
 根因: afterAll 写入停止标记后立即删除临时目录，假 CLI 错过标记后无限等待，独立会话不会随 Core 退出
-复核: 待复核
+复核: 通过
 repos: apps/web
 
 ## 现象
@@ -71,4 +71,10 @@ repos: apps/web
 
 ## 复核意见
 
-待复核。本轮修复已完成，完整进程树回归通过证据仍待宿主复现检查；后续由 Autome 调度，本轮不启动后续会话。
+复核: 通过。
+
+- 复验：本轮在 worktree 内执行复现命令 `npm --prefix apps/web test -- test/logtail-live-cleanup.test.ts`，退出 0（1 passed），无 EPERM。修复前宿主两次均在泄漏断言处失败，修复后进程表断言为空。
+- 差异：`git diff 48cf58a3 f6d5cb2c -- apps/web` 只改 `logtail-live.test.ts` 假 CLI 脚本，两个等待循环加入 `[ -d "$root" ] || exit 0`；回归测试 `logtail-live-cleanup.test.ts` 未变，未删除、跳过或弱化任何断言、输入、用例名。
+- 根因：afterAll 写标记后立即删目录，假 CLI 错过标记会无限轮询，与代码机制一致；目录消失即退出直接消除该条件，站得住。
+- 回归测试有意义：独立启动原测试文件，两秒后检查本次临时目录关联进程及其后代，并在 finally 清理残留。
+- 范围最小：仅 10 行测试夹具改动，产品代码未动。未运行全量门禁，由宿主合并前执行。
