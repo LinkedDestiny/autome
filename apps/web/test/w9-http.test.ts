@@ -9,7 +9,8 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 async function setup(terminal?: (command: string) => Promise<void>) {
   const fixture = await w9Kernel(); cleanups.push(fixture.close); await fixture.core.stop();
-  const running = await withBudgetCli(fixture.root, () => startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome, terminal })); cleanups.push(running.close);
+  // Keep the fixture's kernel when reopening its ledger, independent of the installed CLI on PATH.
+  const running = await withBudgetCli(fixture.root, () => startServer({ port: 0, mode: 'development', home: fixture.automeHome, userHome: fixture.userHome, binaryPath: fixture.binaryPath, terminal })); cleanups.push(running.close);
   const address = running.server.address(); if (!address || typeof address === 'string') throw new Error('没有端口');
   const url = `http://127.0.0.1:${address.port}`;
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; body: string | { ok: boolean; payload?: unknown; error?: string } }>((resolve, reject) => {
