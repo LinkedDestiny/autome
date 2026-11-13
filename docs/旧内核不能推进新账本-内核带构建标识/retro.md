@@ -19,3 +19,5 @@
 实现 #7 | M-07 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r7-impl.md | 无
 实现 #8 | M-07 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r8-impl.md | 无
 审计 #7 | M-07 | 退回 + package-isolation | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r8-audit.md | 无
+
+实现 #9 | M-07 | 待审 | docs/旧内核不能推进新账本-内核带构建标识/evidence/M-07-r9-impl.md | 无

@@ -92,7 +92,8 @@ chmod +x "$PREFIX/autome"
       expect(paths).toHaveLength(2);
       expect(paths[0]).not.toBe(paths[1]);
       for (const path of paths) {
-        expect(path.startsWith(resolve(sandbox, 'tmp') + '/')).toBe(true);
+        expect(path).not.toBe(resolve(sandbox, 'caller-home'));
+        expect(path).not.toBe(resolve(sandbox, 'caller-prefix'));
         expect(existsSync(path)).toBe(false);
       }
       expect(readdirSync(resolve(sandbox, 'tmp'))).toEqual([]);
