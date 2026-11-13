@@ -181,3 +181,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .probe-path { overflow-wrap: anywhere; }
 .project-confirm { flex-direction: column; align-items: flex-start !important; }
 .add-project [role="alert"] { overflow-wrap: anywhere; }
+
+.project-settings { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 24px; }
+.settings-card-body { min-height: 0; overflow-y: auto; padding: 24px; }
+.onboarding-editor { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+.onboarding-editor textarea { min-height: 0; height: 12rem; overflow-y: auto; resize: vertical; }
+
+.project-settings h1 { margin: 0; }
+.settings-card-body { background: var(--animal-bg-content); border-radius: var(--animal-radius); max-width: 960px; overflow-wrap: anywhere; }
+.onboarding-editor textarea { font: inherit; padding: 12px; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); }

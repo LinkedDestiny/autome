@@ -1,3 +1,4 @@
+import { useAdminRevalidate } from './components/admin-live.ts';
 import { useEffect, useState } from 'react';
 import { CommandPalette } from './components/command-palette.tsx';
 import { attachPaletteShortcut, buildCandidates, filterCandidates, initialPalette, isMac, paletteReducer } from './components/palette-model.ts';
@@ -19,6 +20,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 export const links = () => [{ rel: 'stylesheet', href: appCss }];
 export default function App() {
+  useAdminRevalidate();
   const data = useLoaderData<typeof loader>();
   const { projects, kernel } = data;
   const [palette, setPalette] = useState(initialPalette);

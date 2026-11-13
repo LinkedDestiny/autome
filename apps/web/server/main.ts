@@ -29,7 +29,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const uploads = createUploads(home);
   const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
   const taskDocs = createTaskDocs();
-  const admin = createAdmin({ core, automeHome: home, userHome });
+  const admin = createAdmin({ core, automeHome: home, userHome, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home, uploads, paths: admin.paths });
   admin.register(gateway);
   const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs }).catch(error => { store.close(); throw error; });

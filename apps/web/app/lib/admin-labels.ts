@@ -9,3 +9,15 @@ export const ADMIN = {
   repo: '已是 Git 仓库，直接接管', suggested: '看起来是工作区',
   nested: '按单仓库添加会在外层目录 git init，里面的仓库会变成嵌套仓库',
 };
+
+export const ONBOARDING = {
+  title: 'Onboarding', missing: '项目不存在', run: '运行', save: '保存', finish: '完成', skip: '跳过',
+  ended: '已结束', skipped: '已跳过', none: '没有会话', running: '会话运行中', interrupted: '会话已中断',
+  invalidPath: '已拒绝：只能保存项目画像或 AGENTS.md', noCommit: '没有需要提交的改动',
+  saved: '已保存', unfinished: 'Onboarding 尚未结束，请重试',
+  step: (n: number) => `第 ${n} / 5 步`,
+  descriptions: { 3: '起草项目画像与 AGENTS.md', 4: '确认或编辑', 5: '查看 Loop 配置' } as Record<number, string>,
+  count: (n: number, max: number) => `${n} / ${max} 字符`,
+  exit: (code?: number) => `会话已结束，退出码 ${code ?? '未知'}`,
+  commit: (sha: string) => `已生成 init commit ${sha.slice(0, 8)}`,
+};

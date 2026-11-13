@@ -19,7 +19,7 @@ async function setup() {
           resolve({ status: res.statusCode!, body: isJson ? JSON.parse(text) : text });
         } catch (error) { reject(error); }
       });
-    }); req.setTimeout(10000, () => req.destroy(new Error('请求超时'))); req.on('error', reject); req.end(JSON.stringify(body));
+    }); req.setTimeout(10000, () => req.destroy(new Error('请求超时'))); req.on('error', reject); req.end(typeof body === 'string' ? body : JSON.stringify(body));
   });
   return { ...fixture, ...running, post };
 }
@@ -53,4 +53,15 @@ test('添加页 action 与 single fetch 坏 Host/Origin 拒绝且无注册', asy
     expect((await s.post(path, { intent: 'confirm', path: '~/single' }, headers)).status).toBe(403);
   }
   expect(await s.gateway.core.call('project.list', {})).toEqual(before);
+});
+test('设置 action 与 single fetch 安全头和超长保存经网关拒绝', async () => {
+  const s = await setup(); s.repo('single'); const added = await s.gateway.core.call('project.add', { path: join(s.userHome, 'single') }) as { project: { id: string } }; const id = added.project.id;
+  const before = await s.gateway.core.call('project.onboarding.artefacts', { project_id: id });
+  for (const suffix of ['', '.data']) {
+    const path = `/projects/${id}/settings${suffix}`;
+    for (const intent of ['run', 'save', 'finish', 'skip']) for (const headers of [{ Host: 'evil.example' }, { Origin: 'http://evil.example' }] as Record<string, string>[]) expect((await s.post(path, { intent }, headers)).status).toBe(403);
+    const result = await s.post(path, new URLSearchParams({ intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) }).toString(), { 'Content-Type': 'application/x-www-form-urlencoded' });
+    expect(result.status).toBe(200); expect(String(result.body)).toContain('已拒绝：'); expect(String(result.body)).toContain('字符上限');
+  }
+  expect(await s.gateway.core.call('project.onboarding.artefacts', { project_id: id })).toEqual(before);
 });

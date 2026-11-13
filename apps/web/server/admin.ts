@@ -1,11 +1,14 @@
+import { createOnboardingWatch } from './onboarding-watch.ts';
 import { createPathGuard } from './paths.ts';
 import { LocalOpError, type createGateway } from './gateway.ts';
 import type { CoreSupervisor } from './core/supervisor.ts';
 
 type Project = { id: string; onboarding: unknown; [key: string]: unknown };
-export function createAdmin({ core, userHome }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string }) {
+export function createAdmin({ core, userHome, publish }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
   const paths = createPathGuard({ home: userHome });
+  const onboarding = createOnboardingWatch(publish);
   return {
+    onboarding,
     paths,
     register(gateway: ReturnType<typeof createGateway>) {
       gateway.registerLocalOp('project.confirm', async params => {
@@ -27,7 +30,7 @@ export function createAdmin({ core, userHome }: { core: Pick<CoreSupervisor, 'ca
         return result;
       });
     },
-    onTick() {},
+    onTick() { onboarding.onTick(); },
   };
 }
 export type AdminServices = ReturnType<typeof createAdmin>;

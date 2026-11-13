@@ -1,7 +1,8 @@
+import { ADMIN } from '../lib/admin-labels.ts';
 import { useEffect, useState } from 'react';
 import { Link, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
-import { newTaskHref } from '../components/nav-links.ts';
+import { newTaskHref, settingsHref } from '../components/nav-links.ts';
 import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
@@ -38,6 +39,7 @@ export default function ProjectBoard() {
   const foldHref = `${location.pathname}${query.size ? `?${query}` : ''}`;
   return <div className="board"><header className="board-header"><h1>{data.project.display_name}</h1>
     <div className="board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
+    <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header><div className="board-columns">{columns.map(column => <section className="board-column" key={column.id} aria-labelledby={`board-${column.id}`}>
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
