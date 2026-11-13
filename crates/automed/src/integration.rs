@@ -200,7 +200,7 @@ fn repo_range(
     start: &str,
     doc_dir: &str,
     conflicts: &[String],
-    read_stat: &dyn Fn(&Path, &str, Option<&str>) -> Result<String>,
+    read_stat: &impl Fn(&Path, &str, Option<&str>) -> Result<String>,
 ) -> Result<Value> {
     let repo = &slot.worktree;
     let end = read(repo, &["rev-parse", "HEAD"])?.trim().to_owned();

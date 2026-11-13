@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/25
+implementation-round: 2/25
 current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-01 独立审计通过后，实现 M-02 的集成复验守卫、证据指针守卫与审计启动接线
+next-action: 宿主复跑快检并独立审计 M-01；通过后实现 M-02 的集成复验守卫、证据指针守卫与审计启动接线
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -400,7 +400,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 ### M-01 验收契约
 
-最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-01-r1-impl.md · 17 用例通过，待独立审计 · 实现 #1
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-01-r2-impl.md · 快检及 17 用例通过，待独立审计 · 实现 #2
 
 - 验收命令：`cargo test -p automed --lib integration_range`
 - 预期：17 个用例通过，基线 0 个（本轮之前没有名字含 `integration_range` 的用例）。逐个：`integration_range_linear_repair_lists_the_fix_commit`、`integration_range_rebase_lists_only_rewritten_and_new_commits`（同时断言「消失」列表）、`integration_range_clean_rebase_is_empty`、`integration_range_doc_only_commits_are_not_integration`、`integration_range_counts_the_sweep_commit_and_skips_the_brief_commit`、`integration_range_a_crashed_attempt_keeps_its_commits`、`integration_range_test_files_by_path_and_by_content`、`integration_range_workspace_member_paths_carry_the_repo_name`、`integration_range_is_recorded_only_for_an_all_done_table_that_stays_done`（轮前有 `待审`、轮后新增 `开放` 两种都不记）、`integration_range_records_the_trigger_from_the_carried_inject`（rebase / 门禁 / 无注入三种）、`integration_range_bug_loop_records_nothing`；另 5 个（评审 R1 的反例）：`integration_range_conflict_that_drops_the_product_commit_is_still_integration`（冲突中选上游、自己的产品提交变空被丢弃：事件写出，「消失」带该提交的路径与 stat）、`integration_range_conflict_file_commit_with_an_equivalent_patch_id_is_still_listed`（`"hello world"` 解成 `"helloworld"`，patch-id 相同仍被列出）、`integration_range_inline_test_module_with_only_setup_changed_is_listed`（只改内联测试模块里的测试准备行，文件进测试清单）、`integration_range_unreadable_range_fails_closed`（范围读取失败不写事件也不放行）、`integration_range_a_stat_failure_keeps_the_range`（stat 读取失败：事件仍写、字段带「读取失败」）。
