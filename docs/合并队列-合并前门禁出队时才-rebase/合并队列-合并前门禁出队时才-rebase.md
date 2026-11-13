@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/25
+implementation-round: 4/25
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03：出队 rebase 冲突回实现 / 修复轮并让位
+next-action: 审计 M-03：复验出队冲突让位、授权保留、熔断与修复后自动合并
 
 任务文件：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-task.md`
 任务卡（第一输入）：`docs/合并队列-合并前门禁出队时才-rebase/合并队列-合并前门禁出队时才-rebase-card.md`
@@ -402,7 +402,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 |---|---|---|---|---|
 | M-01 | 已完成 | 合并队列核心：`[merge] auto` 读取、出队对齐、项目合并临界区 | 0 | merge-queue |
 | M-02 | 已完成 | 授权寿命与预先同意 / 撤销、配置警告 | 0 | merge-auth |
-| M-03 | 开放 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
+| M-03 | 待审 | 出队 rebase 冲突回实现 / 修复轮并让位 | 0 | merge-conflict |
 | M-04 | 开放 | 过期显示与合并队列的输出 | 0 | merge-view |
 | M-05 | 开放 | README 与技术设计文档 | 0 | docs |
 
@@ -432,6 +432,8 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 - 内容：D2 全部（`merge_press`、`cancel`、CLI `--cancel`、字段改名、删自动清除、`config::warnings`）；既有测试处置表里标 M-02 的各行。
 
 ### M-03 范围
+
+最新证据：docs/合并队列-合并前门禁出队时才-rebase/evidence/M-03-r4-impl.md · 验收通过，待审 · 实现 #4
 
 - 结果：出队 rebase 冲突时任务回实现轮（Bug 回修复轮），名额当场让给下一个，授权保留，修好后重新排队并自动合并。
 - 覆盖：G1（冲突分支）；验收 4。
@@ -473,7 +475,7 @@ G5 的显示告诉用户。合并本身任何时候都串行（D4 的 `Merging` 
 ### M-03 验收契约
 
 - 验收命令：`cargo test -p autome-domain merge_conflict_ && cargo test -p automed --lib merge_conflict_ && cargo test -p automed --test end_to_end merge_conflict_`
-- 预期：共 5 个用例通过（domain 2：`merge_conflict_a_dequeue_conflict_goes_back_to_implement`、`merge_conflict_a_bug_dequeue_conflict_goes_back_to_fix`；automed lib 1：`merge_conflict_a_dequeue_conflict_yields_the_queue_and_counts_the_streak`；e2e 2：`merge_conflict_a_dequeue_conflict_returns_to_implement_keeps_the_request_and_merges_after_the_repair`、`merge_conflict_a_bug_dequeue_conflict_returns_to_the_fix_round`）；需求用例里第三个任务的 `gate.started` 早于冲突任务修好后的那次 `gate.started`。
+- 预期：共 6 个用例通过（domain 2：`merge_conflict_a_dequeue_conflict_goes_back_to_implement`、`merge_conflict_a_bug_dequeue_conflict_goes_back_to_fix`；automed lib 2：`merge_conflict_a_dequeue_conflict_yields_the_queue_and_counts_the_streak`、`merge_conflict_bug_streak_and_budget_stop_before_launching_another_fix`；e2e 2：`merge_conflict_a_dequeue_conflict_returns_to_implement_keeps_the_request_and_merges_after_the_repair`、`merge_conflict_a_bug_dequeue_conflict_returns_to_the_fix_round`）；需求用例里第三个任务的 `gate.started` 早于冲突任务修好后的那次 `gate.started`。
 - 负向对照：让 `(MergeGate, Conflict)` 落进通用分支变成 `Failed` 时两个 domain 用例与两个 e2e 用例失败；冲突后不让出名额（例如在 rebase 前先写 `gate.started` 或保留排队条目）时 `merge_conflict_a_dequeue_conflict_yields_the_queue_and_counts_the_streak` 失败。
 
 ### M-04 验收契约

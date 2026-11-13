@@ -1926,7 +1926,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
     // Conflict repair consumes the same implementation budget as ordinary
     // work. Keep the streak in the ledger so daemon restarts cannot reset it.
     if let Trigger::CoreStepDone {
-        node: Node::Rebase,
+        node: conflict_node @ (Node::Rebase | Node::MergeGate),
         result,
     } = trigger
     {
@@ -1950,26 +1950,30 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
                 Action::StartRole {
                     role: Role::Impl,
                     ..
+                } | Action::StartBugSession {
+                    step: BugStep::Fix,
+                    ..
                 }
             ) {
                 let next = ctx
                     .store
                     .next_round(task_id, &SessionKind::Role { role: Role::Impl })?;
-                let reason = if let Some(limit) = task.budget_n.filter(|limit| next > *limit) {
-                    Some(FailureReason::ImplBudget { limit })
-                } else if count >= 3 {
-                    Some(FailureReason::RebaseConflict {
-                        detail: format!(
-                            "rebase 连续 {count} 次出现相同冲突文件集：{}；请检查后重跑",
-                            files.join(", ")
-                        ),
-                    })
-                } else {
-                    None
-                };
+                let reason =
+                    if let Some(limit) = task.budget_n.filter(|limit| !bug && next > *limit) {
+                        Some(FailureReason::ImplBudget { limit })
+                    } else if count >= 3 {
+                        Some(FailureReason::RebaseConflict {
+                            detail: format!(
+                                "rebase 连续 {count} 次出现相同冲突文件集：{}；请检查后重跑",
+                                files.join(", ")
+                            ),
+                        })
+                    } else {
+                        None
+                    };
                 if let Some(reason) = reason {
                     transition.next = TaskState::Failed {
-                        at: Node::Rebase,
+                        at: *conflict_node,
                         reason,
                     };
                     transition.action = Action::None;

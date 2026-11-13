@@ -306,6 +306,22 @@ pub fn apply_for(
             _ => apply_with_merge_request(state, trigger, ctx, merge_requested),
         },
         (
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+            Trigger::CoreStepDone {
+                node: Node::MergeGate,
+                result: CoreStepResult::Conflict { files, .. },
+            },
+        ) => Ok(start_fix(
+            Node::MergeGate,
+            Some(Inject::RebaseConflict {
+                files: files.clone(),
+            }),
+            ctx,
+            progress,
+        )),
+        (
             TaskState::Active { node: Node::Rebase },
             Trigger::CoreStepDone {
                 node: Node::Rebase,
@@ -1269,6 +1285,75 @@ mod tests {
             assert!(!t.grants_merge_request);
         }
     }
+    #[test]
+    fn merge_conflict_a_bug_dequeue_conflict_goes_back_to_fix() {
+        let c = config();
+        for requested in [false, true] {
+            for files in [vec![], vec!["file".into()]] {
+                let trigger = core_done(
+                    Node::MergeGate,
+                    CoreStepResult::Conflict {
+                        files: files.clone(),
+                        detail: "conflict".into(),
+                    },
+                );
+                let t = apply_for(
+                    TaskKind::Bug,
+                    &active(Node::MergeGate),
+                    &trigger,
+                    &ctx(&c),
+                    BugProgress::default(),
+                    requested,
+                )
+                .unwrap();
+                assert_eq!(t.next, active(Node::Fix));
+                assert_eq!(
+                    t.action,
+                    Action::StartBugSession {
+                        step: BugStep::Fix,
+                        inject: Some(Inject::RebaseConflict { files })
+                    }
+                );
+                let t = apply_for(
+                    TaskKind::Bug,
+                    &active(Node::MergeGate),
+                    &trigger,
+                    &ctx(&c),
+                    BugProgress {
+                        fix_round: c.bug.fix_rounds,
+                        repro_misses: 0,
+                    },
+                    requested,
+                )
+                .unwrap();
+                assert!(matches!(
+                    t.next,
+                    TaskState::Failed {
+                        at: Node::MergeGate,
+                        reason: FailureReason::FixBudget { .. }
+                    }
+                ));
+            }
+        }
+        assert!(
+            apply_for(
+                TaskKind::Bug,
+                &active(Node::MergeGate),
+                &core_done(
+                    Node::Rebase,
+                    CoreStepResult::Conflict {
+                        files: vec![],
+                        detail: "mismatch".into()
+                    }
+                ),
+                &ctx(&c),
+                BugProgress::default(),
+                false
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn bug_loop_rebase_conflict_and_merge_gate_failure_return_to_fix_not_implement() {
         let t = at(

@@ -272,3 +272,80 @@ fn merge_auth_a_preauthorized_task_merges_without_stopping_and_a_cancelled_one_s
         }
     }
 }
+
+#[test]
+fn merge_conflict_a_dequeue_conflict_returns_to_implement_keeps_the_request_and_merges_after_the_repair() {
+    let (mut w, ids) = mq_e2e_world("mc-feature", 1, false);
+    let b = &ids[1];
+    let task = w.ctx.store.get_task(b).unwrap();
+    let wt = w.repo.join(".worktree").join(&task.slug);
+    std::fs::write(wt.join("README.md"), "branch conflict\n").unwrap();
+    automed::git::commit_paths(&wt, &["README.md"], "branch conflict").unwrap();
+    let repair = w.root.join("repair-now");
+    w.doc_step_for(&task.slug, 8, &doc("实现中", 2, 2, &[("M-01", "待审")]), &format!(
+        "while [ ! -f '{}' ]; do sleep 0.01; done\n(git rebase main || {{ git checkout --ours README.md; git add README.md; GIT_EDITOR=true git rebase --continue; }}) >/dev/null 2>&1\n", repair.display()));
+    w.doc_step_for(&task.slug, 9, &doc("实现中", 2, 2, &[("M-01", "已完成")]), "");
+    w.retro_step_learning(10, &task.slug, "出队冲突后保留授权并让出门禁名额");
+    let retro = std::fs::read_to_string(w.repo.join(".autome/fake/10.sh")).unwrap();
+    w.step_for(&task.slug, 10, &retro);
+    std::fs::write(w.repo.join(".autome/fake").join(&task.slug).join("next"), "8").unwrap();
+    // A already occupies the host slot. B and C queue before main advances.
+    queue_wait(&mut w, |w| !setup_events(w, &ids[0], "gate.started").is_empty());
+    assert_eq!(setup_events(&w, b, "gate.queued").len(), 1);
+    std::fs::write(w.repo.join("README.md"), "main conflict\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["README.md"], "main conflict").unwrap();
+    // Stop A instead of merging its now-stale head; B gets the next dequeue.
+    ok(&w.call("task.stop", json!({"task_id":ids[0]})));
+    queue_wait(&mut w, |w| !setup_events(w, &ids[2], "gate.started").is_empty());
+    assert_eq!(w.node(b).as_deref(), Some("implement"));
+    assert!(setup_events(&w, b, "gate.started").is_empty());
+    assert_eq!(setup_events(&w, b, "merge.unlocked").len(), 1);
+    let started = w.ctx.store.last_event(b, "session.started").unwrap().unwrap();
+    assert_eq!(started["inject"]["files"], json!(["README.md"]));
+    assert!(automed::merge_queue::authorization(&w.ctx, &w.ctx.store.get_task(b).unwrap()).unwrap().is_some());
+    std::fs::write(w.root.join(format!("release-{}", ids[2])), "go").unwrap();
+    queue_wait(&mut w, |w| w.state(&ids[2]) == "done");
+    std::fs::write(repair, "go").unwrap();
+    std::fs::write(w.root.join(format!("release-{b}")), "go").unwrap();
+    w.settle();
+    assert_eq!(w.state(b), "done");
+    assert_eq!(setup_events(&w, b, "gate.started").len(), 1);
+    assert!(setup_events(&w, &ids[2], "gate.started")[0].0 < setup_events(&w, b, "gate.started")[0].0);
+    assert_eq!(setup_events(&w, b, "merge.direct").len(), 1);
+    assert_eq!(std::fs::read_to_string(w.repo.join("README.md")).unwrap(), "main conflict\n");
+}
+
+#[test]
+fn merge_conflict_a_bug_dequeue_conflict_returns_to_the_fix_round() {
+    let mut w = World::new("mc-bug");
+    let request = "dequeue bug conflict";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let wt = w.repo.join(".worktree").join(&slug);
+    std::fs::write(wt.join("README.md"), "branch conflict\n").unwrap();
+    automed::git::commit_paths(&wt, &["README.md"], "branch conflict").unwrap();
+    std::fs::write(w.repo.join("README.md"), "main conflict\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["README.md"], "main conflict").unwrap();
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "(git rebase main || { git checkout --ours README.md; git add README.md; GIT_EDITOR=true git rebase --continue; }) >/dev/null 2>&1");
+    bug_step(&w, 5, &slug, &bug_doc("通过"), "");
+    w.ctx.store.append_event("merge.auto", &id, json!({"active":true,"by":"user"})).unwrap();
+    w.ctx.store.set_task_state(&id, &autome_domain::task::TaskState::Active { node: autome_domain::task::Node::MergeGate }).unwrap();
+    let before = setup_events(&w, &id, "gate.started").len();
+    queue_tick(&mut w);
+    assert_eq!(w.node(&id).as_deref(), Some("fix"));
+    assert_eq!(setup_events(&w, &id, "gate.started").len(), before);
+    let started = w.ctx.store.last_event(&id, "session.started").unwrap().unwrap();
+    assert_eq!(started["inject"]["files"], json!(["README.md"]));
+    assert_eq!(setup_events(&w, &id, "merge.unlocked").len(), 1);
+    assert!(automed::merge_queue::authorization(&w.ctx, &w.ctx.store.get_task(&id).unwrap()).unwrap().is_some());
+    let session = w.ctx.store.running_session(&id).unwrap().unwrap();
+    assert_eq!(session.kind, autome_domain::session::SessionKind::Bug { step: autome_domain::session::BugStep::Fix });    w.settle();
+    assert_eq!(w.state(&id), "done", "{:?}", w.ctx.store.get_task(&id).unwrap().state);
+    assert!(w.prompt(4).contains("修复轮"));
+    assert_eq!(setup_events(&w, &id, "merge.direct").len(), 1);
+}

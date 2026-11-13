@@ -596,3 +596,161 @@ fn merge_auth_leaving_the_merge_tail_writes_no_revocation() {
         );
     }
 }
+
+#[test]
+fn merge_conflict_a_dequeue_conflict_yields_the_queue_and_counts_the_streak() {
+    let mut w = mq_world("mc-yield");
+    let a = queue_task(&mut w, "A");
+    let b = mq_task(&mut w, "B");
+    let c = mq_task(&mut w, "C");
+    let wt = w.repo.join(".worktree/B");
+    std::fs::write(wt.join("README.md"), "branch\n").unwrap();
+    git::commit_paths(&wt, &["README.md"], "branch conflict").unwrap();
+    let blocker = queue_job(&w, &a, "gate", "block", None);
+    queue_run(&mut w, &b);
+    queue_run(&mut w, &c);
+    assert_eq!(queue_count(&w, &b, "gate.queued"), 1);
+    std::fs::write(w.repo.join("README.md"), "main\n").unwrap();
+    git::commit_paths(&w.repo, &["README.md"], "main conflict").unwrap();
+    let main = git::head_sha(&w.repo).unwrap();
+    blocker.clear();
+    queue_run(&mut w, &b);
+    assert_eq!(
+        w.state(&b.id),
+        TaskState::Active {
+            node: Node::Implement
+        }
+    );
+    assert_eq!(queue_count(&w, &b, "gate.started"), 0);
+    assert_eq!(queue_count(&w, &b, "merge.unlocked"), 1);
+    assert!(merge_requested(&w.ctx, &b.id).unwrap());
+    assert_eq!(git::head_sha(&w.repo).unwrap(), main);
+    assert_eq!(
+        std::fs::read_to_string(wt.join("README.md")).unwrap(),
+        "branch\n"
+    );
+    queue_run(&mut w, &c);
+    assert_eq!(queue_count(&w, &c, "gate.started"), 1);
+    assert!(mq_seq(&w, &b, "merge.unlocked") < mq_seq(&w, &c, "gate.started"));
+    // Replay the same conflict after repair rounds; the third observation trips
+    // the breaker, while a zero budget prevents even the first repair launch.
+    for (budget, expected_count) in [(25, 2), (25, 3), (0, 4)] {
+        w.ctx.store.set_task_budget(&b.id, budget).unwrap();
+        w.set_state(
+            &b.id,
+            TaskState::Active {
+                node: Node::MergeGate,
+            },
+        );
+        advance(
+            &mut w.ctx,
+            &b.id,
+            &Trigger::CoreStepDone {
+                node: Node::MergeGate,
+                result: CoreStepResult::Conflict {
+                    files: vec!["README.md".into()],
+                    detail: "same conflict".into(),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            w.ctx
+                .store
+                .last_event(&b.id, "rebase.conflicts")
+                .unwrap()
+                .unwrap()["count"],
+            expected_count
+        );
+        match expected_count {
+            2 => assert_eq!(
+                w.state(&b.id),
+                TaskState::Active {
+                    node: Node::Implement
+                }
+            ),
+            3 => assert!(matches!(
+                w.state(&b.id),
+                TaskState::Failed {
+                    at: Node::MergeGate,
+                    reason: FailureReason::RebaseConflict { .. }
+                }
+            )),
+            _ => assert!(matches!(
+                w.state(&b.id),
+                TaskState::Failed {
+                    at: Node::MergeGate,
+                    reason: FailureReason::ImplBudget { limit: 0 }
+                }
+            )),
+        }
+        assert!(merge_requested(&w.ctx, &b.id).unwrap());
+    }
+}
+
+#[test]
+fn merge_conflict_bug_streak_and_budget_stop_before_launching_another_fix() {
+    for (count, budget, breaker) in [(1, 25, true), (0, 0, false)] {
+        let (mut w, task, _, _, _, _) = repro_gate_world("before_merge", 0);
+        w.ctx.store.set_task_budget(&task.id, budget).unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "rebase.conflicts",
+                &task.id,
+                json!({"files":["a","b"],"count":count}),
+            )
+            .unwrap();
+        for expected in (count + 1)..=3 {
+            w.set_state(
+                &task.id,
+                TaskState::Active {
+                    node: Node::MergeGate,
+                },
+            );
+            advance(
+                &mut w.ctx,
+                &task.id,
+                &Trigger::CoreStepDone {
+                    node: Node::MergeGate,
+                    result: CoreStepResult::Conflict {
+                        files: vec!["b".into(), "a".into(), "a".into()],
+                        detail: "conflict".into(),
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                w.ctx
+                    .store
+                    .last_event(&task.id, "rebase.conflicts")
+                    .unwrap()
+                    .unwrap()["count"],
+                expected
+            );
+            if !breaker {
+                assert!(matches!(
+                    w.state(&task.id),
+                    TaskState::Failed {
+                        at: Node::MergeGate,
+                        reason: FailureReason::FixBudget { limit: 0 }
+                    }
+                ));
+                assert_eq!(queue_count(&w, &task, "bug.fix_round_started"), 0);
+                break;
+            }
+            if expected == 2 {
+                assert_eq!(w.state(&task.id), TaskState::Active { node: Node::Fix });
+            } else {
+                assert!(matches!(
+                    w.state(&task.id),
+                    TaskState::Failed {
+                        at: Node::MergeGate,
+                        reason: FailureReason::RebaseConflict { .. }
+                    }
+                ));
+                assert_eq!(queue_count(&w, &task, "bug.fix_round_started"), 1);
+            }
+        }
+    }
+}
