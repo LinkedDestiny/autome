@@ -821,6 +821,7 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("task_id")
         ),
         "project.alert" => format!("报警（{subject}）：{}  → autome alerts", s("kind")),
+        "guard.auto_fixed" => format!("{subject} {}", s("detail")),
         "guard.warning" => format!("{subject} 守卫提醒：{}", s("code")),
         "task.protocol_failure" => format!("{subject} 协议失败：{}", s("detail")),
         _ => return None,
@@ -1838,5 +1839,22 @@ fn operator_note_events_render_one_line_each() {
         .unwrap();
         assert_eq!(line.lines().count(), 1);
         assert!(line.contains("T-1") && line.contains("备注"));
+    }
+}
+
+#[test]
+fn legacy_pointer_auto_fixed_event_is_readable() {
+    for detail in [
+        "该任务固定的协议 v7 没有这条规则，已自动还原",
+        "违反『已完成里程碑的最新证据不改』，已自动还原",
+    ] {
+        let line = event_line(
+            "guard.auto_fixed",
+            "T-1",
+            &serde_json::json!({"code":"impl_closed_milestone", "detail":detail}),
+        )
+        .unwrap();
+        assert_eq!(line, format!("T-1 {detail}"));
+        assert_eq!(line.lines().count(), 1);
     }
 }

@@ -32,6 +32,7 @@ pub(crate) fn audit_guard(
     let evidence = integration["evidence"].as_str()?;
     let current = evidence_stamp(&evidence_dir.join(evidence));
     Some(guards::IntegrationAudit {
+        legacy: integration["legacy"].as_bool().unwrap_or(false),
         impl_round: integration["impl_round"].as_u64()?.try_into().ok()?,
         evidence: evidence.to_owned(),
         summary: integration["summary"].as_str()?.to_owned(),
@@ -47,12 +48,9 @@ pub(crate) fn integration_for_audit(
     template: &str,
     evidence_dir: &Path,
 ) -> Result<Option<Value>> {
-    if !template
+    let legacy = !template
         .lines()
-        .any(|line| line == "<!-- integration-audit -->")
-    {
-        return Ok(None);
-    }
+        .any(|line| line == "<!-- integration-audit -->");
     let Some(range) = store
         .last_event(task, "integration.range")
         .map_err(|e| e.to_string())?
@@ -137,14 +135,18 @@ pub(crate) fn integration_for_audit(
             ));
         }
     }
-    Ok(Some(json!({
+    let mut payload = json!({
         "impl_session": first_impl,
         "impl_round": range["impl_round"],
         "evidence": evidence,
         "summary": summary.join("；"),
         "range": range,
         "evidence_stamp": evidence_stamp(&evidence_dir.join(evidence)),
-    })))
+    });
+    if legacy {
+        payload["legacy"] = json!(true);
+    }
+    Ok(Some(payload))
 }
 
 fn read(repo: &Path, args: &[&str]) -> Result<String> {
@@ -602,7 +604,7 @@ mod tests {
         );
     }
     #[test]
-    fn integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit() {
+    fn legacy_pointer_integration_payload_is_legacy_when_the_marker_is_missing() {
         let w = World::new();
         assert!(
             integration_for_audit(
@@ -614,6 +616,11 @@ mod tests {
             .unwrap()
             .is_none()
         );
+        assert!(
+            integration_for_audit(&w.store, "T", "old audit", &w.slot.worktree)
+                .unwrap()
+                .is_none()
+        );
         audit_fixture(&w);
         for template in [
             "",
@@ -624,9 +631,11 @@ mod tests {
             assert!(
                 integration_for_audit(&w.store, "T", template, &w.slot.worktree)
                     .unwrap()
-                    .is_none()
+                    .unwrap()["legacy"]
+                    == true
             );
         }
+        assert!(select_audit(&w).get("legacy").is_none());
         assert_eq!(
             select_audit(&w)["summary"],
             "rebase 冲突； abcdef0..1234567，1 个提交"

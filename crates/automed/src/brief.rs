@@ -790,6 +790,7 @@ session-protocol = []
         // Exercise the actual admission guard: changing only the evidence
         // filename from the audit ordinal to the implementation round fixes it.
         let mut round = crate::guards::Round {
+            protocol_version: None,
             role: Role::Audit,
             status: &s,
             before: None,
@@ -962,6 +963,10 @@ pub fn integration_section(event: &serde_json::Value, doc_dir: &str) -> String {
         "\n## 本轮要审的集成改动\n\n本轮是**集成复验**：实现 #{} 开始时里程碑表没有 `开放` / `待审`，却在 `{doc_dir}/` 之外留下了提交。规则见 `{doc_dir}/protocol/loop-protocol.md` 的「集成复验」一节。\n\n触发原因：",
         event["impl_round"]
     );
+    if event["legacy"] == true {
+        out = out.replace(&format!("规则见 `{doc_dir}/protocol/loop-protocol.md` 的「集成复验」一节。"),
+            "冻结的旧协议没有集成复验规则；本节由内核补充。请核对下列目录外提交，独立复跑验收并记录结论；未写证据时内核只提醒。");
+    }
     let trigger = &event["trigger"];
     match trigger["kind"].as_str() {
         Some("rebase_conflict") => {

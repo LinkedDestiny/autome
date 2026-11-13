@@ -11592,7 +11592,7 @@ fn legacy_pointer_scenario(version: u32, dirty: bool) {
         + &pointer.replace("original-audit.md", "new-impl.md");
     let mut script = World::doc_script(&slug, 8, &changed, "echo ok > gate-ok\ngit add gate-ok");
     if dirty {
-        script.push_str("echo dirty > untracked-product\n");
+        script.push_str("touch \"$(git rev-parse --git-path index.lock)\"\n");
     }
     w.step(8, &script);
     if version < 8 {
@@ -11627,6 +11627,14 @@ fn legacy_pointer_scenario(version: u32, dirty: bool) {
     w.settle();
     if dirty {
         assert_eq!(w.state(&id), "failed");
+        assert!(
+            w.ctx
+                .store
+                .last_event(&id, "guard.auto_fixed")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!w.repo.join(".autome/fake/9.prompt").exists());
         assert_eq!(
             w.ctx
                 .store

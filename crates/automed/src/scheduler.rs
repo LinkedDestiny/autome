@@ -1071,11 +1071,54 @@ fn start_due_retries(ctx: &mut Ctx, report: &mut TickReport) {
     }
 }
 
-/// The one place a round's output is admitted (plan §4.D).
-///
-/// Only a document that parsed is checked: a round that could not produce a
-/// readable status block has already failed, and piling a second complaint on
-/// top would bury the one a person can act on.
+/// A narrow, recorded exception to the rule that guards do not rewrite documents.
+fn restore_closed_pointer_document(
+    worktree: &Path,
+    task: &TaskRecord,
+    before: &str,
+    after: &str,
+    milestones: &[(String, autome_domain::status_block::MilestoneState)],
+    version: Option<u32>,
+) -> std::result::Result<(String, serde_json::Value), String> {
+    let restored = guards::restore_closed_pointers(before, after, milestones)
+        .ok_or("无法识别需要还原的证据指针")?;
+    if !git::is_clean(worktree).map_err(|e| e.to_string())? {
+        return Err("工作区不干净，不能自动还原".into());
+    }
+    let path = worktree.join(task.design_doc());
+    std::fs::write(&path, &restored).map_err(|e| e.to_string())?;
+    let commit = git::commit_paths(
+        worktree,
+        &[&task.design_doc()],
+        &format!("chore(autome): {} 还原已完成里程碑的最新证据指针", task.id),
+    );
+    let commit = match commit {
+        Ok(Some(commit)) => commit,
+        other => {
+            // Leave the session's original document in place when the commit fails.
+            let write = std::fs::write(&path, after);
+            let reset = git::run_ok(worktree, &["reset", "--", &task.design_doc()]);
+            return Err(format!(
+                "还原提交失败：{other:?}；恢复原文：{write:?}；恢复索引：{reset:?}"
+            ));
+        }
+    };
+    let detail = match version {
+        Some(v) if v < 8 => format!("该任务固定的协议 v{v} 没有这条规则，已自动还原"),
+        Some(_) => "违反『已完成里程碑的最新证据不改』，已自动还原".to_owned(),
+        None => "无法识别任务协议版本，已自动还原已完成里程碑的最新证据指针".to_owned(),
+    };
+    let event = json!({
+        "code": "impl_closed_milestone",
+        "milestones": guards::retargeted_closed_milestones(before, after, milestones),
+        "commit": commit,
+        "protocol": task.protocol_ref,
+        "detail": detail,
+    });
+    Ok((restored, event))
+}
+
+/// The one place a parsed round output is admitted (plan §4.D).
 fn apply_guards(
     ctx: &mut Ctx,
     session: &Session,
@@ -1117,7 +1160,12 @@ fn apply_guards(
     let integration_audit = started.as_ref().and_then(|v| {
         crate::integration::audit_guard(v, &worktree.join(task.doc_dir()).join("evidence"))
     });
-    let round = guards::Round {
+    let mut round = guards::Round {
+        protocol_version: task
+            .protocol_ref
+            .as_deref()
+            .and_then(ProtocolRef::parse)
+            .and_then(|p| p.version()),
         integration: integration_audit.as_ref(),
         design_before: design_before.as_deref(),
         design_after: design_after.as_deref(),
@@ -1136,7 +1184,40 @@ fn apply_guards(
         ),
         repairing: is_repairing(carried_inject(ctx, &task.id, &session.id)?.as_ref()),
     };
-    let findings = guards::check(&round);
+    let mut findings = guards::check(&round);
+    let repaired;
+    if role == Role::Impl
+        && findings.iter().any(|f| f.code == "impl_closed_milestone")
+        && let (Some(old), Some(new), Some(snapshot)) = (&design_before, &design_after, &before)
+        && !guards::retargeted_closed_milestones(old, new, &snapshot.milestones).is_empty()
+    {
+        match restore_closed_pointer_document(
+            &worktree,
+            task,
+            old,
+            new,
+            &snapshot.milestones,
+            round.protocol_version,
+        ) {
+            Ok((text, event)) => {
+                ctx.store
+                    .append_event("guard.auto_fixed", &task.id, event)?;
+                repaired = text;
+                round.design_after = Some(&repaired);
+                round.design_bytes = repaired.len() as u64;
+                findings = guards::check(&round);
+            }
+            Err(detail) => {
+                for finding in findings
+                    .iter_mut()
+                    .filter(|f| f.code == "impl_closed_milestone")
+                {
+                    finding.detail.push_str(&format!(" 自动还原失败：{detail}"));
+                }
+            }
+        }
+    }
+
     // Read the range before replacing task.head: retries share the first attempt's H0.
     let integration = crate::integration::range(
         &ctx.store,
@@ -1195,7 +1276,7 @@ fn apply_guards(
         json!(guards::Snapshot {
             milestones: crate::task_metrics::snapshot(status),
             retro_lines: round.retro_lines,
-            design_bytes,
+            design_bytes: round.design_bytes,
         }),
     )?;
     if let Some(integration) = integration {
@@ -3634,7 +3715,13 @@ fn launch_session(
             gate_evidence,
             integration_audit.as_ref().map(|v| {
                 crate::brief::integration_section(
-                    &v["range"],
+                    &{
+                        let mut range = v["range"].clone();
+                        if v["legacy"] == true {
+                            range["legacy"] = json!(true);
+                        }
+                        range
+                    },
                     &layout.doc_dir_from_cwd(&task.doc_dir()),
                 )
             }),
@@ -9948,19 +10035,97 @@ mod tests {
             },
         )
         .unwrap();
-        let failure = w
+        let fixed = w
             .ctx
             .store
-            .last_event(&task.id, "guard.failed")
+            .last_event(&task.id, "guard.auto_fixed")
             .unwrap()
             .unwrap();
-        assert_eq!(failure["code"], "impl_closed_milestone");
-        assert!(failure["detail"].as_str().unwrap().contains("new-impl.md"));
+        assert_eq!(fixed["code"], "impl_closed_milestone");
+        assert!(
+            std::fs::read_to_string(wt.join(task.design_doc()))
+                .unwrap()
+                .contains("old-audit.md")
+        );
         w.ctx
             .store
             .append_event("task.head", &task.id, json!({"sha":"missing-object"}))
             .unwrap();
         assert!(design_at_last_task_head(&w.ctx.store, &wt, &task).is_none());
+    }
+
+    #[test]
+    fn legacy_pointer_restore_io_and_commit_failures_preserve_the_document() {
+        let mut w = World::new("pointer-restore-failure");
+        let task = w.add_task("T-1", "a");
+        let wt = w.with_worktree(&task);
+        let old = "### M-01\n最新证据：old-audit.md\n";
+        let new = "### M-01\n最新证据：new-impl.md\n";
+        let milestones = vec![("M-01".into(), MilestoneState::Done)];
+        w.write_design(&task, new);
+        git::commit_paths(&wt, &[&task.design_doc()], "session pointer").unwrap();
+        let head = git::head_sha(&wt).unwrap();
+        std::fs::write(wt.join("untracked-product"), "dirty").unwrap();
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7))
+                .unwrap_err()
+                .contains("不干净")
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join(task.design_doc())).unwrap(),
+            new
+        );
+        std::fs::remove_file(wt.join("untracked-product")).unwrap();
+        let lock = git::run_ok(&wt, &["rev-parse", "--git-path", "index.lock"])
+            .unwrap()
+            .stdout;
+        let lock = wt.join(lock.trim());
+        std::fs::write(&lock, "held").unwrap();
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7)).is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join(task.design_doc())).unwrap(),
+            new
+        );
+        assert_eq!(git::head_sha(&wt).unwrap(), head);
+        std::fs::remove_file(lock).unwrap();
+        assert!(git::is_clean(&wt).unwrap());
+        let path = wt.join(task.design_doc());
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&path, readonly).unwrap();
+        let write_failure =
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, Some(7));
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(write_failure.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), new);
+        // Unknown document shapes are rejected before touching disk.
+        assert!(
+            restore_closed_pointer_document(&wt, &task, old, "unknown", &milestones, None).is_err()
+        );
+        // Missing Git repository exercises the read failure branch.
+        assert!(
+            restore_closed_pointer_document(
+                &wt.join("missing"),
+                &task,
+                old,
+                new,
+                &milestones,
+                None
+            )
+            .is_err()
+        );
+        let (restored, event) =
+            restore_closed_pointer_document(&wt, &task, old, new, &milestones, None).unwrap();
+        assert_eq!(restored, old);
+        assert!(
+            event["detail"]
+                .as_str()
+                .unwrap()
+                .contains("无法识别任务协议版本")
+        );
     }
 
     #[test]
