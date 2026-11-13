@@ -3,7 +3,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cargo test --offline -p automed --lib merge_tail_reaches_done_without_a_session_slot -- --test-threads=1
 根因: Merging 不占会话槽位而 MainCheck 占槽，合并成功后的统一准入先将 MainCheck 改为 Requeued，尚未执行无负载的门禁结果复用判断。
-复核: 待复核
+复核: 通过
 repos: autome-v2
 
 ## 现象
@@ -50,4 +50,9 @@ parallel=1 且另一个 Implement 任务占满槽位时，目标任务已成功�
 
 ## 复核意见
 
-待独立复核。
+独立复核通过（第 1/3 轮）。
+- 差异检查：定位提交 8528c26 到修复提交 270ce52，回归测试文件只有新增行，无删除、跳过或弱化；原两个测试未改，另加关闭复用、门禁命令变化两个满槽负向场景。
+- 复验：原复现命令及 `merge_tail_`（3 项）、`main_check_reuse`（4 项）、`merge_core_steps_reacquire`（1 项）均通过。
+- 根因：Merging 不占槽而 MainCheck 占槽，准入先于 run_gate 的复用判断，分析与代码一致。
+- 范围：仅 scheduler.rs 抽出 `reusable_main_check` 供准入与 run_gate 共用（条件相同），可复用时在准入前走 GateDone(Passed)；不可复用的真实门禁仍占槽并排队，未改 occupies_slot。范围最小。
+- 未运行全量门禁，由宿主合并前运行。
