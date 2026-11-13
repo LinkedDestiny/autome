@@ -808,6 +808,7 @@ mod tests {
             },
         );
         let ctx = Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config: &config,
             budget_n: Some(35),

@@ -186,6 +186,9 @@ fn failure(reason: &Value) -> String {
     let detail = reason["detail"].as_str().unwrap_or("");
     match reason["kind"].as_str().unwrap_or("") {
         "design_budget" => format!("设计轮用完（上限 {}）", reason["limit"]),
+        "test_fix_limit" => autome_domain::bug_loop::test_fix_limit_message(
+            reason["limit"].as_u64().unwrap_or(2) as u32,
+        ),
         "fix_budget" => format!("修复轮次用完（上限 {}）", reason["limit"]),
         "impl_budget" => format!("实现预算用完（N = {}）", reason["limit"]),
         "gate_same_failure"
@@ -235,6 +238,9 @@ pub fn next_step(task: &Value) -> Option<String> {
         ("active", "not_a_bug") => Some(format!(
             "autome task convert {id} [--start]    或    autome cancel {id}；确认是 Bug：autome reply {id} \"理由\""
         )),
+        ("failed", _) if state["reason"]["kind"] == "test_fix_limit" => {
+            Some(format!("autome rerun {id} locate    或取消后重提"))
+        }
         ("failed", _) if state["reason"]["kind"] == "fix_budget" => {
             Some(format!("autome extend {id} 1"))
         }
@@ -1684,5 +1690,13 @@ mod scope_tests {
                 )
             );
         }
+    }
+    #[test]
+    fn test_fix_limit_status_explains_recovery() {
+        assert_eq!(
+            failure(&json!({"kind":"test_fix_limit","limit":2})),
+            autome_domain::bug_loop::test_fix_limit_message(2)
+        );
+        assert_eq!(next_step(&json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"test_fix_limit","limit":2}}})).as_deref(), Some("autome rerun T-1 locate    或取消后重提"));
     }
 }

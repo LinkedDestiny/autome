@@ -218,6 +218,9 @@ pub enum FailureReason {
     ImplBudget {
         limit: u32,
     },
+    TestFixLimit {
+        limit: u32,
+    },
     FixBudget {
         limit: u32,
     },
@@ -435,6 +438,8 @@ pub enum Trigger {
         outcome: crate::bug_loop::BugSessionOutcome,
     },
     ReproDone {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paired: Option<crate::bug_loop::ReproPair>,
         head: String,
         command: String,
         exit_code: i32,
@@ -573,6 +578,7 @@ pub struct Context<'a> {
     pub decisions: PendingDecisions,
     /// Whether restored scope patches still need an implementation round.
     pub handoff_pending: bool,
+    pub bug_test_defect: bool,
 }
 
 /// A side effect `automed` must perform as part of applying a transition.
@@ -672,6 +678,9 @@ pub struct Transition {
     pub consumes_decisions: bool,
     /// True only when this transition grants authorization after a behind merge.
     pub grants_merge_request: bool,
+    /// Event to persist atomically with this transition (Bug Loop only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_fix_event: Option<crate::bug_loop::TestFixEvent>,
 }
 
 impl Transition {
@@ -682,6 +691,7 @@ impl Transition {
             budget_n: None,
             consumes_decisions: false,
             grants_merge_request: false,
+            test_fix_event: None,
         }
     }
 
@@ -2266,6 +2276,7 @@ mod tests {
 
     fn ctx<'a>(config: &'a ResolvedConfig) -> Context<'a> {
         Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config,
             budget_n: Some(25),
@@ -3236,6 +3247,7 @@ mod tests {
     fn approving_with_pending_decisions_runs_one_more_design_round() {
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config: &c,
             budget_n: None,
@@ -3266,6 +3278,7 @@ mod tests {
     /// A context with `included` Backlog items waiting to be absorbed.
     fn with_included(c: &ResolvedConfig, included: u32, budget: u32) -> Context<'_> {
         Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config: c,
             budget_n: Some(budget),
@@ -3392,6 +3405,7 @@ mod tests {
         // while the task sits here has no later round to be picked up by.
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config: &c,
             budget_n: Some(25),
@@ -3411,6 +3425,7 @@ mod tests {
     fn merging_with_only_ignored_items_proceeds_to_merge() {
         let c = cfg();
         let context = Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config: &c,
             budget_n: Some(25),
@@ -4215,6 +4230,7 @@ mod tests {
         states: &[MilestoneState],
     ) -> Transition {
         let context = Context {
+            bug_test_defect: false,
             handoff_pending: pending,
             ..ctx(config)
         };

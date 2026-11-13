@@ -2204,6 +2204,8 @@ pub(crate) fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
 fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
     Ok(BugProgress {
         fix_round: ctx.store.count_events(&task.id, "bug.fix_round_started")?,
+        test_fixes: 0,
+        test_fix_open: false,
         repro_misses: ctx
             .store
             .count_events_after(&task.id, "bug.repro_missed", "task.replied")?,
@@ -2385,6 +2387,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     let decisions = ctx.store.pending_decisions(task_id)?;
     let context = task::Context {
+        bug_test_defect: false,
         handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
@@ -2517,6 +2520,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         }
     }
     if let Trigger::ReproDone {
+        paired: _,
         head,
         command,
         exit_code,
@@ -2547,6 +2551,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
                 action: Action::None,
                 budget_n: None,
                 consumes_decisions: false,
+                test_fix_event: None,
                 grants_merge_request: false,
             };
         }
@@ -4615,6 +4620,7 @@ fn run_gate_attempt(
             ctx,
             &task.id,
             &Trigger::ReproDone {
+                paired: None,
                 head,
                 command: gate.command,
                 exit_code,
@@ -4967,6 +4973,7 @@ fn cancel_task(ctx: &mut Ctx, task: &TaskRecord, project: &Project) -> Result<()
 pub(crate) fn check_convert_cancel(ctx: &Ctx, task: &TaskRecord, project: &Project) -> Result<()> {
     let resolved = resolve_config(ctx, project)?;
     let context = task::Context {
+        bug_test_defect: false,
         handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
@@ -7011,6 +7018,7 @@ mod tests {
                 action: Action::Reenter { node: step.node() },
                 budget_n: None,
                 consumes_decisions: false,
+                test_fix_event: None,
                 grants_merge_request: false,
             };
             perform(&mut w.ctx, &task, &project, &resolved, &transition).unwrap();

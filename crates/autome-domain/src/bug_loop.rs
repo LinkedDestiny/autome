@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct BugProgress {
     pub fix_round: u32,
     pub repro_misses: u32,
+    pub test_fixes: u32,
+    pub test_fix_open: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -21,6 +23,58 @@ pub enum BugSessionOutcome {
     MissingArtifact { path: String },
     GuardFailed { detail: String },
 }
+pub const TEST_FIX_LIMIT: u32 = 2;
+
+pub fn test_fix_limit_message(limit: u32) -> String {
+    format!(
+        "回归测试已退回定位轮修正 {limit} 次（上限 {limit}），仍被判有缺陷。请人工检查回归测试后 autome rerun <任务> locate，或取消后重提"
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproPair {
+    pub base_exit: i32,
+    pub base_timed_out: bool,
+    pub head_exit: i32,
+    pub head_timed_out: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestFixJudgement {
+    Accept,
+    NeedsFix,
+    NotReproduced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TestFixEvent {
+    Requested {
+        by: BugStep,
+        attempt: u32,
+        limit: u32,
+    },
+    Settled {
+        result: TestFixJudgement,
+        pair: ReproPair,
+    },
+}
+
+fn reproduced(exit: i32, timed_out: bool) -> bool {
+    !timed_out && exit != 0 && ![126, 127].contains(&exit)
+}
+
+pub fn judge_test_fix(pair: &ReproPair) -> TestFixJudgement {
+    if !reproduced(pair.base_exit, pair.base_timed_out) {
+        TestFixJudgement::NotReproduced
+    } else if pair.head_exit == 0 && !pair.head_timed_out {
+        TestFixJudgement::Accept
+    } else {
+        TestFixJudgement::NeedsFix
+    }
+}
+
 pub fn uses_bug_loop(kind: TaskKind, state: &TaskState, started: bool) -> bool {
     kind == TaskKind::Bug && (started || matches!(state, TaskState::Draft | TaskState::Queued))
 }
@@ -213,7 +267,20 @@ pub fn apply_for(
                     ));
                 }
             };
-            let invalid = if *node != Node::Locate && doc.status != BugStatus::Located {
+            if doc.regression_defect && !ctx.bug_test_defect {
+                return Ok(Transition::fail(
+                    *node,
+                    FailureReason::Protocol {
+                        detail: "Bug 文档字段 回归测试 缺失、重复或值无效".into(),
+                    },
+                ));
+            }
+            let invalid = if doc.regression_defect
+                && (*node == Node::Locate
+                    || (*node == Node::FixReview && doc.review != BugReview::Rejected))
+            {
+                Some("回归测试有缺陷只能由修复轮或打回复核轮声明")
+            } else if *node != Node::Locate && doc.status != BugStatus::Located {
                 Some("status 必须是已定位")
             } else if (*node == Node::FixReview) == (doc.review == BugReview::Pending) {
                 Some("复核 字段不符合当前轮次")
@@ -227,6 +294,29 @@ pub fn apply_for(
                         detail: detail.into(),
                     },
                 ));
+            }
+            if doc.regression_defect {
+                if progress.test_fixes >= TEST_FIX_LIMIT {
+                    return Ok(Transition::fail(
+                        *node,
+                        FailureReason::TestFixLimit {
+                            limit: TEST_FIX_LIMIT,
+                        },
+                    ));
+                }
+                let mut transition = session(BugStep::Locate, None, ctx);
+                if matches!(transition.next, TaskState::Active { .. }) {
+                    transition.test_fix_event = Some(TestFixEvent::Requested {
+                        by: if *node == Node::Fix {
+                            BugStep::Fix
+                        } else {
+                            BugStep::FixReview
+                        },
+                        attempt: progress.test_fixes + 1,
+                        limit: TEST_FIX_LIMIT,
+                    });
+                }
+                return Ok(transition);
             }
             Ok(match node {
                 Node::Locate => match doc.status {
@@ -244,6 +334,7 @@ pub fn apply_for(
                 node: Node::ReproCheck,
             },
             Trigger::ReproDone {
+                paired,
                 head,
                 command,
                 exit_code,
@@ -251,9 +342,44 @@ pub fn apply_for(
                 tail,
             },
         ) => {
-            if !timed_out && *exit_code != 0 && ![126, 127].contains(exit_code) {
-                return Ok(start_fix(Node::ReproCheck, None, ctx, progress));
-            }
+            let (exit_code, timed_out) = if ctx.bug_test_defect && progress.test_fix_open {
+                let Some(pair) = paired else {
+                    return Ok(Transition::fail(
+                        Node::ReproCheck,
+                        FailureReason::Protocol {
+                            detail: "修正回归测试缺少成对复现结果".into(),
+                        },
+                    ));
+                };
+                let result = judge_test_fix(pair);
+                let transition = match result {
+                    TestFixJudgement::Accept => Some(core(Node::FixGate)),
+                    TestFixJudgement::NeedsFix => Some(start_fix(
+                        Node::ReproCheck,
+                        Some(Inject::GateFailed {
+                            head: head.clone(),
+                            command: command.clone(),
+                            tail: tail.clone(),
+                        }),
+                        ctx,
+                        progress,
+                    )),
+                    TestFixJudgement::NotReproduced => None,
+                };
+                if let Some(mut transition) = transition {
+                    transition.test_fix_event = Some(TestFixEvent::Settled {
+                        result,
+                        pair: *pair,
+                    });
+                    return Ok(transition);
+                }
+                (&pair.base_exit, &pair.base_timed_out)
+            } else {
+                if reproduced(*exit_code, *timed_out) {
+                    return Ok(start_fix(Node::ReproCheck, None, ctx, progress));
+                }
+                (exit_code, timed_out)
+            };
             if progress.repro_misses >= 1 {
                 return Ok(Transition::active(Node::AwaitInfo, Action::None));
             }
@@ -384,6 +510,7 @@ mod tests {
     }
     fn ctx(config: &ResolvedConfig) -> Context<'_> {
         Context {
+            bug_test_defect: false,
             handoff_pending: false,
             config,
             budget_n: None,
@@ -411,6 +538,8 @@ mod tests {
         Trigger::BugSessionEnded {
             outcome: BugSessionOutcome::Ok {
                 doc: Box::new(BugDoc {
+                    regression_defect: false,
+                    regression_defect_section: None,
                     status,
                     review,
                     fix_round: 0,
@@ -424,6 +553,7 @@ mod tests {
     }
     fn repro(code: i32, timed_out: bool) -> Trigger {
         Trigger::ReproDone {
+            paired: None,
             head: "sha".into(),
             command: "test bug".into(),
             exit_code: code,
@@ -1084,6 +1214,8 @@ mod tests {
                     &ctx(&config()),
                     BugProgress {
                         fix_round: 0,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: misses,
                     },
                 )
@@ -1213,6 +1345,8 @@ mod tests {
                     &context,
                     BugProgress {
                         fix_round: round,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: 0,
                     },
                 )
@@ -1244,6 +1378,8 @@ mod tests {
             &ctx(&cfg),
             BugProgress {
                 fix_round: 3,
+                test_fixes: 0,
+                test_fix_open: false,
                 repro_misses: 0,
             },
         )
@@ -1322,6 +1458,8 @@ mod tests {
                     &ctx(&c),
                     BugProgress {
                         fix_round: c.bug.fix_rounds,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: 0,
                     },
                     requested,
@@ -1513,6 +1651,8 @@ mod tests {
                     &ctx(&config()),
                     BugProgress {
                         fix_round: 20,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: 0,
                     },
                 );
@@ -1564,6 +1704,8 @@ mod tests {
                         &context,
                         BugProgress {
                             fix_round,
+                            test_fixes: 0,
+                            test_fix_open: false,
                             repro_misses: 0,
                         },
                     )
@@ -1642,6 +1784,7 @@ mod tests {
     fn scope_patch_passed_review_returns_to_fix() {
         let c = config();
         let context = Context {
+            bug_test_defect: false,
             handoff_pending: true,
             budget_n: Some(2),
             ..ctx(&c)
@@ -1654,6 +1797,8 @@ mod tests {
                     &context,
                     BugProgress {
                         fix_round: round,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: 0,
                     },
                 )
@@ -1675,6 +1820,7 @@ mod tests {
         let c = config();
         for limit in [0, 2, u32::MAX] {
             let context = Context {
+                bug_test_defect: false,
                 handoff_pending: true,
                 budget_n: Some(limit),
                 ..ctx(&c)
@@ -1686,6 +1832,8 @@ mod tests {
                     &context,
                     BugProgress {
                         fix_round: round,
+                        test_fixes: 0,
+                        test_fix_open: false,
                         repro_misses: 0,
                     },
                 )
@@ -1709,6 +1857,358 @@ mod tests {
                 ended(BugStatus::Located, BugReview::Passed)
             ),
             core(Node::Rebase)
+        );
+    }
+    fn defect(review: BugReview) -> Trigger {
+        let mut trigger = ended(BugStatus::Located, review);
+        if let Trigger::BugSessionEnded {
+            outcome: BugSessionOutcome::Ok { doc },
+        } = &mut trigger
+        {
+            doc.regression_defect = true;
+        }
+        trigger
+    }
+    #[test]
+    fn test_fix_fix_declaring_a_defect_starts_locate_without_a_fix_round() {
+        let config = config();
+        let mut context = ctx(&config);
+        context.bug_test_defect = true;
+        for used in [0, 1] {
+            let progress = BugProgress {
+                fix_round: u32::MAX,
+                test_fixes: used,
+                ..BugProgress::default()
+            };
+            let t = run(
+                &active(Node::Fix),
+                &defect(BugReview::Pending),
+                &context,
+                progress,
+            )
+            .unwrap();
+            assert_eq!(t.next, active(Node::Locate));
+            assert_eq!(
+                t.action,
+                Action::StartBugSession {
+                    step: BugStep::Locate,
+                    inject: None
+                }
+            );
+            assert_eq!(t.budget_n, None);
+            assert_eq!(progress.fix_round, u32::MAX);
+            assert_eq!(
+                t.test_fix_event,
+                Some(TestFixEvent::Requested {
+                    by: BugStep::Fix,
+                    attempt: used + 1,
+                    limit: 2
+                })
+            );
+        }
+        let mut disabled = config.clone();
+        off(&mut disabled, Role::Impl);
+        let mut disabled_ctx = ctx(&disabled);
+        disabled_ctx.bug_test_defect = true;
+        let t = run(
+            &active(Node::Fix),
+            &defect(BugReview::Pending),
+            &disabled_ctx,
+            BugProgress::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            t.next,
+            TaskState::Failed {
+                at: Node::Locate,
+                reason: FailureReason::Config { .. }
+            }
+        ));
+        assert_eq!(t.test_fix_event, None);
+    }
+    #[test]
+    fn test_fix_review_declaring_a_defect_starts_locate() {
+        let config = config();
+        let mut context = ctx(&config);
+        context.bug_test_defect = true;
+        let t = run(
+            &active(Node::FixReview),
+            &defect(BugReview::Rejected),
+            &context,
+            BugProgress::default(),
+        )
+        .unwrap();
+        assert_eq!(t.next, active(Node::Locate));
+        assert_eq!(
+            t.action,
+            Action::StartBugSession {
+                step: BugStep::Locate,
+                inject: None
+            }
+        );
+        assert_eq!(
+            t.test_fix_event,
+            Some(TestFixEvent::Requested {
+                by: BugStep::FixReview,
+                attempt: 1,
+                limit: 2
+            })
+        );
+        for (node, review) in [
+            (Node::Locate, BugReview::Pending),
+            (Node::FixReview, BugReview::Passed),
+            (Node::FixReview, BugReview::Pending),
+            (Node::Fix, BugReview::Rejected),
+        ] {
+            let t = run(
+                &active(node),
+                &defect(review),
+                &context,
+                BugProgress::default(),
+            )
+            .unwrap();
+            assert!(matches!(
+                t.next,
+                TaskState::Failed {
+                    reason: FailureReason::Protocol { .. },
+                    ..
+                }
+            ));
+            assert_eq!(t.test_fix_event, None);
+        }
+    }
+    #[test]
+    fn test_fix_limit_reached_fails_with_a_readable_reason() {
+        let config = config();
+        let mut context = ctx(&config);
+        context.bug_test_defect = true;
+        for used in [2, 3, u32::MAX] {
+            for (node, review) in [
+                (Node::Fix, BugReview::Pending),
+                (Node::FixReview, BugReview::Rejected),
+            ] {
+                let t = run(
+                    &active(node),
+                    &defect(review),
+                    &context,
+                    BugProgress {
+                        test_fixes: used,
+                        ..BugProgress::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    t.next,
+                    TaskState::Failed {
+                        at: node,
+                        reason: FailureReason::TestFixLimit { limit: 2 }
+                    }
+                );
+                assert_eq!(t.action, Action::None);
+                assert_eq!(t.test_fix_event, None);
+            }
+        }
+        assert_eq!(
+            test_fix_limit_message(2),
+            "回归测试已退回定位轮修正 2 次（上限 2），仍被判有缺陷。请人工检查回归测试后 autome rerun <任务> locate，或取消后重提"
+        );
+    }
+    #[test]
+    fn test_fix_old_protocol_treats_the_key_as_unparseable() {
+        for (node, review) in [
+            (Node::Locate, BugReview::Pending),
+            (Node::Fix, BugReview::Pending),
+            (Node::FixReview, BugReview::Rejected),
+        ] {
+            let bad = at(node, defect(review));
+            let unparseable = at(
+                node,
+                Trigger::BugSessionEnded {
+                    outcome: BugSessionOutcome::Unparseable {
+                        error: BugDocError {
+                            detail: "Bug 文档字段 回归测试 缺失、重复或值无效".into(),
+                        },
+                    },
+                },
+            );
+            assert_eq!(bad, unparseable);
+        }
+    }
+    #[test]
+    fn test_fix_pair_judgement_accept_needs_fix_not_reproduced() {
+        for base_exit in [i32::MIN, -1, 0, 1, 126, 127, i32::MAX] {
+            for head_exit in [i32::MIN, 0, 1, 126, 127, i32::MAX] {
+                for base_timed_out in [false, true] {
+                    for head_timed_out in [false, true] {
+                        let expected = if base_timed_out || [0, 126, 127].contains(&base_exit) {
+                            TestFixJudgement::NotReproduced
+                        } else if head_exit == 0 && !head_timed_out {
+                            TestFixJudgement::Accept
+                        } else {
+                            TestFixJudgement::NeedsFix
+                        };
+                        assert_eq!(
+                            judge_test_fix(&ReproPair {
+                                base_exit,
+                                base_timed_out,
+                                head_exit,
+                                head_timed_out
+                            }),
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn test_fix_settled_results_route_to_fix_gate_fix_or_the_miss_rule() {
+        let config = config();
+        let mut context = ctx(&config);
+        context.bug_test_defect = true;
+        let progress = BugProgress {
+            fix_round: 1,
+            test_fix_open: true,
+            test_fixes: 1,
+            ..BugProgress::default()
+        };
+        let locate = run(
+            &active(Node::Locate),
+            &ended(BugStatus::Located, BugReview::Pending),
+            &context,
+            progress,
+        )
+        .unwrap();
+        assert_eq!(locate.next, active(Node::ReproCheck));
+        for (base_exit, base_timed_out, head_exit, head_timed_out, expected) in [
+            (1, false, 0, false, Node::FixGate),
+            (1, false, 1, false, Node::Fix),
+            (1, false, 0, true, Node::Fix),
+            (0, false, 0, false, Node::Locate),
+            (126, false, 0, false, Node::Locate),
+            (127, false, 0, false, Node::Locate),
+            (1, true, 0, false, Node::Locate),
+        ] {
+            let pair = ReproPair {
+                base_exit,
+                base_timed_out,
+                head_exit,
+                head_timed_out,
+            };
+            let mut trigger = repro(1, false);
+            if let Trigger::ReproDone { paired, .. } = &mut trigger {
+                *paired = Some(pair);
+            }
+            let t = run(&active(Node::ReproCheck), &trigger, &context, progress).unwrap();
+            assert_eq!(t.next, active(expected));
+            if expected == Node::Locate {
+                assert_eq!(t.test_fix_event, None);
+                let why = if base_timed_out {
+                    "timed_out"
+                } else if base_exit == 0 {
+                    "exited_zero"
+                } else {
+                    "not_runnable"
+                };
+                assert!(
+                    matches!(&t.action, Action::StartBugSession { step: BugStep::Locate, inject: Some(Inject::ReproNotFailing { exit_code, why: actual, .. }) } if *exit_code == base_exit && actual == why)
+                );
+                let second = run(
+                    &active(Node::ReproCheck),
+                    &trigger,
+                    &context,
+                    BugProgress {
+                        repro_misses: 1,
+                        ..progress
+                    },
+                )
+                .unwrap();
+                assert_eq!(second.next, active(Node::AwaitInfo));
+                assert_eq!(second.test_fix_event, None);
+            } else {
+                assert_eq!(
+                    t.test_fix_event,
+                    Some(TestFixEvent::Settled {
+                        result: judge_test_fix(&pair),
+                        pair
+                    })
+                );
+                if expected == Node::Fix {
+                    assert_eq!(t.budget_n, Some(3));
+                    assert!(matches!(
+                        t.action,
+                        Action::StartBugSession {
+                            step: BugStep::Fix,
+                            inject: Some(Inject::GateFailed { .. })
+                        }
+                    ));
+                    let spent = run(
+                        &active(Node::ReproCheck),
+                        &trigger,
+                        &context,
+                        BugProgress {
+                            fix_round: 3,
+                            ..progress
+                        },
+                    )
+                    .unwrap();
+                    assert!(matches!(
+                        spent.next,
+                        TaskState::Failed {
+                            reason: FailureReason::FixBudget { limit: 3 },
+                            ..
+                        }
+                    ));
+                } else {
+                    assert_eq!(
+                        t.action,
+                        Action::RunCoreStep {
+                            node: Node::FixGate
+                        }
+                    );
+                    let gate_t =
+                        run(&t.next, &gate(Node::FixGate, true), &context, progress).unwrap();
+                    assert_eq!(gate_t.next, active(Node::FixReview));
+                }
+            }
+            // A pair does not activate the path for legacy tasks or closed repair mode.
+            assert_eq!(
+                run(&active(Node::ReproCheck), &trigger, &ctx(&config), progress)
+                    .unwrap()
+                    .next,
+                active(Node::Fix)
+            );
+            assert_eq!(
+                run(
+                    &active(Node::ReproCheck),
+                    &trigger,
+                    &context,
+                    BugProgress::default()
+                )
+                .unwrap()
+                .next,
+                active(Node::Fix)
+            );
+        }
+        let missing = run(
+            &active(Node::ReproCheck),
+            &repro(1, false),
+            &context,
+            progress,
+        )
+        .unwrap();
+        assert!(matches!(
+            missing.next,
+            TaskState::Failed {
+                reason: FailureReason::Protocol { .. },
+                ..
+            }
+        ));
+        let mut old = serde_json::to_value(repro(1, false)).unwrap();
+        old.as_object_mut().unwrap().remove("paired");
+        assert_eq!(
+            serde_json::from_value::<Trigger>(old).unwrap(),
+            repro(1, false)
         );
     }
 }
