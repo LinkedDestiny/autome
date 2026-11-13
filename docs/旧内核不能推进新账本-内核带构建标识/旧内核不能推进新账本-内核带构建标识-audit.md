@@ -1,9 +1,8 @@
-# 审计结论（审计 #7）
+# 审计结论（审计 #8）
 
-## M-07 结论：实现缺陷，退回开放（reopen 1，领域 package-isolation）
+## M-07 结论：通过，标为已完成
 
-- 失败命令：`npm run test --prefix apps/web -- test/ci-config.test.ts`，输出尾部：`Tests  1 failed | 7 passed (8)`，失败于 `expect(path.startsWith(resolve(sandbox, 'tmp') + '/')).toBe(true)`。
-- 违反：设计 M-07 验收命令「预期 8 个用例通过」。
-- 根因：macOS 的 `mktemp -d` 忽略 `TMPDIR`（实测），新增用例却假定 scratch 在 `TMPDIR` 之下。
-- 详见 `evidence/M-07-r8-audit.md`。
-- 判别检查：本轮没有留下可搬的检查；失败的就是项目内那条用例本身，在本机复跑即红。
+- 验收命令通过：8 用例 0 失败，`sh -n` 退出 0。
+- 三条负向对照（去掉 AUTOME_HOME、去掉清理、吞安装失败）均使新增用例失败，已还原。
+- 详见 `evidence/M-07-r9-audit.md`。
+- 新造检查：上述三处缺陷注入，结果均为红；不留存。
