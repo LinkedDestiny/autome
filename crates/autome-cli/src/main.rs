@@ -1470,6 +1470,19 @@ mod idle_tests {
     }
 
     #[test]
+    fn session_ended_run_json_prints_the_event() {
+        let payload = json!({"session_id":"s1","kind":{"kind":"role","role":"impl"},"round":2,"end":"exited","exit_code":0,"duration_ms":123,"cost_usd":0.2});
+        let event = json!({"seq":9,"at":"2026-11-14T00:00:00Z","subject":"T-1","kind":"session.ended","payload":payload});
+        let printed = serde_json::to_string(&run_event(&event, true)).unwrap();
+        let row: Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(row["kind"], "session.ended");
+        assert_eq!(row["payload"], payload);
+        assert_eq!(row["task_id"], "T-1");
+        assert_eq!(row["seq"], 9);
+        assert!(render::event_line("session.ended", "T-1", &payload).is_none());
+    }
+
+    #[test]
     fn run_event_task_identity() {
         let c = client();
         insert(&c, "not-a-prefix", TaskState::Queued);

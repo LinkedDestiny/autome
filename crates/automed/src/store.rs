@@ -894,6 +894,38 @@ impl Store {
         .collect()
     }
 
+    pub fn events_by_subject(
+        &self,
+        subject: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<StoredEvent>> {
+        let mut stmt = self.conn.prepare("SELECT seq, kind, subject_id, payload, at FROM events WHERE subject_id = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3")?;
+        let rows = stmt.query_map(
+            params![subject, after.min(i64::MAX as u64) as i64, limit],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (seq, kind, subject, payload, at) = row?;
+            Ok(StoredEvent {
+                seq,
+                kind,
+                subject,
+                payload: serde_json::from_str(&payload)?,
+                at,
+            })
+        })
+        .collect()
+    }
+
     pub fn events_since_with_subject(
         &self,
         after_seq: u64,

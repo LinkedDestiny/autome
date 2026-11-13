@@ -506,6 +506,12 @@ schema v7 新增 `task_after(task_id, after_id, ord, notified)`：两个任务�
 
 `task.reply {task_id, info}` 对走 Bug Loop 的任务表示补充信息：只有停在 `await_info` / `not_a_bug` 时可回到 `locate`，空白文本拒绝「补充信息不能为空」，其它节点拒绝；对需求任务则等同 `task.reject`，把 `info` 原样作为驳回意见。出处：`crates/automed/src/dispatch.rs` 的 `dispatch`（`task.reply` 分支）；`crates/autome-domain/src/bug_loop.rs` 的 `apply_for`、测试 `bug_loop_reply_is_refused_when_empty_or_not_waiting`。
 
+`task.changes` 的文件项包含 `path`、`added`、`deleted`、`status`（`added|deleted|modified|renamed`）；改名另带 `from`，顶层与各仓库提供 `deleted_count`。Git 使用 `-M` 和 NUL 分隔，保留特殊路径与二进制零行数。分支清理后用记录的双亲合并提交第一父提交到合并提交的差异恢复清单，`merged: true`；工作区按 `merge.repo` 的各成员提交恢复。缺失或非合并提交返回 `available: false`。
+
+`events.since {after_seq?, limit?, subject?}`：subject 是账本 `subject_id`，任务事件含所属会话事件；项目会话按项目 ID 查询。先过滤再分页，`latest_seq` 始终为全账本游标；省略 subject 保留旧回包。浏览器读网关仍拒绝该方法，服务端可调用。
+
+`session.ended` 在收割与显式停止时记录一次，subject 与开始事件一致。载荷为 `{session_id, kind, round, end, exit_code, duration_ms, cost_usd}`；`end` 为 `exited|stopped|timed_out|crashed`，非零退出和失踪归崩溃。未知退出码、时长、花费为 null，收割先记录 usage 再读取指标。CLI `run --json` 原样输出，人读模式不增加输出或通知。
+
 事件：`project.updated`、`task.updated`、`session.started / ended`、`config.changed`、`env.changed`、`skills.changed`、`core.status`。
 
 新增事件：`task.after_set` 携带更新后的 `after`；`task.moved` 携带任务、项目、位置参数及 `queue_position`；`task.blocked` 携带 `task`、`on`、`reason`、`project_id`。依赖为取消或失败时，同一阻塞原因只通知一次；恢复后再次失败可再次通知。

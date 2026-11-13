@@ -12009,3 +12009,212 @@ fn task_documents_e2e_bug_task_lists_its_bug_document() {
             .all(|d| d["source"] == "default_branch")
     );
 }
+
+#[test]
+fn task_changes_status_e2e_before_and_after_merge() {
+    needs_git!();
+    let mut w = World::new("changes-status");
+    for name in ["delete-me", "modify-me", "rename-me"] {
+        std::fs::write(w.repo.join(name), format!("{name}\nunique\n")).unwrap();
+    }
+    automed::git::commit_paths(&w.repo, &["."], "base files").unwrap();
+    let id = wait_for_automatic_merge(&mut w, "file status");
+    let task = w.ctx.store.get_task(&id).unwrap();
+    let wt = w.repo.join(".worktree").join(&task.slug);
+    std::fs::remove_file(wt.join("delete-me")).unwrap();
+    std::fs::write(wt.join("modify-me"), "modified\n").unwrap();
+    std::fs::write(wt.join("add-me"), "added\n").unwrap();
+    std::fs::rename(wt.join("rename-me"), wt.join("renamed-me")).unwrap();
+    automed::git::commit_paths(&wt, &["."], "four types").unwrap();
+    let before = ok(&w.call("task.changes", json!({"task_id":id}))).clone();
+    for (path, status) in [
+        ("add-me", "added"),
+        ("delete-me", "deleted"),
+        ("modify-me", "modified"),
+        ("renamed-me", "renamed"),
+    ] {
+        let f = before["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap();
+        assert_eq!(f["status"], status);
+        let keys: Vec<_> = f.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            if status == "renamed" {
+                vec!["added", "deleted", "from", "path", "status"]
+            } else {
+                vec!["added", "deleted", "path", "status"]
+            }
+        );
+        if status == "renamed" {
+            assert_eq!(f["from"], "rename-me");
+        }
+    }
+    assert_eq!(before["deleted_count"], 1);
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    assert!(!automed::git::branch_exists(&w.repo, &task.branch()));
+    let after = ok(&w.call("task.changes", json!({"task_id":id}))).clone();
+    assert_eq!(after["merged"], true);
+    for key in ["files", "deleted_count", "total_added", "total_deleted"] {
+        assert_eq!(before[key], after[key], "{key}");
+    }
+    w.ctx.store.complete_task(&id, Some("missing")).unwrap();
+    assert_eq!(
+        ok(&w.call("task.changes", json!({"task_id":id})))["available"],
+        false
+    );
+    let first = automed::git::run_ok(&w.repo, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+    w.ctx.store.complete_task(&id, Some(first.line())).unwrap();
+    assert_eq!(
+        ok(&w.call("task.changes", json!({"task_id":id})))["available"],
+        false
+    );
+}
+
+#[test]
+fn events_by_subject_e2e_interleaved_tasks_and_project() {
+    needs_git!();
+    let mut w = World::new("subject-pages");
+    let a = wait_for_automatic_merge(&mut w, "subject a");
+    let b = wait_for_automatic_merge(&mut w, "subject b");
+    let start = w.ctx.store.latest_seq().unwrap();
+    let mut expected = Vec::new();
+    for subject in [&a, &b, &a, &w.project_id, &b, &a] {
+        let seq = w
+            .ctx
+            .store
+            .append_event("session.ended", subject, json!({"task_id":"wrong"}))
+            .unwrap();
+        if subject == &a {
+            expected.push(seq);
+        }
+    }
+    let latest = w.ctx.store.latest_seq().unwrap();
+    let mut cursor = start;
+    let mut found = Vec::new();
+    loop {
+        let page = ok(&w.call(
+            "events.since",
+            json!({"subject":a,"after_seq":cursor,"limit":1}),
+        ))
+        .clone();
+        assert_eq!(page["latest_seq"], latest);
+        let rows = page["events"].as_array().unwrap();
+        if rows.is_empty() {
+            break;
+        }
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["subject"], a);
+        cursor = rows[0]["seq"].as_u64().unwrap();
+        found.push(cursor);
+    }
+    assert_eq!(found, expected);
+    let project = w.project_id.clone();
+    let page = ok(&w.call("events.since", json!({"subject":project,"after_seq":start}))).clone();
+    assert_eq!(page["events"].as_array().unwrap().len(), 1);
+}
+
+fn assert_session_ended(w: &mut World, id: &str, end: &str, code: Value) {
+    let events = w.ctx.store.task_events(id, "session.ended").unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    let session = w.ctx.store.list_sessions(id).unwrap().remove(0);
+    assert_eq!(event["session_id"], session.id);
+    assert_eq!(event["kind"], serde_json::to_value(session.kind).unwrap());
+    assert_eq!(event["round"], session.round);
+    assert_eq!(event["end"], end);
+    assert_eq!(event["exit_code"], code);
+    // A short CLI can exit before launch bookkeeping writes started_at.
+    // The existing metrics contract represents that negative duration as unknown.
+    if let Some(duration) = session.metrics.duration_ms {
+        assert_eq!(event["duration_ms"], duration);
+    } else if session.ended_at.as_deref().unwrap() >= session.started_at.as_str() {
+        assert!(event["duration_ms"].is_u64(), "{event:?}");
+    } else {
+        assert!(event["duration_ms"].is_null());
+    }
+    assert_eq!(
+        event["cost_usd"],
+        serde_json::to_value(session.metrics.cost_usd).unwrap()
+    );
+    assert_eq!(event.as_object().unwrap().len(), 7);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(w.ctx.store.count_events(id, "session.ended").unwrap(), 1);
+}
+
+#[test]
+fn session_ended_e2e_exited() {
+    needs_git!();
+    let mut w = World::new("ended-exit");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 3600\n");
+    w.step(1, "exit 0\n");
+    let id = create_task(&mut w, "ended exit");
+    scheduling_wait(
+        &mut w,
+        |w| {
+            let report = automed::scheduler::tick(&mut w.ctx);
+            assert!(report.errors.is_empty(), "{report:?}");
+            w.ctx.store.count_events(&id, "session.ended").unwrap() == 1
+        },
+        |_| "waiting for normal exit".into(),
+    );
+    assert_session_ended(&mut w, &id, "exited", json!(0));
+}
+#[test]
+fn session_ended_e2e_crashed() {
+    needs_git!();
+    let mut w = World::new("ended-crash");
+    w.configure("[retry]\nattempts = 1\nbackoff_seconds = 3600\n");
+    w.step(1, "exit 3\n");
+    let id = create_task(&mut w, "ended crash");
+    wait_for_retry(&mut w.ctx, &id);
+    assert_session_ended(&mut w, &id, "crashed", json!(3));
+}
+#[test]
+fn session_ended_e2e_stopped() {
+    needs_git!();
+    let (mut w, _) = session_timeout_world("ended-stop");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "ended stop");
+    let pid = session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    ok(&w.call("task.stop", json!({"task_id":id})));
+    assert_session_ended(&mut w, &id, "stopped", Value::Null);
+    assert!(!automed::launcher::pid_alive(pid));
+}
+#[test]
+fn session_ended_e2e_timed_out() {
+    needs_git!();
+    let (mut w, conn) = session_timeout_world("ended-timeout");
+    session_timeout_block(&w);
+    let id = create_task(&mut w, "ended timeout");
+    let pid = session_timeout_wait_file(&w.root.join("timeout-child.pid"));
+    let s = w.ctx.store.running_session(&id).unwrap().unwrap();
+    session_timeout_backdate(&conn, &s.id);
+    let report = automed::scheduler::tick(&mut w.ctx);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_session_ended(&mut w, &id, "timed_out", Value::Null);
+    assert!(!automed::launcher::pid_alive(pid));
+}
+
+#[test]
+fn task_changes_status_workspace_after_cleanup() {
+    needs_git!();
+    let mut w = Workspace::new("changes-workspace", &["docs", "backend"]);
+    let (id, _) = workspace_waiting_to_merge(&mut w);
+    let before = ok(&call(&mut w.ctx, "task.changes", json!({"task_id":id}))).clone();
+    ok(&call(&mut w.ctx, "task.merge", json!({"task_id":id})));
+    w.settle();
+    let after = ok(&call(&mut w.ctx, "task.changes", json!({"task_id":id}))).clone();
+    assert_eq!(after["merged"], true);
+    assert_eq!(before["repos"].as_array().unwrap().len(), 2);
+    assert_eq!(before["files"], after["files"]);
+    for repo in after["repos"].as_array().unwrap() {
+        assert_eq!(repo["merged"], true);
+    }
+}

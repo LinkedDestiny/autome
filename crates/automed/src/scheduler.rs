@@ -393,6 +393,7 @@ fn reap_session(ctx: &mut Ctx, s: &Session) -> Result<bool> {
     };
     ctx.store.finish_session(&s.id, &lifecycle, &ended_at)?;
     record_usage(ctx, s, &project, &task, &ended_at);
+    record_session_ended(&ctx.store, s, &s.task_id, &lifecycle, &ended_at)?;
 
     // Onboarding sessions are not part of a task's Loop; the project page
     // advances its own wizard.
@@ -1525,7 +1526,48 @@ fn check_budget(ctx: &Ctx, project: &Project, task: &TaskRecord) -> Result<()> {
     Ok(())
 }
 
-fn record_usage(ctx: &mut Ctx, s: &Session, project: &Project, task: &TaskRecord, ended_at: &str) {
+/// Shared by reap and explicit stop; subject also supports project-owned sessions.
+pub(crate) fn record_session_ended(
+    store: &crate::store::Store,
+    s: &Session,
+    subject: &str,
+    lifecycle: &SessionLifecycle,
+    ended_at: &str,
+) -> Result<()> {
+    if store
+        .session_event(subject, &s.id, "session.ended")?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let (end, exit_code) = match lifecycle {
+        SessionLifecycle::Exited { exit_code: 0 } => ("exited", Some(0)),
+        SessionLifecycle::Exited { exit_code } => ("crashed", Some(*exit_code)),
+        SessionLifecycle::Killed => ("stopped", None),
+        SessionLifecycle::TimedOut { .. } => ("timed_out", None),
+        SessionLifecycle::Vanished => ("crashed", None),
+        _ => return Ok(()),
+    };
+    let stored = store
+        .list_sessions(&s.task_id)?
+        .into_iter()
+        .find(|row| row.id == s.id);
+    let metrics = stored.as_ref().map(|row| &row.metrics);
+    store.append_event("session.ended", subject, json!({
+        "session_id": s.id, "kind": s.kind, "round": s.round, "end": end, "exit_code": exit_code,
+        "duration_ms": metrics.and_then(|m| m.duration_ms).or_else(|| wall_clock_ms(&s.started_at, ended_at)),
+        "cost_usd": metrics.and_then(|m| m.cost_usd),
+    }))?;
+    Ok(())
+}
+
+pub(crate) fn record_usage(
+    ctx: &mut Ctx,
+    s: &Session,
+    project: &Project,
+    task: &TaskRecord,
+    ended_at: &str,
+) {
     // The session's own output lives beside the project, not in the task's
     // checkout — one directory per task under `.autome/output/`, which is
     // where the wrapper script writes and where the panel reads.
@@ -11630,6 +11672,80 @@ mod tests {
         w.set_state("T-1", state.clone());
         recover(&mut w.ctx);
         assert_eq!(w.state("T-1"), state);
+    }
+
+    #[test]
+    fn session_ended_vanished_metrics_and_timestamp_boundaries() {
+        needs_git!();
+        let mut w = World::new("ended-boundaries");
+        w.add_task("T-1", "ended");
+        let mut s = Session {
+            id: "s1".into(),
+            task_id: "T-1".into(),
+            kind: SessionKind::Intake,
+            runtime: autome_domain::role::Runtime::Claude,
+            model: "m".into(),
+            effort: None,
+            skills: vec![],
+            round: 0,
+            started_at: "invalid".into(),
+            ended_at: None,
+            lifecycle: SessionLifecycle::Running,
+            log_path: "l".into(),
+            pid: None,
+            limit_minutes: None,
+            protocol_ref: None,
+            rules_hash: None,
+            metrics: Default::default(),
+        };
+        w.ctx.store.insert_session(&s).unwrap();
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Running, "bad").unwrap();
+        assert_eq!(w.ctx.store.count_events("T-1", "session.ended").unwrap(), 0);
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Vanished, "bad").unwrap();
+        let e = w
+            .ctx
+            .store
+            .session_event("T-1", "s1", "session.ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(e["end"], "crashed");
+        for key in ["exit_code", "duration_ms", "cost_usd"] {
+            assert!(e[key].is_null());
+        }
+        record_session_ended(&w.ctx.store, &s, "T-1", &SessionLifecycle::Vanished, "bad").unwrap();
+        assert_eq!(w.ctx.store.count_events("T-1", "session.ended").unwrap(), 1);
+        s.id = "s2".into();
+        w.ctx.store.insert_session(&s).unwrap();
+        let metrics = autome_domain::metrics::SessionMetrics {
+            cost_usd: Some(0.25),
+            duration_ms: Some(123),
+            ..Default::default()
+        };
+        w.ctx.store.set_session_metrics(&s.id, &metrics).unwrap();
+        record_session_ended(
+            &w.ctx.store,
+            &s,
+            "T-1",
+            &SessionLifecycle::Exited { exit_code: 0 },
+            "bad",
+        )
+        .unwrap();
+        let e = w
+            .ctx
+            .store
+            .session_event("T-1", "s2", "session.ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(e["duration_ms"], 123);
+        assert_eq!(e["cost_usd"], 0.25);
+        assert_eq!(
+            wall_clock_ms("2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"),
+            Some(1000)
+        );
+        assert_eq!(
+            wall_clock_ms("2026-01-01T00:00:01Z", "2026-01-01T00:00:00Z"),
+            None
+        );
     }
 
     #[test]

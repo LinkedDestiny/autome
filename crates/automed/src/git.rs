@@ -906,6 +906,8 @@ pub fn try_merge(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
+    pub status: String,
+    pub from: Option<String>,
     pub path: String,
     pub added: u32,
     pub deleted: u32,
@@ -941,22 +943,49 @@ pub fn change_summary(repo: &Path, base: &str, branch: &str) -> Result<ChangeSum
         .line()
         .parse::<u32>()
         .unwrap_or(0);
-    let numstat = run_ok(repo, &["diff", "--numstat", &range])?;
+    // NUL records preserve tabs, newlines and non-ASCII paths, including renames.
+    let names = run_ok(repo, &["diff", "-M", "--name-status", "-z", &range])?;
+    let numstat = run_ok(repo, &["diff", "-M", "--numstat", "-z", &range])?;
+    let mut counts = std::collections::HashMap::new();
+    let mut records = numstat.stdout.split('\0');
+    while let Some(record) = records.next() {
+        let mut fields = record.splitn(3, '\t');
+        let (Some(a), Some(d), Some(path)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            records.next(); // old path
+            records.next().unwrap_or_default()
+        } else {
+            path
+        };
+        counts.insert(
+            path,
+            (a.parse::<u32>().unwrap_or(0), d.parse::<u32>().unwrap_or(0)),
+        );
+    }
     let mut files = Vec::new();
     let (mut total_added, mut total_deleted) = (0u32, 0u32);
-    for line in numstat.stdout.lines() {
-        let mut parts = line.split('\t');
-        let (a, d, p) = match (parts.next(), parts.next(), parts.next()) {
-            (Some(a), Some(d), Some(p)) => (a, d, p),
-            _ => continue,
+    let mut records = names.stdout.split('\0').filter(|s| !s.is_empty());
+    while let Some(code) = records.next() {
+        let Some(first) = records.next() else { break };
+        let (status, from, path) = match code.as_bytes()[0] {
+            b'A' => ("added", None, first),
+            b'D' => ("deleted", None, first),
+            b'R' => (
+                "renamed",
+                Some(first.to_string()),
+                records.next().unwrap_or(first),
+            ),
+            _ => ("modified", None, first),
         };
-        // Binary files report "-" for both counts.
-        let added = a.parse::<u32>().unwrap_or(0);
-        let deleted = d.parse::<u32>().unwrap_or(0);
+        let (added, deleted) = counts.get(path).copied().unwrap_or_default();
         total_added += added;
         total_deleted += deleted;
         files.push(FileChange {
-            path: p.to_string(),
+            path: path.to_string(),
+            status: status.into(),
+            from,
             added,
             deleted,
         });
@@ -982,6 +1011,64 @@ pub fn commit_subjects(repo: &Path, base: &str, branch: &str) -> Result<Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_changes_status_all_types_and_unusual_paths() {
+        let dir = repo_with_commit("status");
+        let repo = dir.path();
+        for name in ["delete", "modify", "old\t中文\nname"] {
+            write(repo, name, &format!("{name}\nunique\n"));
+        }
+        commit_paths(repo, &["."], "base").unwrap();
+        run_ok(repo, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::remove_file(repo.join("delete")).unwrap();
+        write(repo, "modify", "changed\n");
+        write(repo, "add", "added\n");
+        std::fs::rename(repo.join("old\t中文\nname"), repo.join("new\t中文\nname")).unwrap();
+        commit_paths(repo, &["."], "changes").unwrap();
+        let summary = change_summary(repo, "main", "feature").unwrap();
+        assert_eq!(summary.files.len(), 4);
+        for (path, status, added, deleted) in [
+            ("delete", "deleted", 0, 2),
+            ("modify", "modified", 1, 2),
+            ("add", "added", 1, 0),
+            ("new\t中文\nname", "renamed", 0, 0),
+        ] {
+            let f = summary.files.iter().find(|f| f.path == path).unwrap();
+            assert_eq!((&*f.status, f.added, f.deleted), (status, added, deleted));
+            assert_eq!(
+                f.from.as_deref(),
+                if status == "renamed" {
+                    Some("old\t中文\nname")
+                } else {
+                    None
+                }
+            );
+        }
+    }
+    #[test]
+    fn task_changes_status_binary_and_empty() {
+        let dir = repo_with_commit("binary-status");
+        let repo = dir.path();
+        assert!(
+            change_summary(repo, "main", "main")
+                .unwrap()
+                .files
+                .is_empty()
+        );
+        run_ok(repo, &["checkout", "-b", "feature"]).unwrap();
+        std::fs::write(repo.join("binary"), [0, 1, 2]).unwrap();
+        commit_paths(repo, &["."], "binary").unwrap();
+        let summary = change_summary(repo, "main", "feature").unwrap();
+        assert_eq!(summary.files.len(), 1);
+        assert_eq!(summary.files[0].status, "added");
+        assert_eq!((summary.total_added, summary.total_deleted), (0, 0));
+    }
+    #[test]
+    fn task_changes_status_missing_revision_fails() {
+        let dir = repo_with_commit("missing-status");
+        assert!(change_summary(dir.path(), "main", "missing").is_err());
+        assert!(second_parent(dir.path(), "main").is_err());
+    }
     #[test]
     fn tree_id_of_a_no_ff_merge_equals_the_merged_head_and_differs_after_a_new_commit() {
         let dir = repo_with_commit("tree-id");

@@ -2588,11 +2588,14 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
         if let Some(pid) = session.pid {
             let _ = crate::launcher::stop_session(pid);
         }
-        ctx.store.finish_session(
-            &session.id,
-            &autome_domain::session::SessionLifecycle::Killed,
-            &now_iso(),
-        )?;
+        let ended_at = now_iso();
+        let lifecycle = autome_domain::session::SessionLifecycle::Killed;
+        ctx.store
+            .finish_session(&session.id, &lifecycle, &ended_at)?;
+        let task = ctx.store.get_task(task_id)?;
+        let project = ctx.store.get_project(&task.project_id)?;
+        scheduler::record_usage(ctx, &session, &project, &task, &ended_at);
+        scheduler::record_session_ended(&ctx.store, &session, task_id, &lifecycle, &ended_at)?;
         // The round never finished, so whatever it carried was not applied.
         ctx.store.release_decisions(&session.id)?;
     }
@@ -2698,26 +2701,54 @@ fn task_archive(ctx: &mut Ctx, task_id: &str, archive: bool) -> DispatchResult {
 fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
-    let layout = crate::layout::TaskLayout::of(
-        &project,
-        &task.slug,
-        &crate::scheduler::working_repos(&project, &task),
-    );
+    let merge_records = ctx.store.task_events(task_id, "merge.repo")?;
+    let mut working = crate::scheduler::working_repos(&project, &task);
+    if project.is_workspace() {
+        // Cleanup removes the worktrees and their repos declaration. The merge
+        // ledger still identifies every member whose history must be shown.
+        for record in &merge_records {
+            if record["commit"].is_string()
+                && let Some(name) = record["repo"].as_str()
+                && !working.iter().any(|n| n == name)
+            {
+                working.push(name.to_owned());
+            }
+        }
+    }
+    let layout = crate::layout::TaskLayout::of(&project, &task.slug, &working);
 
     // One row per repository the task worked in, in the order the merge will
     // take them. A single-repository project has exactly one, which is what
     // the panel drew before workspaces existed.
     let mut repos: Vec<Value> = Vec::new();
     for slot in &layout.repos {
-        if !git::branch_exists(&slot.repo_root, &slot.branch) {
-            continue;
-        }
-        let summary = git::change_summary(&slot.repo_root, &slot.base, &slot.branch)?;
-        let subjects = git::commit_subjects(&slot.repo_root, &slot.base, &slot.branch)?;
+        let archived = !git::branch_exists(&slot.repo_root, &slot.branch);
+        let merge_commit = if archived && project.is_workspace() {
+            merge_records
+                .iter()
+                .rev()
+                .find(|e| e["repo"] == slot.name && e["commit"].is_string())
+                .and_then(|e| e["commit"].as_str().map(str::to_owned))
+        } else {
+            task.merge_commit.clone()
+        };
+        let (base, branch) = if archived {
+            let Some(commit) =
+                merge_commit.filter(|c| git::second_parent(&slot.repo_root, c).is_ok())
+            else {
+                continue;
+            };
+            (format!("{commit}^1"), commit)
+        } else {
+            (slot.base.clone(), slot.branch.clone())
+        };
+        let summary = git::change_summary(&slot.repo_root, &base, &branch)?;
+        let subjects = git::commit_subjects(&slot.repo_root, &base, &branch)?;
         // Already in, from an earlier press or because the task changed
         // nothing here. `merge_all` skips exactly this case, so the panel has
         // to show it rather than offering to merge nothing.
-        let merged = git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false);
+        let merged = archived
+            || git::is_ancestor(&slot.repo_root, &slot.branch, &slot.base).unwrap_or(false);
         // The same judgement `merge_task_branch` makes, not a stricter one:
         // the panel must not tell the user a merge is blocked that the core
         // would happily perform, nor the reverse.
@@ -2729,9 +2760,10 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "branch": slot.branch,
             "into": slot.base,
             "commits": summary.commits,
-            "files": summary.files.iter().map(|f| json!({
-                "path": f.path, "added": f.added, "deleted": f.deleted
-            })).collect::<Vec<_>>(),
+            "files": summary.files.iter().map(|f| { let mut row = json!({
+                "path": f.path, "added": f.added, "deleted": f.deleted, "status": f.status
+            }); if let Some(from) = &f.from { row["from"] = json!(from); } row }).collect::<Vec<_>>(),
+            "deleted_count": summary.files.iter().filter(|f| f.status == "deleted").count(),
             "total_added": summary.total_added,
             "total_deleted": summary.total_deleted,
             "subjects": subjects,
@@ -2765,10 +2797,14 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
         .map(|r| r["blocked_by"].clone())
         .unwrap_or(Value::Null);
 
+    let archived = layout
+        .repos
+        .iter()
+        .all(|slot| !git::branch_exists(&slot.repo_root, &slot.branch));
     let total = |key: &str| -> i64 {
         repos
             .iter()
-            .filter(|r| r["merged"] != json!(true))
+            .filter(|r| archived || r["merged"] != json!(true))
             .filter_map(|r| r[key].as_i64())
             .sum()
     };
@@ -2787,6 +2823,8 @@ fn task_changes(ctx: &mut Ctx, task_id: &str) -> DispatchResult {
             "files": repos.iter().flat_map(|r| r["files"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
             "total_added": total("total_added"),
             "total_deleted": total("total_deleted"),
+            "deleted_count": repos.iter().filter_map(|r| r["deleted_count"].as_u64()).sum::<u64>(),
+            "merged": repos.iter().all(|r| r["merged"] == true),
             "subjects": repos.iter().flat_map(|r| r["subjects"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(),
             "mergeable": mergeable,
             "rebase_first": outstanding.iter().any(|r| r["behind"] == json!(true)),
@@ -3165,7 +3203,11 @@ fn events_since(ctx: &mut Ctx, params: &Value) -> DispatchResult {
         .and_then(Value::as_u64)
         .unwrap_or(200)
         .min(1000) as u32;
-    let events = ctx.store.events_since_with_at(after, limit)?;
+    let events = match params.get("subject") {
+        None => ctx.store.events_since_with_at(after, limit)?,
+        Some(Value::String(subject)) => ctx.store.events_by_subject(subject, after, limit)?,
+        Some(_) => return Err(bad_params("subject 必须是字符串")),
+    };
     Ok((
         json!({
             "events": events.iter().map(|e| json!({
@@ -6303,6 +6345,79 @@ mod tests {
         assert_eq!(entry["bound_roles"], json!(["impl"]));
         assert!(entry["conflicts"].as_array().unwrap().is_empty());
         assert_eq!(entry["project_scoped"], json!(true));
+    }
+
+    #[test]
+    fn events_by_subject_filters_before_pagination_and_validates_type() {
+        let mut sb = Sandbox::new("subject");
+        for subject in ["a", "b", "a", "project"] {
+            sb.ctx()
+                .store
+                .append_event("session.started", subject, json!({"task_id":"wrong"}))
+                .unwrap();
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("events.since", json!({"subject":"a","limit":1})),
+        );
+        let first = ok_payload(&out)["events"][0]["seq"].as_u64().unwrap();
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "events.since",
+                json!({"subject":"a","after_seq":first,"limit":1}),
+            ),
+        );
+        assert_eq!(ok_payload(&out)["events"].as_array().unwrap().len(), 1);
+        assert!(ok_payload(&out)["events"][0]["seq"].as_u64().unwrap() > first);
+        for params in [
+            json!({"subject":""}),
+            json!({"subject":"a","limit":0}),
+            json!({"subject":"missing"}),
+        ] {
+            let out = handle_command(sb.ctx(), &cmd("events.since", params));
+            assert_eq!(ok_payload(&out)["events"], json!([]));
+            assert_eq!(
+                ok_payload(&out)["latest_seq"],
+                sb.ctx().store.latest_seq().unwrap()
+            );
+        }
+        for _ in 0..1001 {
+            sb.ctx()
+                .store
+                .append_event("test", "large", json!({}))
+                .unwrap();
+        }
+        let out = handle_command(
+            sb.ctx(),
+            &cmd("events.since", json!({"subject":"large","limit":u64::MAX})),
+        );
+        assert_eq!(ok_payload(&out)["events"].as_array().unwrap().len(), 1000);
+        let out = handle_command(
+            sb.ctx(),
+            &cmd(
+                "events.since",
+                json!({"subject":"large","after_seq":u64::MAX}),
+            ),
+        );
+        assert_eq!(ok_payload(&out)["events"], json!([]));
+        let out = handle_command(sb.ctx(), &cmd("events.since", json!({"subject":123})));
+        assert!(matches!(out.reply.outcome, ReplyOutcome::Error { .. }));
+    }
+    #[test]
+    fn events_by_subject_omitted_preserves_original_bytes() {
+        let mut sb = Sandbox::new("subject-compat");
+        sb.ctx()
+            .store
+            .append_event("test", "a", json!({"text":"中文\n"}))
+            .unwrap();
+        let rows = sb.ctx().store.events_since_with_at(0, 200).unwrap();
+        let expected = json!({"events":rows.iter().map(|e|json!({"seq":e.seq,"kind":e.kind,"subject":e.subject,"payload":e.payload,"at":e.at})).collect::<Vec<_>>(),"latest_seq":sb.ctx().store.latest_seq().unwrap()});
+        let out = handle_command(sb.ctx(), &cmd("events.since", json!({})));
+        assert_eq!(
+            serde_json::to_vec(&ok_payload(&out)).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
     }
 
     // ---- events ----------------------------------------------------------
