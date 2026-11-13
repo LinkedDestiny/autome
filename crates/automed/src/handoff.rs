@@ -52,6 +52,10 @@ pub fn sections(
     Some(text)
 }
 
+pub fn test_fix_section() -> String {
+    "\n## 修正回归测试\n\n这次是回来修测试的。缺陷说明见 Bug 文档『回归测试缺陷』小节。只能改回归测试与任务文档，产品修复已经在分支上。结束时删掉 `回归测试: 有缺陷` 并写 `status: 已定位`。\n".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,8 +135,4 @@ mod tests {
         assert!(bug.contains("上一轮复核越界改动已被还原"));
         assert!(bug.contains("按复核不通过退回修复轮"));
     }
-}
-
-pub fn test_fix_section() -> String {
-    "\n## 修正回归测试\n\n这次是回来修测试的。缺陷说明见 Bug 文档『回归测试缺陷』小节。只能改回归测试与任务文档，产品修复已经在分支上。结束时删掉 `回归测试: 有缺陷` 并写 `status: 已定位`。\n".into()
 }
