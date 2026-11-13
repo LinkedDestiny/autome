@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 6/25
-current-milestone: M-05
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-05 协议正文与技术设计，复验验收命令及负向对照
+next-action: 无
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -382,7 +382,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
 | M-03 | 已完成 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
 | M-04 | 已完成 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
-| M-05 | 待审 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
+| M-05 | 已完成 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
 
 ## 测试与验收
 
@@ -436,11 +436,11 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 ### M-05 验收契约
 
-最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r6-impl.md · 验收通过，待审 · 实现 #6
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-05-r6-audit.md · 通过 · 审计 #5
 
 - 验收命令：`cargo run -p automed -- protocol eval protocol/ && cargo test -p automed --test prompt_rendering && test "$(grep -c '^## protocol/v' protocol/CHANGELOG.md)" = 7 && grep -q '^## 集成复验$' protocol/loop-protocol.md && grep -q '集成复验' docs/development/technical-design.md`
 - 预期：静态门退出码 0；`prompt_rendering` 35 个通过，与 M-03 结束时相同（证明新增的协议正文没有流进普通审计、实现简报的金样）；`## protocol/v1..v7` 恰 7 个标题；两条 grep 命中。
-- 负向对照：把「集成复验」写成 `### 审计轮` 下的小节时 `before_merge_audit_brief_matches_its_golden` 与 `gate_quick_audit_brief_matches_golden` 失败（简报摘到了新文字）；rebase 丢掉任一版本标题时标题计数不等于 7；CHANGELOG 条目的 `metric` 写成不在 `TaskMetrics::METRIC_NAMES` 里的名字时静态门失败。
+- 负向对照：把「集成复验」写成 `实现循环` 之下的小节（如 `#### 集成复验`，位于 `### 审计轮` 内）时，`## 集成复验$` 的 grep 失败，验收命令退出码非 0（审计 #5 实测：`prompt_rendering` 的金样用空协议文本，不会因此失败，所以拦下它的是 grep 而不是金样；真实简报会因 `section("实现循环")` 把新文字摘进去）；rebase 丢掉任一版本标题时标题计数不等于 7；CHANGELOG 条目的 `metric` 写成不在 `TaskMetrics::METRIC_NAMES` 里的名字时静态门失败。
 
 ## Backlog
 
