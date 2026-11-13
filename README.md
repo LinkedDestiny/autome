@@ -379,6 +379,12 @@ Use `--kind bug` for a Bug Loop task; the default kind is `feature`. The Bug
 Loop goes through locate → reproduce → fix → fix gate → review → rebase →
 merge gate → merge, and requires the audit role to be enabled.
 
+Bug Loop 支持「修正回归测试」：修复轮或复核轮声明 `回归测试: 有缺陷`，
+并在 `## 回归测试缺陷` 中写明用例、缺陷、证据、建议。内核最多退回定位轮 2 次，
+该定位轮只能修测试和任务文档，不增加修复轮次。修正后的测试在隔离基线检出和当前
+分支各跑一次：基线失败且当前分支通过才进入复核；当前分支仍失败回修复轮；基线
+不失败按未复现处理。旧协议没有声明标记时保持原行为。
+
 `--brief <file>` reads a UTF-8 task card; `--brief -` reads it from standard
 input. With no request argument, the first `# ` heading supplies the title
 (or the first non-empty line with leading whitespace and `#` removed if there

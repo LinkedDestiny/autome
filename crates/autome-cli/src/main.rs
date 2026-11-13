@@ -570,7 +570,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                     "{}  {}  {}",
                     t["id"].as_str().unwrap_or_default(),
                     t["slug"].as_str().unwrap_or_default(),
-                    render::state_line(&t["state"])
+                    render::task_state_line(t)
                 );
                 if t["state"]["state"] == "draft" {
                     println!(
@@ -599,7 +599,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                     "{}  {}  {}",
                     new_id,
                     t["slug"].as_str().unwrap_or_default(),
-                    render::state_line(&t["state"])
+                    render::task_state_line(t)
                 );
                 println!("由 {id} 改建，{id} 已取消。");
                 if t["state"]["state"] == "draft" {
@@ -617,7 +617,7 @@ fn task(c: &mut Client, a: &Args) -> Result<()> {
                 print_json(&out);
             } else {
                 let t = &out["task"];
-                println!("{}  {}", id, render::state_line(&t["state"]));
+                println!("{}  {}", id, render::task_state_line(t));
                 if let Some(next) = render::next_step(t) {
                     println!("→ {next}");
                 }
@@ -662,7 +662,7 @@ fn list(c: &mut Client, a: &Args) -> Result<()> {
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
             p["display_name"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, true),
             render::cost_cell(t),
             render::blocked_suffix(t)
@@ -736,7 +736,7 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             "  {}  {:<28} {}{}  ·  {}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, false),
             e["project_name"].as_str().unwrap_or_default()
         );
@@ -754,7 +754,7 @@ fn status(c: &mut Client, a: &Args) -> Result<()> {
             "  {}  {:<28} {}{}",
             t["id"].as_str().unwrap_or_default(),
             t["slug"].as_str().unwrap_or_default(),
-            render::state_line(&t["state"]),
+            render::task_state_line(t),
             render::merge_suffix(t, false)
         );
         let cost = render::cost_cell(t);
@@ -823,7 +823,7 @@ fn task_detail(got: &Value) {
     );
     println!(
         "  状态      {}{}",
-        render::state_line(&t["state"]),
+        render::task_state_line(t),
         render::merge_suffix(t, false)
     );
 
@@ -1277,7 +1277,7 @@ fn trigger(c: &mut Client, a: &Args, method: &str, mut params: Value) -> Result<
     } else {
         c.call("task.get", json!({ "task_id": id }))?["task"].clone()
     };
-    println!("{}  {}", id, render::state_line(&task["state"]));
+    println!("{}  {}", id, render::task_state_line(&task));
     if let Some(next) = render::next_step(&task) {
         println!("→ {next}");
     }

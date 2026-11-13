@@ -475,6 +475,11 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("command"),
             p["exit_code"]
         ),
+        "bug.repro_missed" if p["paired"].is_object() => format!(
+            "{subject} 修正后的回归测试：基线上没有失败，按未复现处理；{}\n{}",
+            s("why"),
+            s("tail")
+        ),
         "bug.repro_missed"
             if s("why") == "timed_out"
                 && autome_domain::gate_failure::kernel_timeout(&s("tail")).is_some() =>
@@ -492,6 +497,18 @@ pub fn event_line(kind: &str, subject: &str, p: &Value) -> Option<String> {
             s("command"),
             s("why"),
             s("tail")
+        ),
+        "bug.test_fix_requested" => format!(
+            "{subject} 回归测试被判有缺陷，退回定位轮修正（第 {} / {} 次）",
+            p["attempt"], p["limit"]
+        ),
+        "bug.test_fix_settled" => format!(
+            "{subject} 修正后的回归测试：{}",
+            match p["result"].as_str() {
+                Some("accepted") => "基线上失败、当前分支通过，接受",
+                Some("needs_fix") => "基线上失败、当前分支仍失败，回到修复轮",
+                _ => "基线上没有失败，按未复现处理",
+            }
         ),
         "bug.fix_round_started" => format!("{subject} 修复第 {} / {} 轮", p["round"], p["limit"]),
         "bug.reviewed" => format!("{subject} 复核第 {} 轮：{}", p["round"], s("verdict")),
@@ -1699,4 +1716,46 @@ mod scope_tests {
         );
         assert_eq!(next_step(&json!({"id":"T-1","state":{"state":"failed","reason":{"kind":"test_fix_limit","limit":2}}})).as_deref(), Some("autome rerun T-1 locate    或取消后重提"));
     }
+}
+
+pub fn task_state_line(task: &Value) -> String {
+    let line = state_line(&task["state"]);
+    if task["test_fix"]["open"] == true && task["state"]["node"] == "locate" {
+        line.replace(
+            "定位",
+            &format!(
+                "定位（修正回归测试 {}/{}）",
+                task["test_fix"]["used"], task["test_fix"]["limit"]
+            ),
+        )
+    } else {
+        line
+    }
+}
+
+#[test]
+fn test_fix_events_and_status_read_plainly() {
+    use serde_json::json;
+    assert!(
+        event_line(
+            "bug.test_fix_requested",
+            "T-1",
+            &json!({"attempt":1,"limit":2})
+        )
+        .unwrap()
+        .contains("第 1 / 2 次")
+    );
+    for (result, expected) in [("accepted", "接受"), ("needs_fix", "回到修复轮")] {
+        assert!(
+            event_line("bug.test_fix_settled", "T-1", &json!({"result":result}))
+                .unwrap()
+                .contains(expected)
+        );
+    }
+    assert_eq!(
+        task_state_line(
+            &json!({"state":{"state":"active","node":"locate"},"test_fix":{"used":1,"limit":2,"open":true}})
+        ),
+        "运行中 · 定位（修正回归测试 1/2）"
+    );
 }

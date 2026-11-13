@@ -5989,6 +5989,10 @@ fn bug_loop_task_get_reports_the_fix_round_for_bugs_only() {
             }))
         );
         if kind == "bug" {
+            assert_eq!(
+                task.remove("test_fix"),
+                Some(json!({"used":0,"limit":2,"open":false}))
+            );
             assert_eq!(task.remove("fix_round"), Some(json!(0)));
         } else {
             assert!(!task.contains_key("fix_round"));
@@ -10597,4 +10601,317 @@ fn handoff_e2e_last_milestone_patch_with_product_change_is_integration_audited_t
             .unwrap(),
         1
     );
+}
+
+fn test_fix_doc() -> String {
+    bug_doc("待复核").replacen("\n\n##", "\n回归测试: 有缺陷\n\n##", 1)
+        + "\n## 回归测试缺陷\n- 用例: regression.sh\n- 缺陷: wrong expectation\n- 证据: fixed product still fails\n- 建议: assert fixed\n"
+}
+
+fn test_fix_scenario(name: &str, correction: &str, expected: &str) -> World {
+    let mut w = World::new(name);
+    let slug = slug_for(name);
+    // Product exists on the default branch; baseline failure must be a real assertion.
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    std::fs::write(w.repo.join("lib.rs"), "product\n#[cfg(test)]\nold tests\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt", "lib.rs"], "product baseline").unwrap();
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        "printf 'wrong\\n' > expected.txt; printf 'test \"$(cat product.txt)\" = \"$(cat expected.txt)\"\\n' > regression.sh",
+    );
+    bug_step(&w, 2, &slug, &test_fix_doc(), BUG_FIX);
+    bug_step(&w, 3, &slug, &bug_doc("待复核"), correction);
+    bug_step(
+        &w,
+        4,
+        &slug,
+        &bug_doc(if expected == "await_info" {
+            "待复核"
+        } else {
+            "通过"
+        }),
+        "",
+    );
+    let id = create_bug(&mut w, name);
+    w.settle();
+    assert_eq!(
+        w.node(&id).unwrap_or_else(|| w.state(&id)),
+        expected,
+        "{:?}",
+        w.ctx.store.get_task(&id).unwrap().state
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        1
+    );
+    w
+}
+
+#[test]
+fn test_fix_e2e_defective_fixture_is_corrected_and_reaches_merge() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-accept",
+        "printf 'fixed\\n' > expected.txt; printf 'product\\n#[cfg(test)]\\ncorrected tests\\n' > lib.rs; mkdir -p tests; echo 'exit 0' > tests/added.sh",
+        "await_merge",
+    );
+    let tasks = w.ctx.store.list_tasks(&w.project_id).unwrap();
+    let id = &tasks[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.fix_round_started")
+            .unwrap(),
+        1
+    );
+    let settled = w
+        .ctx
+        .store
+        .last_event(id, "bug.test_fix_settled")
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled["result"], "accepted");
+    assert_eq!(settled["base_exit"], 1);
+    assert_eq!(settled["head_exit"], 0);
+    assert!(!w.repo.join(".autome/output/repro-base").join(id).exists());
+}
+
+#[test]
+fn test_fix_e2e_locate_touching_product_code_is_rejected() {
+    needs_git!();
+    let w = test_fix_scenario("test-fix-product", "echo tampered > product.txt", "failed");
+    assert!(format!("{:?}", w.task_states()).contains("只能改回归测试"));
+}
+
+#[test]
+fn test_fix_e2e_corrected_test_green_on_base_goes_not_reproduced() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-base-green",
+        "printf 'exit 0\\n' > regression.sh",
+        "await_info",
+    );
+    let id = &w.ctx.store.list_tasks(&w.project_id).unwrap()[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.test_fix_settled")
+            .unwrap(),
+        0
+    );
+    assert_eq!(w.ctx.store.count_events(id, "bug.repro_missed").unwrap(), 2);
+}
+
+#[test]
+fn test_fix_e2e_corrected_test_red_on_head_returns_to_fix() {
+    needs_git!();
+    let w = test_fix_scenario(
+        "test-fix-head-red",
+        "printf 'exit 1\\n' > regression.sh",
+        "failed",
+    );
+    let id = &w.ctx.store.list_tasks(&w.project_id).unwrap()[0].id;
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(id, "bug.fix_round_started")
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        w.ctx
+            .store
+            .last_event(id, "bug.test_fix_settled")
+            .unwrap()
+            .unwrap()["result"],
+        "needs_fix"
+    );
+}
+
+#[test]
+fn test_fix_e2e_missing_defect_section_is_rejected() {
+    needs_git!();
+    for missing in ["section", "用例", "缺陷", "证据", "建议", "empty"] {
+        let mut w = World::new(&format!("test-fix-missing-{missing}"));
+        let slug = slug_for("missing defect");
+        let mut doc = test_fix_doc();
+        if missing == "section" {
+            doc = doc.split("## 回归测试缺陷").next().unwrap().to_owned();
+        } else if missing == "empty" {
+            doc = doc.replace("- 用例: regression.sh", "- 用例:  ");
+        } else {
+            doc = doc
+                .lines()
+                .filter(|s| !s.starts_with(&format!("- {missing}:")))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+        bug_step(&w, 2, &slug, &doc, BUG_FIX);
+        let id = create_bug(&mut w, "missing defect");
+        w.settle();
+        assert_eq!(w.state(&id), "failed");
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events(&id, "bug.test_fix_requested")
+                .unwrap(),
+            0
+        );
+        assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("回归测试缺陷"));
+    }
+}
+
+#[test]
+fn test_fix_e2e_old_protocol_task_keeps_todays_handling() {
+    needs_git!();
+    let mut w = World::new("test-fix-old");
+    let slug = slug_for("old defect");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "{BUG_LOCATE}\nsed '/<!-- regression-test-defect -->/d' docs/{slug}/protocol/prompts/fix.md > old-prompt\nmv old-prompt docs/{slug}/protocol/prompts/fix.md"
+        ),
+    );
+    bug_step(&w, 2, &slug, &test_fix_doc(), BUG_FIX);
+    let id = create_bug(&mut w, "old defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn test_fix_e2e_locate_editing_a_command_named_product_script_is_rejected() {
+    needs_git!();
+    let mut w = World::new("test-fix-script");
+    std::fs::write(w.repo.join("product.sh"), "exit 1\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.sh"], "product entry").unwrap();
+    let slug = slug_for("script defect");
+    let doc = bug_doc("待复核").replace("sh regression.sh", "sh product.sh; sh regression.sh");
+    let defect = test_fix_doc().replace("sh regression.sh", "sh product.sh; sh regression.sh");
+    bug_step(&w, 1, &slug, &doc, BUG_LOCATE);
+    bug_step(&w, 2, &slug, &defect, BUG_FIX);
+    bug_step(&w, 3, &slug, &doc, "echo 'exit 0' > product.sh");
+    let id = create_bug(&mut w, "script defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("product.sh"));
+}
+
+#[test]
+fn test_fix_e2e_limit_exceeded_fails_with_reason() {
+    needs_git!();
+    let mut w = World::new("test-fix-limit");
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt"], "baseline").unwrap();
+    let slug = slug_for("limit defect");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    for n in [2, 5, 8] {
+        bug_step(&w, n, &slug, &test_fix_doc(), BUG_FIX);
+    }
+    for n in [3, 6] {
+        bug_step(&w, n, &slug, &bug_doc("待复核"), "");
+    }
+    for n in [4, 7] {
+        bug_step(&w, n, &slug, &bug_doc("打回"), "");
+    }
+    let id = create_bug(&mut w, "limit defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.test_fix_requested")
+            .unwrap(),
+        2
+    );
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("TestFixLimit"));
+}
+
+#[test]
+fn test_fix_e2e_resnapshot_keeps_earlier_tests_without_a_snapshot() {
+    needs_git!();
+    let mut w = World::new("test-fix-union");
+    std::fs::write(w.repo.join("product.txt"), "broken\n").unwrap();
+    automed::git::commit_paths(&w.repo, &["product.txt"], "baseline").unwrap();
+    let slug = slug_for("union defect");
+    bug_step(
+        &w,
+        1,
+        &slug,
+        &bug_doc("待复核").replace("已定位", "无法复现"),
+        "mkdir -p tests; echo 'exit 1' > tests/early.sh",
+    );
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 3, &slug, &test_fix_doc(), BUG_FIX);
+    bug_step(&w, 4, &slug, &bug_doc("待复核"), "");
+    bug_step(&w, 5, &slug, &bug_doc("打回"), "");
+    bug_step(
+        &w,
+        6,
+        &slug,
+        &bug_doc("待复核"),
+        "echo 'exit 0' > tests/early.sh",
+    );
+    let id = create_bug(&mut w, "union defect");
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_info"));
+    assert_eq!(
+        w.ctx
+            .store
+            .count_events(&id, "bug.regression_snapshot")
+            .unwrap(),
+        0
+    );
+    ok(&w.call("task.reply", json!({"task_id":id,"info":"reproduce again"})));
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    assert!(
+        format!("{:?}", w.ctx.store.get_task(&id).unwrap().state)
+            .contains("回归测试被修改、删除或重命名：/tests/early.sh")
+    );
+}
+
+#[test]
+fn test_fix_e2e_review_can_request_repair_and_stale_declaration_is_rejected() {
+    needs_git!();
+    let mut w = World::new("test-fix-review");
+    let slug = slug_for("review defect");
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+    bug_step(
+        &w,
+        3,
+        &slug,
+        &test_fix_doc().replace("复核: 待复核", "复核: 打回"),
+        "",
+    );
+    bug_step(&w, 4, &slug, &test_fix_doc(), "");
+    let id = create_bug(&mut w, "review defect");
+    w.settle();
+    assert_eq!(w.state(&id), "failed");
+    let requested = w
+        .ctx
+        .store
+        .last_event(&id, "bug.test_fix_requested")
+        .unwrap()
+        .unwrap();
+    assert_eq!(requested["by"], "fix_review");
+    assert!(w.prompt(4).contains("这次是回来修测试的"));
+    assert!(format!("{:?}", w.ctx.store.get_task(&id).unwrap().state).contains("必须删除"));
 }

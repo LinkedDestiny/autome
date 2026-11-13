@@ -701,6 +701,7 @@ fn task_json(
         "merge": crate::merge_queue::view(ctx, t).map_err(|e| internal(e.to_string()))?,
     });
     if t.kind == TaskKind::Bug {
+        value["test_fix"] = crate::scheduler::test_fix::view(&ctx.store, &t.id)?;
         value["fix_round"] = json!(ctx.store.count_events(&t.id, "bug.fix_round_started")?);
     }
     Ok(value)
@@ -2399,6 +2400,13 @@ fn stop_running_session(ctx: &mut Ctx, task_id: &str) -> Result<(), DispatchErro
         && let Ok(project) = ctx.store.get_project(&task.project_id)
     {
         crate::gate::stop_all(std::path::Path::new(&project.path), task_id);
+        let layout = crate::layout::TaskLayout::of(
+            &project,
+            &task.slug,
+            &scheduler::working_repos(&project, &task),
+        );
+        scheduler::test_fix::cleanup(&project, &task, &layout)
+            .map_err(|e| internal(e.to_string()))?;
         crate::gate::discard_node(std::path::Path::new(&project.path), task_id, "setup")
             .map_err(|e| internal(e.to_string()))?;
         crate::gate::discard_node(std::path::Path::new(&project.path), task_id, "after_merge")

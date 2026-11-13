@@ -18,6 +18,8 @@
 //! All three funnel into `advance`, so there is exactly one implementation of
 //! "apply a transition and act on it".
 
+pub(crate) mod test_fix;
+
 use std::path::{Path, PathBuf};
 
 use autome_domain::bug_loop::{self, BugProgress, BugSessionOutcome};
@@ -1982,6 +1984,17 @@ fn guard_bug_regression(
     task: &TaskRecord,
     doc: &autome_domain::bug_doc::BugDoc,
 ) -> Result<()> {
+    let repairing = session.kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && bug_progress(ctx, task)?.test_fix_open;
+    if test_fix::enabled(project, task) {
+        test_fix::validate(doc, repairing)?;
+    }
+    if repairing {
+        return test_fix::snapshot(ctx, session, project, task, doc);
+    }
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
     if session.kind
         == (SessionKind::Bug {
@@ -1994,6 +2007,11 @@ fn guard_bug_regression(
             return Ok(()); // Sessions begun by older binaries have no starting snapshot.
         };
         let mut files = Vec::new();
+        let mut support = ctx
+            .store
+            .last_event(&task.id, "bug.regression_snapshot")?
+            .and_then(|s| s["support"].as_array().cloned())
+            .unwrap_or_default();
         for entry in heads {
             let repo = entry["repo"]
                 .as_str()
@@ -2082,6 +2100,11 @@ fn guard_bug_regression(
                         file["blocks"] = json!(blocks);
                     }
                     files.push(file);
+                } else if !support
+                    .iter()
+                    .any(|f| f["repo"] == repo && f["path"] == path)
+                {
+                    support.push(json!({"repo":repo,"path":path}));
                 }
             }
         }
@@ -2098,7 +2121,7 @@ fn guard_bug_regression(
         ctx.store.append_event(
             "bug.regression_snapshot",
             &task.id,
-            json!({"session_id": session.id, "files": files}),
+            json!({"session_id": session.id, "files": files, "support": support}),
         )?;
     } else if session.kind == (SessionKind::Bug { step: BugStep::Fix })
         && let Some(snapshot) = ctx.store.last_event(&task.id, "bug.regression_snapshot")?
@@ -2201,11 +2224,15 @@ pub(crate) fn uses_bug_loop(ctx: &Ctx, task: &TaskRecord) -> Result<bool> {
     ))
 }
 
-fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
+pub(crate) fn bug_progress(ctx: &Ctx, task: &TaskRecord) -> Result<BugProgress> {
     Ok(BugProgress {
         fix_round: ctx.store.count_events(&task.id, "bug.fix_round_started")?,
-        test_fixes: 0,
-        test_fix_open: false,
+        test_fixes: ctx.store.count_events(&task.id, "bug.test_fix_requested")?,
+        test_fix_open: ctx.store.count_events_after(
+            &task.id,
+            "bug.test_fix_requested",
+            "bug.test_fix_settled",
+        )? > 0,
         repro_misses: ctx
             .store
             .count_events_after(&task.id, "bug.repro_missed", "task.replied")?,
@@ -2387,7 +2414,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
 
     let decisions = ctx.store.pending_decisions(task_id)?;
     let context = task::Context {
-        bug_test_defect: false,
+        bug_test_defect: test_fix::enabled(&project, &task),
         handoff_pending: crate::handoff::pending(&ctx.store, &task.id)?.is_pending(),
         config: &resolved,
         budget_n: task.budget_n,
@@ -2520,7 +2547,7 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         }
     }
     if let Trigger::ReproDone {
-        paired: _,
+        paired,
         head,
         command,
         exit_code,
@@ -2528,14 +2555,19 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
         tail,
     } = trigger
     {
-        let why = if *timed_out {
+        let (checked_exit, checked_timeout) = paired
+            .as_ref()
+            .map(|p| (p.base_exit, p.base_timed_out))
+            .unwrap_or((*exit_code, *timed_out));
+        let why = if checked_timeout {
             "timed_out"
-        } else if [126, 127].contains(exit_code) {
+        } else if [126, 127].contains(&checked_exit) {
             "not_runnable"
         } else {
             "exited_zero"
         };
-        let reproduced = !timed_out && *exit_code != 0 && ![126, 127].contains(exit_code);
+        let reproduced =
+            !checked_timeout && checked_exit != 0 && ![126, 127].contains(&checked_exit);
         if reproduced
             && let Some(empty) = ctx.store.last_event(task_id, "bug.regression_empty")?
             && let Some(started) = ctx.store.last_event(task_id, "session.started")?
@@ -2555,11 +2587,14 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
                 grants_merge_request: false,
             };
         }
-        let payload = if reproduced {
-            json!({"sha": head, "command": command, "exit_code": exit_code})
+        let mut payload = if reproduced {
+            json!({"sha": head, "command": command, "exit_code": checked_exit})
         } else {
-            json!({"sha": head, "command": command, "exit_code": exit_code, "why": why, "tail": tail})
+            json!({"sha": head, "command": command, "exit_code": checked_exit, "why": why, "tail": tail})
         };
+        if let Some(pair) = paired {
+            payload["paired"] = json!(pair);
+        }
         ctx.store.append_event(
             if reproduced {
                 "bug.reproduced"
@@ -2569,6 +2604,23 @@ fn advance(ctx: &mut Ctx, task_id: &str, trigger: &Trigger) -> Result<bool> {
             task_id,
             payload,
         )?;
+    }
+
+    if let Some(event) = &transition.test_fix_event {
+        match event {
+            bug_loop::TestFixEvent::Requested { by, attempt, limit } => {
+                let session = ctx
+                    .store
+                    .last_event(task_id, "session.started")?
+                    .unwrap_or_default();
+                ctx.store.append_event("bug.test_fix_requested", task_id,
+                    json!({"session_id":session["session_id"],"by":by,"attempt":attempt,"limit":limit}))?;
+            }
+            bug_loop::TestFixEvent::Settled { result, pair } => {
+                ctx.store.append_event("bug.test_fix_settled", task_id,
+                    json!({"result":if *result == bug_loop::TestFixJudgement::Accept {"accepted"} else {"needs_fix"},"base_exit":pair.base_exit,"head_exit":pair.head_exit}))?;
+            }
+        }
     }
 
     // Entering the implementation loop for the first time is when N is
@@ -3647,7 +3699,17 @@ fn launch_session(
         prompt.push_str(&section);
     }
 
+    if kind
+        == (SessionKind::Bug {
+            step: BugStep::Locate,
+        })
+        && bug_progress(ctx, task)?.test_fix_open
+    {
+        prompt.push_str(&crate::handoff::test_fix_section());
+    }
+
     // Capture before the process can edit a checkout, not after launch returns.
+
     let scope_heads = if matches!(kind.role(), Some(Role::Audit | Role::Retro)) {
         Some(
             layout
@@ -4524,10 +4586,15 @@ fn run_gate_attempt(
         }
         job.set_launch(&launch)
             .map_err(|e| err(format!("无法记录门禁种类：{e}")))?;
+        let run_command = if node == Node::ReproCheck && bug_progress(ctx, task)?.test_fix_open {
+            test_fix::prepare(ctx, project, task, layout, &gate.command, &job)?
+        } else {
+            gate.command.clone()
+        };
         crate::gate::start(
             &job,
             &cwd,
-            &gate.command,
+            &run_command,
             &[
                 ("AUTOME_TASK", task.id.as_str()),
                 ("AUTOME_HEAD", head.as_str()),
@@ -4616,11 +4683,18 @@ fn run_gate_attempt(
     }
 
     if node == Node::ReproCheck {
+        let paired = if bug_progress(ctx, task)?.test_fix_open {
+            let pair = test_fix::pair(&job, exit_code);
+            test_fix::cleanup(project, task, layout)?;
+            Some(pair)
+        } else {
+            None
+        };
         advance(
             ctx,
             &task.id,
             &Trigger::ReproDone {
-                paired: None,
+                paired,
                 head,
                 command: gate.command,
                 exit_code,
@@ -5129,6 +5203,23 @@ pub fn recover(ctx: &mut Ctx) -> TickReport {
     let restoration = (|| -> Result<()> {
         for project in ctx.store.list_projects()? {
             for task in ctx.store.list_tasks(&project.id)? {
+                let layout = TaskLayout::of(&project, &task.slug, &working_repos(&project, &task));
+                let last_gate = ctx.store.last_event(&task.id, "gate.started")?;
+                let running = last_gate
+                    .as_ref()
+                    .and_then(|g| g["sha"].as_str())
+                    .is_some_and(|head| {
+                        let job = crate::gate::Job::at(
+                            Path::new(&project.path),
+                            &task.id,
+                            "repro_check",
+                            &head[..head.len().min(12)],
+                        );
+                        crate::gate::running(&job)
+                    });
+                if !running {
+                    test_fix::cleanup(&project, &task, &layout)?;
+                }
                 if let Err(error) = resume_unfinished(ctx, &task) {
                     report.errors.push(format!("{}: {error}", task.id));
                 }
@@ -11872,6 +11963,182 @@ mod tests {
                     node: Node::Cleanup
                 }
             ));
+        }
+    }
+    #[test]
+    fn test_fix_overlay_takes_test_files_from_head_and_the_rest_from_base() {
+        let mut w = World::new("test-fix-overlay");
+        let task = w.add_task("T-1", "overlay");
+        std::fs::write(w.repo.join("product"), "broken").unwrap();
+        git::commit_paths(&w.repo, &["product"], "baseline").unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("product"), "fixed").unwrap();
+        std::fs::write(wt.join("test.sh"), "test product = fixed").unwrap();
+        git::commit_paths(&wt, &["product", "test.sh"], "fix and test").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"test.sh","protect":"file"}]}),
+            )
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        test_fix::prepare(&w.ctx, &project, &task, &layout, "sh test.sh", &job).unwrap();
+        let base = w.repo.join(".autome/output/repro-base/T-1/current");
+        assert_eq!(
+            std::fs::read_to_string(base.join("product")).unwrap(),
+            "broken"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("test.sh")).unwrap(),
+            "test product = fixed"
+        );
+        assert!(git::is_clean(&wt).unwrap());
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_base_checkout_is_removed_after_the_check() {
+        let mut w = World::new("test-fix-clean");
+        let task = w.add_task("T-1", "clean");
+        w.with_worktree(&task);
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event("bug.regression_snapshot", &task.id, json!({"files":[]}))
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        for command in ["true", "false", "missing-command"] {
+            test_fix::prepare(&w.ctx, &project, &task, &layout, command, &job).unwrap();
+            test_fix::cleanup(&project, &task, &layout).unwrap();
+            assert!(!w.repo.join(".autome/output/repro-base/T-1").exists());
+            assert!(
+                !git::run_ok(&w.repo, &["worktree", "list", "--porcelain"])
+                    .unwrap()
+                    .stdout
+                    .contains("repro-base")
+            );
+        }
+        let mut invalid = layout.clone();
+        invalid.repos[0].base = "missing-default-branch".into();
+        let command = test_fix::prepare(&w.ctx, &project, &task, &invalid, "true", &job).unwrap();
+        assert!(command.contains("exit 127"));
+        assert!(!w.repo.join(".autome/output/repro-base/T-1").exists());
+    }
+
+    #[test]
+    fn test_fix_overlay_splices_an_inline_test_section() {
+        let mut w = World::new("test-fix-inline");
+        let task = w.add_task("T-1", "inline");
+        std::fs::write(w.repo.join("lib.rs"), "broken\n#[cfg(test)]\nold tests\n").unwrap();
+        git::commit_paths(&w.repo, &["lib.rs"], "baseline").unwrap();
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("lib.rs"), "fixed\n#[cfg(test)]\nnew tests\n").unwrap();
+        git::commit_paths(&wt, &["lib.rs"], "fix").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"lib.rs","protect":"section"}]}),
+            )
+            .unwrap();
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(w.repo.join(".autome/output/repro-base/T-1/current/lib.rs"))
+                .unwrap(),
+            "broken\n#[cfg(test)]\nnew tests\n"
+        );
+        std::fs::write(wt.join("lib.rs"), "fixed without a test marker\n").unwrap();
+        git::commit_paths(&wt, &["lib.rs"], "missing section").unwrap();
+        let failed = test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert!(failed.contains("识别不出测试段 lib.rs"));
+        assert!(failed.contains("exit 127"));
+        std::fs::write(wt.join("new.rs"), "#[test]\nnew test\n").unwrap();
+        git::commit_paths(&wt, &["new.rs"], "new inline file").unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[{"repo":"","path":"new.rs","protect":"section"}]}),
+            )
+            .unwrap();
+        let failed = test_fix::prepare(&w.ctx, &project, &task, &layout, "true", &job).unwrap();
+        assert!(failed.contains("基线无法构造 new.rs"));
+        assert!(failed.contains("exit 127"));
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_overlay_brings_support_files_and_flags_missing_dependencies() {
+        let mut w = World::new("test-fix-support");
+        let task = w.add_task("T-1", "support");
+        let wt = w.with_worktree(&task);
+        std::fs::write(wt.join("fixture.bin"), [0, 255, 1]).unwrap();
+        git::commit_paths(&wt, &["fixture.bin"], "fixture").unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let layout = TaskLayout::single(&project, &task.slug);
+        let job = crate::gate::Job::at(&w.repo, &task.id, "repro_check", "test");
+        w.ctx
+            .store
+            .append_event("bug.regression_snapshot", &task.id, json!({"files":[]}))
+            .unwrap();
+        let command =
+            test_fix::prepare(&w.ctx, &project, &task, &layout, "cat fixture.bin", &job).unwrap();
+        assert!(command.contains("依赖缺失 fixture.bin"));
+        assert!(command.contains("exit 127"));
+        w.ctx
+            .store
+            .append_event(
+                "bug.regression_snapshot",
+                &task.id,
+                json!({"files":[],"support":[{"repo":"","path":"fixture.bin"}]}),
+            )
+            .unwrap();
+        let command =
+            test_fix::prepare(&w.ctx, &project, &task, &layout, "cat fixture.bin", &job).unwrap();
+        assert!(!command.contains("exit 127"));
+        assert_eq!(
+            std::fs::read(
+                w.repo
+                    .join(".autome/output/repro-base/T-1/current/fixture.bin")
+            )
+            .unwrap(),
+            [0, 255, 1]
+        );
+        test_fix::cleanup(&project, &task, &layout).unwrap();
+    }
+
+    #[test]
+    fn test_fix_task_get_reports_used_limit_and_open() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        assert_eq!(
+            test_fix::view(&store, "T").unwrap(),
+            json!({"used":0,"limit":2,"open":false})
+        );
+        for n in 1..=2 {
+            store
+                .append_event("bug.test_fix_requested", "T", json!({"attempt":n}))
+                .unwrap();
+            assert_eq!(
+                test_fix::view(&store, "T").unwrap(),
+                json!({"used":n,"limit":2,"open":true})
+            );
+            store
+                .append_event("bug.test_fix_settled", "T", json!({"result":"accepted"}))
+                .unwrap();
+            assert_eq!(
+                test_fix::view(&store, "T").unwrap(),
+                json!({"used":n,"limit":2,"open":false})
+            );
         }
     }
 }

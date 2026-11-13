@@ -273,6 +273,20 @@ Queued 首次进入定位时记录 `bug.loop_started`。出处：`crates/automed
 
 Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-round`、`复现命令`、`根因`、`复核`（待复核 / 通过 / 打回）。会话模板为 `protocol/prompts/locate.md`、`protocol/prompts/fix.md`、`protocol/prompts/fix-review.md`，规则为 `protocol/bug-protocol.md`，编译进 automed。出处：`crates/autome-domain/src/bug_doc.rs` 的 `parse`；`crates/automed/src/protocol/mod.rs` 的 `SEED`。
 
+**修正回归测试。**
+
+冻结的 `prompts/fix.md` 含 `<!-- regression-test-defect -->` 时启用修测试路径。
+`bug.test_fix_requested` 记录声明会话、来源轮次、次数与上限（2）；
+`bug.test_fix_settled` 记录 accepted / needs_fix 和基线、HEAD 退出码。
+`task.get.task.test_fix` 暴露 used、limit、open；CLI 事件流与定位状态显示此模式。
+声明轮不能改受保护测试；修测试定位轮只允许任务文档、既有整文件测试与支持文件、
+新增测试及源文件的测试段，命令点名既有产品脚本不授予写权限。缺陷四项必须非空，
+定位结束必须删除声明。新的保护快照包含先前快照和定位阶段累计测试改动。
+成对检查仍占用一个 repro 作业，基线取 merge-base，覆盖修正后的测试和 support，
+内联测试保留基线产品部分。缺少显式命令依赖或无法构造基线按未复现处理，
+不能借无关构建失败接受测试。基线红、HEAD 绿进入 FixGate / FixReview；HEAD 红
+正常计修复轮；基线不红沿用两次未复现转 AwaitInfo 的规则。临时检出检查结束后移除。
+
 ## 6. Git 工作区操作
 
 所有 Git 命令由 automed 以固定二进制、净化环境执行，禁用 credential helper，不触碰远端。
