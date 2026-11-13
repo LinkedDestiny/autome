@@ -24,3 +24,5 @@ AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering
 `AUTOME_UPDATE_GOLDEN=1 cargo test -p automed --test prompt_rendering before_merge_audit_brief_matches_its_golden`。
 
 五份 `prompts/*-before-merge.md` 是 before_merge 模式的渲染结果，固定门禁命令为 `make check`；原有 each_round 金样保持不变。
+
+`impl-timeout`、`impl-timeout-gate`、`intake-timeout` 固定超时续做说明、原注入保留及 Intake 任务输入；使用 `timeout_retry` 过滤更新这三个金样。

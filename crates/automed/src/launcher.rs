@@ -470,7 +470,14 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
 
     match spec.kind {
         SessionKind::Bug { step } => p.push_str(&bug_prompt(step, spec)?),
-        SessionKind::Intake => return intake_prompt(spec),
+        SessionKind::Intake => {
+            let mut p = intake_prompt(spec)?;
+            if let Some(inject) = spec.inject {
+                render_inject(&mut p, spec, inject);
+            }
+            return Ok(p);
+        }
+
         SessionKind::Onboarding => return onboarding_prompt(spec),
         SessionKind::Role { role } => {
             p.push_str(&role_prompt(role, spec)?);
@@ -486,14 +493,29 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
         ));
     }
 
-    match spec.inject {
-        Some(Inject::ReproNotFailing {
+    if let Some(inject) = spec.inject {
+        render_inject(&mut p, spec, inject);
+    }
+    Ok(p)
+}
+
+fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
+    match inject {
+        Inject::SessionTimedOut { minutes, tail, .. } => {
+            p.push_str(&format!("\n上一个会话运行超过 {minutes} 分钟，被 Autome 终止（超时）。它留在工作区里的改动已由 Autome 提交到本分支。日志最后 40 行（原文）：\n\n```\n{tail}\n```\n\n本轮先把已有进度写进文档（设计文档、证据文件、Bug 文档或任务整理本该写的那份文档里本轮该写的地方）并提交，再缩小本轮目标：\n只做能在上限内完成的部分，其余写进 next-action 留给下一轮。本轮是被中断那一轮的续做，不是新的一轮：状态块里的轮数——\n实现轮以本 prompt 开头给出的 `implementation-round` 为准，设计轮的 design-round 如果上一个会话已经加过一，保持现值——不要再加。\n"));
+            if let Some(carried) = inject.effective() {
+                let mut inner = String::new();
+                render_inject(&mut inner, spec, carried);
+                p.push_str(&inner.replace("implementation-round 照常加一", "implementation-round 以本 prompt 开头给出的数为准（本轮是被中断那一轮的续做，不再加一）"));
+            }
+        }
+        Inject::ReproNotFailing {
             head,
             command,
             exit_code,
             why,
             tail,
-        }) => {
+        } => {
             if let Some(n) =
                 autome_domain::gate_failure::kernel_timeout(tail).filter(|_| why == "timed_out")
             {
@@ -502,30 +524,30 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                 p.push_str(&format!("\n复现检查没有失败：提交 `{head}`，命令 `{command}`，退出码 {exit_code}。原因：{why}\n输出末尾（原文）：\n```\n{tail}\n```\n请重新定位并提交稳定的回归测试。\n"));
             }
         }
-        Some(Inject::FixRejected) => {
+        Inject::FixRejected => {
             p.push_str(&format!(
                 "\n上一轮复核打回。先读 `{}/{}-bug.md` 的「复核意见」，修复所指出的问题。\n",
                 spec.doc_dir, spec.slug
             ));
         }
-        Some(Inject::DesignFeedback { feedback }) => {
+        Inject::DesignFeedback { feedback } => {
             p.push_str(&format!(
                 "\n用户驳回了上一版设计，意见如下（原文，不要改写）：\n\n{feedback}\n\n\
                  请按这条意见修改设计文档，然后照常结束会话。\n"
             ));
             p.push_str(&render_decisions(spec.decisions));
         }
-        Some(Inject::RebaseConflict { files }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
+        Inject::RebaseConflict { files } if matches!(spec.kind, SessionKind::Bug { .. }) => {
             p.push_str(&format!(
                 "\nrebase 冲突：{}。{REBASE_YOURSELF}按本轮预算更新 Bug 文档并重置复核为待复核。\n",
                 files.join("、")
             ));
         }
-        Some(Inject::GateFailed {
+        Inject::GateFailed {
             head,
             command,
             tail,
-        }) if last_gate_kind(spec) == Some("quick") => {
+        } if last_gate_kind(spec) == Some("quick") => {
             let verdict = gate_failure_verdict(tail)
                 .replace("门禁超时", "快检超时")
                 .replace("测试失败", "检查失败");
@@ -547,11 +569,11 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                 p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{ending}\n"));
             }
         }
-        Some(Inject::GateFailed {
+        Inject::GateFailed {
             head,
             command,
             tail,
-        }) if matches!(spec.kind, SessionKind::Bug { .. }) => {
+        } if matches!(spec.kind, SessionKind::Bug { .. }) => {
             let verdict = gate_failure_verdict(tail);
             if let Some(cmd) = spec.gate_before_merge {
                 p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", round_gate_line(spec, cmd)));
@@ -559,7 +581,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                 p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用同一命令确认通过并提交；不要修改回归测试。\n"));
             }
         }
-        Some(Inject::RebaseConflict { files }) => {
+        Inject::RebaseConflict { files } => {
             p.push_str(&format!(
                 "\n本分支 rebase 到最新默认分支时发生冲突，涉及文件：\n{}\n\n\
                  {REBASE_YOURSELF}保持里程碑状态与设计文档一致，然后照常结束会话。\n",
@@ -570,14 +592,14 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
                     .join("\n")
             ));
         }
-        Some(Inject::Decisions) => {
+        Inject::Decisions => {
             p.push_str(&render_decisions(spec.decisions));
         }
-        Some(Inject::GateFailed {
+        Inject::GateFailed {
             head,
             command,
             tail,
-        }) => {
+        } => {
             // The output verbatim and the commit it came from: the round has
             // to reproduce the failure before it can fix it, and "the gate
             // failed" without either is a claim it cannot check.
@@ -596,10 +618,7 @@ pub fn build_prompt(spec: &PromptSpec<'_>) -> Result<String> {
             ));
             }
         }
-        None => {}
     }
-
-    Ok(p)
 }
 
 fn bug_attachment_name(path: &str) -> String {
@@ -1501,6 +1520,32 @@ mod tests {
             attachments: &[],
             doc_refs: &[],
         }
+    }
+
+    #[test]
+    fn timeout_retry_renders_timeout_then_gate_without_increment() {
+        let inject = Inject::timed_out(
+            5,
+            "tick 40".into(),
+            Some(Inject::GateFailed {
+                head: "abcdef123456".into(),
+                command: "false".into(),
+                tail: "gate failure".into(),
+            }),
+        );
+        let templates = templates();
+        let prompt = build_prompt(&spec(
+            SessionKind::Role { role: Role::Impl },
+            &[],
+            Some(&inject),
+            &templates,
+        ))
+        .unwrap();
+        assert_eq!(prompt.matches("上一个会话运行超过 5 分钟").count(), 1);
+        assert_eq!(prompt.matches("gate failure").count(), 1);
+        assert!(prompt.find("上一个会话").unwrap() < prompt.find("gate failure").unwrap());
+        assert!(!prompt.contains("implementation-round 照常加一"));
+        assert!(prompt.contains("implementation-round 以本 prompt 开头给出的数为准"));
     }
 
     // ---- adapter table ---------------------------------------------------

@@ -599,13 +599,18 @@ fn schedule_retry(
     if node.is_core_step() || node.awaits_user() {
         return Ok(false);
     }
+    let timeout = ctx
+        .store
+        .session_event(&task.id, &s.id, "session.timeout")?;
     let stream = std::fs::read_to_string(Path::new(&project.path).join(format!(
         "{}/{}.jsonl",
         SessionPaths::dir(&s.task_id),
         s.id
     )))
     .unwrap_or_default();
-    if let Some(message) = crate::usage::model_not_found(s.runtime, &stream) {
+    if timeout.is_none()
+        && let Some(message) = crate::usage::model_not_found(s.runtime, &stream)
+    {
         let role = s.kind.role();
         let location = match role {
             Some(role) => format!(
@@ -633,7 +638,11 @@ fn schedule_retry(
         )?;
         return Ok(true);
     }
-    let transient = crate::usage::classify_failure(s.runtime, &stream, crate::store::epoch_now());
+    let transient = if timeout.is_some() {
+        None
+    } else {
+        crate::usage::classify_failure(s.runtime, &stream, crate::store::epoch_now())
+    };
     let policy = resolve_config(ctx, project)
         .map(|r| r.retry)
         .unwrap_or_default();
@@ -660,7 +669,21 @@ fn schedule_retry(
         None => return Ok(false),
     };
 
-    let inject = carried_inject(ctx, &task.id, &s.id)?;
+    let carried = carried_inject(ctx, &task.id, &s.id)?;
+    let inject = if let Some(event) = timeout {
+        let limit = event["limit"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or_else(|| effective_limit(ctx, s, project));
+        let tail = crate::gate::tail(
+            &Path::new(&project.path).join(SessionPaths::log(&task.id, &s.id)),
+            40,
+        );
+        Some(Inject::timed_out(limit, tail, carried))
+    } else {
+        carried
+    };
+
     ctx.store.schedule_retry(
         &task.id,
         node,
@@ -683,6 +706,13 @@ fn schedule_retry(
         }),
     )?;
     Ok(true)
+}
+
+fn is_repairing(inject: Option<&Inject>) -> bool {
+    matches!(
+        inject.and_then(Inject::effective),
+        Some(Inject::GateFailed { .. })
+    )
 }
 
 /// What a session was carrying when it started, read back from its
@@ -787,8 +817,7 @@ fn apply_guards(
             before.as_ref(),
             ctx,
         ),
-        repairing: carried_inject(ctx, &task.id, &session.id)?
-            .is_some_and(|i| matches!(i, Inject::GateFailed { .. })),
+        repairing: is_repairing(carried_inject(ctx, &task.id, &session.id)?.as_ref()),
     };
     let findings = guards::check(&round);
 
@@ -2837,7 +2866,7 @@ fn start_session(
     // the prompt, the brief and the ledger name one list.
     let session_id = crate::store::new_id("ses");
     let decisions = if matches!(
-        inject,
+        inject.and_then(Inject::effective),
         Some(Inject::Decisions | Inject::DesignFeedback { .. })
     ) {
         ctx.store.carry_decisions(&task.id, &session_id)?
@@ -8822,6 +8851,242 @@ mod tests {
         );
         w.ctx.store.settle_decisions(&session.id).unwrap();
         assert_eq!(w.ctx.store.pending_decisions("T-1").unwrap().included, 0);
+    }
+
+    fn timeout_retry_start(w: &mut World, inject: Option<&Inject>) -> Session {
+        let task = w.add_task("T-1", "a");
+        w.write_design(
+            &task,
+            &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
+        );
+        w.ctx.store.set_task_budget(&task.id, 3).unwrap();
+        w.set_state(
+            &task.id,
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        w.ctx
+            .store
+            .sync_decisions(&task.id, &[("B-01".into(), "保留决定正文".into())], &[])
+            .unwrap();
+        w.ctx
+            .store
+            .set_disposition(&task.id, "backlog", "B-01", Disposition::Include, None)
+            .unwrap();
+        redispatch_with(&mut w.ctx, &task.id, Node::Implement, inject).unwrap();
+        w.ctx.store.running_session(&task.id).unwrap().unwrap()
+    }
+
+    fn timeout_retry_finish(w: &mut World, s: &Session) {
+        w.ctx
+            .store
+            .finish_session(
+                &s.id,
+                &SessionLifecycle::TimedOut { limit_minutes: 5 },
+                &now_iso(),
+            )
+            .unwrap();
+        w.ctx
+            .store
+            .append_event(
+                "session.timeout",
+                &s.task_id,
+                json!({"session_id":s.id,"minutes":6,"limit":5}),
+            )
+            .unwrap();
+        w.ctx.store.release_decisions(&s.id).unwrap();
+    }
+
+    fn timeout_retry_deliver(w: &mut World, s: &Session) {
+        let task = w.ctx.store.get_task(&s.task_id).unwrap();
+        let project = w.ctx.store.get_project(&task.project_id).unwrap();
+        let outcome = read_outcome(
+            &project,
+            &task,
+            &SessionLifecycle::TimedOut { limit_minutes: 5 },
+        );
+        deliver_outcome(&mut w.ctx, s, &project, &task, outcome).unwrap();
+    }
+
+    #[test]
+    fn timeout_retry_counts_despite_stream_failures_and_bounds_log_tail() {
+        for message in ["rate limit exceeded", "model_not_found: missing model"] {
+            let mut w = World::new("timeout-stream");
+            let mut s = timeout_retry_start(&mut w, None);
+            s.runtime = Runtime::Codex;
+            timeout_retry_finish(&mut w, &s);
+            let stream = w
+                .repo
+                .join(format!("{}/{}.jsonl", SessionPaths::dir(&s.task_id), s.id));
+            std::fs::write(
+                stream,
+                json!({"type":"turn.failed","error":{"message":message}}).to_string(),
+            )
+            .unwrap();
+            let log = w.repo.join(SessionPaths::log(&s.task_id, &s.id));
+            std::fs::write(
+                &log,
+                (1..=41).map(|n| format!("line-{n}\n")).collect::<String>(),
+            )
+            .unwrap();
+            timeout_retry_deliver(&mut w, &s);
+            let event = w
+                .ctx
+                .store
+                .last_event("T-1", "session.retry")
+                .unwrap()
+                .unwrap();
+            assert_eq!(event["rate_limited"], false);
+            assert_eq!(event["attempt"], 1);
+            assert!(w.ctx.store.active_cooldowns().unwrap().is_empty());
+            let (_, _, inject) = w.ctx.store.pending_retry("T-1").unwrap().unwrap();
+            let Some(Inject::SessionTimedOut { minutes, tail, .. }) = inject else {
+                panic!("missing timeout");
+            };
+            assert_eq!(minutes, 5);
+            assert_eq!(tail.lines().count(), 40);
+            assert!(tail.starts_with("line-2\n"));
+            assert!(tail.contains("line-41"));
+            // Missing readable logs still produce a timeout retry with an empty tail.
+            std::fs::remove_file(log).unwrap();
+            timeout_retry_deliver(&mut w, &s);
+            let (_, _, inject) = w.ctx.store.pending_retry("T-1").unwrap().unwrap();
+            assert!(
+                matches!(inject, Some(Inject::SessionTimedOut { tail, .. }) if tail.is_empty())
+            );
+        }
+    }
+
+    #[test]
+    fn timeout_retry_exhaustion_fails_without_protocol_failure() {
+        let mut w = World::new("timeout-exhausted");
+        std::fs::write(
+            config_io::project_config_path(&w.repo),
+            "[retry]\nattempts = 0\n",
+        )
+        .unwrap();
+        let s = timeout_retry_start(&mut w, None);
+        timeout_retry_finish(&mut w, &s);
+        timeout_retry_deliver(&mut w, &s);
+        assert!(
+            matches!(w.state("T-1"), TaskState::Failed { reason: FailureReason::SessionCrashed { detail }, .. } if detail.contains("超时") && detail.contains("5 分钟"))
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .count_events("T-1", "task.protocol_failure")
+                .unwrap(),
+            0
+        );
+        assert!(w.ctx.store.pending_retry("T-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn timeout_retry_preserves_round_and_rebase_budget() {
+        let (mut w, task, _) = rebase_retry_fixture("timeout-budget", 3);
+        w.set_state(
+            &task.id,
+            TaskState::Active {
+                node: Node::Implement,
+            },
+        );
+        redispatch_with(&mut w.ctx, &task.id, Node::Implement, None).unwrap();
+        let s = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+        assert_eq!(s.round, 1);
+        timeout_retry_finish(&mut w, &s);
+        timeout_retry_deliver(&mut w, &s);
+        let (_, _, inject) = w.ctx.store.pending_retry(&task.id).unwrap().unwrap();
+        w.ctx.store.retry_started(&task.id).unwrap();
+        redispatch_with(&mut w.ctx, &task.id, Node::Implement, inject.as_ref()).unwrap();
+        let retry = w.ctx.store.running_session(&task.id).unwrap().unwrap();
+        assert_eq!(retry.round, 1);
+        let prompt = std::fs::read_to_string(w.repo.join(format!(
+            "{}/{}.prompt",
+            SessionPaths::dir(&task.id),
+            retry.id
+        )))
+        .unwrap();
+        assert!(prompt.contains("实现轮第 1 轮"));
+        assert_eq!(w.ctx.store.next_round(&task.id, &s.kind).unwrap(), 2);
+        w.ctx
+            .store
+            .finish_session(
+                &retry.id,
+                &SessionLifecycle::Exited { exit_code: 0 },
+                &now_iso(),
+            )
+            .unwrap();
+        w.set_state(&task.id, TaskState::Active { node: Node::Rebase });
+        let task = w.ctx.store.get_task(&task.id).unwrap();
+        run_core_step(&mut w.ctx, &task, Node::Rebase).unwrap();
+        assert_eq!(
+            w.state(&task.id),
+            TaskState::Active {
+                node: Node::Implement
+            }
+        );
+        assert_eq!(
+            w.ctx
+                .store
+                .running_session(&task.id)
+                .unwrap()
+                .unwrap()
+                .round,
+            2
+        );
+    }
+
+    #[test]
+    fn timeout_retry_reclaims_decisions_for_restarted_session() {
+        let mut w = World::new("timeout-decisions");
+        let s = timeout_retry_start(&mut w, Some(&Inject::Decisions));
+        assert_eq!(
+            w.ctx.store.list_decisions("T-1").unwrap()[0]
+                .carried_by
+                .as_deref(),
+            Some(s.id.as_str())
+        );
+        timeout_retry_finish(&mut w, &s);
+        timeout_retry_deliver(&mut w, &s);
+        let (_, _, inject) = w.ctx.store.pending_retry("T-1").unwrap().unwrap();
+        w.ctx.store.retry_started("T-1").unwrap();
+        redispatch_with(&mut w.ctx, "T-1", Node::Implement, inject.as_ref()).unwrap();
+        let retry = w.ctx.store.running_session("T-1").unwrap().unwrap();
+        assert_eq!(
+            w.ctx.store.list_decisions("T-1").unwrap()[0]
+                .carried_by
+                .as_deref(),
+            Some(retry.id.as_str())
+        );
+        let prompt = std::fs::read_to_string(w.repo.join(format!(
+            "{}/{}.prompt",
+            SessionPaths::dir("T-1"),
+            retry.id
+        )))
+        .unwrap();
+        assert!(prompt.contains("保留决定正文"));
+    }
+
+    #[test]
+    fn timeout_retry_gate_repair_guard_reads_effective_injection() {
+        let mut w = World::new("timeout-repair");
+        let gate = Inject::GateFailed {
+            head: "abc".into(),
+            command: "false".into(),
+            tail: "fail".into(),
+        };
+        assert!(is_repairing(Some(&gate)));
+        let wrapped = Inject::timed_out(5, String::new(), Some(gate));
+        let s = timeout_retry_start(&mut w, Some(&wrapped));
+        let persisted = carried_inject(&w.ctx, "T-1", &s.id).unwrap();
+        assert!(is_repairing(persisted.as_ref()));
+        assert!(!is_repairing(Some(&Inject::timed_out(
+            5,
+            String::new(),
+            None
+        ))));
+        assert!(!is_repairing(None));
     }
 
     fn deferred_session(w: &mut World, node: Node) -> Session {

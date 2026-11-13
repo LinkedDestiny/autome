@@ -757,3 +757,61 @@ fn regression_format_only_fix_and_review_explain_exception() {
         }
     }
 }
+
+fn timeout_retry_golden(name: &str, kind: SessionKind, gate: bool) {
+    use autome_domain::task::Inject;
+    let templates = automed::protocol::seed().clone();
+    let inject = Inject::timed_out(
+        5,
+        "tick 39\ntick 40".into(),
+        gate.then(|| Inject::GateFailed {
+            head: "abcdef123456".into(),
+            command: "cargo test".into(),
+            tail: "gate failure".into(),
+        }),
+    );
+    let mut s = spec(kind, &templates);
+    s.inject = Some(&inject);
+    let card = format!("{DOC_DIR}/{SLUG}-card.md");
+    let attachments = ["screen.png".into()];
+    if kind == SessionKind::Intake {
+        s.card_path = Some(&card);
+        s.attachments = &attachments;
+    }
+    let got = build_prompt(&s)
+        .unwrap()
+        .replace(DOC_DIR, "{doc_dir}")
+        .replace(SLUG, "{slug}")
+        .replace(REQUEST, "{request}")
+        .replace(BRIEF, "{brief_path}");
+    assert!(got.contains("超过 5 分钟"));
+    assert!(!got.contains("implementation-round 照常加一"));
+    if kind == SessionKind::Intake {
+        assert!(got.contains("screen.png"));
+        assert!(got.contains("-card.md"));
+    }
+    if !maybe_update_golden(name, &got) {
+        assert_eq!(got, golden(name));
+    }
+}
+
+#[test]
+fn timeout_retry_impl_golden() {
+    timeout_retry_golden(
+        "impl-timeout",
+        SessionKind::Role { role: Role::Impl },
+        false,
+    );
+}
+#[test]
+fn timeout_retry_gate_golden() {
+    timeout_retry_golden(
+        "impl-timeout-gate",
+        SessionKind::Role { role: Role::Impl },
+        true,
+    );
+}
+#[test]
+fn timeout_retry_intake_golden() {
+    timeout_retry_golden("intake-timeout", SessionKind::Intake, false);
+}
