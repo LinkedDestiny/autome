@@ -6,7 +6,7 @@ implementation-round: 3/25
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-02 待独立审计；通过后实现 M-03 的集成简报段、prompt 分支与新金样
+next-action: 实现 M-03 的集成简报段、prompt 分支与新金样
 
 任务文件：`docs/里程碑全部关闭后的实现轮没人审-rebase/里程碑全部关闭后的实现轮没人审-rebase-task.md`
 
@@ -376,7 +376,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | 识别里程碑之外的实现轮并记账：start_heads、提交范围口径、测试文件判定、integration.range 事件 | 0 | |
-| M-02 | 待审 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
+| M-02 | 已完成 | 两条守卫与接线：集成复验未推进、已关闭里程碑的最新证据指针、审计启动时的集成判定与版本门 | 0 | |
 | M-03 | 开放 | 集成复验的简报段与 audit.md 分支：取舍函数、评估工具、新金样、protocol/v7 J-1 与 eval 用例 | 0 | |
 | M-04 | 开放 | 端到端：rebase 冲突到合并卡点、门禁失败后退回、未推进停下、无目录外提交时零变化 | 0 | |
 | M-05 | 开放 | 协议正文与技术设计：loop-protocol 的「集成复验」与检查表、CHANGELOG J-2、technical-design §6/§8 | 0 | |
@@ -409,7 +409,7 @@ k ≥ N 时审计结束走 `Failed(ImplBudget)`，与今天相同。
 
 ### M-02 验收契约
 
-最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-02-r3-impl.md · 验收通过，待审 · 实现 #3
+最新证据：docs/里程碑全部关闭后的实现轮没人审-rebase/evidence/M-02-r3-audit.md · 通过 · 审计 #3
 
 - 验收命令：`cargo test -p automed --lib guards && cargo test -p automed --lib integration_wiring`
 - 预期：`guards` 34 个用例通过，比基线 24 个多 10 个（`integration_audit_with_a_prewritten_evidence_file_and_no_new_write_made_no_progress`、`integration_audit_with_a_still_table_and_no_evidence_made_no_progress`、`integration_audit_with_evidence_and_a_still_table_passes`、`integration_audit_that_reopens_without_evidence_is_missing_evidence`、`integration_audit_that_reopens_with_evidence_passes`、`integration_audit_evidence_of_an_earlier_round_does_not_count`、`closed_pointer_retargeted_to_impl_evidence_fails`、`closed_pointer_added_under_a_closed_milestone_fails`、`closed_pointer_rules_leave_open_milestones_and_fences_alone`、`closed_pointer_without_a_baseline_is_not_guessed`）；既有 24 个（含 `rebase_repair_with_all_milestones_done_does_not_require_empty_audit_evidence`）断言不变全部通过。`integration_wiring` 5 个通过，基线 0（`integration_wiring_evidence_stamp_is_taken_at_the_first_audit_attempt_and_detects_a_rewrite`、`integration_wiring_audit_after_a_recorded_range_is_marked`、`integration_wiring_a_later_impl_session_supersedes_the_range`、`integration_wiring_a_pinned_template_without_the_block_keeps_todays_audit`、`integration_wiring_impl_guard_reads_the_design_at_the_last_task_head`）。
