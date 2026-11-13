@@ -7070,6 +7070,25 @@ mod tests {
         }
     }
 
+    // Gate/reentry tests start after Locate, so prepare its real persisted output.
+    fn seed_located_bug(w: &World, task: &TaskRecord, project: &Project, wt: &Path) {
+        let docs = wt.join("docs").join(&task.slug);
+        std::fs::create_dir_all(&docs).unwrap();
+        let text = "status: 已定位\nfix-round: 0/5\n复现命令: sh regression.sh\n根因: 已确认\n复核: 待复核\n";
+        std::fs::write(wt.join(task.bug_doc()), text).unwrap();
+        std::fs::write(wt.join("regression.sh"), "exit 1\n").unwrap();
+        git::commit_paths(wt, &["docs", "regression.sh"], "locate regression").unwrap();
+        let doc = autome_domain::bug_doc::parse(text).unwrap();
+        test_fix::regression_set(&w.ctx, None, project, task, &doc, "locate").unwrap();
+        let snapshot = w
+            .ctx
+            .store
+            .last_event(&task.id, "bug.regression_snapshot")
+            .unwrap()
+            .unwrap();
+        assert!(!snapshot["files"].as_array().unwrap().is_empty());
+    }
+
     fn repro_gate_world(
         mode: &str,
         code: i32,
@@ -7104,6 +7123,7 @@ mod tests {
             .store
             .append_event("bug.loop_started", &task.id, json!({}))
             .unwrap();
+        seed_located_bug(&w, &task, &project, &wt);
         let repro = format!("while ! test -f released; do sleep 0.01; done; exit {code}");
         w.ctx
             .store
@@ -7373,6 +7393,10 @@ mod tests {
         let project = w.ctx.store.get_project(&task.project_id).unwrap();
         let resolved = resolve_config(&w.ctx, &project).unwrap();
         for step in [BugStep::Locate, BugStep::Fix, BugStep::FixReview] {
+            if step == BugStep::Fix {
+                let layout = TaskLayout::single(&project, &task.slug);
+                seed_located_bug(&w, &task, &project, &layout.cwd);
+            }
             w.set_state(&task.id, TaskState::Active { node: step.node() });
             let transition = Transition {
                 next: TaskState::Active { node: step.node() },

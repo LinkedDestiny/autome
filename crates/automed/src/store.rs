@@ -2931,6 +2931,7 @@ mod tests {
             .iter()
             .map(|t| s.queued_seq(&t.id).unwrap())
             .collect();
+        downgrade_sessions_to_v7(&s);
         s.conn
             .execute_batch("DROP TABLE kernel_mark; PRAGMA user_version = 7;")
             .unwrap();
@@ -2941,7 +2942,7 @@ mod tests {
             s.conn
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            8
+            SCHEMA_VERSION
         );
         assert_eq!(s.queued_tasks("p").unwrap(), before);
         for (task, seq) in before.iter().zip(seqs) {
