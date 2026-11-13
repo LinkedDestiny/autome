@@ -19,3 +19,4 @@
 实现 #10 | M-09 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-09-r10-impl.md | 无
 审计 #9 | M-09 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-09-r10-audit.md | 无
 实现 #11 | M-10 | 待审 | docs/内核补齐批次-2026-11-13-4/evidence/M-10-r11-impl.md | 无
+审计 #10 | M-10 | 通过 | docs/内核补齐批次-2026-11-13-4/evidence/M-10-r11-audit.md | 无
