@@ -10,3 +10,4 @@
 实现 #2 | M-01 | 退回 launcher（修复落地，保持开放；BL-09 纳入 M-13） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-impl.md | ps EPERM，完整验收待复验
 审计 #2 | M-01 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-audit.md | 无
 实现 #3 | M-02 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r3-impl.md | 3 条真实服务用例被 ps EPERM 阻塞
+审计 #3 | M-02 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r3-audit.md | 无
