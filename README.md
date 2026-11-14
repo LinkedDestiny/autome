@@ -552,6 +552,11 @@ sh scripts/ci-local.sh          # a few minutes; most of it is the desktop suite
 sh scripts/ci-local.sh --package  # also builds the .app
 ```
 
+Rust tests use `--no-fail-fast` so all test targets run even after a failure.
+The local gate continues through every step and ends with a bounded list of
+failed Rust targets/cases and Web files/cases; omitted cases remain in the full log.
+Script-level regression tests run via `node --test scripts/test/*.test.mjs`.
+
 The workflow runs on every push to GitHub. The local script is for the commits
 in between — and it is how the Format and Clippy gates got caught 147 and 38
 findings deep, back when there was no remote. To have every commit run it in

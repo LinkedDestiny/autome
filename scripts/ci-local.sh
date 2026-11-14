@@ -39,38 +39,7 @@ for arg in "$@"; do
   esac
 done
 
-# Colour only when someone is watching. The hook redirects to a log file, and
-# escape codes in a log are noise.
-if [ -t 1 ]; then
-  b=$(printf '\033[1m')
-  r=$(printf '\033[0m')
-  red=$(printf '\033[31m')
-  green=$(printf '\033[32m')
-else
-  b='' r='' red='' green=''
-fi
-
-# Newline-separated, not space-separated: step names have spaces in them, and
-# `for name in $passed` would print "End to end" as three steps.
-failed=''
-passed=''
-started=$(date +%s)
-
-run() {
-  name=$1
-  shift
-  printf '\n%s==> %s%s\n' "$b" "$name" "$r"
-  step_started=$(date +%s)
-  if "$@"; then
-    passed="$passed$name
-"
-    printf '%s    ok%s (%ss)\n' "$green" "$r" "$(($(date +%s) - step_started))"
-  else
-    failed="$failed$name
-"
-    printf '%s    FAILED%s (%ss)\n' "$red" "$r" "$(($(date +%s) - step_started))"
-  fi
-}
+. "$root/scripts/ci/lib.sh"
 
 # --- job: rust -------------------------------------------------------------
 # ci.yml runs these as one job, in this order, with `-D warnings` because a
@@ -80,7 +49,9 @@ run 'Clippy' cargo clippy --all-targets -- -D warnings
 # --all-targets includes end_to_end and real_cli (including adapter flags).
 # Run each suite once: repeating the real-Git integration suite can push the
 # host gate past its deadline. Keep uncaptured output for integration failures.
-run 'Test (unit, end to end, adapter flags)' cargo test --workspace --all-targets -- --nocapture
+run 'Test (unit, end to end, adapter flags)' --cases cargo cargo test --workspace --all-targets --no-fail-fast -- --nocapture
+
+run 'Scripts' node --test scripts/test/*.test.mjs
 
 # --- job: desktop ----------------------------------------------------------
 # ci.yml does `npm ci || npm install` on a bare runner. Here node_modules is
@@ -106,7 +77,7 @@ if [ ! -d apps/web/node_modules ]; then
 fi
 run 'Web lint' npm run lint --prefix apps/web
 run 'Web typecheck' npm run typecheck --prefix apps/web
-run 'Web test' npm run test --prefix apps/web
+run 'Web test' --cases vitest npm run test --prefix apps/web
 run 'Web build' npm run build --prefix apps/web
 
 # --- job: package ----------------------------------------------------------
@@ -137,22 +108,5 @@ if [ "$with_package" -eq 1 ]; then
 fi
 
 # --- summary ---------------------------------------------------------------
-elapsed=$(($(date +%s) - started))
-printf '\n%s%s%s\n' "$b" '────────────────────────────────────────' "$r"
-printf '%s' "$passed" | while IFS= read -r name; do
-  printf '%s  ok%s      %s\n' "$green" "$r" "$name"
-done
-printf '%s' "$failed" | while IFS= read -r name; do
-  printf '%s  FAILED%s  %s\n' "$red" "$r" "$name"
-done
-
-if [ -z "$failed" ]; then
-  printf '\n%s全部通过%s，用时 %ss。\n' "$green" "$r" "$elapsed"
-  if [ "$with_package" -eq 0 ]; then
-    printf '（未跑 package —— 加 --package 打包，需要几分钟。）\n'
-  fi
-  exit 0
-fi
-
-printf '\n%s有步骤未通过%s，用时 %ss。\n' "$red" "$r" "$elapsed"
-exit 1
+summary
+exit $?

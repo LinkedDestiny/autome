@@ -48,7 +48,7 @@ test('本地四行独立 run 位于 contract 后、package 分支外', () => {
   expect(local.indexOf('# --- job: web')).toBeGreaterThan(local.indexOf('# --- job: contract'));
   expect(section).toContain("fi\nrun 'Web lint'");
   expect(section.match(/^run 'Web .*$/gm)).toEqual(
-    ['lint', 'typecheck', 'test', 'build'].map(name => `run 'Web ${name}' npm run ${name} --prefix apps/web`),
+    ['lint', 'typecheck', 'test', 'build'].map(name => `run 'Web ${name}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
   );
 });
 
@@ -104,4 +104,13 @@ chmod +x "$PREFIX/autome"
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
+});
+
+test('Rust 一次跑完所有目标，脚本测试纳入本地与 CI', () => {
+  expect(local).toContain('cargo test --workspace --all-targets --no-fail-fast -- --nocapture');
+  for (const name of ['Test', 'End to end', 'Adapter flags exist']) {
+    expect(workflow.jobs.rust.steps.find((step: Step) => step.name === name).run).toContain('--no-fail-fast');
+  }
+  expect(workflow.jobs.scripts.steps.some((step: Step) => step.run === 'node --test scripts/test/*.test.mjs')).toBe(true);
+  expect(local).toContain("run 'Scripts' node --test scripts/test/*.test.mjs");
 });
