@@ -85,10 +85,10 @@ jobs:
         run: npm run typecheck
       - name: Build the core the sidecar tests drive
         run: cargo build -p automed -p autome-cli
-      - name: Test
-        run: npm test
       - name: Build
         run: npm run build
+      - name: Test
+        run: npm test
 
   desktop:
     # A hung step must fail in minutes, not sit at the runner's own limit.
@@ -153,6 +153,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Package
         run: sh scripts/package-cli.sh
       - name: Install from the tarball
@@ -178,6 +181,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/download-artifact@v4
         with:
           name: autome-cli

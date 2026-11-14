@@ -19,5 +19,5 @@ step 'Scripts' '' node --test scripts/test/*.test.mjs
 prep 'Web install' --if-missing apps/web/node_modules sh -c 'cd apps/web && npm ci'
 step 'Web lint' 'apps/web' npm run lint --prefix apps/web
 step 'Web typecheck' 'apps/web' npm run typecheck --prefix apps/web
-step 'Web test' 'apps/web crates protocol plugins apps/desktop/renderer' --cases vitest npm run test --prefix apps/web
 step 'Web build' 'apps/web' npm run build --prefix apps/web
+step 'Web test' 'apps/web crates protocol plugins apps/desktop/renderer' --cases vitest npm run test --prefix apps/web

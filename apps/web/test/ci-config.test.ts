@@ -24,11 +24,14 @@ test('Node 22、npm 缓存与锁文件安装', () => {
     'node-version': '22', cache: 'npm', 'cache-dependency-path': 'apps/web/package-lock.json',
   });
   expect(web.steps.find((step: Step) => step.name === 'Install').run).toBe('npm ci');
+  for (const job of ['cli-package', 'cli-release']) {
+    expect(workflow.jobs[job].steps.find((step: Step) => step.uses === 'actions/setup-node@v4').with['node-version']).toBe('22');
+  }
 });
 
 test('CI 按顺序运行 Web 检查，测试前先构建内核', () => {
   expect(web.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
-    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed -p autome-cli', 'npm test', 'npm run build',
+    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed -p autome-cli', 'npm run build', 'npm test',
   ]);
 });
 
@@ -47,7 +50,7 @@ test('本地只在缺 node_modules 时 npm ci 安装 Web', () => {
 test('本地四步独立声明完整输入，位于 Contract 后、package 分支外', () => {
   expect(steps.indexOf("step 'Web lint'")).toBeGreaterThan(steps.indexOf("step 'Contract'"));
   expect(steps.match(/^step 'Web .*$/gm)).toEqual(
-    ['lint', 'typecheck', 'test', 'build'].map(name =>
+    ['lint', 'typecheck', 'build', 'test'].map(name =>
       `step 'Web ${name}' '${name === 'test' ? 'apps/web crates protocol plugins apps/desktop/renderer' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
   );
   expect(local.indexOf('. "$root/scripts/ci/steps.sh"')).toBeLessThan(local.indexOf('if [ "$with_package" -eq 1 ]'));

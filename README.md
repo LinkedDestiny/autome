@@ -301,6 +301,22 @@ cargo install --path crates/autome-cli  # or plainly, with Rust
 `PREFIX` picks the directory. The installer checks the tarball's `.sha256`,
 refuses an unverified download, and finishes with `autome doctor`.
 
+### The panel
+
+After installation, run `autome web` to start the panel and open your browser.
+Node.js >= 22.22 is required (`brew install node`). Without it the installer
+installs only the CLI; install Node and rerun the installer to add the panel.
+The panel lives at `$(dirname "$PREFIX")/lib/autome/web`, beside the CLI prefix.
+The release tarball also runs directly: keep `web/` beside `autome`.
+
+- `autome web start`: start without opening a browser; repeated runs reuse it.
+- `autome web status` (or `--json`): URL, process, kernel build and running gates.
+- `autome web stop`: stop; refuses active gates unless `--force` is supplied.
+- `autome web service install|uninstall`: manage optional macOS login startup.
+
+The default port is 7420, with automatic fallback if occupied. An explicit
+`--port` must be available. Runtime files and logs live in `$AUTOME_HOME/web`.
+
 ### Upgrading, and which build may drive the ledger
 
 `autome --version` and `automed --version` include a build ID in parentheses:
@@ -325,9 +341,8 @@ adopts the current kernel and records a `kernel.adopted` event. Only the literal
 adopted old process then stops advancing. This does not bypass schema checks.
 
 The dashboard uses `autome core`, the stdio kernel in the installed CLI file.
-Resolution order: `AUTOMED_BIN`, bundled `automed`, the first `autome` on PATH,
-`~/.local/bin/autome`, then a cargo build. Custom PREFIX installs must be on PATH
-or selected with `AUTOMED_BIN=<PREFIX>/autome`. Startup logs show the path and
+Resolution order: `AUTOMED_BIN`, `AUTOME_BUNDLED_CORE` (the CLI that launched the panel), the first `autome` on PATH,
+`~/.local/bin/autome`, then a cargo build. `autome web` supplies its own path for custom PREFIX installs. Startup logs show the path and
 build ID, explicitly identifying cargo builds.
 
 For the first upgrade to schema v8, after merging:

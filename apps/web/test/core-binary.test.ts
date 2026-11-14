@@ -6,7 +6,7 @@ test('环境覆盖优先且不检查存在', () => {
     .toEqual({ path: '/missing', args: [], source: 'env' });
 });
 test('发布包先于本地及 cargo', () => {
-  expect(resolveAutomedBinary({ ...options, exists: () => true })).toEqual({ path: '/repo/apps/automed', args: [], source: 'bundle' });
+  expect(resolveAutomedBinary({ ...options, env: { AUTOME_BUNDLED_CORE: '/bundle/autome' }, exists: () => true })).toEqual({ path: '/bundle/autome', args: ['core'], source: 'bundle' });
 });
 test('本地安装先于 cargo', () => {
   expect(resolveAutomedBinary({ ...options, exists: p => p === '/home/test/.local/bin/autome' }))
@@ -20,9 +20,9 @@ test('cargo 兜底即使不存在，支持 profile', () => {
 test('空覆盖变量视同未设', () => {
   expect(resolveAutomedBinary({ ...options, env: { AUTOMED_BIN: '' } })).toEqual(resolveAutomedBinary(options));
 });
-test('发布包 automed 与 web 目录同级，source 可追溯', () => {
-  expect(resolveAutomedBinary({ ...options, webRoot: '/package/web', exists: p => p === '/package/automed' }))
-    .toEqual({ path: '/package/automed', args: [], source: 'bundle' });
+test('发布包由启动器指定同包 CLI，source 可追溯', () => {
+  expect(resolveAutomedBinary({ ...options, env: { AUTOME_BUNDLED_CORE: '/package/autome' }, webRoot: '/package/web' }))
+    .toEqual({ path: '/package/autome', args: ['core'], source: 'bundle' });
 });
 
 test('环境覆盖 autome 带 core', () => {
@@ -35,4 +35,8 @@ test('不再查旧 local-bin automed', () => {
  const checked:string[]=[];
  expect(resolveAutomedBinary({...options, exists:p=>{checked.push(p);return p.endsWith('.local/bin/automed');}}).source).toBe('cargo');
  expect(checked).not.toContain('/home/test/.local/bin/automed');
+});
+
+test('不认 web 相邻的旧 automed', () => {
+  expect(resolveAutomedBinary({ ...options, exists: p => p === '/repo/apps/automed' }).source).toBe('cargo');
 });
