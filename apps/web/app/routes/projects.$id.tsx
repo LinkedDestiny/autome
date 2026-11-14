@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
 import { ProjectAlerts } from '../components/project-alerts.tsx';
 import { projectAlerts, type AlertDashboard } from '../components/alerts-data.ts';
@@ -40,18 +41,18 @@ export default function ProjectBoard() {
   const [kind, setKind] = useState<KindFilter>('all');
   const location = useLocation();
   const { now, timeZone } = useClock();
-  if ('error' in data) return <p role="alert">{data.error}</p>;
+  if ('error' in data) return <p data-testid={TEST_IDS.pageBoard} role="alert">{data.error}</p>;
   const columns = filterBoard(boardColumns(data.tasks, now), kind);
   const query = new URLSearchParams(location.search);
   if (data.showAll) query.delete('done'); else query.set('done', 'all');
   const foldHref = `${location.pathname}${query.size ? `?${query}` : ''}`;
-  return <div className="board"><header className="board-header"><h1>{data.project.display_name}</h1>
+  return <div className="board" data-testid={TEST_IDS.pageBoard}><header className="board-header"><h1>{data.project.display_name}</h1>
     <div className="board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
     <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
-  <ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" key={column.id} aria-labelledby={`board-${column.id}`}>
-    <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
+  <ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
+    <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body" data-scroll-region>
       {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}

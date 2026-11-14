@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
 import { TaskChangesPanel } from '../components/task-changes.tsx';
 import { TaskDecisions } from '../components/task-decisions.tsx';
@@ -36,7 +37,7 @@ export default function TaskPage() {
   const clock = useClock();
   const context: CardContext = { ...clock, fixRounds: data?.task.budget_n ?? settings.resolved?.bug?.fix_rounds ?? 0,
     cooldowns: dashboard && 'payload' in dashboard ? (dashboard.payload as { cooldowns?: CardContext['cooldowns'] }).cooldowns ?? [] : [], unread: {} };
-  return <div className="task-page">{data ? <>
+  return <div className="task-page" data-testid={TEST_IDS.pageTask}>{data ? <>
     <TaskHeader view={headerView(data, context)} />
     <TaskStage view={stageBarView(data, history?.events ?? [], settings)} />
     <div className="task-controls"><TaskNotice view={noticeView(data, context)} />

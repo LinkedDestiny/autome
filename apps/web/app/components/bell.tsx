@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { formatClock, useClock } from '../lib/clock.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
@@ -15,11 +16,11 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
   const clock = useClock();
   return <div className="bell">
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
-      className="bell-button">
+      className="bell-button" data-testid={TEST_IDS.bellButton}>
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
       {snapshot.unread > 0 && <span className="bell-badge">{snapshot.unread >= 100 ? '99+' : snapshot.unread}</span>}
     </button>
-    {open && <section aria-label="通知列表" className="bell-panel">
+    {open && <section aria-label="通知列表" className="bell-panel" data-testid={TEST_IDS.bellPanel}>
       <header className="bell-header">
         <strong>通知</strong><button type="button" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
       </header>
@@ -27,10 +28,10 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
       {permission === 'denied' && <p className="bell-message">系统通知已被浏览器拒绝，铃铛照常提醒</p>}
       {snapshot.error && <p role="alert" className="bell-error">{snapshot.error}</p>}
       {!snapshot.items.length && <p className="bell-empty">还没有通知</p>}
-      <ul className="bell-list">
+      <ul className="bell-list" data-scroll-region>
         {snapshot.items.map(item => {
           const target = resolveTarget(item, targets);
-          return <li key={item.id} className="bell-item">
+          return <li key={item.id} className="bell-item" data-testid={TEST_IDS.bellItem} data-task-id={item.task_id ?? undefined}>
             {!item.read_at && <span aria-label="未读" className="bell-unread">●</span>}
             {target.href ? <Link to={target.href} onClick={async event => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) { void onRead(item.id); return; }

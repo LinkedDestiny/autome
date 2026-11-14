@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { Form, useNavigation } from 'react-router';
 import { useWriteGate } from '../lib/live.tsx';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
@@ -17,10 +18,10 @@ export function TaskDecisions({ decisions = [] }: { decisions?: TaskPayload['dec
       {item.carried && <p>{DECISION_COPY.carried}</p>}
       <Form method="post"><input type="hidden" name="intent" value="decide" /><input type="hidden" name="kind" value={item.kind} /><input type="hidden" name="item_id" value={item.item_id} />
         <fieldset disabled={!gate.allowed || pending}>
-          {item.kind === 'backlog' ? <><button name="disposition" value="include">纳入</button><button name="disposition" value="ignore">忽略</button></> : <>
-            <label>裁定文字<textarea name="ruling" defaultValue={item.ruling ?? ''} maxLength={MAX_PROSE_LENGTH} required /></label><button name="disposition" value="ruled">裁定</button>
+          {item.kind === 'backlog' ? <><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="include">纳入</button><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ignore">忽略</button></> : <>
+            <label>裁定文字<textarea name="ruling" defaultValue={item.ruling ?? ''} maxLength={MAX_PROSE_LENGTH} required /></label><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ruled">裁定</button>
           </>}
-          <button name="disposition" value="none" formNoValidate>撤销表态</button>
+          <button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="none" formNoValidate>撤销表态</button>
         </fieldset>
       </Form>
     </article>)}

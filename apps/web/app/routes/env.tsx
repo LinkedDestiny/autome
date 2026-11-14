@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useState } from 'react';
 import { Form, useLoaderData, useActionData, useNavigation, type LoaderFunctionArgs, type ActionFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
@@ -30,14 +31,14 @@ export async function action({ request, context }: ActionFunctionArgs): Promise<
 }
 function CopyCommand({ command }: { command: string }) {
   const [status, setStatus] = useState('');
-  return <><pre>{command}</pre><button type="button" onClick={async () => {
+  return <><pre>{command}</pre><button data-testid={TEST_IDS.envCopy} data-command={command} type="button" onClick={async () => {
     try { await navigator.clipboard.writeText(command); setStatus(ENV.copied); } catch { setStatus(ENV.copyError); }
   }}>{ENV.copy}</button><span role="status">{status}</span></>;
 }
 export function EnvView({ data, result, busy = false }: { data: EnvData; result?: EnvResult; busy?: boolean }) {
   const gate = useWriteGate(), snapshot = data.snapshot;
   const disabled = !gate.allowed || busy;
-  return <div className="env-page"><header><h1>{ENV.title}</h1><Form method="post"><button name="intent" value="detect" disabled={disabled || snapshot?.probing} title={gate.reason}>{ENV.detect}</button></Form></header>
+  return <div className="env-page" data-testid={TEST_IDS.pageEnv}><header><h1>{ENV.title}</h1><Form method="post"><button name="intent" value="detect" disabled={disabled || snapshot?.probing} title={gate.reason}>{ENV.detect}</button></Form></header>
     <div className="env-components">
       {data.error && <p role="alert">{data.error}</p>}
       {(snapshot && (!snapshot.probed || snapshot.probing)) && <p role="status">{ENV.probing}</p>}

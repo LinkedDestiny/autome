@@ -4,7 +4,7 @@ import type { LogSession } from './session-log.tsx';
 import type { TaskEvent } from '../../server/task-events.ts';
 import { failureText, nodeLabel, RUNTIME_LABELS, taskStatusLine, type TaskState } from '../lib/labels.ts';
 export type TimelineSession = LogSession & { runtime?: string; model?: string; ended_at?: string | null; metrics?: { cost_usd?: number } | null; lifecycle?: { state: string } };
-export type TimelineEntry = { key: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession };
+export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession };
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
 const str = (value: unknown) => value == null ? '' : String(value);
@@ -82,7 +82,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     const previous = events.slice(0, Math.max(0, index)).findLast(e => e.kind === 'task.snapshot');
     const elapsed = Math.max(0, Date.parse(session.ended_at ?? now) - Date.parse(session.started_at));
     const runtime = session.runtime ?? '';
-    return { key: session.id, at: session.started_at, session, title: `${session.label} · 第 ${session.round} 轮`,
+    return { key: session.id, node: index < 0 ? undefined : str(events[index].payload.node), at: session.started_at, session, title: `${session.label} · 第 ${session.round} 轮`,
       summary: index < 0 ? (session.running ? '运行中' : '已结束') : sessionSummary(session, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][]),
       details: [Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime, session.model ?? '',
         formatRange(session.started_at, session.ended_at, clock), `${session.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
@@ -99,7 +99,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
       const bind = event.kind === 'gate.started' ? run && !run.running : event.kind === 'gate.result' ? run?.running : false;
       if (!bind) {
         if (run) run.entry.summary = '已中断';
-        run = { entry: { key: `gate:${node}:${event.seq}`, at: event.at, title: gateName(p), summary: '', details: [] }, running: false };
+        run = { entry: { key: `gate:${node}:${event.seq}`, node, at: event.at, title: gateName(p), summary: '', details: [] }, running: false };
         entries.push(run.entry); active.set(node, run);
       }
       if (!run) continue;
@@ -124,7 +124,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
       if (repro) { repro.summary = reproduction(event); repro = undefined; }
     } else {
       const title = light(event, clock);
-      if (title) entries.push({ key: `ev:${event.seq}`, at: event.at, title, summary: '', details: [] });
+      if (title) entries.push({ key: `ev:${event.seq}`, node: node || undefined, at: event.at, title, summary: '', details: [] });
     }
   }
   for (const session of sessions.toSorted((a, b) => a.started_at.localeCompare(b.started_at))) {

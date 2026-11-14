@@ -1,3 +1,4 @@
+import { TEST_IDS } from './testids.ts';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useRevalidator } from 'react-router';
 import type { CoreMessage } from '../../server/eventbus-protocol.ts';
@@ -61,5 +62,5 @@ export function useKernelRecovery(status: RecoveryStatus) {
 }
 export function LiveBanner(status: LiveStatus) {
   const banner = liveBanner(status);
-  return banner ? <div role={banner.tone} className="live-banner">{banner.text}</div> : null;
+  return banner ? <div role={banner.tone} className="live-banner" data-testid={TEST_IDS.liveBanner} data-state={status.connection === 'reconnecting' ? 'reconnecting' : status.core?.status === 'outdated' ? 'outdated' : 'offline'}>{banner.text}</div> : null;
 }

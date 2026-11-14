@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { Form, Link, useSearchParams, useNavigation } from 'react-router';
 import { useWriteGate } from '../lib/live.tsx';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
@@ -14,8 +15,8 @@ export function TaskOps({ ops, result }: { ops: OpView[]; result?: { error?: str
     <div className="task-ops-list">{ops.filter(o => o.op !== 'decide').map(entry => {
       const { op } = entry;
       const disabled = !gate.allowed || !entry.enabled || pending;
-      const button = <button type="submit" disabled={disabled}>{entry.label ?? OP_LABELS[op]}</button>;
-      if (op === 'cancel' && search.get('confirm') !== 'cancel') return <div key={op}>{disabled ? <button disabled>{OP_LABELS.cancel}</button> : <Link to={`?${confirm}`}>{OP_LABELS.cancel}</Link>}</div>;
+      const button = <button data-testid={TEST_IDS.taskOp} data-op={op} type="submit" disabled={disabled}>{entry.label ?? OP_LABELS[op]}</button>;
+      if (op === 'cancel' && search.get('confirm') !== 'cancel') return <div key={op}>{disabled ? <button data-testid={TEST_IDS.taskOp} data-op={op} disabled>{OP_LABELS.cancel}</button> : <Link data-testid={TEST_IDS.taskOp} data-op={op} to={`?${confirm}`}>{OP_LABELS.cancel}</Link>}</div>;
       const inputs = <>
         {op === 'reject' && <label>驳回意见<textarea name="feedback" maxLength={MAX_PROSE_LENGTH} required /></label>}
         {op === 'reply' && <label>补充信息<textarea name="info" maxLength={MAX_PROSE_LENGTH} required /></label>}
@@ -24,7 +25,7 @@ export function TaskOps({ ops, result }: { ops: OpView[]; result?: { error?: str
         {op === 'convert' && <label><input type="checkbox" name="start" value="yes" />改建后立即开始</label>}
       </>;
       const form = <Form method="post"><input type="hidden" name="intent" value={op} /><fieldset disabled={disabled}>{inputs}
-        {op === 'cancel' ? <><input type="hidden" name="confirm" value="yes" /><button type="submit">确认取消这个任务</button><Link to={`?${new URLSearchParams([...search].filter(([key]) => key !== 'confirm'))}`}>返回</Link></> : button}
+        {op === 'cancel' ? <><input type="hidden" name="confirm" value="yes" /><button data-testid={TEST_IDS.taskOp} data-op={op} type="submit">确认取消这个任务</button><Link to={`?${new URLSearchParams([...search].filter(([key]) => key !== 'confirm'))}`}>返回</Link></> : button}
       </fieldset></Form>;
       return <div key={op}>{['reject', 'reply', 'rerun', 'extend', 'convert'].includes(op) ? <details><summary>{OP_LABELS[op]}</summary>{form}</details> : form}{entry.reason && <p>{entry.reason}</p>}</div>;
     })}</div>

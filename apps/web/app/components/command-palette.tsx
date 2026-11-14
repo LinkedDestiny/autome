@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { filterCandidates, paletteReducer, type Candidate, type PaletteAction, type PaletteState } from './palette-model.ts';
@@ -23,7 +24,7 @@ export function CommandPalette({ candidates, state, onChange }: { candidates: Ca
   }
   if (!state.open) return null;
   return <div className="palette-backdrop" onClick={event => { if (event.target === event.currentTarget) dispatch({ type: 'close' }); }}>
-    <section className="palette" role="dialog" aria-modal="true" aria-label="跳转" onKeyDown={event => {
+    <section className="palette" data-testid={TEST_IDS.palette} role="dialog" aria-modal="true" aria-label="跳转" onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); dispatch({ type: 'close' }); }
       if (event.key === 'Tab') {
         const controls = event.currentTarget.querySelectorAll<HTMLElement>('button, input');
@@ -42,7 +43,7 @@ export function CommandPalette({ candidates, state, onChange }: { candidates: Ca
           const type = keys[event.key];
           if (type) { event.preventDefault(); dispatch(type === 'close' ? { type } : { type, items }); }
         }} />
-      <div className="palette-list" id="palette-results" role="listbox" aria-label="跳转结果">
+      <div className="palette-list" data-scroll-region id="palette-results" role="listbox" aria-label="跳转结果">
         {items.map((item, index) => <div key={item.key} id={optionId(index)} role="option" aria-selected={index === state.active} aria-disabled={item.disabled} title={item.reason}
           className="palette-option" onClick={() => { if (!item.disabled) { onChange({ ...state, open: false }); navigate(item.href); } }}>
           <strong>{item.title}</strong><span>{item.id} · {item.subtitle}</span>
