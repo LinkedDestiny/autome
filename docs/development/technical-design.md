@@ -557,6 +557,8 @@ schema v9 重建 sessions（v8 的 kernel_mark 保留）：task_id 可空且保�
 
 步骤沿用回归由 `scripts/test/ci-reuse.test.mjs` 覆盖单侧变更、失败修复、工具链失效、快照边界、准备步骤、执行中变更与路径边界；`ci-claims.test.mjs` 检查真实仓库无未归属路径。新增步骤只需在步骤表声明命令与输入；新增跨目录读取仍需同步输入声明。GitHub CI 直接运行各 job，始终全跑。
 
+Web 测试按显式清单 `apps/web/test-groups.ts` 分为 unit（默认并行）、kernel（4 workers）与 exclusive（文件串行），同一 groupOrder 同时启动。共享构建由 globalSetup 先执行一次，六个自构建套件与嵌套 vitest 复用构建标记；新增文件必须归组，守卫检查全覆盖及 unit 中的资源标记。并行度的性能验收仍以任务证据为准。
+
 ## 17. 风险与对策
 
 - **会话墙钟时长上限**。`[loop] session_minutes` 默认 120、至少 5 分钟，启动时冻结；旧会话按当前配置回退。tick 超限终止整个进程组，确认不了就保持运行、不重派；重试用尽才失败。电脑睡眠时间也计入，醒来可能立即超时。Onboarding 同样登记会话并冻结上限，超时终止后只记录项目会话结束，不推进任务；既有心跳兜底保持不变。

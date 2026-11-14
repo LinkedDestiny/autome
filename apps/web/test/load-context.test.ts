@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMemoryRouter, createRequestHandler, RouterContextProvider, type LoaderFunctionArgs, type ServerBuild } from 'react-router';
@@ -63,7 +63,7 @@ it('开发 Vite SSR 取得 Node 注入的网关，不监听端口', async () => 
   finally { await vite.close(); }
 });
 it('生产构建 SSR 取得 Node 注入的网关', async () => {
-  execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'pipe' });
+  ensureBuilt();
   await checkSSR(await import(pathToFileURL(root + 'build/server/index.js').href), 'production');
 });
 it('HTTP 两处分支都配置 getLoadContext', () => {

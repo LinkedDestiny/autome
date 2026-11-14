@@ -1,3 +1,4 @@
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,7 +29,7 @@ beforeAll(async () => {
   try {
     // Fail before spawning any fixture if the environment cannot listen. Never silently skip.
     await new Promise<void>((resolve, reject) => { const probe = createServer(); probe.once('error', reject); probe.listen(0, '127.0.0.1', () => probe.close(error => error ? reject(error) : resolve())); });
-    await exec('npm', ['run', 'build'], { cwd: join(wt, 'apps/web'), timeout: 60000 });
+    ensureBuilt();
     mkdirSync(home); mkdirSync(repo); mkdirSync(join(repo, '.autome'));
     writeFileSync(join(repo, '.autome/config.toml'), '[retry]\nattempts = 0\n');
     symlinkSync('/bin/sleep', join(root, 'w7-sleep'));

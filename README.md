@@ -555,6 +555,11 @@ sh scripts/ci-local.sh --plan     # print decisions and content keys, execute no
 sh scripts/ci-local.sh --check-claims  # reject inputs missing from the declarations
 ```
 
+Web tests use three explicit Vitest projects: parallel `unit`, `kernel` with four
+workers, and serial `exclusive` for shared build/dev-server paths and timing checks.
+A global setup builds once; nested test runs reuse that build. Assign new files in
+`apps/web/test-groups.ts`; membership guards reject omissions and unsafe unit placement.
+
 Rust tests use `--no-fail-fast` so all test targets run even after a failure.
 The local gate continues through every step and ends with a bounded list of
 failed Rust targets/cases and Web files/cases; omitted cases remain in the full log.

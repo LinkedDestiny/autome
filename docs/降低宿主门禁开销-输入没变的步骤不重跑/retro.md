@@ -12,3 +12,5 @@
 审计 #4 | M-04 | 通过 | docs/降低宿主门禁开销-输入没变的步骤不重跑/evidence/M-04-r4-audit.md | 无
 实现 #5 | M-05 | 待审 | docs/降低宿主门禁开销-输入没变的步骤不重跑/evidence/M-05-r5-impl.md | 各类完整快检耗时待宿主采集
 审计 #5 | M-05 | 通过 | docs/降低宿主门禁开销-输入没变的步骤不重跑/evidence/M-05-r5-audit.md | 无
+
+实现 #6 | M-06 | 保持开放 | evidence/M-06-r6-impl.md | 监听与 ps 权限阻塞；性能、连跑及 ENOTEMPTY 待取证
