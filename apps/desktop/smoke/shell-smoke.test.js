@@ -7,6 +7,7 @@ const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
 const { isPanelProcess } = require('../src/shell/smoke');
+const { seedNewerLedger } = require('./ledger-fixture');
 const run = promisify(execFile);
 const desktop = resolve(__dirname, '..');
 const packaged = process.env.AUTOME_SMOKE_APP && resolve(process.env.AUTOME_SMOKE_APP);
@@ -16,8 +17,8 @@ const core = packaged ? join(packaged, 'Contents/Resources/core/autome') : resol
 const fixtures = [];
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'autome-shell-smoke-'));
-  const env = { ...process.env, AUTOME_HOME: home, AUTOMED_DB_PATH: join(home, 'state/automed.sqlite3'), PATH: '/usr/bin:/bin', AUTOME_WEB_PORT: '0', AUTOME_BUNDLED_CORE: core, AUTOME_NODE: electron };
-  for (const key of ['AUTOMED_BIN', 'AUTOME_TEST_BUILD_ID', 'AUTOME_ALLOW_OLDER_KERNEL', 'ELECTRON_RUN_AS_NODE', 'AUTOME_SHELL_SMOKE_BANNER']) delete env[key];
+  const env = { ...process.env, AUTOME_HOME: home, AUTOMED_DB_PATH: join(home, 'state/automed.sqlite3'), PATH: '/usr/bin:/bin', AUTOME_WEB_PORT: '0', AUTOME_NODE: electron };
+  for (const key of ['AUTOME_BUNDLED_CORE', 'AUTOMED_BIN', 'AUTOME_TEST_BUILD_ID', 'AUTOME_ALLOW_OLDER_KERNEL', 'ELECTRON_RUN_AS_NODE', 'AUTOME_SHELL_SMOKE_BANNER']) delete env[key];
   const f = { home, env, file: join(home, 'web/server.json'), pids: new Set() }; fixtures.push(f); return f;
 }
 function launcher(f, args) { return run(electron, [join(web, 'bin/autome-web.js'), ...args], { env: { ...f.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 35000 }); }
@@ -74,6 +75,8 @@ test('最小 PATH 用 Electron Node 启动；登记地址和 healthz 一致', as
     assert.equal(value.url, registration.url); assert.equal(value.serverPid, registration.pid);
     assert.equal(registration.kernel.path, core); assert.equal(registration.kernel.source, 'bundle');
     const health = await (await fetch(value.url + '/healthz')).json(); assert.equal(health.ok, true); assert.equal(health.pid, value.serverPid);
+    const info = await (await fetch(value.url + '/api/instance')).json();
+    assert.equal(info.web_version, require('../../web/package.json').version);
   });
   assert.equal(result.reused, false);
 });
@@ -88,15 +91,9 @@ test('已有 autome web 服务只复用，退出后仍存活', async () => {
 test('更新账本拒绝旧同包内核并显示横幅', async () => {
   const f = fixture();
   await run(core, ['status'], { env: f.env, timeout: 10000 });
-  if (packaged) {
-    // Release binaries intentionally ignore debug identity overrides; only mutate this private fixture.
-    const { DatabaseSync } = require('node:sqlite');
-    const db = new DatabaseSync(f.env.AUTOMED_DB_PATH);
-    try { db.prepare('UPDATE kernel_mark SET build_id = ? WHERE id = 1').run('9999999-20990101T000000Z-ffffffffffff'); } finally { db.close(); }
-  } else {
-    f.env.AUTOME_TEST_BUILD_ID = '0000001-20200101T000000Z-000000000000';
-  }
-  f.env.AUTOME_SHELL_SMOKE_BANNER = '内核比账本旧';
-  const value = await shell(f); assert.match(value.banner, /内核比账本旧/);
+  seedNewerLedger(f.env.AUTOMED_DB_PATH);
+  if (!packaged) f.env.AUTOME_TEST_BUILD_ID = '0000001-20200101T000000Z-000000000000';
+  f.env.AUTOME_SHELL_SMOKE_BANNER = '比推进过账本的内核';
+  const value = await shell(f); assert.match(value.banner, /比推进过账本的内核/);
 });
 test('所有临时服务及内核均清理，无残留', async () => { for (const f of fixtures) { await cleanup(f); assert.deepEqual(scan(f), []); } });

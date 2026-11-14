@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { corePathEnv } from './login-path.ts';
 import { randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
@@ -24,6 +25,8 @@ import { HOST, resolvePort } from './config.ts';
 import { createHttpServer } from './http.ts';
 import type { Mode } from './http.ts';
 
+const { version: webVersion } = createRequire(import.meta.url)('../package.json') as { version: string };
+
 export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, instanceFile = false }: { instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
   const binary = binaryPath ? { path: binaryPath, args: binaryArgs ?? [], source: 'env' as const } : resolveAutomedBinary();
   if (binaryArgs) binary.args = binaryArgs;
@@ -46,7 +49,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   admin.register(gateway);
   const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, identity, instanceStatus: async (): Promise<InstanceStatus> => {
     const dashboard = await core.call('dashboard.get') as { running: { task: { id: string; title: string; state: { node?: string } } }[] };
-    return { ...registration, kernel: { ...kernel, may_advance: core.isConnected() },
+    return { ...registration, web_version: webVersion, kernel: { ...kernel, may_advance: core.isConnected() },
       gates: runningGates(dashboard),
       other_driver: core.otherDriver() };
   } }).catch(error => { store.close(); throw error; });

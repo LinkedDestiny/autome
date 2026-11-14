@@ -39,5 +39,6 @@
     "probe:sqlite": "node scripts/probe-sqlite.ts",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "react-router typegen && tsc --noEmit"
-  }
+  },
+  "version": "2.0.0"
 }
