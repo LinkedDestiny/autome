@@ -13,6 +13,30 @@ const now = '2026-11-14T00:00:00Z';
 const ev = (seq: number, kind: string, payload: Record<string, unknown> = {}): TaskEvent => ({ seq, kind, payload, subject: 'T-1', at: `2026-11-13T00:00:${String(seq).padStart(2, '0')}Z` });
 const ses = (id = 's', running = false): TimelineSession => ({ id, running, label: '实现', round: 1, runtime: 'codex', started_at: '2026-11-13T00:00:01Z', ended_at: running ? null : '2026-11-13T00:00:11Z' });
 const build = (events: TaskEvent[], sessions: TimelineSession[] = []) => timelineEntries(sessions, events, now);
+it('D-2 回归：真实 Bug 会话在事件缺失和到达后均带稳定 data-node', () => {
+  for (const node of ['locate', 'fix', 'fix_review']) {
+    const session = { ...bug.sessions.find((s: { kind: { step: string } }) => s.kind.step === node), running: true, ended_at: null };
+    const started = ev(1, 'session.started', { session_id: session.id, kind: session.kind });
+    for (const events of [[], [started]]) {
+      expect(build(events, [session])[0]).toMatchObject({ key: session.id, node, summary: '运行中' });
+      const html = renderToString(createElement(TaskTimeline, { sessions: [session], events, now }));
+      expect(html).toContain(`data-node="${node}"`);
+    }
+  }
+});
+it('需求会话以结构化 kind 映射节点，不依赖中文标签或事件 node', () => {
+  for (const [role, node] of [['plan', 'design'], ['impl', 'implement'], ['review', 'review'], ['adjudicate', 'adjudicate'], ['audit', 'audit'], ['retro', 'retro']]) {
+    const session = { ...ses(), label: '自定义标签', kind: { kind: 'role' as const, role } };
+    for (const events of [[], [ev(1, 'session.started', { session_id: 's', kind: session.kind })]]) {
+      expect(build(events, [session])[0].node).toBe(node);
+    }
+  }
+  for (const kind of ['intake', 'onboarding'] as const) expect(build([], [{ ...ses(), kind: { kind } }])[0].node).toBe(kind);
+});
+it('旧会话缺 kind 时保留事件节点，缺少全部依据不伪造节点', () => {
+  expect(build([ev(1, 'session.started', { session_id: 's', node: 'implement' })], [ses()])[0].node).toBe('implement');
+  expect(build([], [ses()])[0].node).toBeUndefined();
+});
 it('需求会话按事件升序，阶段、CLI 与原始回包一致', () => {
   const entries = build(ledger.filter(e => e.subject === 'T-1'), feature.sessions);
   expect(entries.flatMap(e => e.session ? e.session.label : [])).toEqual(['任务整理', '设计', '评审', '裁决', '实现', '审计', '实现', '审计', '复盘']);

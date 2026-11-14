@@ -48,3 +48,4 @@
 
 实现 #17 | M-10 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r17-impl.md | ps EPERM，20 条浏览器用例待宿主复验
 审计 #16 | M-10 | 退回 + e2e-flow | docs/面板交付批次-w10-启动与安装/evidence/M-10-r17-audit.md | 无
+实现 #18 | M-10 | 节点回归通过，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r18-impl.md | ps EPERM，e2e 与时限未验收
