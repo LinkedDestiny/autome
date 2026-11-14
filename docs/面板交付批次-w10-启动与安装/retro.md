@@ -62,3 +62,5 @@
 
 实现 #22 | M-13 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-impl.md | 无
 审计 #21 | M-13 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-audit.md | 无
+
+实现 #23 | M-02（rebase） | main rebase 完成，既有状态保留 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r23-impl.md | 3 条 ps EPERM，待宿主复验
