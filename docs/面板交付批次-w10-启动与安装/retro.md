@@ -6,3 +6,4 @@
 裁决 #2 | M-01（修正）、M-12（措辞） | 采纳 R2-P01：A5 实例判定改三态（活/陈旧/无响应），只有确认失效才接管，无响应时 start/serve/status/stop 各有处置；M-01 增至 30 条；N2-01/02 采纳、N2-03 入 Backlog BL-09；设计保持定稿 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装-adjudication.md | 无
 
 实现 #1 | M-01 | 开放（环境阻塞） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-impl.md | 沙箱禁止监听与 ps，21 条真实服务验收未通过
+审计 #1 | M-01 | 退回 + launcher | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-audit.md | web-stop-gate 4 条失败：测试在门禁进程出现前取 pid
