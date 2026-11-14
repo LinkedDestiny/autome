@@ -101,3 +101,15 @@ it('重试、冷却、守卫和协议失败显示原因全文', () => {
     expect(entry.key).toBe('ev:1'); expect(entry.title).not.toBe('');
   }
 });
+it('步骤报告显示执行、沿用、未跑和红色未核实提示', () => {
+  const event = ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0, steps: { ran: 2, reused: 3, failed: 0, not_run: 1, unverified: 1 } });
+  expect(build([event])[0]).toMatchObject({ summary: '通过 · 执行 2 步 · 沿用 3 步 · 未跑 1 项 · 沿用来源未核实 1 步', unverified: true });
+  const html = renderToString(createElement(TaskTimeline, { sessions: [], events: [event], now }));
+  expect(html).toContain('color:var(--animal-error-active)');
+  const verified = ev(2, 'gate.result', { ...event.payload, steps: { ran: 0, reused: 5, failed: 0, not_run: 0, unverified: 0 } });
+  expect(build([verified])[0].summary).toBe('通过 · 执行 0 步 · 沿用 5 步');
+});
+it('没有报告保持旧摘要，整次沿用与步骤沿用区分', () => {
+  expect(build([ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0 })])[0].summary).toBe('通过');
+  expect(build([ev(1, 'gate.reused')])[0].title).toBe('沿用已通过的结果');
+});

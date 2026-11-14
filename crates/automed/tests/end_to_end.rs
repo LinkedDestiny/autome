@@ -8406,6 +8406,8 @@ fn queue_tick(w: &mut World) {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "started") {
                 let job = automed::gate::Job {
+                    passes: path.with_extension("passes"),
+                    report: path.with_extension("report"),
                     log: path.with_extension("log"),
                     pid: path.with_extension("pid"),
                     exit: path.with_extension("exit"),
@@ -12470,4 +12472,99 @@ fn protocol_integrity_edit_after_migration_still_warns() {
     integrity_two_sessions(&mut w, &id);
     assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 2);
     assert_eq!(integrity_events(&w, &id, "protocol.hash_scheme").len(), 1);
+}
+
+fn gate_steps_scenario(reports: bool) {
+    needs_git!();
+    let mut w = World::new(if reports {
+        "steps-report"
+    } else {
+        "steps-legacy"
+    });
+    let script = w.root.join("steps.sh");
+    let snapshots = w.root.join("snapshots");
+    let key = "a".repeat(40);
+    let command = if reports {
+        format!(
+            "cat \"$AUTOME_GATE_PASSES\" >> '{}'\nif test -s \"$AUTOME_GATE_PASSES\"; then status=reused; else status=ran; fi\nprintf 'autome-gate-report 1\\n%s\\t{}\\tCheck\\n' \"$status\" > \"$AUTOME_GATE_REPORT\"\n",
+            snapshots.display(),
+            key
+        )
+    } else {
+        "echo legacy\n".into()
+    };
+    std::fs::write(&script, command).unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\n",
+        script.display(),
+        script.display()
+    ));
+    let request = "gate steps report";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = w.ctx.store.task_events(&id, "gate.result").unwrap();
+    assert_eq!(results.len(), 2);
+    if reports {
+        assert_eq!(
+            results[0]["steps"],
+            json!({"ran":1,"reused":0,"failed":0,"not_run":0,"unverified":0})
+        );
+        assert_eq!(results[0]["passes"], json!([{"step":"Check","key":key}]));
+        assert_eq!(
+            results[1]["steps"],
+            json!({"ran":0,"reused":1,"failed":0,"not_run":0,"unverified":0})
+        );
+        assert_eq!(results[1]["passes"], json!([]));
+        let snapshot = std::fs::read_to_string(snapshots).unwrap();
+        assert!(snapshot.contains(&format!("{key}\t{id}\tgate\t")));
+    } else {
+        for result in results {
+            let keys: std::collections::BTreeSet<_> = result
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "command",
+                    "exit_code",
+                    "kind",
+                    "log",
+                    "node",
+                    "ok",
+                    "sha",
+                    "tail"
+                ]
+                .into_iter()
+                .collect()
+            );
+        }
+    }
+}
+
+#[test]
+fn gate_steps_second_run_receives_first_pass_and_records_counts() {
+    gate_steps_scenario(true);
+}
+
+#[test]
+fn gate_steps_no_report_preserves_event_fields() {
+    gate_steps_scenario(false);
 }

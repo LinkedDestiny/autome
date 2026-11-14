@@ -4829,7 +4829,10 @@ fn run_gate_attempt(
         } else {
             gate.command.clone()
         };
-        crate::gate::start(
+        let passes = ctx.store.gate_passes(&project.id, &task.id, |commit| {
+            git::second_parent(&repo, commit).ok()
+        })?;
+        crate::gate::start_with_passes(
             &job,
             &cwd,
             &run_command,
@@ -4839,6 +4842,7 @@ fn run_gate_attempt(
                 ("AUTOME_GATE_NODE", node.as_str()),
                 ("AUTOME_GATE_KIND", launch.kind()),
             ],
+            &passes,
         )
         .map_err(|e| err(format!("无法启动门禁：{e}")))?;
         ctx.store.append_event(
@@ -4897,6 +4901,10 @@ fn run_gate_attempt(
         "log": job.log.to_string_lossy(),
         "tail": tail,
     });
+    if let Some(report) = crate::gate::read_report(&job) {
+        result["steps"] = report["steps"].clone();
+        result["passes"] = report["passes"].clone();
+    }
     let replay = record_gate_result(
         &ctx.store,
         &task.id,
