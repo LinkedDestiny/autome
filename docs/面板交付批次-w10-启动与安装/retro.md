@@ -61,3 +61,4 @@
 审计 #20 | M-12 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-12-r21-audit.md | 无
 
 实现 #22 | M-13 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-impl.md | 无
+审计 #21 | M-13 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-audit.md | 无
