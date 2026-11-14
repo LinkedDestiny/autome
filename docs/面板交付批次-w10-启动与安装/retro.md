@@ -45,3 +45,5 @@
 审计 #14 | M-09 | 退回 + e2e-infra | docs/面板交付批次-w10-启动与安装/evidence/M-09-r15-audit.md | 无
 实现 #16 | M-09 | 开放，标签断言已修 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r16-impl.md | ps EPERM 阻断浏览器，负向对照 2、3 未执行
 审计 #15 | M-09 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r16-audit.md | 无
+
+实现 #17 | M-10 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r17-impl.md | ps EPERM，20 条浏览器用例待宿主复验
