@@ -396,6 +396,8 @@ CLI run 展示还原、失败、已处理三种事件，begun 不打印；还原
 
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 
+**本仓库步骤沿用。** `scripts/ci/steps.sh` 用 `step` 声明命令与路径输入，`prep` 在其后任一步实际执行时准备依赖，从不沿用。`scripts/ci/lib.sh` 调用 `inputs.mjs`，复制 Git index 后暂存磁盘内容并写树，以输入树/blob、命令、工具链、全局输入与未归属路径生成键。门禁自身或未归属内容变化会让所有键失效；明确免检的文档变化不失效。仅采信工作区外普通文件 `AUTOME_GATE_PASSES` 的五列 TSV（键、任务、节点、head、时间），缺失/非法则全跑。`AUTOME_GATE_REPORT` 若设置则逐步写 `autome-gate-report 1` 与状态/键/名称三列 TSV；执行通过后重新计算键，不一致只记 `partial`。`--plan` 不执行、不写报告，`--check-claims` 检查路径归属，`--all` 或 `CI_LOCAL_ALL=1` 强制全跑。未导出变量的旧宿主仍全跑、不写报告；内核侧的导出与入账另行接入。引擎清除 `AUTOMED_BIN`、`AUTOME_BIN`、`CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET`，准备步骤固定构建 `target/debug` 下的内核。
+
 **宿主门禁。** 项目配置 `[gate] command` 后，实现轮结束进入 Gate 节点：内核在任务 worktree 里用 `sh -c` 跑这条命令，跑在后台作业里（独立进程组，日志与退出标记写在 `.autome/output/gates/<task>/`），tick 只轮询，不阻塞 IPC。结果绑定当时的 head（工作区项目取所有仓库 head 的 sha256），作业结束时 head 已变则作废重跑。通过才进审计（或无审计时的下一步）；失败回实现轮，注入 `GateFailed{head, command, tail}`，这一轮豁免「必须有开放里程碑」的守卫，因为它修的是已待审的里程碑。rebase 之后在新 head 上再跑一次（MergeGate），与上次通过的 sha 相同且分支不落后才可沿用；失败同样回实现轮。合并之后在 `.worktree/_verify-<sha>` 的 detached 检出上对 main 跑最后一次（MainCheck）：合并已发生，撤不回，所以失败只写一条项目报警（`project_alerts`，仪表盘和 `autome status` 都显示，用户关闭），任务照常完成。默认 `[gate] reuse_for_main_check = true`：合并提交与最近通过 MergeGate 的提交树相同，且被合并的 head 与实际启动命令均匹配时，沿用该结果并写 `gate.reused`，不创建验证检出、不启动 MainCheck 作业；设为 `false` 则始终照常运行。无法确认通过记录、命令或树时也照常运行。同一任务同一 `gate` / `merge_gate` / `fix_gate` 节点连续相同失败指纹达到 `[gate] same_failure_limit`（默认 3，整数 1–10）时熔断，任务失败并附原因摘要与最近日志路径；同节点通过或指纹变化打断连续计数，修复环境后可用 `rerun` / `extend` 重跑，熔断后的新运行从零计数；`repro_check` 与 `main_check` 不参与熔断。每次实际执行的门禁写一条 `gate.result` 事件，审计轮简报的「宿主门禁」段引用它。
 
 宿主作业按实际启动种类分两条独立 FIFO 车道：`full` 与准备命令走重车道（`[gate] concurrency`），`quick` / `repro` 走轻车道（`[gate] quick_concurrency`）。两键全局缺省均为 1、整数 1–10，项目覆盖由全局封顶；只写任一并发键不启用门禁命令。推荐按机器核数设置 quick_concurrency 为 1–2。按一个账本内所有项目同车道的在途作业数与当前项目有效限额比较，不扫描全机进程，也不限制会话内的命令。各车道内严格 FIFO，无节点优先级；排队保留原节点及项目并行槽位，不写作业文件或 started 事件、不消耗预算与失败/重试计数，超时从真正启动的 `.started` 算起。`gate.queued.position` 是入队时从 1 起的快照，`task.get` 与 `dashboard.get` 的 `gate_queue_position` 是同车道实时名次（非排队为 null），`gate_queue_lane` 为 heavy / light 或 null，不复用 `queue_position`；CLI 区分「排队等完整门禁（前面还有 k 个）」与「排队等快检或复现检查（前面还有 k 个）」，k = 名次 − 1。`gate.queued.lane` 持久化车道，缺字段的旧事件归重车道；占位按 `.started` 旁 `.kind` 的启动种类判定，未知归重车道。排队期间重算车道改变时重新进新车道队尾，已经启动的作业不换车道。有效排队项按事件 seq 恢复，启动、状态变化、会话冷却或 `gate.queue_dropped` 使其失效，再来排队尾；准入前出错的队首退队并报告错误。正常结束、失败、超时或作废后释放名额；暂停的活作业继续占位，每 tick 全任务超时回收，已退出未收作业有 tick 期限，避免永久占位。无法读作业目录且账本不能证明无在途作业时保守暂停新准入并报告恢复目录或取消任务的提示。升级时已有超额作业正常收取，不为限额杀掉它们。内核超时终止行在注入、警报与 CLI 中明确显示「门禁超时」；命令自行返回 124 而无终止行不使用该文案，但保留既有熔断指纹将任何 124 视为超时的兼容行为，其摘要仍按超时显示。
@@ -548,6 +550,8 @@ schema v9 重建 sessions（v8 的 kernel_mark 保留）：task_id 可空且保�
 | T7 端到端 | 需求文档 §6 的 10 个场景，用假 CLI 自动化，其中 1 与 3 另用真实 CLI 手工验证 |
 
 本仓库完整门禁的 Rust 测试与 CI 三个 Rust 测试步骤均使用 `--no-fail-fast`。本地门禁逐步捕获输出并继续执行，末尾汇总 Rust 目标 / 用例与 Web 文件 / 用例；用例块最多 20 行、2400 UTF-8 字节，单行最多 160 字符 / 200 字节，剩余数量指向完整日志。`==> 汇总` 将摘要与失败步骤诊断隔开，保持失败指纹兼容。脚本回归由本地 `Scripts` 步骤与 CI `scripts` job 运行。
+
+步骤沿用回归由 `scripts/test/ci-reuse.test.mjs` 覆盖单侧变更、失败修复、工具链失效、快照边界、准备步骤、执行中变更与路径边界；`ci-claims.test.mjs` 检查真实仓库无未归属路径。新增步骤只需在步骤表声明命令与输入；新增跨目录读取仍需同步输入声明。GitHub CI 直接运行各 job，始终全跑。
 
 ## 17. 风险与对策
 

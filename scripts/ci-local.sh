@@ -25,11 +25,16 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2
 
 with_package=0
+ci_mode=prepare
 for arg in "$@"; do
   case "$arg" in
     --package) with_package=1 ;;
+    --all) export CI_LOCAL_ALL=1 ;;
+    --plan) ci_mode=plan ;;
+    --check-claims) ci_mode=claims ;;
     -h | --help)
-      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      echo 'Usage: sh scripts/ci-local.sh [--package] [--all] [--plan] [--check-claims]'
+      echo '--all / CI_LOCAL_ALL=1: force every step; --plan: decisions only; --check-claims: reject unclaimed paths'
       exit 0
       ;;
     *)
@@ -41,44 +46,9 @@ done
 
 . "$root/scripts/ci/lib.sh"
 
-# --- job: rust -------------------------------------------------------------
-# ci.yml runs these as one job, in this order, with `-D warnings` because a
-# warning that is allowed to accumulate stops being read.
-run 'Format' cargo fmt --all -- --check
-run 'Clippy' cargo clippy --all-targets -- -D warnings
-# --all-targets includes end_to_end and real_cli (including adapter flags).
-# Run each suite once: repeating the real-Git integration suite can push the
-# host gate past its deadline. Keep uncaptured output for integration failures.
-run 'Test (unit, end to end, adapter flags)' --cases cargo cargo test --workspace --all-targets --no-fail-fast -- --nocapture
-
-run 'Scripts' node --test scripts/test/*.test.mjs
-
-# --- job: desktop ----------------------------------------------------------
-# ci.yml does `npm ci || npm install` on a bare runner. Here node_modules is
-# normally already there, and reinstalling it on every commit would dominate
-# the runtime.
-if [ ! -d apps/desktop/node_modules ]; then
-  run 'Desktop install' sh -c 'cd apps/desktop && { npm ci || npm install; }'
-fi
-run 'Desktop' npm test --prefix apps/desktop
-
-# --- job: contract ---------------------------------------------------------
-# A guard rather than a gate: the desktop suite cross-checks the read
-# allowlist by parsing dispatch.rs, so this fails loudly if the file it parses
-# ever moves or the constant is renamed.
-run 'Contract' sh -c '
-  test -f crates/automed/src/dispatch.rs &&
-  grep -q "pub const READ_METHODS" crates/automed/src/dispatch.rs
-'
-
-# --- job: web --------------------------------------------------------------
-if [ ! -d apps/web/node_modules ]; then
-  run 'Web install' sh -c 'cd apps/web && npm ci'
-fi
-run 'Web lint' npm run lint --prefix apps/web
-run 'Web typecheck' npm run typecheck --prefix apps/web
-run 'Web test' --cases vitest npm run test --prefix apps/web
-run 'Web build' npm run build --prefix apps/web
+. "$root/scripts/ci/steps.sh"
+ci_dispatch "$ci_mode" || exit $?
+[ "$ci_mode" = prepare ] || exit 0
 
 # --- job: package ----------------------------------------------------------
 # Opt-in. A release build plus electron-builder is minutes, which is the wrong
