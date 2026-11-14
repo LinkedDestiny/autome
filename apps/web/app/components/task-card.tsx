@@ -1,5 +1,6 @@
 import { Link, useFetcher } from 'react-router';
 import { useWriteGate } from '../lib/live.tsx';
+import { columnOf } from './task-columns.ts';
 import { CARD_LABELS } from '../lib/labels.ts';
 import type { BoardTask } from './board-data.ts';
 import { taskHref } from './nav-links.ts';
@@ -12,7 +13,7 @@ export function TaskCard({ task, detail, context }: { task: BoardTask; detail?: 
     {view.badge && <span className="task-card-badge">{view.badge}</span>}
     <ol className="task-card-stages" aria-label={CARD_LABELS.progress}>{view.stages.map(stage => <li key={stage.label} aria-current={stage.current ? 'step' : undefined} data-passed={stage.passed}>{stage.label}</li>)}</ol>
     {view.unknownStage && <p>{view.unknownStage}</p>}{view.progress && <p>{view.progress}</p>}
-    <p className="task-status">{view.activity}</p><p className="task-card-gate">{view.gate}</p>
+    <p className="task-status">{view.activity}</p>{columnOf(task.state) !== 'todo' && <p className="task-card-gate">{view.gate}</p>}
     {view.merged && <p>{view.merged}</p>}
     {task.state.state === 'draft' && <StartTask taskId={task.id} />}
   </article>;

@@ -89,7 +89,7 @@ test('9 needs-you badge with and without unread counts', () => {
     expect(view(task(), undefined, context).badge).toBeNull();
   }
 });
-test('10 loader calls only visible non-draft details and dashboard only for retries', async () => {
+test('10 loader omits draft and completed details and fetches dashboard only for retries', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date(ctx.now));
   try {
     const project = JSON.parse(readFileSync(new URL('./fixtures/w5-project-get.json', import.meta.url), 'utf8'));
@@ -101,12 +101,12 @@ test('10 loader calls only visible non-draft details and dashboard only for retr
     for (const expanded of [false, true]) {
       calls.length = 0; const loaded = await loadBoard({ gateway }, 'P-1', expanded); expect('error' in loaded).toBe(false);
       const ids = calls.filter(c => c.method === 'task.get').map(c => (c.params as { task_id: string }).task_id);
-      expect(ids).toContain('recent'); expect(ids.includes('older')).toBe(expanded); expect(ids).not.toContain('draft');
+      expect(ids).not.toContain('recent'); expect(ids).not.toContain('older'); expect(ids).not.toContain('draft');
       expect(calls.filter(c => c.method === 'dashboard.get')).toHaveLength(0);
-      if (!('error' in loaded)) expect(loaded.details?.recent.gate).toEqual(detail.gate);
+      if (!('error' in loaded)) expect(loaded.details?.recent).toBeUndefined();
     }
     retry = true; calls.length = 0; await loadBoard({ gateway }, 'P-1'); expect(calls.filter(c => c.method === 'dashboard.get')).toHaveLength(1);
-    for (const failedMethod of ['task.get', 'dashboard.get']) for (const status of [409, 503]) {
+    for (const failedMethod of ['task.get', 'dashboard.get']) for (const status of [409, 503, 504]) {
       const rejected: KernelGateway = { ...gateway, read: async request => (request as { method: string }).method === failedMethod ? { status, body: { ok: false, error: '详情读取失败' } } : gateway.read(request) };
       expect(await loadBoard({ gateway: rejected }, 'P-1')).toEqual({ error: '详情读取失败' });
     }

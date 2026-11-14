@@ -58,6 +58,6 @@ export default function ProjectBoard() {
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
       {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
-      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.older.length)}</Link>}
+      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
     </div></section>)}</div></div>;
 }

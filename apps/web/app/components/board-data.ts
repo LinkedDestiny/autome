@@ -1,5 +1,5 @@
 import { NOTIFICATION_RULES } from '../../server/notifier-rules.ts';
-import { needsTaskDetail, type TaskDetail, type CardContext } from './task-card-model.ts';
+import { needsTaskDetail, type TaskDetail, type CardContext, toCardDetail } from './task-card-model.ts';
 import type { WebServices } from '../load-context.ts';
 import { BOARD_READ_ERROR, COLUMN_LABELS } from '../lib/labels.ts';
 import type { ShellTask } from './shell-data.ts';
@@ -14,7 +14,7 @@ export function boardColumns(tasks: readonly BoardTask[], now: string): BoardCol
     const rows = tasks.filter(task => columnOf(task.state) === id).sort((a, b) => id === 'done'
       ? completed(b) - completed(a)
       : Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0));
-    const recent = id === 'done' ? rows.filter(task => Date.parse(now) - completed(task) <= fortnight) : rows;
+    const recent = id === 'done' ? rows.filter(task => Date.parse(now) - completed(task) <= fortnight).slice(0, 20) : rows;
     const older = id === 'done' ? rows.filter(task => !recent.includes(task)) : [];
     return { id, label: COLUMN_LABELS[id], tasks: rows, recent, older, total: rows.length };
   });
@@ -34,12 +34,12 @@ export async function loadBoard({ gateway, unread }: WebServices, id: string, sh
   if (!result.body.ok) return { error: result.body.error ?? BOARD_READ_ERROR };
   const payload = result.body.payload as { project: { id: string; display_name: string }; tasks: BoardTask[]; config?: { bug?: { fix_rounds?: number } } };
   const now = new Date().toISOString();
-  const tasks = payload.tasks.map(task => ({ ...task, project_id: id }));
+  const tasks = payload.tasks.map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, project_id: id }));
   const visible = boardColumns(tasks, now).flatMap(column => showAll ? column.tasks : column.recent);
   const results = await Promise.all(visible.filter(needsTaskDetail).map(async task => ({ id: task.id, result: await gateway.read({ method: 'task.get', params: { task_id: task.id } }) })));
   const rejected = results.find(item => !item.result.body.ok);
   if (rejected) return { error: rejected.result.body.error ?? BOARD_READ_ERROR };
-  const details = Object.fromEntries(results.map(item => [item.id, item.result.body.payload as TaskDetail]));
+  const details = Object.fromEntries(results.map(item => [item.id, toCardDetail(item.result.body.payload as TaskDetail)]));
   let cooldowns: CardContext['cooldowns'] = [];
   if (Object.values(details).some(detail => detail.retry)) {
     const dashboard = await gateway.read({ method: 'dashboard.get', params: {} });
@@ -47,7 +47,7 @@ export async function loadBoard({ gateway, unread }: WebServices, id: string, sh
     cooldowns = (dashboard.body.payload as { cooldowns: CardContext['cooldowns'] }).cooldowns;
   }
   const counts = Object.fromEntries((unread?.unreadByTask(needYouKinds()) ?? []).map(row => [row.task_id, row.count]));
-  return { project: payload.project, tasks, now, showAll, details, cardContext: { now, fixRounds: payload.config?.bug?.fix_rounds ?? 0, cooldowns, unread: counts } };
+  return { project: { id: payload.project.id, display_name: payload.project.display_name }, tasks, now, showAll, details, cardContext: { now, fixRounds: payload.config?.bug?.fix_rounds ?? 0, cooldowns, unread: counts } };
 }
 
 export function needYouKinds() { return NOTIFICATION_RULES.filter(rule => rule.level === 'need_you').map(rule => rule.kind); }

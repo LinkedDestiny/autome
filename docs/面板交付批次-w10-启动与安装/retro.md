@@ -17,3 +17,5 @@
 
 实现 #5 | M-03 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-impl.md | 2 条安装链路/残留检查受 ps EPERM 阻塞
 审计 #5 | M-03 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-audit.md | 无
+
+实现 #6 | M-04 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-04-r6-impl.md | 无

@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
+import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import { waitForTransition } from './fixtures/wait-for-transition.ts';
 
 afterEach(() => vi.useRealTimers());
@@ -6,7 +7,7 @@ function scenario(eventAfter?: number, commandFails = false) {
   vi.useFakeTimers();
   const unsubscribe = vi.fn();
   const result = waitForTransition(received => {
-    if (eventAfter !== undefined) setTimeout(received, eventAfter);
+    if (eventAfter !== undefined) setTimeout(() => { void revalidateForEvents([], received); }, eventAfter);
     return unsubscribe;
   }, () => new Promise<void>((resolve, reject) => setTimeout(() => {
     if (commandFails) reject(Error('stop failed')); else resolve();
@@ -15,15 +16,15 @@ function scenario(eventAfter?: number, commandFails = false) {
 }
 test('stop grace period does not consume the next tick budget', async () => {
   const { result, unsubscribe } = scenario(5900);
-  const checked = expect(result).resolves.toBe(2900);
-  await vi.advanceTimersByTimeAsync(5900);
+  const checked = expect(result).resolves.toBe(3900);
+  await vi.advanceTimersByTimeAsync(6900);
   await checked;
   expect(unsubscribe).toHaveBeenCalledOnce();
 });
 test('an event before the command reply is retained', async () => {
   const { result, unsubscribe } = scenario(2900);
-  const checked = expect(result).resolves.toBe(0);
-  await vi.advanceTimersByTimeAsync(3000);
+  const checked = expect(result).resolves.toBe(900);
+  await vi.advanceTimersByTimeAsync(3900);
   await checked;
   expect(unsubscribe).toHaveBeenCalledOnce();
 });
