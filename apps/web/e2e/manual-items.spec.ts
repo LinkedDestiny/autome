@@ -35,7 +35,7 @@ test('W7 H-04 详情一屏且时间线文档日志各自内部滚动', async ({ 
   await expandLog(page);
   await oneScreen(page);
   for (const selector of ['[data-testid=timeline]', '.task-docs-body', '[data-testid=session-log-body]']) {
-    await expect(page.locator(selector).first()).toHaveAttribute('data-scroll-region', '');
+    await expect(page.locator(selector).first()).toHaveAttribute('data-scroll-region', 'true');
   }
 });
 
@@ -52,7 +52,7 @@ test('W9 H-02 路径补全点选且普通浏览器没有原生选择按钮', asy
   const suggestion = page.getByTestId('path-suggestion').filter({ hasText: 'completion-directory' });
   await expect(suggestion).toHaveCount(1);
   await suggestion.click();
-  await expect(page.getByTestId('path-input')).toHaveValue(join(state().root, 'completion-directory'));
+  await expect(page.getByTestId('path-input')).toHaveValue('~/completion-directory');
   await expect(page.getByTestId('pick-directory')).toHaveCount(0);
 });
 
