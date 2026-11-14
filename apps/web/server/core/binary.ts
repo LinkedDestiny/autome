@@ -12,8 +12,8 @@ export function resolveAutomedBinary({
   exists?: (path: string) => boolean;
 } = {}): KernelBinary {
   if (env.AUTOMED_BIN) return { path: env.AUTOMED_BIN, args: basename(env.AUTOMED_BIN) === 'autome' ? ['core'] : [], source: 'env' };
-  const bundle = resolve(webRoot, '../automed');
-  if (exists(bundle)) return { path: bundle, args: [], source: 'bundle' };
+  const bundle = env.AUTOME_BUNDLED_CORE;
+  if (bundle) return { path: bundle, args: ['core'], source: 'bundle' };
   const candidates = [...(env.PATH === undefined ? [] : env.PATH.split(delimiter).map(dir => resolve(dir, 'autome'))), resolve(home, '.local/bin/autome')];
   const cli = candidates.find(exists);
   if (cli) return { path: cli, args: ['core'], source: 'cli' };

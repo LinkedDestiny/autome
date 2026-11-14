@@ -9,6 +9,7 @@
 mod args;
 mod client;
 mod render;
+mod web;
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,6 +77,7 @@ const USAGE: &str = "autome — 一句话需求，经设计、评审、实现、
   alerts [dismiss <报警>]        项目级报警，如合并后 main 门禁失败
 
 其他
+  web [start|stop [--force]|status|open|service install|uninstall]  在浏览器里打开面板
   core                           以 stdio 提供内核（面板用）
   rpc <方法> ['<JSON 参数>']     直接调用内核的任意 JSON-RPC 方法
   version | help
@@ -94,6 +96,7 @@ fn main() {
     // session, so these two must behave exactly as `automed`'s do — and
     // before anything else, because `render-stream` writes into the log.
     match argv.first().map(String::as_str) {
+        Some("web") => std::process::exit(web::run(&argv[1..])),
         Some("core") => std::process::exit(automed::entry::serve_stdio()),
         Some("render-stream") => std::process::exit(automed::entry::render_stream_main(&argv[1..])),
         Some("protocol") if argv.get(1).map(String::as_str) == Some("eval") => {
@@ -1652,4 +1655,9 @@ fn operator_note_reads_text_from_file_and_stdin() {
     assert!(a.has("--reopen"));
     let a = Args::parse(&["note", "T-1", "内容", "--file", "-"].map(String::from)).unwrap();
     assert!(note_text(&a, &mut &b""[..]).is_err());
+}
+
+#[test]
+fn usage_lists_web() {
+    assert!(USAGE.contains("web [start|stop [--force]|status|open|service install|uninstall]"));
 }

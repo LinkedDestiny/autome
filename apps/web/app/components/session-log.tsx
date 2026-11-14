@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createSessionLogController } from './session-log-controller.ts';
 import { initialLogState, viewOf, type LogAction, type LogState, type LogUpdate } from './session-log-model.ts';
@@ -22,7 +23,7 @@ export function SessionLogView({ session, state, open, onToggle, onAction, textR
   onAction: (action: LogAction) => void; textRef?: React.Ref<HTMLPreElement>;
 }) {
   const view = viewOf(state), t = SESSION_LOG_TEXT;
-  return <details className="session-log" open={open} onToggle={event => onToggle(event.currentTarget.open)}>
+  return <details className="session-log" data-testid={TEST_IDS.sessionLog} data-session-id={session.id} open={open} onToggle={event => onToggle(event.currentTarget.open)}>
     <summary>第 {session.round} 轮 · {session.label} · {session.running ? t.running : t.ended}</summary>
     {open && <div className="session-log-body">
       <div className="session-log-toolbar">
@@ -32,7 +33,7 @@ export function SessionLogView({ session, state, open, onToggle, onAction, textR
       {view.hiddenBefore > 0 && <div className="session-log-toolbar"><span>{t.before(view.hiddenBefore)}</span>
         <button type="button" onClick={() => onAction({ type: 'earlier' })}>{t.earlier}</button>
         <button type="button" onClick={() => onAction({ type: 'top' })}>{t.top}</button></div>}
-      <pre className="session-log-text" ref={textRef} tabIndex={0} onScroll={event => onAction({ type: 'scrolled', atBottom: isAtBottom(event.currentTarget) })}>{view.text || t.empty}</pre>
+      <pre className="session-log-text" data-testid={TEST_IDS.sessionLogBody} data-session-id={session.id} data-scroll-region ref={textRef} tabIndex={0} onScroll={event => onAction({ type: 'scrolled', atBottom: isAtBottom(event.currentTarget) })}>{view.text || t.empty}</pre>
       {view.hiddenAfter > 0 && <div className="session-log-toolbar"><span>{t.after(view.hiddenAfter)}</span>
         <button type="button" onClick={() => onAction({ type: 'later' })}>{t.later}</button></div>}
       <p className="session-log-status">{state.notice || (state.phase === 'subscribing' ? t.loading : state.follow ? t.following : t.paused)}</p>

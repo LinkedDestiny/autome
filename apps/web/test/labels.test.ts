@@ -64,3 +64,15 @@ test('8 runtime labels match serialized Runtime variants', async () => {
   const role = readFileSync(new URL('../../../crates/autome-domain/src/role.rs', import.meta.url), 'utf8');
   expect(sorted(Object.keys(RUNTIME_LABELS))).toEqual(sorted(variants(role, 'Runtime')));
 });
+test('9 守卫标签与 guards 和 scheduler 字面量交叉核对', async () => {
+  const { GUARD_LABELS } = await import('../app/lib/guard-labels.ts');
+  const guards = readFileSync('../../crates/automed/src/guards.rs','utf8').split('#[cfg(test)]')[0];
+  const scheduler = readFileSync('../../crates/automed/src/scheduler.rs','utf8');
+  const codes = [...guards.matchAll(/"([a-z]+(?:_[a-z]+)+)"/g), ...scheduler.matchAll(/"code": "([a-z_]+)"/g)].map(m=>m[1]);
+  expect(Object.keys(GUARD_LABELS).sort()).toEqual([...new Set(codes)].sort());
+  for (const label of Object.values(GUARD_LABELS)) expect(label).toMatch(/[\u4e00-\u9fff]/);
+});
+test('10 未知守卫代码原文回退', async () => {
+  const { guardLabel } = await import('../app/lib/guard-labels.ts');
+  for (const code of ['future','', 'toString', '__proto__']) expect(guardLabel(code)).toBe(code);
+});

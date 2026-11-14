@@ -1,3 +1,4 @@
+import { formatClock, formatDuration, type Clock } from './clock.tsx';
 // Chinese vocabulary and stages mirror crates/autome-domain/src/task.rs.
 export const KIND_LABELS = { feature: '需求', bug: 'Bug' } as const;
 export const STATE_LABELS = { draft: '未开始', queued: '排队中', active: '进行中', paused: '已暂停', stopped: '已停止', failed: '失败', done: '已完成', cancelled: '已取消' } as const;
@@ -42,18 +43,25 @@ export function taskStatusLine(state: TaskState): string {
   const label = Object.hasOwn(STATE_LABELS, state.state) ? STATE_LABELS[state.state as keyof typeof STATE_LABELS] : state.state;
   return node ? `${label} · ${nodeLabel(node)}` : label;
 }
+export function stageStatusLine(kind: string, state: TaskState): string {
+  const stage = stageOf(kind, state);
+  const label = stage && stage.index < 0 ? nodeLabel(stage.label) : stage?.label;
+  const status = state.state === 'active'
+    ? AWAIT_PHRASES[state.node as keyof typeof AWAIT_PHRASES] ?? ''
+    : STATE_LABELS[state.state as keyof typeof STATE_LABELS] ?? state.state;
+  return [...new Set([label, status].filter(Boolean))].join(' · ');
+}
 export const KIND_FILTER_LABELS = { all: '全部', feature: '需求', bug: 'Bug' } as const;
 export function doneFoldLabel(expanded: boolean, count: number): string { return expanded ? '收起' : `查看全部（${count}）`; }
 export const RUNTIME_LABELS = { claude: 'Claude Code', codex: 'Codex' } as const;
 export const CARD_LABELS = { progress: '阶段进度', failed: '失败：', justStarted: '刚开始' } as const;
 export function milestoneProgress(done: number, total: number) { return `已完成 ${done} / ${total}`; }
 export function fixRoundProgress(round: number, total: number) { return `修复第 ${round} / ${total} 轮`; }
-export function formatClock(iso: string) { const date = new Date(iso); return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`; }
 export function sessionActivity(label: string, round: number, milestone: string | null | undefined, minutes: number) {
-  return [`${label}第 ${round} 轮`, milestone, minutes > 0 ? `运行 ${minutes} 分钟` : CARD_LABELS.justStarted].filter(Boolean).join(' · ');
+  return [`${label}第 ${round} 轮`, milestone, minutes > 0 ? `运行 ${formatDuration(minutes * 60_000, 'minute')}` : CARD_LABELS.justStarted].filter(Boolean).join(' · ');
 }
-export function cooldownPhrase(runtime: string, until: string) { return `等 ${Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime} 冷却到 ${formatClock(until)}`; }
-export function retryPhrase(attempt: number, until: string) { return `等待重试（第 ${attempt} 次）· ${formatClock(until)}`; }
+export function cooldownPhrase(runtime: string, until: string, clock: Clock) { return `等 ${Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime} 冷却到 ${formatClock(until, clock)}`; }
+export function retryPhrase(attempt: number, until: string, clock: Clock) { return `等待重试（第 ${attempt} 次）· ${formatClock(until, clock)}`; }
 export function queuePhrase(position?: number | null) { return position == null ? '排队中' : `排队第 ${position} 位`; }
 export function gatePhrase(gate?: { ok: boolean; node: string; exit_code: number } | null, position?: number | null) {
   if (position != null) return `门禁排队第 ${position} 位`;
@@ -82,3 +90,5 @@ export function failureText(reason?: Record<string, unknown>): string {
     default: return String(reason.kind ?? '');
   }
 }
+
+export function roleLabel(role: string): string { return nodeLabel(role === 'plan' ? 'design' : role === 'impl' ? 'implement' : role); }

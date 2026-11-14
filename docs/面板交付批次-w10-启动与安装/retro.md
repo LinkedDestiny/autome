@@ -1,0 +1,70 @@
+设计 #1 | M-01..M-10（开放） | 设计初稿：A3/B3/C2/D2 共 10 个里程碑；实测面板脱仓运行、停面板门禁存活、Electron 43 跑服务、100 任务走查 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装.md | 无
+评审 #1 | M-01..M-10 | 提出 3 条六类问题，另列 4 条非阻塞建议 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装-review.md | 生产模式、单实例互斥、薄壳停止归属
+裁决 #1 | M-01..M-10 | 3 条评审问题全采纳并修正：serve 固定生产模式、serve 为唯一持锁层、stop 绑定 instance；N-01/03/04 采纳、N-02 入 Backlog；设计定稿 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装-adjudication.md | 无
+设计 #2 | M-11、M-12（新增，开放） | 按用户表态纳入 BL-02/03/04→M-11、BL-07→M-12；忽略不做：BL-01 驱动持有者、BL-05 README 截图、BL-06 开发服务登记、BL-08 导航复核 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装.md | 无
+评审 #2 | M-01..M-12 | 提出 1 条六类问题、3 条非阻塞建议 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装-review.md | 健康超时接管仍活实例违反 A-2
+裁决 #2 | M-01（修正）、M-12（措辞） | 采纳 R2-P01：A5 实例判定改三态（活/陈旧/无响应），只有确认失效才接管，无响应时 start/serve/status/stop 各有处置；M-01 增至 30 条；N2-01/02 采纳、N2-03 入 Backlog BL-09；设计保持定稿 | docs/面板交付批次-w10-启动与安装/面板交付批次-w10-启动与安装-adjudication.md | 无
+
+实现 #1 | M-01 | 开放（环境阻塞） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-impl.md | 沙箱禁止监听与 ps，21 条真实服务验收未通过
+审计 #1 | M-01 | 退回 + launcher | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-audit.md | web-stop-gate 4 条失败：测试在门禁进程出现前取 pid
+实现 #2 | M-01 | 退回 launcher（修复落地，保持开放；BL-09 纳入 M-13） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-impl.md | ps EPERM，完整验收待复验
+审计 #2 | M-01 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-audit.md | 无
+实现 #3 | M-02 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r3-impl.md | 3 条真实服务用例被 ps EPERM 阻塞
+审计 #3 | M-02 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r3-audit.md | 无
+
+实现 #4 | M-03 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r4-impl.md | listen/ps EPERM，待宿主复验
+审计 #4 | M-03 | 退回 + package | docs/面板交付批次-w10-启动与安装/evidence/M-03-r4-audit.md | 无
+
+实现 #5 | M-03 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-impl.md | 2 条安装链路/残留检查受 ps EPERM 阻塞
+审计 #5 | M-03 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-audit.md | 无
+
+实现 #6 | M-04 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-04-r6-impl.md | 无
+审计 #6 | M-04 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-04-r6-audit.md | 无
+实现 #7 | M-05 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-05-r7-impl.md | 额外进程残留检查受 ps EPERM 阻塞
+审计 #7 | M-05 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-05-r7-audit.md | 无
+
+实现 #8 | M-06 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-impl.md | 验收无阻塞；扩大回归有两条既有失败，已复跑基线确认
+审计 #8 | M-06 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-audit.md | 无
+
+实现 #9 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r9-impl.md | Electron SIGABRT、listen/ps EPERM；保持开放，reopen 不变
+审计 #9 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r9-audit.md | 无
+
+实现 #10 | M-07 | 开放：纯测试通过，真实冒烟阻断 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r10-impl.md | Electron SIGABRT、监听与 ps EPERM
+审计 #10 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r10-audit.md | 无
+
+实现 #11 | M-07 | 修复完成，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r11-impl.md | Electron SIGABRT、监听及 ps EPERM
+审计 #11 | M-07 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r11-audit.md | 无
+
+实现 #12 | M-08 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-08-r12-impl.md | electron-builder 下载 ENOTFOUND，打包冒烟待复验
+审计 #12 | M-08 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-08-r12-audit.md | 无外网，打包冒烟移入 H-08
+实现 #13 | M-09 | 实现推进，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r13-impl.md | Playwright 下载 ENOTFOUND/ENOTCACHED、ps EPERM；浏览器待复验
+实现 #14 | M-09 | 快检修复、保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r14-impl.md | 浏览器验收待执行
+审计 #13 | M-09 | 退回 + e2e-infra | docs/面板交付批次-w10-启动与安装/evidence/M-09-r14-audit.md | 无
+
+实现 #15 | M-09 | 保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r15-impl.md | ps EPERM 阻断浏览器验收
+审计 #14 | M-09 | 退回 + e2e-infra | docs/面板交付批次-w10-启动与安装/evidence/M-09-r15-audit.md | 无
+实现 #16 | M-09 | 开放，标签断言已修 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r16-impl.md | ps EPERM 阻断浏览器，负向对照 2、3 未执行
+审计 #15 | M-09 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r16-audit.md | 无
+
+实现 #17 | M-10 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r17-impl.md | ps EPERM，20 条浏览器用例待宿主复验
+审计 #16 | M-10 | 退回 + e2e-flow | docs/面板交付批次-w10-启动与安装/evidence/M-10-r17-audit.md | 无
+实现 #18 | M-10 | 节点回归通过，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r18-impl.md | ps EPERM，e2e 与时限未验收
+审计 #17 | M-10 | 退回 + e2e-flow | docs/面板交付批次-w10-启动与安装/evidence/M-10-r18-audit.md | 无
+
+实现 #19 | M-10 | 环境阻塞，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r19-impl.md | ps EPERM，20 条浏览器用例未运行
+审计 #18 | M-10 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r19-audit.md | 无
+
+实现 #20 | M-11 | 开放（单测通过，浏览器受阻） | docs/面板交付批次-w10-启动与安装/evidence/M-11-r20-impl.md | ps EPERM
+审计 #19 | M-11 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-11-r20-audit.md | 无
+
+实现 #21 | M-12 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-12-r21-impl.md | 无
+审计 #20 | M-12 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-12-r21-audit.md | 无
+
+实现 #22 | M-13 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-impl.md | 无
+审计 #21 | M-13 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r22-audit.md | 无
+
+实现 #23 | M-02（rebase） | main rebase 完成，既有状态保留 | docs/面板交付批次-w10-启动与安装/evidence/M-02-r23-impl.md | 3 条 ps EPERM，待宿主复验
+审计 #22 | M-13（集成复验） | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r23-audit.md | 无
+实现 #24 | M-13（rebase 集成） | 待复验，里程碑状态不变 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r24-impl.md | 安装两用例受 ps EPERM 阻塞
+实现 #25 | M-13（快检修复） | 四项单测修复、快检五步通过，状态不变 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r25-impl.md | 11 条真实进程用例受 ps EPERM 阻塞，待宿主复验
+审计 #23 | M-13（集成复验） | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r25-audit.md | 无

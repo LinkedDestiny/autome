@@ -40,12 +40,12 @@ it('根 loader 白名单读取项目列表和详情，空列表和单项目都�
   expect((await loader(args(g))).projects).toEqual([]);
 });
 it('未接入 gateway 返回离线而不抛错', async () => {
-  expect(await loader(args(null))).toEqual({ kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [] });
+  expect(await loader(args(null))).toEqual({ kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [], clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
 });
 it('503、504、409 错误原样传递', async () => {
   for (const [status, error] of [[503, '内核未连接：离线'], [504, '内核响应超时'], [409, '项目读取冲突']] as const) {
     const g = gateway(); vi.mocked(g.read).mockResolvedValue({ status, body: { ok: false, error } });
-    expect(await loader(args(g))).toEqual({ kernel: { ok: false, error }, projects: [], tasks: [] });
+    expect(await loader(args(g))).toEqual({ kernel: { ok: false, error }, projects: [], tasks: [], clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
   }
 });
 async function checkSSR(build: ServerBuild, mode: string) {

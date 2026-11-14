@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { SidebarFooter } from './sidebar-footer.tsx';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
@@ -19,6 +20,6 @@ export function Shell({ projects, banner, children, shortcut = 'Ctrl K', onOpenP
       <button type="button" className="btn-primary" disabled={!gate.allowed} title={gate.reason} onClick={() => onOpenPalette?.('新建')}>新建任务卡</button>
       <NotificationBell />
     </header>
-    <div className="shell-banner">{banner}</div><main className="shell-main">{children}</main>
+    <div className="shell-banner">{banner}</div><main className="shell-main" data-testid={TEST_IDS.shellMain}>{children}</main>
   </div>;
 }

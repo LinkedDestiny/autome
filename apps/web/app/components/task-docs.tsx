@@ -8,7 +8,7 @@ export function TaskDocs({ data, document }: { data: TaskPayload; document: Awai
   return <section className="task-docs" aria-label="任务文档"><h2>文档</h2>
     <nav aria-label="文档选择">{view.tabs.map(link)}{view.evidence.length > 0 && <details open={view.evidence.some(tab => tab.name === document?.name)}><summary>证据（{view.evidence.length}）</summary>{view.evidence.map(link)}</details>}</nav>
     {view.note && <p>{view.note}</p>}
-    <article className="task-docs-body">
+    <article className="task-docs-body" data-scroll-region>
       {document?.error ? <p role="alert">{document.error}</p> : <>
         {document?.missingBrief && <p>这个任务没有任务卡正文</p>}
         {document?.truncated && <p role="status">文档共 {Math.ceil((document.size ?? 0) / 1024)} KB，只显示前 200 KB</p>}

@@ -86,8 +86,10 @@ fetch() {
 # Unpacks the tarball `$1` and leaves the binary's path in $bin.
 unpack() {
   tar -C "$work" -xzf "$1"
-  bin=$(find "$work" -type f -name autome -perm -u+x | head -1)
-  [ -n "$bin" ] || { echo "install-cli: tar 包里没有 autome" >&2; exit 1; }
+  set -- "$work"/*/autome
+  [ "$#" -eq 1 ] && [ -f "$1" ] && [ -x "$1" ] || { echo "install-cli: tar 包里没有唯一的 autome" >&2; exit 1; }
+  bin=$1
+  panel=$(dirname "$bin")/web
 }
 
 script_dir=$(cd "$(dirname "$0")" 2> /dev/null && pwd || echo '')
@@ -97,6 +99,17 @@ if [ -n "$script_dir" ] && [ -f "$script_dir/../crates/autome-cli/Cargo.toml" ];
 fi
 
 bin=''
+panel=''
+node_bin=${AUTOME_NODE:-$(command -v node || true)}
+node_version=$([ -n "$node_bin" ] && "$node_bin" -p process.versions.node 2>/dev/null || true)
+node_ok=0
+major=${node_version%%.*}
+rest=${node_version#*.}
+minor=${rest%%.*}
+case "$major:$minor" in
+  *[!0-9:]* | :* | *:) ;;
+  *) if [ "$major" -gt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -ge 22 ]; }; then node_ok=1; fi ;;
+esac
 if [ -n "$from" ]; then
   case "$from" in
     http://* | https://*)
@@ -128,6 +141,11 @@ elif [ -n "$checkout" ]; then
   echo "==> cargo build --release -p autome-cli"
   cargo build --release --manifest-path "$checkout/Cargo.toml" -p autome-cli
   bin="$checkout/target/release/autome"
+  if [ "$node_ok" -eq 1 ]; then
+    (cd "$checkout/apps/web" && npm ci && npm run build)
+    "$node_bin" "$checkout/apps/web/scripts/stage-panel.ts" "$work/web"
+    panel="$work/web"
+  fi
 else
   version=${AUTOME_VERSION:-latest}
   if [ "$version" = latest ]; then
@@ -155,6 +173,23 @@ cp "$bin" "$dest.new.$$"
 chmod 755 "$dest.new.$$"
 mv -f "$dest.new.$$" "$dest"
 echo "==> 已安装 ${dest}（$("$dest" --version)）"
+
+panel_dest=$(dirname "$prefix")/lib/autome/web
+if [ "$node_ok" -eq 1 ] && [ -d "$panel" ]; then
+  mkdir -p "$(dirname "$panel_dest")"
+  cp -R "$panel" "$panel_dest.new.$$"
+  if [ -e "$panel_dest" ]; then mv "$panel_dest" "$panel_dest.old.$$"; fi
+  if mv "$panel_dest.new.$$" "$panel_dest"; then
+    rm -rf "$panel_dest.old.$$"
+  else
+    [ ! -e "$panel_dest.old.$$" ] || mv "$panel_dest.old.$$" "$panel_dest"
+    exit 1
+  fi
+  echo "==> 已安装面板 ${panel_dest}；运行 autome web"
+elif [ "$node_ok" -eq 0 ]; then
+  echo "没有找到 Node.js 22.22 或更高版本（当前：${node_version:-没有}），只装了命令行。"
+  echo "装好 Node（brew install node）后重新运行本脚本即可装上面板。"
+fi
 
 case ":$PATH:" in
   *":$prefix:"*) ;;

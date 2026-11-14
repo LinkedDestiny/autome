@@ -11,13 +11,71 @@ const rules = [...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].map(([, selector, body])
 function declarations(source: string) { return Object.fromEntries([...source.match(/:root\s*\{([^}]+)\}/)![1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()])); }
 function rule(selector: string) { const found = rules.find(r => r.selector === selector); expect(found, selector).toBeDefined(); return found!.body; }
 it('Layer 1 token 名值逐条一致', () => {
-  expect(declarations(tokens)).toEqual(declarations(readFileSync(new URL('../../desktop/renderer/style.css', import.meta.url), 'utf8')));
+  expect(declarations(tokens)).toEqual({
+    "--animal-font": "Nunito, 'Noto Sans SC', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif",
+    "--animal-primary": "#19c8b9",
+    "--animal-primary-hover": "#3dd4c6",
+    "--animal-primary-active": "#11a89b",
+    "--animal-primary-bg": "#e6f9f6",
+    "--animal-text": "#794f27",
+    "--animal-text-body": "#725d42",
+    "--animal-text-secondary": "#9f927d",
+    "--animal-text-muted": "#8a7b66",
+    "--animal-text-disabled": "#c4b89e",
+    "--animal-bg": "#f8f8f0",
+    "--animal-bg-content": "rgb(247, 243, 223)",
+    "--animal-bg-secondary": "#f0e8d8",
+    "--animal-bg-disabled": "#f0ece2",
+    "--animal-bg-input": "#fffbe7",
+    "--animal-border": "#c4b89e",
+    "--animal-border-hover": "#a89878",
+    "--animal-border-strong": "#9f927d",
+    "--animal-border-light": "#e8dcc8",
+    "--animal-radius-sm": "12px",
+    "--animal-radius": "18px",
+    "--animal-radius-lg": "24px",
+    "--animal-radius-pill": "50px",
+    "--animal-shadow-btn": "#bdaea0",
+    "--animal-shadow-input": "#d4c9b4",
+    "--animal-shadow-switch": "#5a9e1e",
+    "--animal-shadow-sm": "0 2px 4px 0 rgba(61,52,40,.06)",
+    "--animal-shadow-base": "0 3px 10px 0 rgba(61,52,40,.10)",
+    "--animal-shadow-lg": "0 8px 24px 0 rgba(61,52,40,.14)",
+    "--animal-focus-yellow": "#ffcc00",
+    "--animal-focus-yellow-d": "#e0b800",
+    "--animal-sidebar-active": "#b7c6e5",
+    "--animal-sidebar-hover": "#d6dff0",
+    "--animal-success": "#6fba2c",
+    "--animal-success-active": "#5a9e1e",
+    "--animal-warning": "#f5c31c",
+    "--animal-warning-active": "#dba90e",
+    "--animal-error": "#e05a5a",
+    "--animal-error-active": "#c94444",
+    "--animal-ease": "cubic-bezier(0.4, 0, 0.2, 1)",
+    "--animal-duration-fast": ".15s",
+    "--animal-duration": ".25s",
+    "--animal-duration-slow": ".35s",
+    "--tile-pink": "#f8a6b2",
+    "--tile-purple": "#b77dee",
+    "--tile-blue": "#889df0",
+    "--tile-yellow": "#f7cd67",
+    "--tile-orange": "#e59266",
+    "--tile-teal": "#82d5bb",
+    "--tile-green": "#8ac68a",
+    "--tile-red": "#fc736d",
+    "--tile-lime": "#d1da49",
+    "--tile-brown": "#9a835a",
+    "--tile-peach": "#e18c6f"
+  });
 });
 it('字体和许可完整复制，字体仅从本地加载', () => {
-  const source = new URL('../../desktop/renderer/fonts/nunito/', import.meta.url);
+  const hashes: Record<string, string> = {
+  "Nunito-Variable.ttf": "bb55a5ca5c2042335b3991af27c4d0705d0ef41cac6164ac737fd8f2a1e85207",
+  "OFL.txt": "580df76c95a1ec5ab878ceb25bb3d85c6a076804e9c970c8c6972aea775fdf65"
+};
   for (const name of ['Nunito-Variable.ttf', 'OFL.txt']) {
     const hash = (buffer: Buffer) => createHash('sha256').update(buffer).digest('hex');
-    expect(hash(readFileSync(new URL(`styles/fonts/nunito/${name}`, app)))).toBe(hash(readFileSync(new URL(name, source))));
+    expect(hash(readFileSync(new URL(`styles/fonts/nunito/${name}`, app)))).toBe(hashes[name]);
   }
   const path = tokens.match(/url\(['"]?([^'")]+)['"]?\)/)![1];
   expect(path.startsWith('./')).toBe(true); expect(existsSync(new URL(path, new URL('styles/', app)))).toBe(true);

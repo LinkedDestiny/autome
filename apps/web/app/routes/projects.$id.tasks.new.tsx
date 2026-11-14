@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useRef, useState } from 'react';
 import { Form, Link, useActionData, useNavigation, useParams, useRouteLoaderData, type ActionFunctionArgs } from 'react-router';
 import { TASK_TEMPLATES, switchKind, type TaskKind } from '../components/task-templates.ts';
@@ -45,8 +46,8 @@ export default function NewTask() {
       }
     } finally { uploadingRef.current = false; setUploading(false); }
   }
-  if (!project) return <p role="alert">项目不存在</p>;
-  return <Form method="post" className="task-new">
+  if (!project) return <p data-testid={TEST_IDS.pageTaskNew} role="alert">项目不存在</p>;
+  return <div data-testid={TEST_IDS.pageTaskNew} className="task-new-page"><Form method="post" className="task-new" data-testid={TEST_IDS.taskNewForm}>
     <header><h1>新建任务卡</h1><Link to={projectHref(id)}>{project.name}</Link></header>
     <fieldset disabled={busy}><legend>任务类型</legend>{(['feature', 'bug'] as const).map(value => <label key={value}>
       <input type="radio" name="kind" value={value} checked={kind === value} onChange={() => {
@@ -67,6 +68,6 @@ export default function NewTask() {
     {result && 'error' in result && <p role="alert">{result.error}</p>}
     {!gate.allowed && <p role="status">{gate.reason}</p>}
     <footer><button className="btn-primary" name="intent" value="start" disabled={Boolean(disabled)}>创建并开始</button>
-      <button name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
-  </Form>;
+      <button data-testid={TEST_IDS.taskNewDraft} name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
+  </Form></div>;
 }

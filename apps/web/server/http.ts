@@ -14,7 +14,7 @@ import type { ServerBuild } from 'react-router';
 export type Mode = 'development' | 'production';
 const root = resolve(import.meta.dirname, '..');
 
-export async function createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs, admin }: { admin?: AdminServices; taskEvents?: TaskEventSource; taskDocs?: TaskDocReader; mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
+export async function createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs, admin, identity, instanceStatus }: { identity?: { instance: string; pid: number }; instanceStatus?: () => Promise<unknown>; admin?: AdminServices; taskEvents?: TaskEventSource; taskDocs?: TaskDocReader; mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
   const app = express();
   const server = createServer(app);
   const port = () => {
@@ -37,7 +37,10 @@ export async function createHttpServer({ mode, gateway, notifications, store, up
     }
   });
   let closeMiddleware = async () => {};
-  app.get('/healthz', (_req, res) => { res.json({ ok: true }); });
+  app.get('/healthz', (_req, res) => { res.json({ ok: true, ...identity }); });
+  if (instanceStatus) app.get('/api/instance', async (_req, res) => {
+    try { res.json(await instanceStatus()); } catch (error) { res.status(503).json({ error: String(error) }); }
+  });
   if (gateway || notifications || admin) {
     app.use('/api', express.json({ limit: '1mb' }));
     const jsonError: express.ErrorRequestHandler = (_error, _req, res, _next) => {

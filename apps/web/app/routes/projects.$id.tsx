@@ -1,20 +1,22 @@
+import { TEST_IDS } from '../lib/testids.ts';
+import { useClock } from '../lib/clock.tsx';
 import { ProjectAlerts } from '../components/project-alerts.tsx';
 import { projectAlerts, type AlertDashboard } from '../components/alerts-data.ts';
 import { ADMIN } from '../lib/admin-labels.ts';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useActionData, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
-import { newTaskHref, settingsHref } from '../components/nav-links.ts';
+import { newTaskHref, settingsHref, taskHref } from '../components/nav-links.ts';
 import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
-import { KIND_FILTER_LABELS, doneFoldLabel } from '../lib/labels.ts';
+import { KIND_FILTER_LABELS, KIND_LABELS, STATE_LABELS, doneFoldLabel } from '../lib/labels.ts';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
   const services = context.get(servicesContext), id = params.id ?? '';
   const [board, dashboard] = await Promise.all([
-    loadBoard(services, id, new URL(request.url).searchParams.get('done') === 'all'),
+    loadBoard(services, id, new URL(request.url).searchParams.get('done') === 'all', new URL(request.url).searchParams.get('cancelled') === 'all'),
     services.gateway?.read({ method: 'dashboard.get', params: {} }),
   ]);
   return { ...board, alerts: dashboard?.body.ok ? projectAlerts(dashboard.body.payload as AlertDashboard, id) : [],
@@ -32,32 +34,37 @@ export async function action({ request, context }: ActionFunctionArgs) {
   return result.body;
 }
 export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.', 'gate.', 'session.', 'runtime.'));
-function useNow(initial: string) {
-  const [now, setNow] = useState(initial);
-  useEffect(() => { const timer = setInterval(() => setNow(new Date().toISOString()), 60_000); return () => clearInterval(timer); }, []);
-  return now > initial ? now : initial;
-}
 export default function ProjectBoard() {
   useNotificationRevalidate();
   const data = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const [kind, setKind] = useState<KindFilter>('all');
   const location = useLocation();
-  const now = useNow('now' in data ? data.now : '');
-  if ('error' in data) return <p role="alert">{data.error}</p>;
+  const { now, timeZone } = useClock();
+  if ('error' in data) return <p data-testid={TEST_IDS.pageBoard} role="alert">{data.error}</p>;
   const columns = filterBoard(boardColumns(data.tasks, now), kind);
   const query = new URLSearchParams(location.search);
   if (data.showAll) query.delete('done'); else query.set('done', 'all');
   const foldHref = `${location.pathname}${query.size ? `?${query}` : ''}`;
-  return <div className="board"><header className="board-header"><h1>{data.project.display_name}</h1>
+  const cancelledQuery = new URLSearchParams(location.search);
+  if (data.showCancelled) cancelledQuery.delete('cancelled'); else cancelledQuery.set('cancelled', 'all');
+  const cancelledHref = location.pathname + (cancelledQuery.size ? '?' + cancelledQuery : '');
+  const cancelledCount = data.cancelledCounts?.[kind] ?? 0;
+  return <div className="board" data-testid={TEST_IDS.pageBoard}><header className="board-header"><h1>{data.project.display_name}</h1>
     <div className="board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
     <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
-  <ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" key={column.id} aria-labelledby={`board-${column.id}`}>
-    <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
-      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now }} />)}
+  <ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
+    <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body" data-scroll-region>
+      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
-      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.older.length)}</Link>}
+      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
+      {column.id === 'done' && cancelledCount > 0 && <>
+        <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起' + STATE_LABELS.cancelled : STATE_LABELS.cancelled + '（' + cancelledCount + '）'}</Link>
+        {data.showCancelled && <div data-testid={TEST_IDS.boardCancelled}>{data.cancelled?.filter(task => kind === 'all' || task.kind === kind).map(task => <Link key={task.id} className="overview-card task-card" data-testid={TEST_IDS.taskCard} data-task-id={task.id} to={taskHref(task.id)}>
+          <div className="overview-card-meta"><span>{KIND_LABELS[task.kind as keyof typeof KIND_LABELS] ?? task.kind}</span><span>{task.id}</span></div><h3>{task.title}</h3><p>{STATE_LABELS.cancelled}</p>
+        </Link>)}</div>}
+      </>}
     </div></section>)}</div></div>;
 }

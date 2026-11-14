@@ -211,3 +211,5 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .env-component dd { margin: 0 0 12px; }
 .env-page pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--animal-bg-input); border-radius: var(--animal-radius-sm); }
 .env-component form { display: inline-block; margin: 12px; }
+
+.task-new-page { display: contents; }

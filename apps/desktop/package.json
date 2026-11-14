@@ -2,13 +2,14 @@
   "name": "autome-desktop",
   "version": "2.0.0",
   "private": true,
-  "description": "Autome 2.0 desktop shell. UI only, no business state (plan D3); talks to the automed Rust core over framed stdio JSON-RPC.",
+  "description": "Autome desktop shell: bundled Web panel with native directory picker and notifications.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "package": "../../scripts/package.sh",
-    "shots": "electron tools/screenshots.js"
+    "stage-web": "node scripts/stage-web.js",
+    "smoke": "node --test smoke/shell-smoke.test.js"
   },
   "devDependencies": {
     "electron": "43.2.0"
@@ -19,14 +20,16 @@
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*",
-      "renderer/**/*",
-      "!**/*.map"
+      "src/**/*"
     ],
     "extraResources": [
       {
         "from": "core",
         "to": "core"
+      },
+      {
+        "from": "web",
+        "to": "web"
       }
     ],
     "asar": true,
@@ -43,10 +46,7 @@
       "darkModeSupport": false,
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "extendInfo": {
-        "NSAppleEventsUsageDescription": "Autome 在 iTerm2 或 Terminal 中打开会话窗口，好让你能看到每一轮在做什么。"
-      }
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
       "writeUpdateInfo": false

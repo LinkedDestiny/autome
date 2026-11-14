@@ -1,3 +1,4 @@
+import { TEST_IDS } from '../lib/testids.ts';
 import { useEffect, useState } from 'react';
 import { Form, Link, redirect, useActionData, useLoaderData, useNavigation, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
@@ -45,13 +46,13 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
   useEffect(() => { const client = pathCompleteClient(fetch, setSuggestions); client.input(input); return client.dispose; }, [input]);
   const disabled = !gate.allowed || busy || Boolean(result?.project);
   const defaults = checked.probe && confirmDefaults(checked.probe);
-  return <div className="add-project"><h1>{ADMIN.add}</h1><div className="add-project-body">
+  return <div className="add-project" data-testid={TEST_IDS.pageProjectNew}><h1>{ADMIN.add}</h1><div className="add-project-body">
     <Form method="get"><label htmlFor="project-path">{ADMIN.path}</label>
-      <input id="project-path" name="path" value={input} maxLength={512} placeholder="~/code/project" disabled={busy || Boolean(result?.project)} onChange={event => setInput(event.target.value)} />
+      <input data-testid={TEST_IDS.pathInput} id="project-path" name="path" value={input} maxLength={512} placeholder="~/code/project" disabled={busy || Boolean(result?.project)} onChange={event => setInput(event.target.value)} />
       <button disabled={disabled} title={gate.reason}>{busy ? ADMIN.checking : ADMIN.check}</button>
-      {picker && <button type="button" disabled={disabled} onClick={async () => { try { const path = await picker(); if (path) setInput(path); } catch (error) { setPickerError(String(error)); } }}>{ADMIN.picker}</button>}
+      <DirectoryPicker picker={picker} disabled={disabled} onPick={setInput} onError={setPickerError} />
     </Form>
-    <ul className="path-suggestions">{suggestions.entries.map(entry => <li key={entry.path}><button type="button" disabled={busy || Boolean(result?.project)} onClick={() => setInput(entry.path)}>{entry.name}</button></li>)}</ul>
+    <PathSuggestions entries={suggestions.entries} disabled={busy || Boolean(result?.project)} onSelect={setInput} />
     {suggestions.truncated && <p>{ADMIN.more}</p>}{suggestions.error && <p role="alert">{suggestions.error}</p>}{pickerError && <p role="alert">{pickerError}</p>}
     {checked.error && <p role="alert">{checked.error}</p>}
     {checked.probe && <section><p className="probe-path">{checked.probe.path}</p><div className="probe-members">{probeView(checked.probe).map(text => <p key={text}>{text}</p>)}</div>
@@ -73,4 +74,12 @@ export default function AddProject() {
   const result = useActionData<typeof action>();
   const navigation = useNavigation();
   return <AddProjectView key={JSON.stringify(checked)} checked={checked} result={result} busy={navigation.state !== 'idle'} />;
+}
+
+export function PathSuggestions({ entries, disabled, onSelect }: { entries: Suggestions['entries']; disabled: boolean; onSelect: (path: string) => void }) {
+  return <ul className="path-suggestions" data-testid={TEST_IDS.pathSuggestions}>{entries.map(entry => <li key={entry.path}><button data-testid={TEST_IDS.pathSuggestion} type="button" disabled={disabled} onClick={() => onSelect(entry.path)}>{entry.name}</button></li>)}</ul>;
+}
+
+export function DirectoryPicker({ picker, disabled, onPick, onError }: { picker: ReturnType<typeof nativePicker>; disabled: boolean; onPick: (path: string) => void; onError: (error: string) => void }) {
+  return picker ? <button data-testid={TEST_IDS.pickDirectory} type="button" disabled={disabled} onClick={async () => { try { const path = await picker(); if (path) onPick(path); } catch (error) { onError(String(error)); } }}>{ADMIN.picker}</button> : null;
 }

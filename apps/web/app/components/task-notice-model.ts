@@ -16,7 +16,7 @@ export function noticeView(payload: TaskPayload, ctx: CardContext) {
   const retry = payload.retry;
   if (retry) {
     const cooldown = ctx.cooldowns.find(item => item.until === retry.not_before);
-    messages.push(cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until) : retryPhrase(retry.attempts, retry.not_before));
+    messages.push(cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }) : retryPhrase(retry.attempts, retry.not_before, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }));
   }
   if (payload.gate_queue_position != null) messages.push(gatePhrase(null, payload.gate_queue_position));
   if (state.state === 'queued') messages.push(queuePhrase(payload.queue_position));

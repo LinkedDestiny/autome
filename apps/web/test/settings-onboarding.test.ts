@@ -38,6 +38,18 @@ test('3 保存只收两份路径、空串和最大长度原样送网关', async 
 test('4 超长由真实网关拒绝并显示原文', async () => { const call = vi.fn(); const gateway = createGateway({ core: { call, restart: vi.fn() }, home: '/tmp' }); const result = await action(args({ gateway }, { intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) })); expect(result.error).toMatch(/^已拒绝：.*超过.*字符上限/); expect(call).not.toHaveBeenCalled(); expect(html(base, result)).toContain(result.error); });
 test('5 会话状态和离线禁用全部按钮', () => { const running = html({ ...base, session: { state: 'running', session_id: 'ses-test' } }); expect(running).toContain('会话运行中'); expect(running).toContain('ses-test'); expect(running).toMatch(/value="run" disabled=""/); expect(html({ ...base, session: { state: 'ended', exit_code: 7 } })).toContain('退出码 7'); const offline = html(base, undefined, false); expect(offline.match(/<button/g)).toHaveLength(6); expect(offline.match(/disabled="" title="离线原因"/g)).toHaveLength(6); });
 test('6 项目页设置链接', () => { const router = createMemoryRouter([{ path: '/', Component: ProjectBoard }], { hydrationData: { loaderData: { '0': { project: { id: 'p', display_name: '测试' }, tasks: [], alerts: [], now: new Date().toISOString() } } } }); try { expect(renderToString(createElement(RouterProvider, { router }))).toContain('href="/projects/p/settings"'); } finally { router.dispose(); } });
-test('7 扩展消息只刷新 onboarding.ended 且可取消', async () => { const refresh = vi.fn(); const unsubscribe = subscribeAdminRevalidate(subscribeLiveMessages, refresh); publishLiveMessage('hello', { type: 'hello' }); expect(refresh).not.toHaveBeenCalled(); publishLiveMessage('onboarding.ended', { type: 'onboarding.ended' }); await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1)); unsubscribe(); publishLiveMessage('onboarding.ended', { type: 'onboarding.ended' }); expect(refresh).toHaveBeenCalledTimes(1); });
+test('7 扩展消息只刷新 onboarding.ended 且可取消', async () => {
+  vi.useFakeTimers();
+  const refresh = vi.fn(); const unsubscribe = subscribeAdminRevalidate(subscribeLiveMessages, refresh);
+  try {
+    publishLiveMessage('hello', { type: 'hello' });
+    await vi.advanceTimersByTimeAsync(1000); expect(refresh).not.toHaveBeenCalled();
+    publishLiveMessage('onboarding.ended', { type: 'onboarding.ended' });
+    await vi.advanceTimersByTimeAsync(999); expect(refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); expect(refresh).toHaveBeenCalledTimes(1);
+    unsubscribe(); publishLiveMessage('onboarding.ended', { type: 'onboarding.ended' });
+    await vi.advanceTimersByTimeAsync(1000); expect(refresh).toHaveBeenCalledTimes(1);
+  } finally { unsubscribe(); await vi.runOnlyPendingTimersAsync(); vi.useRealTimers(); }
+});
 
 async function action(args: Parameters<typeof routeAction>[0]) { const result = await routeAction(args); if (result instanceof Response) throw new Error('Unexpected redirect during onboarding'); return result; }

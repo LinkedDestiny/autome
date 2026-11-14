@@ -24,11 +24,14 @@ test('Node 22、npm 缓存与锁文件安装', () => {
     'node-version': '22', cache: 'npm', 'cache-dependency-path': 'apps/web/package-lock.json',
   });
   expect(web.steps.find((step: Step) => step.name === 'Install').run).toBe('npm ci');
+  for (const job of ['cli-package', 'cli-release']) {
+    expect(workflow.jobs[job].steps.find((step: Step) => step.uses === 'actions/setup-node@v4').with['node-version']).toBe('22');
+  }
 });
 
 test('CI 按顺序运行 Web 检查，测试前先构建内核', () => {
   expect(web.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
-    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed -p autome-cli', 'npm test', 'npm run build',
+    'npm ci', 'npm run lint', 'npm run typecheck', 'cargo build -p automed -p autome-cli', 'npm run build', 'npm test',
   ]);
 });
 
@@ -39,16 +42,16 @@ test('所有 job 都有正数 timeout-minutes', () => {
   }
 });
 
-test('本地只在缺 node_modules 时 npm ci 安装 Web', () => {
-  expect(steps).toContain("prep 'Web install' --if-missing apps/web/node_modules sh -c 'cd apps/web && npm ci'");
+test('本地使用锁文件指纹安装 Web', () => {
+  expect(steps).toContain("prep 'Web install' sh scripts/ci/install-node.sh apps/web");
   expect(steps.match(/prep 'Web install'/g)).toHaveLength(1);
 });
 
-test('本地四步独立声明完整输入，位于 Contract 后、package 分支外', () => {
+test('本地五步独立声明完整输入，位于 Contract 后、package 分支外', () => {
   expect(steps.indexOf("step 'Web lint'")).toBeGreaterThan(steps.indexOf("step 'Contract'"));
   expect(steps.match(/^step 'Web .*$/gm)).toEqual(
-    ['lint', 'typecheck', 'test', 'build'].map(name =>
-      `step 'Web ${name}' '${name === 'test' ? 'apps/web crates protocol plugins apps/desktop/renderer' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
+    ['lint', 'typecheck', 'build', 'test', 'e2e'].map(name =>
+      `step 'Web ${name}' '${['test', 'e2e'].includes(name) ? 'apps/web crates protocol plugins apps/desktop' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
   );
   expect(local.indexOf('. "$root/scripts/ci/steps.sh"')).toBeLessThan(local.indexOf('if [ "$with_package" -eq 1 ]'));
 });
@@ -114,4 +117,35 @@ test('Rust 一次跑完所有目标，脚本测试纳入本地与 CI', () => {
   }
   expect(workflow.jobs.scripts.steps.some((step: Step) => step.run === 'node --test scripts/test/*.test.mjs')).toBe(true);
   expect(steps).toContain("step 'Scripts' '' node --test scripts/test/*.test.mjs");
+});
+
+test('Bundle 校验 autome 并运行打包面板冒烟，Desktop 保留回归', () => {
+  expect(local).toContain('Resources/core/autome" --version');
+  expect(local).toContain("run 'Bundle launches the panel'");
+  const steps: Step[] = workflow.jobs.package.steps;
+  expect(steps.find(step => step.name === 'The bundle carries a runnable core')?.run).toContain('Resources/core/autome" --version');
+  expect(steps.find(step => step.name === 'Bundle launches the panel')?.run).toContain('npm --prefix apps/desktop run smoke');
+  expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p automed')).toBe(false);
+  expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p autome-cli')).toBe(true);
+});
+
+test('e2e job 安装指定浏览器并独立运行限时浏览器测试', () => {
+  const job = workflow.jobs.e2e;
+  expect(job['runs-on']).toBe('macos-14');
+  expect(job['timeout-minutes']).toBe(15);
+  expect(job.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
+    'npm ci', 'cargo build -p automed -p autome-cli', 'npm run build', 'npx playwright install chromium', 'npm run e2e',
+  ]);
+  expect(job.steps.find((step: Step) => step.uses === 'actions/cache@v4').with.key).toContain('1.64.1');
+});
+
+test('两处依赖目录均比较锁文件指纹且安装成功才写入', () => {
+  for (const [directory, label] of [['web', 'Web'], ['desktop', 'Desktop']]) {
+    expect(steps).toContain(`prep '${label} install' sh scripts/ci/install-node.sh apps/${directory}`);
+  }
+  const installer = readFileSync(resolve(root, 'scripts/ci/install-node.sh'), 'utf8');
+  expect(installer).toContain('set -eu');
+  expect(installer).toContain('shasum -a 256 package-lock.json');
+  expect(installer).toContain('cat node_modules/.autome-lock.sha256');
+  expect(installer.indexOf('npm ci')).toBeLessThan(installer.indexOf('> node_modules/.autome-lock.sha256'));
 });

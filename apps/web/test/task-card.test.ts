@@ -13,7 +13,7 @@ import { NOTIFICATION_RULES, renderReason } from '../server/notifier-rules.ts';
 import { openWebStore } from '../server/store.ts';
 import type { KernelGateway } from '../app/load-context.ts';
 process.env.TZ = 'Asia/Shanghai';
-const ctx: CardContext = { now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
+const ctx: CardContext = { timeZone: 'Asia/Shanghai', now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
 const task = (node = 'implement', kind = 'feature'): BoardTask => ({ id: 'T-1', title: '任务标题', project_id: 'P-1', kind, state: { state: 'active', node } });
 const block = { milestones_done: 3, milestones_total: 5, current_milestone: 'M-02' };
 const view = (t = task(), d?: TaskDetail, context = ctx) => cardView(t, d, context);
@@ -53,8 +53,8 @@ test('4 bug fix rounds never use milestone block', () => {
 });
 test('5 running session activity and minute boundaries', () => {
   const detail = { status_block: block, sessions: [{ label: '实现', round: 3, running: true, started_at: '2026-11-13T06:08:00Z' }] };
-  expect(view(task(), detail).activity).toBe('实现第 3 轮 · M-02 · 运行 12 分钟');
-  expect(view(task('fix', 'bug'), detail).activity).toBe('实现第 3 轮 · 运行 12 分钟');
+  expect(view(task(), detail).activity).toBe('实现第 3 轮 · M-02 · 运行 12 分');
+  expect(view(task('fix', 'bug'), detail).activity).toBe('实现第 3 轮 · 运行 12 分');
   for (const started_at of [ctx.now, '2026-11-13T06:19:01Z', '2026-11-13T06:21:00Z']) expect(view(task(), { sessions: [{ ...detail.sessions[0], started_at }] }).activity).toBe('实现第 3 轮 · 刚开始');
   expect(view(task(), { sessions: [{ ...detail.sessions[0], running: false }] }).activity).toBe('实现');
 });
@@ -89,7 +89,7 @@ test('9 needs-you badge with and without unread counts', () => {
     expect(view(task(), undefined, context).badge).toBeNull();
   }
 });
-test('10 loader calls only visible non-draft details and dashboard only for retries', async () => {
+test('10 loader omits draft and completed details and fetches dashboard only for retries', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date(ctx.now));
   try {
     const project = JSON.parse(readFileSync(new URL('./fixtures/w5-project-get.json', import.meta.url), 'utf8'));
@@ -101,12 +101,12 @@ test('10 loader calls only visible non-draft details and dashboard only for retr
     for (const expanded of [false, true]) {
       calls.length = 0; const loaded = await loadBoard({ gateway }, 'P-1', expanded); expect('error' in loaded).toBe(false);
       const ids = calls.filter(c => c.method === 'task.get').map(c => (c.params as { task_id: string }).task_id);
-      expect(ids).toContain('recent'); expect(ids.includes('older')).toBe(expanded); expect(ids).not.toContain('draft');
+      expect(ids).not.toContain('recent'); expect(ids).not.toContain('older'); expect(ids).not.toContain('draft');
       expect(calls.filter(c => c.method === 'dashboard.get')).toHaveLength(0);
-      if (!('error' in loaded)) expect(loaded.details?.recent.gate).toEqual(detail.gate);
+      if (!('error' in loaded)) expect(loaded.details?.recent).toBeUndefined();
     }
     retry = true; calls.length = 0; await loadBoard({ gateway }, 'P-1'); expect(calls.filter(c => c.method === 'dashboard.get')).toHaveLength(1);
-    for (const failedMethod of ['task.get', 'dashboard.get']) for (const status of [409, 503]) {
+    for (const failedMethod of ['task.get', 'dashboard.get']) for (const status of [409, 503, 504]) {
       const rejected: KernelGateway = { ...gateway, read: async request => (request as { method: string }).method === failedMethod ? { status, body: { ok: false, error: '详情读取失败' } } : gateway.read(request) };
       expect(await loadBoard({ gateway: rejected }, 'P-1')).toEqual({ error: '详情读取失败' });
     }

@@ -67,7 +67,7 @@ afterAll(async () => { await Promise.all([...children].map(stop)); for (const ho
 test('dev /healthz 返回 200 与 ok', async () => {
   const response = await fetch(`${dev.url}/healthz`);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ ok: true });
+  expect(await response.json()).toEqual({ ok: true, instance: expect.any(String), pid: expect.any(Number) });
 });
 test('dev 首页 SSR 与模块脚本', async () => {
   const response = await fetch(dev.url);
@@ -80,7 +80,7 @@ test('dev 首页 SSR 与模块脚本', async () => {
 test('prod /healthz 返回 200 与 ok', async () => {
   const response = await fetch(`${prod.url}/healthz`);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ ok: true });
+  expect(await response.json()).toEqual({ ok: true, instance: expect.any(String), pid: expect.any(Number) });
 });
 test('prod 首页与引用的 JS 资源可访问', async () => {
   const response = await fetch(prod.url);

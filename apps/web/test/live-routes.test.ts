@@ -1,15 +1,22 @@
 import { createMemoryRouter } from 'react-router';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 const webRoot = fileURLToPath(new URL('../', import.meta.url));
-import { byKind, bySubjectParam, liveShouldRevalidate, revalidateAll, revalidateForEvents } from '../app/lib/live-routes.ts';
+import { byKind, bySubjectParam, liveShouldRevalidate, revalidateAll as enqueueAll, revalidateForEvents as enqueueEvents } from '../app/lib/live-routes.ts';
 import { shouldRevalidate as addProjectShouldRevalidate } from '../app/routes/projects.new.tsx';
 const event = (kind = 'task.updated', subject = 'T-1') => ({ seq: 1, kind, subject, payload: {} });
 const routers: ReturnType<typeof createMemoryRouter>[] = [];
-afterEach(() => { for (const router of routers.splice(0)) router.dispose(); });
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => { for (const router of routers.splice(0)) router.dispose(); vi.useRealTimers(); });
+function revalidateForEvents(...args: Parameters<typeof enqueueEvents>) {
+  const result = enqueueEvents(...args); vi.advanceTimersByTime(1000); return result;
+}
+function revalidateAll(...args: Parameters<typeof enqueueAll>) {
+  const result = enqueueAll(...args); vi.advanceTimersByTime(1000); return result;
+}
 async function setup() {
   const counts = { project: 0, task: 0, other: 0 };
   let version = 0;
@@ -111,4 +118,50 @@ it('路由 loader 导出守卫报告缺少 liveShouldRevalidate 的文件', () =
   const bad = resolve(webRoot, 'test/fixtures/live-routes-bad/missing.tsx'); expect(missingLive([bad])).toEqual([bad]);
   const files = readdirSync(resolve(webRoot, 'app/routes'), { recursive: true }).filter(f => /\.[jt]sx?$/.test(String(f))).map(f => resolve(webRoot, 'app/routes', String(f)));
   expect(missingLive([resolve(webRoot, 'app/root.tsx'), ...files])).toEqual([]);
+});
+it('同一秒内五批事件只在后沿重验一次，包括 reload', async () => {
+  const revalidate = vi.fn();
+  const batches = [enqueueEvents([event()], revalidate)];
+  for (let i = 1; i < 5; i++) {
+    await vi.advanceTimersByTimeAsync(199);
+    batches.push(enqueueEvents([event()], revalidate));
+  }
+  batches.push(enqueueAll(revalidate));
+  await vi.advanceTimersByTimeAsync(203);
+  expect(revalidate).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await Promise.all(batches);
+  expect(revalidate).toHaveBeenCalledOnce();
+});
+it('窗口内不同前缀取并集，reload 也并入同一次', async () => {
+  const c = await setup();
+  const first = enqueueEvents([event('project.updated')], () => c.router.revalidate());
+  const second = enqueueEvents([event('task.updated')], () => c.router.revalidate());
+  await vi.advanceTimersByTimeAsync(1000); await Promise.all([first, second]);
+  expect(c.counts).toEqual({ project: 1, task: 1, other: 0 });
+  const third = enqueueEvents([event()], () => c.router.revalidate());
+  const fourth = enqueueAll(() => c.router.revalidate());
+  await vi.advanceTimersByTimeAsync(1000); await Promise.all([third, fourth]);
+  expect(c.counts).toEqual({ project: 2, task: 2, other: 1 });
+});
+it('到点后新事件另开窗口，旧完成不丢掉等待中的新事件', async () => {
+  let release!: () => void;
+  const old = enqueueEvents([event()], () => new Promise<void>(resolve => { release = resolve; }));
+  await vi.advanceTimersByTimeAsync(1000);
+  const url = new URL('http://localhost/');
+  const args = { currentUrl: url, nextUrl: url, currentParams: {}, defaultShouldRevalidate: false } as never;
+  const next = vi.fn(() => { expect(liveShouldRevalidate(byKind('project.'))(args)).toBe(true); });
+  const newer = enqueueEvents([event('project.updated')], next);
+  release(); await old;
+  await vi.advanceTimersByTimeAsync(999); expect(next).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1); await newer;
+  expect(next).toHaveBeenCalledOnce();
+  expect(liveShouldRevalidate(byKind('project.'))(args)).toBe(false);
+  const failed = enqueueEvents([event()], async () => { throw Error('loader failed'); });
+  const rejected = expect(failed).rejects.toThrow('loader failed');
+  await vi.advanceTimersByTimeAsync(1000); await rejected;
+  expect(liveShouldRevalidate(byKind('task.'))(args)).toBe(false);
+  const recovered = enqueueEvents([event('project.updated')], next);
+  await vi.advanceTimersByTimeAsync(1000); await recovered;
+  expect(next).toHaveBeenCalledTimes(2);
 });

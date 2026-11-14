@@ -29,7 +29,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/express": "^5",
-    "@types/ws": "^8.18.2"
+    "@types/ws": "^8.18.2",
+    "@playwright/test": "1.64.1"
   },
   "scripts": {
     "dev": "node server/start.js",
@@ -38,6 +39,8 @@
     "test": "vitest run",
     "probe:sqlite": "node scripts/probe-sqlite.ts",
     "lint": "eslint . --max-warnings 0",
-    "typecheck": "react-router typegen && tsc --noEmit"
-  }
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "e2e": "node scripts/e2e-preflight.ts && playwright test"
+  },
+  "version": "2.0.0"
 }

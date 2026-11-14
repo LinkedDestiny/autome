@@ -1,3 +1,5 @@
+import { TEST_IDS } from '../lib/testids.ts';
+import { formatClock, useClock } from '../lib/clock.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { subscribeLiveMessages } from '../lib/live-client.ts';
@@ -5,24 +7,20 @@ import { createBellClient, EMPTY_BELL, type BellSnapshot } from './bell-client.t
 import { resolveTarget, TARGETS } from './bell-targets.ts';
 import { browserSystemNotifier, showSystemNotification, type SystemNotifier, type SystemPermission } from './bell-system.ts';
 
-function localTime(value: string) {
-  const date = new Date(value);
-  const pad = (part: number) => String(part).padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TARGETS, permission = 'unsupported', onRequest }: {
   snapshot: BellSnapshot; open: boolean; onToggle: () => void;
   onRead: (id: string) => Promise<void>; onAll: () => Promise<void>; targets?: typeof TARGETS;
   permission?: SystemPermission; onRequest?: () => void;
 }) {
+  const clock = useClock();
   return <div className="bell">
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
-      className="bell-button">
+      className="bell-button" data-testid={TEST_IDS.bellButton}>
       <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
       {snapshot.unread > 0 && <span className="bell-badge">{snapshot.unread >= 100 ? '99+' : snapshot.unread}</span>}
     </button>
-    {open && <section aria-label="通知列表" className="bell-panel">
+    {open && <section aria-label="通知列表" className="bell-panel" data-testid={TEST_IDS.bellPanel}>
       <header className="bell-header">
         <strong>通知</strong><button type="button" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
       </header>
@@ -30,10 +28,10 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
       {permission === 'denied' && <p className="bell-message">系统通知已被浏览器拒绝，铃铛照常提醒</p>}
       {snapshot.error && <p role="alert" className="bell-error">{snapshot.error}</p>}
       {!snapshot.items.length && <p className="bell-empty">还没有通知</p>}
-      <ul className="bell-list">
+      <ul className="bell-list" data-scroll-region>
         {snapshot.items.map(item => {
           const target = resolveTarget(item, targets);
-          return <li key={item.id} className="bell-item">
+          return <li key={item.id} className="bell-item" data-testid={TEST_IDS.bellItem} data-task-id={item.task_id ?? undefined}>
             {!item.read_at && <span aria-label="未读" className="bell-unread">●</span>}
             {target.href ? <Link to={target.href} onClick={async event => {
               if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) { void onRead(item.id); return; }
@@ -44,7 +42,7 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
             {item.body && <p className="bell-body">{item.body}</p>}
             {target.note && <p className="bell-note">{target.note}</p>}
             <div className="bell-footer">
-              <time dateTime={item.created_at} className="bell-time">{localTime(item.created_at)}</time>
+              <time dateTime={item.created_at} className="bell-time">{formatClock(item.created_at, clock)}</time>
               {!item.read_at && <button type="button" onClick={() => { void onRead(item.id); }}>标为已读</button>}
             </div>
           </li>;

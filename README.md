@@ -301,6 +301,22 @@ cargo install --path crates/autome-cli  # or plainly, with Rust
 `PREFIX` picks the directory. The installer checks the tarball's `.sha256`,
 refuses an unverified download, and finishes with `autome doctor`.
 
+### The panel
+
+After installation, run `autome web` to start the panel and open your browser.
+Node.js >= 22.22 is required (`brew install node`). Without it the installer
+installs only the CLI; install Node and rerun the installer to add the panel.
+The panel lives at `$(dirname "$PREFIX")/lib/autome/web`, beside the CLI prefix.
+The release tarball also runs directly: keep `web/` beside `autome`.
+
+- `autome web start`: start without opening a browser; repeated runs reuse it.
+- `autome web status` (or `--json`): URL, process, kernel build and running gates.
+- `autome web stop`: stop; refuses active gates unless `--force` is supplied.
+- `autome web service install|uninstall`: manage optional macOS login startup.
+
+The default port is 7420, with automatic fallback if occupied. An explicit
+`--port` must be available. Runtime files and logs live in `$AUTOME_HOME/web`.
+
 ### Upgrading, and which build may drive the ledger
 
 `autome --version` and `automed --version` include a build ID in parentheses:
@@ -325,9 +341,8 @@ adopts the current kernel and records a `kernel.adopted` event. Only the literal
 adopted old process then stops advancing. This does not bypass schema checks.
 
 The dashboard uses `autome core`, the stdio kernel in the installed CLI file.
-Resolution order: `AUTOMED_BIN`, bundled `automed`, the first `autome` on PATH,
-`~/.local/bin/autome`, then a cargo build. Custom PREFIX installs must be on PATH
-or selected with `AUTOMED_BIN=<PREFIX>/autome`. Startup logs show the path and
+Resolution order: `AUTOMED_BIN`, `AUTOME_BUNDLED_CORE` (the CLI that launched the panel), the first `autome` on PATH,
+`~/.local/bin/autome`, then a cargo build. `autome web` supplies its own path for custom PREFIX installs. Startup logs show the path and
 build ID, explicitly identifying cargo builds.
 
 For the first upgrade to schema v8, after merging:
@@ -481,8 +496,8 @@ sh scripts/ci-local.sh && sh scripts/package.sh
 - `crates/autome-cli` — the `autome` command. Links `automed` and calls the
   same dispatcher the desktop's requests reach; no logic of its own beyond
   argument parsing and printing.
-- `apps/desktop` — the Electron shell. Two IPC channels with two independent
-  allowlists; the renderer can never name a filesystem path.
+- `apps/desktop` — a thin Electron shell loading the Web panel, with native
+  directory selection and notifications. The panel owns the core connection.
 - `docs/development/` — the requirements and the technical design. These are
   the authority.
 - `docs/plans/` — decision records and audits, dated. `docs/design/` — the
@@ -614,20 +629,24 @@ AUTOMED_REAL_CLI=1 AUTOMED_REAL_LOOP=1 \
 ## Packaging
 
 ```sh
+npm --prefix apps/web ci
+npm --prefix apps/web run build
 sh scripts/package.sh            # unsigned .app and .dmg in apps/desktop/dist, for local use
 CSC_NAME="Developer ID Application: …" sh scripts/package.sh   # signed
 ```
 
 To install locally, quit Autome, replace `/Applications/Autome.app` with
 `apps/desktop/dist/mac-arm64/Autome.app`, and start it again. On start the
-core refreshes every project's scaffold and picks up any session that ended
-while it was closed.
+shell starts the bundled Web panel using Electron's Node runtime, or connects
+to an existing `autome web` service. No system Node installation is needed.
+The bundle carries `Resources/core/autome` and `Resources/web` outside asar.
+Run `AUTOME_SMOKE_APP="$PWD/apps/desktop/dist/mac-arm64/Autome.app" npm --prefix apps/desktop run smoke`
+to check startup, reuse, the older-kernel banner, and process cleanup in temporary homes.
 
 Signing is opt-in rather than best-effort: an unsigned build that claims to be
 signed is worse than one that says it is not. The hardened runtime is on, so
 `build/entitlements.mac.plist` declares every capability the app uses —
-including AppleEvents, without which the session launcher cannot open a
-terminal and every session fails to start, in signed builds only.
+including Electron JIT and framework loading. The shell does not request AppleEvents.
 
 ## Status
 

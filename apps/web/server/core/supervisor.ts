@@ -21,6 +21,13 @@ export class CoreSupervisor {
   private stopGeneration = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private sequence = 0;
+  private skippedTicks: number[] = [];
+  otherDriver() {
+    const now = (this.options.now ?? Date.now)();
+    this.skippedTicks = this.skippedTicks.filter(time => time > now - 60000);
+    const last = this.skippedTicks.at(-1);
+    return { skipped_last_minute: this.skippedTicks.length, last_skipped_at: last === undefined ? null : new Date(last).toISOString() };
+  }
   private tickId?: string;
 
   constructor(options: Options) { this.options = options; }
@@ -104,6 +111,10 @@ export class CoreSupervisor {
     this.tickId = command.request_id;
     const reply = sidecar.requestUntilReply(command).then(reply => {
       const report = (payload(reply) ?? {}) as TickReport;
+      if (this.sidecar === sidecar && report.skipped) {
+        this.skippedTicks.push((this.options.now ?? Date.now)());
+        this.otherDriver();
+      }
       if (this.sidecar === sidecar && ['starting', 'connected', 'outdated'].includes(this.status.state)) {
         if (report.older_kernel) {
           const reason = report.older_kernel.message;

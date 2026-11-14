@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
+import { logName, timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
 import type { TaskEvent } from '../server/task-events.ts';
 // Original wire fixtures captured by w7-flow.sh; synthetic variants below exercise event boundaries.
@@ -13,6 +13,30 @@ const now = '2026-11-14T00:00:00Z';
 const ev = (seq: number, kind: string, payload: Record<string, unknown> = {}): TaskEvent => ({ seq, kind, payload, subject: 'T-1', at: `2026-11-13T00:00:${String(seq).padStart(2, '0')}Z` });
 const ses = (id = 's', running = false): TimelineSession => ({ id, running, label: '实现', round: 1, runtime: 'codex', started_at: '2026-11-13T00:00:01Z', ended_at: running ? null : '2026-11-13T00:00:11Z' });
 const build = (events: TaskEvent[], sessions: TimelineSession[] = []) => timelineEntries(sessions, events, now);
+it('D-2 回归：真实 Bug 会话在事件缺失和到达后均带稳定 data-node', () => {
+  for (const node of ['locate', 'fix', 'fix_review']) {
+    const session = { ...bug.sessions.find((s: { kind: { step: string } }) => s.kind.step === node), running: true, ended_at: null };
+    const started = ev(1, 'session.started', { session_id: session.id, kind: session.kind });
+    for (const events of [[], [started]]) {
+      expect(build(events, [session])[0]).toMatchObject({ key: session.id, node, summary: '运行中' });
+      const html = renderToString(createElement(TaskTimeline, { sessions: [session], events, now }));
+      expect(html).toContain(`data-node="${node}"`);
+    }
+  }
+});
+it('需求会话以结构化 kind 映射节点，不依赖中文标签或事件 node', () => {
+  for (const [role, node] of [['plan', 'design'], ['impl', 'implement'], ['review', 'review'], ['adjudicate', 'adjudicate'], ['audit', 'audit'], ['retro', 'retro']]) {
+    const session = { ...ses(), label: '自定义标签', kind: { kind: 'role' as const, role } };
+    for (const events of [[], [ev(1, 'session.started', { session_id: 's', kind: session.kind })]]) {
+      expect(build(events, [session])[0].node).toBe(node);
+    }
+  }
+  for (const kind of ['intake', 'onboarding'] as const) expect(build([], [{ ...ses(), kind: { kind } }])[0].node).toBe(kind);
+});
+it('旧会话缺 kind 时保留事件节点，缺少全部依据不伪造节点', () => {
+  expect(build([ev(1, 'session.started', { session_id: 's', node: 'implement' })], [ses()])[0].node).toBe('implement');
+  expect(build([], [ses()])[0].node).toBeUndefined();
+});
 it('需求会话按事件升序，阶段、CLI 与原始回包一致', () => {
   const entries = build(ledger.filter(e => e.subject === 'T-1'), feature.sessions);
   expect(entries.flatMap(e => e.session ? e.session.label : [])).toEqual(['任务整理', '设计', '评审', '裁决', '实现', '审计', '实现', '审计', '复盘']);
@@ -50,7 +74,7 @@ it('门禁一次执行的排队、运行、结果、同提交重跑、中断与 
   const q = ev(1, 'gate.queued', { node: 'gate', job: 'gate', position: 2 });
   const start = ev(2, 'gate.started', { node: 'gate', kind: 'quick', sha: '1234567890', command: 'test', log: '/tmp/test.log' });
   expect(build([q])[0].summary).toBe('排队第 2 位');
-  expect(build([q, start])[0]).toMatchObject({ key: 'gate:gate:1', title: '快检', summary: '运行中', details: ['test', '12345678', '/tmp/test.log'] });
+  expect(build([q, start])[0]).toMatchObject({ key: 'gate:gate:1', title: '快检', summary: '运行中', details: ['test', '12345678', '日志 test.log'], log: '/tmp/test.log' });
   for (const [exit_code, ok, summary] of [[0, true, '通过'], [1, false, '未通过 · 退出码 1'], [null, false, '超时']] as const) {
     const result = ev(3, 'gate.result', { ...start.payload, exit_code, ok });
     expect(build([q, start, result])).toHaveLength(1);
@@ -115,4 +139,37 @@ it('步骤报告显示执行、沿用、未跑和红色未核实提示', () => {
 it('没有报告保持旧摘要，整次沿用与步骤沿用区分', () => {
   expect(build([ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0 })])[0].summary).toBe('通过');
   expect(build([ev(1, 'gate.reused')])[0].title).toBe('沿用已通过的结果');
+});
+it('可见时间不保留 ISO，重试与冷却均使用本地时区', () => {
+  const entries = timelineEntries([ses()], [ev(1,'session.retry',{not_before:now}),ev(2,'runtime.cooldown',{until:now})],now,'Asia/Shanghai');
+  const text = entries.map(e=>[e.title,...e.details].join(' ')).join(' ');
+  expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+  expect(text).toContain('11月13日 08:00 → 08:00'); expect(text).toContain('08:00 重试');
+});
+it('用时 8 分 50 秒且运行中、已结束、被停止都保留用时', () => {
+  for (const running of [true,false]) {
+    const session = {...ses(), running, started_at:'2026-11-13T00:00:00Z',ended_at:running?null:'2026-11-13T00:08:50Z'};
+    expect(timelineEntries([session],[],'2026-11-13T00:08:50Z')[0].details).toContain(`${running?'已运行':'用时'} 8 分 50 秒`);
+  }
+});
+
+it('gate log paths appear only in hover titles for start and every result', () => {
+  for (const kind of ['gate.started', 'gate.result']) for (const exit_code of [0, 1, null]) {
+    const log = '/private/中文 目录/gate-key.log';
+    const events = [ev(1, kind, { node: 'gate', log, exit_code, ok: exit_code === 0 })];
+    const html = renderToString(createElement(TaskTimeline, { sessions: [], events, now }));
+    expect(html).toContain('class="timeline-log" title="' + log + '">日志 gate-key.log</span>');
+    expect(html.replace(/<[^>]*>/g, '')).not.toContain(log);
+    expect(build(events)[0].log).toBe(log);
+  }
+});
+it('all four setup and merge titles project log names including input boundaries', () => {
+  for (const kind of ['setup.started', 'setup.result', 'merge.after_started', 'merge.after']) for (const log of ['', 'single.log', '/tmp/中文 空格.log']) for (const ok of [true, false]) {
+    const events = [ev(1, kind, { log, ok, exit_code: ok ? 0 : 1 })];
+    const html = renderToString(createElement(TaskTimeline, { sessions: [], events, now }));
+    expect(build(events)[0].title).toContain('日志 ' + logName(log));
+    if (log) expect(html).toContain('title="' + log + '">日志 ' + logName(log));
+    if (log.startsWith('/')) expect(html.replace(/<[^>]*>/g, '')).not.toContain(log);
+  }
+  expect(logName('')).toBe(''); expect(logName('/')).toBe('');
 });
