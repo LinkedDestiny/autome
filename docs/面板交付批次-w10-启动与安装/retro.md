@@ -58,3 +58,4 @@
 审计 #19 | M-11 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-11-r20-audit.md | 无
 
 实现 #21 | M-12 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-12-r21-impl.md | 无
+审计 #20 | M-12 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-12-r21-audit.md | 无
