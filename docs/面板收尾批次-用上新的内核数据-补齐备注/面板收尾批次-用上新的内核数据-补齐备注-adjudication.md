@@ -43,3 +43,35 @@
 ### 提交
 
 提交由本轮尝试 `git commit`；若被拒绝，由 Autome 兜底提交。
+
+## 第 2 轮（裁决轮）
+
+**评审结论：** 评审 #2 提出 1 条属于协议六类、可追溯的问题（R2-P01，内部逻辑矛盾 / 违反任务目标），无新增非阻塞建议。裁决轮对照源码复核后**采纳**，设计文档已修改，`design-round` 由 1 增至 2。修改后未发现剩余的六类问题，设计定稿：`status` 为 `实现中`，M-01…M-13 共 13 个里程碑（均为 `开放`，reopen 0），状态块与里程碑表格式不变。
+
+核对到的源码证据：
+
+- `apps/web/app/components/task-docs-model.ts:4`：文档链接 `href` 固定为 `?doc=<name>`（任务卡为 `?`），`task-docs.tsx:7` 再拼 `tab=docs`，两处都不保留 `from` / `timeline`。
+- `apps/web/app/components/task-detail-data.ts:51` 读 `doc`，`task-changes-model.ts:10,12` 读 `tab` / `doc`：对象写法 `setSearchParams({from})` 会整体替换查询串，直开 `?tab=docs&doc=…` 挂载后即丢 `doc`。
+- `apps/web/app/routes/tasks.$id.tsx` 的 `tabLink` 已复制现有参数，是正确写法，沿用。
+
+### 逐条裁决
+
+| ID | 主张摘要 | 设计位置 | 裁决 | 证据或理由 | 修改落点 | 复提计数 |
+|---|---|---|---|---|---|---|
+| D2-P01（R2-P01） | `tab` / `doc` 与新增 `from` / `timeline` 共用查询串，钉住窗口的对象写法覆盖 `tab` / `doc`，文档链接与「显示更早」又丢 `from` 或文档选择，使窗口固定失效、直开文档链接回到任务卡 | C-Q1、C-Q3；M-05 | 采纳 | 对 D1-P02 的窗口固定方向不变（不是重提）；新增写法与既有导航组合出两条可复现的失败路径：直开 `?tab=docs&doc=…` 挂载后 `doc` 丢失；点文档链接清掉 `from`，窗口回缺省，已展开日志卸载。违反任务 C-2、验-3 与约束 10（日志不折叠） | C-Q1 新增「查询参数互相独立」：纯函数 `withParams`（新 `task-url.ts`），钉住改回调写法、仅在无 `from` 且无 `timeline=all` 时补；文档链接保留 `from` / `timeline`；「显示更早」保留 `tab` / `doc`、删 `from`；`docsView.href` 改给文档名；4 处出口加 grep 核对。C-Q3 增「文档导航不清 `from`」及浏览器步骤与 C-2b 直开用例。M-05：vitest 37→40（task-detail-data 7→10）、manual-items 6→7，补负向对照与文件清单 | 0 |
+
+### 非阻塞建议处置
+
+无新增。
+
+### 争议项
+
+无，所有主张复提计数为 0。
+
+### 设计是否定稿
+
+是。R2-P01 的修改已落到 C-Q1、C-Q3 与 M-05 的验收契约（用例数、负向对照已同步），其它里程碑不受影响；`status` 改为 `实现中`，里程碑表完整，Autome 应据此停在「等待批准」。
+
+### 提交
+
+提交由本轮尝试 `git commit`；若被拒绝，由 Autome 兜底提交。
