@@ -55,3 +55,4 @@
 审计 #18 | M-10 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r19-audit.md | 无
 
 实现 #20 | M-11 | 开放（单测通过，浏览器受阻） | docs/面板交付批次-w10-启动与安装/evidence/M-11-r20-impl.md | ps EPERM
+审计 #19 | M-11 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-11-r20-audit.md | 无
