@@ -90,6 +90,30 @@ jobs:
       - name: Test
         run: npm test
 
+  e2e:
+    timeout-minutes: 15
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: macos-arm64-playwright-1.64.0
+      - run: npm ci
+      - run: cargo build -p automed -p autome-cli
+      - run: npm run build
+      - run: npx playwright install chromium
+      - run: npm run e2e
+
   desktop:
     # A hung step must fail in minutes, not sit at the runner's own limit.
     # The desktop job once held a runner for 45 minutes on a test that takes

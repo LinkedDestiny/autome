@@ -128,3 +128,20 @@ test('Bundle 校验 autome 并运行打包面板冒烟，Desktop 保留回归', 
   expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p automed')).toBe(false);
   expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p autome-cli')).toBe(true);
 });
+
+test('e2e job 安装指定浏览器并独立运行限时浏览器测试', () => {
+  const job = workflow.jobs.e2e;
+  expect(job['runs-on']).toBe('macos-14');
+  expect(job['timeout-minutes']).toBe(15);
+  expect(job.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
+    'npm ci', 'cargo build -p automed -p autome-cli', 'npm run build', 'npx playwright install chromium', 'npm run e2e',
+  ]);
+  expect(job.steps.find((step: Step) => step.uses === 'actions/cache@v4').with.key).toContain('1.64.0');
+});
+
+test('两处依赖目录均比较锁文件指纹且安装成功才写入', () => {
+  for (const [directory, label] of [['web', 'Web'], ['desktop', 'Desktop']]) {
+    expect(local).toContain(`if [ ! -d apps/${directory}/node_modules ] || [ "$(cat apps/${directory}/node_modules/.autome-lock.sha256 2>/dev/null)" != "$(shasum -a 256 apps/${directory}/package-lock.json | cut -d ' ' -f 1)" ]; then`);
+    expect(local).toContain(`run '${label} install' sh -c 'cd apps/${directory} && npm ci && shasum -a 256 package-lock.json | cut -d " " -f 1 > node_modules/.autome-lock.sha256'`);
+  }
+});

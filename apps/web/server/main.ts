@@ -27,7 +27,7 @@ import type { Mode } from './http.ts';
 
 const { version: webVersion } = createRequire(import.meta.url)('../package.json') as { version: string };
 
-export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, instanceFile = false }: { instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, tickIntervalMs = 3000, instanceFile = false }: { tickIntervalMs?: number; instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
   const binary = binaryPath ? { path: binaryPath, args: binaryArgs ?? [], source: 'env' as const } : resolveAutomedBinary();
   if (binaryArgs) binary.args = binaryArgs;
   console.error(await describeKernel(binary, { env: { ...process.env, ...kernelEnv, AUTOME_HOME: home } }));
@@ -72,7 +72,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const registration: Instance = { ...identity, port: actualPort, url: `http://127.0.0.1:${actualPort}`, started_at, web_root: resolve(import.meta.dirname, '..'), kernel };
   const ready = core.start();
   if (!instanceFile) void ready.catch(error => console.error(String(error)));
-  const ticker = createTicker({ call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
+  const ticker = createTicker({ intervalMs: tickIntervalMs, call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
   const running = {
     server, gateway, core, registerUpgrade, bus, logtail,
     async close() {

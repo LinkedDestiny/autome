@@ -5,6 +5,7 @@
     "bin",
     "scripts",
     "test",
+    "e2e",
     "*.ts",
     ".react-router/types/**/*"
   ],

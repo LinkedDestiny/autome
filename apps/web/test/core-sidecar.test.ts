@@ -420,3 +420,16 @@ test('测试源码不按条件跳过真实内核用例', () => {
     assert.doesNotMatch(source, /process\.env\s*(?:\.\s*CI\b|\[\s*['"]CI['"]\s*\])/, file);
   }
 });
+
+test('浏览器测试与配置不按条件跳过用例', () => {
+  const root = path.resolve(import.meta.dirname, '../e2e');
+  const files = fs.readdirSync(root, { recursive: true }).map(String).filter(file => file.endsWith('.ts')).map(file => path.join(root, file));
+  files.push(path.resolve(root, '../playwright.config.ts'));
+  assert.ok(files.length >= 3);
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(source, /\b(?:test|it|describe)\s*\.\s*(?:skipIf|runIf|skip|fixme|todo)\s*\(/, file);
+    assert.doesNotMatch(source, /\b(?:skip|todo)\s*:/, file);
+    assert.doesNotMatch(source, /process\.env\s*(?:\.\s*CI\b|\[\s*['"]CI['"]\s*\])/, file);
+  }
+});
