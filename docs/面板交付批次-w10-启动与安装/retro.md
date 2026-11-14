@@ -67,3 +67,4 @@
 审计 #22 | M-13（集成复验） | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r23-audit.md | 无
 实现 #24 | M-13（rebase 集成） | 待复验，里程碑状态不变 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r24-impl.md | 安装两用例受 ps EPERM 阻塞
 实现 #25 | M-13（快检修复） | 四项单测修复、快检五步通过，状态不变 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r25-impl.md | 11 条真实进程用例受 ps EPERM 阻塞，待宿主复验
+审计 #23 | M-13（集成复验） | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-13-r25-audit.md | 无

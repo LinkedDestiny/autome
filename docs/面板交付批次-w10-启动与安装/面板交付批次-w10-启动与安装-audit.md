@@ -1,5 +1,10 @@
-# 实现审计（审计 #22 · 集成复验）
+# 审计结论 · 审计 #23（集成复验）
 
-结论：**通过**。范围 `40994c7..ddc1a3c`，rebase 冲突文件 `crates/autome-cli/src/main.rs`、`tests/cli.rs` 两侧改动都在，无冲突标记，测试未被削弱，M-13 验收与 autome-cli 测试通过，负向对照有效。里程碑表不动。
+范围：提交 235b6e2（仅 5 个 apps/web 测试文件）。结论：**通过**，里程碑表不动。
 
-证据：docs/面板交付批次-w10-启动与安装/evidence/M-13-r23-audit.md
+- 无冲突标记，无 rebase 丢失提交。
+- 测试改动是让断言对齐 1s 批处理窗口、root loader 的 clock 字段和启动器并发收敛，均未削弱；批处理窗口注入 0/2000 时三条改过的用例会失败。
+- M-13 验收命令 35 条全过；web-launcher 12 条全过。
+- 无实现缺陷，无新增 Backlog。
+
+证据：docs/面板交付批次-w10-启动与安装/evidence/M-13-r25-audit.md
