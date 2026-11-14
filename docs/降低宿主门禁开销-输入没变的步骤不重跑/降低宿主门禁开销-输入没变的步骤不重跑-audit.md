@@ -1,8 +1,3 @@
-# 审计结论 · 审计 #4 · M-04
+# 审计 #5 · M-05 · 通过
 
-结论：**通过**。M-04 标为已完成。
-
-- 验收 `node --test scripts/test/ci-quick.test.mjs`：13/13 通过。
-- 负向对照 8 项注入（契约列出的 6 项加起点为空、失败判定反转）全部被对应用例拦住，已还原，工作区无差异。
-- 证据：docs/降低宿主门禁开销-输入没变的步骤不重跑/evidence/M-04-r4-audit.md
-- 无实现缺陷、无验证缺口。Backlog 沿用 BL-01、BL-02，无新增。
+验收命令全绿（e2e `gate_quick_` 9 个、scheduler `gate_quick_host` 10 个）。两项负向对照（起点取当前 head；修复会话不记 `start_heads`）都让对应用例失败，已还原。快检耗时采集移入 H-02。详见 `evidence/M-05-r5-audit.md`。
