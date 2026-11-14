@@ -65,7 +65,15 @@ export const testGroups = {
     "test/task-timeline.test.ts",
     "test/uploads.test.ts",
     "test/w9-layout.test.ts",
-    "test/write-gate.test.ts"
+    "test/write-gate.test.ts",
+    "test/board-cancelled.test.ts",
+    "test/board-payload.test.ts",
+    "test/clock.test.ts",
+    "test/docs-web.test.ts",
+    "test/login-path.test.ts",
+    "test/native-shell.test.ts",
+    "test/testids.test.ts",
+    "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
     "test/add-project-real.test.ts",
@@ -79,7 +87,6 @@ export const testGroups = {
     "test/core-supervisor.test.ts",
     "test/env-real.test.ts",
     "test/gateway.test.ts",
-    "test/install-alignment.test.ts",
     "test/kernel-identity.test.ts",
     "test/notifier-backfill-real.test.ts",
     "test/notifier-live-fixture.test.ts",
@@ -96,7 +103,11 @@ export const testGroups = {
     "test/task-ops-real.test.ts",
     "test/task-timeline-real.test.ts",
     "test/ticker.test.ts",
-    "test/test-groups.test.ts"
+    "test/test-groups.test.ts",
+    "test/e2e-preflight.test.ts",
+    "test/prepare-web.test.ts",
+    "test/stage-panel.test.ts",
+    "test/web-launcher-input.test.ts"
   ],
   "exclusive": [
     "test/board-live-listen.test.ts",
@@ -116,6 +127,14 @@ export const testGroups = {
     "test/task-live-real.test.ts",
     "test/task-log-live.test.ts",
     "test/uploads-http.test.ts",
-    "test/w9-http.test.ts"
+    "test/w9-http.test.ts",
+    "test/login-path-real.test.ts",
+    "test/process-scan.test.ts",
+    "test/web-instance.test.ts",
+    "test/web-launcher-cleanup.test.ts",
+    "test/web-launcher.test.ts",
+    "test/web-service.test.ts",
+    "test/web-stop-gate.test.ts",
+    "test/install-alignment.test.ts"
   ]
 };

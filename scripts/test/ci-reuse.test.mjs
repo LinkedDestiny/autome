@@ -46,13 +46,13 @@ function fixture(t, custom = false) {
 const executed = rows => rows.filter(r => r.action === '执行').map(r => r.name);
 const allRun = rows => assert.equal(executed(rows).length, rows.length);
 
-test('01 Web-only input reruns exactly the four Web steps', t => {
+test('01 Web-only input reruns Desktop and all five Web steps', t => {
   const f = fixture(t); f.seed(); f.put('apps/web/app/reuse-probe.ts', 'export {};');
-  assert.deepEqual(executed(f.plan(f.env)), ['Web lint', 'Web typecheck', 'Web test', 'Web build']);
+  assert.deepEqual(executed(f.plan(f.env)), ['Desktop', 'Web lint', 'Web typecheck', 'Web build', 'Web test', 'Web e2e']);
 });
 test('02 Rust input includes Desktop and Web test dependencies', t => {
   const f = fixture(t); f.seed(); f.put('crates/automed/src/reuse-probe.rs', '// changed');
-  assert.deepEqual(executed(f.plan(f.env)), ['Format', 'Clippy', 'Test (unit, end to end, adapter flags)', 'Desktop', 'Web test']);
+  assert.deepEqual(executed(f.plan(f.env)), ['Format', 'Clippy', 'Test (unit, end to end, adapter flags)', 'Desktop', 'Web test', 'Web e2e']);
 });
 test('03 docs-only input reuses everything', t => {
   const f = fixture(t); f.seed(); f.put('docs/only.md', 'new docs');

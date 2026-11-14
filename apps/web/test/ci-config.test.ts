@@ -42,16 +42,16 @@ test('所有 job 都有正数 timeout-minutes', () => {
   }
 });
 
-test('本地只在缺 node_modules 时 npm ci 安装 Web', () => {
-  expect(steps).toContain("prep 'Web install' --if-missing apps/web/node_modules sh -c 'cd apps/web && npm ci'");
+test('本地使用锁文件指纹安装 Web', () => {
+  expect(steps).toContain("prep 'Web install' sh scripts/ci/install-node.sh apps/web");
   expect(steps.match(/prep 'Web install'/g)).toHaveLength(1);
 });
 
-test('本地四步独立声明完整输入，位于 Contract 后、package 分支外', () => {
+test('本地五步独立声明完整输入，位于 Contract 后、package 分支外', () => {
   expect(steps.indexOf("step 'Web lint'")).toBeGreaterThan(steps.indexOf("step 'Contract'"));
   expect(steps.match(/^step 'Web .*$/gm)).toEqual(
-    ['lint', 'typecheck', 'build', 'test'].map(name =>
-      `step 'Web ${name}' '${name === 'test' ? 'apps/web crates protocol plugins apps/desktop/renderer' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
+    ['lint', 'typecheck', 'build', 'test', 'e2e'].map(name =>
+      `step 'Web ${name}' '${['test', 'e2e'].includes(name) ? 'apps/web crates protocol plugins apps/desktop' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
   );
   expect(local.indexOf('. "$root/scripts/ci/steps.sh"')).toBeLessThan(local.indexOf('if [ "$with_package" -eq 1 ]'));
 });
@@ -141,7 +141,11 @@ test('e2e job 安装指定浏览器并独立运行限时浏览器测试', () => 
 
 test('两处依赖目录均比较锁文件指纹且安装成功才写入', () => {
   for (const [directory, label] of [['web', 'Web'], ['desktop', 'Desktop']]) {
-    expect(local).toContain(`if [ ! -d apps/${directory}/node_modules ] || [ "$(cat apps/${directory}/node_modules/.autome-lock.sha256 2>/dev/null)" != "$(shasum -a 256 apps/${directory}/package-lock.json | cut -d ' ' -f 1)" ]; then`);
-    expect(local).toContain(`run '${label} install' sh -c 'cd apps/${directory} && npm ci && shasum -a 256 package-lock.json | cut -d " " -f 1 > node_modules/.autome-lock.sha256'`);
+    expect(steps).toContain(`prep '${label} install' sh scripts/ci/install-node.sh apps/${directory}`);
   }
+  const installer = readFileSync(resolve(root, 'scripts/ci/install-node.sh'), 'utf8');
+  expect(installer).toContain('set -eu');
+  expect(installer).toContain('shasum -a 256 package-lock.json');
+  expect(installer).toContain('cat node_modules/.autome-lock.sha256');
+  expect(installer.indexOf('npm ci')).toBeLessThan(installer.indexOf('> node_modules/.autome-lock.sha256'));
 });
