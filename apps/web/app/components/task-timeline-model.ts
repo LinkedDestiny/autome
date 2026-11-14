@@ -10,7 +10,7 @@ function sessionNode(kind: SessionKind | undefined) {
   if (kind?.kind === 'role') return kind.role === 'plan' ? 'design' : kind.role === 'impl' ? 'implement' : kind.role;
   return kind?.kind;
 }
-export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; log?: string };
+export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; failures?: string[]; log?: string };
 export function logName(path: string): string { return path.split('/').at(-1) ?? ''; }
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
@@ -52,7 +52,7 @@ function light(event: TaskEvent, clock: Clock): string | undefined {
   }
   if (event.kind.startsWith('guard.')) return `守卫提醒：${guardLabel(s('code'))}${p.detail ? `：${s('detail')}` : ''}`;
 }
-function sessionSummary(session: TimelineSession, window: TaskEvent[], previous: [string, string][]) {
+function sessionSummary(session: TimelineSession, window: TaskEvent[], previous: [string, string][], failures: string[]) {
   if (session.running) return '运行中';
   if (session.lifecycle?.state === 'killed') return '已被停止';
   let before = new Map(previous);
@@ -71,7 +71,11 @@ function sessionSummary(session: TimelineSession, window: TaskEvent[], previous:
     if (event.kind === 'bug.reviewed') result.push(p.verdict === 'Passed' ? '复核通过' : '复核打回');
     if (event.kind === 'task.updated' && ['session_ended', 'bug_session_ended'].includes(str(p.trigger))) {
       const state = p.state as TaskState & { reason?: Record<string, unknown> };
-      if (state.state === 'failed') result.push(failureText(state.reason));
+      if (state.state === 'failed') {
+        const reason = state.reason;
+        failures.push(failureText(reason));
+        result.push(failureText(typeof reason?.log === 'string' ? { ...reason, log: logName(reason.log) } : reason));
+      }
       else if (!result.length) result.push(`→ ${taskStatusLine(state)}`);
     }
   }
@@ -89,8 +93,10 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     const previous = events.slice(0, Math.max(0, index)).findLast(e => e.kind === 'task.snapshot');
     const elapsed = Math.max(0, Date.parse(session.ended_at ?? now) - Date.parse(session.started_at));
     const runtime = session.runtime ?? '';
+    const failures: string[] = [];
     return { key: session.id, node: sessionNode(session.kind) ?? (index < 0 ? undefined : str(events[index].payload.node) || undefined), at: session.started_at, session, title: `${session.label} · 第 ${session.round} 轮`,
-      summary: index < 0 ? (session.running ? '运行中' : '已结束') : sessionSummary(session, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][]),
+      summary: index < 0 ? (session.running ? '运行中' : '已结束') : sessionSummary(session, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][], failures),
+      failures,
       details: [Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime, session.model ?? '',
         formatRange(session.started_at, session.ended_at, clock), `${session.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
         session.metrics?.cost_usd != null ? `$${session.metrics.cost_usd.toFixed(2)}` : '无计费数据'].filter(Boolean) };
@@ -142,4 +148,4 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
   }
   return entries;
 }
-export const TIMELINE_TEXT = { title: '执行时间线', empty: '还没有执行记录', truncated: '更早的内核事件已省略' };
+export const TIMELINE_TEXT = { title: '执行时间线', failure: '失败详情', empty: '还没有执行记录', truncated: '更早的内核事件已省略' };

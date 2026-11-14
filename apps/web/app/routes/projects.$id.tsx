@@ -10,7 +10,7 @@ import { newTaskHref, settingsHref, taskHref } from '../components/nav-links.ts'
 import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
-import { KIND_FILTER_LABELS, KIND_LABELS, doneFoldLabel } from '../lib/labels.ts';
+import { KIND_FILTER_LABELS, KIND_LABELS, STATE_LABELS, doneFoldLabel } from '../lib/labels.ts';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
@@ -61,9 +61,9 @@ export default function ProjectBoard() {
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
       {column.id === 'done' && cancelledCount > 0 && <>
-        <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起已取消' : '已取消（' + cancelledCount + '）'}</Link>
+        <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起' + STATE_LABELS.cancelled : STATE_LABELS.cancelled + '（' + cancelledCount + '）'}</Link>
         {data.showCancelled && <div data-testid={TEST_IDS.boardCancelled}>{data.cancelled?.filter(task => kind === 'all' || task.kind === kind).map(task => <Link key={task.id} className="overview-card task-card" data-testid={TEST_IDS.taskCard} data-task-id={task.id} to={taskHref(task.id)}>
-          <div className="overview-card-meta"><span>{KIND_LABELS[task.kind as keyof typeof KIND_LABELS] ?? task.kind}</span><span>{task.id}</span></div><h3>{task.title}</h3><p>已取消</p>
+          <div className="overview-card-meta"><span>{KIND_LABELS[task.kind as keyof typeof KIND_LABELS] ?? task.kind}</span><span>{task.id}</span></div><h3>{task.title}</h3><p>{STATE_LABELS.cancelled}</p>
         </Link>)}</div>}
       </>}
     </div></section>)}</div></div>;

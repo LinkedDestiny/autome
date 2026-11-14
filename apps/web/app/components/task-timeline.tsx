@@ -15,6 +15,7 @@ export function TaskTimeline({ sessions, events, now, truncated, error }: { sess
     <ol>{entries.map(entry => <li data-testid={TEST_IDS.timelineEntry} data-entry-key={entry.key} data-node={entry.node} key={entry.key} className={entry.session ? 'timeline-session' : 'timeline-step'}>
       <h3>{text(entry.title, entry.log)}</h3><p className={entry.unverified ? 'timeline-unverified' : undefined}>{entry.summary}</p>
       <p className="timeline-meta">{text(entry.details.join(' · '), entry.log)}</p>
+      {entry.failures?.filter(Boolean).map((failure, index) => <details className="timeline-failure" key={index}><summary>{t.failure}</summary><p>{failure}</p></details>)}
       {entry.session && <SessionLog session={entry.session} defaultOpen={entry.session.running} />}
     </li>)}</ol>
   </section>;
