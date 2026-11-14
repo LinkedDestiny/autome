@@ -18,7 +18,11 @@ test('重复打开只复用一个服务', async () => {
 });
 test('两个并发 start 只起一个服务', async () => {
   const h = live(); const results = await Promise.all([h.run(['start']), h.run(['start'])]); expect(results.map(r => r.code)).toEqual([0, 0]);
-  expect(h.servers()).toHaveLength(1); expect(await judgeInstance(await h.registration())).toBe('live');
+  // Both parents can observe the winner before the losing serve finishes its lock retry.
+  // A second persistent service must still fail this bounded convergence check.
+  const registered = await h.registration();
+  await expect.poll(() => h.servers().map(server => server.pid), { timeout: 3000 }).toEqual([registered.pid]);
+  expect(await judgeInstance(registered)).toBe('live');
 });
 test('status 输出端口、内核路径来源与 autome 构建标识', async () => {
   const h = live(); expect((await h.run(['start'])).code).toBe(0); const v = await h.registration();

@@ -54,5 +54,10 @@ test('5 only whitelisted task fields leave the loader, including zero fix_round'
 });
 test('6 root loader returns the same shell through RouterContextProvider', async () => {
   const g = gateway(); const args = { context: createLoadContext({ gateway: g })(), request: new Request('http://localhost/'), params: {}, url: new URL('http://localhost/'), pattern: '/' } satisfies LoaderFunctionArgs;
-  expect(await loader(args)).toEqual(await loadShell(g));
+  vi.useFakeTimers();
+  const now = '2026-11-14T00:00:00.000Z';
+  vi.setSystemTime(new Date(now));
+  try {
+    expect(await loader(args)).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+  } finally { vi.useRealTimers(); }
 });

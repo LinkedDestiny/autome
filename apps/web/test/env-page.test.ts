@@ -51,7 +51,17 @@ test('5 首页只在已检测且有缺项时提示',()=>{
 });
 test('6 侧栏环境入口',()=>{const router=createMemoryRouter([{path:'/',element:createElement(SidebarFooter)}]);try{expect(renderToString(createElement(RouterProvider,{router}))).toContain('href="/env"');}finally{router.dispose();}});
 test('7 env.probing 与 env.changed 触发重载，其他消息不触发',async()=>{
+  vi.useFakeTimers();
   let handler: LiveMessageListener=()=>{}; const revalidate=vi.fn(); const unsubscribe=vi.fn();
-  const release=subscribeAdminRevalidate(fn=>{handler=fn;return unsubscribe;},revalidate); handler('env.changed',{type:'env.changed'}); expect(revalidate).toHaveBeenCalledTimes(1); handler('unrelated',{type:'unrelated'}); expect(revalidate).toHaveBeenCalledTimes(1); release(); expect(unsubscribe).toHaveBeenCalled();
-  await revalidateForEvents([{seq:1,kind:'env.probing',subject:'environment',payload:{}}],()=>{expect(shouldRevalidate({defaultShouldRevalidate:false,currentUrl:new URL('http://localhost/env'),nextUrl:new URL('http://localhost/env'),currentParams:{}} as Parameters<typeof shouldRevalidate>[0])).toBe(true);});
+  const release=subscribeAdminRevalidate(fn=>{handler=fn;return unsubscribe;},revalidate);
+  try {
+    handler('env.changed',{type:'env.changed'});
+    await vi.advanceTimersByTimeAsync(999); expect(revalidate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); expect(revalidate).toHaveBeenCalledTimes(1);
+    handler('unrelated',{type:'unrelated'});
+    await vi.advanceTimersByTimeAsync(1000); expect(revalidate).toHaveBeenCalledTimes(1);
+    const probing = revalidateForEvents([{seq:1,kind:'env.probing',subject:'environment',payload:{}}],()=>{expect(shouldRevalidate({defaultShouldRevalidate:false,currentUrl:new URL('http://localhost/env'),nextUrl:new URL('http://localhost/env'),currentParams:{}} as Parameters<typeof shouldRevalidate>[0])).toBe(true);});
+    await vi.advanceTimersByTimeAsync(1000); await probing;
+  } finally { release(); await vi.runOnlyPendingTimersAsync(); vi.useRealTimers(); }
+  expect(unsubscribe).toHaveBeenCalled();
 });

@@ -53,15 +53,19 @@ it('真实恢复 hook 在无账本事件下重验一次，首个 hello 与持续
     const router = createMemoryRouter([{ id: 'root', path: '/', loader: () => ({ ok: ++calls > 1 && succeeds }), shouldRevalidate: liveShouldRevalidate(byKind('task.')) }]);
     await vi.waitFor(() => expect(router.state.initialized).toBe(true));
     harness.enabled = true; harness.ref = { current: false }; harness.revalidate = () => router.revalidate();
+    vi.useFakeTimers();
     const render = async (core: CoreMessage) => {
       useKernelRecovery({ core, kernelOk: (router.state.loaderData.root as { ok: boolean }).ok });
       harness.effects.splice(0).forEach(effect => effect());
+      const before = calls;
+      await vi.advanceTimersByTimeAsync(999); expect(calls).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
       await vi.waitFor(() => expect(router.state.revalidation).toBe('idle'));
     };
     try {
       await render(initialCore); await render(connected); await render(connected);
       expect(calls).toBe(2); expect(router.state.loaderData.root).toEqual({ ok: succeeds });
       await render(offline); await render(connected); expect(calls).toBe(succeeds ? 2 : 3);
-    } finally { harness.enabled = false; router.dispose(); }
+    } finally { await vi.runOnlyPendingTimersAsync(); vi.useRealTimers(); harness.enabled = false; router.dispose(); }
   }
 });
