@@ -15,3 +15,4 @@
 
 实现 #6 | M-06 | 保持开放 | evidence/M-06-r6-impl.md | 监听与 ps 权限阻塞；性能、连跑及 ENOTEMPTY 待取证
 审计 #6 | M-06 | 退回 + Web 测试分组配置 | docs/降低宿主门禁开销-输入没变的步骤不重跑/evidence/M-06-r6-audit.md | 无
+实现 #7 | M-06 | 保持开放，分组启动已修复 | evidence/M-06-r7-impl.md | 监听与 ps 被拒绝，性能及五连跑未验收

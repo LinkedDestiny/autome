@@ -16,11 +16,15 @@ test('内核、端口、进程及构建测试不进入 unit', () => {
   const marker = /target\/debug|CoreSupervisor|AutomedSidecar|w9Kernel|fixtures\/.*sh|startServer\(|createHttpServer\(|createServer\(|listen\(|spawn\(['"]npm|npm run build|ps -axo|process-leak/;
   for (const file of testGroups.unit) expect(readFileSync(resolve(web, file), 'utf8'), file).not.toMatch(marker);
 });
-test('exclusive 串行，kernel 有限并行，三组同时启动且预构建', () => {
+test('unit 与 kernel 同组有限并行，exclusive 随后串行且预构建', () => {
   expect(projects.map(p => p.test.name).sort()).toEqual(['exclusive', 'kernel', 'unit']);
   expect(projects.find(p => p.test.name === 'exclusive')!.test.fileParallelism).toBe(false);
-  expect(projects.find(p => p.test.name === 'kernel')!.test.maxWorkers).toBe(4);
-  expect(projects.every(p => p.test.sequence.groupOrder === 0)).toBe(true);
+  for (const name of ['unit', 'kernel']) {
+    const project = projects.find(p => p.test.name === name)!.test;
+    expect(project.maxWorkers).toBe(4);
+    expect(project.sequence.groupOrder).toBe(0);
+  }
+  expect(projects.find(p => p.test.name === 'exclusive')!.test.sequence.groupOrder).toBe(1);
   expect(config.test!.fileParallelism).not.toBe(false);
   expect(config.test!.globalSetup).toEqual(['./test/fixtures/global-setup.ts']);
 });

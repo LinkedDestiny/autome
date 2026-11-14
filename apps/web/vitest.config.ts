@@ -6,8 +6,10 @@ export default defineConfig({
     projects: Object.entries(testGroups).map(([name, include]) => ({
       test: {
         name, include, testTimeout: 60_000, hookTimeout: 60_000,
-        sequence: { groupOrder: 0 },
-        ...(name === 'exclusive' ? { fileParallelism: false } : name === 'kernel' ? { maxWorkers: 4 } : {}),
+        // Vitest requires the same worker limit within a scheduling group.
+        // Finish parallel work before suites that inspect processes/shared state.
+        sequence: { groupOrder: name === 'exclusive' ? 1 : 0 },
+        ...(name === 'exclusive' ? { fileParallelism: false } : { maxWorkers: 4 }),
       },
     })),
   },
