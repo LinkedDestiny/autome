@@ -10,7 +10,8 @@ function sessionNode(kind: SessionKind | undefined) {
   if (kind?.kind === 'role') return kind.role === 'plan' ? 'design' : kind.role === 'impl' ? 'implement' : kind.role;
   return kind?.kind;
 }
-export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession };
+export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; log?: string };
+export function logName(path: string): string { return path.split('/').at(-1) ?? ''; }
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
 const str = (value: unknown) => value == null ? '' : String(value);
@@ -36,11 +37,11 @@ function light(event: TaskEvent, clock: Clock): string | undefined {
     case 'merge.locked': return '已取得合并锁';
     case 'merge.direct': return '直接进入合并';
     case 'merge.unlocked': return '已释放合并锁';
-    case 'merge.after_started': return `合并后命令开始：${s('command')} · 日志：${s('log')}`;
-    case 'merge.after': return `合并后命令${p.ok ? '通过' : '未通过'}（退出码 ${s('exit_code')}）· 日志：${s('log')}`;
+    case 'merge.after_started': return `合并后命令开始：${s('command')} · 日志 ${logName(s('log'))}`;
+    case 'merge.after': return `合并后命令${p.ok ? '通过' : '未通过'}（退出码 ${s('exit_code')}）· 日志 ${logName(s('log'))}`;
     case 'merge.after_skipped': return `合并后命令跳过：${s('reason')}`;
-    case 'setup.started': return `准备命令开始（${s('checkout')}）：${s('command')} · 日志：${s('log')}`;
-    case 'setup.result': return `准备命令${p.ok ? '通过' : '未通过'}（${s('checkout')}，退出码 ${s('exit_code')}）· 日志：${s('log')}`;
+    case 'setup.started': return `准备命令开始（${s('checkout')}）：${s('command')} · 日志 ${logName(s('log'))}`;
+    case 'setup.result': return `准备命令${p.ok ? '通过' : '未通过'}（${s('checkout')}，退出码 ${s('exit_code')}）· 日志 ${logName(s('log'))}`;
     case 'setup.skipped': return `准备命令跳过：${s('reason')}`;
     case 'task.updated': return operations[s('trigger')];
     case 'session.retry': return p.rate_limited ? `会话撞到${s('reason')}` : `会话崩溃，${formatClock(s('not_before'), clock)} 重试（第 ${s('attempt')}/${s('of')} 次）：${s('reason')}`;
@@ -112,7 +113,8 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
       run.entry.title = gateName(p);
       if (event.kind === 'gate.queued') run.entry.summary = `排队第 ${p.position} 位`;
       else {
-        run.entry.details = [str(p.command), str(p.sha).slice(0, 8), str(p.log)].filter(Boolean);
+        run.entry.details = [str(p.command), str(p.sha).slice(0, 8), p.log ? `日志 ${logName(str(p.log))}` : ''].filter(Boolean);
+        run.entry.log = str(p.log) || undefined;
         run.running = true;
         run.entry.summary = event.kind === 'gate.started' ? '运行中' : p.exit_code == null ? '超时' : node === 'repro_check' ? `退出码 ${p.exit_code}` : p.ok ? '通过' : `未通过 · 退出码 ${p.exit_code}`;
       }
@@ -130,7 +132,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
       if (repro) { repro.summary = reproduction(event); repro = undefined; }
     } else {
       const title = light(event, clock);
-      if (title) entries.push({ key: `ev:${event.seq}`, node: node || undefined, at: event.at, title, summary: '', details: [] });
+      if (title) entries.push({ key: `ev:${event.seq}`, node: node || undefined, at: event.at, title, summary: '', details: [], log: ['setup.started', 'setup.result', 'merge.after_started', 'merge.after'].includes(event.kind) ? str(p.log) || undefined : undefined });
     }
   }
   for (const session of sessions.toSorted((a, b) => a.started_at.localeCompare(b.started_at))) {

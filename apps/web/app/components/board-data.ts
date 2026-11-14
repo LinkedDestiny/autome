@@ -28,14 +28,18 @@ export function filterBoard(columns: readonly BoardColumn[], kind: KindFilter): 
 export function boardHeading(column: BoardColumn, kind: KindFilter): string {
   return `${column.label}（${kind === 'all' ? column.total : `${column.tasks.length} / ${column.total}`}）`;
 }
-export type BoardData = { error: string } | { project: { id: string; display_name: string }; tasks: BoardTask[]; now: string; showAll: boolean; details?: Record<string, TaskDetail>; cardContext?: CardContext };
-export async function loadBoard({ gateway, unread }: WebServices, id: string, showAll = false): Promise<BoardData> {
+export type CancelledTask = Pick<BoardTask, 'id' | 'title' | 'kind' | 'state'>;
+export type BoardData = { error: string } | { project: { id: string; display_name: string }; tasks: BoardTask[]; now: string; showAll: boolean; showCancelled?: boolean; cancelledCounts?: Record<KindFilter, number>; cancelled?: CancelledTask[]; details?: Record<string, TaskDetail>; cardContext?: CardContext };
+export async function loadBoard({ gateway, unread }: WebServices, id: string, showAll = false, showCancelled = false): Promise<BoardData> {
   if (!gateway) return { error: '内核未连接：服务未接入网关' };
   const result = await gateway.read({ method: 'project.get', params: { project_id: id } });
   if (!result.body.ok) return { error: result.body.error ?? BOARD_READ_ERROR };
   const payload = result.body.payload as { project: { id: string; display_name: string }; tasks: BoardTask[]; config?: { bug?: { fix_rounds?: number } } };
   const now = currentClock().now;
-  const tasks = payload.tasks.map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, project_id: id }));
+  const cancelledRows = payload.tasks.filter(task => task.state.state === 'cancelled');
+  const cancelledCounts = { all: cancelledRows.length, feature: cancelledRows.filter(task => task.kind === 'feature').length, bug: cancelledRows.filter(task => task.kind === 'bug').length };
+  const cancelled = showCancelled ? cancelledRows.map(({ id, title, kind, state }) => ({ id, title, kind, state })).sort((a, b) => Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0)) : undefined;
+  const tasks = payload.tasks.filter(task => task.state.state !== 'cancelled').map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, project_id: id }));
   const visible = boardColumns(tasks, now).flatMap(column => showAll ? column.tasks : column.recent);
   const results = await Promise.all(visible.filter(needsTaskDetail).map(async task => ({ id: task.id, result: await gateway.read({ method: 'task.get', params: { task_id: task.id } }) })));
   const rejected = results.find(item => !item.result.body.ok);
@@ -48,7 +52,7 @@ export async function loadBoard({ gateway, unread }: WebServices, id: string, sh
     cooldowns = (dashboard.body.payload as { cooldowns: CardContext['cooldowns'] }).cooldowns;
   }
   const counts = Object.fromEntries((unread?.unreadByTask(needYouKinds()) ?? []).map(row => [row.task_id, row.count]));
-  return { project: { id: payload.project.id, display_name: payload.project.display_name }, tasks, now, showAll, details, cardContext: { now, fixRounds: payload.config?.bug?.fix_rounds ?? 0, cooldowns, unread: counts } };
+  return { project: { id: payload.project.id, display_name: payload.project.display_name }, tasks, now, showAll, showCancelled, cancelledCounts, ...(cancelled ? { cancelled } : {}), details, cardContext: { now, fixRounds: payload.config?.bug?.fix_rounds ?? 0, cooldowns, unread: counts } };
 }
 
 export function needYouKinds() { return NOTIFICATION_RULES.filter(rule => rule.level === 'need_you').map(rule => rule.kind); }

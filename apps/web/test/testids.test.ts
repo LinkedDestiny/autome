@@ -122,3 +122,7 @@ test('scroll exemptions are restricted to all seven designated internal regions'
   });
   expect([...found].sort()).toEqual(allowed.sort());
 });
+
+test('expanded cancelled section exposes stable selectors', () => {
+  has(render(Board, { ...board, showCancelled: true, cancelledCounts: { all: 1, feature: 0, bug: 1 }, cancelled: [{ ...task, state: { state: 'cancelled' } }] }, '/projects/P-1?cancelled=all'), ids.boardCancelled, ids.boardCancelledToggle);
+});

@@ -94,3 +94,12 @@ test('5 todo cards omit gate rows while running cards keep them', async () => {
   expect(todo).not.toContain('门禁未跑过');
   expect(html.split('<h2 id="board-running">')[1]).toContain('task-card-gate');
 });
+
+test('6 100 tasks plus 40 expanded cancellations stay below 200 KB', async () => {
+  const { tasks, gateway } = fixture();
+  tasks.push(...Array.from({ length: 40 }, (_, i) => ({ id: 'T-' + (101 + i), title: '已取消任务', kind: 'feature', project_id: 'P-1', state: { state: 'cancelled' } })));
+  const board = await loadBoard({ gateway }, 'P-1', true, true);
+  const shell = await loadShell(gateway);
+  const bytes = Buffer.byteLength(JSON.stringify(board)) + Buffer.byteLength(JSON.stringify(shell));
+  expect(bytes + Buffer.byteLength(render(board))).toBeLessThanOrEqual(200 * 1024);
+});

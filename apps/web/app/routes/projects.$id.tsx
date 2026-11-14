@@ -6,17 +6,17 @@ import { ADMIN } from '../lib/admin-labels.ts';
 import { useState } from 'react';
 import { Link, useActionData, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
-import { newTaskHref, settingsHref } from '../components/nav-links.ts';
+import { newTaskHref, settingsHref, taskHref } from '../components/nav-links.ts';
 import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
-import { KIND_FILTER_LABELS, doneFoldLabel } from '../lib/labels.ts';
+import { KIND_FILTER_LABELS, KIND_LABELS, doneFoldLabel } from '../lib/labels.ts';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
   const services = context.get(servicesContext), id = params.id ?? '';
   const [board, dashboard] = await Promise.all([
-    loadBoard(services, id, new URL(request.url).searchParams.get('done') === 'all'),
+    loadBoard(services, id, new URL(request.url).searchParams.get('done') === 'all', new URL(request.url).searchParams.get('cancelled') === 'all'),
     services.gateway?.read({ method: 'dashboard.get', params: {} }),
   ]);
   return { ...board, alerts: dashboard?.body.ok ? projectAlerts(dashboard.body.payload as AlertDashboard, id) : [],
@@ -46,6 +46,10 @@ export default function ProjectBoard() {
   const query = new URLSearchParams(location.search);
   if (data.showAll) query.delete('done'); else query.set('done', 'all');
   const foldHref = `${location.pathname}${query.size ? `?${query}` : ''}`;
+  const cancelledQuery = new URLSearchParams(location.search);
+  if (data.showCancelled) cancelledQuery.delete('cancelled'); else cancelledQuery.set('cancelled', 'all');
+  const cancelledHref = location.pathname + (cancelledQuery.size ? '?' + cancelledQuery : '');
+  const cancelledCount = data.cancelledCounts?.[kind] ?? 0;
   return <div className="board" data-testid={TEST_IDS.pageBoard}><header className="board-header"><h1>{data.project.display_name}</h1>
     <div className="board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
     <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
@@ -56,5 +60,11 @@ export default function ProjectBoard() {
       {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
+      {column.id === 'done' && cancelledCount > 0 && <>
+        <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起已取消' : '已取消（' + cancelledCount + '）'}</Link>
+        {data.showCancelled && <div data-testid={TEST_IDS.boardCancelled}>{data.cancelled?.filter(task => kind === 'all' || task.kind === kind).map(task => <Link key={task.id} className="overview-card task-card" data-testid={TEST_IDS.taskCard} data-task-id={task.id} to={taskHref(task.id)}>
+          <div className="overview-card-meta"><span>{KIND_LABELS[task.kind as keyof typeof KIND_LABELS] ?? task.kind}</span><span>{task.id}</span></div><h3>{task.title}</h3><p>已取消</p>
+        </Link>)}</div>}
+      </>}
     </div></section>)}</div></div>;
 }

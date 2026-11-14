@@ -23,6 +23,10 @@ export function prepare(root: string) {
   });
   // Enough draft cards to force the board's intended inner scroll container.
   for (let i = 0; i < 30; i++) cli(root, ['task', 'new', `draft-${i}`, '--draft', '--brief', '-'], '# Draft');
+  for (let i = 0; i < 30; i++) {
+    const result = JSON.parse(cli(root, ['task', 'new', 'cancelled-' + i, '--draft', '--brief', '-', '--json'], '# Cancelled')) as { task: { id: string } };
+    cli(root, ['cancel', result.task.id]);
+  }
   mkdirSync(join(root, 'completion-directory'));
   const list = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
   return list.projects[0].project.id;

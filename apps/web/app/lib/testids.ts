@@ -8,6 +8,8 @@ export const TEST_IDS = {
   pageProjectNew: 'page-project-new',
   pageSettings: 'page-settings',
   pageEnv: 'page-env',
+  boardCancelled: 'board-cancelled',
+  boardCancelledToggle: 'board-cancelled-toggle',
   boardColumn: 'board-column',
   taskCard: 'task-card',
   taskOp: 'task-op',

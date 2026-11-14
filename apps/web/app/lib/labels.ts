@@ -43,6 +43,14 @@ export function taskStatusLine(state: TaskState): string {
   const label = Object.hasOwn(STATE_LABELS, state.state) ? STATE_LABELS[state.state as keyof typeof STATE_LABELS] : state.state;
   return node ? `${label} · ${nodeLabel(node)}` : label;
 }
+export function stageStatusLine(kind: string, state: TaskState): string {
+  const stage = stageOf(kind, state);
+  const label = stage && stage.index < 0 ? nodeLabel(stage.label) : stage?.label;
+  const status = state.state === 'active'
+    ? AWAIT_PHRASES[state.node as keyof typeof AWAIT_PHRASES] ?? ''
+    : STATE_LABELS[state.state as keyof typeof STATE_LABELS] ?? state.state;
+  return [...new Set([label, status].filter(Boolean))].join(' · ');
+}
 export const KIND_FILTER_LABELS = { all: '全部', feature: '需求', bug: 'Bug' } as const;
 export function doneFoldLabel(expanded: boolean, count: number): string { return expanded ? '收起' : `查看全部（${count}）`; }
 export const RUNTIME_LABELS = { claude: 'Claude Code', codex: 'Codex' } as const;

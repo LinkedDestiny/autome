@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
+import { logName, timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
 import type { TaskEvent } from '../server/task-events.ts';
 // Original wire fixtures captured by w7-flow.sh; synthetic variants below exercise event boundaries.
@@ -74,7 +74,7 @@ it('门禁一次执行的排队、运行、结果、同提交重跑、中断与 
   const q = ev(1, 'gate.queued', { node: 'gate', job: 'gate', position: 2 });
   const start = ev(2, 'gate.started', { node: 'gate', kind: 'quick', sha: '1234567890', command: 'test', log: '/tmp/test.log' });
   expect(build([q])[0].summary).toBe('排队第 2 位');
-  expect(build([q, start])[0]).toMatchObject({ key: 'gate:gate:1', title: '快检', summary: '运行中', details: ['test', '12345678', '/tmp/test.log'] });
+  expect(build([q, start])[0]).toMatchObject({ key: 'gate:gate:1', title: '快检', summary: '运行中', details: ['test', '12345678', '日志 test.log'], log: '/tmp/test.log' });
   for (const [exit_code, ok, summary] of [[0, true, '通过'], [1, false, '未通过 · 退出码 1'], [null, false, '超时']] as const) {
     const result = ev(3, 'gate.result', { ...start.payload, exit_code, ok });
     expect(build([q, start, result])).toHaveLength(1);
@@ -151,4 +151,25 @@ it('用时 8 分 50 秒且运行中、已结束、被停止都保留用时', () 
     const session = {...ses(), running, started_at:'2026-11-13T00:00:00Z',ended_at:running?null:'2026-11-13T00:08:50Z'};
     expect(timelineEntries([session],[],'2026-11-13T00:08:50Z')[0].details).toContain(`${running?'已运行':'用时'} 8 分 50 秒`);
   }
+});
+
+it('gate log paths appear only in hover titles for start and every result', () => {
+  for (const kind of ['gate.started', 'gate.result']) for (const exit_code of [0, 1, null]) {
+    const log = '/private/中文 目录/gate-key.log';
+    const events = [ev(1, kind, { node: 'gate', log, exit_code, ok: exit_code === 0 })];
+    const html = renderToString(createElement(TaskTimeline, { sessions: [], events, now }));
+    expect(html).toContain('class="timeline-log" title="' + log + '">日志 gate-key.log</span>');
+    expect(html.replace(/<[^>]*>/g, '')).not.toContain(log);
+    expect(build(events)[0].log).toBe(log);
+  }
+});
+it('all four setup and merge titles project log names including input boundaries', () => {
+  for (const kind of ['setup.started', 'setup.result', 'merge.after_started', 'merge.after']) for (const log of ['', 'single.log', '/tmp/中文 空格.log']) for (const ok of [true, false]) {
+    const events = [ev(1, kind, { log, ok, exit_code: ok ? 0 : 1 })];
+    const html = renderToString(createElement(TaskTimeline, { sessions: [], events, now }));
+    expect(build(events)[0].title).toContain('日志 ' + logName(log));
+    if (log) expect(html).toContain('title="' + log + '">日志 ' + logName(log));
+    if (log.startsWith('/')) expect(html.replace(/<[^>]*>/g, '')).not.toContain(log);
+  }
+  expect(logName('')).toBe(''); expect(logName('/')).toBe('');
 });
