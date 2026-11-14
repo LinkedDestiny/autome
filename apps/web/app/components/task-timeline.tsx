@@ -7,7 +7,7 @@ export function TaskTimeline({ sessions, events, now, truncated, error }: { sess
     <h2>{t.title}</h2>{truncated && <p>{t.truncated}</p>}{error && <p role="status">{error}</p>}
     {!entries.length && <p>{t.empty}</p>}
     <ol>{entries.map(entry => <li key={entry.key} className={entry.session ? 'timeline-session' : 'timeline-step'}>
-      <h3>{entry.title}</h3><p style={entry.unverified ? { color: 'var(--animal-error-active)' } : undefined}>{entry.summary}</p>
+      <h3>{entry.title}</h3><p className={entry.unverified ? 'timeline-unverified' : undefined}>{entry.summary}</p>
       <p className="timeline-meta">{entry.details.join(' · ')}</p>
       {entry.session && <SessionLog session={entry.session} defaultOpen={entry.session.running} />}
     </li>)}</ol>

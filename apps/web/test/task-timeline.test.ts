@@ -105,9 +105,12 @@ it('步骤报告显示执行、沿用、未跑和红色未核实提示', () => {
   const event = ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0, steps: { ran: 2, reused: 3, failed: 0, not_run: 1, unverified: 1 } });
   expect(build([event])[0]).toMatchObject({ summary: '通过 · 执行 2 步 · 沿用 3 步 · 未跑 1 项 · 沿用来源未核实 1 步', unverified: true });
   const html = renderToString(createElement(TaskTimeline, { sessions: [], events: [event], now }));
-  expect(html).toContain('color:var(--animal-error-active)');
+  expect(html).toContain('class="timeline-unverified"');
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.timeline-unverified\s*\{\s*color:\s*var\(--animal-error-active\);\s*\}/);
   const verified = ev(2, 'gate.result', { ...event.payload, steps: { ran: 0, reused: 5, failed: 0, not_run: 0, unverified: 0 } });
   expect(build([verified])[0].summary).toBe('通过 · 执行 0 步 · 沿用 5 步');
+  expect(renderToString(createElement(TaskTimeline, { sessions: [], events: [verified], now }))).not.toContain('timeline-unverified');
 });
 it('没有报告保持旧摘要，整次沿用与步骤沿用区分', () => {
   expect(build([ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0 })])[0].summary).toBe('通过');
