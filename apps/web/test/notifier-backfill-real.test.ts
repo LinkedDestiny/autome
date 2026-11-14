@@ -48,7 +48,7 @@ async function sameStateEvent(id: string) {
 function closePanel() { notifier.close(); store.close(); }
 function reopenPanel() { store = openWebStore(home); notifier = make(); }
 beforeAll(async () => { await core.start(); await run('setup'); }, 240000);
-afterAll(async () => { closePanel(); await core.stop(); rmSync(root, { recursive: true, force: true }); });
+afterAll(async () => { closePanel(); await core.stop(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
 test('真实账本一个 await_merge 任务，空面板库首次启动恰 1 条', async () => {
   const snapshot = await core.call('dashboard.get', {}) as ReturnType<typeof dashboardDouble>;

@@ -25,7 +25,7 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => {
   try { await command(join(wt, 'target/debug/autome'), ['stop', 'T-3'], { cwd: join(root, 'repo'), env: { ...process.env, AUTOME_HOME: home }, timeout: 30_000 }); }
-  finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  finally { await core.stop(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
   process.stdout.write(`W6 board-detail setup/tests/cleanup ${Math.ceil(performance.now() - started)} ms\n`);
 });
 test('1 real kernel detail produces failure reason, session activity and unrun gate', async () => {

@@ -25,7 +25,7 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => {
   try { await cli('stop', 'T-3'); } catch { /* already stopped by the cross-process test */ }
-  await core.stop(); rmSync(root, { recursive: true, force: true });
+  await core.stop(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   process.stdout.write(`W5 shell-live including setup/cleanup ${Math.ceil(performance.now() - suiteStarted)} ms\n`);
 });
 test('1 real kernel counts agree with project.list and preserve draft/active/failed', async () => {

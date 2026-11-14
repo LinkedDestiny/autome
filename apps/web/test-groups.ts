@@ -70,6 +70,7 @@ export const testGroups = {
   "kernel": [
     "test/add-project-real.test.ts",
     "test/alerts-real.test.ts",
+    "test/w9-cleanup.test.ts",
     "test/board-detail-real.test.ts",
     "test/board-live.test.ts",
     "test/ci-config.test.ts",

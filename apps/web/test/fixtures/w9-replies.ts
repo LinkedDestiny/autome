@@ -1,7 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { budgetTask, tickAlerts, withBudgetCli } from './w9-alerts.ts';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,7 +21,9 @@ export async function w9Kernel() {
   const close = async () => {
     await core.stop();
     if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
-    rmSync(root, { recursive: true, force: true });
+    // stop() waits for the direct child; transient filesystem/descendant writes
+    // can still race recursive removal. Exhausting the retry budget must fail.
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
   try { await core.start(); } catch (error) { await close(); throw error; }
   const admin = createAdmin({ core, userHome, automeHome });
