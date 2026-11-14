@@ -107,7 +107,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/Library/Caches/ms-playwright
-          key: macos-arm64-playwright-1.64.0
+          key: macos-arm64-playwright-1.64.1
       - run: npm ci
       - run: cargo build -p automed -p autome-cli
       - run: npm run build

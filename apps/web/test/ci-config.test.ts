@@ -136,7 +136,7 @@ test('e2e job 安装指定浏览器并独立运行限时浏览器测试', () => 
   expect(job.steps.filter((step: Step) => step.run).map((step: Step) => step.run)).toEqual([
     'npm ci', 'cargo build -p automed -p autome-cli', 'npm run build', 'npx playwright install chromium', 'npm run e2e',
   ]);
-  expect(job.steps.find((step: Step) => step.uses === 'actions/cache@v4').with.key).toContain('1.64.0');
+  expect(job.steps.find((step: Step) => step.uses === 'actions/cache@v4').with.key).toContain('1.64.1');
 });
 
 test('两处依赖目录均比较锁文件指纹且安装成功才写入', () => {

@@ -38,3 +38,4 @@
 实现 #12 | M-08 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-08-r12-impl.md | electron-builder 下载 ENOTFOUND，打包冒烟待复验
 审计 #12 | M-08 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-08-r12-audit.md | 无外网，打包冒烟移入 H-08
 实现 #13 | M-09 | 实现推进，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r13-impl.md | Playwright 下载 ENOTFOUND/ENOTCACHED、ps EPERM；浏览器待复验
+实现 #14 | M-09 | 快检修复、保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-09-r14-impl.md | 浏览器验收待执行
