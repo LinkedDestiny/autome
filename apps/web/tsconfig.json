@@ -2,6 +2,7 @@
   "include": [
     "app",
     "server",
+    "bin",
     "scripts",
     "test",
     "*.ts",
