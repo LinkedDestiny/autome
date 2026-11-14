@@ -2,6 +2,7 @@
 import { appendFileSync, copyFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { quickCandidates, display } from './quick.mjs';
 
 const [mode, file, ...args] = process.argv.slice(2);
 const git = (args, options = {}) => execFileSync('git', args, { encoding: 'utf8', ...options }).trimEnd();
@@ -96,7 +97,47 @@ try {
     } else {
       const records = passes();
       const reused = keys.map(key => process.env.CI_LOCAL_ALL !== '1' && records.has(key));
-      if (mode === 'plan') {
+      if (mode === 'quick-plan' || mode === 'quick-prepare') {
+        const candidates = quickCandidates();
+        const lines = [];
+        const planning = mode === 'quick-plan';
+        const emit = command => lines.push(command.map(quote).join(' '));
+        const prepare = name => {
+          const row = rows.find(r => r.kind === 'prep' && r.name === name);
+          if (!row) throw new Error(`缺少准备步骤 ${name}`);
+          if (planning) console.log(`prep\t${name}\t${display(row.command)}`);
+          else emit(['execute_prep', row.name, ...row.command]);
+        };
+        const full = name => {
+          const i = rows.findIndex(r => r.kind === 'step' && r.name === name);
+          if (i < 0) throw new Error(`缺少完整步骤 ${name}`);
+          const row = rows[i];
+          if (planning) console.log(`plan\t${reused[i] ? '沿用' : '执行'}\t${keys[i]}\t${name}`);
+          else emit(['execute_step', String(i), keys[i], reused[i] ? records.get(keys[i]) : '', name, ...row.command]);
+        };
+        full('Format'); full('Clippy');
+        if (rows.some((r, i) => ['Web lint', 'Web typecheck'].includes(r.name) && !reused[i])) prepare('Web install');
+        full('Web lint'); full('Web typecheck');
+        emit(['ci_quick_start']);
+        for (const candidate of candidates) {
+          if (candidate.omitted) {
+            if (planning) console.log(`未跑\t${candidate.omitted}`);
+            else emit(['ci_not_run', candidate.omitted]);
+            continue;
+          }
+          const name = candidate.full ?? display(candidate.command);
+          if (!planning) lines.push(`if ci_quick_admit ${quote(name)}; then`);
+          const fullIndex = rows.findIndex(r => r.kind === 'step' && r.name === candidate.full);
+          if (!candidate.full || !reused[fullIndex]) {
+            for (const prep of candidate.prep ?? []) prepare(prep);
+          }
+          if (candidate.full) full(candidate.full);
+          else if (planning) console.log(`candidate\t${JSON.stringify(candidate.command)}`);
+          else emit(['ci_partial', name, '--cases', candidate.parser, ...candidate.command]);
+          if (!planning) lines.push('fi');
+        }
+        if (!planning) writeFileSync(args[0], `${lines.join('\n')}\n`);
+      } else if (mode === 'plan') {
         rows.forEach((row, i) => {
           if (row.kind === 'step') console.log(`plan\t${reused[i] ? '沿用' : '执行'}\t${keys[i]}\t${row.name}`);
         });

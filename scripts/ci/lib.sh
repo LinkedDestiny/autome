@@ -10,6 +10,7 @@ ran=0
 failed_count=0
 started=$(date +%s)
 : > "$ci_tmp/cases"
+: > "$ci_tmp/not-run"
 
 run() {
   name=$1
@@ -49,6 +50,7 @@ summary() {
     printf '  FAILED  %s\n' "$name"
   done
   cat "$ci_tmp/reused"
+  cat "$ci_tmp/not-run"
   node "$root/scripts/ci/summary.mjs" render "$ci_tmp/cases"
   printf '执行 %s 步，沿用 %s 步，失败 %s 步。\n' "$ran" "$reused" "$failed_count"
   elapsed=$(($(date +%s) - started))
@@ -85,11 +87,40 @@ prep() {
 ci_dispatch() {
   export GLOBAL_INPUTS NO_GATE
   node "$root/scripts/ci/inputs.mjs" "$1" "$ci_tmp/steps" "$ci_tmp/execute" || return $?
-  [ "$1" = prepare ] || return 0
+  case "$1" in prepare|quick-prepare) ;; *) return 0 ;; esac
   if [ -n "${AUTOME_GATE_REPORT-}" ]; then
     printf 'autome-gate-report 1\n' > "$AUTOME_GATE_REPORT" || return 2
   fi
   . "$ci_tmp/execute"
+}
+
+ci_quick_start() {
+  ci_quick_started=$(date +%s)
+  ci_quick_budget=${CI_QUICK_BUDGET-120}
+}
+
+ci_not_run() {
+  printf '  未跑    %s\n' "$1" >> "$ci_tmp/not-run"
+  ci_report not_run - "$1"
+}
+
+ci_quick_admit() {
+  if [ "$(($(date +%s) - ci_quick_started))" -ge "$ci_quick_budget" ]; then
+    ci_not_run "$1（超出快检预算 ${ci_quick_budget}s，留给合并前门禁）"
+    return 1
+  fi
+  return 0
+}
+
+ci_partial() {
+  ci_partial_name=$1
+  ci_partial_failures=$failed_count
+  run "$@"
+  if [ "$failed_count" -gt "$ci_partial_failures" ]; then
+    ci_report failed - "$ci_partial_name"
+  else
+    ci_report partial - "$ci_partial_name"
+  fi
 }
 
 ci_report() {
