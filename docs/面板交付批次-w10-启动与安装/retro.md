@@ -33,3 +33,4 @@
 审计 #10 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r10-audit.md | 无
 
 实现 #11 | M-07 | 修复完成，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r11-impl.md | Electron SIGABRT、监听及 ps EPERM
+审计 #11 | M-07 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r11-audit.md | 无
