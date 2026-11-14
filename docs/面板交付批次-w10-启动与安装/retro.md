@@ -28,3 +28,5 @@
 
 实现 #9 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r9-impl.md | Electron SIGABRT、listen/ps EPERM；保持开放，reopen 不变
 审计 #9 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r9-audit.md | 无
+
+实现 #10 | M-07 | 开放：纯测试通过，真实冒烟阻断 | docs/面板交付批次-w10-启动与安装/evidence/M-07-r10-impl.md | Electron SIGABRT、监听与 ps EPERM

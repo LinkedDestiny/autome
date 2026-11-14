@@ -34,7 +34,8 @@ starting = app.whenReady().then(async () => {
   registerIpc({ ipcMain, dialog, Notification, window, url: instance.url });
   await window.loadURL(instance.url);
   if (process.env.AUTOME_SHELL_SMOKE === '1') {
-    const banner = await window.webContents.executeJavaScript("document.querySelector('[data-testid=live-banner]')?.textContent ?? ''");
+    const { readBanner } = require('./src/shell/smoke');
+    const banner = await readBanner(window.webContents, process.env.AUTOME_SHELL_SMOKE_BANNER ?? '');
     console.log(JSON.stringify({ url: instance.url, serverPid: instance.pid, reused: instance.reused, banner }));
     await new Promise(resolve => {
       const timer = setTimeout(resolve, 10000);

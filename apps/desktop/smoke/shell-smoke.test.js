@@ -6,6 +6,7 @@ const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
+const { isPanelProcess } = require('../src/shell/smoke');
 const run = promisify(execFile);
 const desktop = resolve(__dirname, '..');
 const packaged = process.env.AUTOME_SMOKE_APP && resolve(process.env.AUTOME_SMOKE_APP);
@@ -16,7 +17,7 @@ const fixtures = [];
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'autome-shell-smoke-'));
   const env = { ...process.env, AUTOME_HOME: home, AUTOMED_DB_PATH: join(home, 'state/automed.sqlite3'), PATH: '/usr/bin:/bin', AUTOME_WEB_PORT: '0', AUTOME_BUNDLED_CORE: core, AUTOME_NODE: electron };
-  for (const key of ['AUTOMED_BIN', 'AUTOME_TEST_BUILD_ID', 'AUTOME_ALLOW_OLDER_KERNEL', 'ELECTRON_RUN_AS_NODE']) delete env[key];
+  for (const key of ['AUTOMED_BIN', 'AUTOME_TEST_BUILD_ID', 'AUTOME_ALLOW_OLDER_KERNEL', 'ELECTRON_RUN_AS_NODE', 'AUTOME_SHELL_SMOKE_BANNER']) delete env[key];
   const f = { home, env, file: join(home, 'web/server.json'), pids: new Set() }; fixtures.push(f); return f;
 }
 function launcher(f, args) { return run(electron, [join(web, 'bin/autome-web.js'), ...args], { env: { ...f.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 35000 }); }
@@ -82,7 +83,7 @@ test('已有 autome web 服务只复用，退出后仍存活', async () => {
   const existing = JSON.parse(started.stdout);
   const value = await shell(f); assert.equal(value.reused, true); assert.equal(value.serverPid, existing.pid);
   assert.equal((await (await fetch(value.url + '/healthz')).json()).pid, existing.pid);
-  assert.equal(scan(f).filter(row => row.command.includes('autome-web.js serve')).length, 1);
+  assert.equal(scan(f).filter(row => isPanelProcess(row.command, f.home)).length, 1);
 });
 test('更新账本拒绝旧同包内核并显示横幅', async () => {
   const f = fixture();
@@ -95,6 +96,7 @@ test('更新账本拒绝旧同包内核并显示横幅', async () => {
   } else {
     f.env.AUTOME_TEST_BUILD_ID = '0000001-20200101T000000Z-000000000000';
   }
+  f.env.AUTOME_SHELL_SMOKE_BANNER = '内核比账本旧';
   const value = await shell(f); assert.match(value.banner, /内核比账本旧/);
 });
 test('所有临时服务及内核均清理，无残留', async () => { for (const f of fixtures) { await cleanup(f); assert.deepEqual(scan(f), []); } });
