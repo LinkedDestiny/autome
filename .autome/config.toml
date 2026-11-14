@@ -14,7 +14,9 @@ run = "before_merge"
 timeout_minutes = 30
 # 每轮快检（T-67）：实现轮 / 修复轮结束后宿主跑一次，热缓存约 6 秒。
 # 格式、lint、类型问题当轮退回，不用等到合并前。新 worktree 第一次会先装 Web 依赖。
-quick = 'cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && { [ -d apps/web/node_modules ] || (cd apps/web && npm ci); } && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web'
+# 2026-11-14（T-97 合并后）：有 scripts/ci-quick.sh 就跑它（静态检查 + 本轮改动相关的测试，预算 120 秒）；
+# T-97 之前切出的分支没有这个脚本，走 else 分支，即原来的四条命令。
+quick = 'if [ -f scripts/ci-quick.sh ]; then sh scripts/ci-quick.sh; else cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && { [ -d apps/web/node_modules ] || (cd apps/web && npm ci); } && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web; fi'
 quick_timeout_minutes = 10
 
 # 2026-11-13 打开（T-70 合并队列已合并）：任务过了合并前门禁就直接合并，不再停在「等你合并」。
