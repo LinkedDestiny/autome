@@ -19,7 +19,12 @@ async function setup() {
     const info = await (await fetch(v.url + '/api/instance')).json() as InstanceStatus;
     return info.gates.some(gate => gate.task_id === 'T-1');
   }, { timeout: 20000 }).toBe(true);
-  gatePid = processes(h.root).find(row => row.command.includes('/gate.sh'))!.pid;
+  // Entering merge_gate precedes spawning its process on a later scheduler tick.
+  const root = h.root;
+  await expect.poll(() => {
+    gatePid = processes(root).find(row => row.command.includes('/gate.sh'))?.pid ?? 0;
+    return gatePid;
+  }, { timeout: 20000 }).toBeGreaterThan(0);
 }
 let setupPromise: Promise<void> | undefined;
 function ready() { return setupPromise ??= setup(); }
@@ -31,6 +36,7 @@ test('门禁未结束时 stop --wait 2 拒绝停止并解释独立进程', async
   expect(await judgeInstance(await h!.registration())).toBe('live'); expect(pidAlive(gatePid)).toBe(true);
 }, 180000);
 test('stop --force 停服务但门禁继续存活', async () => {
+  await ready();
   const result = await h!.run(['stop', '--force']); expect(result.code, result.stderr).toBe(0); expect(result.stdout).toContain('继续在后台运行');
   expect(await readInstance(h!.file)).toBeNull(); expect(pidAlive(gatePid)).toBe(true);
 });

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { expect } from 'vitest';
 import { createServer } from 'node:net';
 import { readInstance, type Instance } from '../../server/instance.ts';
@@ -46,7 +47,14 @@ export function harness() {
     if (existsSync(file)) { const value = await readInstance(file); if (value) { try { process.kill(value.pid, 'SIGCONT'); } catch { /* Already gone. */ } await run(['stop', '--force']); } }
     for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     for (const row of processes(root).reverse()) { try { process.kill(row.pid, 'SIGKILL'); } catch { /* Already gone. */ } }
-    await expect.poll(() => processes(root), { timeout: 3000 }).toEqual([]);
+    // cleanup also runs in afterAll, where expect.poll is not supported.
+    const deadline = Date.now() + 3000;
+    let remaining = processes(root);
+    while (remaining.length && Date.now() < deadline) {
+      await delay(50);
+      remaining = processes(root);
+    }
+    expect(remaining).toEqual([]);
     rmSync(root, { recursive: true, force: true });
   }
   // A private path in the launcher's argv makes both serve and descendants observable.
