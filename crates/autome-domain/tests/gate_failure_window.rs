@@ -95,3 +95,28 @@ fn gate_failure_window_short_logs_distinguish_failures() {
         fingerprint(&gate_log("protocol_eval_budget", 0), 1, false).id
     );
 }
+
+#[test]
+fn gate_failure_window_case_summary_preserves_fingerprint() {
+    // Include the last-step-failed case: without the summary header its error
+    // names would become additional diagnostics in the failed step's section.
+    for last_failed in [false, true] {
+        let mut log = gate_log("protocol_version_assertion", 0);
+        if last_failed {
+            log.push_str("FAILED  Web test\n");
+        }
+        let before = fingerprint(&log, 1, false);
+        log.push_str(
+            "==> 汇总\n  ok      Desktop\n  FAILED  Test (unit, end to end, adapter flags)\n",
+        );
+        if last_failed {
+            log.push_str("  FAILED  Web test\n");
+        }
+        log.push_str(
+            "失败用例 · Test (unit, end to end, adapter flags)（1）：\n  - end_to_end: error_new_summary_case\n失败用例 · Web test（1）：\n  - file.test.ts > Error: another_summary_case\n执行 3 步，沿用 0 步，失败 1 步。\n有步骤未通过，用时 1s。\n",
+        );
+        let after = fingerprint(&log, 1, false);
+        assert_eq!(before.id, after.id);
+        assert_eq!(before.summary, after.summary);
+    }
+}

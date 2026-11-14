@@ -120,6 +120,8 @@ fn jobs(repo: &Path, task: &str) -> std::io::Result<Vec<(String, gate::Job)>> {
             found.push((
                 stem,
                 gate::Job {
+                    passes: path.with_extension("passes"),
+                    report: path.with_extension("report"),
                     log: path.with_extension("log"),
                     pid: path.with_extension("pid"),
                     exit: path.with_extension("exit"),

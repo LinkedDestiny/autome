@@ -669,6 +669,72 @@ impl Store {
         Ok(self.conn.last_insert_rowid() as u64)
     }
 
+    /// Only the final successful gate on a merged branch can publish across tasks.
+    /// The resolver uses the merge commit's second parent, just like MainCheck reuse.
+    pub fn gate_passes(
+        &self,
+        project_id: &str,
+        task_id: &str,
+        merged_head: impl Fn(&str) -> Option<String>,
+    ) -> Result<String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.subject_id, e.payload, e.at, t.merge_commit FROM events e
+             JOIN tasks t ON t.id = e.subject_id
+             WHERE t.project_id = ?1 AND e.kind = 'gate.result'
+             AND julianday(e.at) >= julianday('now', '-7 days')
+             AND (e.subject_id = ?2 OR (t.merge_commit IS NOT NULL
+               AND e.seq = (SELECT MAX(f.seq) FROM events f WHERE f.subject_id = e.subject_id
+                 AND f.kind = 'gate.result' AND json_extract(f.payload, '$.ok') = 1
+                 AND COALESCE(json_extract(f.payload, '$.kind'), '') != 'quick')))
+             ORDER BY e.at DESC, e.seq DESC",
+        )?;
+        let rows = stmt.query_map(params![project_id, task_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let mut out = String::new();
+        let mut count = 0;
+        for row in rows {
+            let (subject, payload, at, merge) = row?;
+            let p: Value = serde_json::from_str(&payload)?;
+            let (Some(sha), Some(node), Some(passes)) = (
+                p["sha"].as_str(),
+                p["node"].as_str(),
+                p["passes"].as_array(),
+            ) else {
+                continue;
+            };
+            if subject != task_id && merge.as_deref().and_then(&merged_head).as_deref() != Some(sha)
+            {
+                continue;
+            }
+            if [&subject, node, sha, &at]
+                .iter()
+                .any(|s| s.contains(['\t', '\n', '\r']))
+            {
+                continue;
+            }
+            for pass in passes {
+                let Some(key) = pass["key"].as_str().filter(|k| crate::gate::valid_key(k)) else {
+                    continue;
+                };
+                out.push_str(&format!(
+                    "{key}\t{subject}\t{node}\t{}\t{at}\n",
+                    sha.chars().take(12).collect::<String>()
+                ));
+                count += 1;
+                if count == 5000 {
+                    return Ok(out);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The most recent event of one kind about one subject.
     ///
     /// Used for the running comparisons the metrics need — "what did the
@@ -2635,6 +2701,103 @@ pub fn task_counts(tasks: &[TaskRecord]) -> BTreeMap<&'static str, usize> {
 mod tests {
     use super::*;
     use autome_domain::task::{FailureReason, Node};
+
+    #[test]
+    fn gate_report_snapshot_filters_sources_age_order_and_limit() {
+        let s = store();
+        for id in ["p", "other"] {
+            s.insert_project(&project(id, &format!("/tmp/{id}")))
+                .unwrap();
+        }
+        for (id, project_id) in [
+            ("own", "p"),
+            ("merged", "p"),
+            ("open", "p"),
+            ("wrong", "p"),
+            ("foreign", "other"),
+        ] {
+            s.insert_task(&task(id, project_id, id)).unwrap();
+        }
+        for id in ["merged", "wrong", "foreign"] {
+            s.complete_task(id, Some("merge")).unwrap();
+        }
+        let add = |id: &str, key: char, ok: bool, kind: &str, sha: &str| {
+            s.append_event("gate.result", id, serde_json::json!({"ok":ok,"kind":kind,"sha":sha,"node":"gate","passes":[{"step":"check","key":key.to_string().repeat(40)}]})).unwrap()
+        };
+        let old = add("own", 'a', true, "full", "head");
+        s.conn
+            .execute(
+                "UPDATE events SET at = datetime('now', '-7 days', '-1 minute') WHERE seq = ?1",
+                [old],
+            )
+            .unwrap();
+        let recent = add("own", 'b', false, "quick", "head");
+        s.conn
+            .execute(
+                "UPDATE events SET at = datetime('now', '-7 days', '+1 minute') WHERE seq = ?1",
+                [recent],
+            )
+            .unwrap();
+        add("merged", 'c', true, "full", "head");
+        add("merged", 'd', false, "full", "head");
+        add("merged", 'e', true, "quick", "head");
+        add("open", 'f', true, "full", "head");
+        add("wrong", '1', true, "full", "head");
+        add("wrong", '2', true, "full", "wrong-head");
+        add("foreign", '3', true, "full", "head");
+        let snapshot = s.gate_passes("p", "own", |_| Some("head".into())).unwrap();
+        let keys: Vec<_> = snapshot
+            .lines()
+            .map(|l| l.split('\t').next().unwrap())
+            .collect();
+        assert_eq!(keys, ["c".repeat(40), "b".repeat(40)]);
+        assert!(
+            s.gate_passes("p", "own", |_| None)
+                .unwrap()
+                .starts_with(&"b".repeat(40))
+        );
+        let passes: Vec<_> = (0..5001)
+            .map(|n| serde_json::json!({"step":"check","key":format!("{n:040x}")}))
+            .collect();
+        s.append_event(
+            "gate.result",
+            "own",
+            serde_json::json!({"sha":"head","node":"gate","passes":passes}),
+        )
+        .unwrap();
+        let capped = s.gate_passes("p", "own", |_| Some("head".into())).unwrap();
+        assert_eq!(capped.lines().count(), 5000);
+        assert!(capped.starts_with(&format!("{:040x}\t", 0)));
+        assert!(
+            capped
+                .lines()
+                .last()
+                .unwrap()
+                .starts_with(&format!("{:040x}\t", 4999))
+        );
+    }
+
+    #[test]
+    fn gate_report_early_fake_key_never_published_after_merge() {
+        let s = store();
+        s.insert_project(&project("p", "/tmp")).unwrap();
+        for id in ["A", "B"] {
+            s.insert_task(&task(id, "p", id)).unwrap();
+        }
+        for (key, sha) in [('a', "final"), ('b', "final")] {
+            s.append_event("gate.result", "A", serde_json::json!({"ok":true,"kind":"full","sha":sha,"node":"merge_gate","passes":[{"step":"test","key":key.to_string().repeat(40)}]})).unwrap();
+        }
+        assert_eq!(
+            s.gate_passes("p", "B", |_| Some("final".into())).unwrap(),
+            ""
+        );
+        s.complete_task("A", Some("merge")).unwrap();
+        let b = s.gate_passes("p", "B", |_| Some("final".into())).unwrap();
+        assert!(b.contains(&"b".repeat(40)));
+        assert!(!b.contains(&"a".repeat(40)));
+        let a = s.gate_passes("p", "A", |_| Some("final".into())).unwrap();
+        assert!(a.contains(&"a".repeat(40)) && a.contains(&"b".repeat(40)));
+    }
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()

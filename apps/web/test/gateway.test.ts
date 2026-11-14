@@ -89,7 +89,7 @@ test('真实内核经网关写读、手动重启及停止', async () => {
     expect((await gateway.read({ method: 'config.get' })).status).toBe(503);
     expect((await gateway.write({ op: 'core.restart' })).body.payload).toEqual({ restarted: true });
     expect((await gateway.read({ method: 'config.get' })).body.payload).toMatchObject({ resolved: { loop_defaults: { parallel: 4 } } });
-  } finally { await core.stop(); rmSync(home, { recursive: true, force: true }); }
+  } finally { await core.stop(); rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 test('home 环境解析与内核默认值一致，保留空串', () => {
   expect(resolveAutomeHome({ AUTOME_HOME: '/tmp/isolated', HOME: '/tmp/user' })).toBe('/tmp/isolated');

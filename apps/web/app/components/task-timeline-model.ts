@@ -2,7 +2,7 @@ import type { LogSession } from './session-log.tsx';
 import type { TaskEvent } from '../../server/task-events.ts';
 import { failureText, nodeLabel, RUNTIME_LABELS, taskStatusLine, type TaskState } from '../lib/labels.ts';
 export type TimelineSession = LogSession & { runtime?: string; model?: string; ended_at?: string | null; metrics?: { cost_usd?: number } | null; lifecycle?: { state: string } };
-export type TimelineEntry = { key: string; at: string; title: string; summary: string; details: string[]; session?: TimelineSession };
+export type TimelineEntry = { key: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession };
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
 const str = (value: unknown) => value == null ? '' : String(value);
@@ -105,6 +105,15 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
         run.entry.details = [str(p.command), str(p.sha).slice(0, 8), str(p.log)].filter(Boolean);
         run.running = true;
         run.entry.summary = event.kind === 'gate.started' ? '运行中' : p.exit_code == null ? '超时' : node === 'repro_check' ? `退出码 ${p.exit_code}` : p.ok ? '通过' : `未通过 · 退出码 ${p.exit_code}`;
+      }
+      if (event.kind === 'gate.result' && p.steps && typeof p.steps === 'object') {
+        const steps = p.steps as Record<string, number>;
+        run.entry.summary += ` · 执行 ${steps.ran} 步 · 沿用 ${steps.reused} 步`;
+        if (steps.not_run > 0) run.entry.summary += ` · 未跑 ${steps.not_run} 项`;
+        if (steps.unverified > 0) {
+          run.entry.summary += ` · 沿用来源未核实 ${steps.unverified} 步`;
+          run.entry.unverified = true;
+        }
       }
       if (event.kind === 'gate.result') { active.delete(node); if (node === 'repro_check') repro = run.entry; }
     } else if (event.kind === 'bug.reproduced' || event.kind === 'bug.repro_missed') {

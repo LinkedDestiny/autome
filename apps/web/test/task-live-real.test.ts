@@ -1,3 +1,4 @@
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -31,7 +32,7 @@ async function create(slug:string,script:string) {
 }
 beforeAll(async()=>{try{
  await new Promise<void>((resolve,reject)=>{const probe=createServer();probe.once('error',reject);probe.listen(0,'127.0.0.1',()=>probe.close(error=>error?reject(error):resolve()));});
- await exec('npm',['run','build'],{cwd:join(wt,'apps/web'),timeout:60000});
+ ensureBuilt();
  await exec('bash',[join(wt,'apps/web/test/fixtures/w7-flow.sh'),root,wt],{timeout:150000,maxBuffer:1024*1024});
  running=await startServer({port:0,mode:'production',home,binaryPath:join(root,'core-wrapper')});core=running.gateway.core as CoreSupervisor;
  await vi.waitFor(()=>{if(!core?.isConnected())throw Error('core not ready');});

@@ -3924,7 +3924,10 @@ fn launch_session(
     } else {
         None
     };
-    let start_heads = if kind == (SessionKind::Role { role: Role::Impl }) {
+    let start_heads = if matches!(
+        kind,
+        SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
+    ) {
         Some(
             layout
                 .repos
@@ -4542,6 +4545,48 @@ fn run_gate(
     run_gate_attempt(ctx, task, project, layout, node, false)
 }
 
+/// A round's diff starts before the editing session, never at the gate's HEAD.
+fn gate_round_env(
+    ctx: &Ctx,
+    task: &TaskRecord,
+    layout: &TaskLayout,
+    node: Node,
+) -> Result<Vec<(&'static str, String)>> {
+    let [slot] = layout.repos.as_slice() else {
+        return Ok(Vec::new());
+    };
+    // A workspace with only its document repository is still a workspace.
+    if !slot.name.is_empty() || !matches!(node, Node::Gate | Node::FixGate) {
+        return Ok(Vec::new());
+    }
+    let kind = if node == Node::FixGate {
+        SessionKind::Bug { step: BugStep::Fix }
+    } else {
+        SessionKind::Role { role: Role::Impl }
+    };
+    let mut env = Vec::new();
+    let starts = ctx.store.task_events(&task.id, "session.started")?;
+    if let Some(start) = starts
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == json!(kind))
+        && let Some(head) = start["start_heads"].as_array().and_then(|heads| {
+            heads
+                .iter()
+                .find(|entry| entry["repo"] == slot.name)
+                .and_then(|entry| entry["head"].as_str())
+        })
+        && !head.is_empty()
+    {
+        env.push(("AUTOME_ROUND_START", head.to_owned()));
+    }
+    // Old sessions may not have start_heads; the script can use this fallback.
+    if let Ok(base) = git::run_ok(&slot.worktree, &["merge-base", &slot.base, "HEAD"]) {
+        env.push(("AUTOME_BASE", base.stdout.trim().to_owned()));
+    }
+    Ok(env)
+}
+
 fn run_gate_attempt(
     ctx: &mut Ctx,
     task: &TaskRecord,
@@ -4829,18 +4874,19 @@ fn run_gate_attempt(
         } else {
             gate.command.clone()
         };
-        crate::gate::start(
-            &job,
-            &cwd,
-            &run_command,
-            &[
-                ("AUTOME_TASK", task.id.as_str()),
-                ("AUTOME_HEAD", head.as_str()),
-                ("AUTOME_GATE_NODE", node.as_str()),
-                ("AUTOME_GATE_KIND", launch.kind()),
-            ],
-        )
-        .map_err(|e| err(format!("无法启动门禁：{e}")))?;
+        let passes = ctx.store.gate_passes(&project.id, &task.id, |commit| {
+            git::second_parent(&repo, commit).ok()
+        })?;
+        let mut env = vec![
+            ("AUTOME_TASK", task.id.as_str()),
+            ("AUTOME_HEAD", head.as_str()),
+            ("AUTOME_GATE_NODE", node.as_str()),
+            ("AUTOME_GATE_KIND", launch.kind()),
+        ];
+        let round_env = gate_round_env(ctx, task, layout, node)?;
+        env.extend(round_env.iter().map(|(key, value)| (*key, value.as_str())));
+        crate::gate::start_with_passes(&job, &cwd, &run_command, &env, &passes)
+            .map_err(|e| err(format!("无法启动门禁：{e}")))?;
         ctx.store.append_event(
             "gate.started",
             &task.id,
@@ -4897,6 +4943,10 @@ fn run_gate_attempt(
         "log": job.log.to_string_lossy(),
         "tail": tail,
     });
+    if let Some(report) = crate::gate::read_report(&job) {
+        result["steps"] = report["steps"].clone();
+        result["passes"] = report["passes"].clone();
+    }
     let replay = record_gate_result(
         &ctx.store,
         &task.id,
@@ -6557,6 +6607,101 @@ mod tests {
             std::fs::write(w.repo.join(".autome/config.toml"), "invalid [").unwrap();
             assert_eq!(effective_limit(&w.ctx, &legacy, &project), 120);
         }
+    }
+
+    #[test]
+    fn gate_round_environment_boundaries() {
+        let (w, task, _, mut layout, _) = reuse_fixture("round-env-boundaries");
+        let baseline = git::run_ok(
+            &layout.repos[0].worktree,
+            &["merge-base", &layout.repos[0].base, "HEAD"],
+        )
+        .unwrap()
+        .stdout
+        .trim()
+        .to_owned();
+        let base_only = vec![("AUTOME_BASE", baseline.clone())];
+        assert_eq!(
+            gate_round_env(&w.ctx, &task, &layout, Node::Gate).unwrap(),
+            base_only
+        );
+        for (kind, head) in [
+            (SessionKind::Role { role: Role::Impl }, "first"),
+            (SessionKind::Role { role: Role::Impl }, "latest"),
+            (SessionKind::Role { role: Role::Audit }, "audit"),
+            (SessionKind::Bug { step: BugStep::Fix }, "fix"),
+        ] {
+            w.ctx
+                .store
+                .append_event(
+                    "session.started",
+                    &task.id,
+                    json!({"kind": kind, "start_heads":[{"repo":"", "head":head}]}),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            gate_round_env(&w.ctx, &task, &layout, Node::Gate).unwrap(),
+            vec![
+                ("AUTOME_ROUND_START", "latest".into()),
+                ("AUTOME_BASE", baseline.clone())
+            ]
+        );
+        assert_eq!(
+            gate_round_env(&w.ctx, &task, &layout, Node::FixGate).unwrap()[0],
+            ("AUTOME_ROUND_START", "fix".into())
+        );
+        for heads in [
+            json!(null),
+            json!([]),
+            json!([{"repo":"other","head":"wrong"}]),
+            json!([{"repo":"","head":""}]),
+        ] {
+            w.ctx
+                .store
+                .append_event(
+                    "session.started",
+                    &task.id,
+                    json!({"kind":SessionKind::Role { role: Role::Impl },"start_heads":heads}),
+                )
+                .unwrap();
+            // Never borrow an older round's start when the latest event lacks it.
+            assert_eq!(
+                gate_round_env(&w.ctx, &task, &layout, Node::Gate).unwrap(),
+                base_only
+            );
+        }
+        for node in [Node::MergeGate, Node::MainCheck, Node::ReproCheck] {
+            assert!(
+                gate_round_env(&w.ctx, &task, &layout, node)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        layout.repos[0].base = "missing-base".into();
+        assert!(
+            gate_round_env(&w.ctx, &task, &layout, Node::Gate)
+                .unwrap()
+                .is_empty()
+        );
+        layout.repos[0].name = "docs".into();
+        assert!(
+            gate_round_env(&w.ctx, &task, &layout, Node::FixGate)
+                .unwrap()
+                .is_empty()
+        );
+        layout.repos.push(layout.repos[0].clone());
+        assert!(
+            gate_round_env(&w.ctx, &task, &layout, Node::FixGate)
+                .unwrap()
+                .is_empty()
+        );
+        layout.repos.clear();
+        assert!(
+            gate_round_env(&w.ctx, &task, &layout, Node::FixGate)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

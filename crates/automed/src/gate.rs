@@ -87,6 +87,8 @@ pub struct Job {
     pub pid: PathBuf,
     pub exit: PathBuf,
     pub started: PathBuf,
+    pub passes: PathBuf,
+    pub report: PathBuf,
 }
 
 impl Job {
@@ -99,6 +101,8 @@ impl Job {
             pid: dir.join(format!("{stem}.pid")),
             exit: dir.join(format!("{stem}.exit")),
             started: dir.join(format!("{stem}.started")),
+            passes: dir.join(format!("{stem}.passes")),
+            report: dir.join(format!("{stem}.report")),
         }
     }
 
@@ -141,10 +145,80 @@ impl Job {
     /// Throws the run away: the commit it was for is not the one that
     /// matters any more.
     pub fn clear(&self) {
-        for p in [&self.log, &self.pid, &self.exit, &self.started] {
+        for p in [
+            &self.log,
+            &self.pid,
+            &self.exit,
+            &self.started,
+            &self.passes,
+            &self.report,
+        ] {
             let _ = std::fs::remove_file(p);
         }
     }
+}
+
+/// Reports are optional. Invalid or unreadable reports add no event fields.
+pub fn read_report(job: &Job) -> Option<serde_json::Value> {
+    use std::io::Read;
+    const LIMIT: u64 = 256 * 1024;
+    let meta = std::fs::metadata(&job.report).ok()?;
+    if !meta.is_file() || meta.len() > LIMIT {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(&job.report)
+        .ok()?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > LIMIT {
+        return None;
+    }
+    let snapshot = std::fs::read_to_string(&job.passes).unwrap_or_default();
+    let keys: std::collections::HashSet<_> = snapshot
+        .lines()
+        .filter_map(|line| line.split_once('\t').map(|(key, _)| key))
+        .collect();
+    let mut lines = text.lines();
+    if lines.next()? != "autome-gate-report 1" {
+        return None;
+    }
+    let mut steps = serde_json::json!({"ran":0,"reused":0,"failed":0,"not_run":0,"unverified":0});
+    let mut passes = Vec::new();
+    for line in lines {
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() != 3 || fields[2].is_empty() || fields[2].contains('\r') {
+            return None;
+        }
+        let (status, key, step) = (fields[0], fields[1], fields[2]);
+        if !(valid_key(key) || key == "-" && matches!(status, "partial" | "not_run" | "failed")) {
+            return None;
+        }
+        let counter = match status {
+            "ran" | "reused" | "failed" | "not_run" => status,
+            "partial" => "ran",
+            _ => return None,
+        };
+        steps[counter] = serde_json::json!(steps[counter].as_u64()? + 1);
+        if status == "failed" {
+            steps["ran"] = serde_json::json!(steps["ran"].as_u64()? + 1);
+        }
+        if status == "ran" {
+            passes.push(serde_json::json!({"step":step,"key":key}));
+        }
+        if status == "reused" && !keys.contains(key) {
+            steps["unverified"] = serde_json::json!(steps["unverified"].as_u64()? + 1);
+        }
+    }
+    Some(serde_json::json!({"steps":steps,"passes":passes}))
+}
+
+pub(crate) fn valid_key(key: &str) -> bool {
+    (40..=64).contains(&key.len())
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 pub fn dir_for(repo: &Path, task_id: &str) -> PathBuf {
@@ -166,10 +240,22 @@ pub enum Poll {
 
 /// Starts a gate run in the background.
 pub fn start(job: &Job, cwd: &Path, command: &str, env: &[(&str, &str)]) -> std::io::Result<()> {
+    start_with_passes(job, cwd, command, env, "")
+}
+
+/// Snapshot is written after clearing stale job files and before spawning the command.
+pub fn start_with_passes(
+    job: &Job,
+    cwd: &Path,
+    command: &str,
+    env: &[(&str, &str)],
+    passes: &str,
+) -> std::io::Result<()> {
     if let Some(dir) = job.log.parent() {
         std::fs::create_dir_all(dir)?;
     }
     job.clear();
+    std::fs::write(&job.passes, passes)?;
     std::fs::write(&job.started, now_secs().to_string())?;
 
     let mut cmd = Command::new("/bin/sh");
@@ -179,10 +265,14 @@ pub fn start(job: &Job, cwd: &Path, command: &str, env: &[(&str, &str)]) -> std:
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env_remove("AUTOME_ROUND_START")
+        .env_remove("AUTOME_BASE")
         .env("AUTOME_GATE_COMMAND", command)
         .env("AUTOME_GATE_LOG", &job.log)
         .env("AUTOME_GATE_PID", &job.pid)
-        .env("AUTOME_GATE_EXIT", &job.exit);
+        .env("AUTOME_GATE_EXIT", &job.exit)
+        .env("AUTOME_GATE_PASSES", &job.passes)
+        .env("AUTOME_GATE_REPORT", &job.report);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -337,6 +427,8 @@ fn discard_except(
             ".exit.code",
             ".repro-only",
             ".kind",
+            ".passes",
+            ".report",
         ] {
             if let Some(stem) = name.strip_suffix(suffix) {
                 if keep.is_none_or(|key| stem != format!("{node}-{key}")) {
@@ -376,6 +468,8 @@ fn discard_except(
             "exit.code",
             "repro-only",
             "kind",
+            "passes",
+            "report",
         ] {
             match std::fs::remove_file(dir.join(format!("{stem}.{suffix}"))) {
                 Ok(()) => {}
@@ -525,6 +619,122 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn gate_report_counts_only_complete_passes() {
+        let dir = sandbox("report-counts");
+        let job = Job::at(&dir, "T", "gate", "a");
+        std::fs::create_dir_all(job.report.parent().unwrap()).unwrap();
+        let key = "a".repeat(40);
+        std::fs::write(&job.passes, format!("{key}\tT\tgate\thead\ttime\n")).unwrap();
+        std::fs::write(&job.report, format!("autome-gate-report 1\nran\t{key}\tFormat\nreused\t{key}\tClippy\nfailed\t-\tTest\npartial\t-\tRelated\nnot_run\t-\tRemaining\n")).unwrap();
+        let report = read_report(&job).unwrap();
+        assert_eq!(
+            report["steps"],
+            serde_json::json!({"ran":3,"reused":1,"failed":1,"not_run":1,"unverified":0})
+        );
+        assert_eq!(
+            report["passes"],
+            serde_json::json!([{"step":"Format","key":key}])
+        );
+        // Completed steps survive a failing or timed-out command too.
+        for (suffix, code) in [("exit 0", 0), ("exit 7", 7), ("sleep 30", TIMED_OUT)] {
+            let command = format!(
+                "printf 'autome-gate-report 1\nran\t{key}\tCheck\n' > \"$AUTOME_GATE_REPORT\"; {suffix}"
+            );
+            start_with_passes(&job, &dir, &command, &[], "").unwrap();
+            if code == TIMED_OUT {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while read_report(&job).is_none() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                assert!(read_report(&job).is_some());
+                std::fs::write(&job.started, (now_secs() - 3600).to_string()).unwrap();
+                assert_eq!(poll(&job, 1), Poll::Done { exit_code: code });
+            } else {
+                assert_eq!(wait_done(&job, 5), Poll::Done { exit_code: code });
+            }
+            assert_eq!(
+                read_report(&job).unwrap()["passes"],
+                serde_json::json!([{"step":"Check","key":key}])
+            );
+        }
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn gate_report_invalid_missing_unreadable_and_size_boundary() {
+        let dir = sandbox("report-invalid");
+        let job = Job::at(&dir, "T", "gate", "a");
+        assert!(read_report(&job).is_none());
+        std::fs::create_dir_all(job.report.parent().unwrap()).unwrap();
+        std::fs::create_dir(&job.report).unwrap();
+        assert!(read_report(&job).is_none());
+        std::fs::remove_dir(&job.report).unwrap();
+        for bad in [
+            "",
+            "autome-gate-report 2\n",
+            "autome-gate-report 1\nunknown\t-\tx\n",
+            "autome-gate-report 1\nran\t-\tx\n",
+            "autome-gate-report 1\npartial\t-\t\n",
+            "autome-gate-report 1\npartial\t-\tx\textra\n",
+        ] {
+            std::fs::write(&job.report, bad).unwrap();
+            assert!(read_report(&job).is_none(), "{bad:?}");
+        }
+        let prefix = format!("autome-gate-report 1\nran\t{}\t", "a".repeat(64));
+        let text = format!("{}{}\n", prefix, "x".repeat(256 * 1024 - prefix.len() - 1));
+        std::fs::write(&job.report, &text).unwrap();
+        assert!(read_report(&job).is_some());
+        std::fs::write(&job.report, format!("{text}x")).unwrap();
+        assert!(read_report(&job).is_none());
+        std::fs::write(&job.report, "autome-gate-report 1\n").unwrap();
+        assert_eq!(read_report(&job).unwrap()["passes"], serde_json::json!([]));
+        for length in [0, 39, 65] {
+            assert!(!valid_key(&"a".repeat(length)));
+        }
+        for length in [40, 64] {
+            assert!(valid_key(&"a".repeat(length)));
+        }
+        assert!(!valid_key(&"G".repeat(40)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn gate_report_unverified_reuse_is_never_a_pass() {
+        let dir = sandbox("report-unverified");
+        let job = Job::at(&dir, "T", "gate", "a");
+        std::fs::create_dir_all(job.report.parent().unwrap()).unwrap();
+        std::fs::write(
+            &job.report,
+            format!("autome-gate-report 1\nreused\t{}\tCheck\n", "a".repeat(40)),
+        )
+        .unwrap();
+        let report = read_report(&job).unwrap();
+        assert_eq!(report["steps"]["unverified"], 1);
+        assert_eq!(report["passes"], serde_json::json!([]));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn gate_report_clear_and_discard_clean_sidecars() {
+        let dir = sandbox("report-clean");
+        for action in ["clear", "stale", "node"] {
+            let job = Job::at(&dir, "T", "gate", "old");
+            std::fs::create_dir_all(job.report.parent().unwrap()).unwrap();
+            std::fs::write(&job.report, "report").unwrap();
+            std::fs::write(&job.passes, "passes").unwrap();
+            match action {
+                "clear" => job.clear(),
+                "stale" => discard_stale(&dir, "T", "gate", "new").unwrap(),
+                _ => discard_node(&dir, "T", "gate").unwrap(),
+            }
+            assert!(!job.report.exists());
+            assert!(!job.passes.exists());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn sandbox(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("automed-gate-{tag}-{}", std::process::id()));

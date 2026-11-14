@@ -12,7 +12,7 @@ const dirs: string[] = [];
 const cores: CoreSupervisor[] = [];
 afterEach(async () => {
   for (const core of cores.splice(0)) await core.stop();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 function fixture() {
   // Installation acceptance requires macOS, just like CI; never silently skip it.

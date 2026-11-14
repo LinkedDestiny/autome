@@ -21,7 +21,7 @@ let notifier = make();
 const ledgerTimeout = 300000;
 const run = (extra = '') => promisify(execFile)('bash', [join(import.meta.dirname, 'fixtures/w4-ledger.sh'), root, wt, extra], { timeout: extra ? 90000 : ledgerTimeout, maxBuffer: 4 * 1024 * 1024 });
 beforeAll(async () => { await core.start(); await notifier.pull(); }, 10000);
-afterAll(async () => { notifier.close(); store.close(); await core.stop(); rmSync(root, { recursive: true, force: true }); });
+afterAll(async () => { notifier.close(); store.close(); await core.stop(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 test('真实账本七类通知计数与项目补齐，新面板库只补当前等待中的任务', async () => {
   await run(); await notifier.pull();
   const rows = store.list(); const counts: Record<string, number> = {};

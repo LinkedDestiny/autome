@@ -1,3 +1,4 @@
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -57,8 +58,7 @@ async function ready(args: string[]) {
 let dev: Awaited<ReturnType<typeof ready>>;
 let prod: Awaited<ReturnType<typeof ready>>;
 beforeAll(async () => {
-  const build = launch(['run', 'build']);
-  expect(await build.exited, build.stderr()).toBe(0);
+  ensureBuilt();
   dev = await ready(['run', 'dev']);
   prod = await ready(['start']);
 });

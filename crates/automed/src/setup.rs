@@ -115,7 +115,16 @@ pub fn ensure_with_hold(
                         write_record(&checkout.record, fingerprint)?;
                     }
                 }
-                for path in [&job.started, &job.pid, &job.exit, &running] {
+                // Keep the diagnostic log, but retire every per-run artifact,
+                // including the optional gate snapshot and command report.
+                for path in [
+                    &job.started,
+                    &job.pid,
+                    &job.exit,
+                    &job.passes,
+                    &job.report,
+                    &running,
+                ] {
                     let _ = std::fs::remove_file(path);
                 }
                 if fingerprint.is_some() && exit_code != 0 {

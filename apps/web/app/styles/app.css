@@ -122,6 +122,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-timeline li { padding: 12px 16px; border-bottom: 1px solid var(--animal-border); }
 .task-timeline h3 { margin: 0; font-size: 1rem; }
 .timeline-meta { overflow-wrap: anywhere; color: var(--animal-text-secondary); font-size: .85rem; }
+.timeline-unverified { color: var(--animal-error-active); }
 .timeline-step { color: var(--animal-text-secondary); }
 
 .task-docs { min-height: 0; min-width: 0; }

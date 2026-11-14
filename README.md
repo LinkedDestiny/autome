@@ -548,9 +548,32 @@ All of the above at once, in the order and with the flags `.github/workflows/ci.
 uses:
 
 ```sh
-sh scripts/ci-local.sh          # a few minutes; most of it is the desktop suite
+sh scripts/ci-local.sh          # full gate; reuse only with a host-provided pass snapshot
 sh scripts/ci-local.sh --package  # also builds the .app
+sh scripts/ci-local.sh --all      # force every step (also CI_LOCAL_ALL=1)
+sh scripts/ci-local.sh --plan     # print decisions and content keys, execute nothing
+sh scripts/ci-local.sh --check-claims  # reject inputs missing from the declarations
 ```
+
+Web tests use three explicit Vitest projects: parallel `unit`, `kernel` with four
+workers, and serial `exclusive` for shared build/dev-server paths and timing checks.
+A global setup builds once; nested test runs reuse that build. Assign new files in
+`apps/web/test-groups.ts`; membership guards reject omissions and unsafe unit placement.
+
+Rust tests use `--no-fail-fast` so all test targets run even after a failure.
+The local gate continues through every step and ends with a bounded list of
+failed Rust targets/cases and Web files/cases; omitted cases remain in the full log.
+Steps declare commands and input prefixes in `scripts/ci/steps.sh`. Keys include
+actual tracked and untracked non-ignored contents, toolchain versions, global
+inputs and unclaimed paths. A matching pass is reused only from an external
+`AUTOME_GATE_PASSES` snapshot; absent, invalid or in-worktree snapshots cause
+execution. `AUTOME_GATE_REPORT` receives incremental results when provided by
+the host. Without host variables, every step runs and no report is written.
+Preparation (including building both core binaries) runs when a following check
+executes. Binary/target override variables are cleared to keep tests on the freshly
+built `target/debug` binaries. Add new cross-directory test dependencies to the
+step inputs even when another step already claims that directory.
+Script-level regression tests run via `node --test scripts/test/*.test.mjs`.
 
 The workflow runs on every push to GitHub. The local script is for the commits
 in between — and it is how the Format and Clippy gates got caught 147 and 38

@@ -8,6 +8,7 @@ import { expect, test } from 'vitest';
 const root = resolve(import.meta.dirname, '../../..');
 const workflow = parse(readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8'));
 const local = readFileSync(resolve(root, 'scripts/ci-local.sh'), 'utf8');
+const steps = readFileSync(resolve(root, 'scripts/ci/steps.sh'), 'utf8');
 const web = workflow.jobs.web;
 type Step = { name?: string; uses?: string; run?: string; with?: Record<string, string> };
 
@@ -39,23 +40,23 @@ test('所有 job 都有正数 timeout-minutes', () => {
 });
 
 test('本地只在缺 node_modules 时 npm ci 安装 Web', () => {
-  expect(local).toContain("if [ ! -d apps/web/node_modules ]; then\n  run 'Web install' sh -c 'cd apps/web && npm ci'\nfi");
-  expect(local.match(/run 'Web install'/g)).toHaveLength(1);
+  expect(steps).toContain("prep 'Web install' --if-missing apps/web/node_modules sh -c 'cd apps/web && npm ci'");
+  expect(steps.match(/prep 'Web install'/g)).toHaveLength(1);
 });
 
-test('本地四行独立 run 位于 contract 后、package 分支外', () => {
-  const section = local.slice(local.indexOf('# --- job: web'), local.indexOf('# --- job: package'));
-  expect(local.indexOf('# --- job: web')).toBeGreaterThan(local.indexOf('# --- job: contract'));
-  expect(section).toContain("fi\nrun 'Web lint'");
-  expect(section.match(/^run 'Web .*$/gm)).toEqual(
-    ['lint', 'typecheck', 'test', 'build'].map(name => `run 'Web ${name}' npm run ${name} --prefix apps/web`),
+test('本地四步独立声明完整输入，位于 Contract 后、package 分支外', () => {
+  expect(steps.indexOf("step 'Web lint'")).toBeGreaterThan(steps.indexOf("step 'Contract'"));
+  expect(steps.match(/^step 'Web .*$/gm)).toEqual(
+    ['lint', 'typecheck', 'test', 'build'].map(name =>
+      `step 'Web ${name}' '${name === 'test' ? 'apps/web crates protocol plugins apps/desktop/renderer' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
   );
+  expect(local.indexOf('. "$root/scripts/ci/steps.sh"')).toBeLessThan(local.indexOf('if [ "$with_package" -eq 1 ]'));
 });
 
 test('本地门禁在 Web test 之前已构建内核', () => {
-  const build = local.indexOf('cargo test --workspace --all-targets');
+  const build = steps.indexOf("prep 'Build core' cargo build -p automed -p autome-cli");
   expect(build).toBeGreaterThanOrEqual(0);
-  expect(build).toBeLessThan(local.indexOf("run 'Web test'"));
+  expect(build).toBeLessThan(steps.indexOf("step 'Web test'"));
 });
 
 test('CLI package 隔离 home 与 prefix，成功和安装失败均清理并保留退出码', () => {
@@ -104,4 +105,13 @@ chmod +x "$PREFIX/autome"
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
+});
+
+test('Rust 一次跑完所有目标，脚本测试纳入本地与 CI', () => {
+  expect(steps).toContain('cargo test --workspace --all-targets --no-fail-fast -- --nocapture');
+  for (const name of ['Test', 'End to end', 'Adapter flags exist']) {
+    expect(workflow.jobs.rust.steps.find((step: Step) => step.name === name).run).toContain('--no-fail-fast');
+  }
+  expect(workflow.jobs.scripts.steps.some((step: Step) => step.run === 'node --test scripts/test/*.test.mjs')).toBe(true);
+  expect(steps).toContain("step 'Scripts' '' node --test scripts/test/*.test.mjs");
 });

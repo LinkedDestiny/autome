@@ -2877,6 +2877,209 @@ fn rejecting_design_carries_pending_decisions_and_approval_starts_implementation
 /// commit has a `gate-ok` file, and — when told to — fails on the checkout
 /// the core makes of the merge commit.
 #[test]
+fn gate_quick_feature_exports_round_start_and_base() {
+    needs_git!();
+    let mut w = World::new("quick-round-env");
+    let captured = w.root.join("env");
+    let script = w.root.join("env.sh");
+    std::fs::write(&script, format!("printf '%s %s %s %s\n' \"$AUTOME_GATE_NODE\" \"${{AUTOME_ROUND_START-unset}}\" \"${{AUTOME_BASE-unset}}\" \"$(git rev-parse HEAD)\" >> '{}'\n", captured.display())).unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\n",
+        script.display(),
+        script.display()
+    ));
+    let request = "round environment";
+    let slug = slug_for(request);
+    let expected = w.root.join("before-session");
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        &format!(
+            "git rev-parse HEAD > '{}'\ngit merge-base main HEAD >> '{}'",
+            expected.display(),
+            expected.display()
+        ),
+    );
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let expected = std::fs::read_to_string(expected).unwrap();
+    let expected: Vec<_> = expected.lines().collect();
+    let captured = std::fs::read_to_string(captured).unwrap();
+    let lines: Vec<Vec<_>> = captured
+        .lines()
+        .map(|s| s.split_whitespace().collect())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(&lines[0][..3], &["gate", expected[0], expected[1]]);
+    assert_ne!(
+        lines[0][1], lines[0][3],
+        "the editing session committed a new HEAD"
+    );
+    assert_eq!(&lines[1][..3], &["merge_gate", "unset", "unset"]);
+}
+
+#[test]
+fn gate_quick_bug_fix_gate_exports_round_start() {
+    needs_git!();
+    let mut w = World::new("quick-bug-round-env");
+    let captured = w.root.join("env");
+    let expected = w.root.join("before-fix");
+    let script = w.root.join("env.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "printf '%s %s\n' \"$AUTOME_ROUND_START\" \"$AUTOME_BASE\" > '{}'",
+            captured.display()
+        ),
+    )
+    .unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'true'\nquick = 'sh {}'\n",
+        script.display()
+    ));
+    let request = "bug round environment";
+    let slug = slug_for(request);
+    bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+    bug_step(
+        &w,
+        2,
+        &slug,
+        &bug_doc("待复核"),
+        &format!(
+            "git rev-parse HEAD > '{}'\ngit merge-base main HEAD >> '{}'\n{BUG_FIX}",
+            expected.display(),
+            expected.display()
+        ),
+    );
+    bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+    let id = create_bug(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let expected = std::fs::read_to_string(expected).unwrap();
+    let expected: Vec<_> = expected.split_whitespace().collect();
+    let captured = std::fs::read_to_string(captured).unwrap();
+    assert_eq!(captured.split_whitespace().collect::<Vec<_>>(), expected);
+    let starts = w.ctx.store.task_events(&id, "session.started").unwrap();
+    let fix_kind = json!(autome_domain::session::SessionKind::Bug {
+        step: autome_domain::session::BugStep::Fix
+    });
+    let fix = starts.iter().find(|s| s["kind"] == fix_kind).unwrap();
+    assert_eq!(fix["start_heads"][0]["head"], expected[0]);
+    let gate = w.ctx.store.task_events(&id, "gate.result").unwrap();
+    let gate = gate.iter().find(|e| e["node"] == "fix_gate").unwrap();
+    assert_ne!(gate["sha"], expected[0]);
+}
+
+#[test]
+fn gate_quick_feature_related_test_failure_names_case_and_skips_untouched() {
+    needs_git!();
+    for budget in [120, 1] {
+        let mut w = World::new("quick-related");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::fs::create_dir_all(w.repo.join("scripts/ci")).unwrap();
+        for name in ["lib.sh", "summary.mjs"] {
+            std::fs::copy(
+                source.join("scripts/ci").join(name),
+                w.repo.join("scripts/ci").join(name),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(w.repo.join("probe/tests")).unwrap();
+        std::fs::write(
+            w.repo.join("probe/Cargo.toml"),
+            "[package]\nname='probe'\nversion='0.1.0'\nedition='2021'\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            w.repo.join("probe/tests/changed.rs"),
+            "#[test] fn changed_case() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            w.repo.join("probe/tests/later.rs"),
+            "#[test] fn later_case() {}\n",
+        )
+        .unwrap();
+        let untouched = w.root.join("untouched");
+        std::fs::write(
+            w.repo.join("probe/tests/untouched.rs"),
+            format!(
+                "#[test] fn untouched() {{ std::fs::write({:?}, \"ran\").unwrap(); }}",
+                untouched.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(w.repo.join("probe/.gitignore"), "target/\nCargo.lock\n").unwrap();
+        std::fs::write(w.repo.join("scripts/quick.sh"), r#"root=$PWD
+. "$root/scripts/ci/lib.sh"
+printf 'autome-gate-report 1\n' > "$AUTOME_GATE_REPORT"
+first=true
+for target in changed later untouched; do
+  if git diff --name-only "${AUTOME_ROUND_START:-HEAD}" -- "probe/tests/$target.rs" | grep -q .; then
+    # Admit the first fixture workload at t=0. Starting the 1s clock before
+    # git discovery can legitimately exhaust it before any test starts.
+    if "$first"; then
+      ci_quick_start
+      first=false
+    elif ! ci_quick_admit "$target"; then
+      continue
+    fi
+    ci_partial "$target" --cases cargo cargo test --manifest-path probe/Cargo.toml --test "$target"
+  fi
+done
+summary
+"#).unwrap();
+        automed::git::commit_paths(&w.repo, &["scripts", "probe"], "quick fixture").unwrap();
+        w.configure(&format!("[gate]\nrun = 'before_merge'\ncommand = 'true'\nquick = 'CI_QUICK_BUDGET={budget} sh scripts/quick.sh'\n"));
+        let request = "related failure";
+        let slug = slug_for(request);
+        w.doc_step_for_prelude(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]), "printf '#[test] fn changed_case() { std::thread::sleep(std::time::Duration::from_secs(2)); assert!(false); }\n' > probe/tests/changed.rs\nprintf '\n// changed\n' >> probe/tests/later.rs\ngit add probe");
+        w.doc_step_for_prelude(
+            6,
+            &slug,
+            &doc("实现中", 2, 2, &[("M-01", "待审")]),
+            "printf '#[test] fn changed_case() {}\n' > probe/tests/changed.rs\ngit add probe",
+        );
+        w.doc_step(7, &slug, &doc("实现中", 2, 2, &[("M-01", "已完成")]));
+        w.retro_step(8, &slug);
+        let id = resume_setup(&mut w, request);
+        w.settle();
+        assert_eq!(
+            w.node(&id).as_deref(),
+            Some("await_merge"),
+            "budget={budget}, task={:?}, events={:?}",
+            w.ctx.store.get_task(&id).unwrap(),
+            w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap()
+        );
+        assert!(!untouched.exists());
+        assert!(w.prompt(6).contains("changed_case"));
+        let results = w.ctx.store.task_events(&id, "gate.result").unwrap();
+        let quick: Vec<_> = results.iter().filter(|e| e["kind"] == "quick").collect();
+        assert_eq!(quick.len(), 2);
+        assert_eq!(quick[0]["ok"], false);
+        assert_eq!(quick[1]["ok"], true);
+        assert!(quick[0]["tail"].as_str().unwrap().contains("changed_case"));
+        assert_eq!(quick[0]["steps"]["failed"], 1);
+        assert!(
+            quick
+                .iter()
+                .all(|q| q["passes"].as_array().unwrap().is_empty())
+        );
+        if budget == 1 {
+            assert!(w.prompt(6).contains("未跑"));
+            assert_eq!(quick[0]["steps"]["not_run"], 1);
+        } else {
+            assert_eq!(quick[0]["steps"]["not_run"], 0);
+            assert_eq!(quick[0]["steps"]["ran"], 2);
+        }
+    }
+}
+
+#[test]
 fn gate_quick_feature_two_milestones_run_quick_each_round_and_full_once() {
     needs_git!();
     let mut w = World::new("quick-two");
@@ -7119,7 +7322,11 @@ fn setup_run_in_flight_is_collected_under_its_own_fingerprint_when_the_watched_f
     needs_git!();
     let mut w = World::new("setup-changed");
     let request = "setup changed";
-    setup_fixture(&w, request, "sleep 2");
+    setup_fixture(
+        &w,
+        request,
+        "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2",
+    );
     let id = create_task(&mut w, request);
     resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
     std::fs::write(
@@ -7154,7 +7361,11 @@ fn setup_run_in_flight_that_fails_after_the_watched_file_changed_still_fails_the
     needs_git!();
     let mut w = World::new("setup-changed-fail");
     let request = "setup changed fail";
-    setup_fixture(&w, request, "sleep 2; exit 3");
+    setup_fixture(
+        &w,
+        request,
+        "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2; exit 3",
+    );
     let id = create_task(&mut w, request);
     resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
     std::fs::write(
@@ -7174,6 +7385,11 @@ fn setup_run_in_flight_that_fails_after_the_watched_file_changed_still_fails_the
     assert_eq!(results[0].1["ok"], false);
     assert!(setup_events(&w, &id, "session.started").is_empty());
     assert!(!automed::setup::worktree_record(&w.repo, &id).exists());
+    let job = automed::gate::Job::at(&w.repo, &id, "setup", "worktree");
+    assert!(job.log.exists());
+    for path in [&job.started, &job.pid, &job.exit, &job.passes, &job.report] {
+        assert!(!path.exists(), "{}", path.display());
+    }
 }
 
 #[test]
@@ -8406,6 +8622,8 @@ fn queue_tick(w: &mut World) {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "started") {
                 let job = automed::gate::Job {
+                    passes: path.with_extension("passes"),
+                    report: path.with_extension("report"),
                     log: path.with_extension("log"),
                     pid: path.with_extension("pid"),
                     exit: path.with_extension("exit"),
@@ -12470,4 +12688,99 @@ fn protocol_integrity_edit_after_migration_still_warns() {
     integrity_two_sessions(&mut w, &id);
     assert_eq!(integrity_events(&w, &id, "integrity_warning").len(), 2);
     assert_eq!(integrity_events(&w, &id, "protocol.hash_scheme").len(), 1);
+}
+
+fn gate_steps_scenario(reports: bool) {
+    needs_git!();
+    let mut w = World::new(if reports {
+        "steps-report"
+    } else {
+        "steps-legacy"
+    });
+    let script = w.root.join("steps.sh");
+    let snapshots = w.root.join("snapshots");
+    let key = "a".repeat(40);
+    let command = if reports {
+        format!(
+            "cat \"$AUTOME_GATE_PASSES\" >> '{}'\nif test -s \"$AUTOME_GATE_PASSES\"; then status=reused; else status=ran; fi\nprintf 'autome-gate-report 1\\n%s\\t{}\\tCheck\\n' \"$status\" > \"$AUTOME_GATE_REPORT\"\n",
+            snapshots.display(),
+            key
+        )
+    } else {
+        "echo legacy\n".into()
+    };
+    std::fs::write(&script, command).unwrap();
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\n",
+        script.display(),
+        script.display()
+    ));
+    let request = "gate steps report";
+    let slug = slug_for(request);
+    for (n, body) in [
+        (1, doc("设计中", 0, 0, &[])),
+        (2, doc("设计中", 1, 0, &[])),
+        (3, doc("设计中", 1, 0, &[])),
+        (4, doc("实现中", 2, 0, &[("M-01", "开放")])),
+        (5, doc("实现中", 2, 1, &[("M-01", "待审")])),
+        (6, doc("实现中", 2, 1, &[("M-01", "已完成")])),
+    ] {
+        w.doc_step(n, &slug, &body);
+    }
+    w.retro_step(7, &slug);
+    let id = create_task(&mut w, request);
+    w.settle();
+    ok(&w.call("task.approve", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let results = w.ctx.store.task_events(&id, "gate.result").unwrap();
+    assert_eq!(results.len(), 2);
+    if reports {
+        assert_eq!(
+            results[0]["steps"],
+            json!({"ran":1,"reused":0,"failed":0,"not_run":0,"unverified":0})
+        );
+        assert_eq!(results[0]["passes"], json!([{"step":"Check","key":key}]));
+        assert_eq!(
+            results[1]["steps"],
+            json!({"ran":0,"reused":1,"failed":0,"not_run":0,"unverified":0})
+        );
+        assert_eq!(results[1]["passes"], json!([]));
+        let snapshot = std::fs::read_to_string(snapshots).unwrap();
+        assert!(snapshot.contains(&format!("{key}\t{id}\tgate\t")));
+    } else {
+        for result in results {
+            let keys: std::collections::BTreeSet<_> = result
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "command",
+                    "exit_code",
+                    "kind",
+                    "log",
+                    "node",
+                    "ok",
+                    "sha",
+                    "tail"
+                ]
+                .into_iter()
+                .collect()
+            );
+        }
+    }
+}
+
+#[test]
+fn gate_steps_second_run_receives_first_pass_and_records_counts() {
+    gate_steps_scenario(true);
+}
+
+#[test]
+fn gate_steps_no_report_preserves_event_fields() {
+    gate_steps_scenario(false);
 }

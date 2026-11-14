@@ -1,3 +1,4 @@
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,7 +26,7 @@ async function connect() { const ws = new WebSocket(url.replace('http:', 'ws:') 
 async function fail(title: string) { await cli('task', 'new', title, '-p', repo); await cli('run', '--until-idle', '--interval', '0.2'); }
 beforeAll(async () => {
   // Build explicitly so this suite also runs alone, before any other build test.
-  await promisify(execFile)('npm', ['run', 'build'], { cwd: resolve(wt, 'apps/web'), timeout: 60000 });
+  ensureBuilt();
 }, 60000);
 beforeAll(async () => {
   mkdirSync(repo); mkdirSync(home); writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\nexit 3\n', { mode: 0o755 });

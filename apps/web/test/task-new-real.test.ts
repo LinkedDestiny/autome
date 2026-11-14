@@ -15,7 +15,7 @@ const core=new CoreSupervisor({home,binaryPath:join(root,'core-wrapper')});
 const uploads=createUploads(home), gateway=createGateway({core,home,uploads});
 const command=promisify(execFile); let projectId:string; const activeIds:string[]=[]; const started=performance.now();
 beforeAll(async()=>{await command('sh',[join(wt,'apps/web/test/fixtures/w6-project.sh'),root,wt],{timeout:60_000});await core.start({timeoutMs:30_000});const result=await gateway.read({method:'project.list'});projectId=(result.body.payload as {projects:{project:{id:string}}[]}).projects[0].project.id;},120_000);
-afterAll(async()=>{try {for(const id of activeIds) await command(join(wt,'target/debug/autome'),['stop',id],{cwd:join(root,'repo'),env:{...process.env,AUTOME_HOME:home},timeout:30_000});}finally{await core.stop();rmSync(root,{recursive:true,force:true});}process.stdout.write(`W6 new real setup/tests/cleanup ${Math.ceil(performance.now()-started)} ms\n`);});
+afterAll(async()=>{try {for(const id of activeIds) await command(join(wt,'target/debug/autome'),['stop',id],{cwd:join(root,'repo'),env:{...process.env,AUTOME_HOME:home},timeout:30_000});}finally{await core.stop();rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}process.stdout.write(`W6 new real setup/tests/cleanup ${Math.ceil(performance.now()-started)} ms\n`);});
 function form(intent:string,brief:string,id?:string){const data=new FormData();data.set('kind','feature');data.set('intent',intent);data.set('brief',brief);if(id)data.append('attachments',id);return data;}
 test('1 start creates running card and copies original attachment bytes',async()=>{
   const bytes=Buffer.from('附件逐字核对'); const info=await uploads.receive({ stream: Readable.from([bytes]), name: encodeURIComponent('参考.txt') });

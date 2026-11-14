@@ -37,21 +37,32 @@ jobs:
       # T1/T2/T3: the unit suites. Git is present on the runner, so the git
       # and launcher tests run rather than skipping.
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --no-fail-fast
 
       # T7: the end-to-end suite, which drives a whole task to a merge commit
       # against a real repository with a stand-in for the model. Run
       # separately so a failure here is legible as "the loop broke" rather
       # than being buried in the unit output.
       - name: End to end
-        run: cargo test --test end_to_end -- --nocapture
+        run: cargo test --test end_to_end --no-fail-fast -- --nocapture
 
       # T5, the free half: ask each installed CLI for its own --help and check
       # every flag the adapter table passes appears in it. Costs nothing and
       # needs no account, and would have caught the `-p` bug that made every
       # session hang. Skips whichever CLI the runner does not have.
       - name: Adapter flags exist
-        run: cargo test --test real_cli every_adapter_flag -- --nocapture
+        run: cargo test --test real_cli every_adapter_flag --no-fail-fast -- --nocapture
+
+  scripts:
+    timeout-minutes: 5
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test scripts
+        run: node --test scripts/test/*.test.mjs
 
   web:
     timeout-minutes: 15

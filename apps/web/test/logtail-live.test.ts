@@ -1,3 +1,4 @@
+import { ensureBuilt } from './fixtures/ensure-built.ts';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,7 +40,7 @@ async function startTask() {
 }
 
 beforeAll(async () => {
-  await exec('npm', ['run', 'build'], { cwd: join(wt, 'apps/web'), timeout: 60000 });
+  ensureBuilt();
   mkdirSync(home); mkdirSync(repo);
   configureFailureRepo(repo);
   writeFileSync(fake, `#!/bin/sh
