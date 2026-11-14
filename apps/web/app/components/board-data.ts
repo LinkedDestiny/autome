@@ -1,3 +1,4 @@
+import { currentClock } from '../lib/clock.tsx';
 import { NOTIFICATION_RULES } from '../../server/notifier-rules.ts';
 import { needsTaskDetail, type TaskDetail, type CardContext, toCardDetail } from './task-card-model.ts';
 import type { WebServices } from '../load-context.ts';
@@ -33,7 +34,7 @@ export async function loadBoard({ gateway, unread }: WebServices, id: string, sh
   const result = await gateway.read({ method: 'project.get', params: { project_id: id } });
   if (!result.body.ok) return { error: result.body.error ?? BOARD_READ_ERROR };
   const payload = result.body.payload as { project: { id: string; display_name: string }; tasks: BoardTask[]; config?: { bug?: { fix_rounds?: number } } };
-  const now = new Date().toISOString();
+  const now = currentClock().now;
   const tasks = payload.tasks.map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, project_id: id }));
   const visible = boardColumns(tasks, now).flatMap(column => showAll ? column.tasks : column.recent);
   const results = await Promise.all(visible.filter(needsTaskDetail).map(async task => ({ id: task.id, result: await gateway.read({ method: 'task.get', params: { task_id: task.id } }) })));

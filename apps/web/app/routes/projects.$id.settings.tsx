@@ -1,3 +1,4 @@
+import { configWarning } from '../lib/config-warnings.ts';
 import { useState } from 'react';
 import { Form, redirect, useLoaderData, useActionData, useNavigation, type LoaderFunctionArgs, type ActionFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
@@ -75,7 +76,7 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
     {data.config?.error ? <p role="alert">{data.config.error}</p> : <>
       {data.config?.paths.map(path => <p key={path}><code>{path}</code></p>)}
       <dl className="config-rows">{data.config?.rows.map(row => <div key={row.key} data-config-key={row.key}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
-      {data.config?.warnings.map((warning, i) => <pre key={i}>{JSON.stringify(warning)}</pre>)}
+      {data.config?.warnings.map((warning, i) => <pre key={i}>{configWarning(warning)}</pre>)}
     </>}
   </section>
   <section className="settings-card-body"><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>

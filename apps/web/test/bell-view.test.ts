@@ -1,3 +1,4 @@
+import { ClockProvider } from '../app/lib/clock.tsx';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createRoutesStub, MemoryRouter } from 'react-router';
@@ -7,9 +8,9 @@ import { BellView } from '../app/components/bell.tsx';
 import { TARGETS, resolveTarget } from '../app/components/bell-targets.ts';
 import type { BellSnapshot, NotificationItem } from '../app/components/bell-client.ts';
 import App from '../app/root.tsx';
-const item: NotificationItem = { id: 'ntf-1', kind: 'await_merge', level: 'need_you', task_id: 'T-3', project_id: 'prj-1', title: 'T-3 可以合并了', body: '实现通知器', created_at: new Date(2026, 0, 2, 3, 4).toISOString(), read_at: null };
+const item: NotificationItem = { id: 'ntf-1', kind: 'await_merge', level: 'need_you', task_id: 'T-3', project_id: 'prj-1', title: 'T-3 可以合并了', body: '实现通知器', created_at: '2026-01-01T19:04:00Z', read_at: null };
 function view(snapshot: BellSnapshot, targets = TARGETS) {
-  return renderToString(createElement(MemoryRouter, null, createElement(BellView, { snapshot, open: true, targets, onToggle: vi.fn(), onRead: async () => {}, onAll: async () => {} })));
+  return renderToString(createElement(MemoryRouter, null, createElement(ClockProvider, { initial: { now: '2026-01-02T12:00:00Z', timeZone: 'Asia/Shanghai' } }, createElement(BellView, { snapshot, open: true, targets, onToggle: vi.fn(), onRead: async () => {}, onAll: async () => {} }))));
 }
 it('徽标 0 隐藏，1、99、100 边界与中文 aria-label', () => {
   for (const unread of [0, 1, 99, 100]) {
@@ -20,7 +21,7 @@ it('徽标 0 隐藏，1、99、100 边界与中文 aria-label', () => {
 });
 it('列表标题、正文、本地时间、未读圆点与操作；全已读时禁用', () => {
   const html = view({ unread: 1, items: [item] });
-  for (const text of [item.title, item.body!, '01-02 03:04', 'aria-label="未读"', '标为已读', '全部已读']) expect(html).toContain(text);
+  for (const text of [item.title, item.body!, '03:04', 'aria-label="未读"', '标为已读', '全部已读']) expect(html).toContain(text);
   const read = view({ unread: 0, items: [{ ...item, body: null, read_at: item.created_at }] });
   expect(read).not.toContain(item.body!);
   expect(read).not.toContain('标为已读'); expect(read).not.toContain('aria-label="未读"'); expect(read).toMatch(/disabled="">全部已读/);
@@ -57,7 +58,7 @@ it('顶栏内定位与内部 60vh 滚动', () => {
 });
 it('root 同时渲染铃铛与子路由，仍只由 useLiveEvents 建连接', () => {
   const Stub = createRoutesStub([{ id: 'root', path: '/', loader: () => null, Component: App, children: [{ index: true, Component: () => createElement('p', null, '子路由内容') }] }]);
-  const html = renderToString(createElement(Stub, { hydrationData: { loaderData: { root: { kernel: { ok: true }, projects: [], tasks: [] } } } }));
+  const html = renderToString(createElement(Stub, { hydrationData: { loaderData: { root: { clock: { now: '2026-01-02T12:00:00Z', timeZone: 'Asia/Shanghai' }, kernel: { ok: true }, projects: [], tasks: [] } } } }));
   expect(html).toContain('aria-label="通知，0 条未读"'); expect(html).toContain('子路由内容');
   const root = readFileSync(new URL('../app/root.tsx', import.meta.url), 'utf8'); expect(root.match(/useLiveEvents\(\)/g)).toHaveLength(1);
   for (const name of readdirSync(new URL('../app/components/', import.meta.url)).filter(name => name.startsWith('bell'))) {

@@ -1,3 +1,4 @@
+import { ClockProvider, currentClock } from './lib/clock.tsx';
 import { useAdminRevalidate } from './components/admin-live.ts';
 import { useEffect, useState } from 'react';
 import { CommandPalette } from './components/command-palette.tsx';
@@ -11,7 +12,7 @@ import { LiveBanner, useLiveEvents, writeGate, WriteGateProvider, useKernelRecov
 import { Links, Link, Meta, Outlet, isRouteErrorResponse, useRouteError, Scripts, ScrollRestoration, useLoaderData, type LoaderFunctionArgs } from "react-router";
 export async function loader({ context }: LoaderFunctionArgs) {
   const { gateway } = context.get(servicesContext);
-  return loadShell(gateway);
+  return { ...await loadShell(gateway), clock: currentClock() };
 }
 export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.'));
 
@@ -39,8 +40,8 @@ export default function App() {
       ? paletteReducer(state, { type: 'close' })
       : paletteReducer(state, { type: 'open', items: filterCandidates(candidates, '').items })));
   }, [candidates]);
-  return <WriteGateProvider value={gate}><Shell projects={projects} shortcut={shortcut} onOpenPalette={openPalette}
-    banner={<LiveBanner {...live} kernelError={kernel.ok ? undefined : kernel.error} />}><Outlet /></Shell><CommandPalette candidates={candidates} state={palette} onChange={setPalette} /></WriteGateProvider>;
+  return <ClockProvider initial={data.clock}><WriteGateProvider value={gate}><Shell projects={projects} shortcut={shortcut} onOpenPalette={openPalette}
+    banner={<LiveBanner {...live} kernelError={kernel.ok ? undefined : kernel.error} />}><Outlet /></Shell><CommandPalette candidates={candidates} state={palette} onChange={setPalette} /></WriteGateProvider></ClockProvider>;
 }
 export function ErrorBoundary() {
   const error = useRouteError();

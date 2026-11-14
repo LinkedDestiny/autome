@@ -28,7 +28,7 @@ test('1 真实配置值逐行一致且重新加载显示 validate 警告',async(
   const s=await setup();const reply=await s.core.call('config.get',{project_id:s.id}) as {resolved:typeof fixture.config.resolved}; expect(reply.resolved).toEqual(fixture.config.resolved);
   const data=await loader(s.args); const rows=data.config!.rows; function verify(value:unknown,key=''){if(key==='roles')return;if(value!==null&&typeof value==='object')Object.entries(value).forEach(([k,v])=>verify(v,key?key+'.'+k:k));else expect(rows.find(r=>r.key===key)?.value).toBe(value===null?'未配置':String(value));} verify(reply.resolved);
   const markup=html(data); for(const row of rows){expect(markup).toContain(`data-config-key="${row.key}"`);expect(markup).toContain(row.value);}
-  writeFileSync(join(s.path,'.autome/config.toml'),'[loop]\nsession_minutes = 1\n');const changed=await loader(s.args);expect(changed.config?.warnings).toEqual([{kind:'session_minutes_out_of_range',min:5,value:1}]);expect(html(changed)).toContain('session_minutes_out_of_range');
+  writeFileSync(join(s.path,'.autome/config.toml'),'[loop]\nsession_minutes = 1\n');const changed=await loader(s.args);expect(changed.config?.warnings).toEqual([{kind:'session_minutes_out_of_range',min:5,value:1}]);expect(html(changed)).toContain('会话时长 1 分钟低于下限 5 分钟');
 });
 test('2 草稿任务阻止移除并原样返回内核拒绝',async()=>{const s=await setup();await s.draft();expect(await s.submit()).toEqual({error:'still-running tasks must finish or be cancelled first: T-1'});expect((await loader(s.args)).project?.id).toBe(s.id);});
 test('3 取消任务后移除、跳转、事件刷新 root 且文件快照不变',async()=>{

@@ -1,7 +1,8 @@
+import { useClock } from '../lib/clock.tsx';
 import { ProjectAlerts } from '../components/project-alerts.tsx';
 import { projectAlerts, type AlertDashboard } from '../components/alerts-data.ts';
 import { ADMIN } from '../lib/admin-labels.ts';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useActionData, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
 import { newTaskHref, settingsHref } from '../components/nav-links.ts';
@@ -32,18 +33,13 @@ export async function action({ request, context }: ActionFunctionArgs) {
   return result.body;
 }
 export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.', 'gate.', 'session.', 'runtime.'));
-function useNow(initial: string) {
-  const [now, setNow] = useState(initial);
-  useEffect(() => { const timer = setInterval(() => setNow(new Date().toISOString()), 60_000); return () => clearInterval(timer); }, []);
-  return now > initial ? now : initial;
-}
 export default function ProjectBoard() {
   useNotificationRevalidate();
   const data = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const [kind, setKind] = useState<KindFilter>('all');
   const location = useLocation();
-  const now = useNow('now' in data ? data.now : '');
+  const { now, timeZone } = useClock();
   if ('error' in data) return <p role="alert">{data.error}</p>;
   const columns = filterBoard(boardColumns(data.tasks, now), kind);
   const query = new URLSearchParams(location.search);
@@ -56,7 +52,7 @@ export default function ProjectBoard() {
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
   <ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" key={column.id} aria-labelledby={`board-${column.id}`}>
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body">
-      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now }} />)}
+      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
     </div></section>)}</div></div>;

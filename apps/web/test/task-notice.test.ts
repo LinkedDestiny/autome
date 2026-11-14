@@ -6,7 +6,7 @@ import { TaskNotice } from '../app/components/task-notice.tsx';
 import type { TaskPayload } from '../app/components/task-detail-data.ts';
 import type { CardContext } from '../app/components/task-card-model.ts';
 process.env.TZ = 'Asia/Shanghai';
-const ctx: CardContext = { now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
+const ctx: CardContext = { timeZone: 'Asia/Shanghai', now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
 const p = (reason?: Record<string, unknown>): TaskPayload => ({ task: { id: 'T-1', title: '标题', kind: 'feature', state: reason ? { state: 'failed', at: 'gate', reason } : { state: 'active', node: 'implement' } }, sessions: [] });
 const long = '状态块读取失败，保留错误原文与每一条提示。'.repeat(12);
 const cases: [Record<string, unknown>, string][] = [

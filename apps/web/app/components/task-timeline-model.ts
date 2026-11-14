@@ -1,3 +1,5 @@
+import { formatClock, formatDuration, formatRange, type Clock } from '../lib/clock.tsx';
+import { guardLabel } from '../lib/guard-labels.ts';
 import type { LogSession } from './session-log.tsx';
 import type { TaskEvent } from '../../server/task-events.ts';
 import { failureText, nodeLabel, RUNTIME_LABELS, taskStatusLine, type TaskState } from '../lib/labels.ts';
@@ -15,7 +17,7 @@ function gateName(p: Record<string, unknown>) {
   if (p.node === 'gate' && p.kind === 'quick') return '快检';
   return nodeLabel(str(p.node));
 }
-function light(event: TaskEvent): string | undefined {
+function light(event: TaskEvent, clock: Clock): string | undefined {
   const p = event.payload, s = (key: string) => str(p[key]);
   switch (event.kind) {
     case 'gate.queued': return p.job === 'setup' ? `准备命令排队第 ${p.position} 位` : undefined;
@@ -35,12 +37,13 @@ function light(event: TaskEvent): string | undefined {
     case 'setup.result': return `准备命令${p.ok ? '通过' : '未通过'}（${s('checkout')}，退出码 ${s('exit_code')}）· 日志：${s('log')}`;
     case 'setup.skipped': return `准备命令跳过：${s('reason')}`;
     case 'task.updated': return operations[s('trigger')];
-    case 'session.retry': return p.rate_limited ? `会话撞到${s('reason')}` : `会话崩溃，${s('not_before')} 重试（第 ${s('attempt')}/${s('of')} 次）：${s('reason')}`;
-    case 'session.deferred': return `${nodeLabel(s('node'))} 等 ${s('runtime')} 冷却到 ${s('until')}`;
-    case 'runtime.cooldown': return `${s('runtime')} 限流，冷却到 ${s('until')}：${s('reason')}`;
+    case 'session.retry': return p.rate_limited ? `会话撞到${s('reason')}` : `会话崩溃，${formatClock(s('not_before'), clock)} 重试（第 ${s('attempt')}/${s('of')} 次）：${s('reason')}`;
+    case 'session.deferred': return `${nodeLabel(s('node'))} 等 ${s('runtime')} 冷却到 ${formatClock(s('until'), clock)}`;
+    case 'runtime.cooldown': return `${s('runtime')} 限流，冷却到 ${formatClock(s('until'), clock)}：${s('reason')}`;
     case 'task.protocol_failure': return `协议失败：${s('detail') || s('reason')}`;
-    case 'guard.warning': return `守卫提醒：${s('code')}${p.message ? `：${s('message')}` : ''}`;
+    case 'guard.warning': return `守卫提醒：${guardLabel(s('code'))}${p.message || p.detail ? `：${s('message') || s('detail')}` : ''}`;
   }
+  if (event.kind.startsWith('guard.')) return `守卫提醒：${guardLabel(s('code'))}${p.detail ? `：${s('detail')}` : ''}`;
 }
 function sessionSummary(session: TimelineSession, window: TaskEvent[], previous: [string, string][]) {
   if (session.running) return '运行中';
@@ -67,7 +70,8 @@ function sessionSummary(session: TimelineSession, window: TaskEvent[], previous:
   }
   return result.join('；') || '已结束';
 }
-export function timelineEntries(sessions: readonly TimelineSession[], input: readonly TaskEvent[], now: string): TimelineEntry[] {
+export function timelineEntries(sessions: readonly TimelineSession[], input: readonly TaskEvent[], now: string, timeZone = 'UTC'): TimelineEntry[] {
+  const clock = { now, timeZone };
   const events = input.toSorted((a, b) => a.seq - b.seq);
   const entries: TimelineEntry[] = [];
   const anchored = new Set<string>();
@@ -81,7 +85,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     return { key: session.id, at: session.started_at, session, title: `${session.label} · 第 ${session.round} 轮`,
       summary: index < 0 ? (session.running ? '运行中' : '已结束') : sessionSummary(session, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][]),
       details: [Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime, session.model ?? '',
-        `${session.started_at} → ${session.ended_at ?? '尚未结束'}`, `${session.running ? '已运行' : '用时'} ${Number.isFinite(elapsed) ? Math.floor(elapsed / 1000) : 0} 秒`,
+        formatRange(session.started_at, session.ended_at, clock), `${session.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
         session.metrics?.cost_usd != null ? `$${session.metrics.cost_usd.toFixed(2)}` : '无计费数据'].filter(Boolean) };
   };
   for (const [index, event] of events.entries()) {
@@ -119,7 +123,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     } else if (event.kind === 'bug.reproduced' || event.kind === 'bug.repro_missed') {
       if (repro) { repro.summary = reproduction(event); repro = undefined; }
     } else {
-      const title = light(event);
+      const title = light(event, clock);
       if (title) entries.push({ key: `ev:${event.seq}`, at: event.at, title, summary: '', details: [] });
     }
   }

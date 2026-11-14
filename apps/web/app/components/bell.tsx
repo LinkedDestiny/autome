@@ -1,3 +1,4 @@
+import { formatClock, useClock } from '../lib/clock.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { subscribeLiveMessages } from '../lib/live-client.ts';
@@ -5,17 +6,13 @@ import { createBellClient, EMPTY_BELL, type BellSnapshot } from './bell-client.t
 import { resolveTarget, TARGETS } from './bell-targets.ts';
 import { browserSystemNotifier, showSystemNotification, type SystemNotifier, type SystemPermission } from './bell-system.ts';
 
-function localTime(value: string) {
-  const date = new Date(value);
-  const pad = (part: number) => String(part).padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TARGETS, permission = 'unsupported', onRequest }: {
   snapshot: BellSnapshot; open: boolean; onToggle: () => void;
   onRead: (id: string) => Promise<void>; onAll: () => Promise<void>; targets?: typeof TARGETS;
   permission?: SystemPermission; onRequest?: () => void;
 }) {
+  const clock = useClock();
   return <div className="bell">
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
       className="bell-button">
@@ -44,7 +41,7 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
             {item.body && <p className="bell-body">{item.body}</p>}
             {target.note && <p className="bell-note">{target.note}</p>}
             <div className="bell-footer">
-              <time dateTime={item.created_at} className="bell-time">{localTime(item.created_at)}</time>
+              <time dateTime={item.created_at} className="bell-time">{formatClock(item.created_at, clock)}</time>
               {!item.read_at && <button type="button" onClick={() => { void onRead(item.id); }}>标为已读</button>}
             </div>
           </li>;

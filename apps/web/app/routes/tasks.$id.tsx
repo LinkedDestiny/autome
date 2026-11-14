@@ -1,3 +1,4 @@
+import { useClock } from '../lib/clock.tsx';
 import { TaskChangesPanel } from '../components/task-changes.tsx';
 import { TaskDecisions } from '../components/task-decisions.tsx';
 import { DETAIL_TABS, detailTab, TASK_PAGE_EVENT_PREFIXES } from '../components/task-changes-model.ts';
@@ -32,7 +33,8 @@ export default function TaskPage() {
   const tabLink = (id: string) => { const next = new URLSearchParams(search); next.set('tab', id); return `?${next}`; };
   const result = useActionData<typeof action>();
   const settings = config && 'payload' in config ? config.payload as TaskConfig : {};
-  const context: CardContext = { now: new Date().toISOString(), fixRounds: data?.task.budget_n ?? settings.resolved?.bug?.fix_rounds ?? 0,
+  const clock = useClock();
+  const context: CardContext = { ...clock, fixRounds: data?.task.budget_n ?? settings.resolved?.bug?.fix_rounds ?? 0,
     cooldowns: dashboard && 'payload' in dashboard ? (dashboard.payload as { cooldowns?: CardContext['cooldowns'] }).cooldowns ?? [] : [], unread: {} };
   return <div className="task-page">{data ? <>
     <TaskHeader view={headerView(data, context)} />

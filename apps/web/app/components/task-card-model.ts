@@ -12,7 +12,7 @@ export interface TaskDetail {
   sessions?: { label: string; round: number; started_at: string; running: boolean }[];
   status_block?: { milestones_done: number; milestones_total: number; current_milestone?: string | null } | null;
 }
-export interface CardContext { now: string; fixRounds: number; cooldowns: { runtime: string; until: string }[]; unread: Record<string, number> }
+export interface CardContext { now: string; timeZone?: string; fixRounds: number; cooldowns: { runtime: string; until: string }[]; unread: Record<string, number> }
 export function needsTaskDetail(task: BoardTask) { return columnOf(task.state) !== null && task.state.state !== 'draft' && columnOf(task.state) !== 'done'; }
 export function cardView(task: BoardTask, detail: TaskDetail | undefined, ctx: CardContext) {
   const stages = task.kind === 'bug' ? BUG_STAGES : FEATURE_STAGES;
@@ -26,7 +26,7 @@ export function cardView(task: BoardTask, detail: TaskDetail | undefined, ctx: C
   const node = task.state.node;
   let activity = taskStatusLine(task.state);
   if (task.state.state === 'active' && node && Object.hasOwn(AWAIT_PHRASES, node)) activity = AWAIT_PHRASES[node as keyof typeof AWAIT_PHRASES];
-  else if (retry) activity = cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until) : retryPhrase(retry.attempts, retry.not_before);
+  else if (retry) activity = cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }) : retryPhrase(retry.attempts, retry.not_before, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' });
   else if (session) activity = sessionActivity(session.label, session.round, task.kind === 'feature' ? block?.current_milestone : null, Math.max(0, Math.floor((Date.parse(ctx.now) - Date.parse(session.started_at)) / 60_000)));
   else if (task.state.state === 'queued') activity = queuePhrase(detail?.queue_position);
   else if (task.state.state === 'failed') activity = CARD_LABELS.failed + renderReason(task.state.reason);

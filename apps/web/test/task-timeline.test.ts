@@ -116,3 +116,15 @@ it('没有报告保持旧摘要，整次沿用与步骤沿用区分', () => {
   expect(build([ev(1, 'gate.result', { node: 'gate', ok: true, exit_code: 0 })])[0].summary).toBe('通过');
   expect(build([ev(1, 'gate.reused')])[0].title).toBe('沿用已通过的结果');
 });
+it('可见时间不保留 ISO，重试与冷却均使用本地时区', () => {
+  const entries = timelineEntries([ses()], [ev(1,'session.retry',{not_before:now}),ev(2,'runtime.cooldown',{until:now})],now,'Asia/Shanghai');
+  const text = entries.map(e=>[e.title,...e.details].join(' ')).join(' ');
+  expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+  expect(text).toContain('11月13日 08:00 → 08:00'); expect(text).toContain('08:00 重试');
+});
+it('用时 8 分 50 秒且运行中、已结束、被停止都保留用时', () => {
+  for (const running of [true,false]) {
+    const session = {...ses(), running, started_at:'2026-11-13T00:00:00Z',ended_at:running?null:'2026-11-13T00:08:50Z'};
+    expect(timelineEntries([session],[],'2026-11-13T00:08:50Z')[0].details).toContain(`${running?'已运行':'用时'} 8 分 50 秒`);
+  }
+});

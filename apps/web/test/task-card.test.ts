@@ -13,7 +13,7 @@ import { NOTIFICATION_RULES, renderReason } from '../server/notifier-rules.ts';
 import { openWebStore } from '../server/store.ts';
 import type { KernelGateway } from '../app/load-context.ts';
 process.env.TZ = 'Asia/Shanghai';
-const ctx: CardContext = { now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
+const ctx: CardContext = { timeZone: 'Asia/Shanghai', now: '2026-11-13T06:20:00Z', fixRounds: 3, cooldowns: [], unread: {} };
 const task = (node = 'implement', kind = 'feature'): BoardTask => ({ id: 'T-1', title: '任务标题', project_id: 'P-1', kind, state: { state: 'active', node } });
 const block = { milestones_done: 3, milestones_total: 5, current_milestone: 'M-02' };
 const view = (t = task(), d?: TaskDetail, context = ctx) => cardView(t, d, context);
@@ -53,8 +53,8 @@ test('4 bug fix rounds never use milestone block', () => {
 });
 test('5 running session activity and minute boundaries', () => {
   const detail = { status_block: block, sessions: [{ label: '实现', round: 3, running: true, started_at: '2026-11-13T06:08:00Z' }] };
-  expect(view(task(), detail).activity).toBe('实现第 3 轮 · M-02 · 运行 12 分钟');
-  expect(view(task('fix', 'bug'), detail).activity).toBe('实现第 3 轮 · 运行 12 分钟');
+  expect(view(task(), detail).activity).toBe('实现第 3 轮 · M-02 · 运行 12 分');
+  expect(view(task('fix', 'bug'), detail).activity).toBe('实现第 3 轮 · 运行 12 分');
   for (const started_at of [ctx.now, '2026-11-13T06:19:01Z', '2026-11-13T06:21:00Z']) expect(view(task(), { sessions: [{ ...detail.sessions[0], started_at }] }).activity).toBe('实现第 3 轮 · 刚开始');
   expect(view(task(), { sessions: [{ ...detail.sessions[0], running: false }] }).activity).toBe('实现');
 });
