@@ -24,3 +24,4 @@
 审计 #7 | M-05 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-05-r7-audit.md | 无
 
 实现 #8 | M-06 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-impl.md | 验收无阻塞；扩大回归有两条既有失败，已复跑基线确认
+审计 #8 | M-06 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-audit.md | 无
