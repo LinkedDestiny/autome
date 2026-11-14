@@ -52,3 +52,4 @@
 审计 #17 | M-10 | 退回 + e2e-flow | docs/面板交付批次-w10-启动与安装/evidence/M-10-r18-audit.md | 无
 
 实现 #19 | M-10 | 环境阻塞，保持开放 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r19-impl.md | ps EPERM，20 条浏览器用例未运行
+审计 #18 | M-10 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-10-r19-audit.md | 无
