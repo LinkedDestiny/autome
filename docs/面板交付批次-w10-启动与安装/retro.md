@@ -14,3 +14,5 @@
 
 实现 #4 | M-03 | 开放，环境阻塞 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r4-impl.md | listen/ps EPERM，待宿主复验
 审计 #4 | M-03 | 退回 + package | docs/面板交付批次-w10-启动与安装/evidence/M-03-r4-audit.md | 无
+
+实现 #5 | M-03 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-impl.md | 2 条安装链路/残留检查受 ps EPERM 阻塞

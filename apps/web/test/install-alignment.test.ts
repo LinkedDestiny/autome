@@ -115,6 +115,22 @@ test('--binary 无 cargo/node/npm 仍可打包，缺 --web 与空路径拒绝', 
   expect(run(['--web', '']).status).toBe(2);
 }, 60000);
 
+test('安装成功消息与 PATH 提示完整且 stderr 为空（审计回归）', () => {
+  const f = fixture();
+  const checkTmp = mkdtempSync(join(tmpdir(), 'autome-install-msg-')); dirs.push(checkTmp);
+  delete f.env.AUTOME_TEST_BUILD_ID;
+  const doctorBin = join(f.dir, 'doctor-bin'); mkdirSync(doctorBin);
+  for (const name of ['git', 'claude', 'codex']) writeFileSync(join(doctorBin, name), '#!/bin/sh\necho "logged in test 1.0.0"\n', { mode: 0o755 });
+  f.env.PATH = `${doctorBin}:/usr/bin:/bin`;
+  const result = spawnSync('/bin/sh', ['apps/web/test/fixtures/install-msg-check.sh', archive], {
+    cwd: root, env: { ...f.env, TMPDIR: checkTmp }, encoding: 'utf8', timeout: 45000,
+  });
+  const installOutput = readdirSync(checkTmp).map(dir => readFileSync(join(checkTmp, dir, 'out'), 'utf8')).join('\n');
+  expect(result.stdout, result.stderr + installOutput).toBe('OK\n');
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe('');
+});
+
 test('安装验收清理全部临时服务与内核，无残留', () => {
   expect(cleaned.length).toBeGreaterThan(0);
   for (const dir of cleaned) { expect(leftoverProcesses(dir)).toEqual([]); expect(existsSync(dir)).toBe(false); }

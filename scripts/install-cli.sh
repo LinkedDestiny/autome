@@ -185,7 +185,7 @@ if [ "$node_ok" -eq 1 ] && [ -d "$panel" ]; then
     [ ! -e "$panel_dest.old.$$" ] || mv "$panel_dest.old.$$" "$panel_dest"
     exit 1
   fi
-  echo "==> 已安装面板 $panel_dest；运行 autome web"
+  echo "==> 已安装面板 ${panel_dest}；运行 autome web"
 elif [ "$node_ok" -eq 0 ]; then
   echo "没有找到 Node.js 22.22 或更高版本（当前：${node_version:-没有}），只装了命令行。"
   echo "装好 Node（brew install node）后重新运行本脚本即可装上面板。"
