@@ -10,8 +10,13 @@ export type SystemNotifier = {
   request(): Promise<SystemPermission>;
   show(notice: SystemNotice): void;
 };
-type Browser = { Notification?: typeof Notification; focus(): void; location: { assign(href: string): void } };
+type Browser = { autome?: { notify?: (input: { title: string; body: string; href: string | null }) => Promise<unknown> }; Notification?: typeof Notification; focus(): void; location: { assign(href: string): void } };
 export function browserSystemNotifier(browser: Browser): SystemNotifier {
+  if (typeof browser.autome?.notify === 'function') {
+    const native = browser.autome.notify.bind(browser.autome);
+    return { permission: () => 'granted', request: async () => 'granted',
+      show: ({ title, body, href }) => { void native({ title, body: body ?? '', href }).catch(error => console.error('系统通知失败', error)); } };
+  }
   return {
     permission: () => browser.Notification?.permission ?? 'unsupported',
     request: async () => browser.Notification ? browser.Notification.requestPermission() : 'unsupported',

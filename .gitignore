@@ -16,3 +16,5 @@ apps/desktop/dist/
 # Autome
 .worktree/
 .autome/output/
+
+apps/desktop/web/

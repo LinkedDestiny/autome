@@ -8,7 +8,9 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "package": "../../scripts/package.sh",
-    "shots": "electron tools/screenshots.js"
+    "shots": "electron tools/screenshots.js",
+    "stage-web": "node scripts/stage-web.js",
+    "smoke": "node --test smoke/shell-smoke.test.js"
   },
   "devDependencies": {
     "electron": "43.2.0"

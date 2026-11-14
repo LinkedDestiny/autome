@@ -25,3 +25,5 @@
 
 实现 #8 | M-06 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-impl.md | 验收无阻塞；扩大回归有两条既有失败，已复跑基线确认
 审计 #8 | M-06 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-06-r8-audit.md | 无
+
+实现 #9 | M-07 | 退回 shell | docs/面板交付批次-w10-启动与安装/evidence/M-07-r9-impl.md | Electron SIGABRT、listen/ps EPERM；保持开放，reopen 不变
