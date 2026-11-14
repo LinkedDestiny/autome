@@ -8,3 +8,4 @@
 实现 #1 | M-01 | 开放（环境阻塞） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-impl.md | 沙箱禁止监听与 ps，21 条真实服务验收未通过
 审计 #1 | M-01 | 退回 + launcher | docs/面板交付批次-w10-启动与安装/evidence/M-01-r1-audit.md | web-stop-gate 4 条失败：测试在门禁进程出现前取 pid
 实现 #2 | M-01 | 退回 launcher（修复落地，保持开放；BL-09 纳入 M-13） | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-impl.md | ps EPERM，完整验收待复验
+审计 #2 | M-01 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-01-r2-audit.md | 无
