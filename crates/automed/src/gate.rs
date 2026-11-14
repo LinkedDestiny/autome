@@ -265,6 +265,8 @@ pub fn start_with_passes(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env_remove("AUTOME_ROUND_START")
+        .env_remove("AUTOME_BASE")
         .env("AUTOME_GATE_COMMAND", command)
         .env("AUTOME_GATE_LOG", &job.log)
         .env("AUTOME_GATE_PID", &job.pid)
