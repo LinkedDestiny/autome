@@ -496,8 +496,8 @@ sh scripts/ci-local.sh && sh scripts/package.sh
 - `crates/autome-cli` — the `autome` command. Links `automed` and calls the
   same dispatcher the desktop's requests reach; no logic of its own beyond
   argument parsing and printing.
-- `apps/desktop` — the Electron shell. Two IPC channels with two independent
-  allowlists; the renderer can never name a filesystem path.
+- `apps/desktop` — a thin Electron shell loading the Web panel, with native
+  directory selection and notifications. The panel owns the core connection.
 - `docs/development/` — the requirements and the technical design. These are
   the authority.
 - `docs/plans/` — decision records and audits, dated. `docs/design/` — the
@@ -629,20 +629,24 @@ AUTOMED_REAL_CLI=1 AUTOMED_REAL_LOOP=1 \
 ## Packaging
 
 ```sh
+npm --prefix apps/web ci
+npm --prefix apps/web run build
 sh scripts/package.sh            # unsigned .app and .dmg in apps/desktop/dist, for local use
 CSC_NAME="Developer ID Application: …" sh scripts/package.sh   # signed
 ```
 
 To install locally, quit Autome, replace `/Applications/Autome.app` with
 `apps/desktop/dist/mac-arm64/Autome.app`, and start it again. On start the
-core refreshes every project's scaffold and picks up any session that ended
-while it was closed.
+shell starts the bundled Web panel using Electron's Node runtime, or connects
+to an existing `autome web` service. No system Node installation is needed.
+The bundle carries `Resources/core/autome` and `Resources/web` outside asar.
+Run `AUTOME_SMOKE_APP="$PWD/apps/desktop/dist/mac-arm64/Autome.app" npm --prefix apps/desktop run smoke`
+to check startup, reuse, the older-kernel banner, and process cleanup in temporary homes.
 
 Signing is opt-in rather than best-effort: an unsigned build that claims to be
 signed is worse than one that says it is not. The hardened runtime is on, so
 `build/entitlements.mac.plist` declares every capability the app uses —
-including AppleEvents, without which the session launcher cannot open a
-terminal and every session fails to start, in signed builds only.
+including Electron JIT and framework loading. The shell does not request AppleEvents.
 
 ## Status
 

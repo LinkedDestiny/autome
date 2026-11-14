@@ -104,14 +104,9 @@ jobs:
       - name: Install
         working-directory: apps/desktop
         run: npm ci || npm install
-      # The suite's sidecar half drives the real core binary. Without it those
-      # tests fail on their own precondition assert — the job would be red for
-      # a reason that has nothing to do with the shell, or (before the fix that
-      # came with this line) would hang until the runner's limit.
-      - name: Build the core the sidecar tests drive
-        run: cargo build -p automed
-      # T4/T6: the IPC gates, the shell, and the renderer's screen tests
-      # including the one-screen height measurement.
+      # Preserve the ledger-fixture regression introduced during M-07 audit.
+      - name: Build the CLI for the ledger fixture regression
+        run: cargo build -p autome-cli
       - name: Test
         working-directory: apps/desktop
         run: npm test
@@ -136,8 +131,10 @@ jobs:
       - name: The bundle carries a runnable core
         run: |
           app="apps/desktop/dist/mac-arm64/Autome.app"
-          test -x "$app/Contents/Resources/core/automed"
-          "$app/Contents/Resources/core/automed" --help < /dev/null
+          test -x "$app/Contents/Resources/core/autome"
+          "$app/Contents/Resources/core/autome" --version < /dev/null
+      - name: Bundle launches the panel
+        run: AUTOME_SMOKE_APP="$PWD/apps/desktop/dist/mac-arm64/Autome.app" npm --prefix apps/desktop run smoke
       - uses: actions/upload-artifact@v4
         with:
           name: Autome-unsigned-dmg

@@ -118,3 +118,13 @@ test('Rust 一次跑完所有目标，脚本测试纳入本地与 CI', () => {
   expect(workflow.jobs.scripts.steps.some((step: Step) => step.run === 'node --test scripts/test/*.test.mjs')).toBe(true);
   expect(steps).toContain("step 'Scripts' '' node --test scripts/test/*.test.mjs");
 });
+
+test('Bundle 校验 autome 并运行打包面板冒烟，Desktop 保留回归', () => {
+  expect(local).toContain('Resources/core/autome" --version');
+  expect(local).toContain("run 'Bundle launches the panel'");
+  const steps: Step[] = workflow.jobs.package.steps;
+  expect(steps.find(step => step.name === 'The bundle carries a runnable core')?.run).toContain('Resources/core/autome" --version');
+  expect(steps.find(step => step.name === 'Bundle launches the panel')?.run).toContain('npm --prefix apps/desktop run smoke');
+  expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p automed')).toBe(false);
+  expect(workflow.jobs.desktop.steps.some((step: Step) => step.run === 'cargo build -p autome-cli')).toBe(true);
+});

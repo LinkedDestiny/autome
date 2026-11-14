@@ -72,9 +72,10 @@ if [ "$with_package" -eq 1 ]; then
   '
   run 'Bundle carries a runnable core' sh -c '
     app="apps/desktop/dist/mac-arm64/Autome.app"
-    test -x "$app/Contents/Resources/core/automed" &&
-    "$app/Contents/Resources/core/automed" --help < /dev/null > /dev/null
+    test -x "$app/Contents/Resources/core/autome" &&
+    "$app/Contents/Resources/core/autome" --version < /dev/null > /dev/null
   '
+  run 'Bundle launches the panel' env AUTOME_SMOKE_APP="$PWD/apps/desktop/dist/mac-arm64/Autome.app" npm --prefix apps/desktop run smoke
 fi
 
 # --- summary ---------------------------------------------------------------
