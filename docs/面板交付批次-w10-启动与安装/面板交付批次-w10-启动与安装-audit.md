@@ -1,7 +1,8 @@
-# 实现审计 · 审计 #11
+# 审计 · M-08（第 12 轮）
 
-里程碑 M-07：**通过**（标 `已完成`）。
+结论：**通过**，M-08 标为 `已完成`。证据：docs/面板交付批次-w10-启动与安装/evidence/M-08-r12-audit.md
 
-验收命令整条通过：纯测试 16 条、native-shell 3 条、stage-web、smoke 4/4（真实 Electron）。负向对照 4 条注入均被拦住并已还原，第 5 条由 shell-main 第 1 条与 smoke 第 2 条覆盖。证据：docs/面板交付批次-w10-启动与安装/evidence/M-07-r11-audit.md。
-
-构造的检查：对 server.js 与 preload.js 做缺陷注入（见证据），结果均为红，还原后绿。
+- desktop 22 条、styles+ci-config 21 条全过，`renderer/` 不存在。
+- 两条负向对照（package.sh 复制 automed、extraResources 漏 web）均使 packaging 测试失败，还原后复绿。
+- `package.sh` 的 electron-builder 阶段因本机无外网失败，未得到 .app；该项移入人工验收清单 H-08（联网环境或 GitHub package job 复验），不计 reopen。
+- 无实现缺陷；无新增 Backlog。
