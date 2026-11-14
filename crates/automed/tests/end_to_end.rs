@@ -7322,7 +7322,11 @@ fn setup_run_in_flight_is_collected_under_its_own_fingerprint_when_the_watched_f
     needs_git!();
     let mut w = World::new("setup-changed");
     let request = "setup changed";
-    setup_fixture(&w, request, "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2");
+    setup_fixture(
+        &w,
+        request,
+        "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2",
+    );
     let id = create_task(&mut w, request);
     resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
     std::fs::write(
