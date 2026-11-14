@@ -16,6 +16,7 @@ mkdir -p "$staging"
 cp "$root/target/release/autome" "$staging/autome"
 chmod 755 "$staging/autome"
 
+sh "$root/scripts/prepare-web.sh"
 npm --prefix "$desktop" run stage-web
 
 cd "$desktop"

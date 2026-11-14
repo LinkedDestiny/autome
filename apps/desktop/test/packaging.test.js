@@ -50,3 +50,10 @@ test('both CI bundle checks execute autome and run packaged panel smoke', () => 
     assert.match(script, /AUTOME_SMOKE_APP=.*Autome\.app.*npm --prefix apps\/desktop run smoke/);
   }
 });
+test('package prepares web before staging and packaging', () => {
+  const script = read('scripts/package.sh');
+  const prepare = script.indexOf('sh "$root/scripts/prepare-web.sh"');
+  assert.ok(prepare >= 0);
+  assert.ok(prepare < script.indexOf('run stage-web'));
+  assert.ok(script.indexOf('run stage-web') < script.indexOf('npx electron-builder'));
+});
