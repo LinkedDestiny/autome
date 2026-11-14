@@ -7322,7 +7322,7 @@ fn setup_run_in_flight_is_collected_under_its_own_fingerprint_when_the_watched_f
     needs_git!();
     let mut w = World::new("setup-changed");
     let request = "setup changed";
-    setup_fixture(&w, request, "sleep 2");
+    setup_fixture(&w, request, "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2");
     let id = create_task(&mut w, request);
     resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
     std::fs::write(
@@ -7357,7 +7357,11 @@ fn setup_run_in_flight_that_fails_after_the_watched_file_changed_still_fails_the
     needs_git!();
     let mut w = World::new("setup-changed-fail");
     let request = "setup changed fail";
-    setup_fixture(&w, request, "sleep 2; exit 3");
+    setup_fixture(
+        &w,
+        request,
+        "echo report > \"$AUTOME_GATE_REPORT\"; sleep 2; exit 3",
+    );
     let id = create_task(&mut w, request);
     resume_wait(&mut w, |w| w.root.join("setup-runs").exists());
     std::fs::write(
@@ -7377,6 +7381,11 @@ fn setup_run_in_flight_that_fails_after_the_watched_file_changed_still_fails_the
     assert_eq!(results[0].1["ok"], false);
     assert!(setup_events(&w, &id, "session.started").is_empty());
     assert!(!automed::setup::worktree_record(&w.repo, &id).exists());
+    let job = automed::gate::Job::at(&w.repo, &id, "setup", "worktree");
+    assert!(job.log.exists());
+    for path in [&job.started, &job.pid, &job.exit, &job.passes, &job.report] {
+        assert!(!path.exists(), "{}", path.display());
+    }
 }
 
 #[test]
