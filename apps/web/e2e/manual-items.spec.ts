@@ -34,9 +34,12 @@ test('W7 H-04 详情一屏且时间线文档日志各自内部滚动', async ({ 
   await visit(page, '/tasks/T-1');
   await expandLog(page);
   await oneScreen(page);
-  for (const selector of ['[data-testid=timeline]', '.task-docs-body', '[data-testid=session-log-body]']) {
+  for (const selector of ['[data-testid=timeline]', '[data-testid=session-log-body]']) {
     await expect(page.locator(selector).first()).toHaveAttribute('data-scroll-region', 'true');
   }
+  await visit(page, '/tasks/T-1?tab=docs');
+  await oneScreen(page);
+  await expect(page.locator('.task-docs-body').first()).toHaveAttribute('data-scroll-region', 'true');
 });
 
 test('W9 H-01 添加项目、设置、环境三页原一屏判据', async ({ page }) => {
