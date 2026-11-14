@@ -19,3 +19,4 @@
 审计 #5 | M-03 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-03-r5-audit.md | 无
 
 实现 #6 | M-04 | 待审 | docs/面板交付批次-w10-启动与安装/evidence/M-04-r6-impl.md | 无
+审计 #6 | M-04 | 通过 | docs/面板交付批次-w10-启动与安装/evidence/M-04-r6-audit.md | 无
