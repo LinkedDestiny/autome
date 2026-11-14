@@ -2189,3 +2189,109 @@ fn dashboard_tolerates_broken_config_in_autome_status() {
             .any(|p| p["config_error"].is_null())
     );
 }
+
+struct WebFixture {
+    root: PathBuf,
+}
+impl WebFixture {
+    fn new(tag: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("autome-web-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("panel/bin")).unwrap();
+        std::fs::write(root.join("panel/bin/autome-web.js"), "").unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_autome"), root.join("autome")).unwrap();
+        std::fs::write(
+            root.join("node"),
+            "#!/bin/sh\nprintf '%s\\n' \"$AUTOME_BUNDLED_CORE\" \"$@\"\nexit ${FAKE_EXIT:-0}\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(root.join("node"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        Self { root }
+    }
+    fn command(&self) -> std::process::Command {
+        let mut c = std::process::Command::new(self.root.join("autome"));
+        c.arg("web")
+            .env("AUTOME_HOME", self.root.join("absent"))
+            .env("AUTOME_NODE", self.root.join("node"))
+            .env("PATH", "")
+            .env("AUTOME_WEB_ROOT", self.root.join("panel"));
+        c
+    }
+}
+impl Drop for WebFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+#[test]
+fn web_forwards_arguments() {
+    let f = WebFixture::new("args");
+    let o = f
+        .command()
+        .args(["stop", "--force", "-x", "space value"])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).ends_with("stop\n--force\n-x\nspace value\n"));
+}
+#[test]
+fn web_forwards_core() {
+    let f = WebFixture::new("core");
+    let o = f.command().output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout).lines().next().unwrap(),
+        f.root.join("autome").to_str().unwrap()
+    );
+}
+#[test]
+fn web_does_not_open_ledger() {
+    let f = WebFixture::new("ledger");
+    assert!(f.command().output().unwrap().status.success());
+    assert!(!f.root.join("absent").exists());
+}
+#[test]
+fn web_missing_node() {
+    let f = WebFixture::new("node");
+    let o = f.command().env_remove("AUTOME_NODE").output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    let s = String::from_utf8_lossy(&o.stderr);
+    assert!(s.contains("没有找到 Node.js") && s.contains("brew install node"));
+}
+#[test]
+fn web_missing_panel() {
+    let f = WebFixture::new("panel");
+    let o = f.command().env_remove("AUTOME_WEB_ROOT").output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("没有找到面板"));
+}
+#[test]
+fn web_root_priority() {
+    let f = WebFixture::new("priority");
+    std::fs::create_dir_all(f.root.join("web/bin")).unwrap();
+    std::fs::write(f.root.join("web/bin/autome-web.js"), "").unwrap();
+    let o = f.command().output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&o.stdout)
+            .contains(f.root.join("panel/bin/autome-web.js").to_str().unwrap())
+    );
+    let o = f.command().env_remove("AUTOME_WEB_ROOT").output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&o.stdout)
+            .contains(f.root.join("web/bin/autome-web.js").to_str().unwrap())
+    );
+}
+#[test]
+fn web_exit_code() {
+    let f = WebFixture::new("exit");
+    assert_eq!(
+        f.command()
+            .env("FAKE_EXIT", "42")
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(42)
+    );
+}

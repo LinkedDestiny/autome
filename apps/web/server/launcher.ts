@@ -1,3 +1,4 @@
+import { service } from './service.ts';
 import { existsSync } from 'node:fs';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -131,6 +132,10 @@ export async function stop(file: string, { force = false, wait = 1800, instance 
 export async function launch(args: string[]) {
   const action = args[0]?.startsWith('-') ? 'open' : args.shift() ?? 'open';
   process.title = `autome-web ${resolveAutomeHome(process.env)} ${action}`;
+  if (action === 'service') {
+    if (args.length !== 1) throw new Error('用法：service install|uninstall');
+    return service(args[0]);
+  }
   const allowed: Record<string, string[]> = { open: ['--port'], start: ['--port', '--json'], serve: ['--port'], status: ['--json'], stop: ['--force', '--wait', '--instance'] };
   if (!allowed[action]) throw new Error(`未知面板命令：${action}`);
   const options = new Map<string, string>();

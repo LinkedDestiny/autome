@@ -1,3 +1,4 @@
+import { corePathEnv } from './login-path.ts';
 import { randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { writeInstance, removeInstance, runningGates, type Instance, type InstanceStatus } from './instance.ts';
@@ -99,7 +100,7 @@ export async function runFromEnv(options: { mode?: Mode; instanceFile?: boolean;
   try {
     port = options.port ?? resolvePort(process.env.AUTOME_WEB_PORT);
     const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
-    const running = await startServer({ port, mode, instanceFile: options.instanceFile, terminal: createMacTerminal() });
+    const running = await startServer({ port, mode, kernelEnv: corePathEnv() ?? undefined, instanceFile: options.instanceFile, terminal: createMacTerminal() });
     const address = running.server.address();
     if (address && typeof address === 'object') {
       console.log(`autome-web 已启动：http://127.0.0.1:${address.port}（${mode === 'production' ? '生产' : '开发'}模式）`);
