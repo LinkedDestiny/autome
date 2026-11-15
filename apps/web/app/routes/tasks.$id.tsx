@@ -1,3 +1,4 @@
+import { TaskNotes } from '../components/task-notes.tsx';
 import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
 import { TaskChangesPanel } from '../components/task-changes.tsx';
@@ -45,7 +46,7 @@ export default function TaskPage() {
     <div className="task-detail-body">
     <TaskTimeline sessions={data.sessions} events={history?.events ?? []} now={context.now} truncated={history?.truncated} error={history && 'error' in history ? history.error : undefined} />
     <div className="task-detail-panel"><nav className="task-detail-tabs" aria-label="任务详情标签">{DETAIL_TABS.map(tab => <Link key={tab.id} to={tabLink(tab.id)} preventScrollReset aria-current={selected === tab.id ? 'page' : undefined}>{tab.label}</Link>)}</nav>
-      {selected === 'docs' ? <TaskDocs data={data} document={document} /> : selected === 'changes' ? <TaskChangesPanel data={data} changes={changes} /> : <TaskDecisions decisions={data.decisions} />}
+      {selected === 'docs' ? <TaskDocs data={data} document={document} /> : selected === 'changes' ? <TaskChangesPanel data={data} changes={changes} /> : selected === 'notes' ? <TaskNotes data={data} result={result} /> : <TaskDecisions decisions={data.decisions} />}
     </div></div>
   </> : <p>{error}</p>}</div>;
 }

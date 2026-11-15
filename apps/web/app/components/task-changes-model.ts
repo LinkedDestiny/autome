@@ -1,7 +1,7 @@
 import type { TaskPayload } from './task-detail-data.ts';
 import { failureText } from '../lib/labels.ts';
 export const TASK_PAGE_EVENT_PREFIXES = ['task.', 'session.', 'gate.', 'bug.', 'merge.', 'rebase.', 'guard.', 'runtime.'];
-export const DETAIL_TABS = [{ id: 'docs', label: '文档' }, { id: 'changes', label: '改动与合并' }, { id: 'decisions', label: '待你决定' }] as const;
+export const DETAIL_TABS = [{ id: 'docs', label: '文档' }, { id: 'changes', label: '改动与合并' }, { id: 'decisions', label: '待你决定' }, { id: 'notes', label: '备注与依赖' }] as const;
 const MERGE_NODES = ['await_merge', 'rebase', 'merge_gate', 'merging', 'main_check', 'cleanup'];
 export function inMergeSegment(data: TaskPayload) {
   return Boolean(data.task.merge?.authorized || (data.task.state?.state === 'active' && MERGE_NODES.includes(data.task.state.node ?? '')));

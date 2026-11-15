@@ -21,6 +21,7 @@ export type TaskPayload = {
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
   sessions: TimelineSession[];
+  notes?: { n: number; text: string; at: string; delivered?: { role: string; round: number; at: string } | null }[];
   decisions?: { kind: string; item_id: string; consumed: boolean; disposition: string; text: string; ruling?: string; carried?: boolean }[];
   documents?: TaskDocument[];
   brief?: string | null;
