@@ -55,7 +55,7 @@ export default function ProjectBoard() {
     <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
-  {data.configError && <section role="alert"><p>项目配置有误，以下是内核的校验原文</p><pre className="board-config-error" data-scroll-region style={{ maxHeight: 120, overflow: 'auto' }}>{data.configError}</pre></section>}<ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
+  {data.configError && <section role="alert"><p>项目配置有误，以下是内核的校验原文</p><pre className="board-config-error" data-scroll-region>{data.configError}</pre></section>}<ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body" data-scroll-region>
       {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
