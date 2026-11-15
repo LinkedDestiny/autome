@@ -1,7 +1,7 @@
 import { setRelatedSubjects } from '../app/lib/live-routes.ts';
 import { shouldRevalidate as taskShouldRevalidate } from '../app/routes/tasks.$id.tsx';
 import type { ShouldRevalidateFunctionArgs } from 'react-router';
-const taskArgs = { currentUrl: new URL('http://localhost/tasks/T-1'), nextUrl: new URL('http://localhost/tasks/T-1'), currentParams: { id: 'T-1' }, defaultShouldRevalidate: false } as ShouldRevalidateFunctionArgs;
+const taskArgs: ShouldRevalidateFunctionArgs = { currentUrl: new URL('http://localhost/tasks/T-1'), nextUrl: new URL('http://localhost/tasks/T-1'), currentParams: { id: 'T-1' }, nextParams: { id: 'T-1' }, defaultShouldRevalidate: false };
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
