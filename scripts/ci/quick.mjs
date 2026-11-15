@@ -100,7 +100,11 @@ export function quickCandidates() {
   ].filter(Boolean))].sort();
   if (paths.some(path => /[\t\r\n]/.test(path))) throw new Error('改动路径不能含 Tab 或换行');
   const candidates = [];
-  const add = (priority, command, parser = 'cargo', prep = []) => candidates.push({ priority, command, parser, prep });
+  const add = (priority, command, parser = 'cargo', prep = []) => {
+    // Integration targets can launch sibling binaries that cargo test -p does not rebuild.
+    if (parser === 'cargo' && (command.includes('--test') || command.includes('--tests'))) prep = ['Build core', ...prep];
+    candidates.push({ priority, command, parser, prep });
+  };
   let metadata;
   const unit = (crate, priority) => {
     metadata ??= JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], { encoding: 'utf8' }));

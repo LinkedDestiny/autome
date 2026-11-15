@@ -55,6 +55,13 @@ test('02 automed source selects its entire lib, without domain tests', t => {
   const f = fixture(t); f.change('crates/automed/src/gate.rs');
   assert.deepEqual(commands(f.plan()), [['cargo', 'test', '-p', 'automed', '--lib', '--no-fail-fast']]);
 });
+test('Rust integration tests build matching CLI and kernel before execution', t => {
+  const f = fixture(t, true); f.change('crates/autome-cli/tests/cli.rs');
+  const output = f.plan();
+  assert.ok(output.indexOf('prep\tBuild core') >= 0 && output.indexOf('prep\tBuild core') < output.indexOf('candidate\t'));
+  const r = f.run([]); ok(r);
+  assert.ok(r.stdout.indexOf('BUILD') >= 0 && r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
+});
 test('03 one Web related command includes source and test, quoted paths and Build core first', t => {
   const f = fixture(t); f.put("apps/web/app/with space '汉字.ts", 'export {};'); f.change('apps/web/test/ci-config.test.ts');
   const output = f.plan(); const list = commands(output); assert.equal(list.length, 1);
@@ -178,5 +185,7 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
   const passes = resolve(f.dir, 'passes'); writeFileSync(passes, [...records.values()].map(k => `${k}\tT\tgate\tabc\tnow\n`).join(''));
   const r = f.run([], { AUTOME_GATE_PASSES: passes, AUTOME_GATE_REPORT: f.report }); ok(r);
   const report = readFileSync(f.report, 'utf8'); assert.equal((report.match(/^reused\t/gm) ?? []).length, 5); assert.match(report, /partial\t/);
-  assert.doesNotMatch(r.stdout, /^BUILD$/m);
+  // Reusing Desktop must not suppress the Rust integration target's fresh binaries.
+  assert.equal((r.stdout.match(/^BUILD$/gm) ?? []).length, 1);
+  assert.ok(r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
 });
