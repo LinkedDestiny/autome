@@ -43,6 +43,8 @@ export const ALERT_KINDS: Record<string, string> = {
 };
 
 export const ENV = {
+  drivers: '驱动', selfDriver: '本面板', driving: '推进中', stoppedDriving: '已停止推进',
+  driverStartedAt: '启动时间', driverLastTickAt: '最近一次 tick',
   title: '环境检查', detect: '重新检测', probing: '正在检测…', installed: '已安装', missing: '未安装',
   noLogin: '不需要登录', loggedIn: '已登录', expired: '登录已过期', unknown: '登录状态未知',
   attention: '需要处理', version: '版本', path: '路径', prerequisite: '前置条件', none: '无', met: '已满足', unmet: '未满足',

@@ -42,9 +42,9 @@ export function EnvView({ data, result, busy = false }: { data: EnvData; result?
   const disabled = !gate.allowed || busy;
   return <div className="env-page" data-testid={TEST_IDS.pageEnv}><header><h1>{ENV.title}</h1><Form method="post"><button name="intent" value="detect" disabled={disabled || snapshot?.probing} title={gate.reason}>{ENV.detect}</button></Form></header>
     <div className="env-components">
-      <section className="env-component"><h2>驱动</h2>
+      <section className="env-component"><h2>{ENV.drivers}</h2>
         <p role="status">{driverSummary(data.drivers)}</p>
-        {data.drivers?.list.map(driver => <div key={driver.pid}><p>pid {driver.pid} · {driver.command}{driver.self && ' · 本面板'} · {driver.driving ? '推进中' : '已停止推进'}</p><dl><dt>启动时间</dt><dd>{driver.started_at}</dd><dt>最近一次 tick</dt><dd>{driver.last_tick_at}</dd></dl></div>)}
+        {data.drivers?.list.map(driver => <div key={driver.pid}><p>pid {driver.pid} · {driver.command}{driver.self && ` · ${ENV.selfDriver}`} · {driver.driving ? ENV.driving : ENV.stoppedDriving}</p><dl><dt>{ENV.driverStartedAt}</dt><dd>{driver.started_at}</dd><dt>{ENV.driverLastTickAt}</dt><dd>{driver.last_tick_at}</dd></dl></div>)}
       </section>
       {data.error && <p role="alert">{data.error}</p>}
       {(snapshot && (!snapshot.probed || snapshot.probing)) && <p role="status">{ENV.probing}</p>}
