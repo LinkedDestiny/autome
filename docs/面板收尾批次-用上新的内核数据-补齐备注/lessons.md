@@ -2,7 +2,10 @@
 
 本任务没有记录到 Autome 指标；下列计数全部数自本任务的证据文件、设计文档与简报，不是指标值。
 第 2 轮复盘在第 1 轮的 L-01…L-04 之后补入合并前门禁超时（实现 #24、审计 #16）的材料，新增 L-05。
-第 3 轮复盘补入第二次合并前门禁失败（宿主 df5ba1d 上 B-3 读到 0 个会话，实现 #25、审计 #17）：L-02 计数按 25 份实现证据更新，新增 L-06。
+第 3 轮复盘补入第二次合并前门禁失败（宿主 df5ba1d 上 B-3 读到 0 个会话，实现 #25、审计 #17），新增 L-06。
+第 4 轮复盘补入第三次合并前门禁失败（宿主 a92adbeb 上 e2e 夹具 `prepare()` 的 `w7-flow.sh` 60 s ETIMEDOUT，实现 #26、审计 #18）：
+这一失败审计 #14 早已见过并按「环境限制」放行，L-06 据此改写为覆盖两次放行；L-02 计数按 26 份实现证据更新，
+并把审计 #14 的 ETIMEDOUT 从「环境时有时无」里移出；新增 L-07（门禁失败后逐个修、三次往返）。
 
 ```yaml
 - id: L-01
@@ -16,9 +19,9 @@
 
 - id: L-02
   domain: tooling
-  symptom: M-07 用了 3 个实现轮、被审计 #8 退回一次，r11–r13 跑截图脚本都在启动前报 `spawnSync ps EPERM`，最后交付的 README 图是 r13 从审计轮的 `.autome/output/shots-2/` 复制来的；两次合并前门禁失败的修复（实现 #24 的 C-2 超时、实现 #25 的 B-3 会话数）在实现轮和审计 #16、#17 里跑 Playwright 都在 setup 的 ps EPERM 处 0 条执行，两次修复都没有经过任何一次本地浏览器运行就交回宿主门禁
-  root_cause: 会话沙箱不允许 `ps` 与本地端口监听，25 份实现证据里有 20 份记了 EPERM；审计轮环境时有时无（审计 #3–#8、#12 跑通了浏览器或截图脚本，审计 #14 在 setup 里 ETIMEDOUT，审计 #16、#17 ps EPERM），依赖进程枚举或监听的验收只能碰运气等某一轮第一次跑
-  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r25-audit.md
+  symptom: M-07 用了 3 个实现轮、被审计 #8 退回一次，r11–r13 跑截图脚本都在启动前报 `spawnSync ps EPERM`，最后交付的 README 图是 r13 从审计轮的 `.autome/output/shots-2/` 复制来的；三次合并前门禁失败的修复（实现 #24 的 C-2 超时、#25 的 B-3 会话数、#26 的夹具 prepare 超时）在实现轮里跑 Playwright 都在 setup 的 ps EPERM 处 0 条执行，审计 #16、#17 同样起不来、审计 #18 未跑浏览器，三次修复都没有经过任何一次本地浏览器运行就交回宿主门禁
+  root_cause: 会话沙箱不允许 `ps` 与本地端口监听，26 份实现证据里有 21 份记了 EPERM；审计轮环境时有时无（审计 #3–#8、#12 跑通了浏览器或截图脚本，审计 #16、#17 ps EPERM），依赖进程枚举或监听的验收只能碰运气等某一轮第一次跑
+  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r26-impl.md
   level: protocol
   proposal: 实现轮与审计轮会话都放行 `ps` 与 127.0.0.1 监听，`npx playwright test` 在这两种轮次里都能越过 globalSetup 的进程表预检、执行到第一条用例
   predicted_impact: {metric: verification_gaps, direction: down, scope: task, horizon: 3}
@@ -52,10 +55,19 @@
 
 - id: L-06
   domain: verification
-  symptom: 审计 #4 复验 M-04 时看到 B-3 约 4 次中 2 次在 `controls.spec.ts:100` 失败（active 后立即断言 sessions.length > 0、未轮询），判为测试竞态记 Backlog BL-13 后通过；13 个里程碑全部完成后，宿主 df5ba1d 的合并前门禁正是在这一行读到 0 个会话而失败，任务回到实现 #25 与审计 #17，修法就是审计 #4 已经指出的「改成轮询」（c4b5d93 只改这一处 expect.poll）
-  root_cause: 共同原则 4 把「还可以更好」送进 Backlog，审计 #4 以「产品行为正确」为由把一条间歇失败的门禁用例也归了进去；但这条用例属于合并前门禁会完整运行的 e2e 套件，间歇失败本身就会让门禁失败，Backlog 在里程碑全部完成前不会被任何一轮处理
-  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r25-impl.md
+  symptom: 合并前门禁后两次失败的位置，都是审计早已亲眼看到又放行的——审计 #4 复验 M-04 时 B-3 约 4 次中 2 次在 `controls.spec.ts:100` 读到 0 个会话，判「测试竞态、产品正确」记 BL-13 后通过，宿主 df5ba1d 门禁正是在这一行失败（实现 #25 改成 expect.poll）；审计 #14 复验 M-12 时 `npx playwright test e2e/live.spec.ts` 在 globalSetup `prepare()` 的 `bash w7-flow.sh` 60 秒 ETIMEDOUT，判「环境限制」后通过，宿主 a92adbeb 门禁正是以同一个 `spawnSync bash ETIMEDOUT` 失败（实现 #26 把这一处 60 s 对齐为其它 6 个调用方已在用的 150 s）
+  root_cause: 审计把门禁会运行的步骤上的失败按「产品行为正确」或「环境限制」放行；但间歇断言失败与超时都不是会话沙箱特有的权限拒绝（EPERM），宿主门禁同样会碰上，而 Backlog 条目与审计证据里的「环境限制」备注在里程碑全部完成前不会被任何一轮处理，于是 M-04、M-12 关闭后又被门禁推翻
+  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-12-r22-audit.md
   level: protocol
-  proposal: 审计复验中观察到合并前门禁会运行的用例出现间歇失败时，审计结论为退回并点名该用例，不得以「测试竞态、产品正确」记 Backlog 后通过
+  proposal: 审计复验中，合并前门禁会运行的用例或 setup 步骤出现断言失败或超时（含间歇出现）时，审计结论为退回并点名该步骤；只有权限拒绝（EPERM）这一类沙箱特有的失败可以记为环境限制后通过
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
+
+- id: L-07
+  domain: process
+  symptom: 13 个里程碑全部完成后，合并前门禁连续失败三次（f579963 的 360 s globalTimeout、df5ba1d 的 B-3 读到 0 个会话、a92adbeb 的夹具 prepare 60 s ETIMEDOUT），每次各花一个修复实现轮、一个集成审计和一个复盘（实现 #24–#26、审计 #16–#18、复盘第 2–4 轮）；第二、三次失败的位置在第一次失败之前已分别记在 Backlog BL-13 与审计 #14 证据里
+  root_cause: 实现 #24 定位门禁失败时只看宿主当次报告的失败（C-2/C-2b 未执行），列的候选原因只有 tick 空等、造卡成本、C-2 会话链，没有翻本任务 Backlog 与既往审计证据里门禁路径上已知的失败；共同原则 3「一次处理同类问题」被落成「同一个用例」而不是「同一个门禁」，于是同一门禁上的已知问题要等宿主一个一个报出来
+  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r24-impl.md
+  level: brief
+  proposal: 合并前门禁失败后的第一个修复实现轮，在证据里列出本任务 Backlog 与既往审计证据中所有涉及门禁会运行的用例或步骤的失败记录（本例应列出 BL-13 与审计 #14 的 60 s ETIMEDOUT），并逐条修复或写明不修的理由
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
 ```
