@@ -82,6 +82,7 @@ export const testGroups = {
     "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
+    "test/e2e-fixture.test.ts",
     "test/web-binary-gone-real.test.ts",
     "test/web-status-driver-real.test.ts",
     "test/add-project-real.test.ts",

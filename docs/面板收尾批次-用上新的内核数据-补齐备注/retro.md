@@ -65,3 +65,5 @@
 
 实现 #25 | M-04 | 待审（门禁修复，原状态不变） | evidence/M-04-r25-impl.md | 浏览器 ps EPERM，宿主复验
 审计 #17 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r25-audit.md | 无（Playwright 受沙箱限制，由宿主门禁复验）
+
+实现 #26 | M-04 | 待审（门禁修复，原状态不变） | evidence/M-04-r26-impl.md | ps EPERM，真实 fixture 耗时待宿主复验
