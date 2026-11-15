@@ -120,6 +120,17 @@ fn null_file() -> std::io::Result<File> {
 pub struct Registration {
     file: Option<File>,
 }
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if let Some(file) = &self.file {
+            use std::os::unix::io::AsRawFd;
+            // Closing alone leaves the lock held while a concurrent child is
+            // between fork and exec, even though the descriptor is CLOEXEC.
+            // SAFETY: self owns the descriptor and it is still open.
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
 impl Registration {
     pub fn touch(&self) -> std::io::Result<()> {
         if let Some(file) = &self.file {
@@ -294,6 +305,10 @@ mod tests {
     fn released_registration_is_removed() {
         let db = tmp_db("released");
         let registration = register(&db, "autome run", None).unwrap();
+        // Model a concurrent child between fork and exec: CLOEXEC has not
+        // closed its inherited reference to the same open file description.
+        let inherited = registration.file.as_ref().unwrap().try_clone().unwrap();
+        assert_eq!(drivers(&db).unwrap().len(), 1);
         drop(registration);
         assert!(drivers(&db).unwrap().is_empty());
         assert_eq!(
@@ -302,6 +317,7 @@ mod tests {
                 .count(),
             0
         );
+        drop(inherited);
     }
 
     #[test]
