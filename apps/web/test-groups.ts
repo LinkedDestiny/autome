@@ -36,6 +36,7 @@ export const testGroups = {
     "test/paths.test.ts",
     "test/project-confirm.test.ts",
     "test/read-gate.test.ts",
+    "test/readme-images.test.ts",
     "test/session-log-controller.test.ts",
     "test/session-log-model.test.ts",
     "test/session-log-view.test.ts",

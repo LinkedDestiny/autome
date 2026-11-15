@@ -2295,3 +2295,62 @@ fn web_exit_code() {
         Some(42)
     );
 }
+
+fn assert_web_help(output: std::process::Output) {
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).unwrap();
+    for word in [
+        "用法：autome web",
+        "open",
+        "start",
+        "status [--json]",
+        "stop",
+        "--force",
+        "--wait 秒",
+        "service install|uninstall",
+        "--port <端口>",
+        "AUTOME_WEB_PORT",
+        "AUTOME_HOME",
+    ] {
+        assert!(text.contains(word), "missing {word}: {text}");
+    }
+    assert!(!text.contains("serve"));
+    assert!(!text.contains("--instance"));
+}
+
+#[test]
+fn web_help_aliases() {
+    let f = WebFixture::new("help-aliases");
+    for flag in ["--help", "-h", "help"] {
+        assert_web_help(f.command().arg(flag).output().unwrap());
+    }
+    assert!(!f.root.join("absent").exists());
+}
+
+#[test]
+fn web_help_without_node_or_panel() {
+    let f = WebFixture::new("help-no-node");
+    for flag in ["--help", "-h", "help"] {
+        assert_web_help(
+            f.command()
+                .env_remove("AUTOME_NODE")
+                .env_remove("AUTOME_WEB_ROOT")
+                .arg(flag)
+                .output()
+                .unwrap(),
+        );
+    }
+    assert!(!f.root.join("absent").exists());
+}
+
+#[test]
+fn web_help_after_subcommand() {
+    let f = WebFixture::new("help-subcommand");
+    for args in [["stop", "--help"], ["start", "-h"], ["unknown", "--help"]] {
+        let output = f.command().args(args).output().unwrap();
+        let expected = f.command().arg("--help").output().unwrap();
+        assert_eq!(output.stdout, expected.stdout);
+        assert_web_help(output);
+    }
+}

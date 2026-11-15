@@ -9,18 +9,18 @@ to approve the design, once to press merge.
 
 ## What it looks like
 
-Every screenshot below is the real renderer, captured by `apps/desktop/tools/
-screenshots.js` from the test fixtures — the same fixtures the DOM suite
-asserts against, so these cannot drift from the shipped screens. The projects,
-tasks and skills in them are invented.
+The web dashboard screenshots can be regenerated from isolated e2e fixtures
+with `apps/web/scripts/screenshots.ts`. After building the core and web app, run
+`npm run screenshots --prefix apps/web`. The script uses invented tasks and a
+temporary ledger, and writes three 1512×944 images to `docs/images/`.
 
 **The dashboard** — everything waiting on you, across every project, above
 everything that is running. Nothing else competes for the space.
 
 ![The dashboard](docs/images/dashboard.png)
 
-**A project** — the repository as Autome sees it, the Loop configuration in
-force, the rules and skills that will be in the prompt, and every task.
+**A project** — tasks grouped by their current stage, with queue order and
+dependencies available from the board.
 
 ![A project](docs/images/project.png)
 
@@ -29,23 +29,6 @@ current session is doing right now, and what it has produced. The stopping
 panel says whether it needs you, and says so in the same place every time.
 
 ![A task](docs/images/task.png)
-
-**The routing graph** — which CLI, model and effort runs each role, global or
-per-project. The banner is the SAME-MODEL rule refusing to save a
-configuration where audit and implementation share a model.
-
-![The routing graph](docs/images/routing.png)
-
-**Skills** — a read-only inventory of what the two CLIs can see, and which
-roles are bound to use each one. The red card is a skill bound to a role whose
-CLI cannot see it.
-
-![Skills](docs/images/skills.png)
-
-**Local environment** — the four things Autome needs, whether each is
-installed and logged in, and which roles stop working if one is not.
-
-![Local environment](docs/images/environment.png)
 
 ## The shape of it
 

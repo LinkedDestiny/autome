@@ -27,3 +27,5 @@
 审计 #6 | M-05 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r9-audit.md | 无
 实现 #10 | M-06 | 开放，D-1…D-4 已实现，待补证 | evidence/M-06-r10-impl.md | ps EPERM 阻断浏览器与 D-5 诊断
 审计 #7 | M-06 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-06-r10-audit.md | 无
+
+实现 #11 | M-07 | 退回 + 截图验收 | evidence/M-07-r11-impl.md | ps 被沙箱拒绝，三张旧图尚未替换；保持开放
