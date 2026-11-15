@@ -5,3 +5,4 @@
 裁决 #2 | M-05 | 采纳 R2-P01，设计定稿（design-round 2，13 个里程碑） | docs/面板收尾批次-用上新的内核数据-补齐备注/面板收尾批次-用上新的内核数据-补齐备注.md | 查询参数互相独立（withParams）
 实现 #1 | M-01 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-01-r1-impl.md | ps/listen/Chromium 沙箱限制，交审计复验
 实现 #2 | M-01 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-01-r2-impl.md | related 的 ps/listen EPERM 交宿主复验
+审计 #1 | M-01 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-01-r2-audit.md | 无
