@@ -18,3 +18,4 @@
 审计 #3 | M-03 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-03-r6-audit.md | 无
 
 实现 #7 | M-04 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r7-impl.md | ps/listen EPERM，浏览器三项与相关环境测试交审计复验
+审计 #4 | M-04 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r7-audit.md | 无
