@@ -1,6 +1,7 @@
 // Explicit membership: new test files must be assigned and reviewed.
 export const testGroups = {
   "unit": [
+    "test/core-binary-watch.test.ts",
     "test/add-project.test.ts",
     "test/alerts.test.ts",
     "test/bell-client.test.ts",
@@ -81,6 +82,7 @@ export const testGroups = {
     "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
+    "test/web-binary-gone-real.test.ts",
     "test/web-status-driver-real.test.ts",
     "test/add-project-real.test.ts",
     "test/alerts-real.test.ts",
