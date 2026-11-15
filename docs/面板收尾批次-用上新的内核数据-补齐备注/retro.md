@@ -32,3 +32,5 @@
 
 实现 #12 | M-07 | 退回 + 截图生成受限 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-07-r12-impl.md | ps EPERM，真实截图未替换
 审计 #8 | M-07 | 退回 + README 截图产物未替换 | evidence/M-07-r12-audit.md | 无
+
+实现 #13 | M-07 | 待审 | evidence/M-07-r13-impl.md | 本轮 ps EPERM；采用审计已生成原图，生成流程待独立复验
