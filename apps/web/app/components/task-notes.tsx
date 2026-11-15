@@ -1,7 +1,7 @@
 import { Form, useNavigation } from 'react-router';
 import { useWriteGate } from '../lib/live.tsx';
 import { formatClock, useClock } from '../lib/clock.tsx';
-import { roleLabel } from '../lib/labels.ts';
+import { nodeLabel, roleLabel } from '../lib/labels.ts';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
 import type { TaskPayload } from './task-detail-data.ts';
 
@@ -20,7 +20,7 @@ export function TaskNotes({ data, result }: { data: TaskPayload; result?: { erro
       <input type="hidden" name="intent" value="note" />
       <fieldset disabled={!gate.allowed || pending}>
         <label>备注正文<textarea name="text" maxLength={MAX_PROSE_LENGTH} required /></label>
-        {state?.state === 'active' && state.node === 'await_merge' && <label><input type="checkbox" name="reopen" value="yes" />同时送回实现轮处理（不合并）</label>}
+        {state?.state === 'active' && state.node === 'await_merge' && <label><input type="checkbox" name="reopen" value="yes" />{`同时送回${nodeLabel('implement')}轮处理（不${nodeLabel('merging')}）`}</label>}
         <button type="submit">提交备注</button>
       </fieldset>
       {!gate.allowed && <p>{gate.reason}</p>}

@@ -13,3 +13,4 @@
 审计 #2 | M-02 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-02-r4-audit.md | 无
 
 实现 #5 | M-03 | 开放（环境阻塞） | evidence/M-03-r5-impl.md | ps/listen EPERM；浏览器未执行，related 清理未通过
+实现 #6 | M-03 | 快检修复，保持开放 | evidence/M-03-r6-impl.md | HTTP listen EPERM，浏览器验收待复验
