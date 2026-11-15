@@ -52,3 +52,5 @@
 
 实现 #21 | M-11 | 快检超时修复，保持开放 | evidence/M-11-r21-impl.md | 真实进程验收仍受 ps 权限限制；宿主复跑快检
 审计 #13 | M-11 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-11-r21-audit.md | 无
+
+实现 #22 | M-12 | 开放（验收受限） | evidence/M-12-r22-impl.md | 浏览器 setup 的 ps EPERM，待宿主复验

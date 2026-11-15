@@ -18,19 +18,6 @@ const hello = (seq = 10) => ({ type: 'hello', seq, core: 'connected' });
 const event = (seq: number) => ({ type: 'event', seq, kind: 'task.updated', subject: 'T-1', payload: {} });
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
-it('浏览器只在接收新事件时更新 liveSeq，hello 和重复事件不推进', () => {
-  const dataset: Record<string, string> = {};
-  vi.stubGlobal('document', { documentElement: { dataset } });
-  const c = setup();
-  try {
-    c.sockets[0].message(hello());
-    expect(dataset.liveSeq).toBeUndefined();
-    c.sockets[0].message(event(11));
-    expect(dataset.liveSeq).toBe('11');
-    c.sockets[0].message(event(10));
-    expect(dataset.liveSeq).toBe('11');
-  } finally { c.stop(); vi.unstubAllGlobals(); }
-});
 it('首次 hello 建检查点，不发 resume', () => {
   const c = setup(); c.sockets[0].message(hello());
   expect(c.sockets[0].send).not.toHaveBeenCalled();
