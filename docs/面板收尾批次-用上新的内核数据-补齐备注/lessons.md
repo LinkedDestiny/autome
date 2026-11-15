@@ -6,6 +6,9 @@
 第 4 轮复盘补入第三次合并前门禁失败（宿主 a92adbeb 上 e2e 夹具 `prepare()` 的 `w7-flow.sh` 60 s ETIMEDOUT，实现 #26、审计 #18）：
 这一失败审计 #14 早已见过并按「环境限制」放行，L-06 据此改写为覆盖两次放行；L-02 计数按 26 份实现证据更新，
 并把审计 #14 的 ETIMEDOUT 从「环境时有时无」里移出；新增 L-07（门禁失败后逐个修、三次往返）。
+第 5 轮复盘补入第四次合并前门禁失败（宿主 da78fdf7 上 `flows.spec.ts` D-1 的「运行中」列不可见，实现 #27、审计 #19）：
+这一失败不在 Backlog 或既往审计证据里，实现 #27 的因果分析指向实现 #24 把功能夹具 tick 改成 100 ms，新增 L-08；
+L-02 计数按 27 份实现证据更新（22 份记了 EPERM，四次门禁修复都没在本地跑过浏览器）；L-07 计数改为四次。
 
 ```yaml
 - id: L-01
@@ -19,9 +22,9 @@
 
 - id: L-02
   domain: tooling
-  symptom: M-07 用了 3 个实现轮、被审计 #8 退回一次，r11–r13 跑截图脚本都在启动前报 `spawnSync ps EPERM`，最后交付的 README 图是 r13 从审计轮的 `.autome/output/shots-2/` 复制来的；三次合并前门禁失败的修复（实现 #24 的 C-2 超时、#25 的 B-3 会话数、#26 的夹具 prepare 超时）在实现轮里跑 Playwright 都在 setup 的 ps EPERM 处 0 条执行，审计 #16、#17 同样起不来、审计 #18 未跑浏览器，三次修复都没有经过任何一次本地浏览器运行就交回宿主门禁
-  root_cause: 会话沙箱不允许 `ps` 与本地端口监听，26 份实现证据里有 21 份记了 EPERM；审计轮环境时有时无（审计 #3–#8、#12 跑通了浏览器或截图脚本，审计 #16、#17 ps EPERM），依赖进程枚举或监听的验收只能碰运气等某一轮第一次跑
-  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r26-impl.md
+  symptom: M-07 用了 3 个实现轮、被审计 #8 退回一次，r11–r13 跑截图脚本都在启动前报 `spawnSync ps EPERM`，最后交付的 README 图是 r13 从审计轮的 `.autome/output/shots-2/` 复制来的；四次合并前门禁失败的修复（实现 #24 的 C-2 超时、#25 的 B-3 会话数、#26 的夹具 prepare 超时、#27 的 D-1 运行中不可见）在实现轮里跑 Playwright 都在 setup 的 ps EPERM 处 0 条执行，审计 #16、#17、#19 同样起不来、审计 #18 未跑浏览器，四次修复都没有经过任何一次本地浏览器运行就交回宿主门禁
+  root_cause: 会话沙箱不允许 `ps` 与本地端口监听，27 份实现证据里有 22 份记了 EPERM；审计轮环境时有时无（审计 #3–#8、#12 跑通了浏览器或截图脚本，审计 #16、#17 ps EPERM），依赖进程枚举或监听的验收只能碰运气等某一轮第一次跑
+  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r27-impl.md
   level: protocol
   proposal: 实现轮与审计轮会话都放行 `ps` 与 127.0.0.1 监听，`npx playwright test` 在这两种轮次里都能越过 globalSetup 的进程表预检、执行到第一条用例
   predicted_impact: {metric: verification_gaps, direction: down, scope: task, horizon: 3}
@@ -64,10 +67,19 @@
 
 - id: L-07
   domain: process
-  symptom: 13 个里程碑全部完成后，合并前门禁连续失败三次（f579963 的 360 s globalTimeout、df5ba1d 的 B-3 读到 0 个会话、a92adbeb 的夹具 prepare 60 s ETIMEDOUT），每次各花一个修复实现轮、一个集成审计和一个复盘（实现 #24–#26、审计 #16–#18、复盘第 2–4 轮）；第二、三次失败的位置在第一次失败之前已分别记在 Backlog BL-13 与审计 #14 证据里
+  symptom: 13 个里程碑全部完成后，合并前门禁连续失败四次（f579963 的 360 s globalTimeout、df5ba1d 的 B-3 读到 0 个会话、a92adbeb 的夹具 prepare 60 s ETIMEDOUT、da78fdf7 的 D-1 运行中不可见），每次各花一个修复实现轮、一个集成审计和一个复盘（实现 #24–#27、审计 #16–#19、复盘第 2–5 轮）；第二、三次失败的位置在第一次失败之前已分别记在 Backlog BL-13 与审计 #14 证据里（第四次见 L-08）
   root_cause: 实现 #24 定位门禁失败时只看宿主当次报告的失败（C-2/C-2b 未执行），列的候选原因只有 tick 空等、造卡成本、C-2 会话链，没有翻本任务 Backlog 与既往审计证据里门禁路径上已知的失败；共同原则 3「一次处理同类问题」被落成「同一个用例」而不是「同一个门禁」，于是同一门禁上的已知问题要等宿主一个一个报出来
   evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r24-impl.md
   level: brief
   proposal: 合并前门禁失败后的第一个修复实现轮，在证据里列出本任务 Backlog 与既往审计证据中所有涉及门禁会运行的用例或步骤的失败记录（本例应列出 BL-13 与审计 #14 的 60 s ETIMEDOUT），并逐条修复或写明不修的理由
   predicted_impact: {metric: impl_rounds_used, direction: down, scope: task, horizon: 3}
+
+- id: L-08
+  domain: verification
+  symptom: 合并前门禁第四次失败在 `flows.spec.ts` D-1 的 `expect(inColumn('running')).toBeVisible()`（宿主 da78fdf7：19 通过、1 失败、9 未执行）；这条用例在本任务开工前就有，本任务里没有任何审计跑过它，失败前也不在 Backlog 里；实现 #27 的因果分析是功能实例 tick 100 ms、页面重验合并窗口 1000 ms，需求前几步写完文档立即结束，可能在浏览器再次取数前就从运行中走到等批准，而 100 ms 是实现 #24 为修第一次门禁超时把 `setup.ts` 普通功能实例从 1000 ms 改出来的
+  root_cause: 实现 #24 把共享夹具的调度间隔一刀改快，只核对了耗时与防重入，没有列出哪些浏览器用例要看到某个中间状态；审计 #16 以「规格内无依赖 1000 ms tick 的断言（grep 无命中）」判定没有影响，但这种依赖不以字面数值出现，而是落在「中间状态的停留时间要长过页面重验间隔」这个时序关系上（实现 #27 自己也注明浏览器受阻，不能排除宿主上还有其它原因）
+  evidence: docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r27-impl.md
+  level: rule
+  proposal: 修改 e2e 共享夹具的 tick、超时等时序参数的实现轮，在证据里列出断言中间状态可见（如运行中、排队中列）的全部浏览器用例，并逐条写明新时序下该状态的停留时间与页面重验间隔的比较；审计不得只凭 grep 旧数值无命中判定没有影响
+  predicted_impact: {metric: closed_then_contradicted, direction: down, scope: task, horizon: 3}
 ```
