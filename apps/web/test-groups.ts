@@ -124,6 +124,7 @@ export const testGroups = {
     "test/gateway-task-card.test.ts",
     "test/gateway-task-lifecycle.test.ts",
     "test/load-context.test.ts",
+    "test/task-detail-ssr.test.ts",
     "test/logtail-live-cleanup.test.ts",
     "test/logtail-live.test.ts",
     "test/notifier-live.test.ts",

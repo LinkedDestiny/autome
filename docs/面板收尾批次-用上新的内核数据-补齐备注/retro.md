@@ -55,3 +55,5 @@
 
 实现 #22 | M-12 | 开放（验收受限） | evidence/M-12-r22-impl.md | 浏览器 setup 的 ps EPERM，待宿主复验
 审计 #14 | M-12 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-12-r22-audit.md | 无（浏览器两例移入人工清单 H-07）
+
+实现 #23 | M-13 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r23-impl.md | 无
