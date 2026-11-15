@@ -72,3 +72,4 @@
 审计 #19 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r27-audit.md | 无
 
 实现 #28 | M-13 | 配置回归通过，浏览器待复验 | evidence/M-13-r28-impl.md | ps EPERM
+审计 #20 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r28-audit.md | 无
