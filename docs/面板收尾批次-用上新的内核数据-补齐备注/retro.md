@@ -25,3 +25,4 @@
 
 实现 #9 | M-05 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r9-impl.md | 浏览器 ps EPERM，交审计复验
 审计 #6 | M-05 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r9-audit.md | 无
+实现 #10 | M-06 | 开放，D-1…D-4 已实现，待补证 | evidence/M-06-r10-impl.md | ps EPERM 阻断浏览器与 D-5 诊断

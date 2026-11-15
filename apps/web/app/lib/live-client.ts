@@ -73,6 +73,7 @@ export function createLiveClient(options: {
         case 'event':
           if (lastSeq !== null && message.seq <= lastSeq) break;
           lastSeq = message.seq;
+          if (typeof document !== 'undefined') document.documentElement.dataset.liveSeq = String(lastSeq);
           batch.push(message);
           flush ??= setTimeout(() => {
             flush = undefined;

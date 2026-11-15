@@ -109,7 +109,10 @@ test('11 Build core precedes executing consumer even when Rust reused; absent wh
   f.seed(); f.put('changing', 'changed');
   let result = f.run([], f.env); assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /==> Rust test\n    沿用/);
-  assert.ok(result.stdout.indexOf('==> Build core') < result.stdout.indexOf('==> Web test'));
+  const build = result.stdout.indexOf('==> Build core'), web = result.stdout.indexOf('==> Web test');
+  assert.ok(build >= 0); assert.ok(web >= 0); assert.ok(build < web);
+  assert.match(result.stdout, /^BUILD$/m); assert.match(result.stdout, /^WEB$/m);
+  assert.ok(result.stdout.indexOf('\nBUILD\n') < result.stdout.indexOf('\nWEB\n'));
   f.seed(); result = f.run([], f.env); assert.equal(result.status, 0);
   assert.doesNotMatch(result.stdout, /==> Build core/); assert.doesNotMatch(result.stdout, /^WEB$/m);
 });

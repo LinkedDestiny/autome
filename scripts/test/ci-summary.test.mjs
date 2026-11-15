@@ -38,6 +38,15 @@ function tail(log) {
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(start));
 }
 
+test('Doc-tests failures belong to their crate, not the preceding unit target', t => {
+  const dir = sandbox(t);
+  const log = '     Running unittests src/lib.rs (target/debug/deps/previous-abc123)\ntest result: ok\n   Doc-tests autome_domain\n\nfailures:\n\n    src/lib.rs - example (line 1)\n\ntest result: FAILED\n';
+  const result = run(dir, `run 'Rust' --cases cargo ${fixture(dir, log)}`);
+  assert.equal(result.status, 1);
+  assert.match(result.summary, /Doc-tests autome_domain: src\/lib.rs - example \(line 1\)/);
+  assert.doesNotMatch(result.summary, /previous \(lib\):/);
+});
+
 test('real cargo runs both failing targets and reports both names', t => {
   const dir = sandbox(t);
   mkdirSync(resolve(dir, 'tests'));

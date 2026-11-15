@@ -23,6 +23,9 @@ function extract(parser, output) {
         const binary = running[2].split('/').at(-1).replace(/-[a-f0-9]+$/, '');
         target = running[1].startsWith('unittests src/lib.rs') ? `${binary} (lib)` : binary;
         failures = false;
+      } else if (/^\s*Doc-tests\s+\S+\s*$/.test(line)) {
+        target = line.trim();
+        failures = false;
       } else if (line === 'failures:') {
         failures = true;
       } else if (failures && /^ {4}\S/.test(line)) {

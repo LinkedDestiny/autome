@@ -32,13 +32,22 @@ test('D-4 内核离线横幅与恢复后补齐离线期间命令行建卡', asyn
   await expect(page.getByTestId('task-card').first()).toBeVisible();
   // Enabled writes prove hydration and the live connection are ready before killing core.
   await expect(page.locator('[data-testid=task-op][data-op=start]').first()).toBeEnabled();
+  const online = newTask(f.root, 'online-draft', ['--draft']);
+  await expect(page.locator(`[data-task-id="${online}"]`)).toBeVisible();
+  const checkpoint = Number(await page.locator('html').getAttribute('data-live-seq'));
+  expect(checkpoint).toBeGreaterThan(0);
   const pid = Number(readFileSync(join(f.root, 'core.pid'), 'utf8').trim());
   expect(Number.isSafeInteger(pid) && pid > 1).toBe(true);
   process.kill(pid, 'SIGKILL');
   await expect(page.locator('[data-testid=live-banner][data-state=offline]')).toBeVisible();
   const id = newTask(f.root, 'offline-draft', ['--draft']);
+  const history = JSON.parse(cli(f.root, ['rpc', 'events.since', JSON.stringify({ subject: id, after_seq: 0, limit: 1000 })])) as { events: { seq: number; kind: string }[] };
+  const created = history.events.find(event => event.kind === 'task.created');
+  expect(created).toBeDefined();
+  expect(created!.seq).toBeGreaterThan(checkpoint);
   await expect(page.locator('[data-testid=live-banner][data-state=offline]')).toBeVisible();
   await expect(page.getByTestId('live-banner')).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-testid=board-column][data-column=todo] [data-task-id="${id}"]`)).toBeVisible();
+  await expect.poll(async () => Number(await page.locator('html').getAttribute('data-live-seq'))).toBeGreaterThanOrEqual(created!.seq);
   expect(loads).toBe(1);
 });
