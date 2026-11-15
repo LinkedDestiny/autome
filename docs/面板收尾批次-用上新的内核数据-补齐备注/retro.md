@@ -49,3 +49,5 @@
 审计 #12 | M-10 | 通过 | evidence/M-10-r19-audit.md | 无
 
 实现 #20 | M-11 | 实现落地，保持开放 | evidence/M-11-r20-impl.md | ps EPERM，真实进程验收交宿主
+
+实现 #21 | M-11 | 快检超时修复，保持开放 | evidence/M-11-r21-impl.md | 真实进程验收仍受 ps 权限限制；宿主复跑快检

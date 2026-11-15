@@ -136,7 +136,10 @@ export function quickCandidates() {
   }
   const web = paths.filter(p => p.startsWith('apps/web/')).map(p => p.slice('apps/web/'.length));
   // Vitest 5 treats tokens after -- as runner arguments, not related paths.
-  if (web.length) add(1, ['sh', '-c', `cd apps/web && npx vitest related --run ${web.map(path => quote(path.startsWith('-') ? `./${path}` : path)).join(' ')}`], 'vitest', ['Web install', 'Build core']);
+  if (web.length) {
+    add(1, ['sh', '-c', `cd apps/web && npx vitest related --run ${web.map(path => quote(path.startsWith('-') ? `./${path}` : path)).join(' ')}`], 'vitest', ['Web install', 'Build core']);
+    candidates.at(-1).web = web;
+  }
   if (paths.some(p => p.startsWith('apps/desktop/'))) candidates.push({ priority: 1, full: 'Desktop', prep: ['Desktop install', 'Build core'] });
   const seen = new Set();
   return candidates.sort((a, b) => a.priority - b.priority).filter(candidate => {

@@ -123,6 +123,16 @@ ci_partial() {
   fi
 }
 
+ci_web_related() {
+  ci_web_failures=$failed_count
+  run 'Discover Web related files' node "$root/apps/web/scripts/quick-related.mjs" "$ci_tmp/web-related" "$@"
+  if [ "$failed_count" -gt "$ci_web_failures" ]; then
+    ci_report failed - 'Discover Web related files'
+    return
+  fi
+  . "$ci_tmp/web-related"
+}
+
 ci_report() {
   if [ -n "${AUTOME_GATE_REPORT-}" ]; then
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$AUTOME_GATE_REPORT" || exit 2
