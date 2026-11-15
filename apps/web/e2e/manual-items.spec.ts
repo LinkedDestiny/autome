@@ -73,12 +73,16 @@ test('W9 H-04 复制按钮把页面原命令写入真实剪贴板', async ({ pag
 
 
 test('C-2 展开日志后新会话到来再加载更早的会话，日志和滚动位置保留', async ({ page }) => {
+  // Preparing 22 real sessions includes protocol transitions and git commits,
+  // not just the 100 ms driver tick. Keep a separate 150 s preparation budget
+  // plus the normal 90 s for browser assertions; other cases stay unchanged.
+  test.setTimeout(240_000);
   const fixture = state(), slug = 'window-history';
   writeWindowScripts(fixture.root, slug);
   const task = newTask(fixture.root, slug);
   const detail = () => JSON.parse(cli(fixture.root, ['rpc', 'task.get', JSON.stringify({ task_id: task })])) as { sessions: { id: string; running: boolean }[] };
   try {
-    await expect.poll(() => detail().sessions.length, { timeout: 75_000 }).toBe(22);
+    await expect.poll(() => detail().sessions.length, { timeout: 150_000 }).toBe(22);
     await visit(page, `/tasks/${task}?tab=docs`);
     await expect(page).toHaveURL(/from=/);
     const from = new URL(page.url()).searchParams.get('from')!;
