@@ -96,8 +96,12 @@ test('B-3 依赖任务在前置合并前不开始、合并后开始', async ({ p
     const status = taskState(f.root, parent); if (status.state !== 'done') expect(taskState(f.root, child).state).toBe('queued'); return status.state;
   }, { timeout: 60_000 }).toBe('done');
   await expect.poll(() => taskState(f.root, child).state).toBe('active');
-  const detail = JSON.parse(cli(f.root, ['rpc', 'task.get', JSON.stringify({task_id: child})]));
-  expect(detail.sessions.length).toBeGreaterThan(0);
+  // active is persisted before start_session inserts the first session (BL-13).
+  // Wait for that separate observable effect without weakening the assertion.
+  await expect.poll(() => {
+    const detail = JSON.parse(cli(f.root, ['rpc', 'task.get', JSON.stringify({task_id: child})]));
+    return detail.sessions.length;
+  }).toBeGreaterThan(0);
   await expect(childCard).not.toContainText(`等 ${parent} 合并`);
 });
 

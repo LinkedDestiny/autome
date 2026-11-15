@@ -62,3 +62,5 @@
 实现 #24 | M-05 | 门禁超时修复待复验 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r24-impl.md | 浏览器启动被 ps EPERM 阻断
 
 审计 #16 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r24-audit.md | 无（Playwright 受沙箱限制，由宿主门禁复验）
+
+实现 #25 | M-04 | 待审（门禁修复，原状态不变） | evidence/M-04-r25-impl.md | 浏览器 ps EPERM，宿主复验
