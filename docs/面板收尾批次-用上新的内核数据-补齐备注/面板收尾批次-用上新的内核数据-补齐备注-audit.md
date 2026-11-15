@@ -1,9 +1,8 @@
-# 审计 · M-06（审计 #7）
+# 审计结论（审计 #8 · M-07）
 
-结论：**通过**，M-06 标为已完成。
+结论：**实现缺陷，退回开放**（reopen 1，领域「README 截图产物未替换」，收敛模式 normal）。
 
-验收命令全部重跑通过（node 26、vitest 12、Playwright 14，含 live D-4 与 layout 项目页）。四项负向对照均命中：Doc-tests 分支删除、⑪ 夹具缺 prep、drain 对恢复期事件不分发（卡片仍出现、`data-live-seq` 停在 218 < 219 而失败）、列体 `overflow-y: visible`；均已还原。
-
-D-5：把 11 个文件的 `maxRetries` 临时设 0，连跑 `vitest run --project kernel`，第 9 次出现 ENOTEMPTY（`…/w9-*/home/.claude`），前 8 次通过。结论：不带重试会复发，写入者在假 HOME 的 `.claude` 下，未进一步定位到进程；按设计「证实不了则保留重试」，重试保留，产品未改。详见 `evidence/M-06-r10-audit.md`。
-
-Backlog：无新增。
+- 失败命令：验收命令末段 `cd apps/web && npx vitest run test/readme-images.test.ts test/test-groups.test.ts`，尺寸用例失败：收到 [1200, 451]，期望 [1512, 944]。
+- 其余各段通过：cli `web_` 10、`--bin autome` 67、构建、截图脚本两次运行（各 3 张 1512×944，残留 0）。
+- 根因：脚本已实现且可用，但 `docs/images/` 的三张产物未替换。实现轮因 ps EPERM 没跑脚本；审计环境可跑，下一轮直接 `--out docs/images` 生成即可。
+- 判别检查：readme-images 现有尺寸用例（无需新造）。证据：evidence/M-07-r12-audit.md。
