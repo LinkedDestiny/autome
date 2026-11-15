@@ -4398,12 +4398,15 @@ fn run_core_step(ctx: &mut Ctx, task: &TaskRecord, node: Node) -> Result<()> {
         }
 
         n if n.is_gate() => return run_gate(ctx, task, &project, &layout, n),
-        Node::Cleanup => match cleanup(&layout) {
-            Ok(()) => CoreStepResult::Ok,
-            Err(e) => CoreStepResult::Failed {
-                detail: e.to_string(),
-            },
-        },
+        Node::Cleanup => {
+            crate::residue::sweep(&ctx.store, &task.id, &layout);
+            match cleanup(&layout) {
+                Ok(()) => CoreStepResult::Ok,
+                Err(e) => CoreStepResult::Failed {
+                    detail: e.to_string(),
+                },
+            }
+        }
         other => {
             return Err(err(format!("{other:?} 不是内核步骤")));
         }
@@ -5357,7 +5360,7 @@ pub(crate) fn check_convert_cancel(ctx: &Ctx, task: &TaskRecord, project: &Proje
     Ok(())
 }
 
-pub(crate) fn discard_checkout(_ctx: &mut Ctx, task: &TaskRecord, project: &Project) {
+pub(crate) fn discard_checkout(ctx: &mut Ctx, task: &TaskRecord, project: &Project) {
     let layout = TaskLayout::of(project, &task.slug, &working_repos(project, task));
 
     // The documents first, while the branch that holds them still exists.
@@ -5379,6 +5382,8 @@ pub(crate) fn discard_checkout(_ctx: &mut Ctx, task: &TaskRecord, project: &Proj
             let _ = copy_dir(&source, &dest);
         }
     }
+
+    crate::residue::sweep(&ctx.store, &task.id, &layout);
 
     // Then every checkout and every branch, in every repository the task
     // worked in. Forced: the user asked for the work to go away, so

@@ -27,6 +27,17 @@ function gateName(p: Record<string, unknown>) {
 function light(event: TaskEvent, clock: Clock): string | undefined {
   const p = event.payload, s = (key: string) => str(p[key]);
   switch (event.kind) {
+    case 'task.processes_stopped': {
+      const processes = (Array.isArray(p.processes) ? p.processes : []) as Record<string, unknown>[];
+      const survivors = (Array.isArray(p.survivors) ? p.survivors : []) as Record<string, unknown>[];
+      return `清理时结束了 ${processes.length} 个残留进程：${processes.map(proc => `${str(proc.pid)} ${str(proc.command)}`).join('；')}${survivors.length ? `；仍有 ${survivors.length} 个进程未退出：${survivors.map(proc => `${str(proc.pid)} ${str(proc.error)}`).join('；')}` : ''}`;
+    }
+    case 'task.processes_unchecked': {
+      const processes = (Array.isArray(p.processes) ? p.processes : []) as Record<string, unknown>[];
+      const tty = processes.filter(proc => proc.kind === 'tty');
+      const unknown = processes.length - tty.length;
+      return [unknown ? `清理时有 ${unknown} 个进程无法判断，未结束` : '', tty.length ? `清理时有 ${tty.length} 个进程有控制终端（可能是你自己打开的终端），未结束：${tty.map(proc => `${str(proc.pid)} ${str(proc.tty)} ${str(proc.command)}`).join('；')}` : ''].filter(Boolean).join('；');
+    }
     case 'gate.queued': return p.job === 'setup' ? `准备命令排队第 ${p.position} 位` : undefined;
     case 'gate.reused': return '沿用已通过的结果';
     case 'gate.skipped': return `跳过：${s('reason')}`;

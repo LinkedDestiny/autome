@@ -201,3 +201,18 @@ it('结束事件优先于矛盾的会话行及运行标志', () => {
     expect(entry.summary).not.toBe('被停止'); expect(entry.summary).not.toBe('运行中'); expect(entry.session?.running).toBe(false);
   }
 });
+it('F 清理结束的进程显示 pid、命令和未退出项', () => {
+  const title = build([ev(1, 'task.processes_stopped', { processes: [{ pid: 42, command: 'sleep 600', signal: 'TERM' }], survivors: [{ pid: 43, error: 'EPERM' }] })])[0].title;
+  expect(title).toContain('清理时结束了 1 个残留进程：42 sleep 600');
+  expect(title).toContain('仍有 1 个进程未退出：43 EPERM');
+});
+it('F 无法判断与有控制终端分别显示，混合及旧事件保留两种原因', () => {
+  const unknown = { pid: 42, command: 'sleep', kind: 'unknown' };
+  const tty = { pid: 43, command: 'shell', kind: 'tty', tty: 'ttys002' };
+  for (const processes of [[unknown], [{ pid: 42 }], [{ pid: 42, kind: 'future' }]]) {
+    expect(build([ev(1, 'task.processes_unchecked', { processes })])[0].title).toBe('清理时有 1 个进程无法判断，未结束');
+  }
+  const text = '清理时有 1 个进程有控制终端（可能是你自己打开的终端），未结束：43 ttys002 shell';
+  expect(build([ev(1, 'task.processes_unchecked', { processes: [tty] })])[0].title).toBe(text);
+  expect(build([ev(1, 'task.processes_unchecked', { processes: [unknown, tty] })])[0].title).toBe(`清理时有 1 个进程无法判断，未结束；${text}`);
+});

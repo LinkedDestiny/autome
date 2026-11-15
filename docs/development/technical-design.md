@@ -309,8 +309,13 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 | 合并前置 | 主工作树中**本次合并会改动的文件**没有未提交改动；任务分支 `merge-base --is-ancestor <default> autome/<slug>` | 不满足即拒绝。判据不是「工作树干净」——界面改配置会留下未提交的 `.autome/config.toml`，按前者会让此后每次合并都被拒 |
 | 合并 | 在项目根 `git merge --no-ff autome/<slug> -m "merge(autome): T-n <title>"` | 主工作树随之更新 |
 | 清理 | `git worktree remove .worktree/<slug>`；`git branch -d autome/<slug>` | 失败时保留并提示 |
+
 | 取消 | 复制 `docs/<slug>/` 到项目根 `docs/.archive/<slug>/`；`worktree remove --force`；`branch -D` | 复制结果留在主工作树，不提交 |
 | 归档 / 恢复 | 项目根 `git mv docs/<slug> docs/.archive/<slug>` 及反向 | 不提交 |
+
+任务合并清理与取消（含改建任务）在删除检出前，按任务布局的 cwd 和各成员 worktree 扫描残留进程。macOS 用 libproc 的可执行文件与工作目录路径按组件匹配（保留原路径与 canonical 路径），仅处理当前用户、非僵尸、非内核自身的进程；有控制终端的只告警。每次信号及存活检查重新核对 pid、微秒级起始时间、路径和终端；先批量 TERM、共等 3 秒，仍符合条件的 KILL、共等 1 秒。PID 复用、路径离开、取得终端或无法复核时不再发信号。无法归属的路径错误不按进程年龄豁免；枚举失败及非 macOS 只告警，不阻断检出清理。
+
+事件 `task.processes_stopped {checkouts, processes: [{pid, command, matched, signal}], survivors: [{pid, command, error}]}` 记录清理结果，`task.processes_unchecked {processes: [{pid, command, kind, reason, tty?}]}` 区分 `unknown` 与 `tty`。命令截到 120 字符，空结果不写事件。无任务残留但本机存在不可归属进程时仍写 unchecked；时间线分别显示无法判断与有控制终端的原因。
 
 **集成复验的提交范围。** 需求实现轮在非空且全 `已完成` 的里程碑表上开始、结束后仍全关闭时，
 按仓库用首次尝试的 `session.started.start_heads` 作 H0（简报提交之后取值，崩溃重试沿用），

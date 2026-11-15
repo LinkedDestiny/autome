@@ -12784,3 +12784,279 @@ fn gate_steps_second_run_receives_first_pass_and_records_counts() {
 fn gate_steps_no_report_preserves_event_fields() {
     gate_steps_scenario(false);
 }
+
+#[cfg(target_os = "macos")]
+mod residue_e2e {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command as OsCommand, Stdio};
+    struct Children {
+        children: Vec<Child>,
+        tty: Option<i32>,
+        script: Option<usize>,
+    }
+    impl Children {
+        fn new() -> Self {
+            Self {
+                children: vec![],
+                tty: None,
+                script: None,
+            }
+        }
+        fn spawn(&mut self, mut cmd: OsCommand) -> usize {
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            self.children.push(cmd.spawn().unwrap());
+            self.children.len() - 1
+        }
+        fn sleep(&mut self, cwd: &std::path::Path) -> usize {
+            let mut cmd = OsCommand::new("/bin/sh");
+            cmd.args(["-c", "exec sleep 600"]).current_dir(cwd);
+            self.spawn(cmd)
+        }
+        fn pid(&self, i: usize) -> i32 {
+            self.children[i].id() as i32
+        }
+        fn alive(&mut self, i: usize) -> bool {
+            self.children[i].try_wait().unwrap().is_none()
+        }
+        fn pty(&mut self, root: &std::path::Path, cwd: &std::path::Path) {
+            let pidfile = root.join("tty.pid");
+            let mut cmd = OsCommand::new("/usr/bin/script");
+            cmd.args(["-q", "/dev/null", "sh", "-c"])
+                .arg(format!(
+                    "echo $$ > '{}'; cd '{}' && exec sleep 600",
+                    pidfile.display(),
+                    cwd.display()
+                ))
+                .current_dir(root);
+            let index = self.spawn(cmd);
+            self.script = Some(index);
+            self.children[index].stdin.take();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pidfile)
+                    && let Ok(pid) = text.trim().parse::<i32>()
+                {
+                    self.tty = Some(pid);
+                    if ready(pid, "sleep") {
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "PTY child did not start"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    impl Children {
+        fn close(&mut self) {
+            if let Some(pid) = self.tty.take() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                // Let script reap its child before terminating the parent.
+                if let Some(index) = self.script {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    while self.children[index].try_wait().ok().flatten().is_none()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            }
+            for child in &mut self.children {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    impl Drop for Children {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+    fn ready(pid: i32, suffix: &str) -> bool {
+        let mut path = [0u8; 4096];
+        let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        n > 0 && String::from_utf8_lossy(path.split(|b| *b == 0).next().unwrap()).ends_with(suffix)
+    }
+    fn prepare(tag: &str) -> (World, String, PathBuf) {
+        let mut w = World::new(tag);
+        let slug = slug_for("sweep");
+        for (n, status, design, implementation, milestones) in [
+            (1, "设计中", 0, 0, vec![]),
+            (2, "设计中", 1, 0, vec![]),
+            (3, "设计中", 1, 0, vec![]),
+            (4, "实现中", 2, 0, vec![("M-01", "开放")]),
+            (5, "实现中", 2, 1, vec![("M-01", "待审")]),
+            (6, "实现中", 2, 1, vec![("M-01", "已完成")]),
+        ] {
+            w.doc_step(n, &slug, &doc(status, design, implementation, &milestones));
+        }
+        w.retro_step(7, &slug);
+        let id = create_task(&mut w, "sweep");
+        w.settle();
+        ok(&w.call("task.approve", json!({"task_id":id})));
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        let checkout = w.repo.join(format!(".worktree/{slug}"));
+        (w, id, checkout)
+    }
+    fn exercise(cancel: bool) {
+        let (mut w, id, checkout) = prepare(if cancel {
+            "residue-cancel"
+        } else {
+            "residue-merge"
+        });
+        let sibling = checkout.with_file_name(format!(
+            "{}-2",
+            checkout.file_name().unwrap().to_string_lossy()
+        ));
+        automed::git::run_ok(
+            &w.repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "residue-sibling",
+                sibling.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut children = Children::new();
+        let cwd = children.sleep(&checkout);
+        let binary = checkout.join(".autome/output/automed-residue");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_automed"), &binary).unwrap();
+        let mut cmd = OsCommand::new(&binary);
+        cmd.current_dir(&w.root)
+            .env("AUTOME_HOME", w.root.join("residue-home"))
+            .env("HOME", w.root.join("home"));
+        let exe = children.spawn(cmd);
+        let main = children.sleep(&w.repo);
+        let sibling_process = children.sleep(&sibling);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready(children.pid(cwd), "sleep") || !ready(children.pid(exe), "automed-residue") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process paths unavailable"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !cancel {
+            children.pty(&w.root, &checkout);
+        }
+        ok(&w.call(
+            if cancel { "task.cancel" } else { "task.merge" },
+            json!({"task_id":id}),
+        ));
+        w.settle();
+        assert_eq!(w.state(&id), if cancel { "cancelled" } else { "done" });
+        assert!(!children.alive(cwd));
+        assert!(!children.alive(exe));
+        assert!(children.alive(main));
+        assert!(children.alive(sibling_process));
+        let stopped = w
+            .ctx
+            .store
+            .last_event(&id, "task.processes_stopped")
+            .unwrap()
+            .unwrap();
+        let processes = stopped["processes"].as_array().unwrap();
+        for (index, matched) in [(cwd, "cwd"), (exe, "exe")] {
+            assert!(
+                processes
+                    .iter()
+                    .any(|p| p["pid"] == children.pid(index) && p["matched"] == matched),
+                "{stopped}"
+            );
+        }
+        assert_eq!(processes.len(), 2, "{stopped}");
+        assert!(stopped["survivors"].as_array().unwrap().is_empty());
+        if let Some(pid) = children.tty {
+            assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+            assert!(processes.iter().all(|p| p["pid"] != pid));
+            let unchecked = w
+                .ctx
+                .store
+                .last_event(&id, "task.processes_unchecked")
+                .unwrap()
+                .unwrap();
+            assert!(
+                unchecked["processes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p["pid"] == pid && p["kind"] == "tty" && p["tty"].as_str().is_some()),
+                "{unchecked}"
+            );
+        }
+        let tty = children.tty;
+        children.close();
+        assert!(
+            children
+                .children
+                .iter_mut()
+                .all(|child| child.try_wait().unwrap().is_some())
+        );
+        if let Some(pid) = tty {
+            assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "PTY child not reaped");
+        }
+    }
+    #[test]
+    fn residue_merge_preserves_other_checkouts_and_controlling_terminal() {
+        assert!(git_available(), "git is required");
+        exercise(false);
+    }
+    #[test]
+    fn residue_cancel_preserves_other_checkouts() {
+        assert!(git_available(), "git is required");
+        exercise(true);
+    }
+    #[test]
+    fn residue_no_processes_no_stopped_event() {
+        assert!(git_available(), "git is required");
+        let (mut w, id, _) = prepare("residue-empty");
+        ok(&w.call("task.cancel", json!({"task_id":id})));
+        assert!(
+            w.ctx
+                .store
+                .last_event(&id, "task.processes_stopped")
+                .unwrap()
+                .is_none()
+        );
+        let unchecked = w
+            .ctx
+            .store
+            .last_event(&id, "task.processes_unchecked")
+            .unwrap();
+        // F.1 requires warnings even for unrelated long-lived applications
+        // whose executable has been replaced. An ambient warning is not a
+        // task residue: never suppress it merely to make this test quiet.
+        if let Some(unchecked) = unchecked {
+            let processes = unchecked["processes"].as_array().unwrap();
+            assert!(!processes.is_empty());
+            for process in processes {
+                assert_eq!(process["kind"], "unknown", "{unchecked}");
+                assert!(
+                    process["pid"].as_i64().unwrap() > 0,
+                    "enumeration must succeed: {unchecked}"
+                );
+                assert!(!process["reason"].as_str().unwrap().is_empty());
+            }
+        }
+    }
+}
