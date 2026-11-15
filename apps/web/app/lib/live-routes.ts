@@ -53,3 +53,15 @@ export function bySubjectParam(prefixes: string[], param: string): Matcher {
   const matches = byKind(...prefixes);
   return (event, params) => matches(event, params) && event.subject === params[param];
 }
+
+const relatedSubjects = new Map<string, Set<string>>();
+export function setRelatedSubjects(key: string, ids: string[]) {
+  relatedSubjects.set(key, new Set(ids));
+  return () => { relatedSubjects.delete(key); };
+}
+export function bySubjectParamOrRelated(prefixes: string[], param: string, relatedPrefixes: string[]): Matcher {
+  const own = bySubjectParam(prefixes, param);
+  const related = byKind(...relatedPrefixes);
+  return (event, params) => own(event, params) || (related(event, params)
+    && relatedSubjects.get(params[param] ?? '')?.has(event.subject) === true);
+}

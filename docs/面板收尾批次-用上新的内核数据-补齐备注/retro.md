@@ -42,3 +42,5 @@
 实现 #16 | M-09 | 待审 | evidence/M-09-r16-impl.md | 关联 Web 的 listen/ps EPERM 交宿主复验
 实现 #17 | M-09 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-09-r17-impl.md | 无；修复驱动登记释放竞态，宿主复验快检
 审计 #11 | M-09 | 通过 | evidence/M-09-r17-audit.md | 无
+
+实现 #18 | M-10 | 开放（验收受阻） | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-10-r18-impl.md | 沙箱禁止 ps 与本地监听

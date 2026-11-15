@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { withParams } from '../components/task-url.ts';
 import { TaskDependencies } from '../components/task-dependencies.tsx';
 import { TaskNotes } from '../components/task-notes.tsx';
@@ -14,7 +15,7 @@ import { TaskNotice } from '../components/task-notice.tsx';
 import { loadTaskDetail } from '../components/task-detail-data.ts';
 import { Link, useSearchParams, useLoaderData, useActionData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
 import { servicesContext } from '../load-context.ts';
-import { bySubjectParam, liveShouldRevalidate } from '../lib/live-routes.ts';
+import { bySubjectParamOrRelated, liveShouldRevalidate, setRelatedSubjects } from '../lib/live-routes.ts';
 import { TaskTimeline } from '../components/task-timeline.tsx';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
@@ -23,9 +24,14 @@ export async function loader({ context, params, request }: LoaderFunctionArgs) {
 export async function action({ context, params, request }: ActionFunctionArgs) {
   return handleTaskAction(await request.formData(), params.id!, context.get(servicesContext));
 }
-export const shouldRevalidate = liveShouldRevalidate(bySubjectParam(TASK_PAGE_EVENT_PREFIXES, 'id'));
+export const shouldRevalidate = liveShouldRevalidate(bySubjectParamOrRelated(TASK_PAGE_EVENT_PREFIXES, 'id', ['task.', 'merge.']));
 export default function TaskPage() {
   const { data, error, header, stage, notice, ops, timeline, window, docs, dependencyReason, document, changes } = useLoaderData<typeof loader>();
+  const taskId = data?.task.id;
+  const after = data?.task.after;
+  useEffect(() => {
+    if (taskId) return setRelatedSubjects(taskId, after ?? []);
+  }, [taskId, after]);
   const [search] = useSearchParams();
   const selected = data ? detailTab(data, search) : 'docs';
   const tabLink = (id: string) => `?${withParams(search, { set: { tab: id } })}`;
