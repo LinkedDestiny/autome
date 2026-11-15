@@ -100,7 +100,11 @@ export function quickCandidates() {
   ].filter(Boolean))].sort();
   if (paths.some(path => /[\t\r\n]/.test(path))) throw new Error('改动路径不能含 Tab 或换行');
   const candidates = [];
-  const add = (priority, command, parser = 'cargo', prep = []) => candidates.push({ priority, command, parser, prep });
+  const add = (priority, command, parser = 'cargo', prep = []) => {
+    // Integration targets can launch sibling binaries that cargo test -p does not rebuild.
+    if (parser === 'cargo' && (command.includes('--test') || command.includes('--tests'))) prep = ['Build core', ...prep];
+    candidates.push({ priority, command, parser, prep });
+  };
   let metadata;
   const unit = (crate, priority) => {
     metadata ??= JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], { encoding: 'utf8' }));
@@ -132,7 +136,10 @@ export function quickCandidates() {
   }
   const web = paths.filter(p => p.startsWith('apps/web/')).map(p => p.slice('apps/web/'.length));
   // Vitest 5 treats tokens after -- as runner arguments, not related paths.
-  if (web.length) add(1, ['sh', '-c', `cd apps/web && npx vitest related --run ${web.map(path => quote(path.startsWith('-') ? `./${path}` : path)).join(' ')}`], 'vitest', ['Web install', 'Build core']);
+  if (web.length) {
+    add(1, ['sh', '-c', `cd apps/web && npx vitest related --run ${web.map(path => quote(path.startsWith('-') ? `./${path}` : path)).join(' ')}`], 'vitest', ['Web install', 'Build core']);
+    candidates.at(-1).web = web;
+  }
   if (paths.some(p => p.startsWith('apps/desktop/'))) candidates.push({ priority: 1, full: 'Desktop', prep: ['Desktop install', 'Build core'] });
   const seen = new Set();
   return candidates.sort((a, b) => a.priority - b.priority).filter(candidate => {

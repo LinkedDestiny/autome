@@ -23,6 +23,8 @@ function fixture(t, fake = false) {
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
   const env = { ...cleanEnv };
   if (fake) {
+    put('apps/web/scripts/quick-related.mjs', `import { writeFileSync } from 'node:fs';
+writeFileSync(process.argv[2], "ci_partial 'vitest related fixture' npx vitest related\\n");`);
     put('scripts/ci/steps.sh', `GLOBAL_INPUTS='scripts'\nNO_GATE='docs'\nstep 'Format' 'crates' true\nstep 'Clippy' 'crates protocol' true\nprep 'Web install' sh -c 'echo INSTALL'\nstep 'Web lint' 'apps/web' true\nstep 'Web typecheck' 'apps/web' true\nprep 'Desktop install' true\nprep 'Build core' sh -c 'echo BUILD'\nstep 'Desktop' 'apps/desktop crates protocol' sh -c 'echo DESKTOP'\nstep 'Rust test' 'crates protocol' false\nstep 'Web test' 'apps/web crates protocol' false\n`);
     const bin = resolve(dir, 'bin'); mkdirSync(bin);
     writeFileSync(resolve(bin, 'npx'), '#!/bin/sh\necho "WEB CANDIDATE $*"\n', { mode: 0o755 });
@@ -54,6 +56,13 @@ test('01 changed integration target only; committed, unstaged and untracked chan
 test('02 automed source selects its entire lib, without domain tests', t => {
   const f = fixture(t); f.change('crates/automed/src/gate.rs');
   assert.deepEqual(commands(f.plan()), [['cargo', 'test', '-p', 'automed', '--lib', '--no-fail-fast']]);
+});
+test('Rust integration tests build matching CLI and kernel before execution', t => {
+  const f = fixture(t, true); f.change('crates/autome-cli/tests/cli.rs');
+  const output = f.plan();
+  assert.ok(output.indexOf('prep\tBuild core') >= 0 && output.indexOf('prep\tBuild core') < output.indexOf('candidate\t'));
+  const r = f.run([]); ok(r);
+  assert.ok(r.stdout.indexOf('BUILD') >= 0 && r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
 });
 test('03 one Web related command includes source and test, quoted paths and Build core first', t => {
   const f = fixture(t); f.put("apps/web/app/with space '汉字.ts", 'export {};'); f.change('apps/web/test/ci-config.test.ts');
@@ -126,6 +135,14 @@ test('09 Web command cwd loads real config and related actually runs changed tes
   const related = spawnSync(command[0], command.slice(1), { cwd: source, env: { ...cleanEnv, NO_COLOR: '1' }, encoding: 'utf8', timeout: 30_000 }); ok(related);
   assert.match(related.stdout, /Tests\s+12 passed \(12\)/);
   assert.doesNotMatch(related.stdout, /No (?:changed|test) files/);
+  const selected = resolve(f.dir, 'related.sh');
+  ok(spawnSync(process.execPath, ['apps/web/scripts/quick-related.mjs', selected, 'test/ci-config.test.ts'], {
+    cwd: source, env: cleanEnv, encoding: 'utf8', timeout: 30_000,
+  }));
+  const script = readFileSync(selected, 'utf8');
+  assert.equal(script.trim().split('\n').length, 1);
+  assert.match(script, /ci_quick_admit.*ci-config\.test\.ts/);
+  assert.match(script, /ci_partial.*--cases vitest/);
 });
 test('10 metadata selects CLI bins and domain dependants; all real targets compile with --no-run', t => {
   const f = fixture(t); f.change('crates/autome-cli/src/main.rs');
@@ -178,5 +195,18 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
   const passes = resolve(f.dir, 'passes'); writeFileSync(passes, [...records.values()].map(k => `${k}\tT\tgate\tabc\tnow\n`).join(''));
   const r = f.run([], { AUTOME_GATE_PASSES: passes, AUTOME_GATE_REPORT: f.report }); ok(r);
   const report = readFileSync(f.report, 'utf8'); assert.equal((report.match(/^reused\t/gm) ?? []).length, 5); assert.match(report, /partial\t/);
-  assert.doesNotMatch(r.stdout, /^BUILD$/m);
+  // Reusing Desktop must not suppress the Rust integration target's fresh binaries.
+  assert.equal((r.stdout.match(/^BUILD$/gm) ?? []).length, 1);
+  assert.ok(r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
+});
+
+test('14 Web related files recheck budget and report the unstarted remainder', t => {
+  const f = fixture(t, true); f.put('apps/web/app/probe.ts', 'export {};');
+  f.put('apps/web/scripts/quick-related.mjs', `import { writeFileSync } from 'node:fs';
+writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh -c 'echo FIRST_WEB; sleep 2'; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
+  const r = f.run([], { CI_QUICK_BUDGET: '1', AUTOME_GATE_REPORT: f.report }); ok(r);
+  assert.match(r.stdout, /FIRST_WEB/);
+  assert.doesNotMatch(r.stdout, /SECOND_WEB/);
+  assert.match(readFileSync(f.report, 'utf8'), /partial\t-\tfirst-web/);
+  assert.match(readFileSync(f.report, 'utf8'), /not_run\t-\tsecond-web/);
 });

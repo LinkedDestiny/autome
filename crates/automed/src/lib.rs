@@ -65,6 +65,7 @@ pub mod layout;
 pub mod merge_after;
 pub mod merge_queue;
 pub mod protocol;
+mod residue;
 pub mod scheduler;
 pub mod scope;
 

@@ -1,5 +1,5 @@
 import type { TaskPayload } from './task-detail-data.ts';
-export const OP_LABELS = { start: '开始', approve: '批准', reject: '驳回', reply: '补充信息', merge: '合并', merge_cancel: '撤销授权', convert: '改建成需求', pause: '暂停', resume: '恢复', stop: '停止', cancel: '取消', rerun: '重跑', extend: '追加预算', decide: '表态' } as const;
+export const OP_LABELS = { note: '备注', set_after: '依赖', start: '开始', approve: '批准', reject: '驳回', reply: '补充信息', merge: '合并', merge_cancel: '撤销授权', convert: '改建成需求', pause: '暂停', resume: '恢复', stop: '停止', cancel: '取消', rerun: '重跑', extend: '追加预算', decide: '表态' } as const;
 export type Intent = keyof typeof OP_LABELS;
 export type OpView = { op: Intent; enabled: boolean; reason?: string; nodes?: string[]; label?: string };
 export type OpsInput = { kind: string; state: NonNullable<TaskPayload['task']['state']>; roles: Record<string, boolean> | null; mergeQueue: boolean; merge?: TaskPayload['task']['merge']; openDecisions: boolean; archived?: boolean };

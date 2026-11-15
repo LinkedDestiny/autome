@@ -19,7 +19,9 @@ export function prepare(root: string) {
   execFileSync('bash', [join(checkout, 'apps/web/test/fixtures/w7-flow.sh'), root, checkout], {
     env: { ...process.env, HOME: root, AUTOME_HOME: join(root, 'autome-home'),
       AUTOMED_BIN: join(checkout, 'target/debug/automed'), AUTOME_BIN: join(checkout, 'target/debug/autome') },
-    timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
+    // Same multi-session W7 flow as task-detail/task-docs/task-timeline tests.
+    // Keep their 150 s budget here too; 60 s can cut off a healthy setup.
+    timeout: 150_000, stdio: ['ignore', 'pipe', 'pipe'],
   });
   // Enough draft cards to force the board's intended inner scroll container.
   for (let i = 0; i < 30; i++) cli(root, ['task', 'new', `draft-${i}`, '--draft', '--brief', '-'], '# Draft');
@@ -41,14 +43,15 @@ export function startHeldTask(root: string) {
 }
 
 // Reuse the real protocol steps, but give every scenario its own task/worktree.
-export function flowSteps(root: string, slug: string, kind: 'feature' | 'bug' = 'feature') {
+export function flowSteps(root: string, slug: string, kind: 'feature' | 'bug' = 'feature',
+  { holdFirstStep = false }: { holdFirstStep?: boolean } = {}) {
   const source = kind === 'feature' ? 'feat' : 'bugx';
   const from = join(root, 'repo/.autome/fake', source);
   const to = join(root, 'repo/.autome/fake', slug);
   mkdirSync(to, { recursive: true });
   for (const file of readdirSync(from).filter(name => /^\d+\.sh$/.test(name))) {
     const step = file.slice(0, -3);
-    const hold = kind === 'bug' ? `i=0
+    const hold = kind === 'bug' || (holdFirstStep && step === '1') ? `i=0
 while [ ! -f '${root}/release-${slug}-${step}' ]; do
   i=$((i+1)); [ "$i" -lt 600 ] || exit 93
   '${root}/bin/w7-sleep' 0.1

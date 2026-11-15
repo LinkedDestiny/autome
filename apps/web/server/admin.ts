@@ -2,7 +2,7 @@ import { TerminalUnavailable, unavailableTerminal, type TerminalLauncher } from 
 import type { InstallRecipe } from '../app/components/env-model.ts';
 import { relative, isAbsolute, join } from 'node:path';
 import { realpathSync } from 'node:fs';
-import { createOnboardingWatch } from './onboarding-watch.ts';
+import { readOnboardingDisk } from './onboarding-disk.ts';
 import { createPathGuard } from './paths.ts';
 import { LocalOpError, type createGateway } from './gateway.ts';
 import type { CoreSupervisor } from './core/supervisor.ts';
@@ -10,7 +10,7 @@ import type { CoreSupervisor } from './core/supervisor.ts';
 type Project = { id: string; onboarding: unknown; [key: string]: unknown };
 export function createAdmin({ core, userHome, automeHome, publish, terminal = unavailableTerminal }: { core: Pick<CoreSupervisor, 'call'>; userHome: string; automeHome: string; terminal?: TerminalLauncher; publish?: (message: { type: string; [key: string]: unknown }) => void }) {
   const paths = createPathGuard({ home: userHome });
-  const onboarding = createOnboardingWatch(publish);
+  const onboarding = { status: readOnboardingDisk };
   let environment: { generation: number; probing: boolean } | undefined;
   return {
     configPaths(projectPath: string) {
@@ -58,7 +58,6 @@ export function createAdmin({ core, userHome, automeHome, publish, terminal = un
       });
     },
     onTick(report?: { [key: string]: unknown }) {
-      onboarding.onTick();
       if (typeof report?.env_generation !== 'number' || typeof report.env_probing !== 'boolean') return;
       const next = { generation: report.env_generation, probing: report.env_probing };
       if (!environment || next.generation !== environment.generation || next.probing !== environment.probing) publish?.({ type: 'env.changed', ...next });

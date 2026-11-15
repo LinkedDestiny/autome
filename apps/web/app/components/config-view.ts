@@ -1,7 +1,7 @@
 import { roleLabel } from '../lib/labels.ts';
 import { CONFIG_LABELS, SETTINGS } from '../lib/admin-labels.ts';
-export type ConfigRow = { key: string; label: string; value: string };
-export function configRows(resolved: unknown): ConfigRow[] {
+export type ConfigRow = { key: string; label: string; value: string; isDefault?: boolean; source?: string };
+export function configRows(resolved: unknown, defaults: readonly string[] = []): ConfigRow[] {
   const rows: ConfigRow[] = [];
   function visit(value: unknown, key: string) {
     if (Array.isArray(value) && key === 'roles') {
@@ -12,5 +12,12 @@ export function configRows(resolved: unknown): ConfigRow[] {
     } else rows.push({ key, label: Object.hasOwn(CONFIG_LABELS, key) ? CONFIG_LABELS[key] : key, value: value === null ? SETTINGS.unset : String(value) });
   }
   visit(resolved, '');
-  return rows;
+  return rows.map(row => {
+    if (row.key.startsWith('roles.')) {
+      const roles = (resolved as { roles: { provenance?: string }[] }).roles;
+      const source = ({ global: '全局', project: '项目', default: '默认' } as Record<string, string>)[roles[Number(row.key.split('.')[1])]?.provenance ?? ''];
+      return source ? { ...row, source } : row;
+    }
+    return defaults.includes(row.key.split('.')[0]) ? { ...row, isDefault: true } : row;
+  });
 }

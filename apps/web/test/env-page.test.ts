@@ -65,3 +65,13 @@ test('7 env.probing 与 env.changed 触发重载，其他消息不触发',async(
   } finally { release(); await vi.runOnlyPendingTimersAsync(); vi.useRealTimers(); }
   expect(unsubscribe).toHaveBeenCalled();
 });
+
+test('8 驱动卡片区分本面板、推进中、停止与旧内核', async () => {
+  const driver = { pid: 123, command: 'autome core', started_at: '2026-01-01T00:00:00Z', last_tick_at: '2026-01-01T00:00:02Z', driving: true, self: true };
+  const drivers = async () => ({ available: true, list: [driver, { ...driver, pid: 456, self: false, driving: false, command: 'autome run' }] });
+  const data = await loader(args({ gateway: { read: vi.fn(async () => ok({ ...snapshot, probed: false })), write: vi.fn() }, drivers }));
+  const text = html(data);
+  for (const word of ['驱动', '本面板', '推进中', '已停止推进', '456', 'autome run', driver.last_tick_at]) expect(text).toContain(word);
+  expect(html({ ...envData, drivers: { available: false, list: [] } })).toContain('内核较旧，只能推断');
+  expect(html({ ...envData, drivers: { available: false, list: [], error: '读取失败' } })).toContain('驱动信息暂不可用：读取失败');
+});

@@ -1,8 +1,18 @@
-import { inMergeSegment } from './task-changes-model.ts';
+import { dependencyReadOnly } from './queue-deps.ts';
+import { currentClock } from '../lib/clock.tsx';
+import { headerView } from './task-header-model.ts';
+import { noticeView } from './task-notice-model.ts';
+import { stageBarView, type TaskConfig } from './task-stage-model.ts';
+import { availableOps, opsInput } from './task-ops.ts';
+import { docsView } from './task-docs-model.ts';
+import { timelineEntries } from './task-timeline-model.ts';
+import type { CardContext } from './task-card-model.ts';
+import type { BlockedDependency } from './queue-deps.ts';
+import { detailTab } from './task-changes-model.ts';
 import { parseMarkdown } from '../lib/markdown.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TimelineSession } from './task-timeline-model.ts';
-import type { TaskEvent } from '../../server/task-events.ts';
+import type { TaskEvent } from '../../server/task-history.ts';
 import { DOC_LIMIT_BYTES, pickDocument, type TaskDocument } from '../../server/task-docs.ts';
 export type TaskPayload = {
   cost?: { usd_total: number; sessions: number; sessions_without_cost: number };
@@ -16,11 +26,12 @@ export type TaskPayload = {
     milestones?: { id: string; state: string; title?: string }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
   sessions: TimelineSession[];
+  notes?: { n: number; text: string; at: string; delivered?: { role: string; round: number; at: string } | null }[];
   decisions?: { kind: string; item_id: string; consumed: boolean; disposition: string; text: string; ruling?: string; carried?: boolean }[];
   documents?: TaskDocument[];
   brief?: string | null;
@@ -40,21 +51,48 @@ export async function loadTaskDetail(services: WebServices, id: string, url: URL
       return response.body.ok ? { payload: response.body.payload } : { error: response.body.error };
     } catch (error) { return { error: String(error) }; }
   }
-  const mergeSegment = inMergeSegment(data);
+  const selected = detailTab(data, url.searchParams);
   const [config, history, dashboard, changes] = await Promise.all([
     data.project ? read('config.get', { project_id: data.project.id }) : Promise.resolve({ error: '角色状态未知' }),
     services.taskEvents ? services.taskEvents.forTask(id).catch(error => ({ events: [] as TaskEvent[], truncated: false, error: `内核事件暂时读不到：${String(error)}` }))
       : Promise.resolve({ events: [] as TaskEvent[], truncated: false, error: '内核事件暂时读不到：服务不可用' }),
     data.retry ? read('dashboard.get', {}) : undefined,
-    mergeSegment ? read('task.changes', { task_id: id }) : undefined,
+    selected === 'changes' ? read('task.changes', { task_id: id }) : undefined,
   ]);
   const name = url.searchParams.get('doc');
   let document: { name: string | null; text?: string; error?: string; size?: number; truncated?: boolean; missingBrief?: boolean };
-  if (name !== null) {
+  if (selected !== 'docs') document = { name };
+  else if (name !== null) {
     const picked = pickDocument(data.documents ?? [], name);
     document = !picked.ok ? { name, error: picked.message } : services.taskDocs
       ? { name, ...await services.taskDocs.read(picked.entry.absolute, DOC_LIMIT_BYTES) }
       : { name, error: '文档读取服务不可用' };
   } else document = { name: null, text: data.brief ?? data.task.request ?? '', missingBrief: data.brief == null, truncated: false };
-  return { data, config, history, dashboard, changes, document: { ...document, nodes: 'text' in document ? parseMarkdown(document.text ?? '') : [] } };
+  const settings = config && 'payload' in config ? config.payload as TaskConfig : {};
+  const clock = currentClock();
+  const context: CardContext = { ...clock, fixRounds: data.task.budget_n ?? settings.resolved?.bug?.fix_rounds ?? 0,
+    cooldowns: dashboard && 'payload' in dashboard ? (dashboard.payload as { cooldowns?: CardContext['cooldowns'] }).cooldowns ?? [] : [], unread: {} };
+  const sessions = data.sessions.toSorted((a, b) => a.started_at.localeCompare(b.started_at));
+  const pinned = sessions.findIndex(session => session.id === url.searchParams.get('from'));
+  const start = url.searchParams.get('timeline') === 'all' ? 0 : pinned >= 0 ? pinned : Math.max(0, sessions.length - 20);
+  const visible = new Set(sessions.slice(start).map(session => session.id));
+  const entries = timelineEntries(data.sessions, history.events, clock.now, clock.timeZone)
+    .filter(entry => entry.session ? visible.has(entry.session.id) : start === 0 || entry.at >= sessions[start].started_at)
+    .map(entry => ({ ...entry, session: entry.session ? projectSession(entry.session) : undefined }));
+  const { task } = data;
+  const projected: TaskPayload = {
+    task: { id: task.id, title: task.title, slug: task.slug, kind: task.kind, state: task.state,
+      ...(Object.hasOwn(task, 'merge') ? { merge: task.merge } : {}), archived: task.archived, after: task.after, blocked_by: task.blocked_by },
+    project: data.project ? { id: data.project.id } : undefined, sessions: [], status_block: data.status_block, notes: data.notes, decisions: data.decisions?.filter(d => !d.consumed),
+  };
+  return { data: projected, header: headerView(data, context), notice: noticeView(data, context),
+    stage: stageBarView(data, history.events, settings), ops: availableOps(opsInput(data, 'payload' in config ? config.payload : null)),
+    dependencyReason: dependencyReadOnly(data), docs: docsView(data), timeline: { entries, truncated: history.truncated, error: 'error' in history ? history.error : undefined },
+    window: { from: sessions[start]?.id ?? null, earlier: start }, changes, document: { ...document, nodes: 'text' in document ? parseMarkdown(document.text ?? '') : [] } };
+}
+
+function projectSession(session: TimelineSession): TimelineSession {
+  const { id, label, round, kind, runtime, model, started_at, ended_at, running, lifecycle, metrics } = session;
+  return { id, label, round, kind, runtime, model, started_at, ended_at, running,
+    lifecycle: lifecycle ? { state: lifecycle.state } : undefined, metrics: metrics ? { cost_usd: metrics.cost_usd } : metrics };
 }

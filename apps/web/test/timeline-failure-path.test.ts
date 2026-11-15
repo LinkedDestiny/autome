@@ -2,9 +2,14 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
 import { timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
-import { TaskTimeline } from '../app/components/task-timeline.tsx';
+import { TaskTimeline as Timeline } from '../app/components/task-timeline.tsx';
+import { MemoryRouter } from 'react-router';
+import { timelineEntries as entriesForView } from '../app/components/task-timeline-model.ts';
+function TaskTimeline({ sessions, events, now, ...props }: { sessions: Parameters<typeof entriesForView>[0]; events: Parameters<typeof entriesForView>[1]; now: string; truncated?: boolean; error?: string }) {
+  return createElement(MemoryRouter, {}, createElement(Timeline, { entries: entriesForView(sessions, events, now), window: { from: null, earlier: 0 }, ...props }));
+}
 import { failureText } from '../app/lib/labels.ts';
-import type { TaskEvent } from '../server/task-events.ts';
+import type { TaskEvent } from '../server/task-history.ts';
 const now = '2026-11-14T00:00:00Z';
 const session: TimelineSession = { id: 's', label: '实现', round: 1, running: false, started_at: now, ended_at: now };
 function check(reason: Record<string, unknown>, expected: string) {

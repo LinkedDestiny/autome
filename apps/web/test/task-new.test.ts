@@ -1,3 +1,4 @@
+import { dependencyCandidates } from '../app/components/queue-deps.ts';
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -45,7 +46,7 @@ test('5 action passes exact create fields and rejects malformed form', async () 
   for (const intent of ['start','draft']) for (const kind of ['feature','bug']) {
     const write = vi.fn(async () => ({ status:200,body:{ok:true} })); const input=form(intent); input.set('kind',kind); input.append('attachments','a');
     await submit(input,{gateway:{write,read:vi.fn()},uploads});
-    expect(write).toHaveBeenCalledWith({op:'task.create',params:{project_id:'P',kind,brief:'# 测试\r\n正文',draft:intent==='draft',attachments:['a']}});
+    expect(write).toHaveBeenCalledWith({op:'task.create',params:{project_id:'P',kind,brief:'# 测试\r\n正文',draft:intent==='draft',attachments:['a'],after:[]}});
   }
   const write=vi.fn();
   for (const [key,value] of [['kind','other'],['intent','other']]) { const input=form();input.set(key,value); expect(await submit(input,{gateway:{write,read:vi.fn()}})).toHaveProperty('error'); }
@@ -66,3 +67,18 @@ test('7 SSR form fields, limits and write gate', () => {
 });
 test('8 successful action redirects to project', async () => { const result=await submit(form(),{gateway:{read:vi.fn(),write:async()=>({status:200,body:{ok:true}})}});expect(result).toBeInstanceOf(Response);expect((result as Response).headers.get('Location')).toBe('/projects/P'); });
 test('9 unknown project shows explicit message', () => {expect(render(true,false)).toContain('项目不存在');expect(render(true,false)).not.toContain('<form');});
+
+test('10 依赖候选限同项目未结束任务排除自己且倒序', () => {
+  const tasks = ['draft', 'queued', 'active', 'done', 'cancelled'].map((state, i) => ({ id: `T-${i+1}`, title: state, state: { state }, kind: 'feature', project_id: 'P' }));
+  tasks.push({ ...tasks[0], id: 'T-10', project_id: 'other' });
+  expect(dependencyCandidates(tasks, 'P', 'T-2').map(t => t.id)).toEqual(['T-3', 'T-1']);
+});
+test('11 新建提交带 after，空和上限合法超限拒绝', async () => {
+  for (const size of [0, 1, 8, 9]) {
+    const input = form(); for (let i = 1; i <= size; i++) input.append('after', `T-${i}`);
+    const write = vi.fn(async () => ({ status: 200, body: { ok: true } }));
+    const result = await submit(input, { gateway: { read: vi.fn(), write } });
+    if (size > 8) { expect(result).toHaveProperty('error'); expect(write).not.toHaveBeenCalled(); }
+    else expect(write).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ after: input.getAll('after') }) }));
+  }
+});

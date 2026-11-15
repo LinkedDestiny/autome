@@ -100,3 +100,29 @@ test('8 board source cannot duplicate state classification', () => {
     expect(readFileSync(new URL(`../app/${path}`, import.meta.url), 'utf8')).not.toMatch(/['"](?:draft|queued|paused|stopped|failed)['"]/);
   }
 });
+
+test('9 坏配置下卡片仍渲染且不带详情', async () => {
+  const gateway: KernelGateway = { read: async input => (input as { method: string }).method === 'project.get' ? { status: 200, body: { ok: true, payload: { project: { id: 'P-1', display_name: '坏项目' }, tasks: [task({ state: 'active', node: 'implement' })], config_error: 'TOML 原文' } } } : { status: 409, body: { ok: false, error: 'TOML 原文' } }, write: async () => { throw new Error('只读'); } };
+  const result = await loadBoard({ gateway }, 'P-1'); expect(result).not.toHaveProperty('error'); expect(result).toHaveProperty('details', {}); expect(render(result)).toContain('任务 T-1');
+});
+test('10 页头显示配置校验原文', () => { const html = render({ ...data([]), configError: 'TOML 原文 <bad>' }); expect(html).toContain('项目配置有误，以下是内核的校验原文'); expect(html).toContain('TOML 原文 &lt;bad&gt;'); });
+
+test('11 排队按内核位置而不是编号排序并透传依赖字段', async () => {
+  const rows = [3, 1, 2].map((n, i) => ({ ...task({ state: 'queued' }, `T-${n}`), queue_position: i + 1, after: ['T-9'], blocked_by: [{ id: 'T-9', state: { state: 'draft' }, reason: null }] }));
+  const gateway: KernelGateway = { read: async () => ({ status: 200, body: { ok: true, payload: { project: { id: 'P-1', display_name: '甲' }, tasks: rows } } }), write: async () => { throw Error('只读'); } };
+  const loaded = await loadBoard({ gateway }, 'P-1');
+  if ('error' in loaded) throw Error(loaded.error);
+  expect(loaded.tasks[0]).toMatchObject({ queue_position: 1, after: ['T-9'], blocked_by: rows[0].blocked_by });
+  expect(boardColumns(loaded.tasks, now)[0].tasks.map(t => t.id)).toEqual(['T-3', 'T-1', 'T-2']);
+});
+test('12 排队在前草稿编号倒序在后含空队列和单元素', () => {
+  const rows = [task({ state: 'draft' }, 'T-100'), { ...task({ state: 'queued' }, 'T-1'), queue_position: 1 }, task({ state: 'draft' }, 'T-010')];
+  expect(boardColumns(rows, now)[0].tasks.map(t => t.id)).toEqual(['T-1', 'T-100', 'T-010']);
+  expect(boardColumns([rows[1]], now)[0].tasks).toEqual([rows[1]]);
+});
+test('13 只有排队且队列多于一张才给调序菜单', () => {
+  const q = task({ state: 'queued' });
+  expect(render(data([q]))).not.toContain('<summary>调整顺序');
+  const html = render(data([q, task({ state: 'queued' }, 'T-2'), task({ state: 'draft' }, 'T-3')]));
+  expect(html.match(/<summary>调整顺序/g)).toHaveLength(2);
+});

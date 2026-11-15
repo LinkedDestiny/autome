@@ -91,3 +91,14 @@ test('11 补全防抖、乱序、失败与卸载取消', async () => {
     client.input('~/d'); client.dispose(); const calls = fetcher.mock.calls.length; await vi.advanceTimersByTimeAsync(150); expect(fetcher).toHaveBeenCalledTimes(calls);
   } finally { vi.useRealTimers(); }
 });
+
+test('12 四种拒绝在填表前显示且无确认表单', () => {
+  for (const [kind, label] of Object.entries({ already_project: '这个目录已经是项目', nested_in_project: '它在已有项目里面', contains_project: '它包含已有项目', not_a_directory: '这不是目录' })) {
+    const p = { ...probe, rejection: { kind, message: '内核拒绝原文' } };
+    expect(canConfirm('~/code', { display: '~/code', probe: p })).toBe(false);
+    const text = html(undefined, true, p); expect(text).toContain(label); expect(text).toContain('内核拒绝原文'); expect(text).not.toContain('name="intent"');
+  }
+});
+test('13 already_project 链到项目', () => { expect(html(undefined, true, { ...probe, rejection: { kind: 'already_project', message: '原文', project_id: 'p /' } })).toContain('href="/projects/p%20%2F"'); });
+test('14 嵌套两种链到对方', () => { for (const kind of ['nested_in_project', 'contains_project']) expect(html(undefined, true, { ...probe, rejection: { kind, message: '原文', project_id: 'other' } })).toContain('href="/projects/other"'); });
+test('15 未知 kind 回退 message，null 仍可确认', () => { for (const kind of ['future', 'toString', '__proto__', '']) expect(html(undefined, true, { ...probe, rejection: { kind, message: '未来拒绝' } })).toContain('未来拒绝'); expect(canConfirm('x', { display: 'x', probe: { ...probe, rejection: null } })).toBe(true); });

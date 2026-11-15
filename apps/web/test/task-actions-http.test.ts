@@ -14,7 +14,7 @@ const close=async()=>{if(http){await http.closeMiddleware();if(http.server.liste
 beforeAll(async()=>{try{const probe=createProbe();probe.listen(0,'127.0.0.1');await once(probe,'listening');await new Promise<void>((resolve,reject)=>probe.close(e=>e?reject(e):resolve()));http=await createHttpServer({mode:'development',gateway});http.server.listen(0,'127.0.0.1');await once(http.server,'listening');const address=http.server.address();if(!address||typeof address==='string')throw Error('无端口');origin=`http://127.0.0.1:${address.port}`;}catch(error){await close();throw error;}},60_000);
 afterAll(close);
 const post=(path:string,intent:string,headers:Record<string,string>={})=>new Promise<number>((resolve,reject)=>{
-  const body=new URLSearchParams({intent,feedback:'意见',info:'补充',confirm:'yes',node:'rebase',extra_rounds:'1',kind:'backlog',item_id:'B-01',disposition:'include'}).toString();
+  const body=new URLSearchParams({intent,text:'备注',feedback:'意见',info:'补充',confirm:'yes',node:'rebase',extra_rounds:'1',kind:'backlog',item_id:'B-01',disposition:'include'}).toString();
   const req=request(origin+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded','Content-Length':String(Buffer.byteLength(body)),...headers}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode!));});
   req.setTimeout(10_000,()=>req.destroy(new Error('HTTP timeout')));req.on('error',reject);req.end(body);
 });

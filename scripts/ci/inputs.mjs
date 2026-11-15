@@ -133,6 +133,7 @@ try {
           }
           if (candidate.full) full(candidate.full);
           else if (planning) console.log(`candidate\t${JSON.stringify(candidate.command)}`);
+          else if (candidate.web) emit(['ci_web_related', ...candidate.web]);
           else emit(['ci_partial', name, '--cases', candidate.parser, ...candidate.command]);
           if (!planning) lines.push('fi');
         }

@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { MemoryRouter } from 'react-router';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { CoreSupervisor } from '../server/core/supervisor.ts';
 import { createGateway } from '../server/gateway.ts';
-import { createTaskEvents } from '../server/task-events.ts';
+import { readTaskEvents } from '../server/task-history.ts';
 import { loadTaskDetail } from '../app/components/task-detail-data.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
 import { leftoverProcesses, teardown } from './fixtures/process-leak.ts';
@@ -16,10 +17,10 @@ const wt = resolve(import.meta.dirname, '../../..');
 const root = mkdtempSync(join(tmpdir(), 'w7-timeline-'));
 const home = join(root, 'autome-home');
 const core = new CoreSupervisor({ home, binaryPath: join(root, 'core-wrapper') });
-const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
+const taskEvents = { forTask: (id: string) => readTaskEvents((method, params) => core.call(method, params), id) };
 const services = { gateway: createGateway({ core, home }), taskEvents };
 const ids = () => existsSync(join(root, 'task-ids')) ? readFileSync(join(root, 'task-ids'), 'utf8').trim().split('\n') : [];
-const cleanup = () => teardown({ root, core, taskIds: ids(), stopServices: () => taskEvents.close() });
+const cleanup = () => teardown({ root, core, taskIds: ids() });
 beforeAll(async () => {
   try {
     await promisify(execFile)('bash', [join(wt, 'apps/web/test/fixtures/w7-flow.sh'), root, wt], { timeout: 150_000, maxBuffer: 1024 * 1024 });
@@ -30,7 +31,7 @@ afterAll(cleanup);
 async function render(id: string) {
   const result = await loadTaskDetail(services, id, new URL(`http://localhost/tasks/${id}`));
   expect(result.error).toBeUndefined(); expect(result.data?.task.state).toMatchObject({ node: 'await_merge' });
-  return renderToString(createElement(TaskTimeline, { sessions: result.data!.sessions, events: result.history!.events, now: new Date().toISOString() }));
+  return renderToString(createElement(MemoryRouter, {}, createElement(TaskTimeline, { ...result.timeline!, window: result.window! })));
 }
 it('真实需求任务页面按会话顺序显示阶段与结果，包含快检、rebase 和合并前门禁', async () => {
   const html = await render('T-1');

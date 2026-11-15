@@ -22,6 +22,15 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await expect(page.getByTestId('path-suggestion').first()).toBeVisible();
   }
   if (name === '环境') await expect(page.getByTestId('env-copy').first()).toBeVisible();
+  if (name === '项目') {
+    await expect(page.locator('.board-column-body[data-scroll-region]')).toHaveCount(4);
+    const body = page.locator('[data-column=todo] .board-column-body');
+    expect(await body.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    expect(await body.evaluate(el => getComputedStyle(el).overflowY)).toMatch(/^(auto|scroll)$/);
+    await body.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    expect(await body.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollTop)).toBe(0);
+  }
   if (name === '已取消展开') {
     await expect(page.getByTestId('board-cancelled').getByTestId('task-card')).toHaveCount(30);
     await expect(page.locator('.board-column-body[data-scroll-region]').filter({ has: page.getByTestId('board-cancelled') })).toHaveCount(1);

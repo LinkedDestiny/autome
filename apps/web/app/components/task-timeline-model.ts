@@ -1,10 +1,10 @@
 import { formatClock, formatDuration, formatRange, type Clock } from '../lib/clock.tsx';
 import { guardLabel } from '../lib/guard-labels.ts';
 import type { LogSession } from './session-log.tsx';
-import type { TaskEvent } from '../../server/task-events.ts';
+import type { TaskEvent } from '../../server/task-history.ts';
 import { failureText, nodeLabel, RUNTIME_LABELS, taskStatusLine, type TaskState } from '../lib/labels.ts';
 type SessionKind = { kind: 'bug'; step: string } | { kind: 'role'; role: string } | { kind: 'intake' | 'onboarding' };
-export type TimelineSession = LogSession & { kind?: SessionKind; runtime?: string; model?: string; ended_at?: string | null; metrics?: { cost_usd?: number } | null; lifecycle?: { state: string } };
+export type TimelineSession = LogSession & { kind?: SessionKind; runtime?: string; model?: string; ended_at?: string | null; metrics?: { cost_usd?: number } | null; exit_code?: number | null; timed_out?: boolean; lifecycle?: { state: string; exit_code?: number | null } };
 function sessionNode(kind: SessionKind | undefined) {
   if (kind?.kind === 'bug') return kind.step;
   if (kind?.kind === 'role') return kind.role === 'plan' ? 'design' : kind.role === 'impl' ? 'implement' : kind.role;
@@ -27,6 +27,17 @@ function gateName(p: Record<string, unknown>) {
 function light(event: TaskEvent, clock: Clock): string | undefined {
   const p = event.payload, s = (key: string) => str(p[key]);
   switch (event.kind) {
+    case 'task.processes_stopped': {
+      const processes = (Array.isArray(p.processes) ? p.processes : []) as Record<string, unknown>[];
+      const survivors = (Array.isArray(p.survivors) ? p.survivors : []) as Record<string, unknown>[];
+      return `清理时结束了 ${processes.length} 个残留进程：${processes.map(proc => `${str(proc.pid)} ${str(proc.command)}`).join('；')}${survivors.length ? `；仍有 ${survivors.length} 个进程未退出：${survivors.map(proc => `${str(proc.pid)} ${str(proc.error)}`).join('；')}` : ''}`;
+    }
+    case 'task.processes_unchecked': {
+      const processes = (Array.isArray(p.processes) ? p.processes : []) as Record<string, unknown>[];
+      const tty = processes.filter(proc => proc.kind === 'tty');
+      const unknown = processes.length - tty.length;
+      return [unknown ? `清理时有 ${unknown} 个进程无法判断，未结束` : '', tty.length ? `清理时有 ${tty.length} 个进程有控制终端（可能是你自己打开的终端），未结束：${tty.map(proc => `${str(proc.pid)} ${str(proc.tty)} ${str(proc.command)}`).join('；')}` : ''].filter(Boolean).join('；');
+    }
     case 'gate.queued': return p.job === 'setup' ? `准备命令排队第 ${p.position} 位` : undefined;
     case 'gate.reused': return '沿用已通过的结果';
     case 'gate.skipped': return `跳过：${s('reason')}`;
@@ -54,7 +65,6 @@ function light(event: TaskEvent, clock: Clock): string | undefined {
 }
 function sessionSummary(session: TimelineSession, window: TaskEvent[], previous: [string, string][], failures: string[]) {
   if (session.running) return '运行中';
-  if (session.lifecycle?.state === 'killed') return '已被停止';
   let before = new Map(previous);
   const result: string[] = [];
   for (const event of window) {
@@ -91,14 +101,23 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
   const sessionEntry = (session: TimelineSession, index: number): TimelineEntry => {
     const next = events.findIndex((e, i) => i > index && e.kind === 'session.started');
     const previous = events.slice(0, Math.max(0, index)).findLast(e => e.kind === 'task.snapshot');
-    const elapsed = Math.max(0, Date.parse(session.ended_at ?? now) - Date.parse(session.started_at));
+    const ended = events.find(e => e.kind === 'session.ended' && e.payload.session_id === session.id);
+    const exitCode = ended ? ended.payload.exit_code : session.exit_code ?? session.lifecycle?.exit_code;
+    const end = ended ? ended.payload.end : session.running ? null
+      : session.lifecycle?.state === 'killed' ? 'stopped' : session.timed_out ? 'timed_out'
+      : session.lifecycle?.state === 'vanished' || (session.lifecycle?.state === 'exited' && exitCode != null && exitCode !== 0) ? 'crashed' : 'exited';
+    const endText = end === 'stopped' ? '被停止' : end === 'timed_out' ? '超时'
+      : end === 'crashed' ? exitCode == null ? '崩溃（进程消失）' : `崩溃（退出码 ${exitCode}）` : end === 'exited' ? '正常结束' : '';
+    const endedAt = ended?.at ?? session.ended_at;
+    const effectiveSession = ended ? { ...session, running: false, ended_at: endedAt } : session;
+    const elapsed = Math.max(0, Date.parse(endedAt ?? now) - Date.parse(session.started_at));
     const runtime = session.runtime ?? '';
     const failures: string[] = [];
-    return { key: session.id, node: sessionNode(session.kind) ?? (index < 0 ? undefined : str(events[index].payload.node) || undefined), at: session.started_at, session, title: `${session.label} · 第 ${session.round} 轮`,
-      summary: index < 0 ? (session.running ? '运行中' : '已结束') : sessionSummary(session, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][], failures),
+    return { key: session.id, node: sessionNode(session.kind) ?? (index < 0 ? undefined : str(events[index].payload.node) || undefined), at: session.started_at, session: effectiveSession, title: `${session.label} · 第 ${session.round} 轮`,
+      summary: end === 'stopped' ? endText : index < 0 ? (effectiveSession.running ? '运行中' : '已结束') : sessionSummary(effectiveSession, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][], failures),
       failures,
       details: [Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime, session.model ?? '',
-        formatRange(session.started_at, session.ended_at, clock), `${session.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
+        formatRange(session.started_at, endedAt, clock), endText, `${effectiveSession.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
         session.metrics?.cost_usd != null ? `$${session.metrics.cost_usd.toFixed(2)}` : '无计费数据'].filter(Boolean) };
   };
   for (const [index, event] of events.entries()) {

@@ -74,7 +74,7 @@ test('4 completed tasks never fetch details; card projection preserves only used
     for (const value of Object.values(board.details!)) {
       expect(JSON.parse(JSON.stringify(value))).toEqual({ gate: { ok: true, node: 'main_check', exit_code: 0 }, gate_queue_position: null, queue_position: null, retry: null, status_block: null });
     }
-    expect(Object.keys(board.tasks[0]).sort()).toEqual(['id', 'title', 'kind', 'state', 'fix_round', 'completed_at', 'merge_commit', 'project_id'].sort());
+    expect(Object.keys(board.tasks[0]).sort()).toEqual(['id', 'title', 'kind', 'state', 'fix_round', 'completed_at', 'merge_commit', 'project_id', 'queue_position', 'after', 'blocked_by'].sort());
   }
   const input = { ...detail, sessions: [...detail.sessions, { ...detail.sessions[0], running: true }], retry: { attempts: 2, not_before: now, secret: 'omit' }, status_block: { milestones_done: 1, milestones_total: 2, current_milestone: 'M-01', secret: 'omit' } };
   const before = JSON.stringify(input), projected = toCardDetail(input);

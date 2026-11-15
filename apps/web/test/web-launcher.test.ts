@@ -1,3 +1,4 @@
+import { driverSummary, readDrivers, type DriverStatus } from '../server/drivers.ts';
 import { afterEach, expect, test } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -31,13 +32,11 @@ test('status 输出端口、内核路径来源与 autome 构建标识', async ()
   for (const text of [String(v.port), h.env.AUTOMED_BIN!, 'env', version]) expect(result.stdout).toContain(text);
   const json = await h.run(['status', '--json']); expect(JSON.parse(json.stdout).kernel.build_id).toBe(version);
 });
-test('status 区分真实驱动锁让路与没有其他驱动', async () => {
+test('status 使用登记而不是瞬时锁让路推断', async () => {
   const h = live(); expect((await h.run(['start'])).code).toBe(0);
-  expect((await h.run(['status'])).stdout).toContain('没有发现其他驱动');
-  // The existing ledger lock is held without invoking another scheduler.
-  const lock = execute('/usr/bin/lockf', ['-k', join(h.home, 'state/automed.sqlite3.driver.lock'), '/bin/sleep', '8'], { env: h.env });
-  try { await expect.poll(async () => (await h.run(['status'])).stdout, { timeout: 7000 }).toContain('有另一个驱动'); }
-  finally { await lock; }
+  expect((await h.run(['status'])).stdout).toContain('没有其他驱动');
+  const result = JSON.parse((await h.run(['status', '--json'])).stdout);
+  expect(result.drivers).toMatchObject({ available: true, list: [expect.objectContaining({ self: true, command: 'autome core' })] });
 });
 test('没有门禁时 stop 清理进程和登记文件', async () => { const h = live(); expect((await h.run(['start'])).code).toBe(0); const v = await h.registration(); const result = await h.run(['stop']); expect(result.code).toBe(0); expect(await readInstance(h.file)).toBeNull(); await expect.poll(() => pidAlive(v.pid)).toBe(false); });
 test('非 macOS 打开器打印手动打开提示', async () => { const lines: string[] = []; await openPanel('http://127.0.0.1:1234', { platform: 'linux', executable: '', log: line => lines.push(line) }); expect(lines).toEqual(['请在浏览器里打开 http://127.0.0.1:1234']); });
@@ -61,3 +60,29 @@ test('暂停期间 start/status/stop 保留登记，恢复后 reused', async () 
 });
 test('暂停后 stop --force 用 SIGKILL 兜底并清理登记', async () => { const h = live(); expect((await h.run(['start'])).code).toBe(0); const v = await h.registration(); process.kill(v.pid, 'SIGSTOP'); const result = await h.run(['stop', '--force']); expect(result.code, result.stderr).toBe(0); expect(await readInstance(h.file)).toBeNull(); await expect.poll(() => pidAlive(v.pid)).toBe(false); });
 test('服务和内核的所有子孙无残留', async () => { const h = live(); expect((await h.run(['start'])).code).toBe(0); expect(h.servers()).toHaveLength(1); await h.cleanup(); expect(processes(h.root)).toEqual([]); active.splice(active.indexOf(h), 1); });
+
+const driver = { pid: 123, command: 'autome run --interval 1', started_at: '2026-01-01T00:00:00Z', last_tick_at: '2026-01-01T00:00:02Z', driving: true, self: false };
+const status = (list = [driver]): DriverStatus => ({ available: true, list });
+test('status 另一驱动推进时给出 pid 命令与 tick', () => {
+  const text = driverSummary(status());
+  for (const value of ['另一个驱动在推进', '123', driver.command, driver.last_tick_at]) expect(text).toContain(value);
+});
+test('status 已登记但最近没有推进不声称正在推进', () => {
+  const text = driverSummary(status([{ ...driver, driving: false }]));
+  expect(text).toContain('pid 123 已登记但最近没有推进'); expect(text).not.toContain('另一个驱动在推进');
+});
+test('status 只有本面板或没有登记时没有其他驱动', async () => {
+  const read = await readDrivers(async () => ({ drivers: [driver] }), () => 123, () => ({ skipped_last_minute: 0, last_skipped_at: null }));
+  expect(read.list[0].self).toBe(true);
+  for (const value of [read, status([])]) expect(driverSummary(value)).toBe('没有其他驱动');
+});
+test('status 旧内核退回让路推断，其他读取失败保留错误', async () => {
+  const other = () => ({ skipped_last_minute: 2, last_skipped_at: driver.last_tick_at });
+  const old = await readDrivers(async () => { throw Object.assign(Error('unknown'), { code: 'unknown_method' }); }, () => 456, other);
+  expect(driverSummary(old)).toContain('内核较旧，只能推断：有另一个驱动');
+  expect(driverSummary(undefined, { skipped_last_minute: 0, last_skipped_at: null })).toContain('没有发现其他驱动');
+  for (const message of ['拒绝授权', '读盘失败', '请求超时', '内核未连接']) {
+    const failed = await readDrivers(async () => { throw Error(message); }, () => 456, other);
+    expect(driverSummary(failed)).toBe('驱动信息暂不可用：' + message);
+  }
+});

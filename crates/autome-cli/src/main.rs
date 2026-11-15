@@ -1055,6 +1055,15 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
         })
         .transpose()?
         .unwrap_or(3.0);
+    if !interval.is_finite() || interval < 0.0 {
+        return Err(CliError::Usage("--interval 必须是非负有限秒数".into()));
+    }
+    let command = std::iter::once("autome".to_string())
+        .chain(std::env::args().skip(1))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let registration = automed::driver_lock::register(&c.db, &command, Some(interval))
+        .map_err(|e| CliError::Failed(format!("驱动登记失败：{e}")))?;
     let once = a.has("--once");
     let until_idle = a.has("--until-idle");
     let verbose = a.has("--verbose");
@@ -1071,6 +1080,9 @@ fn drive(c: &mut Client, a: &Args) -> Result<()> {
     let mut older_message: Option<String> = None;
     loop {
         let report = c.call("scheduler.tick", json!({}))?;
+        registration
+            .touch()
+            .map_err(|e| CliError::Failed(format!("驱动登记更新失败：{e}")))?;
         let older = &report["older_kernel"];
         let blocked = older["message"].as_str();
         if let Some(message) = blocked {

@@ -6,7 +6,9 @@ import { flowSteps, newTask, state } from './harness/fixture.ts';
 // All subsequent navigation uses visible SPA links, so a document reload fails.
 test('D-1 网页草稿到批准合并完成，全程实时且不刷新', async ({ page }) => {
   const f = state();
-  flowSteps(f.root, 'browser-feature');
+  // Keep the running state observable even when the 100 ms driver finishes
+  // design before the browser's coalesced revalidation can render it.
+  flowSteps(f.root, 'browser-feature', 'feature', { holdFirstStep: true });
   let loads = 0;
   page.on('load', () => loads++);
   await visit(page, `/projects/${encodeURIComponent(f.projectId)}/tasks/new`);
@@ -21,6 +23,7 @@ test('D-1 网页草稿到批准合并完成，全程实时且不刷新', async (
   await expect(inColumn('todo')).toBeVisible();
   await card.getByRole('button', { name: '开始', exact: true }).click();
   await expect(inColumn('running')).toBeVisible();
+  writeFileSync(join(f.root, 'release-browser-feature-1'), 'release');
   await expect(inColumn('needs_you')).toBeVisible({ timeout: 40_000 });
   await page.getByTestId('bell-button').click();
   await expect(page.locator(`[data-testid=bell-item][data-task-id="${id}"]`).first()).toContainText('等你批准');

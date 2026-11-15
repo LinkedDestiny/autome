@@ -1,8 +1,9 @@
+import { afterInput } from './queue-deps.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TaskPayload } from './task-detail-data.ts';
 import { availableOps, opsInput, OP_LABELS, type Intent } from './task-ops.ts';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
-export const WRITE_OPS: Record<Intent, string> = { start: 'task.start', approve: 'task.approve', reject: 'task.reject', reply: 'task.reply', merge: 'task.merge', merge_cancel: 'task.merge', convert: 'task.convert', pause: 'task.pause', resume: 'task.resume', stop: 'task.stop', cancel: 'task.cancel', rerun: 'task.rerun_from', extend: 'task.extend_budget', decide: 'task.decide' };
+export const WRITE_OPS: Record<Intent, string> = { note: 'task.note', set_after: 'task.set_after', start: 'task.start', approve: 'task.approve', reject: 'task.reject', reply: 'task.reply', merge: 'task.merge', merge_cancel: 'task.merge', convert: 'task.convert', pause: 'task.pause', resume: 'task.resume', stop: 'task.stop', cancel: 'task.cancel', rerun: 'task.rerun_from', extend: 'task.extend_budget', decide: 'task.decide' };
 export async function handleTaskAction(form: FormData, id: string, services: WebServices) {
   const intent = form.get('intent');
   if (typeof intent !== 'string' || !Object.hasOwn(WRITE_OPS, intent)) return { error: '未知操作' };
@@ -15,6 +16,17 @@ export async function handleTaskAction(form: FormData, id: string, services: Web
     if (!value(key).trim()) return { error: op === 'reject' ? '驳回意见不能为空' : '补充信息不能为空' };
     if (value(key).length > MAX_PROSE_LENGTH) return { error: `输入不能超过 ${MAX_PROSE_LENGTH} 字符` };
     params[key] = value(key);
+  }
+  if (op === 'note') {
+    if (!value('text').trim()) return { error: '备注不能为空' };
+    if (value('text').length > MAX_PROSE_LENGTH) return { error: `输入不能超过 ${MAX_PROSE_LENGTH} 字符` };
+    params.text = value('text');
+    params.reopen = value('reopen') === 'yes';
+  }
+  if (op === 'set_after') {
+    const deps = afterInput(form);
+    if (deps.error) return { error: deps.error };
+    params.after = deps.after;
   }
   if (op === 'extend') {
     const extra = Number(value('extra_rounds'));
@@ -51,6 +63,10 @@ export async function handleTaskAction(form: FormData, id: string, services: Web
   if (result.body.ok && op === 'convert') {
     const converted = result.body.payload as { task: { id: string } };
     return { ok: true, notice: `已改建为需求 ${converted.task.id}`, convertedTaskId: converted.task.id };
+  }
+  if (result.body.ok && op === 'note') {
+    const payload = result.body.payload as { warning?: string };
+    return { ok: true, notice: '已提交备注', warning: payload.warning };
   }
   return result.body.ok ? { ok: true, notice: op === 'merge' ? '已提交合并' : `已提交${OP_LABELS[op]}` } : { error: result.body.error };
 }

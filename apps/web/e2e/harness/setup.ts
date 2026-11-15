@@ -12,7 +12,9 @@ export default async function setup() {
   const liveRoot = mkdtempSync(join(tmpdir(), 'autome-e2e-live-'));
   process.env.AUTOME_E2E_LIVE_ROOT = liveRoot;
   try {
-    await start(root, 1000);
+    // Functional scenarios drive many sessions (C-2 alone needs 23). Avoid a
+    // one-second idle wait per tick; production timing is covered by liveRoot.
+    await start(root, 100);
     await start(liveRoot, 3000);
   } catch (error) {
     console.error('e2e setup failed:', error);

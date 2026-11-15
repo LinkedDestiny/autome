@@ -309,8 +309,13 @@ Bug 文档包含 `status`（已定位 / 无法复现 / 不是 Bug）、`fix-roun
 | 合并前置 | 主工作树中**本次合并会改动的文件**没有未提交改动；任务分支 `merge-base --is-ancestor <default> autome/<slug>` | 不满足即拒绝。判据不是「工作树干净」——界面改配置会留下未提交的 `.autome/config.toml`，按前者会让此后每次合并都被拒 |
 | 合并 | 在项目根 `git merge --no-ff autome/<slug> -m "merge(autome): T-n <title>"` | 主工作树随之更新 |
 | 清理 | `git worktree remove .worktree/<slug>`；`git branch -d autome/<slug>` | 失败时保留并提示 |
+
 | 取消 | 复制 `docs/<slug>/` 到项目根 `docs/.archive/<slug>/`；`worktree remove --force`；`branch -D` | 复制结果留在主工作树，不提交 |
 | 归档 / 恢复 | 项目根 `git mv docs/<slug> docs/.archive/<slug>` 及反向 | 不提交 |
+
+任务合并清理与取消（含改建任务）在删除检出前，按任务布局的 cwd 和各成员 worktree 扫描残留进程。macOS 用 libproc 的可执行文件与工作目录路径按组件匹配（保留原路径与 canonical 路径），仅处理当前用户、非僵尸、非内核自身的进程；有控制终端的只告警。每次信号及存活检查重新核对 pid、微秒级起始时间、路径和终端；先批量 TERM、共等 3 秒，仍符合条件的 KILL、共等 1 秒。PID 复用、路径离开、取得终端或无法复核时不再发信号。无法归属的路径错误不按进程年龄豁免；枚举失败及非 macOS 只告警，不阻断检出清理。
+
+事件 `task.processes_stopped {checkouts, processes: [{pid, command, matched, signal}], survivors: [{pid, command, error}]}` 记录清理结果，`task.processes_unchecked {processes: [{pid, command, kind, reason, tty?}]}` 区分 `unknown` 与 `tty`。命令截到 120 字符，空结果不写事件。无任务残留但本机存在不可归属进程时仍写 unchecked；时间线分别显示无法判断与有控制终端的原因。
 
 **集成复验的提交范围。** 需求实现轮在非空且全 `已完成` 的里程碑表上开始、结束后仍全关闭时，
 按仓库用首次尝试的 `session.started.start_heads` 作 H0（简报提交之后取值，崩溃重试沿用），
@@ -393,6 +398,8 @@ CLI run 展示还原、失败、已处理三种事件，begun 不打印；还原
 **合并后命令。** 项目 `[merge] after` 是 Cleanup 的前置子阶段，不新增节点：合并成功、MainCheck（若配置）通过、主检出准备处理完后，在清理任务 worktree / 分支之前，由宿主在 `project.path` 用 `sh -c` 执行；准备失败仍运行钩子。命令获得 `AUTOME_TASK` 与 `AUTOME_MERGE_COMMIT`（本任务完整合并 SHA），主检出可能已有后续合并。工作区、无单一合并提交、MainCheck 失败或跳过时只写一次 `merge.after_skipped`；Bug Loop 同样适用。
 
 复用 `gate::Job` 独立进程组，文件为 `.autome/output/gates/<task>/after_merge-<sha12>.{log,pid,exit,started}`，tick 只轮询，core 重启接续；启动前等待其它任务在途的钩子或主检出准备（含尚无 pid 的启动空窗）。`after_merge.prepared` 标记准备段已处理，钩子等待或重入不重复准备；不改变 setup 自己的互斥规则。写 `merge.after_started {command, commit, log}` 与 `merge.after {ok, exit_code, command, commit, log, tail}`，CLI 打印开始、结果或跳过原因。非零退出或超时（缺省 10 分钟，杀进程组、退出码 124）仅报 `after_merge_failed`，失败警报与结果事件同事务写入；已有结果则不再执行，照常清理并进入 Done，不撤销合并。作业存在但开始事件缺失时补事件，不重启；作业消失则清文件、下次 tick 重试。暂停后恢复接同一作业；停止/取消杀进程并删作业文件，停止后恢复重新运行，取消不报失败。停留期间删除配置则直接清理，在途命令后台结束且不收结果。命令应可重复执行，只写 gitignore 产物或检出之外，避免弄脏主检出阻塞后续合并。
+
+**驱动查询。** 只读 RPC `driver.list` 返回 `{drivers: [{pid, command, started_at, last_tick_at, driving}]}`。循环驱动在 `<db>.drivers/<pid>.json` 登记并持有独立 flock；每次 tick 完成更新 mtime，超过 `max(30 秒, 3 × interval)` 未更新即停止推进。stdio 内核首次 tick 才登记，查询按 flock 清除失效登记，不依赖 pid 存活。面板 status 排除自己的内核，环境页列出全部登记；旧内核回退让路推断。
 
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 

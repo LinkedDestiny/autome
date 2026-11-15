@@ -28,7 +28,7 @@ export const SETTINGS = {
   name: '输入项目名以确认移除', mismatch: '已拒绝：输入的项目名不一致',
 };
 export const CONFIG_LABELS: Record<string, string> = {
-  gate: '门禁命令', gate_quick: '快检命令',
+  gate_quick_concurrency: '快检并行数', 'setup.command': '初始化命令', 'setup.timeout_minutes': '初始化超时（分钟）', 'merge_after.command': '合并后命令', 'merge_after.timeout_minutes': '合并后超时（分钟）', gate: '门禁命令', gate_quick: '快检命令',
   'bug.fix_rounds': '修复轮数', 'gate.command': '门禁命令', 'gate.timeout_minutes': '门禁超时（分钟）', gate_run: '门禁运行时机', 'gate_quick.command': '快检命令', 'gate_quick.timeout_minutes': '快检超时（分钟）', setup: '初始化命令',
   gate_concurrency: '门禁并行数', gate_reuse_for_main_check: '复用主分支检查', gate_same_failure_limit: '相同失败上限',
   'loop_defaults.parallel': '并行数', 'loop_defaults.session_minutes': '会话时长上限（分钟）',
@@ -43,6 +43,8 @@ export const ALERT_KINDS: Record<string, string> = {
 };
 
 export const ENV = {
+  drivers: '驱动', selfDriver: '本面板', driving: '推进中', stoppedDriving: '已停止推进',
+  driverStartedAt: '启动时间', driverLastTickAt: '最近一次 tick',
   title: '环境检查', detect: '重新检测', probing: '正在检测…', installed: '已安装', missing: '未安装',
   noLogin: '不需要登录', loggedIn: '已登录', expired: '登录已过期', unknown: '登录状态未知',
   attention: '需要处理', version: '版本', path: '路径', prerequisite: '前置条件', none: '无', met: '已满足', unmet: '未满足',

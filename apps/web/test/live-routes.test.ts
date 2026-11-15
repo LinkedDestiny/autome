@@ -1,3 +1,7 @@
+import { setRelatedSubjects } from '../app/lib/live-routes.ts';
+import { shouldRevalidate as taskShouldRevalidate } from '../app/routes/tasks.$id.tsx';
+import type { ShouldRevalidateFunctionArgs } from 'react-router';
+const taskArgs: ShouldRevalidateFunctionArgs = { currentUrl: new URL('http://localhost/tasks/T-1'), nextUrl: new URL('http://localhost/tasks/T-1'), currentParams: { id: 'T-1' }, nextParams: { id: 'T-1' }, defaultShouldRevalidate: false };
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -164,4 +168,41 @@ it('到点后新事件另开窗口，旧完成不丢掉等待中的新事件', a
   const recovered = enqueueEvents([event('project.updated')], next);
   await vi.advanceTimersByTimeAsync(1000); await recovered;
   expect(next).toHaveBeenCalledTimes(2);
+});
+
+it('前置 task 与 merge 事件重验依赖任务，自己的原有事件仍重验', async () => {
+  const clear = setRelatedSubjects('T-1', ['T-9', 'T-8']);
+  try {
+    for (const [kind, subject] of [['task.updated', 'T-9'], ['merge.completed', 'T-8'], ['session.finished', 'T-1']]) {
+      await revalidateForEvents([event(kind, subject)], async () => {
+        expect(taskShouldRevalidate(taskArgs)).toBe(true);
+      });
+    }
+  } finally { clear(); }
+});
+it('无关任务、前置的非 task/merge 事件与空依赖不触发', async () => {
+  const clear = setRelatedSubjects('T-1', ['T-9']);
+  try {
+    for (const [kind, subject] of [['task.updated', 'T-8'], ['session.finished', 'T-9'], ['', 'T-9'], ['task.updated', '']]) {
+      await revalidateForEvents([event(kind, subject)], async () => {
+        expect(taskShouldRevalidate(taskArgs)).toBe(false);
+      });
+    }
+    setRelatedSubjects('T-1', []);
+    await revalidateForEvents([event('task.updated', 'T-9')], async () => expect(taskShouldRevalidate(taskArgs)).toBe(false));
+  } finally { clear(); }
+});
+it('after 替换与卸载清除旧前置，登记按任务隔离', async () => {
+  const clear = setRelatedSubjects('T-1', ['T-9']);
+  const other = setRelatedSubjects('T-2', ['T-9']);
+  try {
+    setRelatedSubjects('T-1', ['T-8']);
+    await revalidateForEvents([event('task.updated', 'T-9')], async () => expect(taskShouldRevalidate(taskArgs)).toBe(false));
+    await revalidateForEvents([event('task.updated', 'T-8')], async () => expect(taskShouldRevalidate(taskArgs)).toBe(true));
+    clear();
+    await revalidateForEvents([event('task.updated', 'T-8')], async () => expect(taskShouldRevalidate(taskArgs)).toBe(false));
+    await revalidateForEvents([event('task.updated', 'T-9')], async () => {
+      expect(taskShouldRevalidate({ ...taskArgs, currentParams: { id: 'T-2' } })).toBe(true);
+    });
+  } finally { clear(); other(); }
 });

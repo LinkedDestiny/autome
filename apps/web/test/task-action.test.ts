@@ -3,9 +3,9 @@ import { handleTaskAction, WRITE_OPS } from '../app/components/task-action.ts';
 import { MAX_PROSE_LENGTH } from '../server/gates/write-gate.ts';
 const form=(intent:string,fields:Record<string,string>={})=>{ const f=new FormData(); Object.entries({intent,...fields}).forEach(([k,v])=>f.set(k,v)); return f; };
 const setup=()=>({gateway:{write:vi.fn().mockResolvedValue({status:200,body:{ok:true,payload:{task:{id:'T-2'}}}}),read:vi.fn().mockResolvedValue({body:{ok:true,payload:{task:{state:{state:'stopped',at:'design'},merge:{authorized:true}}}}})}});
-it('14 种意图精确映射一次写请求',async()=>{
-  const extra:Record<string,Record<string,string>>={reject:{feedback:'意见'},reply:{info:'补充'},cancel:{confirm:'yes'},rerun:{node:'rebase'},extend:{extra_rounds:'2'},convert:{start:'yes'},decide:{kind:'backlog',item_id:'B-1',disposition:'include'}};
-  const params:Record<string,object>={reject:{feedback:'意见'},reply:{info:'补充'},merge_cancel:{cancel:true},rerun:{node:'rebase'},extend:{extra_rounds:2},convert:{kind:'feature',start:true},decide:extra.decide};
+it('16 种意图精确映射一次写请求',async()=>{
+  const extra:Record<string,Record<string,string>>={note:{text:'备注'},set_after:{after:'T-2'},reject:{feedback:'意见'},reply:{info:'补充'},cancel:{confirm:'yes'},rerun:{node:'rebase'},extend:{extra_rounds:'2'},convert:{start:'yes'},decide:{kind:'backlog',item_id:'B-1',disposition:'include'}};
+  const params:Record<string,object>={note:{text:'备注',reopen:false},set_after:{after:['T-2']},reject:{feedback:'意见'},reply:{info:'补充'},merge_cancel:{cancel:true},rerun:{node:'rebase'},extend:{extra_rounds:2},convert:{kind:'feature',start:true},decide:extra.decide};
   for(const [intent,op] of Object.entries(WRITE_OPS)) {const s=setup();expect(await handleTaskAction(form(intent,extra[intent]),'T-1',s)).toMatchObject({ok:true});expect(s.gateway.write).toHaveBeenCalledExactlyOnceWith({op,params:{task_id:'T-1',...params[intent]}});}
 });
 it('400/409/503/504 原文逐字透传',async()=>{
@@ -24,3 +24,7 @@ it('成功留在本页，合并不声称完成；无网关返回原因',async()=
   expect(await handleTaskAction(form('merge'),'T-1',setup())).toEqual({ok:true,notice:'已提交合并'});
   expect(await handleTaskAction(form('start'),'T-1',{gateway:null})).toHaveProperty('error');
 });
+
+it('note 参数含 reopen 且保留原文与 warning',async()=>{const s=setup();s.gateway.write.mockResolvedValue({status:200,body:{ok:true,payload:{warning:'合并期间原文'}}});expect(await handleTaskAction(form('note',{text:' 原文\n ',reopen:'yes'}),'T-1',s)).toMatchObject({warning:'合并期间原文'});expect(s.gateway.write).toHaveBeenCalledWith({op:'task.note',params:{task_id:'T-1',text:' 原文\n ',reopen:true}});});
+it('set_after 参数组装支持多选和清空',async()=>{for(const ids of [[],['T-2','T-3']]){const s=setup(),f=form('set_after');ids.forEach(id=>f.append('after',id));await handleTaskAction(f,'T-1',s);expect(s.gateway.write).toHaveBeenCalledWith({op:'task.set_after',params:{task_id:'T-1',after:ids}});}});
+it('未知 intent 仍拒绝且不写网关',async()=>{const s=setup();expect(await handleTaskAction(form('constructor'),'T-1',s)).toEqual({error:'未知操作'});expect(s.gateway.write).not.toHaveBeenCalled();});

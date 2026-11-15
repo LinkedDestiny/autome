@@ -8,7 +8,7 @@ export function ProjectList({ projects }: { projects: ShellProject[] }) {
     const running = project.counts?.running ?? '—', needsYou = project.counts?.needs_you ?? '—';
     return <Link className="project-card" key={project.id} to={projectHref(project.id)} title={project.error}
       aria-label={`${project.name}：${COLUMN_LABELS.running} ${running}，${COLUMN_LABELS.needs_you} ${needsYou}${project.alerts ? `，${ALERTS.count(project.alerts)}` : ''}`}>
-      <strong>{project.name}</strong><span className="project-counts">
+      <strong>{project.name}</strong>{project.configError && <span className="count-pill count-alert" title={project.configError}>配置有误</span>}<span className="project-counts">
         <span className={`count-pill count-running${running === 0 ? ' count-zero' : ''}`}>{`${COLUMN_LABELS.running} ${running}`}</span>
         <span className={`count-pill count-needs-you${needsYou === 0 ? ' count-zero' : ''}`}>{`${COLUMN_LABELS.needs_you} ${needsYou}`}</span>
       {!!project.alerts && <span className="count-pill count-alert">{ALERTS.count(project.alerts)}</span>}

@@ -13,7 +13,7 @@ export default function Overview() {
     const cards = overviewTasks(tasks, column);
     return <section className="overview-column" key={column} aria-labelledby={`heading-${column}`}>
       <h2 id={`heading-${column}`}>{`${COLUMN_LABELS[column]}（${cards.length}）`}</h2>
-      <div className="overview-column-body">{!kernel.ok ? <p>内核离线，暂时拿不到任务</p> : cards.length === 0 ? <p>{column === 'needs_you' ? '没有需要你处理的任务' : '没有正在进行的任务'}</p> : cards.map(task => <OverviewCard key={task.id} task={task} projectName={projects.find(project => project.id === task.project_id)?.name ?? task.project_id} />)}</div>
+      <div className="overview-column-body">{!kernel.ok ? <p>内核离线，暂时拿不到任务</p> : cards.length === 0 ? <p>{column === 'needs_you' ? '没有需要你处理的任务' : '没有正在进行的任务'}</p> : cards.map(task => <OverviewCard key={task.id} task={task} configError={projects.find(project => project.id === task.project_id)?.configError} projectName={projects.find(project => project.id === task.project_id)?.name ?? task.project_id} />)}</div>
     </section>;
   })}</div></div>;
 }

@@ -4,12 +4,22 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { expect, test } from 'vitest';
+import browserConfig from '../playwright.config.ts';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workflow = parse(readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8'));
 const local = readFileSync(resolve(root, 'scripts/ci-local.sh'), 'utf8');
 const steps = readFileSync(resolve(root, 'scripts/ci/steps.sh'), 'utf8');
 const web = workflow.jobs.web;
+test('串行浏览器套件为 29 例及初始化清理预留预算，仍受 CI 上限约束', () => {
+  // 360 s already expired after 20 passing cases on the host. Budget the
+  // 29-case suite at 20 s/case plus 120 s for both fixture servers and cleanup.
+  expect(browserConfig.globalTimeout).toBeGreaterThanOrEqual(29 * 20_000 + 120_000);
+  expect(browserConfig.globalTimeout).toBeLessThan(workflow.jobs.e2e['timeout-minutes'] * 60_000);
+  expect(browserConfig.workers).toBe(1);
+  expect(browserConfig.timeout).toBe(90_000);
+  expect(browserConfig.retries).toBe(0);
+});
 type Step = { name?: string; uses?: string; run?: string; with?: Record<string, string> };
 
 test('Web job 使用 macOS 且限时 15 分钟', () => {

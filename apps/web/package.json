@@ -40,7 +40,8 @@
     "probe:sqlite": "node scripts/probe-sqlite.ts",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "react-router typegen && tsc --noEmit",
-    "e2e": "node scripts/e2e-preflight.ts && playwright test"
+    "e2e": "node scripts/e2e-preflight.ts && playwright test",
+    "screenshots": "node scripts/screenshots.ts"
   },
   "version": "2.0.0"
 }

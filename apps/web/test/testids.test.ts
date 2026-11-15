@@ -1,3 +1,5 @@
+import { taskPageData } from './fixtures/task-page-data.ts';
+import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createElement as h, type ComponentType, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -35,7 +37,7 @@ function has(html: string, ...selectors: string[]) { for (const id of selectors)
 const pages: [string, ComponentType, unknown, string][] = [
   [ids.pageOverview, Overview, shell, '/'],
   [ids.pageBoard, Board, board, '/projects/P-1'],
-  [ids.pageTask, Task, { data: { task, project, sessions: [] }, history: { events: [] }, config: { payload: {} }, dashboard: { payload: {} } }, '/tasks/T-01'],
+  [ids.pageTask, Task, await taskPageData({ task, project, sessions: [] }), '/tasks/T-01'],
   [ids.pageTaskNew, NewTask, shell, '/projects/P-1/tasks/new'],
   [ids.pageProjectNew, NewProject, { display: '' }, '/projects/new'],
   [ids.pageSettings, Settings, { project, files: [], session: { state: 'none' } }, '/projects/P-1/settings'],
@@ -70,7 +72,7 @@ test('component selectors retain object identity and conditional states', () => 
   }
   expect(view(h(LiveBanner, { connection: 'open', core: { type: 'core', status: 'connected' } }))).not.toContain(`data-testid="${ids.liveBanner}"`);
   const session = { id: 'S-01', label: '定位', round: 1, running: true, started_at: now };
-  const timeline = view(h(TaskTimeline, { sessions: [session], events: [{ seq: 1, subject: task.id, at: now, kind: 'session.started', payload: { session_id: session.id, node: 'locate' } }], now }));
+  const timeline = view(h(TaskTimeline, { entries: timelineEntries([session], [{ seq: 1, subject: task.id, at: now, kind: 'session.started', payload: { session_id: session.id, node: 'locate' } }], now), window: { from: null, earlier: 0 } }));
   has(timeline, ids.timeline, ids.timelineEntry, ids.sessionLog, ids.sessionLogBody);
   expect(timeline).toContain('data-node="locate"'); expect(timeline).toContain('data-entry-key="S-01"');
   for (const open of [false, true]) {
@@ -111,8 +113,8 @@ test('selector registry is unique, used, and the only source for JSX testids', (
   });
   expect([...used].sort()).toEqual(Object.keys(ids).sort());
 });
-test('scroll exemptions are restricted to all seven designated internal regions', () => {
-  const allowed = ['board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
+test('scroll exemptions are restricted to designated internal regions', () => {
+  const allowed = ['task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
   const found = new Set<string>();
   for (const [, source] of sources()) attributes(source, attrs => {
     if (!attrs.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText() === 'data-scroll-region')) return;

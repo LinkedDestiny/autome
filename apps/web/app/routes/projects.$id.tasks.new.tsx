@@ -1,3 +1,5 @@
+import { DependencyChoices } from '../components/task-dependencies.tsx';
+import { dependencyCandidates } from '../components/queue-deps.ts';
 import { TEST_IDS } from '../lib/testids.ts';
 import { useRef, useState } from 'react';
 import { Form, Link, useActionData, useNavigation, useParams, useRouteLoaderData, type ActionFunctionArgs } from 'react-router';
@@ -65,6 +67,7 @@ export default function NewTask() {
         <button type="button" disabled={navigation.state !== 'idle'} onClick={() => setAttachments(items => items.filter(other => other.key !== item.key))}>移除</button>
       </li>)}</ul>
     </section>
+    <DependencyChoices tasks={dependencyCandidates(shell?.tasks ?? [], id)} disabled={!gate.allowed || busy} />
     {result && 'error' in result && <p role="alert">{result.error}</p>}
     {!gate.allowed && <p role="status">{gate.reason}</p>}
     <footer><button className="btn-primary" name="intent" value="start" disabled={Boolean(disabled)}>创建并开始</button>

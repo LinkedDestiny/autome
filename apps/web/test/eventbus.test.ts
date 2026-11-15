@@ -170,3 +170,21 @@ test('续传分页期间账本回退，丢弃旧批次并通知全部连接', as
     expect(client.messages).toContainEqual({ type: 'reload' }); expect(client.seqs()).toEqual([2]);
   }
 });
+test('已在线连接重连从断开前游标续读，离线事件逐条送达', async () => {
+  const f = fixture(10);
+  f.bus.setCoreStatus({ state: 'connected', attempts: 0 });
+  await f.bus.pull();
+  const c = f.connect();
+  f.setLatest(11); await f.bus.pull();
+  expect(c.seqs()).toEqual([11]);
+  f.bus.setCoreStatus({ state: 'restarting', attempts: 1 });
+  f.setLatest(14); f.call.mockClear();
+  f.bus.setCoreStatus({ state: 'connected', attempts: 0 });
+  await f.bus.pull();
+  expect(f.call.mock.calls[0]).toEqual(['events.since', { after_seq: 11, limit: 1000 }]);
+  expect(c.messages.filter(m => m.type === 'event')).toEqual(
+    [11, 12, 13, 14].map(seq => ({ type: 'event', ...event(seq) })),
+  );
+  await f.bus.pull(); expect(c.seqs()).toEqual([11, 12, 13, 14]);
+  f.bus.close();
+});

@@ -1,9 +1,11 @@
+import { createBinaryWatch } from './core/binary-watch.ts';
+import { readDrivers } from './drivers.ts';
 import { createRequire } from 'node:module';
 import { corePathEnv } from './login-path.ts';
 import { randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { writeInstance, removeInstance, runningGates, type Instance, type InstanceStatus } from './instance.ts';
-import { createTaskEvents } from './task-events.ts';
+import { readTaskEvents } from './task-history.ts';
 import { createTaskDocs } from './task-docs.ts';
 import { createMacTerminal, unavailableTerminal, type TerminalLauncher } from './terminal.ts';
 import { createAdmin } from './admin.ts';
@@ -27,7 +29,7 @@ import type { Mode } from './http.ts';
 
 const { version: webVersion } = createRequire(import.meta.url)('../package.json') as { version: string };
 
-export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, tickIntervalMs = 3000, instanceFile = false }: { tickIntervalMs?: number; instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, tickIntervalMs = 3000, instanceFile = false, onKernelBinaryGone = path => console.error(`内核二进制 ${path} 已不存在`) }: { onKernelBinaryGone?: (path: string) => void; tickIntervalMs?: number; instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
   const binary = binaryPath ? { path: binaryPath, args: binaryArgs ?? [], source: 'env' as const } : resolveAutomedBinary();
   if (binaryArgs) binary.args = binaryArgs;
   console.error(await describeKernel(binary, { env: { ...process.env, ...kernelEnv, AUTOME_HOME: home } }));
@@ -42,16 +44,17 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const attached = attachNotifier({ bus, notifier });
   const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
   const uploads = createUploads(home);
-  const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
+  const taskEvents = { forTask: (id: string) => readTaskEvents((method, params) => core.call(method, params), id) };
   const taskDocs = createTaskDocs();
   const admin = createAdmin({ core, automeHome: home, userHome, terminal, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home, uploads, paths: admin.paths });
   admin.register(gateway);
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, identity, instanceStatus: async (): Promise<InstanceStatus> => {
+  const drivers = () => readDrivers(method => core.call(method), () => core.sidecar?._child?.pid, () => core.otherDriver());
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, drivers, identity, instanceStatus: async (): Promise<InstanceStatus> => {
     const dashboard = await core.call('dashboard.get') as { running: { task: { id: string; title: string; state: { node?: string } } }[] };
     return { ...registration, web_version: webVersion, kernel: { ...kernel, may_advance: core.isConnected() },
       gates: runningGates(dashboard),
-      other_driver: core.otherDriver() };
+      drivers: await drivers(), other_driver: core.otherDriver() };
   } }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {
@@ -73,14 +76,15 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const ready = core.start();
   if (!instanceFile) void ready.catch(error => console.error(String(error)));
   const ticker = createTicker({ intervalMs: tickIntervalMs, call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
+  let binaryWatch: ReturnType<typeof createBinaryWatch> | undefined = undefined;
   const running = {
     server, gateway, core, registerUpgrade, bus, logtail,
     async close() {
+      binaryWatch?.stop();
       ticker.stop();
       notifier.close();
       await logtail.close();
       bus.close();
-      taskEvents.close();
       await core.stop();
       store.close();
       await closeMiddleware();
@@ -95,6 +99,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
     try { await ready; await writeInstance(join(home, 'web/server.json'), registration); }
     catch (error) { await running.close(); throw error; }
   }
+  binaryWatch = createBinaryWatch({ path: binary.path, onGone: () => onKernelBinaryGone(binary.path), log: console.error });
   return running;
 }
 
@@ -103,15 +108,21 @@ export async function runFromEnv(options: { mode?: Mode; instanceFile?: boolean;
   try {
     port = options.port ?? resolvePort(process.env.AUTOME_WEB_PORT);
     const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development');
-    const running = await startServer({ port, mode, kernelEnv: corePathEnv() ?? undefined, instanceFile: options.instanceFile, terminal: createMacTerminal() });
+    const running = await startServer({ port, mode, kernelEnv: corePathEnv() ?? undefined, instanceFile: options.instanceFile, terminal: createMacTerminal(), onKernelBinaryGone: path => {
+      console.error(`内核二进制 ${path} 已不存在（所在 worktree 可能已删除），面板服务退出`);
+      shutdown();
+    } });
     const address = running.server.address();
     if (address && typeof address === 'object') {
       console.log(`autome-web 已启动：http://127.0.0.1:${address.port}（${mode === 'production' ? '生产' : '开发'}模式）`);
     }
+    let closing = false;
     const shutdown = () => {
+      if (closing) return;
+      closing = true;
       process.off('SIGINT', shutdown);
       process.off('SIGTERM', shutdown);
-      void running.close().catch(error => { console.error(error); process.exitCode = 1; });
+      void running.close().then(() => { process.exitCode = 0; }).catch(error => { console.error(error); process.exitCode = 1; });
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);

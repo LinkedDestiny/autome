@@ -1,3 +1,4 @@
+import capturedConfig from './fixtures/m02-config-get.json' with { type: 'json' };
 import populatedConfig from './fixtures/m05-config-resolved.json' with { type: 'json' };
 import { CONFIG_WARNINGS, configWarning } from '../app/lib/config-warnings.ts';
 import { CONFIG_LABELS } from '../app/lib/admin-labels.ts';
@@ -37,7 +38,7 @@ test('1 真实配置逐行、null、未知键和省略字段', () => {
 });
 test('2 validate 警告中文逐条显示', async () => {
   const warnings = [{ kind: 'session_minutes_out_of_range', min: 5, value: 1 }, { kind: 'future', detail: '原文' }];
-  const read = vi.fn(async ({ method }: {method:string}) => ok(method === 'project.list' ? { projects: [{project:base.project}] } : method === 'config.get' ? fixture.config : method === 'config.validate' ? { violations: warnings } : {files:[]}));
+  const read = vi.fn(async ({ method }: {method:string}) => ok(method === 'project.list' ? { projects: [{project:base.project}] } : method === 'project.get' ? {} : method === 'config.get' ? fixture.config : method === 'config.validate' ? { violations: warnings } : {files:[]}));
   const data = await loader(args({gateway:{read,write:vi.fn()}})); expect(data.config?.warnings).toEqual(warnings); const text = html(data); for (const word of ['会话时长 1 分钟低于下限 5 分钟','future','detail=原文']) expect(text).toContain(word);
 });
 test('3 配置路径使用 AUTOME_HOME 并仅缩写家目录内路径', () => {
@@ -49,7 +50,7 @@ test('3 配置路径使用 AUTOME_HOME 并仅缩写家目录内路径', () => {
 test('4 配置失败独立显示，其他卡照常', async () => {
   for (const error of ['TOML parse error 原文','拒绝授权','读盘失败','请求超时','内核未连接']) {
     const read = vi.fn(async ({method}:{method:string}) => method === 'config.get' ? {status:409,body:{ok:false,error}} : ok(method === 'project.list' ? {projects:[{project:base.project}]} : {files:[]}));
-    const data = await loader(args({gateway:{read,write:vi.fn()}})); expect(data.config?.error).toBe(error); const text=html(data); for(const word of [error,'Onboarding','移除项目']) expect(text).toContain(word); expect(text).not.toContain('data-config-key');
+    const data = await loader(args({gateway:{read,write:vi.fn()}})); expect(data.config?.error).toBe(error); const text=html(data); for(const word of [error,'Onboarding','移除项目']) expect(text).toContain(word); expect(text).not.toContain('data-config-key'); expect(read.mock.calls.some(([call]) => call.method === 'config.validate')).toBe(false);
   }
 });
 test('5 名字严格比较，错误不写，正确才写；离线禁用', async () => {
@@ -61,7 +62,7 @@ test('5 名字严格比较，错误不写，正确才写；离线禁用', async 
 });
 test('6 移除说明和目录明确且配置只读', () => { const text=html({...base,config:{rows:configRows(fixture.config.resolved),paths:[],warnings:[]}}); for(const word of ['只是取消注册','不会删除任何文件','/tmp/p']) expect(text).toContain(word); const card=text.split('配置（只读）')[1].split('移除项目')[0]; expect(card).not.toMatch(/<(input|textarea|button)/); });
 test('7 新增源码没有删除文件调用或导入', () => {
-  const paths=['server/paths.ts','server/admin.ts','server/onboarding-watch.ts','server/terminal.ts',...['app/routes','app/components'].flatMap(dir=>readdirSync(dir).filter(f=>/^(projects\.(new|\$id\.settings)|settings-|config-view|add-project|path-complete|admin-live|sidebar-footer|alerts|env)/.test(f)).map(f=>dir+'/'+f))];
+  const paths=['server/paths.ts','server/admin.ts','server/onboarding-disk.ts','server/terminal.ts',...['app/routes','app/components'].flatMap(dir=>readdirSync(dir).filter(f=>/^(projects\.(new|\$id\.settings)|settings-|config-view|add-project|path-complete|admin-live|sidebar-footer|alerts|env)/.test(f)).map(f=>dir+'/'+f))];
   for(const path of paths.filter(existsSync)) {const source=readFileSync(path,'utf8'); expect(source,path).not.toMatch(/\b(rmSync|unlinkSync|rmdirSync)\b|\bfs(\.promises)?\.(rm|unlink|rmdir)\(/); for(const match of source.matchAll(/import\s*{([^}]+)}\s*from\s*['"]node:fs(?:\/promises)?['"]/g)) expect(match[1],path).not.toMatch(/\b(rm|unlink|rmdir)\b/); }
 });
 test('8 八种配置警告中文包含各自字段', () => {
@@ -92,4 +93,22 @@ test('11 真实 config.get 全部行键有标签并翻译角色', () => {
   expect(rows.find(r=>r.key==='roles.0')?.label).toBe('角色 设计（plan）');
   expect(rows.find(r=>r.key==='roles.3')?.label).toBe('角色 实现（impl）');
   for (const key of ['gate.command','gate.timeout_minutes','gate_quick.command','gate_quick.timeout_minutes']) expect(CONFIG_LABELS[key]).toMatch(/[\u4e00-\u9fff]/);
+});
+
+test('12 全量配置每个叶子都有行与标签', () => {
+  const resolved = { ...capturedConfig.resolved, gate_quick_concurrency: 2, setup: { command: 'true', timeout_minutes: 5 }, merge_after: { command: 'true', timeout_minutes: 5 } };
+  const rows = configRows(resolved); const keys: string[] = [];
+  function visit(value: unknown, key = '') { if (key === 'roles') return; if (value !== null && typeof value === 'object') Object.entries(value).forEach(([k, v]) => visit(v, key ? key + '.' + k : k)); else keys.push(key); } visit(resolved);
+  expect(rows.filter(r => !r.key.startsWith('roles.')).map(r => r.key)).toEqual(keys);
+  keys.forEach(key => expect(CONFIG_LABELS[key], key).toBeTruthy());
+});
+test('13 默认段全部且只有它们有默认徽标', () => {
+  const defaults = capturedConfig.defaults; const rows = configRows(capturedConfig.resolved, defaults);
+  for (const row of rows) expect(Boolean(row.isDefault)).toBe(defaults.includes(row.key.split('.')[0]));
+  const text = html({ ...base, config: { rows, paths: [], warnings: [] } }); expect(text.split('>默认</span>').slice(1)).toHaveLength(rows.filter(r => r.isDefault).length);
+});
+test('14 角色 provenance 区分全局项目默认', () => {
+  const rows = configRows({ roles: ['global', 'project', 'default'].map(provenance => ({ role: 'impl', config: {}, provenance })) });
+  expect(rows.map(r => r.source)).toEqual(['全局', '项目', '默认']);
+  const text = html({ ...base, config: { rows, paths: [], warnings: [] } }); for (const source of ['全局', '项目', '默认']) expect(text).toContain('>' + source + '</span>');
 });
