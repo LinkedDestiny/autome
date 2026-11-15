@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
-import { checkout, prepare } from '../e2e/harness/fixture.ts';
+import { checkout, flowSteps, prepare } from '../e2e/harness/fixture.ts';
 
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
 const roots: string[] = [];
@@ -43,4 +43,52 @@ test('W7 flow failure is preserved and stops card seeding', () => {
   const error = new Error('fixture command failed');
   expect(() => prepare(fixture(0, error))).toThrow(error);
   expect(execFileSync).toHaveBeenCalledTimes(1);
+});
+
+function flowFixture(kind: 'feature' | 'bug' = 'feature') {
+  const root = mkdtempSync(join(tmpdir(), 'e2e-flow-barrier-'));
+  roots.push(root);
+  const source = join(root, 'repo/.autome/fake', kind === 'feature' ? 'feat' : 'bugx');
+  mkdirSync(source, { recursive: true });
+  mkdirSync(join(root, 'bin'));
+  for (const step of [1, 2]) writeFileSync(join(source, `${step}.sh`), `echo completed > '${root}/completed-${step}'\n`);
+  return root;
+}
+
+// Execute the generated shell, using sleep calls as a deterministic observer.
+// The observer releases only after seeing the body held across three polls.
+test('feature first step waits for observation and then runs; later steps are free', async () => {
+  const root = flowFixture();
+  const { execFileSync: run } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  writeFileSync(join(root, 'bin/w7-sleep'), `#!/bin/sh
+[ ! -f '${root}/completed-1' ] || exit 94
+echo poll >> '${root}/polls'
+[ "$(wc -l < '${root}/polls')" -lt 3 ] || touch '${root}/release-browser-feature-1'
+`, { mode: 0o755 });
+  flowSteps(root, 'browser-feature', 'feature', { holdFirstStep: true });
+  run('sh', [join(root, 'repo/.autome/fake/browser-feature/1.sh')], { timeout: 5000 });
+  expect(readFileSync(join(root, 'polls'), 'utf8').trim().split('\n')).toHaveLength(3);
+  expect(existsSync(join(root, 'completed-1'))).toBe(true);
+  run('sh', [join(root, 'repo/.autome/fake/browser-feature/2.sh')], { timeout: 5000 });
+  expect(existsSync(join(root, 'completed-2'))).toBe(true);
+});
+
+test('unreleased feature barrier exits 93 without running the step body', async () => {
+  const root = flowFixture();
+  const { spawnSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  writeFileSync(join(root, 'bin/w7-sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  flowSteps(root, 'browser-feature', 'feature', { holdFirstStep: true });
+  const result = spawnSync('sh', [join(root, 'repo/.autome/fake/browser-feature/1.sh')], { timeout: 15_000 });
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(93);
+  expect(existsSync(join(root, 'completed-1'))).toBe(false);
+});
+
+test.each(['feature', 'bug'] as const)('%s keeps its existing default barriers', kind => {
+  const root = flowFixture(kind);
+  flowSteps(root, 'other-flow', kind);
+  for (const step of [1, 2]) {
+    const script = readFileSync(join(root, `repo/.autome/fake/other-flow/${step}.sh`), 'utf8');
+    expect(script.includes(`release-other-flow-${step}`)).toBe(kind === 'bug');
+  }
 });
