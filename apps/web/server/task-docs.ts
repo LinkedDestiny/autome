@@ -2,7 +2,7 @@ import { lstat, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { looksLikeAPath } from './gates/write-gate.ts';
 export const DOC_LIMIT_BYTES = 200 * 1024;
-export type TaskDocument = { name: string; absolute: string; label?: string; size?: number; path?: string };
+export type TaskDocument = { name: string; absolute: string; label?: string; source?: 'worktree' | 'default_branch'; size?: number; path?: string };
 export function pickDocument(documents: TaskDocument[], name: string) {
   if (looksLikeAPath(name)) return { ok: false as const, message: '已拒绝：文档名不能是路径' };
   const entry = documents.find(document => document.name === name);

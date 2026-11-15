@@ -1,4 +1,4 @@
-import type { createTaskEvents } from '../server/task-events.ts';
+import type { readTaskEvents } from '../server/task-history.ts';
 import type { createTaskDocs } from '../server/task-docs.ts';
 import type { AdminServices } from '../server/admin.ts';
 import { createContext, RouterContextProvider, type RouterContext } from 'react-router';
@@ -9,7 +9,7 @@ import type { UploadService } from '../server/uploads.ts';
 import type { openWebStore } from '../server/store.ts';
 export type UnreadSource = Pick<ReturnType<typeof openWebStore>, 'unreadByTask'>;
 export type KernelGateway = Pick<ReturnType<typeof createGateway>, 'read' | 'write'>;
-export type TaskEventSource = Pick<ReturnType<typeof createTaskEvents>, 'forTask'>;
+export type TaskEventSource = { forTask: (id: string) => ReturnType<typeof readTaskEvents> };
 export type TaskDocReader = Pick<ReturnType<typeof createTaskDocs>, 'read'>;
 export type WebServices = {
   taskEvents?: TaskEventSource | null;

@@ -3,7 +3,7 @@ import { corePathEnv } from './login-path.ts';
 import { randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { writeInstance, removeInstance, runningGates, type Instance, type InstanceStatus } from './instance.ts';
-import { createTaskEvents } from './task-events.ts';
+import { readTaskEvents } from './task-history.ts';
 import { createTaskDocs } from './task-docs.ts';
 import { createMacTerminal, unavailableTerminal, type TerminalLauncher } from './terminal.ts';
 import { createAdmin } from './admin.ts';
@@ -42,7 +42,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const attached = attachNotifier({ bus, notifier });
   const notifications = createNotificationApi({ store, publish: message => bus.broadcast(message) });
   const uploads = createUploads(home);
-  const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
+  const taskEvents = { forTask: (id: string) => readTaskEvents((method, params) => core.call(method, params), id) };
   const taskDocs = createTaskDocs();
   const admin = createAdmin({ core, automeHome: home, userHome, terminal, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home, uploads, paths: admin.paths });
@@ -80,7 +80,6 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
       notifier.close();
       await logtail.close();
       bus.close();
-      taskEvents.close();
       await core.stop();
       store.close();
       await closeMiddleware();

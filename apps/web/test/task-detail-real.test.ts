@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync, symlinkSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, symlinkSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -6,21 +6,24 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { CoreSupervisor } from '../server/core/supervisor.ts';
 import { createGateway } from '../server/gateway.ts';
-import { createTaskEvents } from '../server/task-events.ts';
+import { readTaskEvents } from '../server/task-history.ts';
 import { createTaskDocs } from '../server/task-docs.ts';
 import { loadTaskDetail } from '../app/components/task-detail-data.ts';
+import { docsView } from '../app/components/task-docs-model.ts';
+import { changesView, type TaskChanges } from '../app/components/task-changes-model.ts';
+import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { leftoverProcesses, teardown } from './fixtures/process-leak.ts';
 const wt = resolve(import.meta.dirname, '../../..');
 const root = mkdtempSync(join(tmpdir(), 'w7-detail-'));
 const home = join(root, 'autome-home');
 const core = new CoreSupervisor({ home, binaryPath: join(root, 'core-wrapper') });
-const taskEvents = createTaskEvents({ call: (method, params) => core.call(method, params) });
+const taskEvents = { forTask: (id: string) => readTaskEvents((method, params) => core.call(method, params), id) };
 const services = { gateway: createGateway({ core, home }), taskEvents, taskDocs: createTaskDocs() };
 const ids = () => existsSync(join(root, 'task-ids')) ? readFileSync(join(root, 'task-ids'), 'utf8').trim().split('\n') : [];
-const cleanup = () => teardown({ root, core, taskIds: ids(), stopServices: () => taskEvents.close() });
+const cleanup = () => { if (existsSync(root)) writeFileSync(join(root, 'release-main-check'), ''); return teardown({ root, core, taskIds: ids() }); };
 beforeAll(async () => {
   try {
-    await promisify(execFile)('bash', [join(wt, 'apps/web/test/fixtures/w7-flow.sh'), root, wt], { timeout: 150_000, maxBuffer: 1024 * 1024 });
+    await promisify(execFile)('bash', [join(wt, 'apps/web/test/fixtures/w7-flow.sh'), root, wt], { timeout: 150_000, maxBuffer: 1024 * 1024, env: { ...process.env, AUTOME_BIN: join(wt, 'target/debug/autome'), AUTOMED_BIN: join(wt, 'target/debug/automed') } });
     await core.start({ timeoutMs: 30_000 });
   } catch (error) {
     try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], `setup: ${String(error)}; cleanup: ${String(cleanupError)}`, { cause: cleanupError }); }
@@ -47,6 +50,7 @@ it('Bug 真实事件含定位、复现、修复门禁、复核且可读取清单
   for (const kind of ['bug.located', 'bug.reproduced', 'bug.reviewed']) expect(events.some(e => e.kind === kind)).toBe(true);
   expect(events.some(e => e.kind === 'gate.result' && e.payload.node === 'fix_gate')).toBe(true);
   expect(events.every(e => e.subject === 'T-2')).toBe(true);
+  expect(docsView(result.data!).tabs.map(t => t.label)).toContain('Bug 文档');
   const document = result.data?.documents?.find(d => d.name.endsWith('-bug.md'));
   expect(document).toBeDefined();
   const content = await load('T-2', document!.name);
@@ -58,9 +62,44 @@ it('按本次清单名称读取真实设计文档', async () => {
   expect(result.document?.text).toContain('| M-02 | 已完成 |');
   expect(result.config).toHaveProperty('payload');
 });
+it('合并并清理后文档标签及来源、设计正文、里程碑终态和改动仍可读', async () => {
+  const before = await load('T-1');
+  writeFileSync(join(root, 'release-main-check'), '');
+  const cli = (args: string[]) => promisify(execFile)(join(wt, 'target/debug/autome'), args, { cwd: join(root, 'repo'), env: { ...process.env, AUTOME_HOME: home, AUTOMED_CLAUDE_BINARY: join(root, 'bin/fake-cli'), AUTOMED_CODEX_BINARY: join(root, 'bin/fake-cli') }, timeout: 60000 });
+  for (const id of ['T-1', 'T-2']) { await cli(['merge', id]); await cli(['run', '--until-idle', '--interval', '0.2']); }
+  const done = await load('T-1', 'feat.md');
+  expect(done.data?.task.state?.state).toBe('done');
+  expect(existsSync(join(root, 'repo/.worktree/feat'))).toBe(false);
+  expect(docsView(done.data!).tabs).toEqual(docsView(before.data!).tabs);
+  expect(docsView(done.data!).source).toBe('来自默认分支（主检出）');
+  expect(done.data?.documents?.every(d => d.source === 'default_branch')).toBe(true);
+  expect(done.document?.text).toContain('| M-02 | 已完成 |');
+  expect(done.data?.status_block).toMatchObject({ milestones_done: 2, milestones_total: 2 });
+  expect(changesView(done.changes?.payload as TaskChanges, done.data!)).toMatchObject({ available: true, merged: true });
+}, 150000);
+it('真实结束事件的正常退出、退出码 3 崩溃和停止均进入时间线', async () => {
+  const normal = await load('T-1');
+  expect(timelineEntries(normal.data!.sessions, normal.history!.events, new Date().toISOString()).some(e => e.session?.label === '设计' && e.details.includes('正常结束'))).toBe(true);
+  for (const [slug, script, expected] of [['crash-end', 'exit 3', '崩溃（退出码 3）'], ['stop-end', `exec '${root}/bin/w7-sleep' 300`, '被停止']]) {
+    const fake = join(root, 'repo/.autome/fake', slug); mkdirSync(fake, { recursive: true });
+    writeFileSync(join(fake, 'next'), '1'); writeFileSync(join(fake, '1.sh'), script);
+    const { task } = await core.call('task.create', { project_id: normal.data!.project!.id, brief: `# ${slug}`, draft: true }) as { task: { id: string } };
+    appendFileSync(join(root, 'task-ids'), task.id + '\n');
+    await core.call('task.start', { task_id: task.id });
+    if (slug === 'stop-end') {
+      await vi.waitFor(async () => { await core.call('scheduler.tick', {}); expect((await load(task.id)).data?.sessions.some(s => s.running)).toBe(true); }, { timeout: 20000, interval: 100 });
+      await core.call('task.stop', { task_id: task.id });
+    }
+    await vi.waitFor(async () => {
+      await core.call('scheduler.tick', {});
+      const result = await load(task.id);
+      expect(result.history!.events.some(e => e.kind === 'session.ended')).toBe(true);
+      expect(timelineEntries(result.data!.sessions, result.history!.events, new Date().toISOString()).some(e => e.details.includes(expected))).toBe(true);
+    }, { timeout: 20000, interval: 100 });
+  }
+}, 60000);
 it('正常出口与异常 teardown 均无残留；杀不掉保留目录，清理可重复', async () => {
-  for (const id of ids()) { try { await core.call('task.stop', { task_id: id }, { timeoutMs: 1000 }); } catch { /* await_merge rejects */ } }
-  taskEvents.close(); await core.stop();
+  for (const id of ids()) { try { await core.call('task.stop', { task_id: id }, { timeoutMs: 1000 }); } catch { /* await_merge rejects */ } } await core.stop();
   await vi.waitFor(() => expect(leftoverProcesses(root)).toEqual([]));
   const childRoot = mkdtempSync(join(tmpdir(), 'w7-cleanup-'));
   mkdirSync(join(childRoot, 'bin')); symlinkSync('/bin/sleep', join(childRoot, 'bin/w7-sleep'));

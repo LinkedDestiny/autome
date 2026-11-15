@@ -1,5 +1,5 @@
 import { BUG_STAGES, FEATURE_STAGES, STATE_LABELS, fixRoundProgress, stageOf, type TaskState } from '../lib/labels.ts';
-import type { TaskEvent } from '../../server/task-events.ts';
+import type { TaskEvent } from '../../server/task-history.ts';
 import type { TaskPayload } from './task-detail-data.ts';
 export interface TaskConfig { resolved?: { bug?: { fix_rounds?: number } } }
 const milestoneLabels: Record<string, string> = { open: '开放', pending: '待审', done: '已完成' };

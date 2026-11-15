@@ -5,7 +5,7 @@ import { stageBarView } from '../app/components/task-stage-model.ts';
 import { TaskStage } from '../app/components/task-stage.tsx';
 import { FEATURE_STAGES, BUG_STAGES } from '../app/lib/labels.ts';
 import type { TaskPayload } from '../app/components/task-detail-data.ts';
-import type { TaskEvent } from '../server/task-events.ts';
+import type { TaskEvent } from '../server/task-history.ts';
 const payload = (state: NonNullable<TaskPayload['task']['state']> = { state: 'active', node: 'implement' }, kind = 'feature'): TaskPayload => ({
   task: { id: 'T-1', title: '标题', kind, state, budget_n: 30, fix_round: 2 }, sessions: [],
   status_block: { design_round: 1, design_round_limit: 5, impl_round: 3, impl_round_limit: 9, milestones_done: 1, milestones_total: 3,

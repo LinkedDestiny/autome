@@ -54,7 +54,7 @@ export const testGroups = {
     "test/task-detail-data.test.ts",
     "test/task-docs-view.test.ts",
     "test/task-docs.test.ts",
-    "test/task-events.test.ts",
+    "test/task-history.test.ts",
     "test/task-header.test.ts",
     "test/task-new.test.ts",
     "test/task-notice.test.ts",

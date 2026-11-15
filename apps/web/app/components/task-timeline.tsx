@@ -2,7 +2,7 @@ import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
 import { SessionLog } from './session-log.tsx';
 import { TIMELINE_TEXT as t, logName, timelineEntries, type TimelineSession } from './task-timeline-model.ts';
-import type { TaskEvent } from '../../server/task-events.ts';
+import type { TaskEvent } from '../../server/task-history.ts';
 export function TaskTimeline({ sessions, events, now, truncated, error }: { sessions: readonly TimelineSession[]; events: readonly TaskEvent[]; now: string; truncated?: boolean; error?: string }) {
   const entries = timelineEntries(sessions, events, now, useClock().timeZone);
   const text = (value: string, log?: string) => {

@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
 import { failureText } from '../app/lib/labels.ts';
-import type { TaskEvent } from '../server/task-events.ts';
+import type { TaskEvent } from '../server/task-history.ts';
 const now = '2026-11-14T00:00:00Z';
 const session: TimelineSession = { id: 's', label: '实现', round: 1, running: false, started_at: now, ended_at: now };
 function check(reason: Record<string, unknown>, expected: string) {

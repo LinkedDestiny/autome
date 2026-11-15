@@ -3,9 +3,10 @@ export function docsView(data: TaskPayload) {
   const documents = data.documents ?? [];
   const tab = (doc: NonNullable<TaskPayload['documents']>[number]) => ({ name: doc.name, label: doc.label === '证据' ? doc.name : doc.label ?? doc.name, href: `?doc=${encodeURIComponent(doc.name)}` });
   return {
-    tabs: [{ name: null, label: '任务卡', href: '?' }, ...documents.filter(doc => doc.label !== '证据').map(tab)],
+    tabs: [{ name: null, label: '任务卡', href: '?' }, ...documents.filter(doc => doc.label !== '证据' && doc.label !== '任务卡').map(tab)],
     evidence: documents.filter(doc => doc.label === '证据').map(tab),
-    note: documents.length ? null : data.task.state?.state === 'done' ? '任务已完成，工作目录已清理，文档暂不可读。' : data.task.kind === 'bug' ? '内核尚未提供 Bug 文档，当前只显示任务卡。' : null,
+    note: !documents.length && data.task.state?.state === 'cancelled' ? '任务已取消，文档没有合并到默认分支。' : null,
+    source: documents.some(doc => doc.source === 'default_branch') ? '来自默认分支（主检出）' : null,
     designName: data.task.slug ? `${data.task.slug}.md` : null,
   };
 }

@@ -2,7 +2,7 @@ import { inMergeSegment } from './task-changes-model.ts';
 import { parseMarkdown } from '../lib/markdown.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TimelineSession } from './task-timeline-model.ts';
-import type { TaskEvent } from '../../server/task-events.ts';
+import type { TaskEvent } from '../../server/task-history.ts';
 import { DOC_LIMIT_BYTES, pickDocument, type TaskDocument } from '../../server/task-docs.ts';
 export type TaskPayload = {
   cost?: { usd_total: number; sessions: number; sessions_without_cost: number };
@@ -46,7 +46,7 @@ export async function loadTaskDetail(services: WebServices, id: string, url: URL
     services.taskEvents ? services.taskEvents.forTask(id).catch(error => ({ events: [] as TaskEvent[], truncated: false, error: `内核事件暂时读不到：${String(error)}` }))
       : Promise.resolve({ events: [] as TaskEvent[], truncated: false, error: '内核事件暂时读不到：服务不可用' }),
     data.retry ? read('dashboard.get', {}) : undefined,
-    mergeSegment ? read('task.changes', { task_id: id }) : undefined,
+    mergeSegment || data.task.state?.state === 'done' ? read('task.changes', { task_id: id }) : undefined,
   ]);
   const name = url.searchParams.get('doc');
   let document: { name: string | null; text?: string; error?: string; size?: number; truncated?: boolean; missingBrief?: boolean };

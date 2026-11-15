@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { expect, it } from 'vitest';
 import { logName, timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
-import type { TaskEvent } from '../server/task-events.ts';
+import type { TaskEvent } from '../server/task-history.ts';
 // Original wire fixtures captured by w7-flow.sh; synthetic variants below exercise event boundaries.
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/w7/${name}.json`, import.meta.url), 'utf8'));
 const feature = fixture('feature'), bug = fixture('bug');
@@ -96,7 +96,7 @@ it('会话花费、缺省、零金额、用时、被停止与运行时间', () =
   for (const [metrics, cost] of [[null, '无计费数据'], [{ cost_usd: 0 }, '$0.00'], [{ cost_usd: 1.235 }, '$1.24']] as const) {
     const entry = build([], [{ ...ses(), metrics }])[0]; expect(entry.details).toContain(cost); expect(entry.details).toContain('用时 10 秒');
   }
-  expect(build([ev(1, 'session.started', { session_id: 's' })], [{ ...ses(), lifecycle: { state: 'killed' } }])[0].summary).toBe('已被停止');
+  expect(build([ev(1, 'session.started', { session_id: 's' })], [{ ...ses(), lifecycle: { state: 'killed' } }])[0].summary).toBe('被停止');
   expect(build([], [ses('s', true)])[0].details.join()).toContain('已运行');
   expect(build([], [{ ...ses(), started_at: '2024-02-29T23:59:59Z', ended_at: '2024-03-01T00:00:00Z' }])[0].details).toContain('用时 1 秒');
   expect(build([], [{ ...ses(), started_at: '2025-12-31T23:59:59Z', ended_at: '2026-01-01T00:00:00Z' }])[0].details).toContain('用时 1 秒');
@@ -172,4 +172,27 @@ it('all four setup and merge titles project log names including input boundaries
     if (log.startsWith('/')) expect(html.replace(/<[^>]*>/g, '')).not.toContain(log);
   }
   expect(logName('')).toBe(''); expect(logName('/')).toBe('');
+});
+it('事件给出四种结束方式与结束时刻，崩溃区分退出码和消失', () => {
+  // Real kernel timeout requires session_minutes >= 1; use its exact wire shape here.
+  for (const [end, exit_code, text] of [['exited', 0, '正常结束'], ['stopped', null, '被停止'], ['timed_out', null, '超时'], ['crashed', 3, '崩溃（退出码 3）'], ['crashed', null, '崩溃（进程消失）']] as const) {
+    const ended = ev(21, 'session.ended', { session_id: 's', kind: { kind: 'role', role: 'impl' }, round: 1, end, exit_code, duration_ms: null, cost_usd: null });
+    for (const started of [[], [ev(1, 'session.started', { session_id: 's' })]]) {
+      const entry = build([...started, ended], [ses()])[0];
+      expect(entry.details).toContain(text); expect(entry.details).toContain('用时 20 秒');
+    }
+  }
+});
+it('没有 ended 事件时退回会话行，运行中不伪造结束', () => {
+  for (const [state, timed_out, exit_code, text] of [['killed', false, null, '被停止'], ['exited', true, null, '超时'], ['exited', false, 3, '崩溃（退出码 3）'], ['vanished', false, null, '崩溃（进程消失）'], ['exited', false, 0, '正常结束']] as const) {
+    expect(build([], [{ ...ses(), lifecycle: { state, exit_code }, timed_out }])[0].details).toContain(text);
+  }
+  expect(build([], [ses('s', true)])[0].details).not.toContain('正常结束');
+});
+it('结束事件优先于矛盾的会话行及运行标志', () => {
+  for (const session of [{ ...ses(), lifecycle: { state: 'killed' } }, ses('s', true)]) {
+    const entry = build([ev(1, 'session.started', { session_id: 's' }), ev(21, 'session.ended', { session_id: 's', end: 'crashed', exit_code: 4 })], [session])[0];
+    expect(entry.details).toContain('崩溃（退出码 4）'); expect(entry.details).toContain('用时 20 秒');
+    expect(entry.summary).not.toBe('被停止'); expect(entry.summary).not.toBe('运行中'); expect(entry.session?.running).toBe(false);
+  }
 });

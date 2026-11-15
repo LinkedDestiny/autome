@@ -10,7 +10,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { startServer } from '../server/main.ts';
 import type { CoreSupervisor } from '../server/core/supervisor.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
-import { createTaskEvents } from '../server/task-events.ts';
+import { readTaskEvents } from '../server/task-history.ts';
 import { loadTaskDetail } from '../app/components/task-detail-data.ts';
 import { shouldRevalidate } from '../app/routes/tasks.$id.tsx';
 import { revalidateForEvents } from '../app/lib/live-routes.ts';
@@ -18,10 +18,10 @@ import { leftoverProcesses, teardown } from './fixtures/process-leak.ts';
 const wt=resolve(import.meta.dirname,'../../..'),root=mkdtempSync(join(tmpdir(),'w7-live-')),home=join(root,'autome-home');
 const exec=promisify(execFile),messages:LedgerEvent[]=[],extraIds:string[]=[];
 let running:Awaited<ReturnType<typeof startServer>>|undefined,core:CoreSupervisor|undefined,ws:WebSocket|undefined;
-let events:ReturnType<typeof createTaskEvents>|undefined,liveId='';
+let events:{ forTask: (id: string) => ReturnType<typeof readTaskEvents> }|undefined,liveId='';
 const ids=()=>[...(existsSync(join(root,'task-ids'))?readFileSync(join(root,'task-ids'),'utf8').trim().split('\n'):[]),...extraIds];
 const cleanup=async()=>{
- if(existsSync(root))writeFileSync(join(root,'release-main-check'),'');ws?.terminate();events?.close();
+ if(existsSync(root))writeFileSync(join(root,'release-main-check'),'');ws?.terminate();
  await teardown({root,core,taskIds:ids(),stopServices:async()=>{const service=running;running=undefined;await service?.close();}});
 };
 async function create(slug:string,script:string) {
@@ -36,7 +36,7 @@ beforeAll(async()=>{try{
  await exec('bash',[join(wt,'apps/web/test/fixtures/w7-flow.sh'),root,wt],{timeout:150000,maxBuffer:1024*1024});
  running=await startServer({port:0,mode:'production',home,binaryPath:join(root,'core-wrapper')});core=running.gateway.core as CoreSupervisor;
  await vi.waitFor(()=>{if(!core?.isConnected())throw Error('core not ready');});
- events=createTaskEvents({call:(m,p)=>core!.call(m,p)});
+ events={ forTask: id => readTaskEvents((m,p)=>core!.call(m,p), id) };
  liveId=await create('live-probe',`exec '${root}/bin/w7-sleep' 300\n`);
  await vi.waitFor(async()=>{await core!.call('scheduler.tick',{});const result=await core!.call('task.get',{task_id:liveId}) as {sessions:{running:boolean}[]};if(!result.sessions.some(s=>s.running))throw Error('not running');},{timeout:15000,interval:50});
  const address=running.server.address();if(!address||typeof address==='string')throw Error('no address');

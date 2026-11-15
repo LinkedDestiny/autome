@@ -28,3 +28,11 @@ it('无 doc 默认任务卡，null 回退原文，空正文仍保留', async () 
     expect(result.document).toMatchObject({ name: null, text: brief ?? '原文', missingBrief: brief === null }); expect(docRead).not.toHaveBeenCalled();
   }
 });
+it('done 也读 changes，取消不读取', async () => {
+  for (const state of ['done', 'cancelled']) {
+    const read = vi.fn().mockResolvedValueOnce({ status: 200, body: { ok: true, payload: { ...payload, task: { ...payload.task, state: { state } } } } }).mockResolvedValue({ status: 200, body: { ok: true, payload: { merged: true } } });
+    const result = await loadTaskDetail({ gateway: { read, write: vi.fn() } }, 'T-1', url);
+    expect(read.mock.calls.some(([request]) => request.method === 'task.changes')).toBe(state === 'done');
+    if (state === 'done') expect(result.changes?.payload).toEqual({ merged: true });
+  }
+});

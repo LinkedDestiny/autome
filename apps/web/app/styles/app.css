@@ -213,3 +213,6 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .env-component form { display: inline-block; margin: 12px; }
 
 .task-new-page { display: contents; }
+
+.task-doc-source { color: var(--animal-text-secondary); }
+.task-doc-heading { display: flex; align-items: baseline; gap: 12px; }
