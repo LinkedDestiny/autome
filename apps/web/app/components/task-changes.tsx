@@ -4,7 +4,7 @@ export function TaskChangesPanel({ data, changes }: { data: TaskPayload; changes
   const view = changesView(changes && 'payload' in changes ? changes.payload as TaskChanges : undefined, data);
   const fileList = (files: ChangedFile[]) => <ul>{files.map((file, index) => <li key={`${index}:${file.path}`}><span>{changeLabel(file)}</span> <code>{file.status === 'renamed' ? `${file.from} → ${file.path}` : file.path}</code> +{file.added} −{file.deleted}</li>)}</ul>;
   return <section className="task-changes" aria-label={CHANGES_COPY.title}>
-    {view.merged && <p>已合并到默认分支</p>}
+    {view.merged && <p>{CHANGES_COPY.merged}</p>}
     <ol className="task-merge-progress">{view.progress.map(step => <li key={step.label} aria-current={step.current ? 'step' : undefined} className={step.complete ? 'is-complete' : undefined}>{step.label}</li>)}</ol>
     {view.failure && <p role="alert">{view.failure}</p>}
     {changes && 'error' in changes && <p role="alert">{changes.error}</p>}

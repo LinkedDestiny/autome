@@ -44,4 +44,4 @@ export function changesView(changes: TaskChanges | undefined, payload: TaskPaylo
     failure: state?.state === 'failed' && MERGE_NODES.includes(node ?? '') ? failureText(state.reason ?? {}) : null,
   };
 }
-export const CHANGES_COPY = { title: '改动与合并', blocked: '未提交改动阻止合并：' };
+export const CHANGES_COPY = { title: '改动与合并', blocked: '未提交改动阻止合并：', merged: '已合并到默认分支' };
