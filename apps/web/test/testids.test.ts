@@ -111,8 +111,8 @@ test('selector registry is unique, used, and the only source for JSX testids', (
   });
   expect([...used].sort()).toEqual(Object.keys(ids).sort());
 });
-test('scroll exemptions are restricted to all seven designated internal regions', () => {
-  const allowed = ['board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
+test('scroll exemptions are restricted to all eight designated internal regions', () => {
+  const allowed = ['board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
   const found = new Set<string>();
   for (const [, source] of sources()) attributes(source, attrs => {
     if (!attrs.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText() === 'data-scroll-region')) return;

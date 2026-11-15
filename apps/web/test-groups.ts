@@ -29,7 +29,7 @@ export const testGroups = {
     "test/notifier-api.test.ts",
     "test/notifier-rules.test.ts",
     "test/older-kernel-live.test.ts",
-    "test/onboarding-watch.test.ts",
+    "test/onboarding-disk.test.ts",
     "test/overview.test.ts",
     "test/palette.test.ts",
     "test/paths.test.ts",

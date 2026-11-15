@@ -11,10 +11,10 @@ import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
 const closes: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
-async function setup() {
+async function setup(exitCode = 0) {
   const s = await w9Kernel(); closes.push(s.close);
   await s.core.stop();
-  const fake = join(s.root, 'fake-cli'); writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\nmkdir -p docs\nprintf "fake profile" > docs/agent-project-profile.md\nprintf "fake agents" > AGENTS.md\n', { mode: 0o755 });
+  const fake = join(s.root, 'fake-cli'); writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\nmkdir -p docs\nprintf "fake profile" > docs/agent-project-profile.md\nprintf "fake agents" > AGENTS.md\nprintf "onboarding log line\\n"\nexit ' + exitCode + '\n', { mode: 0o755 });
   const oldClaude = process.env.AUTOMED_CLAUDE_BINARY, oldCodex = process.env.AUTOMED_CODEX_BINARY;
   process.env.AUTOMED_CLAUDE_BINARY = fake; process.env.AUTOMED_CODEX_BINARY = fake;
   try { await s.core.start(); } finally { for (const [key, value] of [['AUTOMED_CLAUDE_BINARY', oldClaude], ['AUTOMED_CODEX_BINARY', oldCodex]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; } }
@@ -28,9 +28,17 @@ async function setup() {
   const git = (...args: string[]) => execFileSync('git', args, { cwd: path, encoding: 'utf8' }).trim();
   return { ...s, admin, id, path, publish, args, submit, git };
 }
-test('运行、结束通知、读取编辑两份产物与完成 init commit', async () => {
-  const s = await setup(); expect(await s.submit({ intent: 'run' })).toEqual({});
-  await vi.waitFor(() => { s.admin.onTick(); expect(s.admin.onboarding.status(s.path).state).toBe('ended'); expect(s.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'onboarding.ended', project_id: s.id })); }, { timeout: 20000 });
+test('运行、账本结束、读取编辑两份产物与完成 init commit', async () => {
+  const s = await setup();
+  const router = createMemoryRouter([{ path: '/', loader: () => loader(s.args), shouldRevalidate }]); closes.push(async () => router.dispose());
+  await vi.waitFor(() => expect(router.state.initialized).toBe(true));
+  expect(await s.submit({ intent: 'run' })).toEqual({});
+  await vi.waitFor(async () => { await s.core.call('scheduler.tick', {}); expect((await loader(s.args)).session.label).toBe('正常结束'); }, { timeout: 20000 });
+  const session = (await loader(s.args)).session;
+  const log = await s.core.call('session.log', { session_id: session.session_id }); expect(JSON.stringify(log)).toContain('onboarding log line');
+  const events = (await s.core.call('events.since', { after_seq: 0, subject: s.id, limit: 1000 }) as { events: LedgerEvent[] }).events.filter(e => e.kind === 'session.ended'); expect(events).toHaveLength(1);
+  await revalidateForEvents(events, () => router.revalidate());
+  expect((router.state.loaderData['0'] as Awaited<ReturnType<typeof loader>>).session.label).toBe('正常结束');
   const data = await loader(s.args); expect(data.files.map(f => f.content)).toEqual(['fake profile', 'fake agents']);
   for (const file of data.files) expect(await s.submit({ intent: 'save', path: file.path, content: file.content + ' edited' })).toEqual({ saved: true });
   expect(await s.submit({ intent: 'finish' })).toHaveProperty('init_commit', s.git('rev-parse', 'HEAD'));
@@ -52,7 +60,7 @@ test('单仓库跳过生成提交；无产物工作区跳过不创建提交且�
   expect(committed).toBe(head);
   expect((await loader(args)).project?.onboarding.onboarding).toBe('skipped');
 });
-test('超长保存不改变磁盘内容', async () => { const s = await setup(); const before = readFileSync(join(s.path, 'AGENTS.md'), 'utf8'); expect((await s.submit({ intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) })).error).toMatch(/^已拒绝：.*字符上限/); expect(readFileSync(join(s.path, 'AGENTS.md'), 'utf8')).toBe(before); });
+test('崩溃退出码与日志入账，超长保存不改变磁盘内容', async () => { const s = await setup(4); expect(await s.submit({ intent: 'run' })).toEqual({}); await vi.waitFor(async () => { await s.core.call('scheduler.tick', {}); expect((await loader(s.args)).session.label).toBe('崩溃（退出码 4）'); }, { timeout: 20000 }); const before = readFileSync(join(s.path, 'AGENTS.md'), 'utf8'); expect((await s.submit({ intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) })).error).toMatch(/^已拒绝：.*字符上限/); expect(readFileSync(join(s.path, 'AGENTS.md'), 'utf8')).toBe(before); });
 test('账本事件刷新持久 router 的步骤', async () => {
   const s = await setup(); const router = createMemoryRouter([{ path: '/', loader: () => loader(s.args), shouldRevalidate }]);
   try { await vi.waitFor(() => expect(router.state.initialized).toBe(true)); expect((router.state.loaderData['0'] as Awaited<ReturnType<typeof loader>>).project?.onboarding.step).toBe(3);

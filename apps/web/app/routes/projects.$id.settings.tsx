@@ -1,3 +1,4 @@
+import { SessionLog } from '../components/session-log.tsx';
 import { TEST_IDS } from '../lib/testids.ts';
 import { configWarning } from '../lib/config-warnings.ts';
 import { useState } from 'react';
@@ -36,7 +37,6 @@ export async function action({ request, context, params }: ActionFunctionArgs): 
     if (!loaded.project) return { error: loaded.error };
     const result = await gateway.write({ op: 'project.onboarding.run', params: { project_id } });
     if (!result.body.ok) return { error: result.body.error };
-    admin?.onboarding.watch(project_id, loaded.project.path, (result.body.payload as { session_id: string }).session_id);
     return {};
   }
   if (intent !== 'finish' && intent !== 'skip') return { error: ADMIN.unknown };
@@ -62,10 +62,12 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   const active = state.onboarding === 'in_progress';
   const disabled = !gate.allowed || busy;
   const session = data.session;
-  const status = session.state === 'running' ? ONBOARDING.running : session.state === 'ended' ? ONBOARDING.exit(session.exit_code) : session.state === 'interrupted' ? ONBOARDING.interrupted : ONBOARDING.none;
+  const status = session.label ?? (session.state === 'running' ? ONBOARDING.running : session.state === 'ended' ? ONBOARDING.exit(session.exit_code) : session.state === 'interrupted' ? ONBOARDING.interrupted : ONBOARDING.none);
   return <div className="project-settings" data-testid={TEST_IDS.pageSettings}><h1>{data.project.display_name} · {ADMIN.settings}</h1><section className="settings-card-body" data-scroll-region><h2>{ONBOARDING.title}</h2>
     <p>{active ? ONBOARDING.step(state.step!) : state.onboarding === 'skipped' ? ONBOARDING.skipped : ONBOARDING.ended}</p>
     {active && <p>{ONBOARDING.descriptions[state.step!]}</p>}<p role="status">{status} {session.session_id}</p>{session.error && <p role="alert">{session.error}</p>}
+    {session.session_id && <SessionLog key={session.session_id} session={{ id: session.session_id, label: 'Onboarding', round: 1, running: session.state === 'running', started_at: session.started_at ?? '' }} />}
+    {data.error && <p role="alert">{data.error}</p>}
     {result?.error && <p role="alert">{result.error}</p>}{result?.saved && <p role="status">{ONBOARDING.saved}</p>}
     {result && 'init_commit' in result && <p role="status">{result.init_commit ? ONBOARDING.commit(result.init_commit) : ONBOARDING.noCommit}</p>}
     {active && <><Form method="post"><button name="intent" value="run" disabled={disabled || session.state === 'running'} title={gate.reason}>{ONBOARDING.run}</button></Form>
@@ -76,7 +78,7 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   <section className="settings-card-body" data-scroll-region><h2>{SETTINGS.config}</h2>
     {data.config?.error ? <p role="alert">{data.config.error}</p> : <>
       {data.config?.paths.map(path => <p key={path}><code>{path}</code></p>)}
-      <dl className="config-rows">{data.config?.rows.map(row => <div key={row.key} data-config-key={row.key}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+      <dl className="config-rows">{data.config?.rows.map(row => <div key={row.key} data-config-key={row.key}><dt>{row.label}</dt><dd>{row.value} {row.isDefault && <span className="count-pill">默认</span>}{row.source && <span className="count-pill">{row.source}</span>}</dd></div>)}</dl>
       {data.config?.warnings.map((warning, i) => <pre key={i}>{configWarning(warning)}</pre>)}
     </>}
   </section>

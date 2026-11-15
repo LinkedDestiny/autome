@@ -61,3 +61,14 @@ test('6 root loader returns the same shell through RouterContextProvider', async
     expect(await loader(args)).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
   } finally { vi.useRealTimers(); }
 });
+
+test('7 config_error 标记来自 dashboard 且修复后消失', async () => {
+  const g = gateway(), read = g.read; let broken = true;
+  g.read = vi.fn(input => (input as { method: string }).method === 'dashboard.get' ? Promise.resolve({ status: 200, body: { ok: true, payload: { projects: [{ project: { id: 'P-1' }, config_error: broken ? 'TOML 原文' : null }] } } }) : read(input));
+  expect((await loadShell(g)).projects[0].configError).toBe('TOML 原文'); broken = false; expect((await loadShell(g)).projects[0].configError).toBeUndefined();
+});
+test('8 一个坏配置不影响其它项目与任务', async () => {
+  const g = gateway(), read = g.read;
+  g.read = vi.fn(input => (input as { method: string }).method === 'dashboard.get' ? Promise.resolve({ status: 200, body: { ok: true, payload: { projects: [{ project: { id: 'P-2' }, config_error: '坏配置' }] } } }) : read(input));
+  const result = await loadShell(g); expect(result.projects[0].counts?.running).toBe(2); expect(result.tasks).toHaveLength(tasks.length); expect(result.projects[0].configError).toBeUndefined(); expect(result.projects[1].configError).toBe('坏配置'); expect(result.projects[1].alerts).toBeUndefined();
+});

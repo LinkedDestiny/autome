@@ -108,7 +108,9 @@ test('10 loader omits draft and completed details and fetches dashboard only for
     retry = true; calls.length = 0; await loadBoard({ gateway }, 'P-1'); expect(calls.filter(c => c.method === 'dashboard.get')).toHaveLength(1);
     for (const failedMethod of ['task.get', 'dashboard.get']) for (const status of [409, 503, 504]) {
       const rejected: KernelGateway = { ...gateway, read: async request => (request as { method: string }).method === failedMethod ? { status, body: { ok: false, error: '详情读取失败' } } : gateway.read(request) };
-      expect(await loadBoard({ gateway: rejected }, 'P-1')).toEqual({ error: '详情读取失败' });
+      const result = await loadBoard({ gateway: rejected }, 'P-1');
+      if (failedMethod === 'task.get') { expect(result).not.toHaveProperty('error'); expect(result).toHaveProperty('details', {}); expect(result).toHaveProperty('tasks', expect.arrayContaining([expect.objectContaining({ id: 'draft' })])); }
+      else expect(result).toEqual({ error: '详情读取失败' });
     }
   } finally { vi.useRealTimers(); }
 });

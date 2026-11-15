@@ -1,14 +1,13 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-export type OnboardingSession = { state: 'none' | 'running' | 'ended' | 'interrupted'; session_id?: string; exit_code?: number; error?: string };
+export type OnboardingSession = { label?: string; started_at?: string; state: 'none' | 'running' | 'ended' | 'interrupted'; session_id?: string; exit_code?: number; error?: string };
 const sessionId = /^ses-[a-f0-9]{32}$/;
 const directory = (path: string) => join(path, '.autome/output/sessions/onboarding');
 function optionalRead(path: string) {
   try { return readFileSync(path, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
 }
-export function createOnboardingWatch(publish: (message: { type: string; [key: string]: unknown }) => void = () => {}) {
-  const watched = new Map<string, { path: string; id: string }>();
+export function readOnboardingDisk(path: string): OnboardingSession {
   function inspect(path: string, id: string): OnboardingSession {
     const base = join(directory(path), id);
     const exit = optionalRead(base + '.exit');
@@ -29,17 +28,5 @@ export function createOnboardingWatch(publish: (message: { type: string; [key: s
       return latest ? inspect(path, latest.id) : { state: 'none' };
     } catch (error) { return { state: 'interrupted', error: (error as Error).message }; }
   }
-  return {
-    status,
-    watch(projectId: string, path: string, id: string) { if (sessionId.test(id)) watched.set(projectId + ':' + id, { path, id }); },
-    onTick() {
-      for (const [key, { path, id }] of watched) {
-        let state: OnboardingSession;
-        try { state = inspect(path, id); } catch { continue; }
-        if (state.state === 'running') continue;
-        publish({ type: 'onboarding.ended', project_id: key.slice(0, -(id.length + 1)), session_id: id });
-        watched.delete(key);
-      }
-    },
-  };
+  return status(path);
 }

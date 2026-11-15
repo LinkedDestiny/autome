@@ -100,3 +100,9 @@ test('8 board source cannot duplicate state classification', () => {
     expect(readFileSync(new URL(`../app/${path}`, import.meta.url), 'utf8')).not.toMatch(/['"](?:draft|queued|paused|stopped|failed)['"]/);
   }
 });
+
+test('9 坏配置下卡片仍渲染且不带详情', async () => {
+  const gateway: KernelGateway = { read: async input => (input as { method: string }).method === 'project.get' ? { status: 200, body: { ok: true, payload: { project: { id: 'P-1', display_name: '坏项目' }, tasks: [task({ state: 'active', node: 'implement' })], config_error: 'TOML 原文' } } } : { status: 409, body: { ok: false, error: 'TOML 原文' } }, write: async () => { throw new Error('只读'); } };
+  const result = await loadBoard({ gateway }, 'P-1'); expect(result).not.toHaveProperty('error'); expect(result).toHaveProperty('details', {}); expect(render(result)).toContain('任务 T-1');
+});
+test('10 页头显示配置校验原文', () => { const html = render({ ...data([]), configError: 'TOML 原文 <bad>' }); expect(html).toContain('项目配置有误，以下是内核的校验原文'); expect(html).toContain('TOML 原文 &lt;bad&gt;'); });

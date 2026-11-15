@@ -9,6 +9,8 @@ import { canConfirm, confirmDefaults, probeView, type AddResult, type CheckedPro
 import { nativePicker, type PickerWindow } from '../components/native-picker.ts';
 import { pathCompleteClient, type Suggestions } from '../components/path-complete-client.ts';
 
+const rejectionLabels: Record<string, string> = { already_project: '这个目录已经是项目', nested_in_project: '它在已有项目里面', contains_project: '它包含已有项目', not_a_directory: '这不是目录' };
+
 export const shouldRevalidate = liveShouldRevalidate(byKind('project.'));
 
 export async function loader({ request, context }: LoaderFunctionArgs): Promise<CheckedProject> {
@@ -56,6 +58,7 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
     {suggestions.truncated && <p>{ADMIN.more}</p>}{suggestions.error && <p role="alert">{suggestions.error}</p>}{pickerError && <p role="alert">{pickerError}</p>}
     {checked.error && <p role="alert">{checked.error}</p>}
     {checked.probe && <section><p className="probe-path">{checked.probe.path}</p><div className="probe-members">{probeView(checked.probe).map(text => <p key={text}>{text}</p>)}</div>
+      {checked.probe.rejection && <section role="alert"><h2>{Object.hasOwn(rejectionLabels, checked.probe.rejection.kind) ? rejectionLabels[checked.probe.rejection.kind] : ''}</h2><p>{checked.probe.rejection.message}</p>{checked.probe.rejection.project_id && <Link to={'/projects/' + encodeURIComponent(checked.probe.rejection.project_id)}>打开这个项目</Link>}</section>}
       {!workspace && checked.probe.members.length > 0 && <p>{ADMIN.nested}</p>}
       {canConfirm(input, checked) && defaults && !result?.project && <Form method="post" className="project-confirm">
         <input type="hidden" name="intent" value="confirm" /><input type="hidden" name="path" value={checked.display} />

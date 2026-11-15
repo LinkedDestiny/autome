@@ -53,3 +53,9 @@ test('6 every kind, node and status renders one deduplicated stage line', () => 
   }
   expect(card({ state: 'active', node: 'design' }, 'feature')).toContain('class="task-stage">设计</span>');
 });
+
+test('7 总览与侧栏标记配置错误且不混入报警', () => {
+  const projects = shell.projects.map(p => ({ ...p, configError: 'TOML 原文' }));
+  expect(overview({ ...shell, projects })).toContain('配置有误');
+  const text = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(ProjectList, { projects }))); expect(text).toContain('配置有误'); expect(text).not.toContain('报警 1');
+});
