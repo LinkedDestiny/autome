@@ -75,3 +75,4 @@
 审计 #20 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r28-audit.md | 无
 
 实现 #29 | M-05 | C-2 准备预算修正，待宿主复验 | evidence/M-05-r29-impl.md | ps EPERM
+审计 #21 | M-13 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-13-r29-audit.md | 无
