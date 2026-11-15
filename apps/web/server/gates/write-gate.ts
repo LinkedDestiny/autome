@@ -74,7 +74,7 @@ const ARRAY_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze(
   'config.set_role': ['skills'],
 });
 const MAX_ARRAY_ENTRIES = 256;
-const MAX_AFTER_IDS = 8;
+export const MAX_AFTER_IDS = 8;
 const MAX_ARRAY_ITEM_LENGTH = 1024;
 const NAME_ONLY_ARRAYS = Object.freeze(['skills']);
 

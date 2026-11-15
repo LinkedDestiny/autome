@@ -1,3 +1,4 @@
+import { afterInput } from './queue-deps.ts';
 import type { WebServices } from '../load-context.ts';
 import type { TaskPayload } from './task-detail-data.ts';
 import { availableOps, opsInput, OP_LABELS, type Intent } from './task-ops.ts';
@@ -22,7 +23,11 @@ export async function handleTaskAction(form: FormData, id: string, services: Web
     params.text = value('text');
     params.reopen = value('reopen') === 'yes';
   }
-  if (op === 'set_after') params.after = form.getAll('after');
+  if (op === 'set_after') {
+    const deps = afterInput(form);
+    if (deps.error) return { error: deps.error };
+    params.after = deps.after;
+  }
   if (op === 'extend') {
     const extra = Number(value('extra_rounds'));
     if (!/^\d+$/.test(value('extra_rounds')) || !Number.isSafeInteger(extra) || extra < 1 || extra > 4294967295) return { error: '追加轮次必须是正整数且不超过 4294967295' };

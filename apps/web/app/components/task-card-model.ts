@@ -28,11 +28,15 @@ export function cardView(task: BoardTask, detail: TaskDetail | undefined, ctx: C
   if (task.state.state === 'active' && node && Object.hasOwn(AWAIT_PHRASES, node)) activity = AWAIT_PHRASES[node as keyof typeof AWAIT_PHRASES];
   else if (retry) activity = cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }) : retryPhrase(retry.attempts, retry.not_before, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' });
   else if (session) activity = sessionActivity(session.label, session.round, task.kind === 'feature' ? block?.current_milestone : null, Math.max(0, Math.floor((Date.parse(ctx.now) - Date.parse(session.started_at)) / 60_000)));
-  else if (task.state.state === 'queued') activity = queuePhrase(detail?.queue_position);
+  else if (task.state.state === 'queued') activity = queuePhrase(task.queue_position ?? detail?.queue_position);
   else if (task.state.state === 'failed') activity = CARD_LABELS.failed + renderReason(task.state.reason);
   return {
     kind: Object.hasOwn(KIND_LABELS, task.kind) ? KIND_LABELS[task.kind as keyof typeof KIND_LABELS] : task.kind,
     stages: stages.map((item, index) => ({ label: item.label, current: stage?.index === index, passed: stage != null && stage.index > index })),
+    dependencyWarning: task.blocked_by?.some(item => item.reason),
+    dependency: task.blocked_by?.length ? (task.blocked_by.some(item => item.reason)
+      ? task.blocked_by.filter(item => item.reason).map(item => item.id + (item.reason === 'cancelled' ? ' 已取消' : ' 已失败')).join('、') + '，依赖永远等不到——去详情页修改依赖'
+      : '等 ' + task.blocked_by.map(item => item.id).join('、') + ' 合并') : null,
     unknownStage: stage && stage.index < 0 ? stage.label : null, progress, activity,
     gate: gatePhrase(detail?.gate, detail?.gate_queue_position),
     merged: task.state.state === 'done' && task.merge_commit ? mergedPhrase(task.merge_commit) : null,

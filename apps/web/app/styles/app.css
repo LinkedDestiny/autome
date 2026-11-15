@@ -223,3 +223,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-notes article p { white-space: pre-wrap; }
 .task-notes fieldset { border: 0; padding: 12px 0; display: grid; gap: 12px; }
 .task-notes textarea { display: block; width: 100%; min-height: 6rem; }
+
+.task-notes-panel { min-height: 0; overflow-y: auto; padding: 0 16px 16px; }
+.task-notes-panel .task-notes { overflow: visible; padding: 16px 0; }
+.task-new .dependency-choices, .dependency-choices { display: block; flex-shrink: 0; }
+.dependency-choices > div { max-height: 100px; overflow-y: auto; }
+.dependency-choices label { display: block; }
+.queue-controls fieldset { border: 0; display: grid; gap: 8px; padding: 8px 0; min-width: 0; }
+.queue-controls select { max-width: 100%; }
+.dependency-warning { border-left: 3px solid var(--animal-warning); padding-left: 8px; }

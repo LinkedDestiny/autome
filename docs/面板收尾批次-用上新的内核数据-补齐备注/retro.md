@@ -16,3 +16,5 @@
 实现 #6 | M-03 | 快检修复，保持开放 | evidence/M-03-r6-impl.md | HTTP listen EPERM，浏览器验收待复验
 审计 #3 | M-03 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-03-r6-audit.md | 无
 审计 #3 | M-03 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-03-r6-audit.md | 无
+
+实现 #7 | M-04 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-04-r7-impl.md | ps/listen EPERM，浏览器三项与相关环境测试交审计复验

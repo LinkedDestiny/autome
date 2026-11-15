@@ -1,3 +1,4 @@
+import { queueOrder, type BlockedDependency } from './queue-deps.ts';
 import { currentClock } from '../lib/clock.tsx';
 import { NOTIFICATION_RULES } from '../../server/notifier-rules.ts';
 import { needsTaskDetail, type TaskDetail, type CardContext, toCardDetail } from './task-card-model.ts';
@@ -6,7 +7,7 @@ import { BOARD_READ_ERROR, COLUMN_LABELS } from '../lib/labels.ts';
 import type { ShellTask } from './shell-data.ts';
 import { columnOf, type TaskColumn } from './task-columns.ts';
 
-export interface BoardTask extends ShellTask { completed_at?: string | null; merge_commit?: string | null; state: ShellTask['state'] & { reason?: Record<string, unknown> } }
+export interface BoardTask extends ShellTask { queue_position?: number | null; after?: string[]; blocked_by?: BlockedDependency[]; completed_at?: string | null; merge_commit?: string | null; state: ShellTask['state'] & { reason?: Record<string, unknown> } }
 export type KindFilter = 'all' | 'feature' | 'bug';
 export interface BoardColumn { id: TaskColumn; label: string; tasks: BoardTask[]; recent: BoardTask[]; older: BoardTask[]; total: number }
 const fortnight = 14 * 24 * 60 * 60 * 1000;
@@ -14,7 +15,7 @@ export function boardColumns(tasks: readonly BoardTask[], now: string): BoardCol
   return (Object.keys(COLUMN_LABELS) as TaskColumn[]).map(id => {
     const rows = tasks.filter(task => columnOf(task.state) === id).sort((a, b) => id === 'done'
       ? completed(b) - completed(a)
-      : Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0));
+      : (id === 'todo' ? queueOrder(a, b) : 0) || Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0));
     const recent = id === 'done' ? rows.filter(task => Date.parse(now) - completed(task) <= fortnight).slice(0, 20) : rows;
     const older = id === 'done' ? rows.filter(task => !recent.includes(task)) : [];
     return { id, label: COLUMN_LABELS[id], tasks: rows, recent, older, total: rows.length };
@@ -39,7 +40,7 @@ export async function loadBoard({ gateway, unread }: WebServices, id: string, sh
   const cancelledRows = payload.tasks.filter(task => task.state.state === 'cancelled');
   const cancelledCounts = { all: cancelledRows.length, feature: cancelledRows.filter(task => task.kind === 'feature').length, bug: cancelledRows.filter(task => task.kind === 'bug').length };
   const cancelled = showCancelled ? cancelledRows.map(({ id, title, kind, state }) => ({ id, title, kind, state })).sort((a, b) => Number(b.id.match(/\d+/)?.[0] ?? 0) - Number(a.id.match(/\d+/)?.[0] ?? 0)) : undefined;
-  const tasks = payload.tasks.filter(task => task.state.state !== 'cancelled').map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, project_id: id }));
+  const tasks = payload.tasks.filter(task => task.state.state !== 'cancelled').map(({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, queue_position, after, blocked_by }) => ({ id: taskId, title, kind, state, fix_round, completed_at, merge_commit, queue_position, after, blocked_by, project_id: id }));
   const visible = boardColumns(tasks, now).flatMap(column => showAll ? column.tasks : column.recent);
   const results = await Promise.all(visible.filter(needsTaskDetail).map(async task => ({ id: task.id, result: await gateway.read({ method: 'task.get', params: { task_id: task.id } }) })));
   const details = Object.fromEntries(results.filter(item => item.result.body.ok).map(item => [item.id, toCardDetail(item.result.body.payload as TaskDetail)]));

@@ -133,3 +133,17 @@ test('12 actual SQLite unread counts feed the loader and badge', async () => {
     expect(view(read.tasks[0], read.details!['T-1'], read.cardContext).badge).toBe('等你处理');
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('13 卡片显示依赖等待且使用项目队列位置', () => {
+  const t = { ...task(), state: { state: 'queued' }, queue_position: 2, blocked_by: ['T-3', 'T-5'].map(id => ({ id, state: { state: 'queued' }, reason: null })) };
+  expect(view(t).dependency).toBe('等 T-3、T-5 合并');
+  expect(html(t)).toContain('等 T-3、T-5 合并'); expect(html(t)).toContain('排队第 2 位');
+});
+test('14 取消或失败前置给警告且无依赖不显示', () => {
+  for (const [reason, label] of [['cancelled', '已取消'], ['failed', '已失败']]) {
+    const t = { ...task(), blocked_by: [{ id: 'T-3', state: { state: reason }, reason }] };
+    expect(html(t)).toContain(`T-3 ${label}，依赖永远等不到——去详情页修改依赖`);
+    expect(html(t)).toContain('dependency-warning');
+  }
+  expect(view(task()).dependency).toBeNull();
+});

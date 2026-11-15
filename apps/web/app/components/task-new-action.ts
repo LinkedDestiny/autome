@@ -1,3 +1,4 @@
+import { afterInput } from './queue-deps.ts';
 import { redirect } from 'react-router';
 import type { WebServices } from '../load-context.ts';
 import { MAX_BRIEF_BYTES } from '../../server/gates/write-gate.ts';
@@ -23,11 +24,13 @@ export async function createNewTask(form: FormData, projectId: string, services:
   if (intent !== 'start' && intent !== 'draft') return { error: '未知操作' };
   const attachments = form.getAll('attachments');
   if (typeof brief !== 'string' || attachments.some(id => typeof id !== 'string')) return { error: '任务卡表单无效' };
+  const deps = afterInput(form);
+  if (deps.error) return { error: deps.error };
   const ids = attachments as string[];
   const error = validateNewTask(brief, ids, services.uploads);
   if (error) return { error };
   if (!services.gateway) return { error: '内核未连接：服务未接入网关' };
-  const result = await services.gateway.write({ op: 'task.create', params: { project_id: projectId, kind, brief, draft: intent === 'draft', attachments: ids } });
+  const result = await services.gateway.write({ op: 'task.create', params: { project_id: projectId, kind, brief, draft: intent === 'draft', attachments: ids, after: deps.after } });
   if (!result.body.ok) return { error: result.body.error };
   return redirect(projectHref(projectId));
 }

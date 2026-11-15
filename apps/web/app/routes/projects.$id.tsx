@@ -1,3 +1,4 @@
+import { isQueued, moveTask } from '../components/queue-deps.ts';
 import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
 import { ProjectAlerts } from '../components/project-alerts.tsx';
@@ -25,6 +26,7 @@ export async function loader({ context, params, request }: LoaderFunctionArgs) {
 export async function action({ request, context }: ActionFunctionArgs) {
   const form = await request.formData();
   const intent = form.get('intent');
+  if (intent === 'move') return moveTask(form, context.get(servicesContext));
   if (intent !== 'start' && intent !== 'dismiss') return responseData({ error: '未知操作' }, { status: 400 });
   const { gateway } = context.get(servicesContext);
   if (!gateway) return { error: '内核未连接：服务未接入网关' };
@@ -57,7 +59,7 @@ export default function ProjectBoard() {
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
   {data.configError && <section role="alert"><p>项目配置有误，以下是内核的校验原文</p><pre className="board-config-error" data-scroll-region>{data.configError}</pre></section>}<ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
     <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body" data-scroll-region>
-      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
+      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} queue={data.tasks.filter(isQueued)} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
       {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
       {column.id === 'done' && cancelledCount > 0 && <>

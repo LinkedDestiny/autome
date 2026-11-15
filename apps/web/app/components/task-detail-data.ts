@@ -1,3 +1,4 @@
+import type { BlockedDependency } from './queue-deps.ts';
 import { inMergeSegment } from './task-changes-model.ts';
 import { parseMarkdown } from '../lib/markdown.ts';
 import type { WebServices } from '../load-context.ts';
@@ -16,7 +17,7 @@ export type TaskPayload = {
     milestones?: { id: string; state: string; title?: string }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };

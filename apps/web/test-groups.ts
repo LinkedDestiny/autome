@@ -8,6 +8,7 @@ export const testGroups = {
     "test/bell-view.test.ts",
     "test/board-live-timing.test.ts",
     "test/board.test.ts",
+    "test/queue-deps.test.ts",
     "test/config.test.ts",
     "test/core-framing.test.ts",
     "test/core-restart.test.ts",
