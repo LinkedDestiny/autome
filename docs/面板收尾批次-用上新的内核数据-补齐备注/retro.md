@@ -10,3 +10,4 @@
 实现 #3 | M-02 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-02-r3-impl.md | 浏览器及监听测试受沙箱 ps/listen EPERM 限制，宿主复验
 
 实现 #4 | M-02 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-02-r4-impl.md | 无；快检最终以宿主重跑为准
+审计 #2 | M-02 | 通过 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-02-r4-audit.md | 无
