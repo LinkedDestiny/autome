@@ -68,6 +68,7 @@ export const testGroups = {
     "test/task-timeline.test.ts",
     "test/uploads.test.ts",
     "test/w9-layout.test.ts",
+    "test/window-task.test.ts",
     "test/write-gate.test.ts",
     "test/board-cancelled.test.ts",
     "test/board-payload.test.ts",

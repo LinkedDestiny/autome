@@ -22,3 +22,5 @@
 
 实现 #8 | M-05 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r8-impl.md | ps/listen EPERM，浏览器与清理交宿主复验
 审计 #5 | M-05 | 退回 + 详情窗口浏览器验收夹具 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r8-audit.md | 无
+
+实现 #9 | M-05 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-05-r9-impl.md | 浏览器 ps EPERM，交审计复验
