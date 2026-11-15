@@ -394,6 +394,8 @@ CLI run 展示还原、失败、已处理三种事件，begun 不打印；还原
 
 复用 `gate::Job` 独立进程组，文件为 `.autome/output/gates/<task>/after_merge-<sha12>.{log,pid,exit,started}`，tick 只轮询，core 重启接续；启动前等待其它任务在途的钩子或主检出准备（含尚无 pid 的启动空窗）。`after_merge.prepared` 标记准备段已处理，钩子等待或重入不重复准备；不改变 setup 自己的互斥规则。写 `merge.after_started {command, commit, log}` 与 `merge.after {ok, exit_code, command, commit, log, tail}`，CLI 打印开始、结果或跳过原因。非零退出或超时（缺省 10 分钟，杀进程组、退出码 124）仅报 `after_merge_failed`，失败警报与结果事件同事务写入；已有结果则不再执行，照常清理并进入 Done，不撤销合并。作业存在但开始事件缺失时补事件，不重启；作业消失则清文件、下次 tick 重试。暂停后恢复接同一作业；停止/取消杀进程并删作业文件，停止后恢复重新运行，取消不报失败。停留期间删除配置则直接清理，在途命令后台结束且不收结果。命令应可重复执行，只写 gitignore 产物或检出之外，避免弄脏主检出阻塞后续合并。
 
+**驱动查询。** 只读 RPC `driver.list` 返回 `{drivers: [{pid, command, started_at, last_tick_at, driving}]}`。循环驱动在 `<db>.drivers/<pid>.json` 登记并持有独立 flock；每次 tick 完成更新 mtime，超过 `max(30 秒, 3 × interval)` 未更新即停止推进。stdio 内核首次 tick 才登记，查询按 flock 清除失效登记，不依赖 pid 存活。面板 status 排除自己的内核，环境页列出全部登记；旧内核回退让路推断。
+
 **驱动锁。** 推进 Loop 的进程不止一个：桌面端的 sidecar 和 `autome run` 都会 tick。两者打开同一个数据库，在它旁边的 `<db>.driver.lock` 上用 `flock` 轮流持锁。tick 拿不到锁就跳过这一轮（返回 `skipped`），写命令最多等 10 秒。这样两个驱动同时开着，也不会把同一个任务的会话启动两次。
 
 **本仓库步骤沿用。** `scripts/ci/steps.sh` 用 `step` 声明命令与路径输入，`prep` 在其后任一步实际执行时准备依赖，从不沿用。`scripts/ci/lib.sh` 调用 `inputs.mjs`，复制 Git index 后暂存磁盘内容并写树，以输入树/blob、命令、工具链、全局输入与未归属路径生成键。门禁自身或未归属内容变化会让所有键失效；明确免检的文档变化不失效。仅采信工作区外普通文件 `AUTOME_GATE_PASSES` 的五列 TSV（键、任务、节点、head、时间），缺失/非法则全跑。`AUTOME_GATE_REPORT` 若设置则逐步写 `autome-gate-report 1` 与状态/键/名称三列 TSV；执行通过后重新计算键，不一致只记 `partial`。`--plan` 不执行、不写报告，`--check-claims` 检查路径归属，`--all` 或 `CI_LOCAL_ALL=1` 强制全跑。未导出变量的旧宿主仍全跑、不写报告；内核侧的导出与入账见下述报告约定。引擎清除 `AUTOMED_BIN`、`AUTOME_BIN`、`CARGO_TARGET_DIR`、`CARGO_BUILD_TARGET`，准备步骤固定构建 `target/debug` 下的内核。

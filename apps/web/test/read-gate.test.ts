@@ -199,3 +199,5 @@ test('project.probe 拒绝非法路径，例外只属于方法与键', () => {
 test('events.since 带 subject 仍对浏览器不放行', () => {
   assert.equal(gate.validateReadRequest({ method: 'events.since', params: { subject: 'T-1', after_seq: 0, limit: 1 } }).ok, false);
 });
+
+test('driver.list is allowed on the read channel', () => { assert.equal(gate.validateReadRequest({ method: 'driver.list' }).ok, true); });

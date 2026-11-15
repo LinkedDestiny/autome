@@ -81,6 +81,7 @@ export const testGroups = {
     "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
+    "test/web-status-driver-real.test.ts",
     "test/add-project-real.test.ts",
     "test/alerts-real.test.ts",
     "test/w9-cleanup.test.ts",

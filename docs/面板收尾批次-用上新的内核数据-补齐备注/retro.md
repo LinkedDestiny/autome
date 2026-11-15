@@ -35,3 +35,4 @@
 
 实现 #13 | M-07 | 待审 | evidence/M-07-r13-impl.md | 本轮 ps EPERM；采用审计已生成原图，生成流程待独立复验
 审计 #9 | M-07 | 通过 | evidence/M-07-r13-audit.md | 无
+实现 #14 | M-08 | 待审 | docs/面板收尾批次-用上新的内核数据-补齐备注/evidence/M-08-r14-impl.md | ps/listen EPERM，真实面板交审计复验

@@ -14,7 +14,7 @@ import type { ServerBuild } from 'react-router';
 export type Mode = 'development' | 'production';
 const root = resolve(import.meta.dirname, '..');
 
-export async function createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs, admin, identity, instanceStatus }: { identity?: { instance: string; pid: number }; instanceStatus?: () => Promise<unknown>; admin?: AdminServices; taskEvents?: TaskEventSource; taskDocs?: TaskDocReader; mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
+export async function createHttpServer({ mode, gateway, notifications, store, uploads, taskEvents, taskDocs, admin, drivers, identity, instanceStatus }: { drivers?: () => Promise<import('./drivers.ts').DriverStatus>; identity?: { instance: string; pid: number }; instanceStatus?: () => Promise<unknown>; admin?: AdminServices; taskEvents?: TaskEventSource; taskDocs?: TaskDocReader; mode: Mode; uploads?: UploadService; store?: UnreadSource; gateway?: ReturnType<typeof createGateway>; notifications?: ReturnType<typeof createNotificationApi> }) {
   const app = express();
   const server = createServer(app);
   const port = () => {
@@ -86,13 +86,13 @@ export async function createHttpServer({ mode, gateway, notifications, store, up
     app.use(createRequestHandler({
       build: () => vite.ssrLoadModule('virtual:react-router/server-build') as Promise<ServerBuild>,
       mode,
-      getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs, admin }),
+      getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs, admin, drivers }),
     }));
   } else {
     app.use('/assets', express.static(resolve(root, 'build/client/assets'), { immutable: true, maxAge: '1y' }));
     app.use(express.static(resolve(root, 'build/client'), { maxAge: '1h' }));
     const build = await import(pathToFileURL(resolve(root, 'build/server/index.js')).href);
-    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs, admin }) }));
+    app.use(createRequestHandler({ build, mode, getLoadContext: createLoadContext({ gateway: gateway ?? null, unread: store, uploads, taskEvents, taskDocs, admin, drivers }) }));
   }
   const registerUpgrade = installUpgradeGuard(server, port);
   return { server, closeMiddleware, registerUpgrade };

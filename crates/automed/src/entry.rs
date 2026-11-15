@@ -210,6 +210,7 @@ pub fn serve_stdio() -> i32 {
         "automed core starting, reading commands on stdin"
     );
 
+    let mut registration = None;
     let stdin = io::stdin();
     let mut stdin_lock = stdin.lock();
     let stdout = io::stdout();
@@ -241,7 +242,24 @@ pub fn serve_stdio() -> i32 {
             }
         };
 
+        let ticking = command.method == "scheduler.tick";
+        if ticking && registration.is_none() {
+            match crate::driver_lock::register(ctx.store.path(), "autome core", None) {
+                Ok(value) => registration = Some(value),
+                Err(error) => {
+                    tracing::error!(%error, "driver registration failed");
+                    return 1;
+                }
+            }
+        }
         let outcome = handle_command(&mut ctx, &command);
+        if ticking
+            && let Some(registration) = &registration
+            && let Err(error) = registration.touch()
+        {
+            tracing::error!(%error, "driver heartbeat failed");
+            return 1;
+        }
         if let Err(e) = write_outbound(&mut stdout_lock, &Outbound::Reply(outcome.reply)) {
             tracing::error!(?e, "failed to write reply frame to stdout");
             break;

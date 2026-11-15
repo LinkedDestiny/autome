@@ -9,6 +9,7 @@ function looksLikeAPath(value: string) {
 }
 
 const ALLOWED_READ_METHODS = Object.freeze([
+  'driver.list',
   'project.list',
   'project.probe',
   'project.get',

@@ -500,7 +500,8 @@ test('dispatch 中取任意 path 的方法在两个浏览器门禁都不可达',
   }
   const block = source.slice(source.indexOf('pub const READ_METHODS'));
   const reads = [...block.slice(0, block.indexOf('];')).matchAll(/"([\w.]+)"/g)].map((m) => m[1]);
-  assert.equal(reads.length, 17);
+  assert.equal(reads.length, 18);
+  assert.deepEqual([...read.ALLOWED_READ_METHODS, ...read.WITHHELD_READ_METHODS].sort(), [...reads].sort());
   for (const method of reads) {
     // env.detect 是 desktop 原有的显式写入口；其它读入口不能跨到写通道。
     assert.equal(gate.ALLOWED_WRITE_OPS.includes(method), method === 'env.detect', method);

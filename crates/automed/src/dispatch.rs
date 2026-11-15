@@ -483,6 +483,10 @@ fn dispatch(ctx: &mut Ctx, command: &Command) -> DispatchResult {
         "dashboard.get" => dashboard_get(ctx),
 
         // ---- scheduler ---------------------------------------------------
+        "driver.list" => Ok((
+            json!({ "drivers": crate::driver_lock::drivers(ctx.store.path()).map_err(|e| internal(e.to_string()))? }),
+            vec![],
+        )),
         "scheduler.tick" => scheduler_tick(ctx),
 
         // ---- config ------------------------------------------------------
@@ -3380,7 +3384,8 @@ pub fn protocol_error_reply(message: String) -> Reply {
 /// Method names the read channel may carry: everything that cannot mutate.
 /// Electron Main enforces the split, but the list lives here so it stays next
 /// to the dispatch table it describes.
-pub const READ_METHODS: [&str; 17] = [
+pub const READ_METHODS: [&str; 18] = [
+    "driver.list",
     "project.list",
     "project.probe",
     "project.get",

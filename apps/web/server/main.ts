@@ -1,3 +1,4 @@
+import { readDrivers } from './drivers.ts';
 import { createRequire } from 'node:module';
 import { corePathEnv } from './login-path.ts';
 import { randomUUID } from 'node:crypto';
@@ -47,11 +48,12 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const admin = createAdmin({ core, automeHome: home, userHome, terminal, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home, uploads, paths: admin.paths });
   admin.register(gateway);
-  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, identity, instanceStatus: async (): Promise<InstanceStatus> => {
+  const drivers = () => readDrivers(method => core.call(method), () => core.sidecar?._child?.pid, () => core.otherDriver());
+  const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, drivers, identity, instanceStatus: async (): Promise<InstanceStatus> => {
     const dashboard = await core.call('dashboard.get') as { running: { task: { id: string; title: string; state: { node?: string } } }[] };
     return { ...registration, web_version: webVersion, kernel: { ...kernel, may_advance: core.isConnected() },
       gates: runningGates(dashboard),
-      other_driver: core.otherDriver() };
+      drivers: await drivers(), other_driver: core.otherDriver() };
   } }).catch(error => { store.close(); throw error; });
   try {
     await new Promise<void>((resolve, reject) => {

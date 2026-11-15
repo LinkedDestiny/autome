@@ -1,3 +1,4 @@
+import { driverSummary } from './drivers.ts';
 import { service } from './service.ts';
 import { existsSync } from 'node:fs';
 import { mkdir, open, readFile } from 'node:fs/promises';
@@ -88,8 +89,7 @@ async function status(file: string, json: boolean) {
     console.log(json ? JSON.stringify({ unresponsive: true, pid: value.pid, port: value.port, instance: value.instance, url: instanceUrl(value) }) : `面板服务无响应（pid ${value.pid}，端口 ${value.port}，启动于 ${value.started_at}）`); return 4;
   }
   const info = await instanceInfo(value);
-  const lastSkipped = info.other_driver.last_skipped_at ? new Date(info.other_driver.last_skipped_at).toLocaleTimeString('zh-CN', { hour12: false }) : '未知';
-  console.log(json ? JSON.stringify(info) : `${instanceUrl(value)}\npid ${value.pid}，启动于 ${value.started_at}\n内核：${info.kernel.path}，来源：${info.kernel.source}，构建：${info.kernel.build_id}${info.kernel.may_advance ? '' : '（只读：内核比账本旧）'}\n门禁：${info.gates.map(gate => `${gate.task_id} ${gate.node}`).join('、') || '无'}\n${info.other_driver.skipped_last_minute ? `有另一个驱动在推进（最近 1 分钟让路 ${info.other_driver.skipped_last_minute} 次，最近一次 ${lastSkipped}）` : '最近 1 分钟没有发现其他驱动'}`);
+  console.log(json ? JSON.stringify(info) : `${instanceUrl(value)}\npid ${value.pid}，启动于 ${value.started_at}\n内核：${info.kernel.path}，来源：${info.kernel.source}，构建：${info.kernel.build_id}${info.kernel.may_advance ? '' : '（只读：内核比账本旧）'}\n门禁：${info.gates.map(gate => `${gate.task_id} ${gate.node}`).join('、') || '无'}\n${driverSummary(info.drivers, info.other_driver)}`);
   return 0;
 }
 async function instanceInfo(value: Instance) {

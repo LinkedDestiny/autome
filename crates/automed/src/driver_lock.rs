@@ -115,9 +115,259 @@ fn null_file() -> std::io::Result<File> {
     File::open("/dev/null")
 }
 
+/// A process-lifetime registration, separate from the per-operation driver lock.
+/// File::open/OpenOptions use O_CLOEXEC; exec'd sessions cannot keep it alive.
+pub struct Registration {
+    file: Option<File>,
+}
+impl Registration {
+    pub fn touch(&self) -> std::io::Result<()> {
+        if let Some(file) = &self.file {
+            file.set_modified(std::time::SystemTime::now())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Record {
+    pid: u32,
+    command: String,
+    started_at: String,
+    interval_secs: Option<f64>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct DriverInfo {
+    pub pid: u32,
+    pub command: String,
+    pub started_at: String,
+    pub last_tick_at: String,
+    pub driving: bool,
+}
+fn registration_dir(db: &Path) -> Option<PathBuf> {
+    lock_path(db).map(|_| PathBuf::from(format!("{}.drivers", db.display())))
+}
+
+pub fn register(
+    db: &Path,
+    command: &str,
+    interval_secs: Option<f64>,
+) -> std::io::Result<Registration> {
+    use std::io::Write;
+    use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+    let Some(dir) = registration_dir(db) else {
+        return Ok(Registration { file: None });
+    };
+    if interval_secs.is_some_and(|n| !n.is_finite() || n < 0.0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid driver interval",
+        ));
+    }
+    std::fs::create_dir_all(&dir)?;
+    let pid = std::process::id();
+    let temp = dir.join(format!(".{pid}-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        let record = Record {
+            pid,
+            command: command.chars().take(120).collect(),
+            started_at: crate::store::now_iso(),
+            interval_secs,
+        };
+        serde_json::to_writer(&mut file, &record)?;
+        file.flush()?;
+        // SAFETY: file owns this descriptor throughout the registration.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        std::fs::rename(&temp, dir.join(format!("{pid}.json")))?;
+        Ok(Registration { file: Some(file) })
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
+
+pub fn drivers(db: &Path) -> std::io::Result<Vec<DriverInfo>> {
+    use std::os::unix::{fs::MetadataExt, io::AsRawFd};
+    let Some(dir) = registration_dir(db) else {
+        return Ok(vec![]);
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e),
+    };
+    let mut result = vec![];
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.')
+            || entry.path().extension().is_none_or(|s| s != "json")
+        {
+            continue;
+        }
+        let file = match File::open(entry.path()) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        // SAFETY: file is a live descriptor; nonblocking shared lock probes ownership.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+            // Another reader may already have removed this stale entry.
+            if let Ok(current) = std::fs::metadata(entry.path())
+                && current.ino() == file.metadata()?.ino()
+            {
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            continue;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(error);
+        }
+        let record: Record = serde_json::from_reader(&file)?;
+        let modified = file.metadata()?.modified()?;
+        let age = std::time::SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let last_tick_at = crate::store::format_iso(
+            modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        );
+        result.push(DriverInfo {
+            pid: record.pid,
+            command: record.command,
+            started_at: record.started_at,
+            last_tick_at,
+            driving: is_driving(age, record.interval_secs),
+        });
+    }
+    result.sort_by_key(|d| d.pid);
+    Ok(result)
+}
+
+fn is_driving(age: f64, interval: Option<f64>) -> bool {
+    age <= (3.0 * interval.unwrap_or(0.0)).max(30.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_is_visible_with_bounded_unicode_command() {
+        use std::os::unix::io::AsRawFd;
+        let db = tmp_db("registered");
+        let registration = register(&db, &"驱".repeat(121), Some(1.0)).unwrap();
+        let info = drivers(&db).unwrap();
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0].pid, std::process::id());
+        assert_eq!(info[0].command.chars().count(), 120);
+        assert!(info[0].driving);
+        // SAFETY: the owned registration descriptor is valid.
+        let flags = unsafe {
+            libc::fcntl(
+                registration.file.as_ref().unwrap().as_raw_fd(),
+                libc::F_GETFD,
+            )
+        };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        for interval in [f64::NAN, f64::INFINITY, -1.0] {
+            assert!(register(&db, "", Some(interval)).is_err());
+        }
+    }
+
+    #[test]
+    fn released_registration_is_removed() {
+        let db = tmp_db("released");
+        let registration = register(&db, "autome run", None).unwrap();
+        drop(registration);
+        assert!(drivers(&db).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_dir(registration_dir(&db).unwrap())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn pid_reuse_does_not_keep_stale_registration_alive() {
+        let db = tmp_db("reused");
+        let registration = register(&db, "old process with our live pid", None).unwrap();
+        drop(registration);
+        // Our PID is alive, but the old inode no longer has a holder.
+        assert!(drivers(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn memory_registration_has_no_file() {
+        for path in ["", ":memory:"] {
+            let registration = register(Path::new(path), "", None).unwrap();
+            assert!(registration.file.is_none());
+            registration.touch().unwrap();
+            assert!(drivers(Path::new(path)).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn touch_updates_timestamp_and_driving_expires() {
+        assert!(is_driving(30.0, None));
+        assert!(!is_driving(30.001, None));
+        assert!(is_driving(60.0, Some(20.0)));
+        assert!(!is_driving(60.001, Some(20.0)));
+        assert!(is_driving(0.0, Some(f64::MAX)));
+        let db = tmp_db("heartbeat");
+        for (interval, age, expected) in [
+            (None, 29, true),
+            (None, 31, false),
+            (Some(20.0), 59, true),
+            (Some(20.0), 61, false),
+            (Some(0.0), 31, false),
+        ] {
+            let registration = register(&db, "autome core", interval).unwrap();
+            registration
+                .file
+                .as_ref()
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(age))
+                .unwrap();
+            let before = drivers(&db).unwrap().remove(0);
+            assert_eq!(before.driving, expected);
+            registration.touch().unwrap();
+            let after = drivers(&db).unwrap().remove(0);
+            assert!(after.driving);
+            assert!(after.last_tick_at > before.last_tick_at);
+        }
+    }
+
+    #[test]
+    fn unpublished_hidden_files_are_ignored() {
+        let db = tmp_db("hidden");
+        let dir = registration_dir(&db).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".publishing.json");
+        std::fs::write(&path, "incomplete json").unwrap();
+        assert!(drivers(&db).unwrap().is_empty());
+        assert!(path.exists());
+        // Missing directories are empty; filesystem errors are not hidden as empty.
+        let invalid = tmp_db("bad-dir");
+        std::fs::write(registration_dir(&invalid).unwrap(), "not a directory").unwrap();
+        assert!(drivers(&invalid).is_err());
+    }
 
     fn tmp_db(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("automed-lock-{tag}-{}", std::process::id()));

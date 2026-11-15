@@ -293,7 +293,7 @@ The panel lives at `$(dirname "$PREFIX")/lib/autome/web`, beside the CLI prefix.
 The release tarball also runs directly: keep `web/` beside `autome`.
 
 - `autome web start`: start without opening a browser; repeated runs reuse it.
-- `autome web status` (or `--json`): URL, process, kernel build and running gates.
+- `autome web status` (or `--json`): URL, process, kernel build, running gates and registered drivers (PID, command and latest tick). Older kernels fall back to lock-contention estimates.
 - `autome web stop`: stop; refuses active gates unless `--force` is supplied.
 - `autome web service install|uninstall`: manage optional macOS login startup.
 

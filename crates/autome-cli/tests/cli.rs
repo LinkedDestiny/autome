@@ -2354,3 +2354,105 @@ fn web_help_after_subcommand() {
         assert_web_help(output);
     }
 }
+
+struct DriverChild(std::process::Child);
+impl Drop for DriverChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn spawn_driver(s: &Sandbox, args: &[&str]) -> DriverChild {
+    DriverChild(
+        std::process::Command::new(env!("CARGO_BIN_EXE_autome"))
+            .args(args)
+            .env("AUTOME_HOME", s.root.join("home"))
+            .env("AUTOMED_DB_PATH", s.root.join("home/ledger.sqlite3"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
+}
+fn await_driver(s: &Sandbox, pid: u32) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let value = s.json(&["rpc", "driver.list"]);
+        if value["drivers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["pid"] == pid)
+        {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "driver did not register: {value}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+#[test]
+fn driver_run_registers_live_command() {
+    let s = Sandbox::new("driver-live");
+    s.json(&["rpc", "driver.list"]);
+    let child = spawn_driver(&s, &["run", "--interval", "1"]);
+    let info = await_driver(&s, child.0.id());
+    assert_eq!(info["drivers"][0]["driving"], true);
+    assert_eq!(info["drivers"][0]["command"], "autome run --interval 1");
+}
+#[test]
+fn driver_exit_removes_registration() {
+    let s = Sandbox::new("driver-exit");
+    s.json(&["rpc", "driver.list"]);
+    let child = spawn_driver(&s, &["run", "--interval", "1"]);
+    await_driver(&s, child.0.id());
+    drop(child);
+    assert_eq!(
+        s.json(&["rpc", "driver.list"])["drivers"],
+        serde_json::json!([])
+    );
+    for flag in ["--once", "--until-idle"] {
+        s.ok(&["run", flag]);
+        assert_eq!(
+            s.json(&["rpc", "driver.list"])["drivers"],
+            serde_json::json!([])
+        );
+    }
+}
+#[test]
+fn driver_core_waits_for_first_tick() {
+    let s = Sandbox::new("driver-core");
+    s.json(&["rpc", "driver.list"]);
+    let mut child = spawn_driver(&s, &["core"]);
+    for (index, method) in ["driver.list", "scheduler.tick", "driver.list"]
+        .into_iter()
+        .enumerate()
+    {
+        let command = serde_json::json!({"request_id":method, "command_id":method, "protocol_version":1, "method":method, "params":{}});
+        automed::ipc::write_frame(
+            child.0.stdin.as_mut().unwrap(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let frame =
+            automed::ipc::read_frame(child.0.stdout.as_mut().unwrap(), 8 * 1024 * 1024).unwrap();
+        let reply: Value = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(reply["outcome"]["status"], "ok");
+        if index == 0 {
+            assert_eq!(
+                reply["outcome"]["payload"]["drivers"],
+                serde_json::json!([])
+            );
+            assert_eq!(
+                s.json(&["rpc", "driver.list"])["drivers"],
+                serde_json::json!([])
+            );
+        } else {
+            let info = await_driver(&s, child.0.id());
+            assert_eq!(info["drivers"][0]["command"], "autome core");
+        }
+    }
+}

@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export type Instance = { port: number; pid: number; instance: string; url: string; started_at: string; web_root: string; kernel: { path: string; source: string; build_id: string } };
-export type InstanceStatus = Instance & { web_version: string; kernel: Instance['kernel'] & { may_advance: boolean }; gates: { task_id: string; title: string; node: string }[]; other_driver: { skipped_last_minute: number; last_skipped_at: string | null } };
+export type InstanceStatus = Instance & { drivers?: import('./drivers.ts').DriverStatus; web_version: string; kernel: Instance['kernel'] & { may_advance: boolean }; gates: { task_id: string; title: string; node: string }[]; other_driver: { skipped_last_minute: number; last_skipped_at: string | null } };
 export function runningGates(dashboard: { running: { task: { id: string; title: string; state: { node?: string } } }[] }) {
   return dashboard.running.map(entry => entry.task)
     .filter(task => ['gate', 'fix_gate', 'merge_gate', 'repro_check', 'main_check'].includes(task.state.node ?? ''))
