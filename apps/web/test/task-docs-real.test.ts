@@ -32,11 +32,11 @@ beforeAll(async () => {
   }
 }, 180_000);
 afterAll(cleanup);
-const load = (id: string, doc?: string) => loadTaskDetail(services, id, new URL(`http://localhost/tasks/${id}${doc ? `?doc=${encodeURIComponent(doc)}` : ''}`));
+const load = (id: string, doc?: string) => loadTaskDetail(services, id, new URL(`http://localhost/tasks/${id}${doc ? `?tab=docs&doc=${encodeURIComponent(doc)}` : '?tab=docs'}`));
 it('真实任务卡安全渲染与设计文档当前里程碑高亮', async () => {
   const brief = await load('T-1');
-  expect(brief.data!.brief).toContain('<b>raw</b>');
-  const render = (result: Awaited<ReturnType<typeof load>>) => renderToStaticMarkup(createElement(MemoryRouter, {}, createElement(TaskDocs, { data: result.data!, document: result.document })));
+  expect(brief.document!.text).toContain('<b>raw</b>');
+  const render = (result: Awaited<ReturnType<typeof load>>) => renderToStaticMarkup(createElement(MemoryRouter, {}, createElement(TaskDocs, { data: result.data!, view: result.docs, document: result.document })));
   const html = render(brief);
   expect(html).toContain('&lt;b&gt;raw&lt;/b&gt;'); expect(html).not.toContain('<b>'); expect(html).not.toContain('<script'); expect(html).not.toContain('href="javascript');
   const doc = await load('T-1', 'feat.md');

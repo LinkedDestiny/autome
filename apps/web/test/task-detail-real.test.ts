@@ -9,9 +9,7 @@ import { createGateway } from '../server/gateway.ts';
 import { readTaskEvents } from '../server/task-history.ts';
 import { createTaskDocs } from '../server/task-docs.ts';
 import { loadTaskDetail } from '../app/components/task-detail-data.ts';
-import { docsView } from '../app/components/task-docs-model.ts';
 import { changesView, type TaskChanges } from '../app/components/task-changes-model.ts';
-import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { leftoverProcesses, teardown } from './fixtures/process-leak.ts';
 const wt = resolve(import.meta.dirname, '../../..');
 const root = mkdtempSync(join(tmpdir(), 'w7-detail-'));
@@ -35,8 +33,8 @@ const load = (id: string, doc?: string) => loadTaskDetail(services, id, new URL(
 it('需求真实事件只含本任务且升序，快检、rebase、合并前门禁与九次会话', async () => {
   const result = await load('T-1'); expect(result.error).toBeUndefined();
   expect(result.data?.task.state).toMatchObject({ state: 'active', node: 'await_merge' });
-  expect(result.data?.sessions).toHaveLength(9);
-  const events = result.history!.events;
+  expect(result.timeline?.entries.filter(e => e.session)).toHaveLength(9);
+  const events = (await taskEvents.forTask('T-1')).events;
   expect(events.length).toBeGreaterThan(0); expect(events.every(e => e.subject === 'T-1')).toBe(true);
   expect(events.map(e => e.seq)).toEqual([...new Set(events.map(e => e.seq))].sort((a, b) => a - b));
   expect(events.some(e => e.kind === 'gate.result' && e.payload.kind === 'quick')).toBe(true);
@@ -46,21 +44,21 @@ it('需求真实事件只含本任务且升序，快检、rebase、合并前门�
 });
 it('Bug 真实事件含定位、复现、修复门禁、复核且可读取清单中的 Bug 文档', async () => {
   const result = await load('T-2'); expect(result.data?.task.state).toMatchObject({ node: 'await_merge' });
-  const events = result.history!.events;
+  const events = (await taskEvents.forTask('T-2')).events;
   for (const kind of ['bug.located', 'bug.reproduced', 'bug.reviewed']) expect(events.some(e => e.kind === kind)).toBe(true);
   expect(events.some(e => e.kind === 'gate.result' && e.payload.node === 'fix_gate')).toBe(true);
   expect(events.every(e => e.subject === 'T-2')).toBe(true);
-  expect(docsView(result.data!).tabs.map(t => t.label)).toContain('Bug 文档');
-  const document = result.data?.documents?.find(d => d.name.endsWith('-bug.md'));
+  expect(result.docs!.tabs.map(t => t.label)).toContain('Bug 文档');
+  const document = result.docs?.tabs.find(d => d.name?.endsWith('-bug.md'));
   expect(document).toBeDefined();
-  const content = await load('T-2', document!.name);
+  const content = await load('T-2', document!.name!);
   expect(content.document?.text).toContain('复现命令: sh regression.sh');
 });
 it('按本次清单名称读取真实设计文档', async () => {
   const result = await load('T-1', 'feat.md');
   expect(result.document?.text).toContain('current-milestone: M-02');
   expect(result.document?.text).toContain('| M-02 | 已完成 |');
-  expect(result.config).toHaveProperty('payload');
+  expect(result.ops?.length).toBeGreaterThan(0);
 });
 it('合并并清理后文档标签及来源、设计正文、里程碑终态和改动仍可读', async () => {
   const before = await load('T-1');
@@ -70,16 +68,16 @@ it('合并并清理后文档标签及来源、设计正文、里程碑终态和�
   const done = await load('T-1', 'feat.md');
   expect(done.data?.task.state?.state).toBe('done');
   expect(existsSync(join(root, 'repo/.worktree/feat'))).toBe(false);
-  expect(docsView(done.data!).tabs).toEqual(docsView(before.data!).tabs);
-  expect(docsView(done.data!).source).toBe('来自默认分支（主检出）');
-  expect(done.data?.documents?.every(d => d.source === 'default_branch')).toBe(true);
+  expect(done.docs!.tabs).toEqual(before.docs!.tabs);
+  expect(done.docs!.source).toBe('来自默认分支（主检出）');
+  expect(done.docs?.source).toBeTruthy();
   expect(done.document?.text).toContain('| M-02 | 已完成 |');
   expect(done.data?.status_block).toMatchObject({ milestones_done: 2, milestones_total: 2 });
-  expect(changesView(done.changes?.payload as TaskChanges, done.data!)).toMatchObject({ available: true, merged: true });
+  expect(changesView((await loadTaskDetail(services, 'T-1', new URL('http://localhost/tasks/T-1?tab=changes'))).changes?.payload as TaskChanges, done.data!)).toMatchObject({ available: true, merged: true });
 }, 150000);
 it('真实结束事件的正常退出、退出码 3 崩溃和停止均进入时间线', async () => {
   const normal = await load('T-1');
-  expect(timelineEntries(normal.data!.sessions, normal.history!.events, new Date().toISOString()).some(e => e.session?.label === '设计' && e.details.includes('正常结束'))).toBe(true);
+  expect(normal.timeline!.entries.some(e => e.session?.label === '设计' && e.details.includes('正常结束'))).toBe(true);
   for (const [slug, script, expected] of [['crash-end', 'exit 3', '崩溃（退出码 3）'], ['stop-end', `exec '${root}/bin/w7-sleep' 300`, '被停止']]) {
     const fake = join(root, 'repo/.autome/fake', slug); mkdirSync(fake, { recursive: true });
     writeFileSync(join(fake, 'next'), '1'); writeFileSync(join(fake, '1.sh'), script);
@@ -87,14 +85,14 @@ it('真实结束事件的正常退出、退出码 3 崩溃和停止均进入时�
     appendFileSync(join(root, 'task-ids'), task.id + '\n');
     await core.call('task.start', { task_id: task.id });
     if (slug === 'stop-end') {
-      await vi.waitFor(async () => { await core.call('scheduler.tick', {}); expect((await load(task.id)).data?.sessions.some(s => s.running)).toBe(true); }, { timeout: 20000, interval: 100 });
+      await vi.waitFor(async () => { await core.call('scheduler.tick', {}); expect((await load(task.id)).timeline?.entries.some(e => e.session?.running)).toBe(true); }, { timeout: 20000, interval: 100 });
       await core.call('task.stop', { task_id: task.id });
     }
     await vi.waitFor(async () => {
       await core.call('scheduler.tick', {});
       const result = await load(task.id);
-      expect(result.history!.events.some(e => e.kind === 'session.ended')).toBe(true);
-      expect(timelineEntries(result.data!.sessions, result.history!.events, new Date().toISOString()).some(e => e.details.includes(expected))).toBe(true);
+      expect((await taskEvents.forTask(task.id)).events.some(e => e.kind === 'session.ended')).toBe(true);
+      expect(result.timeline!.entries.some(e => e.details.includes(expected))).toBe(true);
     }, { timeout: 20000, interval: 100 });
   }
 }, 60000);

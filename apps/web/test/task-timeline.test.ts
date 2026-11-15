@@ -3,7 +3,12 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { expect, it } from 'vitest';
 import { logName, timelineEntries, type TimelineSession } from '../app/components/task-timeline-model.ts';
-import { TaskTimeline } from '../app/components/task-timeline.tsx';
+import { TaskTimeline as Timeline } from '../app/components/task-timeline.tsx';
+import { MemoryRouter } from 'react-router';
+import { timelineEntries as entriesForView } from '../app/components/task-timeline-model.ts';
+function TaskTimeline({ sessions, events, now, ...props }: { sessions: Parameters<typeof entriesForView>[0]; events: Parameters<typeof entriesForView>[1]; now: string; truncated?: boolean; error?: string }) {
+  return createElement(MemoryRouter, {}, createElement(Timeline, { entries: entriesForView(sessions, events, now), window: { from: null, earlier: 0 }, ...props }));
+}
 import type { TaskEvent } from '../server/task-history.ts';
 // Original wire fixtures captured by w7-flow.sh; synthetic variants below exercise event boundaries.
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/w7/${name}.json`, import.meta.url), 'utf8'));

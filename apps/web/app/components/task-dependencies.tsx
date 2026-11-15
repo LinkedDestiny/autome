@@ -11,11 +11,10 @@ export function DependencyChoices({ tasks, selected = [], disabled = false }: { 
     <small>最多选择 8 个任务</small>
   </fieldset>;
 }
-export function TaskDependencies({ data, result }: { data: TaskPayload; result?: { error?: string } }) {
+export function TaskDependencies({ data, result, reason = dependencyReadOnly(data) }: { reason?: string | null; data: TaskPayload; result?: { error?: string } }) {
   const shell = useRouteLoaderData<ShellData>('root');
   const gate = useWriteGate();
   const busy = useNavigation().state !== 'idle';
-  const reason = dependencyReadOnly(data);
   const after = data.task.after ?? [];
   const tasks = shell?.tasks ?? [];
   return <section aria-label="依赖"><h2>依赖</h2>

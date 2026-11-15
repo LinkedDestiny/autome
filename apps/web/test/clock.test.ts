@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { readFileSync, readdirSync } from 'node:fs';
 import { expect, test } from 'vitest';
 import { ClockProvider, formatClock, formatDuration, formatRange, type Clock } from '../app/lib/clock.tsx';
+import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { TaskTimeline } from '../app/components/task-timeline.tsx';
 import { BellView } from '../app/components/bell.tsx';
 import { ProjectAlerts } from '../app/components/project-alerts.tsx';
@@ -23,7 +24,7 @@ test('用时边界、分钟精度与异常值', () => {
   expect(formatDuration(530000,'minute')).toBe('8 分'); expect(formatDuration(59000,'minute')).toBe('0 分');
 });
 const session = {id:'s',label:'实现',round:1,running:false,started_at:'2026-11-14T06:00:00Z',ended_at:'2026-11-14T06:08:50Z'};
-const timeline = () => h(TaskTimeline,{sessions:[session],events:[],now:clock.now});
+const timeline = () => h(TaskTimeline,{entries:timelineEntries([session],[],clock.now,clock.timeZone),window:{from:null,earlier:0}});
 function render(child: ReturnType<typeof h>) {
   const router = createMemoryRouter([{path:'/',element:h(ClockProvider,{initial:clock},child)}]);
   try { return renderToString(h(RouterProvider,{router})); } finally {router.dispose();}
@@ -36,7 +37,7 @@ test('相同 loader 快照在两个进程 TZ 下 SSR 标记逐字相同', () => 
 test('全站只能在 clock 模块读取时钟或本地日期', () => {
   for (const file of readdirSync('app',{recursive:true}) as string[]) if (/\.tsx?$/.test(file) && file!=='lib/clock.tsx') expect(readFileSync('app/'+file,'utf8'),file).not.toMatch(/new Date\(|Date\.now\(|getHours\(|toLocale/);
 });
-test('时间线使用 provider 时区', () => {expect(render(timeline())).toContain('14:00 → 14:08');});
+test('时间线保留服务端指定时区', () => {expect(render(timeline())).toContain('14:00 → 14:08');});
 test('铃铛使用 provider 时区', () => {
   const html = render(h(BellView,{snapshot:{unread:1,items:[{id:'n',kind:'future',level:'info',project_id:null,task_id:null,title:'通知',body:'',created_at:clock.now,read_at:null}]},open:true,onToggle:()=>{},onRead:async()=>{},onAll:async()=>{}}));
   expect(html).toContain('>14:28</time>');

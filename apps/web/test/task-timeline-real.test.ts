@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { MemoryRouter } from 'react-router';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
@@ -30,7 +31,7 @@ afterAll(cleanup);
 async function render(id: string) {
   const result = await loadTaskDetail(services, id, new URL(`http://localhost/tasks/${id}`));
   expect(result.error).toBeUndefined(); expect(result.data?.task.state).toMatchObject({ node: 'await_merge' });
-  return renderToString(createElement(TaskTimeline, { sessions: result.data!.sessions, events: result.history!.events, now: new Date().toISOString() }));
+  return renderToString(createElement(MemoryRouter, {}, createElement(TaskTimeline, { ...result.timeline!, window: result.window! })));
 }
 it('真实需求任务页面按会话顺序显示阶段与结果，包含快检、rebase 和合并前门禁', async () => {
   const html = await render('T-1');

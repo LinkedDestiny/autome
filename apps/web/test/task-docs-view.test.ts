@@ -37,7 +37,7 @@ it('缺任务卡正文回退原文，空字符串保留；截断提示', async (
 });
 it('标签使用编码后的名字，无路径', () => {
   const html = render({ ...data, documents: [{ name: '中文 &.md', absolute: '/private/secret', label: '评审' }] });
-  expect(html).toContain('?doc=%E4%B8%AD%E6%96%87%20%26.md'); expect(html).not.toContain('/private/secret');
+  expect(html).toContain('doc=%E4%B8%AD%E6%96%87+%26.md'); expect(html).not.toContain('/private/secret');
 });
 it('拒绝路径、清单缺失、读盘失败三类错误原样呈现', () => {
   for (const error of ['已拒绝：文档名不能是路径', '这个任务没有名为 x 的文档', '文档已不在（可能刚被合并清理），刷新后重试', 'EACCES: permission denied']) {

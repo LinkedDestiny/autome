@@ -49,7 +49,7 @@ it('合并提交后 main_check 挂住期间不是完成，释放后才完成且�
  writeFileSync(join(root,'release-main-check'),'');
  await vi.waitFor(async()=>{await core.call('scheduler.tick',{});const result=await load();if(result.data?.task.state?.state!=='done')throw Error(JSON.stringify(result.data?.task.state));},{timeout:45000,interval:100});
  const done=await load();expect(renderToString(createElement(TaskChangesPanel,{data:done.data!,changes:done.changes}))).toContain('aria-current="step">已完成');
- const states=done.history!.events.filter(e=>e.kind==='task.updated').map(e=>e.payload.state as {state:string;node?:string});
+ const states=(await taskEvents.forTask('T-1')).events.filter(e=>e.kind==='task.updated').map(e=>e.payload.state as {state:string;node?:string});
  const merging=states.findIndex(s=>s.node==='merging'||s.node==='main_check'),end=states.findIndex(s=>s.state==='done');expect(merging).toBeGreaterThanOrEqual(0);expect(end).toBeGreaterThan(merging);
 },100000);
 it('收尾无存活进程',async()=>{await cleanup();expect(leftoverProcesses(root)).toEqual([]);});

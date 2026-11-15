@@ -48,7 +48,7 @@ it('仅合并段与授权后读 changes，默认标签及显式文档选择', as
       const payload={...data,task:{...data.task,state,merge:{authorized}}};
       const read=vi.fn(async (request: unknown)=>({status:200,body:{ok:true as const,payload:(request as {method:string}).method==='task.get'?payload:{}}}));
       await loadTaskDetail({gateway:{read,write:vi.fn()}},'T-1',new URL('http://localhost/tasks/T-1'));
-      expect(read.mock.calls.some(([request])=>(request as {method:string}).method==='task.changes')).toBe(authorized||state.state==='active'||state.state==='done');
+      expect(read.mock.calls.some(([request])=>(request as {method:string}).method==='task.changes')).toBe(authorized||state.state==='active');
       expect(detailTab(payload,new URLSearchParams())).toBe(authorized||state.state==='active'?'changes':'docs');
       expect(detailTab(payload,new URLSearchParams('tab=decisions'))).toBe('decisions');
       expect(detailTab(payload,new URLSearchParams('doc=feat.md'))).toBe('docs');
