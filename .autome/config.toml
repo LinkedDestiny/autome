@@ -17,7 +17,10 @@ timeout_minutes = 30
 # 2026-11-14（T-97 合并后）：有 scripts/ci-quick.sh 就跑它（静态检查 + 本轮改动相关的测试，预算 120 秒）；
 # T-97 之前切出的分支没有这个脚本，走 else 分支，即原来的四条命令。
 quick = 'if [ -f scripts/ci-quick.sh ]; then sh scripts/ci-quick.sh; else cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && { [ -d apps/web/node_modules ] || (cd apps/web && npm ci); } && npm run lint --prefix apps/web && npm run typecheck --prefix apps/web; fi'
-quick_timeout_minutes = 10
+# 2026-11-17（T-99 合并后）：快检末尾多了宿主浏览器阶段（按本轮改动选用例，整套上限 720 秒），10 分钟放不下整套。
+quick_timeout_minutes = 20
+# 实现轮 / 修复轮简报里给会话的快检命令，{round_start} 由内核代入本轮起点提交。
+quick_session = 'sh scripts/ci-quick.sh --since {round_start}'
 
 # 2026-11-13 打开（T-70 合并队列已合并）：任务过了合并前门禁就直接合并，不再停在「等你合并」。
 # 设计批准与 Bug 补充信息卡点不受影响。单个任务要停下：autome merge <任务> --cancel。
