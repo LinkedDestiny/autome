@@ -67,6 +67,7 @@ export const testGroups = {
     "test/task-ops-view.test.ts",
     "test/task-ops.test.ts",
     "test/task-page.test.ts",
+    "test/task-page-effect.test.ts",
     "test/task-stage.test.ts",
     "test/task-timeline.test.ts",
     "test/uploads.test.ts",

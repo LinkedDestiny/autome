@@ -148,7 +148,7 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
     const url = new URL(response.url());
     const routes = url.searchParams.get('_routes');
     if (url.pathname === '/tasks/' + child + '.data' && response.ok()
-      && (routes === null || routes.split(',').includes('routes/tasks.$id'))) detailRevalidated = true;
+      && (routes !== null && routes.split(',').includes('routes/tasks.$id'))) detailRevalidated = true;
   });
   cli(f.root, ['approve', parent]); const start = performance.now();
   await expect(dependency).not.toContainText('等你批准', { timeout: 5000 });
