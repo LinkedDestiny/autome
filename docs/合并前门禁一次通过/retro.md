@@ -18,3 +18,4 @@
 审计 #4 | M-04 | 通过 | docs/合并前门禁一次通过/evidence/M-04-r5-audit.md | 无
 实现 #6 | M-05 | 待审 | docs/合并前门禁一次通过/evidence/M-05-r6-impl.md | 无
 实现 #7 | M-05 | 待审 | docs/合并前门禁一次通过/evidence/M-05-r7-impl.md | 宿主快检待重跑
+审计 #5 | M-05 | 通过 | docs/合并前门禁一次通过/evidence/M-05-r7-audit.md | 无
