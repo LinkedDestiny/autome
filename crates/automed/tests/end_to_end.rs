@@ -2877,14 +2877,14 @@ fn rejecting_design_carries_pending_decisions_and_approval_starts_implementation
 /// commit has a `gate-ok` file, and — when told to — fails on the checkout
 /// the core makes of the merge commit.
 #[test]
-fn gate_quick_feature_exports_round_start_and_base() {
+fn gate_quick_round_start_feature_brief_prompt_and_host() {
     needs_git!();
     let mut w = World::new("quick-round-env");
     let captured = w.root.join("env");
     let script = w.root.join("env.sh");
     std::fs::write(&script, format!("printf '%s %s %s %s\n' \"$AUTOME_GATE_NODE\" \"${{AUTOME_ROUND_START-unset}}\" \"${{AUTOME_BASE-unset}}\" \"$(git rev-parse HEAD)\" >> '{}'\n", captured.display())).unwrap();
     w.configure(&format!(
-        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\n",
+        "[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\nquick_session = 'sh scripts/ci-quick.sh --since {{round_start}}'\n",
         script.display(),
         script.display()
     ));
@@ -2896,7 +2896,7 @@ fn gate_quick_feature_exports_round_start_and_base() {
         &slug,
         &doc("实现中", 2, 1, &[("M-01", "待审")]),
         &format!(
-            "git rev-parse HEAD > '{}'\ngit merge-base main HEAD >> '{}'",
+            "git rev-parse HEAD^ > '{}'\ngit merge-base main HEAD >> '{}'",
             expected.display(),
             expected.display()
         ),
@@ -2914,6 +2914,28 @@ fn gate_quick_feature_exports_round_start_and_base() {
         .map(|s| s.split_whitespace().collect())
         .collect();
     assert_eq!(lines.len(), 2);
+    let starts = w.ctx.store.task_events(&id, "session.started").unwrap();
+    let implementation = starts
+        .iter()
+        .find(|s| {
+            s["kind"]
+                == json!(autome_domain::session::SessionKind::Role {
+                    role: autome_domain::role::Role::Impl
+                })
+        })
+        .unwrap();
+    assert_eq!(implementation["start_heads"][0]["head"], expected[0]);
+    let brief = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/impl-1.md")),
+    )
+    .unwrap();
+    for text in [brief, w.prompt(5)] {
+        assert!(
+            text.contains(&format!("sh scripts/ci-quick.sh --since {}", expected[0])),
+            "{text}"
+        );
+    }
     assert_eq!(&lines[0][..3], &["gate", expected[0], expected[1]]);
     assert_ne!(
         lines[0][1], lines[0][3],
@@ -2923,7 +2945,7 @@ fn gate_quick_feature_exports_round_start_and_base() {
 }
 
 #[test]
-fn gate_quick_bug_fix_gate_exports_round_start() {
+fn gate_quick_round_start_bug_brief_prompt_and_host() {
     needs_git!();
     let mut w = World::new("quick-bug-round-env");
     let captured = w.root.join("env");
@@ -2938,7 +2960,7 @@ fn gate_quick_bug_fix_gate_exports_round_start() {
     )
     .unwrap();
     w.configure(&format!(
-        "[gate]\nrun = 'before_merge'\ncommand = 'true'\nquick = 'sh {}'\n",
+        "[gate]\nrun = 'before_merge'\ncommand = 'true'\nquick = 'sh {}'\nquick_session = 'sh scripts/ci-quick.sh --since {{round_start}}'\n",
         script.display()
     ));
     let request = "bug round environment";
@@ -2950,7 +2972,7 @@ fn gate_quick_bug_fix_gate_exports_round_start() {
         &slug,
         &bug_doc("待复核"),
         &format!(
-            "git rev-parse HEAD > '{}'\ngit merge-base main HEAD >> '{}'\n{BUG_FIX}",
+            "git rev-parse HEAD^ > '{}'\ngit merge-base main HEAD >> '{}'\n{BUG_FIX}",
             expected.display(),
             expected.display()
         ),
@@ -2969,6 +2991,18 @@ fn gate_quick_bug_fix_gate_exports_round_start() {
     });
     let fix = starts.iter().find(|s| s["kind"] == fix_kind).unwrap();
     assert_eq!(fix["start_heads"][0]["head"], expected[0]);
+    let brief = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/impl-1.md")),
+    )
+    .unwrap();
+    for text in [brief, w.prompt(2)] {
+        assert!(
+            text.contains(&format!("sh scripts/ci-quick.sh --since {}", expected[0])),
+            "{text}"
+        );
+    }
+
     let gate = w.ctx.store.task_events(&id, "gate.result").unwrap();
     let gate = gate.iter().find(|e| e["node"] == "fix_gate").unwrap();
     assert_ne!(gate["sha"], expected[0]);
@@ -13228,4 +13262,56 @@ fn gate_history_first_merge_repair_has_history() {
 #[test]
 fn gate_history_following_quick_repair_has_no_history() {
     history_repair(true);
+}
+
+#[test]
+fn gate_deadline_uses_feature_quick_and_bug_full_timeout() {
+    needs_git!();
+    for bug in [false, true] {
+        let mut w = World::new(if bug {
+            "deadline-bug"
+        } else {
+            "deadline-feature"
+        });
+        let captured = w.root.join("deadline");
+        let script = w.root.join("deadline.sh");
+        std::fs::write(&script, format!("printf '%s %s %s\\n' \"$AUTOME_GATE_NODE\" \"$AUTOME_GATE_DEADLINE\" \"$(date +%s)\" >> '{}'\n", captured.display())).unwrap();
+        w.configure(&format!("[gate]\nrun = 'before_merge'\ncommand = 'sh {}'\nquick = 'sh {}'\nquick_timeout_minutes = 2\ntimeout_minutes = 7\n", script.display(), script.display()));
+        let request = "deadline check";
+        let slug = slug_for(request);
+        let id = if bug {
+            bug_step(&w, 1, &slug, &bug_doc("待复核"), BUG_LOCATE);
+            bug_step(&w, 2, &slug, &bug_doc("待复核"), BUG_FIX);
+            bug_step(&w, 3, &slug, &bug_doc("通过"), "");
+            create_bug(&mut w, request)
+        } else {
+            w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+            w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+            w.retro_step(7, &slug);
+            resume_setup(&mut w, request)
+        };
+        w.settle();
+        assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+        let captured = std::fs::read_to_string(captured).unwrap();
+        assert_eq!(captured.lines().count(), 2, "{captured}");
+        for line in captured.lines() {
+            let parts: Vec<_> = line.split_whitespace().collect();
+            let seconds = if parts[0] == "gate" { 120 } else { 420 };
+            let deadline: i64 = parts[1].parse().unwrap();
+            let now: i64 = parts[2].parse().unwrap();
+            assert!((deadline - now - seconds).abs() <= 2, "{line}");
+            let event = w
+                .ctx
+                .store
+                .task_events(&id, "gate.started")
+                .unwrap()
+                .into_iter()
+                .find(|e| e["node"] == parts[0])
+                .unwrap();
+            let started =
+                std::path::Path::new(event["log"].as_str().unwrap()).with_extension("started");
+            let started: i64 = std::fs::read_to_string(started).unwrap().parse().unwrap();
+            assert!((deadline - started - seconds).abs() <= 2);
+        }
+    }
 }

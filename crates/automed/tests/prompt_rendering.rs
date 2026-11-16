@@ -55,6 +55,8 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
         templates,
         gate_before_merge: None,
         gate_quick: None,
+        round_start: None,
+        gate_quick_session: None,
         last_gate: None,
         brief_path: BRIEF,
         slug: SLUG,
@@ -639,6 +641,7 @@ fn quick_golden(name: &str, kind: SessionKind) {
     let mut s = spec(kind, templates);
     s.gate_before_merge = Some("make check");
     s.gate_quick = Some("make lint");
+    s.round_start = Some("abc123");
     s.last_gate = Some(&result);
     s.budget = Some(automed::launcher::BudgetLine {
         round: 2,
@@ -691,6 +694,7 @@ fn gate_quick_audit_brief_matches_golden() {
     });
     config.gate_run = GateRun::BeforeMerge;
     config.gate_quick = Some(QuickGate {
+        session: None,
         command: "make lint".into(),
         timeout_minutes: 5,
     });
@@ -1011,4 +1015,17 @@ fn gate_history_brief_section_follows_milestone() {
         got.find("## 门禁用例的既往失败记录").unwrap() < got.find("## 上一轮对手轮的结论").unwrap()
     );
     assert!(got.contains("audit.md:3：B-3 竞态失败"));
+}
+
+#[test]
+fn gate_quick_session_template() {
+    let templates = automed::protocol::seed();
+    let mut s = spec(SessionKind::Role { role: Role::Impl }, templates);
+    s.gate_before_merge = Some("full");
+    s.gate_quick = Some("quick");
+    s.round_start = Some("abc123");
+    s.gate_quick_session = Some("sh scripts/ci-quick.sh --since {round_start}");
+    let prompt = build_prompt(&s).unwrap();
+    assert!(prompt.contains("sh scripts/ci-quick.sh --since abc123"));
+    assert!(prompt.contains("本轮起点 `abc123`"));
 }

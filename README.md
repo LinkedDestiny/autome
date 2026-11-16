@@ -665,3 +665,18 @@ Less than 240 seconds remaining omits the browser run. Budget truncation without
 failed cases records `not_run`; failed cases still reject the round. This budget
 is independent of `CI_QUICK_BUDGET` (120 seconds). After upgrading the kernel,
 configure this project's `quick_timeout_minutes = 20` to fit the whole suite.
+
+The optional `[gate] quick_session = 'sh scripts/ci-quick.sh --since {round_start}'`
+is the session command template: it requires `quick` and exactly one
+`{round_start}` placeholder (blank templates are ignored). Without a template,
+single-repository implementation/fix sessions receive the equivalent
+`AUTOME_ROUND_START=<sha> sh -c '<quick>'`. Their brief, prompt, session event and
+host check share the HEAD captured before the brief commit. Workspace sessions
+retain the existing instruction. Every host gate exports `AUTOME_GATE_DEADLINE`
+as its start time plus its effective timeout; Bug FixGate uses the full gate timeout.
+
+The quick check's 120 seconds is an admission budget: an admitted step can finish
+after it. The summary reports related-stage elapsed time and, on overrun, the last
+step's start offset/duration and the number of remaining steps not run. Browser
+preparation and execution are outside this budget. Web related candidates remain
+one test file per step.

@@ -27,6 +27,10 @@ run() {
   ran=$((ran + 1))
   printf '\n==> %s\n' "$name"
   step_started=$(date +%s)
+  if [ "${ci_quick_active-0}" = 1 ]; then
+    ci_quick_last_name=$name
+    ci_quick_last_start=$((step_started - ci_quick_started))
+  fi
   # A pipeline's status is tee's, not the command's, on POSIX sh.
   { "$@" 2>&1; echo $? > "$ci_tmp/rc"; } | tee "$ci_tmp/out"
   capture_rc=$?
@@ -54,6 +58,9 @@ run() {
       node "$root/scripts/ci/summary.mjs" extract "$parser" "$name" "$ci_tmp/out" >> "$ci_tmp/cases"
     fi
   fi
+  if [ "${ci_quick_active-0}" = 1 ]; then
+    ci_quick_last_duration=$(($(date +%s) - step_started))
+  fi
 }
 
 summary() {
@@ -64,6 +71,7 @@ summary() {
   printf '%s' "$failed" | while IFS= read -r name; do
     printf '  FAILED  %s\n' "$name"
   done
+  [ ! -f "$ci_tmp/quick-summary" ] || cat "$ci_tmp/quick-summary"
   cat "$ci_tmp/reused"
   cat "$ci_tmp/not-run"
   node "$root/scripts/ci/summary.mjs" render "$ci_tmp/cases"
@@ -112,6 +120,11 @@ ci_dispatch() {
 ci_quick_start() {
   ci_quick_started=$(date +%s)
   ci_quick_budget=${CI_QUICK_BUDGET-120}
+  ci_quick_active=1
+  ci_quick_skipped=0
+  ci_quick_last_name=''
+  ci_quick_last_start=0
+  ci_quick_last_duration=0
 }
 
 ci_not_run() {
@@ -121,10 +134,21 @@ ci_not_run() {
 
 ci_quick_admit() {
   if [ "$(($(date +%s) - ci_quick_started))" -ge "$ci_quick_budget" ]; then
+    ci_quick_skipped=$((ci_quick_skipped + 1))
     ci_not_run "$1（超出快检预算 ${ci_quick_budget}s，留给合并前门禁）"
     return 1
   fi
   return 0
+}
+
+ci_quick_finish() {
+  ci_quick_active=0
+  ci_quick_elapsed=$(($(date +%s) - ci_quick_started))
+  printf '快检相关阶段用时 %s 秒（准入预算 %s 秒）' "$ci_quick_elapsed" "$ci_quick_budget" > "$ci_tmp/quick-summary"
+  if [ "$ci_quick_elapsed" -gt "$ci_quick_budget" ] && [ -n "$ci_quick_last_name" ]; then
+    printf '；最后准入的步骤 %s 从第 %s 秒开始、用时 %s 秒；之后的 %s 步未跑' "$ci_quick_last_name" "$ci_quick_last_start" "$ci_quick_last_duration" "$ci_quick_skipped" >> "$ci_tmp/quick-summary"
+  fi
+  printf '\n' >> "$ci_tmp/quick-summary"
 }
 
 ci_partial() {

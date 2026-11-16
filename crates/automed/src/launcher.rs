@@ -324,6 +324,8 @@ pub struct PromptSpec<'a> {
     pub integration_audit: bool,
     pub gate_before_merge: Option<&'a str>,
     pub gate_quick: Option<&'a str>,
+    pub round_start: Option<&'a str>,
+    pub gate_quick_session: Option<&'a str>,
     pub last_gate: Option<&'a serde_json::Value>,
     pub kind: SessionKind,
     /// The prompt templates of the protocol version this task is pinned to.
@@ -414,7 +416,29 @@ fn round_gate_line(spec: &PromptSpec<'_>, command: &str) -> String {
             _ => {}
         }
     }
+    if let (Some(quick), Some(start)) = (spec.gate_quick, spec.round_start)
+        && matches!(
+            spec.kind,
+            SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
+        )
+    {
+        line.push_str(&round_quick_start(quick, spec.gate_quick_session, start));
+    }
     line
+}
+
+pub(crate) fn round_quick_start(quick: &str, template: Option<&str>, start: &str) -> String {
+    let command = template
+        .map(|t| t.replace("{round_start}", start))
+        .unwrap_or_else(|| {
+            format!(
+                "AUTOME_ROUND_START={start} sh -c '{}'",
+                quick.replace('\'', "'\\''")
+            )
+        });
+    format!(
+        "本轮起点 `{start}`（宿主导出的 `AUTOME_ROUND_START` 同值），在会话里跑同一检查：`{command}`。"
+    )
 }
 
 fn last_gate_kind<'a>(spec: &PromptSpec<'a>) -> Option<&'a str> {
@@ -1544,6 +1568,8 @@ mod tests {
             templates,
             gate_before_merge: None,
             gate_quick: None,
+            round_start: None,
+            gate_quick_session: None,
             last_gate: None,
             brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
@@ -2933,6 +2959,53 @@ mod tests {
         s
     }
 
+    #[test]
+    fn round_gate_line_template() {
+        let tpl = crate::protocol::seed();
+        for kind in [
+            SessionKind::Role { role: Role::Impl },
+            SessionKind::Bug { step: BugStep::Fix },
+        ] {
+            let mut s = quick_spec(kind, &tpl);
+            s.round_start = Some("abc123");
+            s.gate_quick_session = Some("sh scripts/ci-quick.sh --since {round_start}");
+            let line = round_gate_line(&s, "full-check");
+            assert!(line.contains("sh scripts/ci-quick.sh --since abc123"));
+            assert!(line.contains("本轮起点 `abc123`"));
+        }
+    }
+    #[test]
+    fn round_gate_line_fallback_quotes() {
+        let tpl = crate::protocol::seed();
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, &tpl);
+        s.round_start = Some("abc123");
+        s.gate_quick = Some("printf '%s' \"$AUTOME_ROUND_START\"");
+        let line = round_gate_line(&s, "full-check");
+        let command = line
+            .split("在会话里跑同一检查：`")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        let output = std::process::Command::new("sh")
+            .args(["-c", command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"abc123");
+    }
+    #[test]
+    fn round_gate_line_workspace_or_missing_start_unchanged() {
+        let tpl = crate::protocol::seed();
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, &tpl);
+        let old = round_gate_line(&s, "full-check");
+        s.gate_quick_session = Some("check {round_start}");
+        assert_eq!(round_gate_line(&s, "full-check"), old);
+        s.kind = SessionKind::Role { role: Role::Audit };
+        s.round_start = Some("abc123");
+        assert!(!round_gate_line(&s, "full-check").contains("本轮起点"));
+    }
     #[test]
     fn gate_quick_prompt_round_sentence_only_for_impl_and_fix() {
         let tpl = crate::protocol::seed();

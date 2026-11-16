@@ -3788,10 +3788,46 @@ fn launch_session(
     } else {
         None
     };
+    let start_heads = if matches!(
+        kind,
+        SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
+    ) {
+        Some(
+            layout
+                .repos
+                .iter()
+                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
+    let round_start = if project.is_workspace() {
+        None
+    } else {
+        start_heads
+            .as_ref()
+            .and_then(|heads| heads.first())
+            .and_then(|h| h["head"].as_str())
+    };
+    let round_quick_note = resolved
+        .quick_gate()
+        .zip(round_start)
+        .map(|(quick, start)| {
+            launcher::round_quick_start(&quick.command, quick.session.as_deref(), start)
+        });
+    let gate_evidence = match (gate_evidence, round_quick_note.as_ref()) {
+        (Some(gate), Some(note)) => Some(format!("{gate}\n{note}\n")),
+        (None, Some(note)) => Some(format!("\n## 宿主门禁\n\n{note}\n")),
+        (gate, None) => gate,
+    };
     let brief_path = match kind
         .role()
         .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
-    {
+        .or_else(|| {
+            (matches!(kind, SessionKind::Bug { step: BugStep::Fix }) && round_quick_note.is_some())
+                .then_some(Role::Impl)
+        }) {
         Some(role) => write_brief(
             ctx,
             task,
@@ -3882,6 +3918,8 @@ fn launch_session(
         templates: &protocol,
         gate_before_merge: resolved.gate_before_merge(),
         gate_quick: resolved.quick_gate().map(|q| q.command.as_str()),
+        round_start,
+        gate_quick_session: resolved.quick_gate().and_then(|q| q.session.as_deref()),
         last_gate: last_gate.as_ref(),
         brief_path: &brief_path,
         slug: &task.slug,
@@ -3897,6 +3935,12 @@ fn launch_session(
         attachments: &task.attachments,
         doc_refs: &task.doc_refs,
     })?;
+
+    if matches!(kind, SessionKind::Bug { step: BugStep::Fix }) && !brief_path.is_empty() {
+        prompt.push_str(&format!(
+            "\n先读本轮简报 `{brief_path}`，其中包含本轮起点与宿主快检命令。\n"
+        ));
+    }
 
     if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
         && let Some(section) = crate::handoff::sections(&patches, None, true)
@@ -3921,20 +3965,6 @@ fn launch_session(
     // Capture before the process can edit a checkout, not after launch returns.
 
     let scope_heads = if matches!(kind.role(), Some(Role::Audit | Role::Retro)) {
-        Some(
-            layout
-                .repos
-                .iter()
-                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-    let start_heads = if matches!(
-        kind,
-        SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
-    ) {
         Some(
             layout
                 .repos
@@ -4915,13 +4945,15 @@ fn run_gate_attempt(
         let passes = ctx.store.gate_passes(&project.id, &task.id, |commit| {
             git::second_parent(&repo, commit).ok()
         })?;
+        let round_env = gate_round_env(ctx, task, layout, node)?;
+        let deadline = (crate::gate::now_secs() + u64::from(gate.timeout_minutes) * 60).to_string();
         let mut env = vec![
+            ("AUTOME_GATE_DEADLINE", deadline.as_str()),
             ("AUTOME_TASK", task.id.as_str()),
             ("AUTOME_HEAD", head.as_str()),
             ("AUTOME_GATE_NODE", node.as_str()),
             ("AUTOME_GATE_KIND", launch.kind()),
         ];
-        let round_env = gate_round_env(ctx, task, layout, node)?;
         env.extend(round_env.iter().map(|(key, value)| (*key, value.as_str())));
         crate::gate::start_with_passes(&job, &cwd, &run_command, &env, &passes)
             .map_err(|e| err(format!("无法启动门禁：{e}")))?;
@@ -5744,6 +5776,8 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         templates: protocol,
         gate_before_merge: None,
         gate_quick: None,
+        round_start: None,
+        gate_quick_session: None,
         last_gate: None,
         brief_path: "",
         slug: "onboarding",

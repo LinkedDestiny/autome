@@ -2383,6 +2383,7 @@ mod tests {
     fn quick_config() -> ResolvedConfig {
         let mut c = before_merge_config();
         c.gate_quick = Some(crate::config::QuickGate {
+            session: None,
             command: "fmt".into(),
             timeout_minutes: 5,
         });

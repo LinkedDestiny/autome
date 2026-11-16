@@ -948,6 +948,7 @@ session-protocol = []
     fn gate_quick_brief_stale_missing_and_legacy_results() {
         let mut config = before_merge_config();
         config.gate_quick = Some(autome_domain::config::QuickGate {
+            session: None,
             command: "quick".into(),
             timeout_minutes: 5,
         });

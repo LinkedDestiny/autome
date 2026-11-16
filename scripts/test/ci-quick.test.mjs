@@ -211,7 +211,44 @@ test('14 Web related files recheck budget and report the unstarted remainder', t
 writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh -c 'echo FIRST_WEB; sleep 2'; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
   const r = f.run([], { CI_QUICK_BUDGET: '1', AUTOME_GATE_REPORT: f.report }); ok(r);
   assert.match(r.stdout, /FIRST_WEB/);
+  assert.match(r.stdout, /最后准入的步骤 first-web 从第 \d+ 秒开始、用时 \d+ 秒；之后的 1 步未跑/);
   assert.doesNotMatch(r.stdout, /SECOND_WEB/);
   assert.match(readFileSync(f.report, 'utf8'), /partial\t-\tfirst-web/);
   assert.match(readFileSync(f.report, 'utf8'), /not_run\t-\tsecond-web/);
+});
+
+test('15 quick summary explains overrun and excludes later browser work', t => {
+  const f = fixture(t, true);
+  const script = `. scripts/ci/lib.sh
+ci_quick_start
+ci_quick_budget=10
+ci_quick_started=$(($(date +%s) - 12))
+ci_quick_last_name='last-web'
+ci_quick_last_start=9
+ci_quick_last_duration=3
+ci_quick_admit next-web || :
+ci_quick_finish
+ci_quick_started=0
+summary`;
+  const r = spawnSync('sh', ['-c', script], { cwd: f.root, env: { ...cleanEnv, root: f.root }, encoding: 'utf8' }); ok(r);
+  assert.match(r.stdout, /快检相关阶段用时 1[23] 秒（准入预算 10 秒）；最后准入的步骤 last-web 从第 9 秒开始、用时 3 秒；之后的 1 步未跑/);
+  const normal = spawnSync('sh', ['-c', '. scripts/ci/lib.sh; ci_quick_start; ci_quick_finish; summary'], { cwd: f.root, env: { ...cleanEnv, root: f.root }, encoding: 'utf8' }); ok(normal);
+  assert.match(normal.stdout, /快检相关阶段用时 \d+ 秒（准入预算 120 秒）/);
+  assert.doesNotMatch(normal.stdout, /最后准入/);
+});
+
+test('16 each discovered Web candidate contains exactly one test file', t => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'quick-files-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const selected = resolve(dir, 'related.sh');
+  ok(spawnSync(process.execPath, ['apps/web/scripts/quick-related.mjs', selected, 'test/ci-config.test.ts', 'test/test-groups.test.ts'], { cwd: source, env: cleanEnv, encoding: 'utf8', timeout: 30_000 }));
+  const lines = readFileSync(selected, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  for (const line of lines) {
+    assert.match(line, /^if ci_quick_admit .*; then ci_partial .* --cases vitest .*; fi$/);
+    const command = line.split(' --cases vitest ')[1];
+    assert.equal((command.match(/test\/[\w.-]+\.test\.ts/g) ?? []).length, 1, command);
+    assert.match(command, /vitest run/);
+    assert.doesNotMatch(command, /vitest related/);
+  }
 });

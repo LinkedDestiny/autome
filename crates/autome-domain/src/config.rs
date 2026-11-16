@@ -355,6 +355,8 @@ pub const DEFAULT_GATE_QUICK_TIMEOUT_MINUTES: u32 = 5;
 /// Project-only quick check used between implementation and audit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuickGate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     pub command: String,
     pub timeout_minutes: u32,
 }

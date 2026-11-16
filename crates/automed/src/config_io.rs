@@ -488,6 +488,23 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
             .get("quick")
             .map(|v| v.as_str().map(str::trim).ok_or("[gate] quick 必须是字符串"))
             .transpose()?;
+        let quick_session = t
+            .get("quick_session")
+            .map(|v| {
+                v.as_str()
+                    .map(str::trim)
+                    .ok_or("[gate] quick_session 必须是字符串")
+            })
+            .transpose()?
+            .filter(|s| !s.is_empty());
+        if let Some(template) = quick_session {
+            if quick.is_none_or(|q| q.is_empty()) {
+                return Err("[gate] quick_session 需要和 quick 一起配置".into());
+            }
+            if template.matches("{round_start}").count() != 1 {
+                return Err("[gate] quick_session 必须恰好含一个 {round_start}".into());
+            }
+        }
         let quick_timeout = match t.get("quick_timeout_minutes") {
             None => autome_domain::config::DEFAULT_GATE_QUICK_TIMEOUT_MINUTES,
             Some(v) => {
@@ -511,6 +528,7 @@ fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
                 );
             }
             config.gate_quick = Some(autome_domain::config::QuickGate {
+                session: quick_session.map(str::to_owned),
                 command: quick.to_string(),
                 timeout_minutes: quick_timeout,
             });
@@ -1752,6 +1770,60 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
+    #[test]
+    fn gate_quick_session_requires_quick() {
+        for quick in ["", "quick = ''", "quick = ' '"] {
+            assert!(
+                parse_project(&format!(
+                    "[gate]\ncommand = 'check'\n{quick}\nquick_session = 'check {round_start}'",
+                    round_start = "{round_start}"
+                ))
+                .unwrap_err()
+                .contains("需要和 quick")
+            );
+        }
+    }
+    #[test]
+    fn gate_quick_session_exactly_one_slot() {
+        for template in ["check", "{round_start} {round_start}"] {
+            assert!(
+                parse_project(&format!(
+                    "[gate]\ncommand = 'check'\nquick = 'quick'\nquick_session = '{template}'"
+                ))
+                .unwrap_err()
+                .contains("恰好含一个")
+            );
+        }
+        let p = parse_project("[gate]\ncommand = 'check'\nquick = 'quick'\nquick_session = 'sh check --since {round_start}'").unwrap();
+        assert_eq!(
+            p.gate_quick.unwrap().session.as_deref(),
+            Some("sh check --since {round_start}")
+        );
+        assert!(parse_project("[gate]\nquick_session = 1").is_err());
+    }
+    #[test]
+    fn gate_quick_session_empty_is_ignored() {
+        for template in ["", " "] {
+            assert!(
+                parse_project(&format!(
+                    "[gate]\ncommand = 'check'\nquick_session = '{template}'"
+                ))
+                .unwrap()
+                .gate_quick
+                .is_none()
+            );
+            assert!(
+                parse_project(&format!(
+                    "[gate]\ncommand = 'check'\nquick = 'quick'\nquick_session = '{template}'"
+                ))
+                .unwrap()
+                .gate_quick
+                .unwrap()
+                .session
+                .is_none()
+            );
+        }
+    }
     #[test]
     fn gate_quick_default_and_explicit_timeout() {
         for (text, expected) in [

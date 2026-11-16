@@ -139,6 +139,7 @@ try {
           else emit(['ci_partial', name, '--cases', candidate.parser, ...candidate.command]);
           if (!planning) lines.push('fi');
         }
+        emit(['ci_quick_finish']);
         const browser = browserSelection();
         if (planning) console.log(`e2e\t${browser.full ? '整套' : browser.specs ? '子集 ' + browser.specs.join(' ') : '不跑'}\t${browser.reason}`);
         const browserIndex = rows.findIndex(r => r.name === 'Web e2e');
