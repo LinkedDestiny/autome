@@ -1,7 +1,8 @@
-# 实现审计（审计 #5）
+# 实现审计（审计 #6）
 
-## M-05：通过
-- 验收命令全部通过：config 3、launcher 3、prompt_rendering 49（基线 48 + 1）、gate_quick_round_start 2、gate_deadline 1、ci-quick 18。
-- 三项负向对照（模板槽位校验放宽、FixGate 用快检超时、起点与 session.started 不一致）各使对应用例变红，已还原。
-- 自造检查：三种共享 automed 测试输入改动，快检计划都不含 end_to_end 且注明未跑；通过后丢弃。
-- 详见 evidence/M-05-r7-audit.md。
+## M-06：退回（实现缺陷，领域：依赖事件验收判别力）
+- 失败项：契约负向对照「相关分支恒假时 BL-01 变红」。注入后重建运行 BL-01 两次均通过（28.8 s、28.5 s），夹具不判别。
+- 单测对照正常：task-page-effect 在恒假下 3 红，无清理函数时 2 红；vitest 3 文件 21 通过。
+- ★ 命令 `--repeat-each=5` 本身不可用（第二遍起同名任务冲突，B-1 同样），已在契约改成 5 次独立调用；5 次中 4 次全过，1 次 BL-01 因高负载超时。
+- 已还原所有注入；工作树无产品改动。临时检查：`.autome/output/m06-audit-run.log`、`m06-audit-loop.log`。
+- 详见 evidence/M-06-r9-audit.md。
