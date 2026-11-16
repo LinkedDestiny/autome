@@ -13138,3 +13138,94 @@ fn gate_digest_quick_repair_keeps_lists_beyond_tail() {
 fn gate_digest_merge_timeout_repair_keeps_lists_beyond_tail() {
     digest_repair(false);
 }
+
+fn history_repair(fail_quick_after_merge: bool) {
+    needs_git!();
+    let mut w = World::new(if fail_quick_after_merge {
+        "history-quick"
+    } else {
+        "history-merge"
+    });
+    let script = w.root.join("history.sh");
+    std::fs::write(&script, "test -f gate-ok && exit 0\nprintf 'autome-gate-cases begin Web e2e\\ncase\\tcontrols.spec.ts\\tB-3 会话\\nsetup\\tprepare()\\nautome-gate-cases end\\n'\nexit 1\n").unwrap();
+    let command = format!("sh {}", script.display());
+    w.configure(&format!(
+        "[gate]\nrun = 'before_merge'\ncommand = '{command}'\nquick = 'test ! -f break-quick'\n"
+    ));
+    let request = "history repair";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]), &format!("mkdir -p docs/{slug}/evidence\nprintf '%s\\n' '- B-3 既往竞态失败' > docs/{slug}/evidence/M-01-r0-audit.md\ngit add docs/{slug}/evidence"));
+    w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+    w.retro_step(7, &slug);
+    w.doc_step_for_prelude(
+        8,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        if fail_quick_after_merge {
+            "echo ok > gate-ok\necho bad > break-quick\ngit add gate-ok break-quick"
+        } else {
+            "echo ok > gate-ok\ngit add gate-ok"
+        },
+    );
+    let audit = if fail_quick_after_merge {
+        w.doc_step_for_prelude(
+            9,
+            &slug,
+            &doc("实现中", 2, 3, &[("M-01", "待审")]),
+            "git rm break-quick",
+        );
+        10
+    } else {
+        9
+    };
+    w.doc_step(
+        audit,
+        &slug,
+        &doc(
+            "实现中",
+            2,
+            if fail_quick_after_merge { 3 } else { 2 },
+            &[("M-01", "已完成")],
+        ),
+    );
+    w.retro_step(audit + 1, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    let root = w.repo.join(format!(".worktree/{slug}"));
+    let brief = std::fs::read_to_string(root.join(format!("docs/{slug}/brief/impl-2.md"))).unwrap();
+    assert!(brief.contains("## 门禁用例的既往失败记录"), "{brief}");
+    assert!(brief.contains("B-3 既往竞态失败"));
+    assert!(brief.contains("M-01-r0-audit.md:1"));
+    let full = std::fs::read_to_string(root.join(format!(".autome/output/gate-history/{id}-2.md")))
+        .unwrap();
+    assert!(full.contains("B-3 既往竞态失败"));
+    let events = w.ctx.store.task_events(&id, "gate.result").unwrap();
+    let merged = events
+        .iter()
+        .find(|e| e["node"] == "merge_gate" && e["ok"] == false)
+        .unwrap();
+    assert_eq!(
+        merged["cases"],
+        json!(["case\tcontrols.spec.ts\tB-3 会话", "setup\tprepare()"])
+    );
+    if fail_quick_after_merge {
+        let next =
+            std::fs::read_to_string(root.join(format!("docs/{slug}/brief/impl-3.md"))).unwrap();
+        assert!(next.contains("本轮是修复轮：宿主快检"));
+        assert!(!next.contains("## 门禁用例的既往失败记录"));
+        assert!(
+            !root
+                .join(format!(".autome/output/gate-history/{id}-3.md"))
+                .exists()
+        );
+    }
+}
+#[test]
+fn gate_history_first_merge_repair_has_history() {
+    history_repair(false);
+}
+#[test]
+fn gate_history_following_quick_repair_has_no_history() {
+    history_repair(true);
+}

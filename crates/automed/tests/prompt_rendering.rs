@@ -447,6 +447,7 @@ fn before_merge_audit_brief_matches_its_golden() {
         "ok":false, "exit_code":1, "log":"gate.log"
     });
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: None,
         role: Role::Audit,
         slug: "example",
@@ -695,6 +696,7 @@ fn gate_quick_audit_brief_matches_golden() {
     });
     let result = serde_json::json!({"sha":"<head>","kind":"quick","command":"make lint","ok":true,"exit_code":0,"log":"gate.log"});
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: None,
         role: Role::Audit,
         slug: "example",
@@ -855,6 +857,7 @@ fn integration_brief(trigger: serde_json::Value, name: &str) {
     use automed::brief::{self, BriefMap, Inputs};
     let event = serde_json::json!({"impl_round":9,"evidence":"M-08-r9-audit.md","trigger":trigger,"repos":[{"repo":"","start":"3f2a1c0123456789","end":"9e81b77123456789","base":"55d0e12123456789","commits":[{"sha":"a1b2c3d123456789","subject":"fix: resolve launcher conflict","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 +-"},{"sha":"e4f5a6b123456789","subject":"test: keep old template compatible","paths":["crates/automed/tests/end_to_end.rs"],"stat":"crates/automed/tests/end_to_end.rs | 2 +-"}],"dropped":[{"sha":"0c9d8e7123456789","subject":"feat: launcher change","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 ++"}],"test_files":["crates/automed/tests/end_to_end.rs"],"commits_omitted":0,"dropped_omitted":0}]});
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: Some(brief::integration_section(&event, "docs/example")),
         scope_patches: None,
         role: Role::Audit,
@@ -992,4 +995,20 @@ fn digest_repair_brief_gate_line() {
     ] {
         assert!(text.contains(expected));
     }
+}
+
+#[test]
+fn gate_history_brief_section_follows_milestone() {
+    use automed::brief::{self, BriefMap, Inputs};
+    let got = brief::build(&Inputs {
+        gate_history: Some("\n## 门禁用例的既往失败记录\n\n机械匹配、可能误报。\n- docs/x/evidence/M-01-r1-audit.md:3：B-3 竞态失败\n".into()),
+        integration: None, role: Role::Impl, slug: "example", doc_dir: "docs/example", round: 2,
+        status: None, audit_doc: None, evidence: &[], loop_protocol: "", session_protocol: "",
+        map: &BriefMap::default(), budget_line: None, decisions: None, gate: None, scope_patches: None,
+    });
+    assert!(got.find("## 本里程碑").unwrap() < got.find("## 门禁用例的既往失败记录").unwrap());
+    assert!(
+        got.find("## 门禁用例的既往失败记录").unwrap() < got.find("## 上一轮对手轮的结论").unwrap()
+    );
+    assert!(got.contains("audit.md:3：B-3 竞态失败"));
 }

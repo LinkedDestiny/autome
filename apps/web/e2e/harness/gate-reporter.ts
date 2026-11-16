@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { type Case, cutReason, listCases, renderDigest } from './gate-digest.ts';
 import ts from 'typescript';
+import { preparationNames, renderCatalog } from '../../scripts/e2e-catalog.mjs';
 import type { FullConfig, FullResult, Reporter, Suite, TestCase, TestError, TestResult, TestStep } from '@playwright/test/reporter';
 import { DECLARED_GLOBAL_TIMEOUT_MS } from './limits.ts';
 import { type Budget, reportDirectory } from './budget.ts';
@@ -55,7 +56,10 @@ export default class GateReporter implements Reporter {
     }
   }
   async onEnd(result: FullResult) {
-    if (process.argv.includes('--list')) return;
+    if (process.argv.includes('--list')) {
+      console.log(renderCatalog((this.suite?.allTests() || []).map(test => ({ file: test.location.file, title: test.titlePath().join(' › ') })), preparationNames(resolve(import.meta.dirname, '../..'))));
+      return;
+    }
     for (const message of await reapRegistered()) this.errors.push({ message });
     const directory = reportDirectory();
     mkdirSync(directory, { recursive: true });
@@ -85,7 +89,7 @@ export default class GateReporter implements Reporter {
     const original = process.env.AUTOME_GATE_LOG ? process.env.AUTOME_GATE_LOG + '.playwright.json' : join(directory, 'report.json');
     writeFileSync(original, JSON.stringify(report, null, 2));
     writeFileSync(join(directory, 'report.json'), JSON.stringify(report, null, 2));
-    console.log(renderDigest(report, resolve(original), cutReason(result.status, cases.some(c => ['not_run', 'interrupted'].includes(c.status)), setup, this.config?.maxFailures || 0, this.config?.globalTimeout ?? declared, !!process.env.CI_E2E_DEADLINE)));
+    console.log(renderDigest(report, resolve(original), cutReason(result.status, cases.some(c => ['not_run', 'interrupted'].includes(c.status)), setup, this.config?.maxFailures || 0, this.config?.globalTimeout ?? declared, !!process.env.CI_E2E_DEADLINE)) + '\n' + renderCatalog(cases.map(test => ({ file: test.location.file, title: test.title })), preparationNames(resolve(import.meta.dirname, '../..'))));
     return { status };
   }
 }

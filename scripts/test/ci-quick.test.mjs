@@ -61,7 +61,10 @@ test('Rust integration tests build matching CLI and kernel before execution', t 
   const f = fixture(t, true); f.change('crates/autome-cli/tests/cli.rs');
   const output = f.plan();
   assert.ok(output.indexOf('prep\tBuild core') >= 0 && output.indexOf('prep\tBuild core') < output.indexOf('candidate\t'));
+  f.put('apps/web/scripts/e2e-catalog.mjs', "console.log('CATALOG');");
   const r = f.run([]); ok(r);
+  assert.ok(r.stdout.indexOf('INSTALL') < r.stdout.indexOf('CATALOG'));
+  assert.ok(r.stdout.includes('CATALOG'));
   assert.ok(r.stdout.indexOf('BUILD') >= 0 && r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
 });
 test('03 one Web related command includes source and test, quoted paths and Build core first', t => {
@@ -193,7 +196,9 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
     const [, , key, name] = line.split('\t'); assert.equal(key, records.get(name));
   }
   const passes = resolve(f.dir, 'passes'); writeFileSync(passes, [...records.values()].map(k => `${k}\tT\tgate\tabc\tnow\n`).join(''));
+  // No inputs change after computing the pass keys: the catalog was already present.
   const r = f.run([], { AUTOME_GATE_PASSES: passes, AUTOME_GATE_REPORT: f.report }); ok(r);
+  assert.match(r.stdout, /未取得浏览器用例清单/); // no node_modules in this fixture; still runs when Web steps reuse
   const report = readFileSync(f.report, 'utf8'); assert.equal((report.match(/^reused\t/gm) ?? []).length, 5); assert.match(report, /partial\t/);
   // Reusing Desktop must not suppress the Rust integration target's fresh binaries.
   assert.equal((r.stdout.match(/^BUILD$/gm) ?? []).length, 1);

@@ -118,6 +118,7 @@ try {
         };
         full('Format'); full('Clippy');
         if (rows.some((r, i) => ['Web lint', 'Web typecheck'].includes(r.name) && !reused[i])) prepare('Web install');
+        if (!planning) lines.push('if [ -f apps/web/scripts/e2e-catalog.mjs ]; then node apps/web/scripts/e2e-catalog.mjs || echo 未取得浏览器用例清单; fi');
         full('Web lint'); full('Web typecheck');
         emit(['ci_quick_start']);
         for (const candidate of candidates) {

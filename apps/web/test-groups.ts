@@ -120,6 +120,7 @@ export const testGroups = {
     "test/web-launcher-input.test.ts"
   ],
   "exclusive": [
+    "test/e2e-catalog.test.ts",
     "test/gate-reporter-run.test.ts",
     "test/board-live-listen.test.ts",
     "test/eventbus-live.test.ts",

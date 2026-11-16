@@ -250,6 +250,7 @@ pub fn section(text: &str, heading: &str) -> Option<String> {
 /// Everything the brief is assembled from. Read by the caller so this module
 /// does no I/O.
 pub struct Inputs<'a> {
+    pub gate_history: Option<String>,
     pub integration: Option<String>,
     pub role: Role,
     pub slug: &'a str,
@@ -346,6 +347,9 @@ pub fn build(input: &Inputs<'_>) -> String {
         None => s.push_str("还没有里程碑表，或者所有里程碑都已完成。\n"),
     }
 
+    if let Some(history) = &input.gate_history {
+        s.push_str(history);
+    }
     if let Some(section) = &input.integration {
         s.push_str(section);
     }
@@ -587,6 +591,7 @@ session-protocol = []
         evidence: &'a [String],
     ) -> Inputs<'a> {
         Inputs {
+            gate_history: None,
             integration: None,
             role,
             slug: "checkout",
@@ -1063,6 +1068,7 @@ mod integration_section_tests {
         let map = BriefMap::default();
         let mut input = Inputs {
             scope_patches: None,
+            gate_history: None,
             integration: None,
             role: Role::Audit,
             slug: "x",

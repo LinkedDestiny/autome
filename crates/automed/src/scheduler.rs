@@ -3805,6 +3805,11 @@ fn launch_session(
             budget.as_ref(),
             decisions,
             gate_evidence,
+            kind.role() == Some(Role::Impl)
+                && matches!(inject, Some(Inject::GateFailed { .. }))
+                && last_gate
+                    .as_ref()
+                    .is_some_and(|g| g["node"] == "merge_gate"),
             integration_audit.as_ref().map(|v| {
                 crate::brief::integration_section(
                     &{
@@ -4145,6 +4150,7 @@ fn write_brief(
     budget: Option<&launcher::BudgetLine>,
     decisions: &[crate::store::DecisionRecord],
     gate: Option<String>,
+    include_gate_history: bool,
     integration: Option<String>,
     scope_patches: Option<String>,
 ) -> Result<String> {
@@ -4172,7 +4178,34 @@ fn write_brief(
     let status = read(task.design_doc()).and_then(|t| status_block::parse(&t).ok());
     let evidence = evidence_filenames(worktree, &task.doc_dir());
 
+    let gate_history = if include_gate_history {
+        let events = ctx.store.task_events(&task.id, "gate.result")?;
+        let catalog = events
+            .iter()
+            .rev()
+            .find_map(|e| e["cases"].as_array())
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Some(
+            crate::gate_history::collect(
+                worktree,
+                &task.doc_dir(),
+                &task.slug,
+                &task.id,
+                round,
+                &catalog,
+            )
+            .unwrap_or_else(|e| format!("\n## 门禁用例的既往失败记录\n\n提取失败：{e}\n")),
+        )
+    } else {
+        None
+    };
     let text = crate::brief::build(&crate::brief::Inputs {
+        gate_history,
         integration,
         role,
         slug: &task.slug,
@@ -4951,6 +4984,10 @@ fn run_gate_attempt(
     });
     if let Some(text) = &digest {
         result["digest"] = json!(text);
+    }
+    let cases = crate::gate_history::cases(&crate::gate::log_window(&job.log));
+    if !cases.is_empty() {
+        result["cases"] = json!(cases);
     }
     if let Some(report) = crate::gate::read_report(&job) {
         result["steps"] = report["steps"].clone();
