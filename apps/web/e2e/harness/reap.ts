@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { leftoverProcesses } from '../../test/fixtures/process-scan.ts';
 import { reportDirectory } from './budget.ts';
 type Registration = { root: string; pid?: number; group?: number };
@@ -10,7 +11,7 @@ export function register(entry: Registration) {
   const rows = entries().filter(row => row.root !== entry.root);
   writeFileSync(registry(), JSON.stringify([...rows, entry]));
 }
-export function reapRegistered() {
+export async function reapRegistered() {
   const errors: string[] = [];
   const retained: Registration[] = [];
   const deadline = Date.now() + Number(process.env.CI_E2E_REAP_MS || 20_000);
@@ -28,7 +29,8 @@ export function reapRegistered() {
         }
         const until = Math.min(deadline, Date.now() + (signal === 'SIGTERM' ? 5000 : 1000));
         while (Date.now() < until && leftoverProcesses(entry.root, tracked).length) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+          // Let Node reap child exits before checking the process table again.
+          await delay(50);
         }
       }
       const remaining = leftoverProcesses(entry.root, tracked);

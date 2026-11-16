@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
@@ -6,7 +6,40 @@ import { afterEach, expect, test, vi } from 'vitest';
 import type { FullConfig, FullResult, Suite, TestCase, TestResult, TestStep } from '@playwright/test/reporter';
 import GateReporter, { literalBudget, margin } from '../e2e/harness/gate-reporter.ts';
 import { recordTiming, timedExpect } from '../e2e/harness/budget.ts';
+import { register, reapRegistered } from '../e2e/harness/reap.ts';
+import { leftoverProcesses } from './fixtures/process-scan.ts';
+vi.mock('./fixtures/process-scan.ts', () => ({ leftoverProcesses: vi.fn() }));
 const roots: string[] = [];
+test('截断报告等待退出回调后再复查和删除登记根', async () => {
+  const h = harness();
+  const root = join(h.root, 'owned'); mkdirSync(root);
+  register({ root, pid: 12345, group: 12345 });
+  vi.stubEnv('CI_E2E_REAP_MS', '200');
+  let exited = false;
+  vi.mocked(leftoverProcesses).mockImplementation(() => exited ? [] : [{ pid: 12345, parent: process.pid, command: root }]);
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    setImmediate(() => { exited = true; });
+    return true;
+  });
+  const { report } = await h.end(2000, 'timedout');
+  expect(report.errors).toEqual([]);
+  expect(report.cut).toBe(true);
+  expect(existsSync(root)).toBe(false);
+  expect(JSON.parse(readFileSync(join(h.root, 'live.json'), 'utf8'))).toEqual([]);
+  expect(kill).toHaveBeenCalledWith(-12345, 'SIGTERM');
+  expect(kill.mock.calls.some(([, signal]) => signal === 'SIGKILL')).toBe(false);
+  expect(await reapRegistered()).toEqual([]);
+});
+test('清理扫描失败保留根与登记并使报告失败', async () => {
+  const h = harness(); const root = join(h.root, 'owned'); mkdirSync(root);
+  register({ root });
+  vi.mocked(leftoverProcesses).mockImplementation(() => { throw Error('scan denied'); });
+  const { report, outcome } = await h.end();
+  expect(outcome?.status).toBe('failed');
+  expect(report.errors).toEqual([expect.objectContaining({ message: expect.stringContaining('scan denied') })]);
+  expect(existsSync(root)).toBe(true);
+  expect(JSON.parse(readFileSync(join(h.root, 'live.json'), 'utf8'))).toEqual([{ root }]);
+});
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function harness(declared = 1000) {
   const root = mkdtempSync(join(tmpdir(), 'gate-unit-')); roots.push(root);

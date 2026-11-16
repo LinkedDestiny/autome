@@ -53,7 +53,7 @@ export default class GateReporter implements Reporter {
   }
   async onEnd(result: FullResult) {
     if (process.argv.includes('--list')) return;
-    for (const message of reapRegistered()) this.errors.push({ message });
+    for (const message of await reapRegistered()) this.errors.push({ message });
     const directory = reportDirectory();
     mkdirSync(directory, { recursive: true });
     const timingFile = join(directory, 'harness.jsonl');

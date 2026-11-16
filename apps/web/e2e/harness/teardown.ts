@@ -11,7 +11,7 @@ export default async function teardown() {
   for (const root of [process.env.AUTOME_E2E_ROOT, process.env.AUTOME_E2E_LIVE_ROOT]) {
     if (root) try { await cleanup(root); } catch (error) { errors.push(error); }
   }
-  errors.push(...reapRegistered());
+  errors.push(...await reapRegistered());
   recordTiming({ label: 'globalTeardown', duration: performance.now() - started });
   if (errors.length) throw new AggregateError(errors, `e2e cleanup failed: ${errors.map(String).join('; ')}`);
 }
