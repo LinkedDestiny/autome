@@ -1,6 +1,6 @@
 import { createElement, type DependencyList, type EffectCallback } from 'react';
 import { renderToString } from 'react-dom/server';
-import { createRoutesStub, RouterContextProvider, type LoaderFunctionArgs } from 'react-router';
+import { createRoutesStub, RouterContextProvider } from 'react-router';
 import { readFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import TaskPage, { loader } from '../app/routes/tasks.$id.tsx';
@@ -21,7 +21,8 @@ async function render(after: string[]) {
   payload.task.id = 'T-1'; payload.task.after = after;
   const context = new RouterContextProvider();
   context.set(servicesContext, { gateway: { read: vi.fn(async () => ({ status: 200, body: { ok: true, payload } })), write: vi.fn() } });
-  const data = await loader({ context, params: { id: 'T-1' }, request: new Request('http://localhost/tasks/T-1?tab=decisions') } as LoaderFunctionArgs);
+  const url = new URL('http://localhost/tasks/T-1?tab=decisions');
+  const data = await loader({ context, params: { id: 'T-1' }, request: new Request(url), url, pattern: '/tasks/:id' });
   captured.length = 0;
   const Stub = createRoutesStub([{ id: 'task', path: '/tasks/:id', Component: TaskPage }]);
   renderToString(createElement(Stub, { initialEntries: ['/tasks/T-1?tab=decisions'], hydrationData: { loaderData: { task: data } } }));

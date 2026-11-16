@@ -139,21 +139,31 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   await expect.poll(() => taskState(f.root, parent).node, { timeout: 60_000 }).toBe('await_design_approval');
   const child = newTask(f.root, 'related-child', ['--after', parent]);
   expect(taskState(f.root, child).state).toBe('queued');
+  // Isolate the real parent's event channel: reload/env notifications and child
+  // events must not refresh the detail on behalf of the related-subject matcher.
+  // Root also matches task.*; Router may omit _routes when both loaders match.
+  let parentEvents = 0;
+  await page.routeWebSocket('**/ws', socket => {
+    const server = socket.connectToServer();
+    server.onMessage(message => {
+      const frame = JSON.parse(String(message)) as { type: string; subject?: string; core?: string; status?: string };
+      if (frame.type === 'hello' || (frame.type === 'core' && frame.status === 'connected')) socket.send(message);
+      else if (frame.type === 'event' && frame.subject === parent) {
+        parentEvents++;
+        socket.send(message);
+      }
+    });
+  });
   let loads = 0; page.on('load', () => loads++);
   await page.goto(`${f.url}/tasks/${child}?tab=notes`);
+  await expect(page.getByRole('button', { name: '提交备注', exact: true })).toBeEnabled();
   const dependency = page.getByRole('region', { name: '依赖', exact: true }).locator('li').filter({ hasText: parent });
   await expect(dependency).toContainText('等你批准');
-  let detailRevalidated = false;
-  page.on('response', response => {
-    const url = new URL(response.url());
-    const routes = url.searchParams.get('_routes');
-    if (url.pathname === '/tasks/' + child + '.data' && response.ok()
-      && (routes !== null && routes.split(',').includes('routes/tasks.$id'))) detailRevalidated = true;
-  });
+  parentEvents = 0;
   cli(f.root, ['approve', parent]); const start = performance.now();
   await expect(dependency).not.toContainText('等你批准', { timeout: 5000 });
   await timedExpect(test.info(), 'controls 动态断言', Math.max(1, 5000 - (performance.now() - start)), timeout => expect(dependency).toContainText('实现', { timeout }));
-  await timedExpect(test.info(), 'controls 动态断言', Math.max(1, 5000 - (performance.now() - start)), timeout => expect.poll(() => detailRevalidated, { timeout }).toBe(true));
+  expect(parentEvents).toBeGreaterThan(0);
   expect(performance.now() - start).toBeLessThanOrEqual(5000);
   expect(taskState(f.root, child).state).toBe('queued');
   expect(loads).toBe(1);

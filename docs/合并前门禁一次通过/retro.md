@@ -21,3 +21,5 @@
 审计 #5 | M-05 | 通过 | docs/合并前门禁一次通过/evidence/M-05-r7-audit.md | 无
 
 实现 #8 | M-06 | 待审 | docs/合并前门禁一次通过/evidence/M-06-r8-impl.md | ★ 浏览器初始化 ps EPERM，宿主日志待审计引用
+
+实现 #9 | M-06 | 待审 | docs/合并前门禁一次通过/evidence/M-06-r9-impl.md | 浏览器受 ps EPERM 阻止，待宿主复验
