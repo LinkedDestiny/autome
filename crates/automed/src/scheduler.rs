@@ -3733,6 +3733,8 @@ fn launch_session(
             last_gate.as_ref(),
             gate_head(&layout).ok().as_deref(),
         )
+    } else if matches!(inject, Some(Inject::GateFailed { .. })) {
+        last_gate.as_ref().map(crate::brief::repair_gate_evidence)
     } else {
         None
     };
@@ -4936,6 +4938,7 @@ fn run_gate_attempt(
     };
     let ok = exit_code == 0;
     let tail = crate::gate::tail(&job.log, 60);
+    let digest = crate::gate::digest(&job.log);
     let mut result = json!({
         "node": node.as_str(),
         "sha": head,
@@ -4946,6 +4949,9 @@ fn run_gate_attempt(
         "log": job.log.to_string_lossy(),
         "tail": tail,
     });
+    if let Some(text) = &digest {
+        result["digest"] = json!(text);
+    }
     if let Some(report) = crate::gate::read_report(&job) {
         result["steps"] = report["steps"].clone();
         result["passes"] = report["passes"].clone();
@@ -5028,6 +5034,7 @@ fn run_gate_attempt(
         GateOutcome::Passed
     } else {
         GateOutcome::Failed {
+            digest,
             head: head.clone(),
             command,
             tail,
@@ -10187,6 +10194,7 @@ mod tests {
     fn timeout_retry_gate_repair_guard_reads_effective_injection() {
         let mut w = World::new("timeout-repair");
         let gate = Inject::GateFailed {
+            digest: None,
             head: "abc".into(),
             command: "false".into(),
             tail: "fail".into(),
@@ -11107,6 +11115,7 @@ mod tests {
                 &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
             );
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "head".into(),
                 command: "check".into(),
                 tail: "fresh gate feedback".into(),
@@ -11263,6 +11272,7 @@ mod tests {
         assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec!["T-1"]);
         assert_eq!(w.ctx.store.list_sessions("T-1").unwrap().len(), 1); // The original session's input wins over a later, unrelated event.
         let inject = Inject::GateFailed {
+            digest: None,
             head: "old-head".into(),
             command: "check".into(),
             tail: "resume-feedback".into(),

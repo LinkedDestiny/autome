@@ -61,7 +61,7 @@ test('本地五步独立声明完整输入，位于 Contract 后、package 分�
   expect(steps.indexOf("step 'Web lint'")).toBeGreaterThan(steps.indexOf("step 'Contract'"));
   expect(steps.match(/^step 'Web .*$/gm)).toEqual(
     ['lint', 'typecheck', 'build', 'test', 'e2e'].map(name =>
-      `step 'Web ${name}' '${['test', 'e2e'].includes(name) ? 'apps/web crates protocol plugins apps/desktop' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : ''}npm run ${name} --prefix apps/web`),
+      `step 'Web ${name}' '${['test', 'e2e'].includes(name) ? 'apps/web crates protocol plugins apps/desktop' : 'apps/web'}' ${name === 'test' ? '--cases vitest ' : name === 'e2e' ? '--cases playwright ' : ''}npm run ${name} --prefix apps/web`),
   );
   expect(local.indexOf('. "$root/scripts/ci/steps.sh"')).toBeLessThan(local.indexOf('if [ "$with_package" -eq 1 ]'));
 });

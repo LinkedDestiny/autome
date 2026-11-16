@@ -507,6 +507,8 @@ pub enum Trigger {
 pub enum GateOutcome {
     Passed,
     Failed {
+        #[serde(default)]
+        digest: Option<String>,
         head: String,
         command: String,
         /// The end of the gate's output: what the next round needs to see.
@@ -639,6 +641,8 @@ pub enum Inject {
     },
     /// The project's gate failed on the commit this round has to fix.
     GateFailed {
+        #[serde(default)]
+        digest: Option<String>,
         head: String,
         command: String,
         tail: String,
@@ -1434,12 +1438,13 @@ fn after_gate(
     status: Option<&StatusBlock>,
     ctx: &Context,
 ) -> Result<Transition, Rejected> {
-    let back_to_impl = |head: &str, command: &str, tail: &str| {
+    let back_to_impl = |head: &str, command: &str, tail: &str, digest: &Option<String>| {
         Transition::active(
             Node::Implement,
             Action::StartRole {
                 role: Role::Impl,
                 inject: Some(Inject::GateFailed {
+                    digest: digest.clone(),
                     head: head.to_string(),
                     command: command.to_string(),
                     tail: tail.to_string(),
@@ -1465,6 +1470,7 @@ fn after_gate(
         (
             Node::Gate,
             GateOutcome::Failed {
+                digest,
                 head,
                 command,
                 tail,
@@ -1479,7 +1485,7 @@ fn after_gate(
                     ));
                 }
             }
-            Ok(back_to_impl(head, command, tail))
+            Ok(back_to_impl(head, command, tail, digest))
         }
         (Node::MergeGate, GateOutcome::Passed) => {
             Ok(Transition::active(Node::AwaitMerge, Action::None))
@@ -1487,11 +1493,12 @@ fn after_gate(
         (
             Node::MergeGate,
             GateOutcome::Failed {
+                digest,
                 head,
                 command,
                 tail,
             },
-        ) => Ok(back_to_impl(head, command, tail)),
+        ) => Ok(back_to_impl(head, command, tail, digest)),
         (Node::MainCheck, _) => Ok(Transition::active(
             Node::Cleanup,
             Action::RunCoreStep {
@@ -2360,6 +2367,7 @@ mod tests {
 
     fn red() -> GateOutcome {
         GateOutcome::Failed {
+            digest: None,
             head: "abc".into(),
             command: "make check".into(),
             tail: "1 failed".into(),
@@ -4422,6 +4430,7 @@ mod timeout_retry_tests {
     #[test]
     fn timeout_retry_preserves_carried_and_replaces_previous_timeout() {
         let gate = Inject::GateFailed {
+            digest: None,
             head: "abc".into(),
             command: "false".into(),
             tail: "failure".into(),

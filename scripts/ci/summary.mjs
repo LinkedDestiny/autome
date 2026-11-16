@@ -13,6 +13,12 @@ function clip(value) {
 }
 
 function extract(parser, output) {
+  if (parser === 'playwright') {
+    try {
+      const report = JSON.parse(readFileSync(process.env.CI_E2E_REPORT_DIR ? process.env.CI_E2E_REPORT_DIR + '/report.json' : '.autome/output/playwright-gate/report.json', 'utf8'));
+      return report.cases.filter(row => ['failed', 'timedOut'].includes(row.status)).map(row => row.location.file + ':' + row.location.line + ' ' + row.title);
+    } catch { return []; }
+  }
   const cases = [];
   let target = 'unknown';
   let failures = false;

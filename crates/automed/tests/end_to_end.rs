@@ -13060,3 +13060,81 @@ mod residue_e2e {
         }
     }
 }
+
+fn digest_repair(quick: bool) {
+    needs_git!();
+    let mut w = World::new(if quick {
+        "digest-quick"
+    } else {
+        "digest-merge"
+    });
+    let script = w.root.join("digest.sh");
+    let segment = include_str!("fixtures/gate-digest-timeout.txt").trim();
+    let digest = segment
+        .strip_prefix("autome-gate-digest begin Web e2e\n")
+        .unwrap()
+        .strip_suffix("\nautome-gate-digest end")
+        .unwrap();
+    std::fs::write(&script, format!("test -f gate-ok && exit 0\ncat <<'DIGEST'\n{segment}\nDIGEST\ni=0; while [ $i -lt 80 ]; do echo unrelated-line; i=$((i+1)); done\nexit 1\n")).unwrap();
+    let command = format!("sh {}", script.display());
+    w.configure(&if quick {
+        format!("[gate]\nrun = 'before_merge'\ncommand = 'true'\nquick = '{command}'\n")
+    } else {
+        format!("[gate]\nrun = 'before_merge'\ncommand = '{command}'\n")
+    });
+    let request = "digest repair";
+    let slug = slug_for(request);
+    w.doc_step(5, &slug, &doc("实现中", 2, 1, &[("M-01", "待审")]));
+    let repair = if quick {
+        6
+    } else {
+        w.doc_step(6, &slug, &doc("实现中", 2, 1, &[("M-01", "已完成")]));
+        w.retro_step(7, &slug);
+        8
+    };
+    w.doc_step_for_prelude(
+        repair,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "待审")]),
+        "echo ok > gate-ok\ngit add gate-ok",
+    );
+    w.doc_step(
+        repair + 1,
+        &slug,
+        &doc("实现中", 2, 2, &[("M-01", "已完成")]),
+    );
+    w.retro_step(repair + 2, &slug);
+    let id = resume_setup(&mut w, request);
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    assert!(w.prompt(repair).contains(digest));
+    let brief = std::fs::read_to_string(
+        w.repo
+            .join(format!(".worktree/{slug}/docs/{slug}/brief/impl-2.md")),
+    )
+    .unwrap();
+    assert!(brief.contains("## 宿主门禁"));
+    assert!(brief.contains(if quick {
+        "本轮是修复轮：宿主快检"
+    } else {
+        "本轮是修复轮：宿主合并前门禁"
+    }));
+    assert!(brief.contains("失败清单与输出末尾在本轮提示词里"));
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    let failed = &events
+        .iter()
+        .find(|(_, k, s, p)| s == &id && k == "gate.result" && p["ok"] == false)
+        .unwrap()
+        .3;
+    assert_eq!(failed["digest"], digest);
+    assert!(!failed["tail"].as_str().unwrap().contains("失败用例"));
+    assert_eq!(failed["node"], if quick { "gate" } else { "merge_gate" });
+}
+#[test]
+fn gate_digest_quick_repair_keeps_lists_beyond_tail() {
+    digest_repair(true);
+}
+#[test]
+fn gate_digest_merge_timeout_repair_keeps_lists_beyond_tail() {
+    digest_repair(false);
+}

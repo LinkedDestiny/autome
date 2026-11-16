@@ -545,10 +545,20 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             ));
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
         } if last_gate_kind(spec) == Some("quick") => {
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail)
                 .replace("门禁超时", "快检超时")
                 .replace("测试失败", "检查失败");
@@ -571,10 +581,20 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             }
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
         } if matches!(spec.kind, SessionKind::Bug { .. }) => {
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail);
             if let Some(cmd) = spec.gate_before_merge {
                 p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", round_gate_line(spec, cmd)));
@@ -597,6 +617,7 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             p.push_str(&render_decisions(spec.decisions));
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
@@ -604,6 +625,15 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             // The output verbatim and the commit it came from: the round has
             // to reproduce the failure before it can fix it, and "the gate
             // failed" without either is a claim it cannot check.
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             if let Some(cmd) = spec.gate_before_merge {
@@ -1438,6 +1468,7 @@ mod tests {
                 "test failed",
             ] {
                 let inject = Inject::GateFailed {
+                    digest: None,
                     head: "abcdef".into(),
                     command: "check".into(),
                     tail: tail.into(),
@@ -1536,6 +1567,7 @@ mod tests {
             5,
             "tick 40".into(),
             Some(Inject::GateFailed {
+                digest: None,
                 head: "abcdef123456".into(),
                 command: "false".into(),
                 tail: "gate failure".into(),
@@ -2680,6 +2712,7 @@ mod tests {
         let p = bug_injected(
             BugStep::Fix,
             &Inject::GateFailed {
+                digest: None,
                 head: "abcdef".into(),
                 command: "sh regression.sh && cargo test".into(),
                 tail: "failed\n具体错误".into(),
@@ -2770,6 +2803,7 @@ mod tests {
     fn before_merge_prompt_feature_failure_limits_repair_scope() {
         let tpl = templates();
         let inject = Inject::GateFailed {
+            digest: None,
             head: "1234567890abcdef".into(),
             command: "failed-command".into(),
             tail: "failure-tail".into(),
@@ -2800,6 +2834,7 @@ mod tests {
     fn before_merge_prompt_bug_failure_limits_repair_scope() {
         let tpl = templates();
         let inject = Inject::GateFailed {
+            digest: None,
             head: "abcdef".into(),
             command: "failed-command".into(),
             tail: "failure-tail".into(),
@@ -2936,6 +2971,7 @@ mod tests {
         let tpl = crate::protocol::seed();
         for tail in ["lint marker", "=== Autome：门禁运行超过 5 分钟，已终止 ==="] {
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "0123456789abcdef".into(),
                 command: "echo {slug}".into(),
                 tail: tail.into(),
@@ -2968,6 +3004,7 @@ mod tests {
         }
         let result = serde_json::json!({"kind":"full"});
         let inject = Inject::GateFailed {
+            digest: None,
             head: "head".into(),
             command: "full-check".into(),
             tail: "failure".into(),
@@ -2990,6 +3027,7 @@ mod tests {
             "=== Autome：门禁运行超过 30 分钟，已终止 ===",
         ] {
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "head".into(),
                 command: "( repro ) && ( quick )".into(),
                 tail: tail.into(),

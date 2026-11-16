@@ -774,6 +774,7 @@ fn timeout_retry_golden(name: &str, kind: SessionKind, gate: bool) {
         5,
         "tick 39\ntick 40".into(),
         gate.then(|| Inject::GateFailed {
+            digest: None,
             head: "abcdef123456".into(),
             command: "cargo test".into(),
             tail: "gate failure".into(),
@@ -913,4 +914,82 @@ fn operator_note_audit_brief_golden() {
 #[test]
 fn operator_note_bug_fix_prompt_golden() {
     operator_note_golden("operator-note-bug", false, true);
+}
+
+fn digest_prompt(kind: SessionKind, quick: bool) {
+    use autome_domain::task::Inject;
+    let templates = automed::protocol::seed().clone();
+    let inject = Inject::GateFailed {
+        head: "abc123".into(),
+        command: "check".into(),
+        tail: "tail-only".into(),
+        digest: Some("失败用例：assertion\n未执行用例：pending\n非用例错误：original".into()),
+    };
+    let result = serde_json::json!({"kind": if quick {"quick"} else {"full"}});
+    let mut s = spec(kind, &templates);
+    s.inject = Some(&inject);
+    s.budget = Some(automed::launcher::BudgetLine {
+        round: 2,
+        limit: 30,
+    });
+    s.last_gate = Some(&result);
+    let text = build_prompt(&s).unwrap();
+    for expected in [
+        "tail-only",
+        "失败清单（宿主门禁按用例整理，原文）",
+        "失败用例：assertion",
+        "未执行用例：pending",
+        "非用例错误：original",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+}
+#[test]
+fn digest_feature_quick_prompt() {
+    digest_prompt(SessionKind::Role { role: Role::Impl }, true);
+}
+#[test]
+fn digest_feature_merge_prompt() {
+    digest_prompt(SessionKind::Role { role: Role::Impl }, false);
+}
+#[test]
+fn digest_bug_gate_prompt() {
+    for quick in [false, true] {
+        digest_prompt(
+            SessionKind::Bug {
+                step: autome_domain::session::BugStep::Fix,
+            },
+            quick,
+        );
+    }
+}
+#[test]
+fn digest_repair_brief_gate_line() {
+    let old: autome_domain::task::Inject = serde_json::from_value(
+        serde_json::json!({"inject":"gate_failed", "head":"old", "command":"check", "tail":"tail"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        old,
+        autome_domain::task::Inject::GateFailed { digest: None, .. }
+    ));
+    let old_outcome: autome_domain::task::GateOutcome = serde_json::from_value(
+        serde_json::json!({"gate":"failed", "head":"old", "command":"check", "tail":"tail"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        old_outcome,
+        autome_domain::task::GateOutcome::Failed { digest: None, .. }
+    ));
+    let text = automed::brief::repair_gate_evidence(
+        &serde_json::json!({"kind":"quick", "sha":"abc123", "log":"/gate.log"}),
+    );
+    for expected in [
+        "本轮是修复轮：宿主快检",
+        "abc123",
+        "/gate.log",
+        "失败清单与输出末尾在本轮提示词里",
+    ] {
+        assert!(text.contains(expected));
+    }
 }

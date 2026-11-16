@@ -9,6 +9,7 @@ import { recordTiming, timedExpect } from '../e2e/harness/budget.ts';
 import { register, reapRegistered } from '../e2e/harness/reap.ts';
 import { leftoverProcesses } from './fixtures/process-scan.ts';
 vi.mock('./fixtures/process-scan.ts', () => ({ leftoverProcesses: vi.fn() }));
+vi.mock('../e2e/harness/gate-digest.ts', async (original) => ({ ...await original<typeof import('../e2e/harness/gate-digest.ts')>(), listCases: vi.fn(() => []) }));
 const roots: string[] = [];
 test('截断报告等待退出回调后再复查和删除登记根', async () => {
   const h = harness();
@@ -92,4 +93,58 @@ test('结构化报告保留字段、错误和未执行状态', async () => {
   const h = harness(); h.reporter.onBegin({ globalTimeout: 1000 } as FullConfig, { allTests: () => [{ titlePath: () => ['pending'], location: { file: 'a', line: 1 }, results: [] }] } as unknown as Suite);
   h.reporter.onError({ message: 'setup failed' }); const { report, outcome } = (await h.end(10, 'failed'));
   expect(outcome?.status).toBe('failed'); expect(report).toMatchObject({ complete: false, cut: false, declaredTimeout: 1000, effectiveTimeout: 1000, errors: [{ message: 'setup failed' }], cases: [{ status: 'not_run' }] });
+});
+
+test('三类清单、断言位置与各项耗时齐全', async () => {
+  const h = harness();
+  const cases = [
+    { titlePath: () => ['failure'], location: { file: 'a.spec.ts', line: 2 }, results: [{ status: 'failed', duration: 10, errors: [{ message: 'assertion original', location: { file: 'a.spec.ts', line: 8 } }] }] },
+    { titlePath: () => ['interrupted'], location: { file: 'a.spec.ts', line: 3 }, results: [{ status: 'interrupted', duration: 20 }] },
+    { id: 'stopped', expectedStatus: 'passed', titlePath: () => ['stopped-before-worker'], location: { file: 'a.spec.ts', line: 5 }, results: [{ status: 'skipped', duration: 0 }] },
+    { titlePath: () => ['pending'], location: { file: 'a.spec.ts', line: 4 }, results: [] },
+  ];
+  h.reporter.onBegin({ globalTimeout: 1000 } as FullConfig, { allTests: () => cases } as unknown as Suite);
+  h.reporter.onError({ message: 'worker original' });
+  await h.end(1000, 'timedout');
+  const text = String(h.log.mock.calls.at(-1)?.[0]);
+  for (const value of ['失败用例：', '未执行用例：', '非用例错误：', 'a.spec.ts:8', 'assertion original', 'worker original', '被中断，已运行 0.02 秒', 'pending', 'stopped-before-worker', '整套被总超时截断']) expect(text).toContain(value);
+});
+test('四种截断成因不混淆', async () => {
+  const { cutReason } = await import('../e2e/harness/gate-digest.ts');
+  expect(cutReason('timedout', true, false, 0, 3000, false)).toBe('整套被总超时截断（globalTimeout 3 秒，未设 maxFailures）');
+  expect(cutReason('timedout', true, false, 0, 3000, true)).toContain('被浏览器预算截断');
+  expect(cutReason('failed', true, true, 0, 3000, false)).toBe('globalSetup 失败，整套未执行');
+  expect(cutReason('interrupted', true, false, 0, 3000, false)).toBe('运行中止，原因见非用例错误');
+  const { listCases } = await import('../e2e/harness/gate-digest.ts');
+  vi.mocked(listCases).mockImplementationOnce(() => { throw Error('list timeout'); });
+  const h = harness(); const { report } = await h.end(10, 'failed');
+  expect(report.errors).toContainEqual({ message: '未能取得用例清单：Error: list timeout' });
+  expect(h.log).toHaveBeenCalledWith(expect.stringContaining('未能取得用例清单'));
+});
+test('超长清单只缩详情且末条保留', async () => {
+  const { renderDigest } = await import('../e2e/harness/gate-digest.ts');
+  const cases = Array.from({ length: 40 }, (_, i) => ({ title: `case-${i}`, location: { file: 'a', line: i + 1 }, status: 'failed', duration: 0, errors: [{ message: '汉'.repeat(1000) }] }));
+  const text = renderDigest({ cases, errors: [], timings: [], overHalf: [], summary: '', warnings: [], declaredTimeout: 0 }, '/original', '');
+  for (let i = 0; i < 40; i++) expect(text).toContain(`a:${i + 1} case-${i}`);
+  expect(text).not.toContain('汉'.repeat(101));
+  expect(text).not.toContain('�');
+});
+test('单条 UTF8 上限与空串边界', async () => {
+  const { clip } = await import('../e2e/harness/gate-digest.ts');
+  expect(clip('', 300)).toBe(''); expect(clip('a'.repeat(1024), 1024)).toHaveLength(1024);
+  expect(Buffer.byteLength(clip('汉'.repeat(1000), 1024))).toBeLessThanOrEqual(1024);
+  expect(clip('汉'.repeat(1000), 1024)).not.toContain('�');
+});
+test('每次运行都打印三类清单包括成功空清单', async () => {
+  const h = harness(); await h.end(); await h.end();
+  expect(h.log.mock.calls).toHaveLength(2);
+  for (const [text] of h.log.mock.calls) for (const section of ['autome-gate-digest begin', '失败用例：', '未执行用例：', '非用例错误：', 'autome-gate-digest end']) expect(text).toContain(section);
+});
+test('按作业保留未截原文且首行路径完整', async () => {
+  const h = harness(); const path = join(h.root, 'job.log'); vi.stubEnv('AUTOME_GATE_LOG', path);
+  h.reporter.onError({ message: '汉'.repeat(5000) + 'original-tail' }); await h.end();
+  expect(String(h.log.mock.calls[0][0]).split('\n')[1]).toBe(`完整原文（未截）：${path}.playwright.json`);
+  expect(readFileSync(path + '.playwright.json', 'utf8')).toContain('original-tail');
+  vi.stubEnv('AUTOME_GATE_LOG', join(h.root, 'next.log')); await h.end();
+  expect(readFileSync(path + '.playwright.json', 'utf8')).toContain('original-tail');
 });

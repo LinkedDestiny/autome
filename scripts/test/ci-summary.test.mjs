@@ -128,3 +128,22 @@ test('18 long multibyte names stay within global byte budget on character bounda
   assert.ok(ending.includes(lines.at(-1)));
   assert.match(ending, /有步骤未通过/);
 });
+
+test('playwright parser lists failed assertions from the structured report', t => {
+  const dir = sandbox(t);
+  mkdirSync(resolve(dir, '.autome/output/playwright-gate'), { recursive: true });
+  writeFileSync(resolve(dir, '.autome/output/playwright-gate/report.json'), JSON.stringify({ cases: [
+    { title: 'failure', location: { file: 'a.spec.ts', line: 2 }, status: 'failed' },
+    { title: 'timeout', location: { file: 'a.spec.ts', line: 3 }, status: 'timedOut' },
+    { title: 'pending', location: { file: 'a.spec.ts', line: 4 }, status: 'not_run' },
+  ] }));
+  const result = run(dir, "run 'Web e2e' --cases playwright false");
+  assert.equal(result.status, 1);
+  assert.match(result.summary, /a.spec.ts:2 failure/);
+  assert.match(result.summary, /a.spec.ts:3 timeout/);
+  assert.doesNotMatch(result.summary, /pending/);
+});
+test('playwright missing report is tolerated without fabricated cases', t => {
+  const result = run(sandbox(t), "run 'Web e2e' --cases playwright false");
+  assert.equal(result.status, 1); assert.doesNotMatch(result.summary, /失败用例/);
+});

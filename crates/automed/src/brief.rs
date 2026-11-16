@@ -25,6 +25,19 @@ use std::collections::BTreeMap;
 /// A skipped round must not inherit a previous commit's gate verdict.
 pub const GATE_ONLY_BEFORE_MERGE: &str = "本项目门禁只在合并前运行，本轮没有宿主门禁结果。\n";
 
+pub fn repair_gate_evidence(result: &Value) -> String {
+    format!(
+        "本轮是修复轮：宿主{}在 `{}` 未通过；失败清单与输出末尾在本轮提示词里，完整日志 `{}`。\n",
+        if result["kind"] == "quick" {
+            "快检"
+        } else {
+            "合并前门禁"
+        },
+        result["sha"].as_str().unwrap_or_default(),
+        result["log"].as_str().unwrap_or_default()
+    )
+}
+
 pub fn gate_evidence(
     config: &ResolvedConfig,
     last: Option<&Value>,

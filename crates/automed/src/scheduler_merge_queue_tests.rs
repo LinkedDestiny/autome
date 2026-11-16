@@ -180,6 +180,7 @@ fn merge_queue_a_merge_waits_while_another_task_holds_the_section() {
             status: None,
             node: Node::MergeGate,
             outcome: GateOutcome::Failed {
+                digest: None,
                 head: "head".into(),
                 command: "false".into(),
                 tail: "test".into(),
@@ -206,6 +207,7 @@ fn merge_queue_every_exit_releases_the_section() {
             status: None,
             node: Node::MergeGate,
             outcome: GateOutcome::Failed {
+                digest: None,
                 head: "head".into(),
                 command: "false".into(),
                 tail: "test".into(),
@@ -397,6 +399,7 @@ fn merge_queue_a_reusable_gate_does_not_jump_an_earlier_queued_task() {
             status: None,
             node: Node::MergeGate,
             outcome: GateOutcome::Failed {
+                digest: None,
                 head: "head".into(),
                 command: "false".into(),
                 tail: "test".into(),
@@ -567,6 +570,7 @@ fn merge_auth_leaving_the_merge_tail_writes_no_revocation() {
             status: None,
             node: Node::MergeGate,
             outcome: GateOutcome::Failed {
+                digest: None,
                 head: "head".into(),
                 command: "false".into(),
                 tail: "test".into(),

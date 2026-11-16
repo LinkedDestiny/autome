@@ -501,11 +501,59 @@ pub fn log_window(log: &Path) -> String {
     read().unwrap_or_default()
 }
 
-/// The last `lines` lines of a log, for the prompt and the panel. Bounded in
-/// bytes too: one line of minified output must not become the whole prompt.
+/// Closed digest segments from the fingerprint window, bounded on UTF-8 boundaries.
+pub fn digest(log: &Path) -> Option<String> {
+    let text = log_window(log);
+    let mut sections = Vec::new();
+    let mut pending = None;
+    for line in text.lines() {
+        if line.starts_with("autome-gate-digest begin ") {
+            pending = Some(Vec::new());
+        } else if line == "autome-gate-digest end" {
+            if let Some(lines) = pending.take() {
+                sections.push(lines.join("\n"));
+            }
+        } else if let Some(lines) = &mut pending {
+            lines.push(line);
+        }
+    }
+    if sections.is_empty() {
+        return None;
+    }
+    let mut text = sections.join("\n");
+    const MAX: usize = 16 * 1024;
+    if text.len() > MAX {
+        let note = format!("\n…完整内容见 `{}` 的 autome-gate-digest 段", log.display());
+        let mut end = MAX.saturating_sub(note.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str(&note);
+    }
+    Some(text)
+}
+
+/// Last non-marker lines for the prompt and panel, bounded to 6000 bytes.
 pub fn tail(log: &Path, lines: usize) -> String {
     let text = std::fs::read_to_string(log).unwrap_or_default();
-    let all: Vec<&str> = text.lines().collect();
+    let mut in_segment = false;
+    let all: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            if line.starts_with("autome-gate-digest begin ")
+                || line.starts_with("autome-gate-cases begin ")
+            {
+                in_segment = true;
+                return false;
+            }
+            if *line == "autome-gate-digest end" || *line == "autome-gate-cases end" {
+                in_segment = false;
+                return false;
+            }
+            !in_segment
+        })
+        .collect();
     let start = all.len().saturating_sub(lines);
     let mut out = all[start..].join("\n");
     const MAX: usize = 6000;
@@ -564,6 +612,67 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    struct DigestDir(std::path::PathBuf);
+    impl Drop for DigestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn digest_file(text: &str) -> (DigestDir, std::path::PathBuf) {
+        let dir = DigestDir(sandbox(&format!("digest-{}", uuid::Uuid::new_v4())));
+        let path = dir.0.join("gate.log");
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+    #[test]
+    fn digest_single() {
+        let (_dir, path) = digest_file(
+            "before\nautome-gate-digest begin Web e2e\n失败用例：a\nautome-gate-digest end\nafter",
+        );
+        assert_eq!(super::digest(&path).as_deref(), Some("失败用例：a"));
+        assert_eq!(super::tail(&path, 60), "before\nafter");
+    }
+    #[test]
+    fn digest_multiple() {
+        let (_dir, path) = digest_file(
+            "autome-gate-digest begin a\none\nautome-gate-digest end\nautome-gate-digest begin b\ntwo\nautome-gate-digest end",
+        );
+        assert_eq!(super::digest(&path).as_deref(), Some("one\ntwo"));
+    }
+    #[test]
+    fn digest_unclosed() {
+        let (_dir, path) = digest_file("autome-gate-digest begin a\none");
+        assert_eq!(super::digest(&path), None);
+        std::fs::write(
+            &path,
+            format!(
+                "autome-gate-digest begin a\n{}\nautome-gate-digest end",
+                "x".repeat(256 * 1024)
+            ),
+        )
+        .unwrap();
+        assert_eq!(super::digest(&path), None);
+    }
+    #[test]
+    fn digest_utf8_limit() {
+        let (_dir, path) = digest_file(&format!(
+            "autome-gate-digest begin a\n{}\nautome-gate-digest end",
+            "汉".repeat(6000)
+        ));
+        let text = super::digest(&path).unwrap();
+        assert!(text.len() <= 16 * 1024);
+        assert!(!text.contains('�'));
+        assert!(text.contains(&path.display().to_string()));
+        assert!(text.contains("完整内容见"));
+    }
+    #[test]
+    fn digest_absent() {
+        let (_dir, path) = digest_file("ordinary log");
+        assert_eq!(super::digest(&path), None);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(super::digest(&path), None);
+    }
+
     #[test]
     fn same_failure_log_window() {
         let dir = sandbox("same-failure-window");
