@@ -94,7 +94,11 @@ test('B-3 依赖任务在前置合并前不开始、合并后开始', async ({ p
   }, { timeout: 60_000 }).toBe('await_merge');
   cli(f.root, ['merge', parent]);
   await expect.poll(() => {
-    const status = taskState(f.root, parent); if (status.state !== 'done') expect(taskState(f.root, child).state).toBe('queued'); return status.state;
+    // Read the child first: the parent may finish between these CLI snapshots.
+    const dependent = taskState(f.root, child);
+    const status = taskState(f.root, parent);
+    if (dependent.state === 'active') expect(status.state).toBe('done');
+    return status.state;
   }, { timeout: 60_000 }).toBe('done');
   await expect.poll(() => taskState(f.root, child).state).toBe('active');
   // active is persisted before start_session inserts the first session (BL-13).
