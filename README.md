@@ -89,6 +89,8 @@ repository by repository.
 
 ### Host gate, retries and cooldowns
 
+Gate commands can print a block delimited by `autome-gate-digest begin <step>` and `autome-gate-digest end` on separate lines. The core collects closed blocks from the last 256 KiB of the log, stores up to 16 KiB in `gate.result.digest`, and forwards them to the repair session separately from the log tail. Truncation names the complete log. The Web reporter lists failed tests with assertion locations, unexecuted tests, and runner errors, distinguishing global timeout, browser budget, setup failure and interruption. It preserves the unabridged report at `$AUTOME_GATE_LOG.playwright.json` (also copied to `.autome/output/playwright-gate/report.json`) and places its absolute path first in the digest. Requirement repair briefs link the failed gate and its log.
+
 **Review scope recovery.** Audit, retrospective and Bug review sessions may still only change their task documents. On the first crossing, the core saves a binary patch under the main checkout's `.autome/output/scope/<task>/<session>.patch` (one per repository in a workspace), restores only the out-of-scope paths to the session baseline and commits the restoration, keeping document edits. `session.scope_restored` appears in `autome run`; `autome status` shows the latest attempt and whether its patches remain pending. The next implementation/fix session decides whether to adopt the patch; the core never applies it automatically. A final audit or retrospective can trigger an extra implementation → audit cycle; Bug review returns to fixing within its fix budget. A detached retrospective leaves the patch pending for manual handling or a later rerun.
 
 The second consecutive crossing by the same role stops with the existing protocol-failure instructions plus “上一次已自动还原”. An intervening implementation/fix session does not reset the streak; a clean session of that same role does. Restoration failure also stops with the existing manual recovery instructions and `session.scope_restore_failed`. Save useful changes, restore only offending paths to the recorded baseline and commit, then rerun; do not reset the whole branch. Durable intent is recorded before restoration, so restart can resume interrupted work.
@@ -650,3 +652,33 @@ Apple silicon only, because that is what CI builds on.
 
 `autome note <任务> "内容"`（或 `--file <路径|->`）给下一需求实现轮、Bug 定位或修复轮捎话，不打断当前会话。成功收尾后标记送达，崩溃重试会再次呈现；状态页可查内容和收件轮。
 没有后续实现轮时会补轮，再审计并过门禁。在合并卡点必须加 `--reopen`，预先合并授权保留；Bug 修复预算耗尽须先 `autome extend`。失败或停止时备注只记录，`rerun` 后送达。合并已经开始后只收下并警告，不再送达。备注与冻结设计冲突时须在证据说明，不能悄悄改范围。
+
+The repository's `ci-quick.sh` runs a separate browser phase after related tests,
+including when an earlier quick check fails. Changed specs select those files;
+shared browser inputs select the whole suite. App/server changes use specs named
+in the current milestone acceptance command, falling back to the whole suite.
+Only a complete whole-suite pass can be reused by the merge gate.
+`CI_E2E_BUDGET` defaults to 720 seconds and includes browser preparation. The
+phase reserves 60 seconds before `AUTOME_GATE_DEADLINE`; on older kernels without
+that variable it assumes a 600-second job starting when the script starts.
+Less than 240 seconds remaining omits the browser run. Budget truncation without
+failed cases records `not_run`; failed cases still reject the round. This budget
+is independent of `CI_QUICK_BUDGET` (120 seconds). After upgrading the kernel,
+configure this project's `quick_timeout_minutes = 20` to fit the whole suite.
+
+The optional `[gate] quick_session = 'sh scripts/ci-quick.sh --since {round_start}'`
+is the session command template: it requires `quick` and exactly one
+`{round_start}` placeholder (blank templates are ignored). Without a template,
+single-repository implementation/fix sessions receive the equivalent
+`AUTOME_ROUND_START=<sha> sh -c '<quick>'`. Their brief, prompt, session event and
+host check share the HEAD captured before the brief commit. Workspace sessions
+retain the existing instruction. Every host gate exports `AUTOME_GATE_DEADLINE`
+as its start time plus its effective timeout; Bug FixGate uses the full gate timeout.
+
+The quick check's 120 seconds is an admission budget: an admitted step can finish
+after it. The summary reports related-stage elapsed time and, on overrun, the last
+step's start offset/duration and the number of remaining steps not run. Browser
+preparation and execution are outside this budget. Web related candidates remain
+one test file per step. Shared `automed/tests/` inputs select unit tests and
+individual integration targets; the whole `end_to_end` target is explicitly
+deferred to the merge gate, just as for edits outside existing test bodies.

@@ -21,4 +21,4 @@ step 'Web lint' 'apps/web' npm run lint --prefix apps/web
 step 'Web typecheck' 'apps/web' npm run typecheck --prefix apps/web
 step 'Web build' 'apps/web' npm run build --prefix apps/web
 step 'Web test' 'apps/web crates protocol plugins apps/desktop' --cases vitest npm run test --prefix apps/web
-step 'Web e2e' 'apps/web crates protocol plugins apps/desktop' npm run e2e --prefix apps/web
+step 'Web e2e' 'apps/web crates protocol plugins apps/desktop' --cases playwright npm run e2e --prefix apps/web

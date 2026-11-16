@@ -25,6 +25,19 @@ use std::collections::BTreeMap;
 /// A skipped round must not inherit a previous commit's gate verdict.
 pub const GATE_ONLY_BEFORE_MERGE: &str = "本项目门禁只在合并前运行，本轮没有宿主门禁结果。\n";
 
+pub fn repair_gate_evidence(result: &Value) -> String {
+    format!(
+        "本轮是修复轮：宿主{}在 `{}` 未通过；失败清单与输出末尾在本轮提示词里，完整日志 `{}`。\n",
+        if result["kind"] == "quick" {
+            "快检"
+        } else {
+            "合并前门禁"
+        },
+        result["sha"].as_str().unwrap_or_default(),
+        result["log"].as_str().unwrap_or_default()
+    )
+}
+
 pub fn gate_evidence(
     config: &ResolvedConfig,
     last: Option<&Value>,
@@ -237,6 +250,7 @@ pub fn section(text: &str, heading: &str) -> Option<String> {
 /// Everything the brief is assembled from. Read by the caller so this module
 /// does no I/O.
 pub struct Inputs<'a> {
+    pub gate_history: Option<String>,
     pub integration: Option<String>,
     pub role: Role,
     pub slug: &'a str,
@@ -333,6 +347,9 @@ pub fn build(input: &Inputs<'_>) -> String {
         None => s.push_str("还没有里程碑表，或者所有里程碑都已完成。\n"),
     }
 
+    if let Some(history) = &input.gate_history {
+        s.push_str(history);
+    }
     if let Some(section) = &input.integration {
         s.push_str(section);
     }
@@ -574,6 +591,7 @@ session-protocol = []
         evidence: &'a [String],
     ) -> Inputs<'a> {
         Inputs {
+            gate_history: None,
             integration: None,
             role,
             slug: "checkout",
@@ -930,6 +948,7 @@ session-protocol = []
     fn gate_quick_brief_stale_missing_and_legacy_results() {
         let mut config = before_merge_config();
         config.gate_quick = Some(autome_domain::config::QuickGate {
+            session: None,
             command: "quick".into(),
             timeout_minutes: 5,
         });
@@ -1050,6 +1069,7 @@ mod integration_section_tests {
         let map = BriefMap::default();
         let mut input = Inputs {
             scope_patches: None,
+            gate_history: None,
             integration: None,
             role: Role::Audit,
             slug: "x",

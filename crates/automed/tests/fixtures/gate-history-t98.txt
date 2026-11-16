@@ -1,0 +1,21 @@
+- vitest 50/50；Playwright B-2、B-4 通过；B-3 竞态失败 2/4（controls.spec.ts:100 未轮询），其余通过 → BL-13。
+
+- 中途两次 Playwright 因机器负载（load 6+）在 setup 阶段 `spawnSync bash ETIMEDOUT`，待负载降后重跑正常，属环境问题。
+
+- `npx playwright test e2e/live.spec.ts`：未能执行，globalSetup 的 `prepare()` 里 `bash w7-flow.sh` 60 秒 ETIMEDOUT（实现轮在另一环境报 ps EPERM）。环境限制，非测试通过也非产品失败。
+
+本沙箱 `ps` EPERM，Playwright 在 setup 阶段即失败（`.autome/output/r16-pw.txt`），无法本机验证 C-2/C-2b 的耗时是否降到 360 s 内；这要由宿主合并前门禁实测。该修复是否足够不能由本轮证明，但改动本身未发现产品行为缺陷，也没有削弱验收。
+
+- `node apps/web/scripts/screenshots.ts --out .autome/output/shots-1` 与 `shots-2`：均退出 0，各 3 张 1512×944 PNG，残留进程检查 0。**脚本在本环境可运行**（实现轮称 ps EPERM，审计环境无此限制）。
+
+- 负向对照：该改动只在 e2e，本沙箱 `ps` EPERM，Playwright 无法起，不能对 B-3 做注入。M-13 验收命令与本改动无交集，未做注入；`expect.poll` 对恒为 0 的返回值会超时失败，是 Playwright 的确定语义。
+
+1. 改动只把 e2e 夹具 w7-flow.sh 的超时 60s→150s，与 task-detail-real / task-docs-real / task-merge-real 的预算一致，只针对触发原因（ETIMEDOUT）。rebase 丢失提交 0 个。
+
+- 改动范围：只加 D-1 首步的观察屏障（`flowSteps` 新增可选 `holdFirstStep`，仅 feature 第 1 步；默认行为不变），spec 在看到 running 列后放行。直接对应触发原因（running 态被 100 ms 驱动抢先越过而不可观察）。无产品代码改动，rebase 无消失提交。
+
+- 测试 diff：flows.spec.ts 未删改任何断言，只在 running 断言后加放行；e2e-fixture.test.ts 纯新增 3 组用例（含默认屏障不变的 feature/bug 对照），没有削弱既有用例。
+
+- 未做：D-1 浏览器流程本会话无法跑（ps EPERM，已知环境限制），由宿主合并前门禁复验。
+
+- BL-13：B-3 已改为有界轮询会话数，保留 sessions.length > 0 判据；真实浏览器复验受 ps EPERM 阻断，待宿主确认。

@@ -942,6 +942,7 @@ mod tests {
             ),
             (
                 Some(Inject::GateFailed {
+                    digest: None,
                     head: "secret-sha".into(),
                     command: "check".into(),
                     tail: "failed".into(),

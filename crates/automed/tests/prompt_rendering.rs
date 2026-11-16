@@ -55,6 +55,8 @@ fn spec<'a>(kind: SessionKind, templates: &'a ProtocolFiles) -> PromptSpec<'a> {
         templates,
         gate_before_merge: None,
         gate_quick: None,
+        round_start: None,
+        gate_quick_session: None,
         last_gate: None,
         brief_path: BRIEF,
         slug: SLUG,
@@ -447,6 +449,7 @@ fn before_merge_audit_brief_matches_its_golden() {
         "ok":false, "exit_code":1, "log":"gate.log"
     });
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: None,
         role: Role::Audit,
         slug: "example",
@@ -638,6 +641,7 @@ fn quick_golden(name: &str, kind: SessionKind) {
     let mut s = spec(kind, templates);
     s.gate_before_merge = Some("make check");
     s.gate_quick = Some("make lint");
+    s.round_start = Some("abc123");
     s.last_gate = Some(&result);
     s.budget = Some(automed::launcher::BudgetLine {
         round: 2,
@@ -690,11 +694,13 @@ fn gate_quick_audit_brief_matches_golden() {
     });
     config.gate_run = GateRun::BeforeMerge;
     config.gate_quick = Some(QuickGate {
+        session: None,
         command: "make lint".into(),
         timeout_minutes: 5,
     });
     let result = serde_json::json!({"sha":"<head>","kind":"quick","command":"make lint","ok":true,"exit_code":0,"log":"gate.log"});
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: None,
         role: Role::Audit,
         slug: "example",
@@ -774,6 +780,7 @@ fn timeout_retry_golden(name: &str, kind: SessionKind, gate: bool) {
         5,
         "tick 39\ntick 40".into(),
         gate.then(|| Inject::GateFailed {
+            digest: None,
             head: "abcdef123456".into(),
             command: "cargo test".into(),
             tail: "gate failure".into(),
@@ -854,6 +861,7 @@ fn integration_brief(trigger: serde_json::Value, name: &str) {
     use automed::brief::{self, BriefMap, Inputs};
     let event = serde_json::json!({"impl_round":9,"evidence":"M-08-r9-audit.md","trigger":trigger,"repos":[{"repo":"","start":"3f2a1c0123456789","end":"9e81b77123456789","base":"55d0e12123456789","commits":[{"sha":"a1b2c3d123456789","subject":"fix: resolve launcher conflict","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 +-"},{"sha":"e4f5a6b123456789","subject":"test: keep old template compatible","paths":["crates/automed/tests/end_to_end.rs"],"stat":"crates/automed/tests/end_to_end.rs | 2 +-"}],"dropped":[{"sha":"0c9d8e7123456789","subject":"feat: launcher change","paths":["crates/automed/src/launcher.rs"],"stat":"crates/automed/src/launcher.rs | 2 ++"}],"test_files":["crates/automed/tests/end_to_end.rs"],"commits_omitted":0,"dropped_omitted":0}]});
     let got = brief::build(&Inputs {
+        gate_history: None,
         integration: Some(brief::integration_section(&event, "docs/example")),
         scope_patches: None,
         role: Role::Audit,
@@ -913,4 +921,111 @@ fn operator_note_audit_brief_golden() {
 #[test]
 fn operator_note_bug_fix_prompt_golden() {
     operator_note_golden("operator-note-bug", false, true);
+}
+
+fn digest_prompt(kind: SessionKind, quick: bool) {
+    use autome_domain::task::Inject;
+    let templates = automed::protocol::seed().clone();
+    let inject = Inject::GateFailed {
+        head: "abc123".into(),
+        command: "check".into(),
+        tail: "tail-only".into(),
+        digest: Some("失败用例：assertion\n未执行用例：pending\n非用例错误：original".into()),
+    };
+    let result = serde_json::json!({"kind": if quick {"quick"} else {"full"}});
+    let mut s = spec(kind, &templates);
+    s.inject = Some(&inject);
+    s.budget = Some(automed::launcher::BudgetLine {
+        round: 2,
+        limit: 30,
+    });
+    s.last_gate = Some(&result);
+    let text = build_prompt(&s).unwrap();
+    for expected in [
+        "tail-only",
+        "失败清单（宿主门禁按用例整理，原文）",
+        "失败用例：assertion",
+        "未执行用例：pending",
+        "非用例错误：original",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+}
+#[test]
+fn digest_feature_quick_prompt() {
+    digest_prompt(SessionKind::Role { role: Role::Impl }, true);
+}
+#[test]
+fn digest_feature_merge_prompt() {
+    digest_prompt(SessionKind::Role { role: Role::Impl }, false);
+}
+#[test]
+fn digest_bug_gate_prompt() {
+    for quick in [false, true] {
+        digest_prompt(
+            SessionKind::Bug {
+                step: autome_domain::session::BugStep::Fix,
+            },
+            quick,
+        );
+    }
+}
+#[test]
+fn digest_repair_brief_gate_line() {
+    let old: autome_domain::task::Inject = serde_json::from_value(
+        serde_json::json!({"inject":"gate_failed", "head":"old", "command":"check", "tail":"tail"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        old,
+        autome_domain::task::Inject::GateFailed { digest: None, .. }
+    ));
+    let old_outcome: autome_domain::task::GateOutcome = serde_json::from_value(
+        serde_json::json!({"gate":"failed", "head":"old", "command":"check", "tail":"tail"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        old_outcome,
+        autome_domain::task::GateOutcome::Failed { digest: None, .. }
+    ));
+    let text = automed::brief::repair_gate_evidence(
+        &serde_json::json!({"kind":"quick", "sha":"abc123", "log":"/gate.log"}),
+    );
+    for expected in [
+        "本轮是修复轮：宿主快检",
+        "abc123",
+        "/gate.log",
+        "失败清单与输出末尾在本轮提示词里",
+    ] {
+        assert!(text.contains(expected));
+    }
+}
+
+#[test]
+fn gate_history_brief_section_follows_milestone() {
+    use automed::brief::{self, BriefMap, Inputs};
+    let got = brief::build(&Inputs {
+        gate_history: Some("\n## 门禁用例的既往失败记录\n\n机械匹配、可能误报。\n- docs/x/evidence/M-01-r1-audit.md:3：B-3 竞态失败\n".into()),
+        integration: None, role: Role::Impl, slug: "example", doc_dir: "docs/example", round: 2,
+        status: None, audit_doc: None, evidence: &[], loop_protocol: "", session_protocol: "",
+        map: &BriefMap::default(), budget_line: None, decisions: None, gate: None, scope_patches: None,
+    });
+    assert!(got.find("## 本里程碑").unwrap() < got.find("## 门禁用例的既往失败记录").unwrap());
+    assert!(
+        got.find("## 门禁用例的既往失败记录").unwrap() < got.find("## 上一轮对手轮的结论").unwrap()
+    );
+    assert!(got.contains("audit.md:3：B-3 竞态失败"));
+}
+
+#[test]
+fn gate_quick_session_template() {
+    let templates = automed::protocol::seed();
+    let mut s = spec(SessionKind::Role { role: Role::Impl }, templates);
+    s.gate_before_merge = Some("full");
+    s.gate_quick = Some("quick");
+    s.round_start = Some("abc123");
+    s.gate_quick_session = Some("sh scripts/ci-quick.sh --since {round_start}");
+    let prompt = build_prompt(&s).unwrap();
+    assert!(prompt.contains("sh scripts/ci-quick.sh --since abc123"));
+    assert!(prompt.contains("本轮起点 `abc123`"));
 }

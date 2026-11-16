@@ -407,6 +407,7 @@ pub fn apply_for(
                     TestFixJudgement::NeedsFix => Some(start_fix(
                         Node::ReproCheck,
                         Some(Inject::GateFailed {
+                            digest: None,
                             head: head.clone(),
                             command: command.clone(),
                             tail: tail.clone(),
@@ -463,12 +464,14 @@ pub fn apply_for(
             },
         ) if node == done => match outcome {
             GateOutcome::Failed {
+                digest,
                 head,
                 command,
                 tail,
             } => Ok(start_fix(
                 *node,
                 Some(Inject::GateFailed {
+                    digest: digest.clone(),
                     head: head.clone(),
                     command: command.clone(),
                     tail: tail.clone(),
@@ -618,6 +621,7 @@ mod tests {
                 GateOutcome::Passed
             } else {
                 GateOutcome::Failed {
+                    digest: None,
                     head: "sha".into(),
                     command: "test bug".into(),
                     tail: "tail".into(),
@@ -1451,6 +1455,7 @@ mod tests {
             Action::StartBugSession {
                 step: BugStep::Fix,
                 inject: Some(Inject::GateFailed {
+                    digest: None,
                     head: "sha".into(),
                     command: "test bug".into(),
                     tail: "tail".into()

@@ -1,0 +1,26 @@
+autome-gate-digest begin Web e2e
+完整原文（未截）：/fixture/report/report.json
+总耗时 3.00079 秒，上限 3 秒（余量 -0.0%）
+整套被总超时截断（globalTimeout 3 秒，未设 maxFailures）
+失败用例：
+/fixture/case.spec.ts:1:134  ›  › case.spec.ts › assertion-failure
+/fixture/case.spec.ts:1:176
+Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 2
+Received: 1
+    at /fixture/case.spec.ts:1:176
+未执行用例：
+/fixture/case.spec.ts:1:186  ›  › case.spec.ts › interrupted-case（被中断，已运行 1.507 秒）
+/fixture/case.spec.ts:1:276  ›  › case.spec.ts › never-started
+非用例错误：
+Timed out waiting 3s for the test suite to run
+Timed out waiting 3s for the teardown for test suite to run
+各用例耗时：
+/fixture/case.spec.ts:1:134  ›  › case.spec.ts › assertion-failure: 12 ms
+/fixture/case.spec.ts:1:186  ›  › case.spec.ts › interrupted-case: 1507 ms
+/fixture/case.spec.ts:1:276  ›  › case.spec.ts › never-started: 0 ms
+准备与收尾耗时：
+setup: 1 ms
+预算过半：
+autome-gate-digest end

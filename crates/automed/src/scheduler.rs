@@ -3733,6 +3733,8 @@ fn launch_session(
             last_gate.as_ref(),
             gate_head(&layout).ok().as_deref(),
         )
+    } else if matches!(inject, Some(Inject::GateFailed { .. })) {
+        last_gate.as_ref().map(crate::brief::repair_gate_evidence)
     } else {
         None
     };
@@ -3786,10 +3788,46 @@ fn launch_session(
     } else {
         None
     };
+    let start_heads = if matches!(
+        kind,
+        SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
+    ) {
+        Some(
+            layout
+                .repos
+                .iter()
+                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else {
+        None
+    };
+    let round_start = if project.is_workspace() {
+        None
+    } else {
+        start_heads
+            .as_ref()
+            .and_then(|heads| heads.first())
+            .and_then(|h| h["head"].as_str())
+    };
+    let round_quick_note = resolved
+        .quick_gate()
+        .zip(round_start)
+        .map(|(quick, start)| {
+            launcher::round_quick_start(&quick.command, quick.session.as_deref(), start)
+        });
+    let gate_evidence = match (gate_evidence, round_quick_note.as_ref()) {
+        (Some(gate), Some(note)) => Some(format!("{gate}\n{note}\n")),
+        (None, Some(note)) => Some(format!("\n## 宿主门禁\n\n{note}\n")),
+        (gate, None) => gate,
+    };
     let brief_path = match kind
         .role()
         .filter(|_| !matches!(kind, SessionKind::Bug { .. }))
-    {
+        .or_else(|| {
+            (matches!(kind, SessionKind::Bug { step: BugStep::Fix }) && round_quick_note.is_some())
+                .then_some(Role::Impl)
+        }) {
         Some(role) => write_brief(
             ctx,
             task,
@@ -3803,6 +3841,11 @@ fn launch_session(
             budget.as_ref(),
             decisions,
             gate_evidence,
+            kind.role() == Some(Role::Impl)
+                && matches!(inject, Some(Inject::GateFailed { .. }))
+                && last_gate
+                    .as_ref()
+                    .is_some_and(|g| g["node"] == "merge_gate"),
             integration_audit.as_ref().map(|v| {
                 crate::brief::integration_section(
                     &{
@@ -3875,6 +3918,8 @@ fn launch_session(
         templates: &protocol,
         gate_before_merge: resolved.gate_before_merge(),
         gate_quick: resolved.quick_gate().map(|q| q.command.as_str()),
+        round_start,
+        gate_quick_session: resolved.quick_gate().and_then(|q| q.session.as_deref()),
         last_gate: last_gate.as_ref(),
         brief_path: &brief_path,
         slug: &task.slug,
@@ -3890,6 +3935,12 @@ fn launch_session(
         attachments: &task.attachments,
         doc_refs: &task.doc_refs,
     })?;
+
+    if matches!(kind, SessionKind::Bug { step: BugStep::Fix }) && !brief_path.is_empty() {
+        prompt.push_str(&format!(
+            "\n先读本轮简报 `{brief_path}`，其中包含本轮起点与宿主快检命令。\n"
+        ));
+    }
 
     if matches!(kind, SessionKind::Bug { step: BugStep::Fix })
         && let Some(section) = crate::handoff::sections(&patches, None, true)
@@ -3914,20 +3965,6 @@ fn launch_session(
     // Capture before the process can edit a checkout, not after launch returns.
 
     let scope_heads = if matches!(kind.role(), Some(Role::Audit | Role::Retro)) {
-        Some(
-            layout
-                .repos
-                .iter()
-                .map(|slot| Ok(json!({"repo": slot.name, "head": git::head_sha(&slot.worktree)?})))
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-    let start_heads = if matches!(
-        kind,
-        SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
-    ) {
         Some(
             layout
                 .repos
@@ -4143,6 +4180,7 @@ fn write_brief(
     budget: Option<&launcher::BudgetLine>,
     decisions: &[crate::store::DecisionRecord],
     gate: Option<String>,
+    include_gate_history: bool,
     integration: Option<String>,
     scope_patches: Option<String>,
 ) -> Result<String> {
@@ -4170,7 +4208,34 @@ fn write_brief(
     let status = read(task.design_doc()).and_then(|t| status_block::parse(&t).ok());
     let evidence = evidence_filenames(worktree, &task.doc_dir());
 
+    let gate_history = if include_gate_history {
+        let events = ctx.store.task_events(&task.id, "gate.result")?;
+        let catalog = events
+            .iter()
+            .rev()
+            .find_map(|e| e["cases"].as_array())
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|s| s.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Some(
+            crate::gate_history::collect(
+                worktree,
+                &task.doc_dir(),
+                &task.slug,
+                &task.id,
+                round,
+                &catalog,
+            )
+            .unwrap_or_else(|e| format!("\n## 门禁用例的既往失败记录\n\n提取失败：{e}\n")),
+        )
+    } else {
+        None
+    };
     let text = crate::brief::build(&crate::brief::Inputs {
+        gate_history,
         integration,
         role,
         slug: &task.slug,
@@ -4880,13 +4945,15 @@ fn run_gate_attempt(
         let passes = ctx.store.gate_passes(&project.id, &task.id, |commit| {
             git::second_parent(&repo, commit).ok()
         })?;
+        let round_env = gate_round_env(ctx, task, layout, node)?;
+        let deadline = (crate::gate::now_secs() + u64::from(gate.timeout_minutes) * 60).to_string();
         let mut env = vec![
+            ("AUTOME_GATE_DEADLINE", deadline.as_str()),
             ("AUTOME_TASK", task.id.as_str()),
             ("AUTOME_HEAD", head.as_str()),
             ("AUTOME_GATE_NODE", node.as_str()),
             ("AUTOME_GATE_KIND", launch.kind()),
         ];
-        let round_env = gate_round_env(ctx, task, layout, node)?;
         env.extend(round_env.iter().map(|(key, value)| (*key, value.as_str())));
         crate::gate::start_with_passes(&job, &cwd, &run_command, &env, &passes)
             .map_err(|e| err(format!("无法启动门禁：{e}")))?;
@@ -4936,6 +5003,7 @@ fn run_gate_attempt(
     };
     let ok = exit_code == 0;
     let tail = crate::gate::tail(&job.log, 60);
+    let digest = crate::gate::digest(&job.log);
     let mut result = json!({
         "node": node.as_str(),
         "sha": head,
@@ -4946,6 +5014,13 @@ fn run_gate_attempt(
         "log": job.log.to_string_lossy(),
         "tail": tail,
     });
+    if let Some(text) = &digest {
+        result["digest"] = json!(text);
+    }
+    let cases = crate::gate_history::cases(&crate::gate::log_window(&job.log));
+    if !cases.is_empty() {
+        result["cases"] = json!(cases);
+    }
     if let Some(report) = crate::gate::read_report(&job) {
         result["steps"] = report["steps"].clone();
         result["passes"] = report["passes"].clone();
@@ -5028,6 +5103,7 @@ fn run_gate_attempt(
         GateOutcome::Passed
     } else {
         GateOutcome::Failed {
+            digest,
             head: head.clone(),
             command,
             tail,
@@ -5700,6 +5776,8 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         templates: protocol,
         gate_before_merge: None,
         gate_quick: None,
+        round_start: None,
+        gate_quick_session: None,
         last_gate: None,
         brief_path: "",
         slug: "onboarding",
@@ -10187,6 +10265,7 @@ mod tests {
     fn timeout_retry_gate_repair_guard_reads_effective_injection() {
         let mut w = World::new("timeout-repair");
         let gate = Inject::GateFailed {
+            digest: None,
             head: "abc".into(),
             command: "false".into(),
             tail: "fail".into(),
@@ -11107,6 +11186,7 @@ mod tests {
                 &design_doc("实现中", &[("M-01", MilestoneState::Open)], ""),
             );
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "head".into(),
                 command: "check".into(),
                 tail: "fresh gate feedback".into(),
@@ -11263,6 +11343,7 @@ mod tests {
         assert_eq!(fill_slots(&mut w.ctx).unwrap(), vec!["T-1"]);
         assert_eq!(w.ctx.store.list_sessions("T-1").unwrap().len(), 1); // The original session's input wins over a later, unrelated event.
         let inject = Inject::GateFailed {
+            digest: None,
             head: "old-head".into(),
             command: "check".into(),
             tail: "resume-feedback".into(),

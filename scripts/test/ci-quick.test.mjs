@@ -61,7 +61,10 @@ test('Rust integration tests build matching CLI and kernel before execution', t 
   const f = fixture(t, true); f.change('crates/autome-cli/tests/cli.rs');
   const output = f.plan();
   assert.ok(output.indexOf('prep\tBuild core') >= 0 && output.indexOf('prep\tBuild core') < output.indexOf('candidate\t'));
+  f.put('apps/web/scripts/e2e-catalog.mjs', "console.log('CATALOG');");
   const r = f.run([]); ok(r);
+  assert.ok(r.stdout.indexOf('INSTALL') < r.stdout.indexOf('CATALOG'));
+  assert.ok(r.stdout.includes('CATALOG'));
   assert.ok(r.stdout.indexOf('BUILD') >= 0 && r.stdout.indexOf('BUILD') < r.stdout.indexOf('CANDIDATE test'));
 });
 test('03 one Web related command includes source and test, quoted paths and Build core first', t => {
@@ -133,7 +136,7 @@ test('09 Web command cwd loads real config and related actually runs changed tes
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { resolveConfig } from 'vitest/node'; const { test: c } = await resolveConfig(); console.log(JSON.stringify({ globalSetup: c.globalSetup.map(p => p.split("/").pop()), projects: c.projects.map(p => ({ name: p.test.name, testTimeout: p.test.testTimeout, hookTimeout: p.test.hookTimeout })) }));`], { cwd: resolve(source, 'apps/web'), env: cleanEnv, encoding: 'utf8' }); ok(r);
   assert.deepEqual(JSON.parse(r.stdout.trim()), { globalSetup: ['global-setup.ts'], projects: ['unit', 'kernel', 'exclusive'].map(name => ({ name, testTimeout: 60000, hookTimeout: 60000 })) });
   const related = spawnSync(command[0], command.slice(1), { cwd: source, env: { ...cleanEnv, NO_COLOR: '1' }, encoding: 'utf8', timeout: 30_000 }); ok(related);
-  assert.match(related.stdout, /Tests\s+12 passed \(12\)/);
+  assert.match(related.stdout, /Tests\s+13 passed \(13\)/);
   assert.doesNotMatch(related.stdout, /No (?:changed|test) files/);
   const selected = resolve(f.dir, 'related.sh');
   ok(spawnSync(process.execPath, ['apps/web/scripts/quick-related.mjs', selected, 'test/ci-config.test.ts'], {
@@ -193,7 +196,9 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
     const [, , key, name] = line.split('\t'); assert.equal(key, records.get(name));
   }
   const passes = resolve(f.dir, 'passes'); writeFileSync(passes, [...records.values()].map(k => `${k}\tT\tgate\tabc\tnow\n`).join(''));
+  // No inputs change after computing the pass keys: the catalog was already present.
   const r = f.run([], { AUTOME_GATE_PASSES: passes, AUTOME_GATE_REPORT: f.report }); ok(r);
+  assert.match(r.stdout, /未取得浏览器用例清单/); // no node_modules in this fixture; still runs when Web steps reuse
   const report = readFileSync(f.report, 'utf8'); assert.equal((report.match(/^reused\t/gm) ?? []).length, 5); assert.match(report, /partial\t/);
   // Reusing Desktop must not suppress the Rust integration target's fresh binaries.
   assert.equal((r.stdout.match(/^BUILD$/gm) ?? []).length, 1);
@@ -202,11 +207,62 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
 
 test('14 Web related files recheck budget and report the unstarted remainder', t => {
   const f = fixture(t, true); f.put('apps/web/app/probe.ts', 'export {};');
+  const clock = resolve(f.dir, 'clock');
+  writeFileSync(clock, '100\n');
+  f.put('advance-clock.sh', 'echo FIRST_WEB\necho 102 > "$QUICK_TEST_CLOCK"\n');
+  writeFileSync(resolve(f.dir, 'bin/date'), '#!/bin/sh\ncat "$QUICK_TEST_CLOCK"\n', { mode: 0o755 });
   f.put('apps/web/scripts/quick-related.mjs', `import { writeFileSync } from 'node:fs';
-writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh -c 'echo FIRST_WEB; sleep 2'; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
-  const r = f.run([], { CI_QUICK_BUDGET: '1', AUTOME_GATE_REPORT: f.report }); ok(r);
+writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh advance-clock.sh; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
+  const r = f.run([], { CI_QUICK_BUDGET: '1', QUICK_TEST_CLOCK: clock, AUTOME_GATE_REPORT: f.report }); ok(r);
   assert.match(r.stdout, /FIRST_WEB/);
+  assert.match(r.stdout, /最后准入的步骤 first-web 从第 \d+ 秒开始、用时 \d+ 秒；之后的 1 步未跑/);
   assert.doesNotMatch(r.stdout, /SECOND_WEB/);
   assert.match(readFileSync(f.report, 'utf8'), /partial\t-\tfirst-web/);
   assert.match(readFileSync(f.report, 'utf8'), /not_run\t-\tsecond-web/);
+});
+
+test('15 quick summary explains overrun and excludes later browser work', t => {
+  const f = fixture(t, true);
+  const script = `. scripts/ci/lib.sh
+ci_quick_start
+ci_quick_budget=10
+ci_quick_started=$(($(date +%s) - 12))
+ci_quick_last_name='last-web'
+ci_quick_last_start=9
+ci_quick_last_duration=3
+ci_quick_admit next-web || :
+ci_quick_finish
+ci_quick_started=0
+summary`;
+  const r = spawnSync('sh', ['-c', script], { cwd: f.root, env: { ...cleanEnv, root: f.root }, encoding: 'utf8' }); ok(r);
+  assert.match(r.stdout, /快检相关阶段用时 1[23] 秒（准入预算 10 秒）；最后准入的步骤 last-web 从第 9 秒开始、用时 3 秒；之后的 1 步未跑/);
+  const normal = spawnSync('sh', ['-c', '. scripts/ci/lib.sh; ci_quick_start; ci_quick_finish; summary'], { cwd: f.root, env: { ...cleanEnv, root: f.root }, encoding: 'utf8' }); ok(normal);
+  assert.match(normal.stdout, /快检相关阶段用时 \d+ 秒（准入预算 120 秒）/);
+  assert.doesNotMatch(normal.stdout, /最后准入/);
+});
+
+test('16 each discovered Web candidate contains exactly one test file', t => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'quick-files-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const selected = resolve(dir, 'related.sh');
+  ok(spawnSync(process.execPath, ['apps/web/scripts/quick-related.mjs', selected, 'test/ci-config.test.ts', 'test/test-groups.test.ts'], { cwd: source, env: cleanEnv, encoding: 'utf8', timeout: 30_000 }));
+  const lines = readFileSync(selected, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  for (const line of lines) {
+    assert.match(line, /^if ci_quick_admit .*; then ci_partial .* --cases vitest .*; fi$/);
+    const command = line.split(' --cases vitest ')[1];
+    assert.equal((command.match(/test\/[\w.-]+\.test\.ts/g) ?? []).length, 1, command);
+    assert.match(command, /vitest run/);
+    assert.doesNotMatch(command, /vitest related/);
+  }
+});
+
+test('17 shared automed test inputs never admit the whole end_to_end target', t => {
+  const f = fixture(t);
+  f.change('crates/automed/tests/golden/prompts/impl-before-merge-quick.md');
+  const output = f.plan();
+  const list = commands(output);
+  assert.ok(list.some(c => c.includes('prompt_rendering')));
+  assert.ok(list.every(c => !c.includes('--tests') && !c.includes('end_to_end')));
+  assert.match(output, /未跑.*end_to_end/);
 });

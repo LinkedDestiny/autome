@@ -324,6 +324,8 @@ pub struct PromptSpec<'a> {
     pub integration_audit: bool,
     pub gate_before_merge: Option<&'a str>,
     pub gate_quick: Option<&'a str>,
+    pub round_start: Option<&'a str>,
+    pub gate_quick_session: Option<&'a str>,
     pub last_gate: Option<&'a serde_json::Value>,
     pub kind: SessionKind,
     /// The prompt templates of the protocol version this task is pinned to.
@@ -414,7 +416,29 @@ fn round_gate_line(spec: &PromptSpec<'_>, command: &str) -> String {
             _ => {}
         }
     }
+    if let (Some(quick), Some(start)) = (spec.gate_quick, spec.round_start)
+        && matches!(
+            spec.kind,
+            SessionKind::Role { role: Role::Impl } | SessionKind::Bug { step: BugStep::Fix }
+        )
+    {
+        line.push_str(&round_quick_start(quick, spec.gate_quick_session, start));
+    }
     line
+}
+
+pub(crate) fn round_quick_start(quick: &str, template: Option<&str>, start: &str) -> String {
+    let command = template
+        .map(|t| t.replace("{round_start}", start))
+        .unwrap_or_else(|| {
+            format!(
+                "AUTOME_ROUND_START={start} sh -c '{}'",
+                quick.replace('\'', "'\\''")
+            )
+        });
+    format!(
+        "本轮起点 `{start}`（宿主导出的 `AUTOME_ROUND_START` 同值），在会话里跑同一检查：`{command}`。"
+    )
 }
 
 fn last_gate_kind<'a>(spec: &PromptSpec<'a>) -> Option<&'a str> {
@@ -545,10 +569,20 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             ));
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
         } if last_gate_kind(spec) == Some("quick") => {
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail)
                 .replace("门禁超时", "快检超时")
                 .replace("测试失败", "检查失败");
@@ -571,10 +605,20 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             }
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
         } if matches!(spec.kind, SessionKind::Bug { .. }) => {
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail);
             if let Some(cmd) = spec.gate_before_merge {
                 p.push_str(&format!("\nAutome 在提交 `{head}` 上运行门禁 `{command}`，{verdict}。输出末尾（原文）：\n```\n{tail}\n```\n修复后用复现命令和与改动直接相关的测试子集确认通过并提交；{}不要修改回归测试。\n", round_gate_line(spec, cmd)));
@@ -597,6 +641,7 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             p.push_str(&render_decisions(spec.decisions));
         }
         Inject::GateFailed {
+            digest,
             head,
             command,
             tail,
@@ -604,6 +649,15 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             // The output verbatim and the commit it came from: the round has
             // to reproduce the failure before it can fix it, and "the gate
             // failed" without either is a claim it cannot check.
+            let tail = &format!(
+                "{tail}{}",
+                digest
+                    .as_ref()
+                    .map(|text| format!(
+                        "\n```\n\n失败清单（宿主门禁按用例整理，原文）：\n```\n{text}"
+                    ))
+                    .unwrap_or_default()
+            );
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             if let Some(cmd) = spec.gate_before_merge {
@@ -1438,6 +1492,7 @@ mod tests {
                 "test failed",
             ] {
                 let inject = Inject::GateFailed {
+                    digest: None,
                     head: "abcdef".into(),
                     command: "check".into(),
                     tail: tail.into(),
@@ -1513,6 +1568,8 @@ mod tests {
             templates,
             gate_before_merge: None,
             gate_quick: None,
+            round_start: None,
+            gate_quick_session: None,
             last_gate: None,
             brief_path: "docs/checkout-flow/brief/impl-1.md",
             slug: "checkout-flow",
@@ -1536,6 +1593,7 @@ mod tests {
             5,
             "tick 40".into(),
             Some(Inject::GateFailed {
+                digest: None,
                 head: "abcdef123456".into(),
                 command: "false".into(),
                 tail: "gate failure".into(),
@@ -2680,6 +2738,7 @@ mod tests {
         let p = bug_injected(
             BugStep::Fix,
             &Inject::GateFailed {
+                digest: None,
                 head: "abcdef".into(),
                 command: "sh regression.sh && cargo test".into(),
                 tail: "failed\n具体错误".into(),
@@ -2770,6 +2829,7 @@ mod tests {
     fn before_merge_prompt_feature_failure_limits_repair_scope() {
         let tpl = templates();
         let inject = Inject::GateFailed {
+            digest: None,
             head: "1234567890abcdef".into(),
             command: "failed-command".into(),
             tail: "failure-tail".into(),
@@ -2800,6 +2860,7 @@ mod tests {
     fn before_merge_prompt_bug_failure_limits_repair_scope() {
         let tpl = templates();
         let inject = Inject::GateFailed {
+            digest: None,
             head: "abcdef".into(),
             command: "failed-command".into(),
             tail: "failure-tail".into(),
@@ -2899,6 +2960,53 @@ mod tests {
     }
 
     #[test]
+    fn round_gate_line_template() {
+        let tpl = crate::protocol::seed();
+        for kind in [
+            SessionKind::Role { role: Role::Impl },
+            SessionKind::Bug { step: BugStep::Fix },
+        ] {
+            let mut s = quick_spec(kind, tpl);
+            s.round_start = Some("abc123");
+            s.gate_quick_session = Some("sh scripts/ci-quick.sh --since {round_start}");
+            let line = round_gate_line(&s, "full-check");
+            assert!(line.contains("sh scripts/ci-quick.sh --since abc123"));
+            assert!(line.contains("本轮起点 `abc123`"));
+        }
+    }
+    #[test]
+    fn round_gate_line_fallback_quotes() {
+        let tpl = crate::protocol::seed();
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
+        s.round_start = Some("abc123");
+        s.gate_quick = Some("printf '%s' \"$AUTOME_ROUND_START\"");
+        let line = round_gate_line(&s, "full-check");
+        let command = line
+            .split("在会话里跑同一检查：`")
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .next()
+            .unwrap();
+        let output = std::process::Command::new("sh")
+            .args(["-c", command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"abc123");
+    }
+    #[test]
+    fn round_gate_line_workspace_or_missing_start_unchanged() {
+        let tpl = crate::protocol::seed();
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
+        let old = round_gate_line(&s, "full-check");
+        s.gate_quick_session = Some("check {round_start}");
+        assert_eq!(round_gate_line(&s, "full-check"), old);
+        s.kind = SessionKind::Role { role: Role::Audit };
+        s.round_start = Some("abc123");
+        assert!(!round_gate_line(&s, "full-check").contains("本轮起点"));
+    }
+    #[test]
     fn gate_quick_prompt_round_sentence_only_for_impl_and_fix() {
         let tpl = crate::protocol::seed();
         for role in [
@@ -2936,6 +3044,7 @@ mod tests {
         let tpl = crate::protocol::seed();
         for tail in ["lint marker", "=== Autome：门禁运行超过 5 分钟，已终止 ==="] {
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "0123456789abcdef".into(),
                 command: "echo {slug}".into(),
                 tail: tail.into(),
@@ -2968,6 +3077,7 @@ mod tests {
         }
         let result = serde_json::json!({"kind":"full"});
         let inject = Inject::GateFailed {
+            digest: None,
             head: "head".into(),
             command: "full-check".into(),
             tail: "failure".into(),
@@ -2990,6 +3100,7 @@ mod tests {
             "=== Autome：门禁运行超过 30 分钟，已终止 ===",
         ] {
             let inject = Inject::GateFailed {
+                digest: None,
                 head: "head".into(),
                 command: "( repro ) && ( quick )".into(),
                 tail: tail.into(),

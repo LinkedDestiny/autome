@@ -18,7 +18,7 @@ export function TaskDependencies({ data, result, reason = dependencyReadOnly(dat
   const after = data.task.after ?? [];
   const tasks = shell?.tasks ?? [];
   return <section aria-label="依赖"><h2>依赖</h2>
-    {after.length ? <ul>{after.map(id => { const state = tasks.find(t => t.id === id)?.state ?? data.task.blocked_by?.find(t => t.id === id)?.state; return <li key={id}>{id} · {state ? taskStatusLine(state) : '状态未知'}</li>; })}</ul> : <p>无依赖</p>}
+    {after.length ? <ul>{after.map(id => { const state = data.task.blocked_by?.find(t => t.id === id)?.state ?? tasks.find(t => t.id === id)?.state; return <li key={id}>{id} · {state ? taskStatusLine(state) : '状态未知'}</li>; })}</ul> : <p>无依赖</p>}
     {reason ? <p>{reason}</p> : <Form method="post" key={after.join(',')}>
       <input type="hidden" name="intent" value="set_after" />
       <DependencyChoices tasks={dependencyCandidates(tasks, data.project?.id ?? '', data.task.id)} selected={after} disabled={!gate.allowed || busy} />
