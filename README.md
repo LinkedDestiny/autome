@@ -650,3 +650,16 @@ Apple silicon only, because that is what CI builds on.
 
 `autome note <任务> "内容"`（或 `--file <路径|->`）给下一需求实现轮、Bug 定位或修复轮捎话，不打断当前会话。成功收尾后标记送达，崩溃重试会再次呈现；状态页可查内容和收件轮。
 没有后续实现轮时会补轮，再审计并过门禁。在合并卡点必须加 `--reopen`，预先合并授权保留；Bug 修复预算耗尽须先 `autome extend`。失败或停止时备注只记录，`rerun` 后送达。合并已经开始后只收下并警告，不再送达。备注与冻结设计冲突时须在证据说明，不能悄悄改范围。
+
+The repository's `ci-quick.sh` runs a separate browser phase after related tests,
+including when an earlier quick check fails. Changed specs select those files;
+shared browser inputs select the whole suite. App/server changes use specs named
+in the current milestone acceptance command, falling back to the whole suite.
+Only a complete whole-suite pass can be reused by the merge gate.
+`CI_E2E_BUDGET` defaults to 720 seconds and includes browser preparation. The
+phase reserves 60 seconds before `AUTOME_GATE_DEADLINE`; on older kernels without
+that variable it assumes a 600-second job starting when the script starts.
+Less than 240 seconds remaining omits the browser run. Budget truncation without
+failed cases records `not_run`; failed cases still reject the round. This budget
+is independent of `CI_QUICK_BUDGET` (120 seconds). After upgrading the kernel,
+configure this project's `quick_timeout_minutes = 20` to fit the whole suite.

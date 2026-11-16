@@ -20,6 +20,7 @@ done
 case "${CI_QUICK_BUDGET-120}" in ''|*[!0-9]*) echo 'CI_QUICK_BUDGET 必须是非负整数秒' >&2; exit 2 ;; esac
 CI_QUICK_BUDGET=$(node -e 'const n = Number(process.env.CI_QUICK_BUDGET ?? 120); if (!Number.isSafeInteger(n) || n < 0) process.exit(2); console.log(n)') || exit 2
 export CI_QUICK_BUDGET
+node -e 'for (const k of ["CI_E2E_BUDGET", "AUTOME_GATE_DEADLINE"]) { const v = process.env[k]; if (v !== undefined && (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) > Math.floor(Number.MAX_SAFE_INTEGER / 1000))) { console.error(k + " 必须是安全范围内的非负整数秒"); process.exit(2); } }' || exit 2
 . "$root/scripts/ci/lib.sh"
 . "$root/scripts/ci/steps.sh"
 ci_dispatch "$ci_mode" || exit $?

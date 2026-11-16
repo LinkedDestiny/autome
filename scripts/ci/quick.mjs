@@ -89,9 +89,9 @@ function changedTests(since, path) {
   return [...names];
 }
 
-export function quickCandidates() {
+export function changedPaths() {
   const since = process.env.AUTOME_ROUND_START || process.env.AUTOME_BASE || process.env.CI_QUICK_SINCE;
-  if (!since) return [{ omitted: '未提供本轮起点，未跑改动相关的测试' }];
+  if (!since) return null;
   // Resolve explicitly: invalid revisions must not look like an empty change set.
   const revision = git(['rev-parse', '--verify', `${since}^{commit}`]).trim();
   const paths = [...new Set([
@@ -99,6 +99,13 @@ export function quickCandidates() {
     ...git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
   ].filter(Boolean))].sort();
   if (paths.some(path => /[\t\r\n]/.test(path))) throw new Error('改动路径不能含 Tab 或换行');
+  return paths;
+}
+
+export function quickCandidates() {
+  const paths = changedPaths();
+  if (!paths) return [{ omitted: '未提供本轮起点，未跑改动相关的测试' }];
+  const revision = process.env.AUTOME_ROUND_START || process.env.AUTOME_BASE || process.env.CI_QUICK_SINCE;
   const candidates = [];
   const add = (priority, command, parser = 'cargo', prep = []) => {
     // Integration targets can launch sibling binaries that cargo test -p does not rebuild.

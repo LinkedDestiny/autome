@@ -3,6 +3,7 @@ import { appendFileSync, copyFileSync, existsSync, readFileSync, realpathSync, s
 import { resolve, relative, isAbsolute } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { quickCandidates, display } from './quick.mjs';
+import { browserSelection } from './e2e.mjs';
 
 const [mode, file, ...args] = process.argv.slice(2);
 const git = (args, options = {}) => execFileSync('git', args, { encoding: 'utf8', ...options }).trimEnd();
@@ -136,6 +137,24 @@ try {
           else if (candidate.web) emit(['ci_web_related', ...candidate.web]);
           else emit(['ci_partial', name, '--cases', candidate.parser, ...candidate.command]);
           if (!planning) lines.push('fi');
+        }
+        const browser = browserSelection();
+        if (planning) console.log(`e2e\t${browser.full ? '整套' : browser.specs ? '子集 ' + browser.specs.join(' ') : '不跑'}\t${browser.reason}`);
+        const browserIndex = rows.findIndex(r => r.name === 'Web e2e');
+        if ((browser.full || browser.specs) && browserIndex >= 0) {
+          if (!planning) lines.push('ci_e2e_start');
+          prepare('Web install');
+          prepare('Build core');
+          full('Web build');
+          if (browser.full) {
+            if (!planning) lines.push('if ci_e2e_admit; then');
+            if (!planning) lines.push('ci_browser_active=1');
+            full('Web e2e');
+          } else if (!planning) {
+            lines.push('if ci_e2e_admit; then', 'ci_browser_active=1');
+            emit(['ci_partial', 'Web e2e', ...rows[browserIndex].command, '--', ...browser.specs]);
+          }
+          if (!planning) lines.push('ci_browser_active=0', 'unset CI_E2E_STAGE CI_E2E_DEADLINE', 'fi');
         }
         if (!planning) writeFileSync(args[0], `${lines.join('\n')}\n`);
       } else if (mode === 'plan') {

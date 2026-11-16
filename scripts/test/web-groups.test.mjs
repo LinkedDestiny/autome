@@ -21,6 +21,6 @@ for (const color of [false, true]) test(`Web runner starts unit, kernel and excl
     assert.match(output, new RegExp(`(?:\\|${project}\\||\\b${project})\\s+test/${file}\\.test\\.ts`));
   }
   assert.match(output, /Test Files\s+3 passed/);
-  assert.match(output, /Tests\s+31 passed \(31\)/);
+  assert.match(output, /Tests\s+32 passed \(32\)/);
   assert.doesNotMatch(output, /no tests|different 'maxWorkers'/);
 });

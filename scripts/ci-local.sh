@@ -20,6 +20,7 @@
 # `.githooks/post-commit` runs this in the background after every commit. To
 # run it by hand, just call it; it takes no state from the hook.
 set -u
+unset CI_E2E_DEADLINE CI_E2E_STAGE
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2

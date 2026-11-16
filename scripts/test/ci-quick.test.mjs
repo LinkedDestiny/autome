@@ -133,7 +133,7 @@ test('09 Web command cwd loads real config and related actually runs changed tes
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `import { resolveConfig } from 'vitest/node'; const { test: c } = await resolveConfig(); console.log(JSON.stringify({ globalSetup: c.globalSetup.map(p => p.split("/").pop()), projects: c.projects.map(p => ({ name: p.test.name, testTimeout: p.test.testTimeout, hookTimeout: p.test.hookTimeout })) }));`], { cwd: resolve(source, 'apps/web'), env: cleanEnv, encoding: 'utf8' }); ok(r);
   assert.deepEqual(JSON.parse(r.stdout.trim()), { globalSetup: ['global-setup.ts'], projects: ['unit', 'kernel', 'exclusive'].map(name => ({ name, testTimeout: 60000, hookTimeout: 60000 })) });
   const related = spawnSync(command[0], command.slice(1), { cwd: source, env: { ...cleanEnv, NO_COLOR: '1' }, encoding: 'utf8', timeout: 30_000 }); ok(related);
-  assert.match(related.stdout, /Tests\s+12 passed \(12\)/);
+  assert.match(related.stdout, /Tests\s+13 passed \(13\)/);
   assert.doesNotMatch(related.stdout, /No (?:changed|test) files/);
   const selected = resolve(f.dir, 'related.sh');
   ok(spawnSync(process.execPath, ['apps/web/scripts/quick-related.mjs', selected, 'test/ci-config.test.ts'], {

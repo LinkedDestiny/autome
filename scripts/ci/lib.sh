@@ -20,12 +20,27 @@ run() {
     parser=$2
     shift 2
   fi
+  ci_browser_not_run=0
+  if [ "${ci_browser_active-0}" = 1 ]; then
+    rm -f "$root/.autome/output/playwright-gate/report.json"
+  fi
   ran=$((ran + 1))
   printf '\n==> %s\n' "$name"
   step_started=$(date +%s)
   # A pipeline's status is tee's, not the command's, on POSIX sh.
   { "$@" 2>&1; echo $? > "$ci_tmp/rc"; } | tee "$ci_tmp/out"
   capture_rc=$?
+  if [ "${ci_browser_active-0}" = 1 ]; then
+    node "$root/scripts/ci/e2e-result.mjs" "$(cat "$ci_tmp/rc")" > "$ci_tmp/e2e-result"
+    ci_result=$?
+    cat "$ci_tmp/e2e-result"
+    if [ "$ci_result" -eq 3 ]; then
+      ci_browser_not_run=1
+      ci_not_run "Web e2e（$(cat "$ci_tmp/e2e-result")）"
+      return
+    fi
+    [ "$ci_result" -eq 0 ] || capture_rc=1
+  fi
   if [ "$capture_rc" -eq 0 ] && [ "$(cat "$ci_tmp/rc")" -eq 0 ]; then
     passed="$passed$name
 "
@@ -116,7 +131,9 @@ ci_partial() {
   ci_partial_name=$1
   ci_partial_failures=$failed_count
   run "$@"
-  if [ "$failed_count" -gt "$ci_partial_failures" ]; then
+  if [ "${ci_browser_not_run-0}" = 1 ]; then
+    return
+  elif [ "$failed_count" -gt "$ci_partial_failures" ]; then
     ci_report failed - "$ci_partial_name"
   else
     ci_report partial - "$ci_partial_name"
@@ -163,7 +180,9 @@ execute_step() {
   ci_active_key=$ci_key
   run "$ci_name" "$@"
   ci_active_key=''
-  if [ "$failed_count" -gt "$ci_previous_failures" ]; then
+  if [ "${ci_browser_not_run-0}" = 1 ]; then
+    return
+  elif [ "$failed_count" -gt "$ci_previous_failures" ]; then
     ci_report failed "$ci_key" "$ci_name"
   elif ci_after=$(node "$root/scripts/ci/inputs.mjs" key "$ci_tmp/steps" "$ci_index") && [ "$ci_after" = "$ci_key" ]; then
     ci_report ran "$ci_key" "$ci_name"
@@ -171,4 +190,26 @@ execute_step() {
     printf '    输入已变化或无法复核，不记录通过：%s\n' "$ci_name"
     ci_report partial - "$ci_name"
   fi
+}
+
+# Independent browser budget includes preparation, never the quick allowance.
+ci_e2e_start() {
+  ci_e2e_started=$(date +%s)
+  ci_e2e_failures=$failed_count
+}
+
+ci_e2e_admit() {
+  if [ "$failed_count" -gt "$ci_e2e_failures" ]; then
+    ci_not_run 'Web e2e（Web build / Build core / Web install 未通过，未跑浏览器用例）'
+    return 1
+  fi
+  ci_deadline=$(node -e 'const end = Math.min((Number(process.argv[1]) + Number(process.env.CI_E2E_BUDGET ?? 720)) * 1000, (Number(process.env.AUTOME_GATE_DEADLINE || Number(process.argv[2]) + 600) - 60) * 1000); console.log(Math.floor(end / 1000))' "$ci_e2e_started" "$started")
+  ci_remaining=$((ci_deadline - $(date +%s)))
+  if [ "$ci_remaining" -lt 240 ]; then
+    ci_not_run "Web e2e（剩余 ${ci_remaining} 秒不够浏览器用例的准备阶段，留给合并前门禁）"
+    return 1
+  fi
+  export CI_E2E_DEADLINE=$((ci_deadline * 1000)) CI_E2E_STAGE=quick
+  export CI_E2E_REPORT_DIR="$root/.autome/output/playwright-gate"
+  return 0
 }
