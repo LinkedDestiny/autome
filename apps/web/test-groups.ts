@@ -1,6 +1,7 @@
 // Explicit membership: new test files must be assigned and reviewed.
 export const testGroups = {
   "unit": [
+    "test/gate-reporter.test.ts",
     "test/core-binary-watch.test.ts",
     "test/add-project.test.ts",
     "test/alerts.test.ts",
@@ -119,6 +120,7 @@ export const testGroups = {
     "test/web-launcher-input.test.ts"
   ],
   "exclusive": [
+    "test/gate-reporter-run.test.ts",
     "test/board-live-listen.test.ts",
     "test/eventbus-live.test.ts",
     "test/gateway-http.test.ts",

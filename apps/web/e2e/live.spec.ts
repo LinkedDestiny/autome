@@ -1,3 +1,4 @@
+import { timedExpect } from './harness/budget.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect } from './harness/browser.ts';
@@ -17,7 +18,7 @@ test('D-3 生产 3000ms tick 下命令行批准五秒内换列', async ({ page }
   cli(f.root, ['approve', id]);
   const start = performance.now();
   await expect(waiting).toHaveCount(0, { timeout: 5000 });
-  await expect(page.locator(`[data-testid=board-column][data-column=running] [data-task-id="${id}"]`)).toBeVisible({ timeout: Math.max(1, 5000 - (performance.now() - start)) });
+  await timedExpect(test.info(), 'live 动态断言', Math.max(1, 5000 - (performance.now() - start)), timeout => expect(page.locator(`[data-testid=board-column][data-column=running] [data-task-id="${id}"]`)).toBeVisible({ timeout }));
   expect(performance.now() - start).toBeLessThanOrEqual(5000);
   expect(loads).toBe(1);
   cli(f.root, ['stop', id]);

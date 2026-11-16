@@ -3,11 +3,16 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:
 import { basename, join } from 'node:path';
 import { clearProcesses, leftoverProcesses } from '../../test/fixtures/process-scan.ts';
 import { checkout, cli, state } from './fixture.ts';
+import { reapRegistered } from './reap.ts';
+import { recordTiming } from './budget.ts';
 export default async function teardown() {
+  const started = performance.now();
   const errors: unknown[] = [];
   for (const root of [process.env.AUTOME_E2E_ROOT, process.env.AUTOME_E2E_LIVE_ROOT]) {
     if (root) try { await cleanup(root); } catch (error) { errors.push(error); }
   }
+  errors.push(...reapRegistered());
+  recordTiming({ label: 'globalTeardown', duration: performance.now() - started });
   if (errors.length) throw new AggregateError(errors, `e2e cleanup failed: ${errors.map(String).join('; ')}`);
 }
 async function cleanup(root: string) {

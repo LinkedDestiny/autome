@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "duration": 3789.687,
+  "declaredTimeout": 4000,
+  "effectiveTimeout": 4000,
+  "complete": true,
+  "cut": false,
+  "margin": {
+    "low": true,
+    "enforced": false
+  },
+  "cases": [
+    {
+      "title": " ›  › case.spec.ts › fixture",
+      "location": {
+        "file": "/Users/dannie/project/autome-v2/.worktree/合并前门禁一次通过/apps/web/.pw-gate-Ha24Lx/case.spec.ts",
+        "line": 2,
+        "column": 1
+      },
+      "status": "passed",
+      "duration": 3503,
+      "errors": []
+    }
+  ],
+  "errors": [],
+  "timings": [
+    {
+      "label": "setup",
+      "duration": 1
+    },
+    {
+      "label": "teardown",
+      "duration": 1
+    }
+  ],
+  "overHalf": [],
+  "summary": "总耗时 3.789687 秒，上限 4 秒（余量 5.3%）",
+  "warnings": [
+    "浏览器用例总耗时 3.789687 秒，上限 4 秒（余量 5.3%），余量低于 20%；合并前门禁口径：只报告，不判失败"
+  ]
+}

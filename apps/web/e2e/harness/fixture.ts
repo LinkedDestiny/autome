@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
+import { recordTiming } from './budget.ts';
+export const PREPARE_TIMEOUT_MS = 150_000;
 export const checkout = resolve(import.meta.dirname, '../../../..');
 export type Fixture = { root: string; home: string; repo: string; projectId: string; url: string; pid: number; tickIntervalMs: number };
 export function state(root = process.env.AUTOME_E2E_ROOT): Fixture {
@@ -16,13 +18,18 @@ export function cli(root: string, args: string[], input?: string) {
   });
 }
 export function prepare(root: string) {
+  const start = performance.now();
+  try {
+  const bashStart = performance.now();
+  try {
   execFileSync('bash', [join(checkout, 'apps/web/test/fixtures/w7-flow.sh'), root, checkout], {
     env: { ...process.env, HOME: root, AUTOME_HOME: join(root, 'autome-home'),
       AUTOMED_BIN: join(checkout, 'target/debug/automed'), AUTOME_BIN: join(checkout, 'target/debug/autome') },
     // Same multi-session W7 flow as task-detail/task-docs/task-timeline tests.
     // Keep their 150 s budget here too; 60 s can cut off a healthy setup.
-    timeout: 150_000, stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: PREPARE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  } finally { recordTiming({ label: `prepare bash ${root}`, budget: PREPARE_TIMEOUT_MS, duration: performance.now() - bashStart }); }
   // Enough draft cards to force the board's intended inner scroll container.
   for (let i = 0; i < 30; i++) cli(root, ['task', 'new', `draft-${i}`, '--draft', '--brief', '-'], '# Draft');
   for (let i = 0; i < 30; i++) {
@@ -32,6 +39,7 @@ export function prepare(root: string) {
   mkdirSync(join(root, 'completion-directory'));
   const list = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
   return list.projects[0].project.id;
+  } finally { recordTiming({ label: `prepare() ${root}`, duration: performance.now() - start }); }
 }
 export function startHeldTask(root: string) {
   const fake = join(root, 'repo/.autome/fake/held');

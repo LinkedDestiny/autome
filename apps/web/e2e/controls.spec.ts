@@ -1,3 +1,4 @@
+import { timedExpect } from './harness/budget.ts';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -151,8 +152,8 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   });
   cli(f.root, ['approve', parent]); const start = performance.now();
   await expect(dependency).not.toContainText('等你批准', { timeout: 5000 });
-  await expect(dependency).toContainText('实现', { timeout: Math.max(1, 5000 - (performance.now() - start)) });
-  await expect.poll(() => detailRevalidated, { timeout: Math.max(1, 5000 - (performance.now() - start)) }).toBe(true);
+  await timedExpect(test.info(), 'controls 动态断言', Math.max(1, 5000 - (performance.now() - start)), timeout => expect(dependency).toContainText('实现', { timeout }));
+  await timedExpect(test.info(), 'controls 动态断言', Math.max(1, 5000 - (performance.now() - start)), timeout => expect.poll(() => detailRevalidated, { timeout }).toBe(true));
   expect(performance.now() - start).toBeLessThanOrEqual(5000);
   expect(taskState(f.root, child).state).toBe('queued');
   expect(loads).toBe(1);
