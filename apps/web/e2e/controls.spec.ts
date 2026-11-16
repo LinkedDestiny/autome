@@ -139,6 +139,20 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   await expect.poll(() => taskState(f.root, parent).node, { timeout: 60_000 }).toBe('await_design_approval');
   const child = newTask(f.root, 'related-child', ['--after', parent]);
   expect(taskState(f.root, child).state).toBe('queued');
+  // Isolate TaskPage's matcher from the root loader. A root-only single-fetch
+  // refresh can otherwise carry fresh task data even when related matching is
+  // broken. Stub only the root route export, leaving the real detail matcher,
+  // effect, event channel and loaders intact. Fail closed if bundling changes.
+  let isolatedRoot = false;
+  await page.route('**/assets/root-*.js', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const exports = source.match(/\b[$\w]+ as shouldRevalidate\b/g);
+    expect(exports).toHaveLength(1);
+    await route.fulfill({ response, body: source.replace(exports![0], '__testRootRevalidate as shouldRevalidate')
+      + '\nconst __testRootRevalidate = () => false;\n' });
+    isolatedRoot = true;
+  });
   // Isolate the real parent's event channel: reload/env notifications and child
   // events must not refresh the detail on behalf of the related-subject matcher.
   // Root also matches task.*; Router may omit _routes when both loaders match.
@@ -157,6 +171,7 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   let loads = 0; page.on('load', () => loads++);
   await page.goto(`${f.url}/tasks/${child}?tab=notes`);
   await expect(page.getByRole('button', { name: '提交备注', exact: true })).toBeEnabled();
+  expect(isolatedRoot).toBe(true);
   const dependency = page.getByRole('region', { name: '依赖', exact: true }).locator('li').filter({ hasText: parent });
   await expect(dependency).toContainText('等你批准');
   parentEvents = 0;

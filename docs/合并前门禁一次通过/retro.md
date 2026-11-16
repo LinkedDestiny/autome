@@ -24,3 +24,5 @@
 
 实现 #9 | M-06 | 待审 | docs/合并前门禁一次通过/evidence/M-06-r9-impl.md | 浏览器受 ps EPERM 阻止，待宿主复验
 审计 #6 | M-06 | 退回 + 依赖事件验收判别力 | docs/合并前门禁一次通过/evidence/M-06-r9-audit.md | BL-01 相关分支恒假下仍通过
+
+实现 #10 | M-06 | 保持开放，单测通过 | docs/合并前门禁一次通过/evidence/M-06-r10-impl.md | ps EPERM 阻断浏览器正负对照
