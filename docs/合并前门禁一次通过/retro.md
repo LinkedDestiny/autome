@@ -7,3 +7,4 @@
 
 实现 #1 | M-01 | 保持开放，验收未齐 | docs/合并前门禁一次通过/evidence/M-01-r1-impl.md | ps EPERM 阻断运行器清理与整套浏览器验收
 实现 #2 | M-01 | 修复清理阻塞，保持开放 | docs/合并前门禁一次通过/evidence/M-01-r2-impl.md | ps EPERM；真实清理待宿主复验
+审计 #1 | M-01 | 通过 | docs/合并前门禁一次通过/evidence/M-01-r2-audit.md | 无
