@@ -11,6 +11,7 @@ function run(body: string, limit = 10_000, quick = false, service = false) {
   const root = mkdtempSync(join(output, 'pw-gate-')); 
   const reportDir = join(root, 'report');
   try {
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
     if (service) leftoverProcesses(root); // Refuse to start a service when cleanup cannot inspect it.
     writeFileSync(join(root, 'case.spec.ts'), `import { test, expect } from ${JSON.stringify(join(web, 'node_modules/@playwright/test/index.mjs'))};\ntest('fixture', async () => { ${body} });`);
     writeFileSync(join(root, 'setup.ts'), `import { recordTiming } from ${JSON.stringify(join(harness, 'budget.ts'))};\n${service ? `import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { register } from ${JSON.stringify(join(harness, 'reap.ts'))};` : ''}\nexport default () => { recordTiming({label:'setup',duration:1}); ${service ? `const root = ${JSON.stringify(join(root, 'owned'))}; mkdirSync(root); register({root}); const child = spawn(process.execPath, ['-e','setInterval(()=>{},1000)', root], {detached:true,stdio:'ignore'}); register({root,pid:child.pid,group:child.pid}); child.unref();` : ''} };`);
