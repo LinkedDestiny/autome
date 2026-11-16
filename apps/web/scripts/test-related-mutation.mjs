@@ -11,6 +11,7 @@ const reportPath = resolve(web, '../../.autome/output/playwright-gate/report.jso
 const original = readFileSync(source, 'utf8');
 const branch = "&& relatedSubjects.get(params[param] ?? '')?.has(event.subject) === true";
 assert.equal(original.split(branch).length, 2, 'exactly one related branch must be mutated');
+/** @param {string} command @param {string[]} args */
 function run(command, args) {
   const result = spawnSync(command, args, { cwd: web, stdio: 'inherit' });
   if (result.error) throw result.error;
@@ -31,7 +32,7 @@ try {
     const test = report.cases[0];
     assert.match(test.title, /BL-01/);
     assert.equal(test.status, 'failed');
-    assert.ok(test.errors.some(error => /等你批准/.test(error.message ?? '')
+    assert.ok(test.errors.some(/** @param {{ message?: string }} error */ error => /等你批准/.test(error.message ?? '')
       && /toContainText/.test(error.message ?? '')), 'must fail on stale dependency text');
     console.log(`related branch mutant rejected: ${i}/5`);
   }

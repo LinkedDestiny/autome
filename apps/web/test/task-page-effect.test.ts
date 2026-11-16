@@ -76,3 +76,18 @@ it('卸载时清除登记，重新挂载可再次登记', async () => {
   if (typeof remount === 'function') remount();
   expect(match('T-9')).toBe(false);
 });
+
+it('依赖详情的新状态优先于未刷新的根 loader，缺失时仍回退根状态', async () => {
+  const { TaskDependencies } = await import('../app/components/task-dependencies.tsx');
+  const payload = JSON.parse(readFileSync(new URL('./fixtures/w7/feature.json', import.meta.url), 'utf8'));
+  payload.task.after = ['T-9', 'T-8', 'T-7'];
+  payload.task.blocked_by = [{ id: 'T-9', state: { state: 'active', node: 'implement' } }];
+  const Stub = createRoutesStub([{ id: 'root', path: '/', children: [{ path: 'dependencies', Component: () => createElement(TaskDependencies, { data: payload, reason: '只读' }) }] }]);
+  const html = renderToString(createElement(Stub, { initialEntries: ['/dependencies'], hydrationData: { loaderData: { root: { tasks: [
+    { id: 'T-9', state: { state: 'active', node: 'await_design_approval' } },
+    { id: 'T-8', state: { state: 'active', node: 'await_design_approval' } },
+  ] } } } }));
+  expect(html.replaceAll('<!-- -->', '')).toMatch(/T-9[^<]*实现/);
+  expect(html.replaceAll('<!-- -->', '')).toMatch(/T-8[^<]*等你批准/);
+  expect(html.replaceAll('<!-- -->', '')).toMatch(/T-7[^<]*状态未知/);
+});
