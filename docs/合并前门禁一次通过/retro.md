@@ -12,3 +12,4 @@
 审计 #2 | M-02 | 通过 | docs/合并前门禁一次通过/evidence/M-02-r3-audit.md | 无
 
 实现 #4 | M-03 | 待审 | docs/合并前门禁一次通过/evidence/M-03-r4-impl.md | 7 条真实 Playwright 测试 ps EPERM，交审计复验
+审计 #3 | M-03 | 通过 | docs/合并前门禁一次通过/evidence/M-03-r4-audit.md | 无
