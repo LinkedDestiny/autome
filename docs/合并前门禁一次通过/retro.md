@@ -9,3 +9,4 @@
 实现 #2 | M-01 | 修复清理阻塞，保持开放 | docs/合并前门禁一次通过/evidence/M-01-r2-impl.md | ps EPERM；真实清理待宿主复验
 审计 #1 | M-01 | 通过 | docs/合并前门禁一次通过/evidence/M-01-r2-audit.md | 无
 实现 #3 | M-02 | 待审 | docs/合并前门禁一次通过/evidence/M-02-r3-impl.md | 全集复跑曾停滞中止，相关20条独立补跑通过
+审计 #2 | M-02 | 通过 | docs/合并前门禁一次通过/evidence/M-02-r3-audit.md | 无
