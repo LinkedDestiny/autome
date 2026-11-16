@@ -17,3 +17,4 @@
 实现 #5 | M-04 | 待审 | docs/合并前门禁一次通过/evidence/M-04-r5-impl.md | 9 条进程检查受 ps EPERM 阻断，交审计复验
 审计 #4 | M-04 | 通过 | docs/合并前门禁一次通过/evidence/M-04-r5-audit.md | 无
 实现 #6 | M-05 | 待审 | docs/合并前门禁一次通过/evidence/M-05-r6-impl.md | 无
+实现 #7 | M-05 | 待审 | docs/合并前门禁一次通过/evidence/M-05-r7-impl.md | 宿主快检待重跑

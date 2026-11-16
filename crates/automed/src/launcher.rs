@@ -2966,7 +2966,7 @@ mod tests {
             SessionKind::Role { role: Role::Impl },
             SessionKind::Bug { step: BugStep::Fix },
         ] {
-            let mut s = quick_spec(kind, &tpl);
+            let mut s = quick_spec(kind, tpl);
             s.round_start = Some("abc123");
             s.gate_quick_session = Some("sh scripts/ci-quick.sh --since {round_start}");
             let line = round_gate_line(&s, "full-check");
@@ -2977,7 +2977,7 @@ mod tests {
     #[test]
     fn round_gate_line_fallback_quotes() {
         let tpl = crate::protocol::seed();
-        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, &tpl);
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
         s.round_start = Some("abc123");
         s.gate_quick = Some("printf '%s' \"$AUTOME_ROUND_START\"");
         let line = round_gate_line(&s, "full-check");
@@ -2998,7 +2998,7 @@ mod tests {
     #[test]
     fn round_gate_line_workspace_or_missing_start_unchanged() {
         let tpl = crate::protocol::seed();
-        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, &tpl);
+        let mut s = quick_spec(SessionKind::Role { role: Role::Impl }, tpl);
         let old = round_gate_line(&s, "full-check");
         s.gate_quick_session = Some("check {round_start}");
         assert_eq!(round_gate_line(&s, "full-check"), old);

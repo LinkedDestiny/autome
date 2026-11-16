@@ -207,9 +207,13 @@ test('13 static steps share complete-gate keys and reuse; related subsets still 
 
 test('14 Web related files recheck budget and report the unstarted remainder', t => {
   const f = fixture(t, true); f.put('apps/web/app/probe.ts', 'export {};');
+  const clock = resolve(f.dir, 'clock');
+  writeFileSync(clock, '100\n');
+  f.put('advance-clock.sh', 'echo FIRST_WEB\necho 102 > "$QUICK_TEST_CLOCK"\n');
+  writeFileSync(resolve(f.dir, 'bin/date'), '#!/bin/sh\ncat "$QUICK_TEST_CLOCK"\n', { mode: 0o755 });
   f.put('apps/web/scripts/quick-related.mjs', `import { writeFileSync } from 'node:fs';
-writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh -c 'echo FIRST_WEB; sleep 2'; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
-  const r = f.run([], { CI_QUICK_BUDGET: '1', AUTOME_GATE_REPORT: f.report }); ok(r);
+writeFileSync(process.argv[2], "if ci_quick_admit first-web; then ci_partial first-web sh advance-clock.sh; fi\\nif ci_quick_admit second-web; then ci_partial second-web sh -c 'echo SECOND_WEB'; fi\\n");`);
+  const r = f.run([], { CI_QUICK_BUDGET: '1', QUICK_TEST_CLOCK: clock, AUTOME_GATE_REPORT: f.report }); ok(r);
   assert.match(r.stdout, /FIRST_WEB/);
   assert.match(r.stdout, /最后准入的步骤 first-web 从第 \d+ 秒开始、用时 \d+ 秒；之后的 1 步未跑/);
   assert.doesNotMatch(r.stdout, /SECOND_WEB/);
@@ -251,4 +255,14 @@ test('16 each discovered Web candidate contains exactly one test file', t => {
     assert.match(command, /vitest run/);
     assert.doesNotMatch(command, /vitest related/);
   }
+});
+
+test('17 shared automed test inputs never admit the whole end_to_end target', t => {
+  const f = fixture(t);
+  f.change('crates/automed/tests/golden/prompts/impl-before-merge-quick.md');
+  const output = f.plan();
+  const list = commands(output);
+  assert.ok(list.some(c => c.includes('prompt_rendering')));
+  assert.ok(list.every(c => !c.includes('--tests') && !c.includes('end_to_end')));
+  assert.match(output, /未跑.*end_to_end/);
 });

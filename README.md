@@ -679,4 +679,6 @@ The quick check's 120 seconds is an admission budget: an admitted step can finis
 after it. The summary reports related-stage elapsed time and, on overrun, the last
 step's start offset/duration and the number of remaining steps not run. Browser
 preparation and execution are outside this budget. Web related candidates remain
-one test file per step.
+one test file per step. Shared `automed/tests/` inputs select unit tests and
+individual integration targets; the whole `end_to_end` target is explicitly
+deferred to the merge gate, just as for edits outside existing test bodies.
