@@ -65,7 +65,64 @@ it('Layer 1 token 名值逐条一致', () => {
     "--tile-red": "#fc736d",
     "--tile-lime": "#d1da49",
     "--tile-brown": "#9a835a",
-    "--tile-peach": "#e18c6f"
+    "--tile-peach": "#e18c6f",
+    "--ui-card-yellow-bg": "#fff8e0",
+    "--ui-card-yellow-border": "#f7cd67",
+    "--ui-card-yellow-text": "#8a6a10",
+    "--ui-pat-yellow-1": "rgba(247,205,103,.22)",
+    "--ui-pat-yellow-2": "rgba(255,225,150,.14)",
+    "--ui-card-teal-bg": "#e8faf5",
+    "--ui-card-teal-border": "#82d5bb",
+    "--ui-card-teal-text": "#2e8a6e",
+    "--ui-pat-teal-1": "rgba(130,213,187,.2)",
+    "--ui-pat-teal-2": "rgba(170,235,210,.12)",
+    "--ui-card-purple-bg": "#f0e8ff",
+    "--ui-card-purple-border": "#b77dee",
+    "--ui-card-purple-text": "#6f4aa8",
+    "--ui-pat-purple-1": "rgba(183,125,238,.18)",
+    "--ui-pat-purple-2": "rgba(210,180,255,.12)",
+    "--ui-card-blue-bg": "#e8edff",
+    "--ui-card-blue-border": "#889df0",
+    "--ui-card-blue-text": "#4f5fb0",
+    "--ui-pat-blue-1": "rgba(136,157,240,.18)",
+    "--ui-pat-blue-2": "rgba(180,195,255,.12)",
+    "--ui-card-green-bg": "#e8f5e8",
+    "--ui-card-green-border": "#8ac68a",
+    "--ui-card-green-text": "#3f7a3f",
+    "--ui-pat-green-1": "rgba(138,198,138,.2)",
+    "--ui-pat-green-2": "rgba(180,225,180,.12)",
+    "--ui-card-red-bg": "#ffe8e8",
+    "--ui-card-red-border": "#fc736d",
+    "--ui-card-red-text": "#b0413a",
+    "--ui-pat-red-1": "rgba(252,115,109,.18)",
+    "--ui-pat-red-2": "rgba(255,180,175,.12)",
+    "--ui-card-dash-bg": "rgb(250,248,242)",
+    "--ui-card-border": "#d4c4a8",
+    "--ui-surface": "#fffdf3",
+    "--ui-white": "#fff",
+    "--ui-pill-teal": "#19c8b9",
+    "--ui-pill-blue": "#889df0",
+    "--ui-pill-purple": "#b77dee",
+    "--ui-pill-orange": "#e59266",
+    "--ui-pill-pink": "#f08a9a",
+    "--ui-pill-brown": "#9a835a",
+    "--ui-pill-green": "#6fba2c",
+    "--ui-pill-yellow": "#f5c31c",
+    "--ui-pill-red": "#e05a5a",
+    "--ui-ribbon-teal-front": "#19c8b9",
+    "--ui-ribbon-teal-back": "#11a89b",
+    "--ui-ribbon-yellow-front": "#f7cd67",
+    "--ui-ribbon-yellow-back": "#d4a030",
+    "--ui-ribbon-blue-front": "#889df0",
+    "--ui-ribbon-blue-back": "#5f78d8",
+    "--ui-ribbon-green-front": "#8ac68a",
+    "--ui-ribbon-green-back": "#5fa05f",
+    "--ui-ribbon-brown-front": "#9a835a",
+    "--ui-ribbon-brown-back": "#7a6440",
+    "--ui-row-gate": "#e8f5e8",
+    "--ui-row-you": "#fff8e0",
+    "--ui-shadow-input": "inset 0 2px 0 rgba(212,201,180,.35)",
+    "--ui-shadow-progress": "inset 0 1px 3px rgba(61,52,40,.12)"
   });
 });
 it('字体和许可完整复制，字体仅从本地加载', () => {
@@ -106,4 +163,16 @@ it('新建页正文和附件内部滚动', () => {
   expect(rule('.task-new')).toContain('height: 100%'); expect(rule('.task-new')).toContain('overflow: hidden');
   expect(rule('.task-new textarea')).toContain('min-height: 0'); expect(rule('.task-new textarea')).toContain('overflow-y: auto');
   expect(rule('.task-new-attachments')).toContain('overflow-y: auto');
+});
+
+it('app.css 的每个 var 都有令牌定义', () => {
+  const defined = declarations(tokens);
+  for (const [, name] of css.matchAll(/var\((--[\w-]+)/g)) expect(defined, name).toHaveProperty(name);
+});
+it('每个 ui 令牌都被 app.css 引用', () => {
+  for (const name of Object.keys(declarations(tokens)).filter(name => name.startsWith('--ui-'))) expect(css, name).toContain('var(' + name + ')');
+});
+it('SVG 只出现在图标与进度条组件', () => {
+  const owners = files.filter(file => file.endsWith('.tsx') && /<svg\b/.test(read(file))).sort();
+  expect(owners).toEqual(['components/icons.tsx', 'components/ui/progress.tsx']);
 });

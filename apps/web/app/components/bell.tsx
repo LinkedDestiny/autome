@@ -1,3 +1,4 @@
+import { Icon } from './icons.tsx';
 import { TEST_IDS } from '../lib/testids.ts';
 import { formatClock, useClock } from '../lib/clock.tsx';
 import { useEffect, useRef, useState } from 'react';
@@ -17,7 +18,7 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
   return <div className="bell">
     <button type="button" aria-label={`通知，${snapshot.unread} 条未读`} aria-expanded={open} onClick={onToggle}
       className="bell-button" data-testid={TEST_IDS.bellButton}>
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+      <Icon name="bell" />
       {snapshot.unread > 0 && <span className="bell-badge">{snapshot.unread >= 100 ? '99+' : snapshot.unread}</span>}
     </button>
     {open && <section aria-label="通知列表" className="bell-panel" data-testid={TEST_IDS.bellPanel}>
