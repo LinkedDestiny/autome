@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 10/65
-current-milestone: M-09
+current-milestone: M-10
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 在允许 ps 的宿主复跑 M-09 浏览器验收与修复后的 F-1，核对截图；通过后交审
+next-action: 推进 M-10 环境页与两个表单页重排
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -653,7 +653,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-06 | 已完成 | D·任务详情页面重排：头部、执行过程、右侧四页签 | 0 | |
 | M-07 | 已完成 | E·Loop 配置：角色卡片、编辑抽屉、范围切换与双模型判定 | 0 | |
 | M-08 | 已完成 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
-| M-09 | 开放 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
+| M-09 | 已完成 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
 | M-10 | 开放 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
 | M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 0 | |
 | M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
@@ -886,7 +886,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-09 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-09-r10-impl.md · F-1 定位修复，145 用例通过，浏览器环境阻断，保持开放 · 实现 #10
+最新证据：docs/web-面板按动森风格重做/evidence/M-09-r10-audit.md · 通过 · 审计 #9
 
 - 验收命令：`(cd apps/web && npx vitest run test/skills-model.test.ts test/skills-page.test.ts test/skills-real.test.ts test/open-path.test.ts test/write-gate.test.ts test/gateway.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/controls.spec.ts -g "技能|F-1")`
 - 预期：9 个文件，至少 120 个用例全过：
