@@ -6,6 +6,7 @@ import { columnOf } from '../app/components/task-columns.ts';
 import type { Clock } from '../app/lib/clock.tsx';
 import { recentMerged, type TodaySummary } from './overview-summary.ts';
 export type OverviewDetail = Pick<TaskPayload, 'status_block' | 'gate'> & {
+  reviewName?: string; adjudicationName?: string;
   session?: Pick<TaskPayload['sessions'][number], 'label' | 'kind' | 'round' | 'started_at'>;
   reviews: number; adjudications: number; pending: number; designBytes?: number; designName?: string; error?: string;
 };

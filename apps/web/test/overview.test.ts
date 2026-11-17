@@ -148,3 +148,57 @@ test('轮次缺值逐字段回退，零值保留，设计与实现会话使用�
   }
   expect(overviewCardView(task, { ...detail, status_block: { ...detail.status_block!, design_round: 0 } }, now).round).toBe('0 / 15');
 });
+
+import { toOverviewDetail } from '../app/lib/overview-model.ts';
+import { loadTaskDetail, type TaskPayload } from '../app/components/task-detail-data.ts';
+import { vi } from 'vitest';
+const approvalTask = { ...task, kind: 'feature', state: { state: 'active', node: 'await_design_approval' } };
+function approvalPayload(review: boolean, adjudication: boolean): TaskPayload {
+  return { task: { id: task.id, title: task.title, slug: '中文 &' }, sessions: [], documents: [
+    ...(review ? [{ name: '中文 &-review.md', absolute: '/private/review', label: '评审' }] : []),
+    ...(adjudication ? [{ name: '中文 &-adjudication.md', absolute: '/private/adjudication', label: '裁决' }] : []),
+  ] };
+}
+test.each([[true, true], [true, false], [false, true], [false, false]])('批准设计文档存在组合 review=%s adjudication=%s', (review, adjudication) => {
+  const html = richCard(approvalTask, toOverviewDetail(approvalPayload(review, adjudication)));
+  for (const [exists, label, suffix] of [[review, '评审', 'review'], [adjudication, '裁决', 'adjudication']] as const) {
+    expect(html.includes(`查看${label}`)).toBe(exists);
+    expect(html.includes(`${label}结果摘要不可得`)).toBe(!exists);
+    if (exists) expect(html).toContain(`href="/tasks/T-2?tab=docs&amp;doc=${encodeURIComponent(`中文 &-${suffix}.md`)}"`);
+  }
+  expect(html).not.toContain('/private/'); expect(html).not.toMatch(/提了|采纳/);
+});
+test('批准入口随清单增删与等待状态切换，无详情或失败明确回退', () => {
+  for (const exists of [false, true, false]) {
+    const d = toOverviewDetail(approvalPayload(exists, exists));
+    expect(richCard(approvalTask, d).includes('查看评审')).toBe(exists);
+    for (const state of [{ state: 'active', node: 'await_merge' }, { state: 'active', node: 'implement' }, { state: 'failed' }, { state: 'queued' }, { state: 'paused' }, { state: 'stopped' }]) {
+      expect(richCard({ ...task, state }, d)).not.toMatch(/查看评审|查看裁决|结果摘要不可得/);
+    }
+  }
+  for (const error of ['读盘失败', '超时', '外部服务不可达']) {
+    const html = richCard(approvalTask, { reviews: 0, adjudications: 0, pending: 0, error });
+    expect(html).toContain(error); expect(html).toContain('评审结果摘要不可得'); expect(html).toContain('裁决结果摘要不可得');
+  }
+  expect(card(approvalTask.state, 'feature')).toContain('评审结果摘要不可得');
+  expect(toOverviewDetail({ ...approvalPayload(false, false), documents: undefined }).reviewName).toBeUndefined();
+});
+test('卡片入口经受控详情加载器读取，撤去清单或读取失败不能绕过', async () => {
+  const payload = approvalPayload(true, true), read = vi.fn().mockResolvedValue({ body: { ok: true, payload } });
+  const docRead = vi.fn().mockResolvedValue({ text: '# 结果', truncated: false });
+  const services = { gateway: { read, write: vi.fn() }, taskDocs: { read: docRead } };
+  const links = overviewCardView(approvalTask, toOverviewDetail(payload), now).reviewDocuments;
+  for (const [index, link] of links.entries()) {
+    const loaded = await loadTaskDetail(services, task.id, new URL(link.href!, 'http://localhost'));
+    expect(loaded.document?.text).toBe('# 结果');
+    expect(docRead).toHaveBeenLastCalledWith(payload.documents![index].absolute, 204800);
+  }
+  docRead.mockResolvedValueOnce({ error: '读盘失败' });
+  expect((await loadTaskDetail(services, task.id, new URL(links[0].href!, 'http://localhost'))).document?.error).toBe('读盘失败');
+  payload.documents = []; docRead.mockClear();
+  expect((await loadTaskDetail(services, task.id, new URL(links[0].href!, 'http://localhost'))).document?.error).toContain('没有名为');
+  for (const name of ['/private/review', '../review.md', '']) {
+    expect((await loadTaskDetail(services, task.id, new URL(`http://localhost/tasks/T-2?doc=${encodeURIComponent(name)}`))).document?.error).toBeTruthy();
+  }
+  expect(docRead).not.toHaveBeenCalled();
+});

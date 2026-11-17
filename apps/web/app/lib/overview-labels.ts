@@ -20,6 +20,10 @@ export function overviewCardView(task: ShellTask, detail: OverviewDetail | undef
     : key === 'failed' ? failureText((task.state as ShellTask['state'] & { reason?: Record<string, unknown> }).reason) || '任务失败，请查看详情'
     : AWAIT_PHRASES[key as keyof typeof AWAIT_PHRASES] ?? '');
   return { summary, badge: WAIT_BADGES[key] ?? (session ? `${session.label} ${round}` : stageStatusLine(task.kind, task.state)),
+    reviewDocuments: key === 'await_design_approval' ? [
+      { label: '查看评审', missing: '评审结果摘要不可得', name: detail?.reviewName },
+      { label: '查看裁决', missing: '裁决结果摘要不可得', name: detail?.adjudicationName },
+    ].map(doc => ({ ...doc, href: doc.name ? `${taskHref(task.id)}?tab=docs&doc=${encodeURIComponent(doc.name)}` : undefined })) : [],
     cost: task.cost_usd == null || (task.cost_usd === 0 && (task.cost_sessions_without_cost ?? 0) > 0) ? '无计费' : `$${task.cost_usd.toFixed(2)}`,
     elapsed: task.created_at ? formatSpan(Date.parse(now) - Date.parse(task.created_at)) : '—',
     round: block ? `${block.design_round ?? '—'} / ${block.design_round_limit ?? '—'}` : '—',

@@ -20,6 +20,9 @@ export function OverviewCard({ task, projectName, configError, detail, waitingSi
     <h3><Link to={view.href}>{task.title}</Link></h3>
     <span className="task-stage">{stageStatusLine(task.kind, task.state)}</span>
     {view.summary && <p>{view.summary}</p>}
+    {view.reviewDocuments.length > 0 && <div className="overview-card-meta">{view.reviewDocuments.map(doc => doc.href
+      ? <Link key={doc.label} className="pill pill-blue" to={doc.href}>{doc.label}</Link>
+      : <span key={doc.label}>{doc.missing}</span>)}</div>}
     {view.queue && <p>{view.queue}</p>}
     {(waiting || running) && <div className="overview-facts">
       {waiting && <span>{OVERVIEW.designRound}<b>{view.round}</b></span>}<span>已花费<b>{view.cost}</b></span><span>已用时<b>{view.elapsed}</b></span>

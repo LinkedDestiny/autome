@@ -32,5 +32,7 @@ export function toOverviewDetail(detail: TaskPayload): OverviewDetail {
     pending: detail.decisions?.filter(d => !d.consumed && d.disposition === 'none').length ?? 0,
     designBytes: detail.documents?.find(d => d.name === `${detail.task?.slug}.md`)?.size,
     designName: detail.documents?.find(d => d.name === `${detail.task?.slug}.md`)?.name,
+    reviewName: detail.documents?.find(d => d.name === `${detail.task?.slug}-review.md`)?.name,
+    adjudicationName: detail.documents?.find(d => d.name === `${detail.task?.slug}-adjudication.md`)?.name,
   };
 }
