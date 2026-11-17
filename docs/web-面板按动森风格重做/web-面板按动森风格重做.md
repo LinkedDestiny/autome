@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 17/65
-current-milestone: M-11
-current-milestone-reopens: 3
-convergence-mode: milestone-review
-next-action: 在具备进程枚举权限的环境复跑 M-11 的 layout.spec.ts 14 条；五图重生成及目视确认已移交 H-09，不再重复缺值实现修复
+current-milestone: M-12
+current-milestone-reopens: 0
+convergence-mode: normal
+next-action: 实现 M-12：skills.list 增加只读 description 与技能卡片描述行
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -655,7 +655,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-08 | 已完成 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
 | M-09 | 已完成 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
 | M-10 | 已完成 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
-| M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 3 | 总览缺值显示 |
+| M-11 | 已完成 | G·README 五张截图与全站一屏巡检收口 | 3 | 总览缺值显示 |
 | M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
 | M-13 | 开放 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
 
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r17-impl.md · 布局前置受阻，五图重生成移交 H-09，保持开放 · 实现 #17
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r17-audit.md · 通过（布局 14 条与五图重生成移交 H-09、H-10）· 审计 #14
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：
@@ -950,6 +950,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 - H-09 在允许进程枚举与浏览器启动的环境执行 `npm run build --prefix apps/web && npm run screenshots --prefix apps/web`，重新生成并替换 docs/images 五图；目视 dashboard.png 无 undefined、黄/青两张任务卡均完整处于首屏，并核对其它四图内容与当前界面一致。当前旧图未修复，合并前必须完成；文件集合与尺寸测试不能替代此项。
 
+- H-10 在允许进程枚举与浏览器启动的环境执行 `(cd apps/web && npx playwright test e2e/layout.spec.ts)`，14 条一屏巡检全过（审计环境下该命令挂起无输出，ps EPERM）。合并前必须完成。
 - H-01 在 1512×944 下打开总览（有任务在跑、有任务等批准），与原型「总览」逐屏对照：结构、组件、配色角色一致
 - H-02 同上，空闲状态的总览与原型「空闲」演示一致：两张虚线空状态卡，右侧「今天」与「最近合并」照常
 - H-03 项目看板与原型「项目看板」逐屏对照，已完成列的日期分组与紧凑条目观感一致
