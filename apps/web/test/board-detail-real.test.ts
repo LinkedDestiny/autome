@@ -28,7 +28,7 @@ afterAll(async () => {
   finally { await core.stop(); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
   process.stdout.write(`W6 board-detail setup/tests/cleanup ${Math.ceil(performance.now() - started)} ms\n`);
 });
-test('1 real kernel detail produces failure reason, session activity and unrun gate', async () => {
+test('1 real kernel detail produces failure reason, session activity and omits absent gate', async () => {
   const loaded = await loadBoard({ gateway }, projectId); if ('error' in loaded) throw Error(loaded.error);
   expect(loaded.tasks.map(t => t.state.state).sort()).toEqual(['active', 'draft', 'failed']);
   const views = loaded.tasks.map(t => ({ state: t.state.state, view: cardView(t, loaded.details![t.id], loaded.cardContext!) }));
@@ -38,7 +38,9 @@ test('1 real kernel detail produces failure reason, session activity and unrun g
   // Same real session, advance only the view clock to exercise elapsed time without sleeping.
   const t = loaded.tasks.find(t => t.state.state === 'active')!;
   expect(cardView(t, loaded.details![t.id], { ...loaded.cardContext!, now: new Date(Date.parse(loaded.now) + 60_000).toISOString() }).activity).toContain('运行');
-  expect(active.gate).toBe('门禁未跑过');
+  // C-3: a real task without a gate omits the gate line, including in-flight tasks.
+  expect(loaded.details![t.id].gate).toBeNull();
+  expect(active.gate).toBeNull();
 }, 120_000);
 test('2 real gateway call count equals visible non-draft tasks', async () => {
   const calls: { method: string; params?: unknown }[] = [];

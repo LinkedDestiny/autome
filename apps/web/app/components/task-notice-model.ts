@@ -18,7 +18,7 @@ export function noticeView(payload: TaskPayload, ctx: CardContext) {
     const cooldown = ctx.cooldowns.find(item => item.until === retry.not_before);
     messages.push(cooldown ? cooldownPhrase(cooldown.runtime, cooldown.until, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }) : retryPhrase(retry.attempts, retry.not_before, { now: ctx.now, timeZone: ctx.timeZone ?? 'UTC' }));
   }
-  if (payload.gate_queue_position != null) messages.push(gatePhrase(null, payload.gate_queue_position));
+  if (payload.gate_queue_position != null) messages.push(gatePhrase(null, payload.gate_queue_position)!);
   if (state.state === 'queued') messages.push(queuePhrase(payload.queue_position));
   const merge = payload.task.merge;
   if (merge?.stale) messages.push(`等你合并，但默认分支已前进 ${merge.stale.behind} 个提交，按合并会先 rebase 并重跑合并前门禁`);

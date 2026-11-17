@@ -1,5 +1,5 @@
 import { timedExpect } from './harness/budget.ts';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { test, expect, visit } from './harness/browser.ts';
@@ -188,4 +188,78 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   expect(loads).toBe(1);
   await page.screenshot({ path: join(checkout, '.autome/output/m10-dependency.png') });
   cli(f.root, ['cancel', child]); cli(f.root, ['cancel', parent]);
+});
+
+test('E-1 页面改全局角色与项目覆盖后 config.get 读回并能恢复', async ({ page }) => {
+  const f=state();
+  const rpc=(method:string,params:object)=>JSON.parse(cli(f.root,['rpc',method,JSON.stringify(params)]));
+  const original=rpc('config.get',{}).global.roles.plan;
+  const projectOriginal=readFileSync(join(f.repo,'.autome/config.toml'),'utf8');
+  try {
+    rpc('config.set_role',{role:'plan',effort:'xhigh'});
+    await visit(page,'/loop');
+    await expect(page.getByTestId('loop-role')).toHaveCount(6);
+    await page.locator('[data-role=plan]').getByRole('button').click();
+    await expect(page.getByText('其它：xhigh',{exact:true})).toBeVisible();
+    await page.getByLabel('模型',{exact:true}).fill('m07-browser-global');
+    await page.getByRole('radiogroup',{name:'Effort',exact:true}).getByText('low',{exact:true}).click();
+    await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{}).global.roles.plan.model).toBe('m07-browser-global');
+    await page.getByRole('button',{name:'关闭',exact:true}).click();
+    await visit(page,`/loop?project=${f.projectId}`);
+    await page.locator('[data-role=plan]').getByRole('button').click();
+    await page.getByLabel('模型',{exact:true}).fill('m07-browser-project');
+    await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{project_id:f.projectId}).resolved.roles[0].config.model).toBe('m07-browser-project');
+    expect(rpc('config.get',{}).global.roles.plan.model).toBe('m07-browser-global');
+    page.once('dialog',dialog=>{expect(dialog.message()).toContain('项目覆盖会一起清掉');void dialog.accept();});
+    await page.getByRole('button',{name:'恢复跟随全局',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{project_id:f.projectId}).resolved.roles[0].provenance).toBe('global');
+    await page.getByRole('button',{name:'关闭',exact:true}).click();
+    await page.screenshot({path:join(checkout,'.autome/output/m07-loop.png')});
+  } finally {
+    rpc('config.set_role',{role:'plan',...original});
+    writeFileSync(join(f.repo,'.autome/config.toml'),projectOriginal);
+  }
+});
+
+test('F-1 技能按仅当前项目绑定后只进该项目', async ({ page }) => {
+  const f = state(), name = 'm09-browser-skill', dir = join(f.root, '.claude/skills', name);
+  const rpc = (method: string, params: object) => JSON.parse(cli(f.root, ['rpc', method, JSON.stringify(params)]));
+  const original = readFileSync(join(f.repo, '.autome/config.toml'), 'utf8');
+  const other = heldProject(f.root, 'm09-other');
+  mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+  try {
+    await visit(page, `/skills?project=${f.projectId}`);
+    await page.getByLabel('搜索技能', { exact: true }).fill('missing');
+    await expect(page.getByTestId('skill-card')).toHaveCount(0);
+    await page.getByLabel('搜索技能', { exact: true }).fill(name);
+    await page.getByTestId('skill-card').click();
+    const drawer = page.getByRole('dialog');
+    await expect(drawer.getByRole('radio', { name: '仅当前项目' })).toBeChecked();
+    await expect(drawer.getByRole('checkbox', { name: '评审', exact: false })).toBeDisabled();
+    await drawer.getByRole('checkbox', { name: '设计', exact: true }).check();
+    await drawer.getByRole('button', { name: '保存绑定' }).click();
+    const planSkills = (id?: string) => rpc('config.get', id ? { project_id: id } : {}).resolved.roles.find((r: { role: string }) => r.role === 'plan').config.skills;
+    await expect.poll(() => planSkills(f.projectId)).toContain(name);
+    expect(planSkills(other.projectId)).not.toContain(name); expect(planSkills()).not.toContain(name);
+    await expect(drawer.getByText('绑定已保存', { exact: true })).toBeVisible();
+    await drawer.getByRole('radio', { name: '全局 · 所有项目' }).check();
+    await expect(drawer.getByRole('checkbox', { name: '设计', exact: true })).not.toBeChecked();
+    await drawer.getByRole('radio', { name: '仅当前项目' }).check();
+    await expect(drawer.getByRole('checkbox', { name: '设计', exact: true })).toBeChecked();
+    await page.screenshot({ path: join(checkout, '.autome/output/m09-drawer.png') });
+    await drawer.getByRole('checkbox', { name: '设计', exact: true }).uncheck();
+    await drawer.getByRole('button', { name: '保存绑定' }).click();
+    await expect.poll(() => planSkills(f.projectId)).not.toContain(name);
+    await drawer.getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(drawer).toHaveCount(0);
+    await page.getByRole('combobox', { name: /^项目/ }).selectOption('');
+    await expect(page).toHaveURL(/\/skills$/);
+    await expect(page.getByRole('radio', { name: /^本项目/ })).toHaveCount(0);
+  } finally {
+    writeFileSync(join(f.repo, '.autome/config.toml'), original);
+    rpc('project.remove', { project_id: other.projectId });
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

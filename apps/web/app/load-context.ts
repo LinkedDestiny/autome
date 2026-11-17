@@ -12,6 +12,8 @@ export type KernelGateway = Pick<ReturnType<typeof createGateway>, 'read' | 'wri
 export type TaskEventSource = { forTask: (id: string) => ReturnType<typeof readTaskEvents> };
 export type TaskDocReader = Pick<ReturnType<typeof createTaskDocs>, 'read'>;
 export type WebServices = {
+  instanceStatus?: () => Promise<unknown>;
+  overviewSummary?: ReturnType<typeof import("../server/overview-summary.ts").createOverviewSummary>;
   drivers?: () => Promise<import('../server/drivers.ts').DriverStatus>;
   taskEvents?: TaskEventSource | null;
   taskDocs?: TaskDocReader | null;

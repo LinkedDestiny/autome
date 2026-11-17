@@ -13440,3 +13440,48 @@ fn manual_retro_gate_metrics_for_a_paused_task() {
     assert_eq!(w.ctx.store.count_events(&id, "task.metrics").unwrap(), 0);
     assert_eq!(w.state(&id), "paused");
 }
+
+#[test]
+fn a_role_written_through_set_role_reaches_the_next_session() {
+    let mut w = World::new("role-next-session");
+    let skill = w.root.join("home/.claude/skills/m07-skill");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "# M07 skill").unwrap();
+    let request = "role next session";
+    let slug = slug_for(request);
+    w.doc_step(1, &slug, &doc("设计中", 0, 0, &[]));
+    w.doc_step(2, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(3, &slug, &doc("设计中", 1, 0, &[]));
+    w.doc_step(4, &slug, &doc("实现中", 2, 0, &[("M-01", "开放")]));
+    w.doc_step(5, &slug, &doc("设计中", 3, 0, &[]));
+    let result = w.call(
+        "config.set_role",
+        json!({"role":"plan","model":"m07-first","effort":"low","skills":["m07-skill"]}),
+    );
+    ok(&result);
+    let id = create_task(&mut w, request);
+    w.settle();
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    let first = sessions
+        .iter()
+        .find(|s| s.model == "m07-first")
+        .expect("design used configured model");
+    assert_eq!(first.effort.as_deref(), Some("low"));
+    assert_eq!(first.skills, vec!["m07-skill"]);
+    assert!(w.prompt(2).contains("本轮必须使用以下技能：m07-skill"));
+    let result = w.call(
+        "config.set_role",
+        json!({"role":"plan","model":"m07-second","effort":"medium","skills":["m07-skill"]}),
+    );
+    ok(&result);
+    w.call("task.reject", json!({"task_id":id,"feedback":"try again"}));
+    wait_for_retry(&mut w.ctx, &id);
+    let sessions = w.ctx.store.list_sessions(&id).unwrap();
+    let next = sessions
+        .iter()
+        .find(|s| s.model == "m07-second")
+        .expect("next design used updated model");
+    assert_eq!(next.effort.as_deref(), Some("medium"));
+    assert_eq!(next.skills, vec!["m07-skill"]);
+    assert!(w.prompt(5).contains("本轮必须使用以下技能：m07-skill"));
+}

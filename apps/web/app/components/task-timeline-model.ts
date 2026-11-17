@@ -1,3 +1,4 @@
+import { taskWaits } from '../lib/waiting.ts';
 import { formatClock, formatDuration, formatRange, type Clock } from '../lib/clock.tsx';
 import { guardLabel } from '../lib/guard-labels.ts';
 import type { LogSession } from './session-log.tsx';
@@ -5,12 +6,12 @@ import type { TaskEvent } from '../../server/task-history.ts';
 import { failureText, nodeLabel, RUNTIME_LABELS, taskStatusLine, type TaskState } from '../lib/labels.ts';
 type SessionKind = { kind: 'bug'; step: string } | { kind: 'role'; role: string } | { kind: 'intake' | 'onboarding' };
 export type TimelineSession = LogSession & { kind?: SessionKind; runtime?: string; model?: string; ended_at?: string | null; metrics?: { cost_usd?: number } | null; exit_code?: number | null; timed_out?: boolean; lifecycle?: { state: string; exit_code?: number | null } };
-function sessionNode(kind: SessionKind | undefined) {
+export function sessionNode(kind: SessionKind | undefined) {
   if (kind?.kind === 'bug') return kind.step;
   if (kind?.kind === 'role') return kind.role === 'plan' ? 'design' : kind.role === 'impl' ? 'implement' : kind.role;
   return kind?.kind;
 }
-export type TimelineEntry = { key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; failures?: string[]; log?: string };
+export type TimelineEntry = { kind?: 'session' | 'gate' | 'user' | 'event'; phase?: string; reopen?: boolean; waitMs?: number; durationMs?: number; key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; failures?: string[]; log?: string };
 export function logName(path: string): string { return path.split('/').at(-1) ?? ''; }
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
@@ -54,6 +55,8 @@ function light(event: TaskEvent, clock: Clock): string | undefined {
     case 'setup.started': return `准备命令开始（${s('checkout')}）：${s('command')} · 日志 ${logName(s('log'))}`;
     case 'setup.result': return `准备命令${p.ok ? '通过' : '未通过'}（${s('checkout')}，退出码 ${s('exit_code')}）· 日志 ${logName(s('log'))}`;
     case 'setup.skipped': return `准备命令跳过：${s('reason')}`;
+    case 'task.decided': return '你作出了决定';
+    case 'milestone.contradicted': return '里程碑被退回';
     case 'task.updated': return operations[s('trigger')];
     case 'session.retry': return p.rate_limited ? `会话撞到${s('reason')}` : `会话崩溃，${formatClock(s('not_before'), clock)} 重试（第 ${s('attempt')}/${s('of')} 次）：${s('reason')}`;
     case 'session.deferred': return `${nodeLabel(s('node'))} 等 ${s('runtime')} 冷却到 ${formatClock(s('until'), clock)}`;
@@ -165,6 +168,50 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     const entry = sessionEntry(session, -1), index = entries.findIndex(e => e.at > entry.at);
     entries.splice(index < 0 ? entries.length : index, 0, entry);
   }
+  const waits = taskWaits(input);
+  let phase = '整理';
+  for (const entry of entries) {
+    entry.kind = entry.session ? 'session' : entry.key.startsWith('gate:') ? 'gate' : 'event';
+    entry.reopen = !!entry.session && entry.node === 'audit' && entry.summary.includes('待审 → 开放');
+    const event = events.find(e => entry.key === `ev:${e.seq}`);
+    if (event) {
+      if (['gate.reused', 'gate.skipped'].includes(event.kind)) entry.kind = 'gate';
+      if (event.kind === 'task.decided' || (event.kind === 'task.updated' && operations[str(event.payload.trigger)])) {
+        entry.kind = 'user';
+        const wait = waits.closed.find(w => w.seq === event.seq);
+        if (wait) { entry.waitMs = Math.max(0, wait.end - wait.start); entry.details.push(`等了 ${formatDuration(entry.waitMs)}`); }
+      }
+      entry.reopen = event.kind === 'milestone.contradicted' || event.payload.trigger === 'reject';
+    }
+    if (entry.key.startsWith('gate:')) {
+      const result = events.find(e => e.kind === 'gate.result' && e.payload.node === entry.node && e.at >= entry.at && (!entry.log || e.payload.log === entry.log));
+      if (result) {
+        entry.reopen = result.payload.ok === false;
+        const start = events.findLast(e => e.seq < result.seq && e.kind === 'gate.started' && e.payload.node === result.payload.node && e.payload.log === result.payload.log);
+        if (start) { entry.durationMs = Math.max(0, Date.parse(result.at) - Date.parse(start.at)); entry.details.push(`用时 ${formatDuration(entry.durationMs)}`); }
+      }
+    }
+    const node = entry.node;
+    if (node === 'intake') phase = '整理';
+    else if (['design', 'review', 'adjudicate', 'await_design_approval'].includes(node ?? '')) phase = '设计';
+    else if (node === 'retro') phase = '复盘';
+    else if (['merge_gate', 'merging', 'rebase', 'main_check', 'cleanup'].includes(node ?? '') || entry.title.includes('合并')) phase = '合并';
+    else if (node) phase = '实现与审计';
+    entry.phase = phase;
+  }
   return entries;
 }
 export const TIMELINE_TEXT = { title: '执行时间线', failure: '失败详情', empty: '还没有执行记录', truncated: '更早的内核事件已省略' };
+
+export function timelineGroups(entries: readonly TimelineEntry[], show?: string | null) {
+  const groups = new Map<string, TimelineEntry[]>();
+  for (const entry of entries) {
+    if (show === 'gates' && entry.kind !== 'gate' || show === 'reopens' && !entry.reopen) continue;
+    const label = entry.phase ?? '实现与审计';
+    groups.set(label, [...(groups.get(label) ?? []), entry]);
+  }
+  return [...groups].map(([label, rows]) => {
+    const entries = rows.toSorted((a, b) => (b.at ?? '').localeCompare(a.at ?? '') || rows.indexOf(b) - rows.indexOf(a));
+    return { label, start: entries.at(-1)!.at, end: entries[0].at, entries };
+  }).sort((a, b) => (b.end ?? '').localeCompare(a.end ?? ''));
+}

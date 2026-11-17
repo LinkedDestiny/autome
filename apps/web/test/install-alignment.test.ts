@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { leftoverProcesses, teardown } from './fixtures/process-leak.ts';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -48,6 +49,9 @@ function fixture() {
 }
 
 test('发布包带运行面板而无开发依赖，校验和正确', () => {
+  // Load the staged server with native Node, without Vite or the source checkout.
+  const smoke = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(panel, 'server/overview.ts')).href)})`], { cwd: scratch, encoding: 'utf8' });
+  expect(smoke.status, smoke.stderr).toBe(0);
   const entries = execFileSync('/usr/bin/tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n');
   const name = basename(archive, '.tar.gz');
   for (const file of ['autome', 'README.md', 'web/build/server/index.js', 'web/server/start.js', 'web/bin/autome-web.js', 'web/app/load-context.ts', 'web/package.json', 'web/node_modules/react/package.json']) expect(entries).toContain(`${name}/${file}`);

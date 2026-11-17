@@ -216,3 +216,31 @@ it('F 无法判断与有控制终端分别显示，混合及旧事件保留两�
   expect(build([ev(1, 'task.processes_unchecked', { processes: [tty] })])[0].title).toBe(text);
   expect(build([ev(1, 'task.processes_unchecked', { processes: [unknown, tty] })])[0].title).toBe(`清理时有 1 个进程无法判断，未结束；${text}`);
 });
+
+import { timelineGroups } from '../app/components/task-timeline-model.ts';
+it('用户行保留全部操作与决定', () => {
+ const ops=['approve','reject','reply','merge','pause','resume','stop','cancel','rerun_from','extend_budget'];
+ const rows=timelineEntries([], [...ops.map((trigger,i)=>ev(i,'task.updated',{trigger})),ev(11,'task.decided',{})],now);
+ expect(rows.filter(r=>r.kind==='user')).toHaveLength(11);
+});
+it('门禁步数和 node/log 用时', () => {
+ const rows=timelineEntries([], [ev(1,'gate.started',{node:'gate',log:'a'}),ev(4,'gate.result',{node:'gate',log:'a',ok:true,steps:{ran:2,reused:3}})],now);
+ expect(rows[0].summary).toContain('执行 2 步 · 沿用 3 步'); expect(rows[0].durationMs).toBe(3000);
+});
+it('reused skipped 可筛选但没有 result 步数', () => {
+ const rows=timelineEntries([], [ev(1,'gate.reused',{node:'gate'}),ev(2,'gate.skipped',{node:'gate',reason:'无需'})],now);
+ expect(timelineGroups(rows,'gates').flatMap(g=>g.entries)).toHaveLength(2); expect(rows[1].title).toContain('无需');
+});
+it('真实审计退回会话可筛选且按阶段倒序', () => {
+ const rows=timelineEntries(feature.sessions,ledger.filter(e=>e.subject==='T-1'),now);
+ const groups=timelineGroups(rows); expect(groups.map(g=>g.end)).toEqual(groups.map(g=>g.end).toSorted().reverse());
+ for(const g of groups) expect(g.entries.map(e=>e.at)).toEqual(g.entries.map(e=>e.at).toSorted().reverse());
+});
+it('筛选链接保留 from、doc 与四页签状态，所有筛选都有返回入口', () => {
+ for(const show of ['', 'gates', 'reopens']) {
+ const html=renderToString(createElement(MemoryRouter,{initialEntries:[`/?from=s1&doc=plan.md&tab=docs&show=${show}`]},createElement(Timeline,{entries:build([ev(1,'gate.result',{node:'gate',ok:false}),ev(2,'task.updated',{trigger:'reject'})]),window:{from:'s1',earlier:0}})));
+ for(const value of ['', 'gates','reopens']) expect(html).toContain(`from=s1&amp;doc=plan.md&amp;tab=docs&amp;show=${value}`);
+ expect(html).toContain('data-scroll-region');
+ if(show==='gates')expect(html).not.toContain('timeline-user');
+ }
+});

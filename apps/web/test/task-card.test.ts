@@ -28,7 +28,7 @@ test('1 feature seven stages and unknown nodes', () => {
   for (const node of ['future_node', '', '__proto__']) { const v = view(task(node)); expect(v.unknownStage).toBe(node); expect(v.stages.some(s => s.current || s.passed)).toBe(false); }
   expect(view({ ...task(), state: { state: 'done' } }).stages[6].current).toBe(true);
   for (const state of ['draft', 'cancelled', 'future']) expect(view({ ...task(), state: { state } }).stages.some(s => s.current)).toBe(false);
-  expect(html(task())).toContain('aria-current="step"'); expect(html(task())).toContain('href="/tasks/T-1"');
+  expect(html(task())).not.toContain('task-card-stages'); expect(html(task())).toContain('href="/tasks/T-1"');
 });
 test('2 bug five stages across every node and stopped/paused/queued/failed', () => {
   for (const [index, stage] of BUG_STAGES.entries()) for (const node of stage.nodes) {
@@ -72,14 +72,14 @@ test('7 waiting priority, failure reasons and queue positions', () => {
 });
 test('8 gate queue, absent, pass, fail and recorded done gate plus merge', () => {
   expect(view(task(), { gate_queue_position: 2 }).gate).toBe('门禁排队第 2 位');
-  expect(view(task(), { gate: null }).gate).toBe('门禁未跑过');
-  expect(view({ ...task(), state: { state: 'draft' } }).gate).toBe('门禁未跑过');
+  expect(view(task(), { gate: null }).gate).toBeNull();
+  expect(view({ ...task(), state: { state: 'draft' } }).gate).toBeNull();
   expect(view(task(), { gate: { ok: true, node: 'gate', exit_code: 0 } }).gate).toBe('门禁通过 · 门禁');
   expect(view(task(), { gate: { ok: false, node: 'gate', exit_code: 7 } }).gate).toBe('门禁未通过 · 退出码 7');
   const recorded = JSON.parse(readFileSync(new URL('./fixtures/w6-task-get.json', import.meta.url), 'utf8'));
   expect(recorded.task.state.state).toBe('done'); expect(recorded.gate.ok).toBe(true);
   const rendered = html(recorded.task, recorded); expect(rendered).toContain('门禁通过 · 验证 main'); expect(rendered).toContain(`已合并 · ${recorded.task.merge_commit.slice(0, 7)}`);
-  expect(view(recorded.task, { ...recorded, gate: null }).gate).toBe('门禁未跑过');
+  expect(view(recorded.task, { ...recorded, gate: null }).gate).toBeNull();
 });
 test('9 needs-you badge with and without unread counts', () => {
   for (const count of [0, 1, 2]) {
@@ -146,4 +146,9 @@ test('14 取消或失败前置给警告且无依赖不显示', () => {
     expect(html(t)).toContain('dependency-warning');
   }
   expect(view(task()).dependency).toBeNull();
+});
+
+test('15 在途无门禁不渲染门禁行', () => { expect(html(task())).not.toContain('task-card-gate'); });
+test('16 任何列都不出现门禁未跑过', () => {
+  for (const state of [{ state: 'queued' }, { state: 'active', node: 'implement' }, { state: 'active', node: 'await_merge' }, { state: 'done' }]) expect(html({ ...task(), state })).not.toContain('门禁未跑过');
 });

@@ -39,6 +39,33 @@ use autome_domain::skill::{Scope, SkillInventory, SkillSource, scan_roots};
 /// The marker file that makes a directory a skill (design §12).
 const SKILL_MARKER: &str = "SKILL.md";
 
+/// Reads display-only metadata in the inventory's stable source order.
+/// Missing, unreadable or malformed headers do not affect skill visibility.
+pub fn description(skill: &autome_domain::skill::Skill) -> Option<String> {
+    skill.sources.iter().find_map(|source| {
+        let text = fs::read_to_string(format!("{}/{SKILL_MARKER}", source.path)).ok()?;
+        parse_description(&text)
+    })
+}
+
+fn parse_description(text: &str) -> Option<String> {
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    let mut header = String::new();
+    for line in lines {
+        if matches!(line.trim_end(), "---" | "...") {
+            let value: serde_yaml::Value = serde_yaml::from_str(&header).ok()?;
+            let description = value.get("description")?.as_str()?.trim();
+            return (!description.is_empty()).then(|| description.to_owned());
+        }
+        header.push_str(line);
+        header.push('\n');
+    }
+    None
+}
+
 /// Scans the four roots for one project and returns the merged inventory.
 ///
 /// `home` is the user's home directory and `repo` the repository root; both are
@@ -554,5 +581,59 @@ mod tests {
 
             assert!(inv.get("reachable").is_some(), "one bad root hid another");
         }
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    #[test]
+    fn skills_description_header_forms_and_boundaries() {
+        for (header, expected) in [
+            ("description: 中文说明", Some("中文说明")),
+            ("description: 'a: b # c'", Some("a: b # c")),
+            ("description: >-\n  first\n  second", Some("first second")),
+            ("description: |\n  first\n  second", Some("first\nsecond")),
+            (
+                "description: '<script>alert(1)</script>'",
+                Some("<script>alert(1)</script>"),
+            ),
+            ("description: ''", None),
+            ("description: '   '", None),
+            ("description: null", None),
+            ("description: [one]", None),
+            ("description: [", None),
+            ("name: example", None),
+        ] {
+            assert_eq!(
+                parse_description(&format!("---\n{header}\n---\n# Body")),
+                expected.map(str::to_owned)
+            );
+        }
+        for text in [
+            "",
+            "# Body\ndescription: body",
+            "---\ndescription: incomplete",
+        ] {
+            assert_eq!(parse_description(text), None);
+        }
+        assert_eq!(
+            parse_description("\u{feff}---\r\ndescription: x\r\n---\r\n"),
+            Some("x".into())
+        );
+    }
+
+    #[test]
+    fn skills_description_read_failure_is_missing() {
+        let skill = autome_domain::skill::Skill {
+            name: "missing".into(),
+            sources: vec![SkillSource {
+                runtime: Runtime::Claude,
+                scope: Scope::Global,
+                path: "/dev/null/not-a-directory".into(),
+            }],
+        };
+        assert_eq!(description(&skill), None);
     }
 }

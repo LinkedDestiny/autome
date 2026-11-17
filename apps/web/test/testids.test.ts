@@ -1,3 +1,7 @@
+import skillReply from './fixtures/m09-skills.json' with { type: 'json' };
+import loopConfig from './fixtures/m07-global.json' with { type: 'json' };
+import Loop from '../app/routes/loop.tsx';
+import Skills from '../app/routes/skills.tsx';
 import { taskPageData } from './fixtures/task-page-data.ts';
 import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -13,7 +17,6 @@ import Board from '../app/routes/projects.$id.tsx';
 import Task from '../app/routes/tasks.$id.tsx';
 import NewTask from '../app/routes/projects.$id.tasks.new.tsx';
 import NewProject, { PathSuggestions, DirectoryPicker } from '../app/routes/projects.new.tsx';
-import Settings from '../app/routes/projects.$id.settings.tsx';
 import Env, { EnvView } from '../app/routes/env.tsx';
 import { BellView } from '../app/components/bell.tsx';
 import { LiveBanner } from '../app/lib/live.tsx';
@@ -35,12 +38,14 @@ function render(Component: ComponentType, data: unknown, url = '/') {
 function view(child: ReactNode, url = '/') { return render(() => child, shell, url); }
 function has(html: string, ...selectors: string[]) { for (const id of selectors) expect(html).toContain(`data-testid="${id}"`); }
 const pages: [string, ComponentType, unknown, string][] = [
+  [ids.pageLoop, Loop, { config: loopConfig, projects: [], skills: [] }, '/loop'],
+  [ids.pageSkills, Skills, null, '/skills'],
   [ids.pageOverview, Overview, shell, '/'],
   [ids.pageBoard, Board, board, '/projects/P-1'],
   [ids.pageTask, Task, await taskPageData({ task, project, sessions: [] }), '/tasks/T-01'],
   [ids.pageTaskNew, NewTask, shell, '/projects/P-1/tasks/new'],
   [ids.pageProjectNew, NewProject, { display: '' }, '/projects/new'],
-  [ids.pageSettings, Settings, { project, files: [], session: { state: 'none' } }, '/projects/P-1/settings'],
+  [ids.pageSettings, Loop, { projects: [], skills: [], project: project.id, settings: { project, files: [], session: { state: 'none' } } }, '/loop?project=P-1&tab=project'],
   [ids.pageEnv, Env, { recipes: {}, errors: {} }, '/env'],
 ];
 // Explicit route parameters are required by the new-task page.
@@ -53,7 +58,7 @@ for (const [id, Component, data, url] of pages) test(`${id} and shell root`, () 
   const html = pageRender(Component, data, url); has(html, ids.shellMain, id);
   if (id === ids.pageTaskNew) { has(html, ids.taskNewForm, ids.taskNewDraft); has(pageRender(NewTask, { ...shell, projects: [] }, url), id); }
   if (id === ids.pageBoard) has(render(Board, { error: '读盘失败' }), id);
-  if (id === ids.pageSettings) has(render(Settings, { error: '项目不存在' }), id);
+  if (id === ids.pageSettings) has(render(Loop, { projects: [], skills: [], settings: { error: '项目不存在' } }), id);
   if (id === ids.pageProjectNew) has(html, ids.pathInput, ids.pathSuggestions);
 });
 test('component selectors retain object identity and conditional states', () => {
@@ -114,7 +119,7 @@ test('selector registry is unique, used, and the only source for JSX testids', (
   expect([...used].sort()).toEqual(Object.keys(ids).sort());
 });
 test('scroll exemptions are restricted to designated internal regions', () => {
-  const allowed = ['task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
+  const allowed = ['env-components', 'skills-grid', 'skills-drawer-body', 'loop-body', 'overview-column-body', 'overview-merged-list', 'task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
   const found = new Set<string>();
   for (const [, source] of sources()) attributes(source, attrs => {
     if (!attrs.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText() === 'data-scroll-region')) return;
@@ -128,3 +133,7 @@ test('scroll exemptions are restricted to designated internal regions', () => {
 test('expanded cancelled section exposes stable selectors', () => {
   has(render(Board, { ...board, showCancelled: true, cancelledCounts: { all: 1, feature: 0, bug: 1 }, cancelled: [{ ...task, state: { state: 'cancelled' } }] }, '/projects/P-1?cancelled=all'), ids.boardCancelled, ids.boardCancelledToggle);
 });
+
+test('Loop 角色卡暴露六个稳定选择器', () => { const text=render(Loop,{config:loopConfig,projects:[],skills:[]},'/loop');has(text,ids.loopRole);expect(text.match(/data-testid="loop-role"/g)).toHaveLength(6); });
+
+test('技能卡使用稳定选择器且每条技能一个按钮', () => { const text = render(Skills, { config: loopConfig, globalConfig: loopConfig, projects: [], skills: skillReply.skills }, '/skills'); has(text, ids.skillCard); expect(text.match(/data-testid="skill-card"/g)).toHaveLength(3); });

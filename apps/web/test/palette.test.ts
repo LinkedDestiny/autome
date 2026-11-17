@@ -32,15 +32,15 @@ it('快捷键命中取消默认行为、切换一次，卸载后不响应', () =
   detach(); const after = key(); target.dispatchEvent(after); expect(after.defaultPrevented).toBe(false); expect(toggle).toHaveBeenCalledTimes(1);
 });
 it('候选包含全部任务、项目和新建项，排序和链接编码符合契约', () => {
-  expect(list.map(item => item.id)).toEqual(['T-4', 'T-12', 'T-3', 'T-1', 'T-2', 'a/b ?中', 'a/b ?中', 'add-project']);
-  expect(list.map(item => item.href)).toEqual(['/tasks/T-4', '/tasks/T-12', '/tasks/T-3', '/tasks/T-1', '/tasks/T-2', '/projects/a%2Fb%20%3F%E4%B8%AD', '/projects/a%2Fb%20%3F%E4%B8%AD/tasks/new', '/projects/new']);
-  expect(list.at(-2)?.title).toBe('在「Alpha 项目」新建任务卡'); expect(list[1].subtitle).toBe('Alpha 项目 · 进行中');
+  expect(list.map(item => item.id)).toEqual(['T-4', 'T-12', 'T-3', 'T-1', 'T-2', 'a/b ?中', 'a/b ?中', 'loop', 'skills', 'env', 'a/b ?中', 'add-project']);
+  expect(list.map(item => item.href)).toEqual(['/tasks/T-4', '/tasks/T-12', '/tasks/T-3', '/tasks/T-1', '/tasks/T-2', '/projects/a%2Fb%20%3F%E4%B8%AD', '/projects/a%2Fb%20%3F%E4%B8%AD/tasks/new', '/loop', '/skills', '/env', '/loop?project=a%2Fb%20%3F%E4%B8%AD', '/projects/new']);
+  expect(list.find(c => c.key.startsWith('new:'))?.title).toBe('在「Alpha 项目」新建任务卡'); expect(list[1].subtitle).toBe('Alpha 项目 · 进行中');
 });
 it('按 ID、标题、项目名忽略大小写过滤；空查询及 0/1/50/51 边界', () => {
   expect(filterCandidates(list, ' t-12 ').items.map(item => item.id)).toEqual(['T-12']);
   expect(filterCandidates(list, '查找').items.map(item => item.id)).toEqual(['T-12']);
-  expect(filterCandidates(list, 'aLPHa').items).toHaveLength(7);
-  expect(filterCandidates(list, '   ').items.map(item => item.id)).toEqual(['T-4', 'T-12', 'a/b ?中', 'a/b ?中', 'add-project']);
+  expect(filterCandidates(list, 'aLPHa').items).toHaveLength(8);
+  expect(filterCandidates(list, '   ').items.map(item => item.id)).toEqual(['T-4', 'T-12', 'a/b ?中', 'a/b ?中', 'loop', 'skills', 'env', 'a/b ?中', 'add-project']);
   expect(filterCandidates(list, 'cancelled').items[0].id).toBe('T-2');
   expect(filterCandidates(list, '不存在').items).toEqual([]);
   for (const count of [0, 1, 50, 51]) {
@@ -82,4 +82,9 @@ it('SSR 语义、活动后代、禁用项、截断提示与关闭状态', () => 
   expect(html).toContain('aria-activedescendant="palette-option-0"'); expect(html).toContain('id="palette-option-0"'); expect(html).toContain('aria-disabled="true"');
   expect(render(false)).toBe(''); expect(render(true, [])).toContain('没有匹配的结果');
   expect(render(true, Array.from({ length: 51 }, (_, index) => ({ ...list[0], key: String(index) })))).toMatch(/还有 <!-- -->1<!-- --> 条/);
+});
+
+it('新增 Loop、技能、环境与项目 Loop 入口', () => {
+  const list = buildCandidates(shell, { allowed: true });
+  for (const href of ['/loop', '/skills', '/env', ...shell.projects.map(p => '/loop?project=' + encodeURIComponent(p.id))]) expect(list.some(c => c.href === href && !c.disabled)).toBe(true);
 });

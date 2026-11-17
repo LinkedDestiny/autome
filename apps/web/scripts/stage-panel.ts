@@ -12,7 +12,8 @@ const out = canonical(resolve(output));
 if (out === root || out.startsWith(`${root}/`)) throw new Error('stage-panel: 输出目录必须在 apps/web 之外');
 if (existsSync(out)) throw new Error('stage-panel: 输出目录必须不存在，避免残留开发依赖');
 mkdirSync(out, { recursive: true });
-for (const name of ['build', 'server', 'bin', 'app/load-context.ts', 'package.json']) {
+// Native server imports are outside the React Router bundle.
+for (const name of ['build', 'server', 'bin', 'app/load-context.ts', 'app/lib/waiting.ts', 'app/lib/overview-model.ts', 'app/components/task-columns.ts', 'package.json']) {
   cpSync(resolve(root, name), resolve(out, name), { recursive: true });
 }
 const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8')) as {

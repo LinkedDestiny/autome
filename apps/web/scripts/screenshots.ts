@@ -1,11 +1,11 @@
 // Manual README asset generation; deliberately not a CI step.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect, type BrowserContext } from '@playwright/test';
-import { checkout, cli, flowSteps, newTask } from '../e2e/harness/fixture.ts';
+import { checkout, cli, flowSteps, newTask, PREPARE_TIMEOUT_MS } from '../e2e/harness/fixture.ts';
 import { clearProcesses, leftoverProcesses } from '../test/fixtures/process-scan.ts';
 import { startServer } from '../server/main.ts';
 
@@ -20,7 +20,7 @@ const args = process.argv.slice(2);
 if (args.length && (args.length !== 2 || args[0] !== '--out' || !args[1].trim())) {
   throw Error('用法：node apps/web/scripts/screenshots.ts [--out <目录>]');
 }
-const out = resolve(args[1] ?? join(checkout, 'docs/images'));
+const out = resolve(checkout, args[1] ?? 'docs/images');
 for (const path of ['apps/web/build/server/index.js', 'target/debug/autome', 'target/debug/automed']) {
   if (!existsSync(join(checkout, path))) {
     throw Error(`缺少 ${path}；请先运行 cargo build -p automed -p autome-cli && npm run build --prefix apps/web`);
@@ -40,16 +40,29 @@ try {
   process.env.AUTOME_HOME = join(root, 'autome-home');
   execFileSync('bash', [join(checkout, 'apps/web/test/fixtures/w7-flow.sh'), root, checkout], {
     env: { ...process.env, AUTOMED_BIN: join(checkout, 'target/debug/automed'), AUTOME_BIN: join(checkout, 'target/debug/autome') },
-    timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: PREPARE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // Keep the shared fixture's completed history, but leave room for both demo cards.
+  const { projects } = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
+  for (const { project } of projects) {
+    const { tasks } = JSON.parse(cli(root, ['rpc', 'project.get', JSON.stringify({ project_id: project.id })])) as { tasks: { id: string; state: { state: string } }[] };
+    for (const task of tasks) if (!['done', 'cancelled'].includes(task.state.state)) cli(root, ['cancel', task.id]);
+  }
   const title = '结算页支持优惠码';
   flowSteps(root, title);
   const taskId = newTask(root, title);
   cli(root, ['run', '--until-idle', '--interval', '0.2']);
+  const runningTitle = '优化订单搜索体验';
+  flowSteps(root, runningTitle, 'feature', { holdFirstStep: true });
+  newTask(root, runningTitle);
+  for (const name of ['界面检查', '回归验证', '文档整理']) {
+    const dir = join(root, '.claude/skills', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: 演示用技能\n---\n# ${name}\n`);
+  }
   for (const title of ['修复导出报表时区错误', '订单列表增加筛选', '补齐支付失败提示']) {
     newTask(root, title, ['--draft']);
   }
-  const { projects } = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
   service = await startServer({ mode: 'production', port: 0, home: join(root, 'autome-home'), userHome: root,
     binaryPath: join(checkout, 'target/debug/autome'), binaryArgs: ['core'],
     kernelEnv: { HOME: root, AUTOMED_CLAUDE_BINARY: join(root, 'bin/fake-cli'), AUTOMED_CODEX_BINARY: join(root, 'bin/fake-cli') },
@@ -66,16 +79,24 @@ try {
   mkdirSync(out, { recursive: true });
   for (const [name, path] of [
     ['dashboard', '/'], ['project', `/projects/${encodeURIComponent(projects[0].project.id)}`], ['task', `/tasks/${taskId}`],
+    ['loop', '/loop'], ['skills', '/skills'],
   ]) {
     const response = await page.goto(`http://127.0.0.1:${address.port}${path}`);
     expect(response?.status()).toBe(200);
     await expect(page.getByTestId('shell-main')).toBeVisible();
     await expect(page.getByTestId('live-banner')).toHaveCount(0);
-    await expect(page.getByTestId('shell-main')).toContainText(title);
+    if (['dashboard', 'project', 'task'].includes(name)) await expect(page.getByTestId('shell-main')).toContainText(title);
+    if (name === 'dashboard') {
+      await expect(page.locator('.overview-task-card.card-yellow').filter({ hasText: title })).toBeInViewport({ ratio: 1 });
+      await expect(page.locator('.overview-task-card.card-teal').filter({ hasText: runningTitle })).toBeInViewport({ ratio: 1 });
+      await expect(page.getByTestId('shell-main')).not.toContainText('undefined');
+    }
+    if (name === 'loop') await expect(page.getByTestId('loop-role')).toHaveCount(6);
+    if (name === 'skills') await expect(page.getByTestId('skill-card')).toHaveCount(3);
     await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: join(out, `${name}.png`), animations: 'disabled' });
   }
-  console.log(`已生成三张 1512×944 截图：${out}`);
+  console.log(`已生成五张 1512×944 截图：${out}`);
 } finally {
   try {
     await browser?.close();

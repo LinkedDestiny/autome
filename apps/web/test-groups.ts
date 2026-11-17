@@ -1,6 +1,14 @@
 // Explicit membership: new test files must be assigned and reviewed.
 export const testGroups = {
   "unit": [
+    "test/skills-model.test.ts",
+    "test/skills-page.test.ts",
+    "test/open-path.test.ts",
+    "test/loop-defaults.test.ts",
+    "test/role-rules.test.ts",
+    "test/loop-page.test.ts",
+    "test/task-summary.test.ts",
+    "test/ui-kit.test.ts",
     "test/dependency-poll.test.ts",
     "test/gate-reporter.test.ts",
     "test/core-binary-watch.test.ts",
@@ -35,6 +43,7 @@ export const testGroups = {
     "test/older-kernel-live.test.ts",
     "test/onboarding-disk.test.ts",
     "test/overview.test.ts",
+    "test/overview-summary.test.ts",
     "test/palette.test.ts",
     "test/paths.test.ts",
     "test/project-confirm.test.ts",
@@ -85,6 +94,11 @@ export const testGroups = {
     "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
+    "test/skills-real.test.ts",
+    "test/loop-real.test.ts",
+    "test/task-summary-real.test.ts",
+    "test/board-done-real.test.ts",
+    "test/overview-states-real.test.ts",
     "test/e2e-fixture.test.ts",
     "test/web-binary-gone-real.test.ts",
     "test/web-status-driver-real.test.ts",

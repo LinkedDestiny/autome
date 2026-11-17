@@ -1,0 +1,170 @@
+{
+  "defaults": [
+    "bug",
+    "gate",
+    "gate_concurrency",
+    "gate_quick",
+    "gate_quick_concurrency",
+    "gate_reuse_for_main_check",
+    "gate_run",
+    "gate_same_failure_limit",
+    "merge_after",
+    "merge_auto",
+    "retry",
+    "setup"
+  ],
+  "global": {
+    "gate": {
+      "concurrency": 1,
+      "quick_concurrency": 1
+    },
+    "loop_defaults": {
+      "budget_factor": 5,
+      "design_rounds": 15,
+      "parallel": 3,
+      "session_minutes": 120
+    },
+    "roles": {
+      "adjudicate": {
+        "effort": null,
+        "enabled": true,
+        "model": "",
+        "runtime": "claude",
+        "skills": []
+      },
+      "audit": {
+        "effort": "high",
+        "enabled": true,
+        "model": "",
+        "runtime": "codex",
+        "skills": []
+      },
+      "impl": {
+        "effort": "high",
+        "enabled": true,
+        "model": "",
+        "runtime": "claude",
+        "skills": []
+      },
+      "plan": {
+        "effort": "high",
+        "enabled": true,
+        "model": "",
+        "runtime": "claude",
+        "skills": []
+      },
+      "retro": {
+        "effort": "high",
+        "enabled": true,
+        "model": "",
+        "runtime": "codex",
+        "skills": []
+      },
+      "review": {
+        "effort": "high",
+        "enabled": true,
+        "model": "",
+        "runtime": "codex",
+        "skills": []
+      }
+    },
+    "ui": {
+      "theme": "system"
+    }
+  },
+  "resolved": {
+    "bug": {
+      "fix_rounds": 3
+    },
+    "gate": null,
+    "gate_concurrency": 1,
+    "gate_quick": null,
+    "gate_quick_concurrency": 1,
+    "gate_reuse_for_main_check": true,
+    "gate_run": "each_round",
+    "gate_same_failure_limit": 3,
+    "loop_defaults": {
+      "budget_factor": 5,
+      "design_rounds": 15,
+      "parallel": 3,
+      "session_minutes": 120
+    },
+    "merge_after": null,
+    "merge_auto": false,
+    "retry": {
+      "attempts": 2,
+      "backoff_seconds": 60
+    },
+    "roles": [
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "project-model",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "project",
+        "role": "plan"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "review"
+      },
+      {
+        "config": {
+          "effort": null,
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "adjudicate"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "claude",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "impl"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "audit"
+      },
+      {
+        "config": {
+          "effort": "high",
+          "enabled": true,
+          "model": "",
+          "runtime": "codex",
+          "skills": []
+        },
+        "provenance": "global",
+        "role": "retro"
+      }
+    ],
+    "setup": null
+  },
+  "scope": "prj-9bb4b8d064a14097a47df68e24a43067",
+  "violations": []
+}

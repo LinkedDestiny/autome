@@ -32,6 +32,8 @@ export function buildCandidates(shell: ShellData, gate: Gate): Candidate[] {
     }),
     ...shell.projects.map(project => ({ key: `project:${project.id}`, id: project.id, title: project.name, project: project.name, subtitle: '项目', href: projectHref(project.id), defaultVisible: true, disabled: false })),
     ...shell.projects.map(project => ({ key: `new:${project.id}`, id: project.id, title: `在「${project.name}」新建任务卡`, project: project.name, subtitle: '新建任务卡', href: newTaskHref(project.id), defaultVisible: true, disabled: !gate.allowed, reason: gate.reason })),
+    ...[['loop', 'Loop 配置'], ['skills', '技能'], ['env', '环境']].map(([id, title]) => ({ key: id, id, title, project: '', subtitle: title, href: '/' + id, defaultVisible: true, disabled: false })),
+    ...shell.projects.map(project => ({ key: 'loop:' + project.id, id: project.id, title: project.name + ' 的 Loop 配置', project: project.name, subtitle: 'Loop 配置', href: '/loop?project=' + encodeURIComponent(project.id), defaultVisible: true, disabled: false })),
     { key: 'add-project', id: 'add-project', title: ADMIN.add, project: '', subtitle: ADMIN.add, href: '/projects/new', defaultVisible: true, disabled: false },
   ];
 }

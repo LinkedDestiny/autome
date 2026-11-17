@@ -46,3 +46,21 @@ test('项目报警使用 provider 时区', () => {
   const html = render(h(ProjectAlerts,{alerts:[{id:'a',project_id:'p',task_id:null,kind:'setup_failed',detail:'失败',created_at:clock.now}]}));
   expect(html).toContain('>14:28</time>');
 });
+
+import { formatRelative, formatSpan } from '../app/lib/clock.tsx';
+test('相对时间秒、分、时、日和未来、空输入边界', () => {
+  const now = '2026-11-17T00:00:00Z';
+  for (const [seconds, text] of [[3, '3 秒前'], [60, '1 分钟前'], [2040, '34 分钟前'], [3600, '1 小时前'], [86400, '1 天前'], [-1, '0 秒前']] as const) expect(formatRelative(new Date(Date.parse(now) - seconds * 1000).toISOString(), now)).toBe(text);
+  expect(formatRelative('', now)).toBe('时间未知');
+});
+test('紧凑时长零、秒、分钟、小时与非有限输入', () => {
+  for (const [ms, text] of [[0, '0 秒'], [59000, '59 秒'], [60000, '1 分 00 秒'], [363000, '6 分 03 秒'], [8940000, '2 时 29 分'], [-1, '0 秒'], [NaN, '0 秒'], [Infinity, '0 秒']] as const) expect(formatSpan(ms)).toBe(text);
+});
+
+import { RelativeTime } from '../app/lib/clock.tsx';
+test('34 分钟前启动且悬停保留绝对时间', () => {
+  const at = '2026-11-14T05:54:00Z';
+  const text = render(h(RelativeTime, { at, suffix: '启动' }));
+  expect(text).toContain('34 分钟前'); expect(text).toContain('启动</time>');
+  expect(text).toContain('title="' + at + '"');
+});

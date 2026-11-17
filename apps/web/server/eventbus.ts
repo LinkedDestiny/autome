@@ -1,3 +1,4 @@
+import { driverCardKey, type DriverStatus } from './drivers.ts';
 import type { CoreStatus } from './core/supervisor.ts';
 import { encodeMessage, mapCoreStatus, parseClientMessage } from './eventbus-protocol.ts';
 import type { CoreMessage, LedgerEvent, ExtensionMessage } from './eventbus-protocol.ts';
@@ -10,6 +11,8 @@ export function createEventBus({ call, log }: {
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   log: (line: string) => void;
 }) {
+  let driverSnapshot: string | undefined;
+  let latestDrivers: DriverStatus | undefined;
   let cursor = 0;
   let initialized = false;
   let closed = false;
@@ -116,6 +119,13 @@ export function createEventBus({ call, log }: {
   }
   return {
     pull,
+    publishDrivers(status: DriverStatus) {
+      const snapshot = driverCardKey(status);
+      latestDrivers = status;
+      if (closed || snapshot === driverSnapshot) return;
+      driverSnapshot = snapshot;
+      for (const client of connections.values()) client.connection.send({ type: 'drivers', status });
+    },
     setCoreStatus(status: CoreStatus) {
       const next = mapCoreStatus(status);
       if (encodeMessage(next) !== encodeMessage(core)) {
@@ -129,6 +139,7 @@ export function createEventBus({ call, log }: {
       const connection = { send: (message: ExtensionMessage) => transport.send(encodeMessage(message)) };
       connections.set(transport, { transport, connection, sentSeq: cursor, helloSeq: cursor, queue: [] });
       transport.send(encodeMessage({ type: 'hello', seq: cursor, core: core.status, ...(core.reason === undefined ? {} : { reason: core.reason }) }));
+      if (latestDrivers) connection.send({ type: 'drivers', status: latestDrivers });
       return () => disconnect(transport);
     },
     receive(transport: Transport, text: string) {

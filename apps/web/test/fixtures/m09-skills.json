@@ -1,0 +1,67 @@
+{
+  "scope": "prj-a140d492e9d54064af7589f512d79bf3",
+  "skills": [
+    {
+      "bound_roles": [
+        "plan"
+      ],
+      "conflicts": [],
+      "name": "alpha",
+      "project_scoped": false,
+      "sources": [
+        {
+          "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-0rlKui/home/.claude/skills/alpha",
+          "runtime": "claude",
+          "scope": "global"
+        },
+        {
+          "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-0rlKui/home/.agents/skills/alpha",
+          "runtime": "codex",
+          "scope": "global"
+        }
+      ],
+      "visible_to": [
+        "claude",
+        "codex"
+      ]
+    },
+    {
+      "bound_roles": [],
+      "conflicts": [],
+      "name": "beta",
+      "project_scoped": true,
+      "sources": [
+        {
+          "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-0rlKui/home/.claude/skills/beta",
+          "runtime": "claude",
+          "scope": "global"
+        },
+        {
+          "path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-0rlKui/home/a/.agents/skills/beta",
+          "runtime": "codex",
+          "scope": "project"
+        }
+      ],
+      "visible_to": [
+        "claude",
+        "codex"
+      ]
+    },
+    {
+      "bound_roles": [],
+      "conflicts": [],
+      "name": "gamma",
+      "project_scoped": true,
+      "sources": [
+        {
+          "path": "/private/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-0rlKui/home/a/.claude/skills/gamma",
+          "runtime": "claude",
+          "scope": "project"
+        }
+      ],
+      "visible_to": [
+        "claude"
+      ]
+    }
+  ]
+}

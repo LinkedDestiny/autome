@@ -9,10 +9,10 @@ const Context = createContext<Clock>(DEFAULT_CLOCK);
 export function ClockProvider({ initial, children }: { initial: Clock; children?: ReactNode }) {
   const [clock, setClock] = useState(initial);
   useEffect(() => {
-    setClock(currentClock());
-    const timer = setInterval(() => setClock(currentClock()), 30_000);
+    setClock({ ...currentClock(), timeZone: initial.timeZone });
+    const timer = setInterval(() => setClock({ ...currentClock(), timeZone: initial.timeZone }), 30_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [initial.timeZone]);
   return <Context.Provider value={clock}>{children}</Context.Provider>;
 }
 export const useClock = () => useContext(Context);
@@ -41,4 +41,35 @@ export function formatDuration(milliseconds: number, precision: 'second' | 'minu
   if (precision === 'minute') return `${minutes} 分`;
   if (minutes) return `${minutes} 分${seconds % 60 ? ` ${seconds % 60} 秒` : ''}`;
   return `${seconds} 秒`;
+}
+
+export function formatRelative(at: string, now: string): string {
+  const seconds = Math.max(0, Math.floor((Date.parse(now) - Date.parse(at)) / 1000));
+  if (!Number.isFinite(seconds)) return '时间未知';
+  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return `${Math.floor(seconds / 86400)} 天前`;
+}
+export function formatSpan(ms: number): string {
+  const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes} 分 ${String(seconds % 60).padStart(2, '0')} 秒` : `${Math.floor(minutes / 60)} 时 ${String(minutes % 60).padStart(2, '0')} 分`;
+}
+
+export function doneGroup(at: string | null | undefined, now: string, timeZone: string): '今天' | '昨天' | '本周更早' | '更早' {
+  const day = (iso: string) => {
+    if (!Number.isFinite(Date.parse(iso))) return NaN;
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date(iso)).map(p => [p.type, p.value]));
+    return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day));
+  };
+  const today = day(now), date = day(at ?? ''), yesterday = today - 86400000;
+  const monday = today - ((new Date(today).getUTCDay() + 6) % 7) * 86400000;
+  return date === today ? '今天' : date === yesterday ? '昨天' : date >= monday && date < yesterday ? '本周更早' : '更早';
+}
+
+export function RelativeTime({ at, suffix = "" }: { at: string; suffix?: string }) {
+  const clock = useClock();
+  return <time dateTime={at} title={at}>{formatRelative(at, clock.now)}{suffix}</time>;
 }

@@ -10,6 +10,6 @@ export function headerView(payload: TaskPayload, ctx: CardContext) {
     id: task.id, title: task.title, kind: card.kind, branch: task.branch,
     project: payload.project ? { label: payload.project.name ?? payload.project.display_name ?? payload.project.id, href: projectHref(payload.project.id) } : null,
     cost: cost ? `费用 $${cost.usd_total.toFixed(2)}（${cost.sessions} 个会话${cost.sessions_without_cost > 0 ? `，其中 ${cost.sessions_without_cost} 个无计费数据` : ''}）` : null,
-    activity: card.activity, gate: card.gate,
+    activity: card.activity, gate: card.gate, merged: task.state.state === 'done', completedAt: task.completed_at, mergeCommit: task.merge_commit?.slice(0, 8),
   };
 }

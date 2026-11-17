@@ -1,3 +1,4 @@
+import { Check } from './ui/check.tsx';
 import { Form, useNavigation, useRouteLoaderData } from 'react-router';
 import { dependencyCandidates, dependencyReadOnly } from './queue-deps.ts';
 import type { ShellData, ShellTask } from './shell-data.ts';
@@ -7,7 +8,7 @@ import { nodeLabel, taskStatusLine } from '../lib/labels.ts';
 
 export function DependencyChoices({ tasks, selected = [], disabled = false }: { tasks: ShellTask[]; selected?: string[]; disabled?: boolean }) {
   return <fieldset className="dependency-choices" disabled={disabled}><legend>{`在这些任务${nodeLabel('merging')}之后开始（可选）`}</legend>
-    <div className="dependency-choice-list" data-scroll-region>{tasks.map(task => <label key={task.id}><input type="checkbox" name="after" value={task.id} defaultChecked={selected.includes(task.id)} />{task.id} · {task.title}</label>)}</div>
+    <div className="dependency-choice-list" data-scroll-region>{tasks.map(task => <Check key={task.id} name="after" value={task.id} defaultChecked={selected.includes(task.id)} label={task.id + " · " + task.title} />)}</div>
     <small>最多选择 8 个任务</small>
   </fieldset>;
 }

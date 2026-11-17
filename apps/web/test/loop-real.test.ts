@@ -1,0 +1,48 @@
+import { saveDefault, defaultFields } from "../app/components/loop-defaults-data.ts";
+
+import { afterEach, expect, test } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { w9Kernel } from './fixtures/w9-replies.ts';
+import { loadLoop, resolvedRoles, saveLoop } from '../app/components/loop-data.ts';
+import { roleRules, type Role, type RoleConfig } from '../app/lib/role-rules.ts';
+import { action } from '../app/routes/loop.tsx';
+import { RouterContextProvider } from 'react-router';
+import { servicesContext } from '../app/load-context.ts';
+const closes:(()=>Promise<void>)[]=[];
+afterEach(async()=>{for(const close of closes.splice(0))await close();});
+async function setup(){const s=await w9Kernel();closes.push(s.close);return s;}
+test('全局模型和 Effort 真实写入读回',async()=>{const s=await setup();expect(await saveLoop(s,undefined,[{role:'plan',fields:{model:'new',effort:'xhigh'}}])).toEqual({saved:['plan']});expect(resolvedRoles((await loadLoop(s)).config!).plan).toMatchObject({model:'new',effort:'xhigh'});});
+test('项目覆盖隔离及恢复跟随全局',async()=>{const s=await setup();const ids:string[]=[];for(const name of ['a','b'])ids.push(((await s.core.call('project.add',{path:s.repo(name)})) as {project:{id:string}}).project.id);await saveLoop(s,undefined,[{role:'plan',fields:{model:'global'}}]);await saveLoop(s,ids[0],[{role:'plan',fields:{model:'project'}}]);expect((await loadLoop(s,ids[0])).config!.resolved.roles[0]).toMatchObject({provenance:'project',config:{model:'project'}});expect(resolvedRoles((await loadLoop(s,ids[1])).config!).plan.model).toBe('global');await saveLoop(s,ids[0],[{role:'plan',fields:{}}],true);expect((await loadLoop(s,ids[0])).config!.resolved.roles[0]).toMatchObject({provenance:'global',config:{model:'global'}});});
+test('17 行页面判定与真实内核逐行一致',async()=>{const s=await setup();const dir=join(s.userHome,'.claude/skills/only-claude');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'SKILL.md'),'# Skill');const base=await loadLoop(s);const rows:{role:Role;fields:Partial<RoleConfig>;seed?:Role}[]=[];for(const role of ['review','audit','retro'] as Role[]) rows.push({role,fields:{runtime:'claude',model:''}},{role,fields:{runtime:'claude',model:'other'}},{role,fields:{runtime:'claude',enabled:false}});rows.push({role:'plan',fields:{skills:['missing']}},{role:'plan',fields:{skills:['only-claude'],runtime:'codex',model:'different'}},{role:'plan',fields:{skills:['only-claude']}},{role:'review',fields:{runtime:'claude',model:' '}},{role:'plan',fields:{model:'',enabled:false}});for(const role of ['review','audit','retro'] as Role[]) rows.push({role,fields:{runtime:'claude',model:'named'},seed:role==='review'?'plan':'impl'});expect(rows).toHaveLength(17);for(const [i,row] of rows.entries()){const {project}=await s.core.call('project.add',{path:s.repo(`case-${i}`)}) as {project:{id:string}};const roles=resolvedRoles(base.config!);if(row.seed){await saveLoop(s,project.id,[{role:row.seed,fields:{model:'named'}}]);roles[row.seed]={...roles[row.seed],model:'named'};}roles[row.role]={...roles[row.role],...row.fields};const rejected=roleRules(roles,base.skills).length>0;const result=await saveLoop(s,project.id,[row]);expect(!!result.error,JSON.stringify(row)).toBe(rejected);}});
+test('action 原样保留内核拒绝 message',async()=>{const s=await setup();const fields={runtime:'claude' as const};const direct=await saveLoop(s,undefined,[{role:'review',fields}]);const context=new RouterContextProvider();context.set(servicesContext,s);const request=new Request('http://localhost/loop',{method:'POST',body:new URLSearchParams({changes:JSON.stringify([{role:'review',fields}])})});expect(await action({request,context,params:{},url:new URL(request.url),pattern:'/loop'})).toEqual(direct);expect(direct.error).toBeTruthy();});
+test('逐项保存中途拒绝保留已写项',async()=>{const s=await setup();const result=await saveLoop(s,undefined,[{role:'plan',fields:{model:'new'}},{role:'review',fields:{runtime:'claude',model:'new'}},{role:'audit',fields:{model:'unwritten'}}]);expect(result.saved).toEqual(['plan']);expect(result.error).toBeTruthy();const r=resolvedRoles((await loadLoop(s)).config!);expect(r.plan.model).toBe('new');expect(r.audit.model).toBe('');});
+
+test('读盘错误保留内核原文并不展示可编辑配置',async()=>{const s=await setup();writeFileSync(join(s.automeHome,'config.toml'),'[broken');const direct=await s.gateway.read({method:'config.get'});const data=await loadLoop(s);expect(data.error).toBe(direct.body.error);expect(data.config).toBeUndefined();});
+
+test('已绑定全局与项目技能时 set_loop 写入成功且读回', async () => {
+  const s = await setup();
+  const path = s.repo('skills');
+  const { project } = await s.core.call('project.add', { path }) as { project: { id: string } };
+  for (const [scope, root, name] of [[undefined, s.userHome, 'global-skill'], [project.id, path, 'project-skill']] as const) {
+    const dir = join(root, '.claude/skills', name); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+    expect(await saveLoop(s, scope, [{ role: 'plan', fields: { skills: [name] } }])).toEqual({ saved: ['plan'] });
+    expect(await saveDefault(s, scope, 'parallel', '2')).toEqual({ saved: true });
+    expect((await loadLoop(s, scope)).config!.resolved.loop_defaults.parallel).toBe(2);
+  }
+});
+test('项目四项覆盖隔离、逐项 null 恢复，修改全局后真正继续继承', async () => {
+  const s = await setup();
+  const { project } = await s.core.call('project.add', { path: s.repo('defaults') }) as { project: { id: string } };
+  const { project: other } = await s.core.call('project.add', { path: s.repo('other') }) as { project: { id: string } };
+  for (const f of defaultFields) {
+    expect(await saveDefault(s, undefined, f.key, String(f.min))).toEqual({ saved: true });
+    expect(await saveDefault(s, project.id, f.key, String(f.min + 1))).toEqual({ saved: true });
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min + 1);
+    expect((await loadLoop(s, other.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min);
+    expect(await saveDefault(s, project.id, f.key, 'null')).toEqual({ saved: true });
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min);
+    await saveDefault(s, undefined, f.key, String(f.min + 2));
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min + 2);
+  }
+});

@@ -19,7 +19,7 @@ function gateway(fail?: string): KernelGateway {
 }
 test('1 reads list once and each detail once through the gateway', async () => {
   const g = gateway(); await loadShell(g);
-  expect(vi.mocked(g.read).mock.calls).toEqual([[{ method: 'project.list', params: {} }], ...['P-1', 'P-2'].map(project_id => [{ method: 'project.get', params: { project_id } }]), [{ method: 'dashboard.get', params: {} }]]);
+  expect(vi.mocked(g.read).mock.calls).toEqual([[{ method: 'project.list', params: {} }], ...['P-1', 'P-2'].map(project_id => [{ method: 'project.get', params: { project_id } }]), [{ method: 'dashboard.get', params: {} }], [{ method: 'skills.list', params: {} }]]);
   expect(g.write).not.toHaveBeenCalled();
 });
 test('2 shared classification drives counts and exact sorted overview membership', async () => {
@@ -49,7 +49,7 @@ test('4 list failures and missing gateway return an offline empty shell', async 
 });
 test('5 only whitelisted task fields leave the loader, including zero fix_round', async () => {
   const shell = await loadShell(gateway());
-  shell.tasks.forEach((task, i) => expect(Object.keys(task).sort()).toEqual(['id', 'kind', 'title', 'project_id', 'state', ...(i === 0 ? ['fix_round'] : [])].sort()));
+  shell.tasks.forEach((task, i) => expect(Object.keys(task).sort()).toEqual(['id', 'kind', 'title', 'project_id', 'state', 'created_at', 'completed_at', 'cost_usd', 'cost_sessions_without_cost', 'metrics', 'queue_position', 'blocked_by', ...(i === 0 ? ['fix_round'] : [])].sort()));
   expect(shell.tasks[0].fix_round).toBe(0); expect(JSON.stringify(shell)).not.toContain('private request');
 });
 test('6 root loader returns the same shell through RouterContextProvider', async () => {
@@ -58,7 +58,8 @@ test('6 root loader returns the same shell through RouterContextProvider', async
   const now = '2026-11-14T00:00:00.000Z';
   vi.setSystemTime(new Date(now));
   try {
-    expect(await loader(args)).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+    const { overview, ...loaded } = await loader(args); expect(overview?.error).toContain('总览事件服务不可用');
+    expect(loaded).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
   } finally { vi.useRealTimers(); }
 });
 
@@ -71,4 +72,24 @@ test('8 一个坏配置不影响其它项目与任务', async () => {
   const g = gateway(), read = g.read;
   g.read = vi.fn(input => (input as { method: string }).method === 'dashboard.get' ? Promise.resolve({ status: 200, body: { ok: true, payload: { projects: [{ project: { id: 'P-2' }, config_error: '坏配置' }] } } }) : read(input));
   const result = await loadShell(g); expect(result.projects[0].counts?.running).toBe(2); expect(result.tasks).toHaveLength(tasks.length); expect(result.projects[0].configError).toBeUndefined(); expect(result.projects[1].configError).toBe('坏配置'); expect(result.projects[1].alerts).toBeUndefined();
+});
+
+test('9 driver.list unknown_method preserves inference and empty known list', async () => {
+  const { readDrivers } = await import('../server/drivers.ts');
+  const read = () => readDrivers(async () => { throw { code: 'unknown_method' }; }, () => 1, () => ({ skipped_last_minute: 2, last_skipped_at: null }));
+  expect((await loadShell(gateway(), read)).drivers).toEqual({ available: false, list: [], other_driver: { skipped_last_minute: 2, last_skipped_at: null } });
+  expect((await loadShell(gateway(), async () => ({ available: true, list: [] }))).drivers?.available).toBe(true);
+});
+test('10 skills failures hide count and recovery includes zero and nonzero', async () => {
+  for (const fail of ['skills.list']) expect((await loadShell(gateway(fail))).skillCount).toBeUndefined();
+  const g = gateway(), read = g.read;
+  for (const skills of [[], [{ name: 'one' }]]) {
+    g.read = vi.fn(input => (input as { method: string }).method === 'skills.list' ? Promise.resolve({ status: 200, body: { ok: true, payload: { skills } } }) : read(input));
+    expect((await loadShell(g)).skillCount).toBe(skills.length);
+  }
+  g.read = vi.fn(input => (input as { method: string }).method === 'skills.list' ? Promise.reject(Error('offline')) : read(input));
+  expect((await loadShell(g)).kernel.ok).toBe(true);
+});
+test('11 completed counts exclude cancelled and preserve empty projects', async () => {
+  const result = await loadShell(gateway()); expect(result.projects.map(p => p.done)).toEqual([1, 0]);
 });

@@ -1468,7 +1468,8 @@ fn config_set_loop(ctx: &mut Ctx, params: &Value) -> DispatchResult {
                 next.loop_defaults.budget_factor = v;
             }
             let resolved = config::resolve(&next, &ProjectConfig::default());
-            reject_if_invalid(&config::validate(&resolved, &config::NoSkills))?;
+            let inventory = skills::scan_global(&ctx.home.to_string_lossy());
+            reject_if_invalid(&config::validate(&resolved, &inventory))?;
             config_io::save_global(&ctx.autome_home, &next)?;
         }
         Some(id) => {
@@ -1488,7 +1489,8 @@ fn config_set_loop(ctx: &mut Ctx, params: &Value) -> DispatchResult {
                 project_config.loop_overrides.budget_factor = budget_factor;
             }
             let resolved = config::resolve(&global, &project_config);
-            reject_if_invalid(&config::validate(&resolved, &config::NoSkills))?;
+            let inventory = skills::scan(&ctx.home.to_string_lossy(), &p.path);
+            reject_if_invalid(&config::validate(&resolved, &inventory))?;
             config_io::save_project(repo, &project_config)?;
             // The parallel limit is also cached on the project row, because
             // the scheduler reads it on every slot decision.
@@ -3298,6 +3300,7 @@ fn skills_list(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
                 .collect();
             json!({
                 "name": s.name,
+                "description": skills::description(s),
                 "sources": s.sources,
                 "visible_to": s.visible_to(),
                 "project_scoped": s.is_project_scoped(),
@@ -3407,6 +3410,57 @@ pub const READ_METHODS: [&str; 18] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn set_loop_accepts_when_a_bound_skill_exists() {
+        let mut sb = Sandbox::new("set-loop-skills");
+        let id = sb.add_project("p");
+        for (project, skill, path) in [
+            (
+                None,
+                "global-skill",
+                sb.ctx.home.join(".claude/skills/global-skill"),
+            ),
+            (
+                Some(id.as_str()),
+                "project-skill",
+                sb.path("p/.claude/skills/project-skill"),
+            ),
+        ] {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "# Skill").unwrap();
+            let bound = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "config.set_role",
+                    json!({"project_id": project, "role": "plan", "skills": [skill]}),
+                ),
+            );
+            ok_payload(&bound);
+            let out = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "config.set_loop",
+                    json!({"project_id": project, "parallel": 2}),
+                ),
+            );
+            assert_eq!(ok_payload(&out)["resolved"]["loop_defaults"]["parallel"], 2);
+            std::fs::remove_dir_all(path).unwrap();
+            let rejected = handle_command(
+                sb.ctx(),
+                &cmd(
+                    "config.set_loop",
+                    json!({"project_id": project, "parallel": 3}),
+                ),
+            );
+            assert!(err_message(&rejected).contains(skill));
+            let read = handle_command(sb.ctx(), &cmd("config.get", json!({"project_id": project})));
+            assert_eq!(
+                ok_payload(&read)["resolved"]["loop_defaults"]["parallel"],
+                2
+            );
+        }
+    }
+
     #[test]
     fn session_minutes_config_validate() {
         assert!(git_available());
