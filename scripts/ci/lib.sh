@@ -187,7 +187,17 @@ execute_prep() {
     [ ! -d "$2" ] || return 0
     shift 2
   fi
+  ci_prep_previous_failures=$failed_count
   run "$ci_prep_name" "$@"
+  if [ "$failed_count" -gt "$ci_prep_previous_failures" ]; then
+    ci_prep_failed=1
+  elif [ "${ci_prep_failed-0}" = 0 ]; then
+    if node "$root/scripts/ci/inputs.mjs" keys "$ci_tmp/steps" > "$ci_tmp/keys.next"; then
+      mv "$ci_tmp/keys.next" "$ci_tmp/keys"
+    else
+      printf 'unknown\n' > "$ci_tmp/keys"
+    fi
+  fi
 }
 
 execute_step() {
@@ -199,6 +209,10 @@ execute_step() {
     reused=$((reused + 1))
     ci_report reused "$ci_key" "$ci_name"
     return 0
+  fi
+  if [ -f "$ci_tmp/keys" ]; then
+    ci_key=$(sed -n "$((ci_index + 1))p" "$ci_tmp/keys")
+    case "$ci_key" in ''|unknown) ci_key=- ;; esac
   fi
   ci_previous_failures=$failed_count
   ci_active_key=$ci_key

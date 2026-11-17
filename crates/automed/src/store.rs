@@ -176,6 +176,13 @@ pub const COOLDOWN_MAX_MINUTES: i64 = 60;
 /// `(key, domain, proposal, evidence, state)` for one rule proposal.
 pub type RuleProposalRow = (String, String, String, Vec<String>, String);
 
+pub struct TimedEvent {
+    pub seq: u64,
+    pub kind: String,
+    pub payload: Value,
+    pub at_secs: Option<i64>,
+}
+
 pub struct StoredEvent {
     pub seq: u64,
     pub kind: String,
@@ -779,6 +786,27 @@ impl Store {
         )?;
         let rows = query.query_map(params![task_id, kind], |r| r.get::<_, String>(0))?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// Complete event stream with timestamps parsed by SQLite, in ledger order.
+    pub fn timed_events(&self, subject_id: &str, kinds: &[&str]) -> Result<Vec<TimedEvent>> {
+        let mut query = self.conn.prepare(
+            "SELECT seq, kind, payload, CAST(strftime('%s', at) AS INTEGER) FROM events
+             WHERE subject_id = ?1 AND kind IN (SELECT value FROM json_each(?2)) ORDER BY seq",
+        )?;
+        let rows = query.query_map(params![subject_id, serde_json::to_string(kinds)?], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get(3)?))
+        })?;
+        rows.map(|row| {
+            let (seq, kind, payload, at_secs) = row?;
+            Ok(TimedEvent {
+                seq,
+                kind,
+                payload: serde_json::from_str(&payload)?,
+                at_secs,
+            })
+        })
+        .collect()
     }
 
     /// Latest of a set of event kinds, without a payload-field restriction.
@@ -2700,6 +2728,37 @@ pub fn task_counts(tasks: &[TaskRecord]) -> BTreeMap<&'static str, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_metrics_timed_events_parse_and_filter() {
+        let s = store();
+        for (kind, at) in [
+            ("gate.started", "2026-01-01T00:00:00Z"),
+            ("gate.result", "2026-01-01 00:00:10"),
+            ("gate.result", "invalid"),
+            ("gate.reused", "2026-01-01T00:00:20Z"),
+        ] {
+            let seq = s
+                .append_event(kind, "task", serde_json::json!({"node":"gate"}))
+                .unwrap();
+            s.conn
+                .execute("UPDATE events SET at=?1 WHERE seq=?2", params![at, seq])
+                .unwrap();
+        }
+        s.append_event("gate.result", "other", serde_json::json!({}))
+            .unwrap();
+        let events = s
+            .timed_events("task", &["gate.started", "gate.result"])
+            .unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events.windows(2).all(|w| w[0].seq < w[1].seq));
+        assert_eq!(events[1].at_secs.unwrap() - events[0].at_secs.unwrap(), 10);
+        assert_eq!(events[2].at_secs, None);
+        assert_eq!(events[0].kind, "gate.started");
+        assert_eq!(events[0].payload["node"], "gate");
+        assert!(s.timed_events("task", &[]).unwrap().is_empty());
+    }
+
     use autome_domain::task::{FailureReason, Node};
 
     #[test]

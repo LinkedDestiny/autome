@@ -36,7 +36,7 @@ writeFileSync(process.argv[2], "ci_partial 'vitest related fixture' npx vitest r
   const base = git(['rev-parse', 'HEAD']);
   const report = resolve(dir, 'report');
   const run = (args = ['--plan'], more = {}) => spawnSync('sh', ['scripts/ci-quick.sh', ...args], {
-    cwd: root, env: { ...env, AUTOME_ROUND_START: base, ...more }, encoding: 'utf8', timeout: 120_000,
+    cwd: root, env: { ...env, NO_COLOR: '1', FORCE_COLOR: '0', AUTOME_ROUND_START: base, ...more }, encoding: 'utf8', timeout: 120_000,
   });
   const plan = (more = {}, args = ['--plan']) => { const r = run(args, more); assert.equal(r.status, 0, r.stdout + r.stderr); return r.stdout; };
   const change = path => appendFileSync(resolve(root, path), '\n// quick change\n');
@@ -265,4 +265,24 @@ test('17 shared automed test inputs never admit the whole end_to_end target', t 
   assert.ok(list.some(c => c.includes('prompt_rendering')));
   assert.ok(list.every(c => !c.includes('--tests') && !c.includes('end_to_end')));
   assert.match(output, /未跑.*end_to_end/);
+});
+
+for (const fail of [false, true]) test(`${fail ? '20' : '19'} 快检装依赖${fail ? '失败不记录通过' : '成功后记录并沿用'}`, t => {
+  const f = fixture(t, true);
+  const steps = resolve(f.root, 'scripts/ci/steps.sh');
+  f.put('scripts/ci/steps.sh', readFileSync(steps, 'utf8').replace("prep 'Web install' sh -c 'echo INSTALL'", "prep 'Web install' sh scripts/ci/install-node.sh apps/web"));
+  const calls = resolve(f.dir, 'npm-calls');
+  writeFileSync(resolve(f.dir, 'bin/npm'), `#!/bin/sh\nif [ "$1" = -v ]; then echo fixture; exit; fi\nmkdir -p node_modules\necho changed >> node_modules/.package-lock.json\necho install >> '${calls}'\nexit ${fail ? 1 : 0}\n`, { mode: 0o755 });
+  const env = { AUTOME_GATE_REPORT: f.report };
+  const first = f.run([], env); assert.equal(first.status, fail ? 1 : 0, first.stdout + first.stderr);
+  const rows = () => readFileSync(f.report, 'utf8').trim().split('\n').slice(1).map(l => l.split('\t'));
+  const web = () => rows().filter(r => ['Web lint', 'Web typecheck'].includes(r[2]));
+  assert.equal(web().length, 2);
+  for (const [action, key] of web()) { assert.equal(action, fail ? 'partial' : 'ran'); assert.match(key, fail ? /^-$/ : /^[a-f0-9]{40}$/); }
+  const passes = resolve(f.dir, 'passes');
+  writeFileSync(passes, rows().filter(r => r[0] === 'ran').map(r => `${r[1]}\tT-1\tgate\tabc123\t2026-11-17\n`).join(''));
+  rmSync(calls);
+  const second = f.run([], { ...env, AUTOME_GATE_PASSES: passes }); assert.equal(second.status, fail ? 1 : 0, second.stdout + second.stderr);
+  assert.deepEqual(web().map(r => r[0]), fail ? ['partial', 'partial'] : ['reused', 'reused']);
+  if (!fail) { assert.doesNotMatch(second.stdout, /==> Web install/); assert.equal(existsSync(calls), false); }
 });

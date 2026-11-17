@@ -106,8 +106,53 @@ pub fn snapshot(status: &StatusBlock) -> Vec<(String, MilestoneState)> {
         .collect()
 }
 
+/// Counts completed attempts; unmatched starts never imply a result.
+#[derive(Debug, Default, PartialEq)]
+pub struct GateCounts {
+    pub round_gate_runs: u32,
+    pub round_gate_failures: u32,
+    pub merge_gate_runs: u32,
+    pub merge_gate_failures: u32,
+    pub gate_seconds: u64,
+}
+
+/// Input is in ledger sequence order, as returned by Store::timed_events.
+pub fn gate_counts(events: &[crate::store::TimedEvent]) -> GateCounts {
+    let mut counts = GateCounts::default();
+    let mut starts = BTreeMap::new();
+    for event in events {
+        let node = event.payload["node"].as_str();
+        let log = event.payload["log"].as_str();
+        if event.kind == "gate.started" {
+            if let (Some(node), Some(log)) = (node, log) {
+                starts.insert((node, log), event.at_secs);
+            }
+        } else if event.kind == "gate.result" {
+            let failed = u32::from(event.payload["ok"].as_bool() == Some(false));
+            match node {
+                Some("gate" | "fix_gate") => {
+                    counts.round_gate_runs += 1;
+                    counts.round_gate_failures += failed;
+                }
+                Some("merge_gate") => {
+                    counts.merge_gate_runs += 1;
+                    counts.merge_gate_failures += failed;
+                }
+                _ => {}
+            }
+            if let (Some(node), Some(log), Some(end)) = (node, log, event.at_secs)
+                && let Some(Some(start)) = starts.get(&(node, log))
+            {
+                counts.gate_seconds += end.saturating_sub(*start).max(0) as u64;
+            }
+        }
+    }
+    counts
+}
+
 /// Everything the aggregation needs that is not in the status block.
 pub struct Counts {
+    pub gates: GateCounts,
     pub protocol_failures: u32,
     pub closed_then_contradicted: u32,
     pub impl_defects: u32,
@@ -148,6 +193,11 @@ pub fn aggregate(
         // was always `None`. `skip_serializing_if` kept it off the wire
         // either way, so dropping the argument changes no output.
         rules_hash: None,
+        round_gate_runs: Some(counts.gates.round_gate_runs),
+        round_gate_failures: Some(counts.gates.round_gate_failures),
+        merge_gate_runs: Some(counts.gates.merge_gate_runs),
+        merge_gate_failures: Some(counts.gates.merge_gate_failures),
+        gate_seconds: Some(counts.gates.gate_seconds),
         design_rounds_used: design_used,
         design_rounds_limit: design_limit,
         impl_rounds_used: impl_used,
@@ -169,6 +219,125 @@ pub fn aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event(
+        kind: &str,
+        node: &str,
+        log: &str,
+        at: Option<i64>,
+        ok: bool,
+    ) -> crate::store::TimedEvent {
+        crate::store::TimedEvent {
+            seq: 0,
+            kind: kind.into(),
+            at_secs: at,
+            payload: serde_json::json!({"node":node,"log":log,"kind":if node == "fix_gate" {"repro"} else {"full"},"sha":"abc","command":"check","lane":"heavy","ok":ok,"exit_code":if ok {0} else {crate::gate::TIMED_OUT},"tail":""}),
+        }
+    }
+    #[test]
+    fn gate_metrics_group_by_node() {
+        let events: Vec<_> = [
+            "gate",
+            "fix_gate",
+            "merge_gate",
+            "repro_check",
+            "main_check",
+        ]
+        .iter()
+        .map(|n| event("gate.result", n, "x", Some(1), true))
+        .collect();
+        assert_eq!(
+            gate_counts(&events),
+            GateCounts {
+                round_gate_runs: 2,
+                merge_gate_runs: 1,
+                ..Default::default()
+            }
+        );
+    }
+    #[test]
+    fn gate_metrics_failures_include_timeouts() {
+        let events: Vec<_> = ["gate", "fix_gate", "merge_gate", "repro_check"]
+            .iter()
+            .map(|n| event("gate.result", n, "x", Some(1), false))
+            .collect();
+        assert_eq!(
+            gate_counts(&events),
+            GateCounts {
+                round_gate_runs: 2,
+                round_gate_failures: 2,
+                merge_gate_runs: 1,
+                merge_gate_failures: 1,
+                gate_seconds: 0
+            }
+        );
+    }
+    #[test]
+    fn gate_metrics_reused_skipped_are_not_attempts() {
+        let events = [
+            event("gate.started", "gate", "x", Some(0), true),
+            event("gate.reused", "gate", "x", Some(9), true),
+            event("gate.skipped", "merge_gate", "x", Some(10), false),
+        ];
+        assert_eq!(gate_counts(&events), GateCounts::default());
+    }
+    #[test]
+    fn gate_metrics_unmatched_starts_are_unknown() {
+        assert_eq!(
+            gate_counts(&[event("gate.started", "gate", "x", Some(0), true)]),
+            GateCounts::default()
+        );
+        assert_eq!(
+            gate_counts(&[event("gate.result", "gate", "x", Some(9), true)]).gate_seconds,
+            0
+        );
+    }
+    #[test]
+    fn gate_metrics_timing_pairs_latest_node_and_log() {
+        let mut events = vec![event("gate.queued", "gate", "x", Some(-999), true)];
+        for node in [
+            "gate",
+            "fix_gate",
+            "merge_gate",
+            "repro_check",
+            "main_check",
+        ] {
+            events.extend([
+                event("gate.started", node, "x", Some(0), true),
+                event("gate.started", node, "x", Some(10), true),
+                event("gate.started", node, "other", Some(19), true),
+                event("gate.result", node, "x", Some(20), true),
+            ]);
+        }
+        assert_eq!(gate_counts(&events).gate_seconds, 50);
+        for (start, end) in [(Some(20), Some(10)), (None, Some(30)), (Some(10), None)] {
+            assert_eq!(
+                gate_counts(&[
+                    event("gate.started", "gate", "x", start, true),
+                    event("gate.result", "gate", "x", end, true)
+                ])
+                .gate_seconds,
+                0
+            );
+        }
+        assert_eq!(
+            gate_counts(&[
+                event("gate.started", "gate", "x", Some(1), true),
+                event("gate.result", "merge_gate", "x", Some(9), true)
+            ])
+            .gate_seconds,
+            0
+        );
+    }
+    #[test]
+    fn gate_metrics_empty_measures_five_zeroes() {
+        let m = aggregate(None, 0, None, counts());
+        for name in &TaskMetrics::METRIC_NAMES[12..] {
+            assert_eq!(m.value(name), Some(0.0));
+        }
+        assert_eq!(gate_counts(&[]), GateCounts::default());
+    }
+
     use autome_domain::status_block::{ConvergenceMode, DocStatus, Milestone};
 
     fn milestone(id: &str, state: MilestoneState, reopen: u32, domains: &[&str]) -> Milestone {
@@ -202,6 +371,7 @@ mod tests {
 
     fn counts() -> Counts {
         Counts {
+            gates: GateCounts::default(),
             protocol_failures: 0,
             closed_then_contradicted: 0,
             impl_defects: 0,

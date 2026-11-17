@@ -92,6 +92,8 @@ try {
     const { keys, unclaimed } = calculate(rows);
     if (mode === 'key') {
       console.log(keys[Number(args[0])]);
+    } else if (mode === 'keys') {
+      console.log(keys.map(key => key ?? '').join('\n'));
     } else if (mode === 'claims') {
       for (const { path } of unclaimed) console.log(path);
       process.exitCode = unclaimed.length ? 1 : 0;

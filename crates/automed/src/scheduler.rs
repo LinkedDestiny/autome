@@ -2994,6 +2994,31 @@ fn record_failed_action(
 
 /// Folds a finished task into `TaskMetrics` and stores it.
 pub(crate) fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
+    let metrics = measure_task(ctx, task_id)?;
+    ctx.store.set_task_metrics(task_id, &metrics)?;
+    ctx.store
+        .append_event("task.metrics", task_id, serde_json::to_value(&metrics)?)?;
+    Ok(())
+}
+
+fn retro_task_metrics(ctx: &Ctx, task_id: &str) -> Option<autome_domain::metrics::TaskMetrics> {
+    match measure_task(ctx, task_id) {
+        Ok(metrics) => Some(metrics),
+        Err(e) => {
+            tracing::warn!(task_id = %task_id, error = %e, "could not measure retro metrics");
+            ctx.store.task_metrics(task_id).unwrap_or_else(|e| {
+                    tracing::warn!(task_id = %task_id, error = %e, "could not read stored retro metrics");
+                    None
+                })
+        }
+    }
+}
+
+/// Measures the current snapshot without publishing terminal task metrics.
+pub(crate) fn measure_task(
+    ctx: &Ctx,
+    task_id: &str,
+) -> Result<autome_domain::metrics::TaskMetrics> {
     let task = ctx.store.get_task(task_id)?;
     let project = ctx.store.get_project(&task.project_id)?;
     let worktree = task_docs_root(&project, &task.slug);
@@ -3018,6 +3043,10 @@ pub(crate) fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     }
 
     let counts = crate::task_metrics::Counts {
+        gates: crate::task_metrics::gate_counts(
+            &ctx.store
+                .timed_events(task_id, &["gate.started", "gate.result"])?,
+        ),
         protocol_failures: ctx.store.count_events(task_id, "task.protocol_failure")?,
         closed_then_contradicted: ctx.store.count_events(task_id, "milestone.contradicted")?,
         impl_defects,
@@ -3037,13 +3066,7 @@ pub(crate) fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
         task.protocol_ref.clone(),
         counts,
     );
-    ctx.store.set_task_metrics(task_id, &metrics)?;
-    ctx.store.append_event(
-        "task.metrics",
-        task_id,
-        serde_json::to_value(&metrics).unwrap_or_else(|_| json!({})),
-    )?;
-    Ok(())
+    Ok(metrics)
 }
 
 /// N is computed from the *initial* milestone count when the design is
@@ -3720,7 +3743,7 @@ fn launch_session(
     // The retro round writes against the task's measured numbers rather than
     // its recollection of the run, so it is the one round handed them.
     let task_metrics = match kind.role() {
-        Some(Role::Retro) => ctx.store.task_metrics(&task.id)?,
+        Some(Role::Retro) => retro_task_metrics(ctx, &task.id),
         _ => None,
     };
     // Written before the prompt that points at it. A round told to read a
@@ -6306,6 +6329,115 @@ mod tests {
     use autome_domain::status_block::MilestoneState;
     use autome_domain::task::Disposition;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn retro_metrics_read_failure_falls_back_without_publishing() {
+        let mut w = World::new("retro-read-failure");
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let path = w.root.join("ledger.db");
+        w.ctx.store = crate::store::Store::open(&path).unwrap();
+        w.ctx.store.insert_project(&project).unwrap();
+        w.add_task("T-1", "metrics");
+        let stored = autome_domain::metrics::TaskMetrics {
+            impl_rounds_used: 7,
+            ..Default::default()
+        };
+        w.ctx.store.set_task_metrics("T-1", &stored).unwrap();
+        w.ctx
+            .store
+            .append_event("gate.result", "T-1", json!({}))
+            .unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE events SET payload = 'invalid' WHERE kind = 'gate.result'",
+            [],
+        )
+        .unwrap();
+        assert!(measure_task(&w.ctx, "T-1").is_err());
+        assert_eq!(retro_task_metrics(&w.ctx, "T-1"), Some(stored));
+        conn.execute("UPDATE tasks SET metrics = NULL WHERE id = 'T-1'", [])
+            .unwrap();
+        assert!(retro_task_metrics(&w.ctx, "T-1").is_none());
+        conn.execute("UPDATE tasks SET metrics = 'invalid' WHERE id = 'T-1'", [])
+            .unwrap();
+        assert!(retro_task_metrics(&w.ctx, "T-1").is_none());
+        assert_eq!(w.ctx.store.count_events("T-1", "task.metrics").unwrap(), 0);
+    }
+
+    #[test]
+    fn gate_metrics_measure_without_writing_then_persist() {
+        let mut w = World::new("gate-metrics");
+        w.add_task("T-1", "metrics");
+        for (i, (node, ok)) in [
+            ("merge_gate", false),
+            ("merge_gate", true),
+            ("gate", false),
+            ("gate", true),
+            ("fix_gate", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let payload = json!({"node":node,"sha":"abc","command":"check","kind":"full","lane":"heavy","log":format!("gate-{i}"),"ok":ok,"exit_code":if ok {0} else {1},"tail":""});
+            w.ctx
+                .store
+                .append_event("gate.started", "T-1", payload.clone())
+                .unwrap();
+            w.ctx
+                .store
+                .append_event("gate.result", "T-1", payload)
+                .unwrap();
+        }
+        for kind in ["gate.reused", "gate.skipped", "gate.started"] {
+            w.ctx
+                .store
+                .append_event(
+                    kind,
+                    "T-1",
+                    json!({"node":"gate","log":"unmatched","ok":true}),
+                )
+                .unwrap();
+        }
+        let measured = measure_task(&w.ctx, "T-1").unwrap();
+        assert!(w.ctx.store.task_metrics("T-1").unwrap().is_none());
+        assert_eq!(w.ctx.store.count_events("T-1", "task.metrics").unwrap(), 0);
+        write_task_metrics(&mut w.ctx, "T-1").unwrap();
+        let stored = w.ctx.store.task_metrics("T-1").unwrap().unwrap();
+        assert_eq!(measured, stored);
+        let results = w.ctx.store.task_events("T-1", "gate.result").unwrap();
+        for (nodes, runs, failures) in [
+            (
+                &["gate", "fix_gate"][..],
+                stored.round_gate_runs,
+                stored.round_gate_failures,
+            ),
+            (
+                &["merge_gate"][..],
+                stored.merge_gate_runs,
+                stored.merge_gate_failures,
+            ),
+        ] {
+            let selected: Vec<_> = results
+                .iter()
+                .filter(|e| nodes.contains(&e["node"].as_str().unwrap()))
+                .collect();
+            assert_eq!(runs, Some(selected.len() as u32));
+            assert_eq!(
+                failures,
+                Some(selected.iter().filter(|e| e["ok"] == false).count() as u32)
+            );
+        }
+        let timed = w
+            .ctx
+            .store
+            .timed_events("T-1", &["gate.started", "gate.result"])
+            .unwrap();
+        assert_eq!(
+            stored.gate_seconds,
+            Some(crate::task_metrics::gate_counts(&timed).gate_seconds)
+        );
+        assert_eq!(w.ctx.store.count_events("T-1", "task.metrics").unwrap(), 1);
+    }
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

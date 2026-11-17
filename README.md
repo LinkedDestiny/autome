@@ -564,14 +564,16 @@ Rust tests use `--no-fail-fast` so all test targets run even after a failure.
 The local gate continues through every step and ends with a bounded list of
 failed Rust targets/cases and Web files/cases; omitted cases remain in the full log.
 Steps declare commands and input prefixes in `scripts/ci/steps.sh`. Keys include
-actual tracked and untracked non-ignored contents, toolchain versions, global
-inputs and unclaimed paths. A matching pass is reused only from an external
+actual tracked and untracked non-ignored contents, toolchain versions (including
+installed dependency trees), global inputs and unclaimed paths. A matching pass is reused only from an external
 `AUTOME_GATE_PASSES` snapshot; absent, invalid or in-worktree snapshots cause
 execution. `AUTOME_GATE_REPORT` receives incremental results when provided by
 the host. Without host variables, every step runs and no report is written.
 Preparation (including building both core binaries) runs when a following check
-executes. Binary/target override variables are cleared to keep tests on the freshly
-built `target/debug` binaries. Add new cross-directory test dependencies to the
+executes. Successful preparation refreshes keys for subsequent executed steps; earlier
+results retain their original keys. After any preparation failure, keys remain
+frozen for the rest of that run. Binary/target override variables are cleared to
+keep tests on the freshly built `target/debug` binaries. Add new cross-directory test dependencies to the
 step inputs even when another step already claims that directory.
 Script-level regression tests run via `node --test scripts/test/*.test.mjs`.
 
