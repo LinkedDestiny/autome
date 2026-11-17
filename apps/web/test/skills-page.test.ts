@@ -19,3 +19,11 @@ test('纯项目禁全局并说明，项目范围继承警告', () => { const tex
 test('conflicts 卡片标红与角色工具原由', () => { const text = renderToString(h(SkillCard, { skill: { ...skills[0], conflicts: ['review'] }, roles, onSelect: noop })); expect(text).toContain('card-red'); expect(text).toContain('评审'); expect(text).toContain('看不到它'); });
 test('空清单有明确提示与内部滚动区', () => { expect(page(undefined, [])).toContain('没有符合条件的技能'); expect(page()).toContain('class="skills-grid" data-scroll-region'); });
 test('失去授权或忙时禁止绑定与打开目录', () => { const text = drawer('beta', 'global', true); expect(text).toContain('<fieldset disabled'); expect(text).toMatch(/disabled="">保存绑定/); expect(text.match(/disabled="">打开目录/g)).toHaveLength(2); });
+test('描述为普通文本且缺失、空串、空白均明确回退', () => {
+  for (const description of [undefined, null, '', '  ', '<script>alert(1)</script>']) {
+    const text = renderToString(h(SkillCard, { skill: { ...skills[0], description }, roles, onSelect: noop }));
+    expect(text).toContain(description?.trim() ? '&lt;script&gt;alert(1)&lt;/script&gt;' : '暂无描述');
+    expect(text).not.toContain('<script>');
+    for (const source of skills[0].sources) expect(text).toContain(source.path);
+  }
+});

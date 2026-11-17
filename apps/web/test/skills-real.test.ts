@@ -1,5 +1,8 @@
+import { createElement as h } from 'react';
+import { renderToString } from 'react-dom/server';
+import { SkillCard } from '../app/routes/skills.tsx';
 import { afterEach, expect, test } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { RouterContextProvider } from 'react-router';
 import { w9Kernel } from './fixtures/w9-replies.ts';
@@ -30,3 +33,19 @@ test('项目取消全局绑定与全局取消后保留项目绑定两方向', as
 test('配置读盘失败保留原文并拒绝保存', async () => { const s = await setup(); writeFileSync(join(s.automeHome, 'config.toml'), '[broken'); const direct = await s.gateway.read({ method: 'config.get' }); expect((await loadSkills(s)).error).toBe(direct.body.error); expect((await saveBinding(s, undefined, 'global', 'alpha', ['plan'])).error).toBe(direct.body.error); });
 test('部分角色保存后拒绝明确返回已写项，不写后续角色', async () => { const s = await setup(); const result = await saveBinding(s, undefined, 'global', 'mixed', ['plan', 'review', 'impl']); expect(result.saved).toEqual(['plan']); expect(result.error).toBeTruthy(); const roles = resolvedRoles((await loadSkills(s)).config!); expect(roles.plan.skills).toEqual(['mixed']); expect(roles.impl.skills).toEqual([]); });
 test('无网关及空输入、非法角色或无项目范围不能保存', async () => { expect((await saveBinding({ gateway: null }, undefined, 'global', 'alpha', ['plan'])).error).toBe('内核不可用'); for (const [scope, name] of [['project', 'alpha'], ['global', '']] as const) expect((await saveBinding({ gateway: null }, undefined, scope, name, [])).error).toBe('绑定请求无效'); });
+test('真实描述按稳定来源首个非空值回退，卡片一致且只读不影响来源绑定可见性', async () => {
+  const s = await setup();
+  const before = (await loadSkills(s)).skills.find(x => x.name === 'alpha')!;
+  const first = join(before.sources[0].path, 'SKILL.md'), second = join(before.sources[1].path, 'SKILL.md');
+  const content = '---\ndescription: >-\n  第一行\n  第二行\n---\n# Skill';
+  writeFileSync(first, '---\ndescription: ""\n---'); writeFileSync(second, content);
+  const skill = (await loadSkills(s)).skills.find(x => x.name === 'alpha')!;
+  expect(skill.description).toBe('第一行 第二行');
+  expect(skill.sources).toEqual(before.sources); expect(skill.visible_to).toEqual(before.visible_to); expect(skill.bound_roles).toEqual(before.bound_roles);
+  expect(renderToString(h(SkillCard, { skill, onSelect: () => {} }))).toContain('第一行 第二行');
+  expect(readFileSync(second, 'utf8')).toBe(content);
+  writeFileSync(first, '---\ndescription: 优先来源\n---');
+  expect((await loadSkills(s)).skills.find(x => x.name === 'alpha')!.description).toBe('优先来源');
+  writeFileSync(first, '# no header'); writeFileSync(second, Buffer.from([255]));
+  expect((await loadSkills(s)).skills.find(x => x.name === 'alpha')!.description).toBeNull();
+});

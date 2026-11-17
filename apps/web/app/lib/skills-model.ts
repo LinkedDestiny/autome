@@ -1,5 +1,5 @@
 import { roleNames, roleOrder, roleRules, type Role, type Roles, type Skill } from './role-rules.ts';
-export type SkillEntry = Skill & { sources: { scope: 'global' | 'project'; runtime: 'claude' | 'codex'; path: string }[]; project_scoped: boolean; bound_roles: Role[]; conflicts: Role[] };
+export type SkillEntry = Skill & { description?: string | null; sources: { scope: 'global' | 'project'; runtime: 'claude' | 'codex'; path: string }[]; project_scoped: boolean; bound_roles: Role[]; conflicts: Role[] };
 export type BindingScope = 'global' | 'project';
 export type SkillFilter = 'all' | 'global' | 'project' | 'bound';
 export function filterSkills(skills: SkillEntry[], filter: SkillFilter, query = '') {

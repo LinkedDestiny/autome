@@ -3300,6 +3300,7 @@ fn skills_list(ctx: &mut Ctx, project_id: Option<&str>) -> DispatchResult {
                 .collect();
             json!({
                 "name": s.name,
+                "description": skills::description(s),
                 "sources": s.sources,
                 "visible_to": s.visible_to(),
                 "project_scoped": s.is_project_scoped(),

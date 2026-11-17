@@ -46,3 +46,5 @@
 
 实现 #17 | M-11 | 开放，截图移交 H-09 | docs/web-面板按动森风格重做/evidence/M-11-r17-impl.md | 布局前置 ps EPERM
 审计 #14 | M-11 | 通过 | docs/web-面板按动森风格重做/evidence/M-11-r17-audit.md | 布局14条与五图重生成移交 H-09/H-10
+
+实现 #18 | M-12 | 待审 | docs/web-面板按动森风格重做/evidence/M-12-r18-impl.md | 快检失败项见证据

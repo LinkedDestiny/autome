@@ -448,6 +448,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .skill-card { display: flex; flex-direction: column; gap: 12px; text-align: left; padding: 20px; min-width: 0; transition: transform 120ms ease; }
 .skill-card:hover { transform: translateY(-2px); }
 .skill-card strong { font-size: 18px; overflow-wrap: anywhere; }
+.skill-description { overflow-wrap: anywhere; white-space: pre-line; }
 .skill-path { font-size: 12px; overflow-wrap: anywhere; }
 .skill-badges { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 .skills-drawer { position: fixed; inset: 64px 16px 16px auto; width: min(460px, 90vw); background: var(--animal-bg-content); border: 2px solid var(--animal-border-strong); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); z-index: 30; display: flex; }

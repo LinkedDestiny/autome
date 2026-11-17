@@ -24,7 +24,7 @@ export async function action({ request, context }: ActionFunctionArgs): Promise<
 }
 export function SkillCard({ skill, roles, onSelect }: { skill: SkillEntry; roles?: Roles; onSelect: () => void }) {
   return <button type="button" className={`card card-pat skill-card card-${skill.conflicts.length ? 'red' : skill.bound_roles.length ? 'green' : 'blue'}`} data-testid={TEST_IDS.skillCard} onClick={onSelect}>
-    <strong>{skill.name}</strong><span className="skill-path">{skill.sources.map(s => s.path).join(' · ')}</span>
+    <strong>{skill.name}</strong><span className="skill-description">{skill.description?.trim() || '暂无描述'}</span><span className="skill-path">{skill.sources.map(s => s.path).join(' · ')}</span>
     <span className="skill-badges">{[...new Set(skill.sources.map(s => s.scope))].map(s => <span key={s} className="pill">{s === 'global' ? '全局' : '项目'}</span>)}{skill.visible_to.map(r => <span className="pill" key={r}>{r === 'claude' ? 'Claude Code' : 'Codex'}</span>)}</span>
     <span className="skill-badges">{skill.bound_roles.length ? skill.bound_roles.map(r => <span className="pill" key={r}>{roleNames[r]} 必用</span>) : '未绑定'}</span>
     {skill.conflicts.map(r => <span key={r}>{roleNames[r]} 用 {roles?.[r].runtime === 'claude' ? 'Claude Code' : 'Codex'}，看不到它</span>)}
