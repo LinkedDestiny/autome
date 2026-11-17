@@ -151,6 +151,17 @@ pub struct TaskMetrics {
     /// Unticked lines in `## 人工验收清单` at the merge gate.
     pub manual_items_open: u32,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_gate_runs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_gate_failures: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_gate_runs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_gate_failures: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_seconds: Option<u64>,
+
     /// Claude sessions only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
@@ -162,7 +173,7 @@ impl TaskMetrics {
     /// The metric names a `predicted_impact` may refer to (plan §3.3, §3.4).
     /// A proposal naming anything else is not measurable, and the review round
     /// rejects it on that ground alone.
-    pub const METRIC_NAMES: [&'static str; 12] = [
+    pub const METRIC_NAMES: [&'static str; 17] = [
         "design_rounds_used",
         "impl_rounds_used",
         "reopen_total",
@@ -175,6 +186,11 @@ impl TaskMetrics {
         "total_turns",
         "total_cost_usd",
         "mean_request_input",
+        "round_gate_runs",
+        "round_gate_failures",
+        "merge_gate_runs",
+        "merge_gate_failures",
+        "gate_seconds",
     ];
 
     pub fn is_metric(name: &str) -> bool {
@@ -196,6 +212,11 @@ impl TaskMetrics {
             "total_tokens" => self.total_tokens as f64,
             "total_turns" => self.total_turns as f64,
             "total_cost_usd" => self.total_cost_usd?,
+            "round_gate_runs" => self.round_gate_runs? as f64,
+            "round_gate_failures" => self.round_gate_failures? as f64,
+            "merge_gate_runs" => self.merge_gate_runs? as f64,
+            "merge_gate_failures" => self.merge_gate_failures? as f64,
+            "gate_seconds" => self.gate_seconds? as f64,
             _ => return None,
         };
         Some(v)
@@ -313,6 +334,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gate_metrics_old_json_preserves_absence() {
+        let raw = r#"{"design_rounds_used":1,"design_rounds_limit":15,"impl_rounds_used":2,"budget_n":15,"milestones":1,"reopen_total":0,"impl_defects":0,"verification_gaps":0,"protocol_failures":0,"closed_then_contradicted":0,"manual_items_open":0,"total_tokens":0,"total_turns":0}"#;
+        let m: TaskMetrics = serde_json::from_str(raw).unwrap();
+        let json = serde_json::to_value(&m).unwrap();
+        for name in &TaskMetrics::METRIC_NAMES[12..] {
+            assert_eq!(m.value(name), None);
+            assert!(json.get(name).is_none());
+        }
+    }
+    #[test]
+    fn gate_metrics_measured_zero_is_present() {
+        let m = TaskMetrics {
+            round_gate_runs: Some(0),
+            round_gate_failures: Some(0),
+            merge_gate_runs: Some(0),
+            merge_gate_failures: Some(0),
+            gate_seconds: Some(0),
+            ..Default::default()
+        };
+        for name in &TaskMetrics::METRIC_NAMES[12..] {
+            assert_eq!(m.value(name), Some(0.0));
+            assert!(TaskMetrics::is_metric(name));
+        }
+    }
+
+    #[test]
     fn empty_metrics_are_distinguishable_from_measured_zeroes() {
         let empty = SessionMetrics::default();
         assert!(empty.is_empty());
@@ -342,6 +389,11 @@ mod tests {
     fn every_metric_name_can_actually_be_read_back() {
         let m = TaskMetrics {
             total_cost_usd: Some(1.5),
+            round_gate_runs: Some(0),
+            round_gate_failures: Some(0),
+            merge_gate_runs: Some(0),
+            merge_gate_failures: Some(0),
+            gate_seconds: Some(0),
             ..Default::default()
         };
         for name in TaskMetrics::METRIC_NAMES {

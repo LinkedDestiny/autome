@@ -183,6 +183,18 @@ pub fn verdict(realized: &RealizedImpact, predicted: Direction) -> &'static str 
 mod tests {
     use super::*;
 
+    #[test]
+    fn gate_metrics_old_json_does_not_dilute_mean() {
+        let old_json = serde_json::to_value(task("protocol/v1@a", 0, 0)).unwrap();
+        assert!(old_json.get("merge_gate_runs").is_none());
+        let old: TaskMetrics = serde_json::from_value(old_json).unwrap();
+        let new = TaskMetrics {
+            merge_gate_runs: Some(2),
+            ..old.clone()
+        };
+        assert_eq!(rows(&[old, new])[0].mean("merge_gate_runs"), Some(2.0));
+    }
+
     fn task(protocol: &str, reopen: u32, contradicted: u32) -> TaskMetrics {
         TaskMetrics {
             protocol_ref: Some(protocol.into()),
