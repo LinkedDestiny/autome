@@ -1,3 +1,4 @@
+import { Ribbon } from '../components/ui/ribbon.tsx';
 import { isQueued, moveTask } from '../components/queue-deps.ts';
 import { TEST_IDS } from '../lib/testids.ts';
 import { useClock } from '../lib/clock.tsx';
@@ -6,12 +7,12 @@ import { projectAlerts, type AlertDashboard } from '../components/alerts-data.ts
 import { ADMIN } from '../lib/admin-labels.ts';
 import { useState } from 'react';
 import { Link, useActionData, useLoaderData, useLocation, data as responseData, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
-import { boardColumns, boardHeading, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
+import { boardColumns, boardHeading, DONE_GROUPS, doneGroup, doneRow, doneTotals, filterBoard, loadBoard, type KindFilter } from '../components/board-data.ts';
 import { newTaskHref, settingsHref, taskHref } from '../components/nav-links.ts';
 import { useNotificationRevalidate } from '../components/board-live.ts';
 import { TaskCard } from '../components/task-card.tsx';
 import { servicesContext } from '../load-context.ts';
-import { KIND_FILTER_LABELS, KIND_LABELS, STATE_LABELS, doneFoldLabel } from '../lib/labels.ts';
+import { KIND_FILTER_LABELS, KIND_LABELS, STATE_LABELS, BOARD_QUEUE_HINT, BOARD_TOTAL_HINT, BOARD_IMPL } from '../lib/labels.ts';
 import { byKind, liveShouldRevalidate } from '../lib/live-routes.ts';
 
 export async function loader({ context, params, request }: LoaderFunctionArgs) {
@@ -44,7 +45,8 @@ export default function ProjectBoard() {
   const location = useLocation();
   const { now, timeZone } = useClock();
   if ('error' in data) return <p data-testid={TEST_IDS.pageBoard} role="alert">{data.error}</p>;
-  const columns = filterBoard(boardColumns(data.tasks, now), kind);
+  const columns = filterBoard(boardColumns(data.tasks, now, timeZone), kind);
+  const totals = doneTotals(data.tasks);
   const query = new URLSearchParams(location.search);
   if (data.showAll) query.delete('done'); else query.set('done', 'all');
   const foldHref = `${location.pathname}${query.size ? `?${query}` : ''}`;
@@ -58,10 +60,13 @@ export default function ProjectBoard() {
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
   {data.configError && <section role="alert"><p>项目配置有误，以下是内核的校验原文</p><pre className="board-config-error" data-scroll-region>{data.configError}</pre></section>}<ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
-    <h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2><div className="board-column-body" data-scroll-region>
-      {(data.showAll ? column.tasks : column.recent).map(task => <TaskCard key={task.id} task={task} queue={data.tasks.filter(isQueued)} detail={data.details?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
+    <Ribbon small color={column.id === 'todo' ? 'brown' : column.id === 'needs_you' ? 'yellow' : column.id === 'done' ? 'green' : 'teal'}><h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2></Ribbon>{column.id === 'todo' && <p className="board-hint">{BOARD_QUEUE_HINT}</p>}{column.id === 'done' && <p className="board-hint" title={BOARD_TOTAL_HINT}>累计 {totals.cost} · 平均{BOARD_IMPL} {totals.average} 轮</p>}<div className="board-column-body" data-scroll-region>
+      {column.id === 'done' ? DONE_GROUPS.filter(group => data.showAll || group !== '更早').map(group => {
+        const rows = column.tasks.filter(task => doneGroup(task.completed_at, now, timeZone) === group).map(doneRow);
+        return rows.length > 0 && <section className="board-done-group" key={group}><h3>{group} · {rows.length} 个</h3>{rows.map(row => <Link className="board-done-row" data-testid={TEST_IDS.taskCard} data-task-id={row.id} key={row.id} to={taskHref(row.id)}><span>{row.id}</span><strong>{row.title}</strong><small>{BOARD_IMPL} {row.rounds} 轮 · 退回 {row.reopens} · {row.cost}</small></Link>)}</section>;
+      }) : column.tasks.map(task => <TaskCard key={task.id} task={task} queue={data.tasks.filter(isQueued)} detail={data.details?.[task.id]} overviewDetail={data.overviewDetails?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
-      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{doneFoldLabel(data.showAll, column.tasks.length)}</Link>}
+      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{data.showAll ? '收起' : `更早 · ${column.older.length} 个 →`}</Link>}
       {column.id === 'done' && cancelledCount > 0 && <>
         <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起' + STATE_LABELS.cancelled : STATE_LABELS.cancelled + '（' + cancelledCount + '）'}</Link>
         {data.showCancelled && <div data-testid={TEST_IDS.boardCancelled}>{data.cancelled?.filter(task => kind === 'all' || task.kind === kind).map(task => <Link key={task.id} className="overview-card task-card" data-testid={TEST_IDS.taskCard} data-task-id={task.id} to={taskHref(task.id)}>

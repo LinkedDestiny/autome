@@ -9,3 +9,5 @@
 
 实现 #3 | M-03 | 开放（浏览器阻塞） | docs/web-面板按动森风格重做/evidence/M-03-r3-impl.md | 浏览器夹具 ps EPERM
 审计 #3 | M-03 | 通过 | docs/web-面板按动森风格重做/evidence/M-03-r3-audit.md | 无
+
+实现 #4 | M-04 | 保持开放 | docs/web-面板按动森风格重做/evidence/M-04-r4-impl.md | 浏览器进程检查 ps EPERM

@@ -387,3 +387,15 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .overview-merged-row small { font-size: 11px; text-align: right; }
 .overview-empty { padding: 24px; }
 .overview-empty p { font-size: 13px; }
+
+.board-column .ribbon { align-self: flex-start; margin-bottom: 8px; }
+.board-column .ribbon h2 { font-size: 15px; margin: 0; }
+.board-hint { font-size: 11px; color: var(--animal-text-muted); margin: 0 0 8px; }
+.board-done-group h3 { font-size: 12px; color: var(--animal-text-muted); margin: 8px 0; }
+.board-done-row { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; padding: 12px; margin-bottom: 8px; border-radius: var(--animal-radius-sm); background: var(--animal-bg-input); border: 1px solid var(--animal-border-light); text-decoration: none; }
+.board-done-row span, .board-done-row small { font-size: 11px; color: var(--animal-text-muted); }
+.board-done-row strong { font-size: 13px; overflow-wrap: anywhere; }
+.board-done-row small { grid-column: 1 / -1; }
+.board-column .task-card { padding: 14px; }
+.board-column .task-card h3 { font-size: 15px; margin: 10px 0; }
+.board-column .task-card p { font-size: 12px; }

@@ -1,3 +1,4 @@
+import { taskHref } from '../components/nav-links.ts';
 import { AWAIT_PHRASES, failureText, gatePhrase, stageStatusLine } from './labels.ts';
 import { formatSpan } from './clock.tsx';
 import type { ShellTask } from '../components/shell-data.ts';
@@ -27,7 +28,7 @@ export function overviewCardView(task: ShellTask, detail: OverviewDetail | undef
     current: block?.current_milestone ? `正在做 ${block.current_milestone}` : '',
     gate: detail?.gate ? gatePhrase(detail.gate) : '',
     queue: task.state.state === 'queued' ? task.blocked_by?.length ? '等 ' + task.blocked_by.map(item => `${item.id} ${item.reason === 'cancelled' ? '已取消，请修改依赖' : item.reason === 'failed' ? '已失败，请处理依赖' : '合并后开始'}`).join('、') : `排第 ${task.queue_position ?? '—'} 位 · 等空闲槽位` : '',
-    href: `/tasks/${encodeURIComponent(task.id)}${key === 'await_design_approval' ? `?doc=${encodeURIComponent(detail?.designName ?? 'design')}` : key === 'await_merge' ? '?tab=changes' : ''}`,
+    href: `${taskHref(task.id)}${key === 'await_design_approval' ? `?doc=${encodeURIComponent(detail?.designName ?? 'design')}` : key === 'await_merge' ? '?tab=changes' : ''}`,
     action: key === 'await_design_approval' ? '看设计并批准' : key === 'await_merge' ? '看改动并合并' : '查看并处理',
   };
 }

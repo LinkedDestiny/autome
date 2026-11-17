@@ -17,6 +17,8 @@ function render(data: Awaited<ReturnType<typeof loader>>, query = '') {
 }
 it('任务路由存在，铃铛目标同步开放', () => {
   expect(readFileSync(new URL('../app/routes.ts', import.meta.url), 'utf8')).toMatch(/route\("tasks\/:id", "routes\/tasks\.\$id\.tsx"\)/);
+  expect(readFileSync(new URL('../app/components/overview-card.tsx', import.meta.url), 'utf8')).toContain('overviewCardView');
+  expect(readFileSync(new URL('../app/lib/overview-labels.ts', import.meta.url), 'utf8')).toContain('taskHref(task.id)');
   expect(TARGETS.find(t => t.pattern === '/tasks/:taskId')?.available).toBe(true);
 });
 it('离线、503/504 和 not_found/404 分支呈现中文', async () => {
@@ -35,7 +37,7 @@ it('仅本任务八类事件触发重验', async () => {
 });
 
 it('四个入口共用任务详情地址', () => {
-  for (const file of ['task-card.tsx', 'overview-card.tsx', 'palette-model.ts']) expect(readFileSync(new URL('../app/components/' + file, import.meta.url), 'utf8')).toContain('taskHref');
+  for (const file of ['task-card.tsx', 'palette-model.ts']) expect(readFileSync(new URL('../app/components/' + file, import.meta.url), 'utf8')).toContain('taskHref');
   expect(TARGETS.find(t => t.pattern === '/tasks/:taskId')?.available).toBe(true);
   expect(readFileSync(new URL('../app/components/nav-links.ts', import.meta.url), 'utf8')).toContain('/tasks/');
 });

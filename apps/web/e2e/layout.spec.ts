@@ -35,6 +35,9 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   }
   if (name === '环境') await expect(page.getByTestId('env-copy').first()).toBeVisible();
   if (name === '项目') {
+    await expect(page.locator('.board-column .ribbon-sm')).toHaveCount(4);
+    await expect(page.locator('.board')).not.toContainText('门禁未跑过');
+    await page.screenshot({ path: '../../.autome/output/m04-board.png' });
     await expect(page.locator('.board-column-body[data-scroll-region]')).toHaveCount(4);
     const body = page.locator('[data-column=todo] .board-column-body');
     expect(await body.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);

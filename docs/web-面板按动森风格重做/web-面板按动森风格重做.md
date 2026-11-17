@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 3/65
+implementation-round: 4/65
 current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-04 项目看板（丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过），按其验收契约取证后标待审
+next-action: 在允许 ps 与浏览器的环境复跑 M-04 验收及快检，核对一屏与截图，全部通过后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -774,6 +774,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 开放区间按序号缓存成固定值：「`now` 前进后增长」用例失败。
 
 ### M-04 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-04-r4-impl.md · 自动化子集通过，浏览器环境阻塞，保持开放 · 实现 #4
 
 - 验收命令：`(cd apps/web && npx vitest run test/board.test.ts test/task-card.test.ts test/task-columns.test.ts test/board-payload.test.ts test/board-cancelled.test.ts test/board-done-real.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/controls.spec.ts -g "项目|全部已完成|已取消展开|B-2|B-3")`
 - 预期：9 个文件，至少 75 个用例全过：

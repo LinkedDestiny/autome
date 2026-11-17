@@ -1,3 +1,4 @@
+import { toOverviewDetail } from '../app/lib/overview-model.ts';
 import type { WebServices } from '../app/load-context.ts';
 import type { ShellData } from '../app/components/shell-data.ts';
 import type { TaskPayload } from '../app/components/task-detail-data.ts';
@@ -28,15 +29,7 @@ export async function loadOverview(services: WebServices, shell: ShellData, cloc
         const result = await services.gateway!.read({ method: 'task.get', params: { task_id: task.id } });
         if (!result.body.ok) throw Error(result.body.error ?? '任务读取失败');
         const detail = result.body.payload as TaskPayload;
-        const session = detail.sessions?.find(s => s.running);
-        data.details[task.id] = { status_block: detail.status_block, gate: detail.gate,
-          session: session && { label: session.label, kind: session.kind, round: session.round, started_at: session.started_at },
-          reviews: detail.sessions?.filter(s => s.kind?.kind === 'role' && s.kind.role === 'review').length ?? 0,
-          adjudications: detail.sessions?.filter(s => s.kind?.kind === 'role' && s.kind.role === 'adjudicate').length ?? 0,
-          pending: detail.decisions?.filter(d => !d.consumed && d.disposition === 'none').length ?? 0,
-          designBytes: detail.documents?.find(d => d.name === `${detail.task.slug}.md`)?.size,
-          designName: detail.documents?.find(d => d.name === `${detail.task.slug}.md`)?.name,
-        };
+        data.details[task.id] = toOverviewDetail(detail);
       } catch (error) { data.details[task.id] = { reviews: 0, adjudications: 0, pending: 0, error: `详情暂不可用：${String(error)}` }; }
     }),
   ]);

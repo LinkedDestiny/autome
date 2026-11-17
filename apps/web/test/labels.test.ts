@@ -1,3 +1,4 @@
+import { gatePhrase } from '../app/lib/labels.ts';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test, expect } from 'vitest';
@@ -76,3 +77,5 @@ test('10 未知守卫代码原文回退', async () => {
   const { guardLabel } = await import('../app/lib/guard-labels.ts');
   for (const code of ['future','', 'toString', '__proto__']) expect(guardLabel(code)).toBe(code);
 });
+
+test('无门禁返回 null，排队仍展示位置', () => { expect(gatePhrase(null)).toBeNull(); expect(gatePhrase(null, 1)).toBe('门禁排队第 1 位'); });

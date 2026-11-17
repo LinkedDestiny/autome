@@ -57,3 +57,14 @@ export function formatSpan(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   return minutes < 60 ? `${minutes} 分 ${String(seconds % 60).padStart(2, '0')} 秒` : `${Math.floor(minutes / 60)} 时 ${String(minutes % 60).padStart(2, '0')} 分`;
 }
+
+export function doneGroup(at: string | null | undefined, now: string, timeZone: string): '今天' | '昨天' | '本周更早' | '更早' {
+  const day = (iso: string) => {
+    if (!Number.isFinite(Date.parse(iso))) return NaN;
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date(iso)).map(p => [p.type, p.value]));
+    return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day));
+  };
+  const today = day(now), date = day(at ?? ''), yesterday = today - 86400000;
+  const monday = today - ((new Date(today).getUTCDay() + 6) % 7) * 86400000;
+  return date === today ? '今天' : date === yesterday ? '昨天' : date >= monday && date < yesterday ? '本周更早' : '更早';
+}

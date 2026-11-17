@@ -1,9 +1,10 @@
+import { ClockProvider } from '../app/lib/clock.tsx';
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createRoutesStub } from 'react-router';
 import { expect, test } from 'vitest';
-import { boardColumns, boardHeading, filterBoard, loadBoard, type BoardData, type BoardTask } from '../app/components/board-data.ts';
+import { boardColumns, boardHeading, doneGroup, doneRow, doneTotals, filterBoard, loadBoard, type BoardData, type BoardTask } from '../app/components/board-data.ts';
 import { columnOf, countByColumn } from '../app/components/task-columns.ts';
 import { COLUMN_LABELS, type TaskState } from '../app/lib/labels.ts';
 import type { KernelGateway } from '../app/load-context.ts';
@@ -17,7 +18,7 @@ const states: TaskState[] = [
 ];
 const tasks = states.map((state, i) => task(state, `T-${i + 1}`, i % 2 ? 'bug' : 'feature'));
 function render(data: BoardData, url = '/projects/P-1') {
-  const Stub = createRoutesStub([{ id: 'board', path: '/projects/:id', Component: ProjectBoard }]);
+  const Stub = createRoutesStub([{ id: 'board', path: '/projects/:id', Component: () => createElement(ClockProvider, { initial: { now, timeZone: 'UTC' } }, createElement(ProjectBoard)) }]);
   return renderToStaticMarkup(createElement(Stub, { initialEntries: [url], hydrationData: { loaderData: { board: { ...data, alerts: [] } } } }));
 }
 const data = (rows = tasks, showAll = false): BoardData => ({ project: { id: 'P-1', display_name: '项目甲' }, tasks: rows, now, showAll });
@@ -34,14 +35,14 @@ test('1 fourteen state shapes reuse columnOf and omit unknown states', () => {
 test('2 column order and labels match the shared vocabulary', () => {
   expect(boardColumns(tasks, now).map(c => [c.id, c.label])).toEqual(Object.entries(COLUMN_LABELS));
 });
-test('3 fourteen-day inclusive boundary and missing completion dates', () => {
+test('3 date groups and missing completion dates', () => {
   const rows = ['2026-10-30T00:00:00Z', '2026-10-29T23:59:59Z', null, '', '2026-11-12T00:00:00Z'].map((completed_at, i) => ({ ...task({ state: 'done' }, `T-${i}`), completed_at }));
   const done = boardColumns(rows, now)[3];
-  expect(done.recent.map(t => t.id)).toEqual(['T-4', 'T-0']);
-  expect(done.older.map(t => t.id)).toEqual(['T-1', 'T-2', 'T-3']);
+  expect(done.recent.map(t => t.id)).toEqual(['T-4']);
+  expect(done.older.map(t => t.id)).toEqual(['T-0', 'T-1', 'T-2', 'T-3']);
   const boundary = '2027-01-01T00:00:00Z';
-  expect(boardColumns([{ ...rows[0], completed_at: '2026-12-18T00:00:00Z' }], boundary)[3].recent).toHaveLength(1);
-  expect(boardColumns([{ ...rows[0], completed_at: '2024-02-29T00:00:00Z' }], '2024-03-14T00:00:00Z')[3].recent).toHaveLength(1);
+  expect(boardColumns([{ ...rows[0], completed_at: '2026-12-31T00:00:00Z' }], boundary)[3].recent).toHaveLength(1);
+  expect(boardColumns([{ ...rows[0], completed_at: '2024-02-29T00:00:00Z' }], '2024-03-01T00:00:00Z')[3].recent).toHaveLength(1);
 });
 test('4 all filter transitions preserve columns, counts and source data', () => {
   const columns = boardColumns(tasks, now); const before = JSON.stringify(columns); const counts = countByColumn(tasks);
@@ -73,7 +74,7 @@ test('6 SSR shows headings, filters, new link and reversible history folding', (
   for (const c of boardColumns(tasks, now)) expect(html).toContain(boardHeading(c, 'all'));
   for (const label of ['全部', '需求', 'Bug']) expect(html).toContain(`>${label}</button>`);
   expect(html).toContain('href="/projects/P-1/tasks/new"');
-  expect(html).toContain('href="/projects/P-1?done=all"'); expect(html).toContain('查看全部（1）');
+  expect(html).toContain('href="/projects/P-1?done=all"'); expect(html).toContain('更早 · 1 个');
   expect(html).not.toContain('href="/tasks/T-13"');
   const expanded = render(data(tasks, true), '/projects/P-1?done=all');
   expect(expanded).toContain('href="/tasks/T-13"'); expect(expanded).toMatch(/href="\/projects\/P-1"[^>]*>收起/);
@@ -125,4 +126,37 @@ test('13 只有排队且队列多于一张才给调序菜单', () => {
   expect(render(data([q]))).not.toContain('<summary>调整顺序');
   const html = render(data([q, task({ state: 'queued' }, 'T-2'), task({ state: 'draft' }, 'T-3')]));
   expect(html.match(/<summary>调整顺序/g)).toHaveLength(2);
+});
+
+test('14 四个列头使用小号彩色丝带及按钮提示', () => {
+  const html = render(data([])); for (const color of ['brown', 'teal', 'yellow', 'green']) expect(html).toContain('ribbon-' + color + ' ribbon-sm');
+  expect(html).toContain('用卡片上的按钮调整顺序');
+});
+test('15 今天昨天本周更早与更早按服务端时区', () => {
+  const now = '2026-11-18T16:00:00Z';
+  expect(['2026-11-18T16:00:00Z','2026-11-18T15:59:59Z','2026-11-15T16:00:00Z','2026-11-15T15:59:59Z'].map(at => doneGroup(at, now, 'Asia/Shanghai'))).toEqual(['今天','昨天','本周更早','更早']);
+});
+test('16 周一零点与跨年闰日空日期边界', () => {
+  expect(doneGroup('2026-11-14T12:00:00Z', '2026-11-16T00:00:00Z', 'UTC')).toBe('更早');
+  expect(doneGroup('2026-11-15T12:00:00Z', '2026-11-16T00:00:00Z', 'UTC')).toBe('昨天');
+  expect(doneGroup('2025-12-29T00:00:00Z', '2026-01-01T00:00:00Z', 'UTC')).toBe('本周更早');
+  expect(doneGroup('2024-02-29T00:00:00Z', '2024-03-01T00:00:00Z', 'UTC')).toBe('昨天');
+  for (const at of ['', null, undefined, 'invalid']) expect(doneGroup(at, now, 'UTC')).toBe('更早');
+});
+test('17 紧凑条目仅六字段 Bug 与缺失指标显示破折号', () => {
+  const t = { ...task({ state: 'done' }), cost_usd: 2, metrics: { impl_rounds_used: 3, reopen_total: 1 } };
+  expect(doneRow(t)).toEqual({ id: 'T-1', title: '任务 T-1', completed_at: undefined, rounds: 3, reopens: 1, cost: '$2.00' });
+  expect(doneRow({ ...t, kind: 'bug' }).rounds).toBe('—');
+  expect(doneRow(task({ state: 'done' }))).toMatchObject({ rounds: '—', reopens: '—', cost: '无计费' });
+});
+test('18 累计包含 Bug 不含取消 平均只含有指标需求', () => {
+  const t = { ...task({ state: 'done' }), cost_usd: 2, metrics: { impl_rounds_used: 4 } };
+  expect(doneTotals([t, { ...t, kind: 'bug' }, { ...t, metrics: null }, { ...t, state: { state: 'cancelled' }, cost_usd: 100 }])).toEqual({ cost: '$6.00', average: '4.0' });
+  expect(doneTotals([])).toEqual({ cost: '$0.00', average: '—' }); expect(doneTotals([t]).average).toBe('4.0');
+});
+test('19 展开紧凑条目无阶段条且保留筛选查询', () => {
+  const t = { ...task({ state: 'done' }), metrics: { impl_rounds_used: 7, reopen_total: 2 }, cost_usd: 4 };
+  const html = render(data([t], true), '/projects/P-1?done=all&cancelled=all');
+  expect(html).toContain('实现 7 轮 · 退回 2 · $4.00'); expect(html).not.toContain('task-card-stages');
+  expect(html).toContain('/projects/P-1?cancelled=all'); expect(html).not.toContain('门禁未跑过');
 });
