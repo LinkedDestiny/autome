@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 14/65
+implementation-round: 15/65
 current-milestone: M-11
 current-milestone-reopens: 1
 convergence-mode: normal
-next-action: 把审计产物 .autome/output/screens-M11/ 的五张 PNG 复制进 docs/images/（审计已在本机跑通截图脚本，1512×944），再跑 M-11 验收命令与快检，通过后标待审
+next-action: 修复总览截图中的 undefined / undefined 与进行中卡片不可见问题，重生成真实截图；在具备进程枚举权限的环境跑完整 M-11 验收，通过后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r14-audit.md · 退回（截图未替换） · 审计 #11
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r15-impl.md · 缺图回归通过，布局受阻，保持开放 · 实现 #15
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：
