@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 16/65
+implementation-round: 17/65
 current-milestone: M-11
 current-milestone-reopens: 3
 convergence-mode: milestone-review
-next-action: 在能跑截图脚本的环境重新生成 dashboard.png 等五图（缺值已修，图里仍有 undefined，进行中卡片也不在首屏）并替换 docs/images，再跑完整 M-11 验收
+next-action: 在具备进程枚举权限的环境复跑 M-11 的 layout.spec.ts 14 条；五图重生成及目视确认已移交 H-09，不再重复缺值实现修复
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r16-audit.md · 退回（dashboard.png 仍含 undefined） · 审计 #13
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r17-impl.md · 布局前置受阻，五图重生成移交 H-09，保持开放 · 实现 #17
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：
@@ -947,6 +947,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 任一页去掉内部滚动区的 `data-scroll-region`：该页的 layout 一屏判据失败。
 
 ## 人工验收清单
+
+- H-09 在允许进程枚举与浏览器启动的环境执行 `npm run build --prefix apps/web && npm run screenshots --prefix apps/web`，重新生成并替换 docs/images 五图；目视 dashboard.png 无 undefined、黄/青两张任务卡均完整处于首屏，并核对其它四图内容与当前界面一致。当前旧图未修复，合并前必须完成；文件集合与尺寸测试不能替代此项。
 
 - H-01 在 1512×944 下打开总览（有任务在跑、有任务等批准），与原型「总览」逐屏对照：结构、组件、配色角色一致
 - H-02 同上，空闲状态的总览与原型「空闲」演示一致：两张虚线空状态卡，右侧「今天」与「最近合并」照常
