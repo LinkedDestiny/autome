@@ -1,6 +1,6 @@
 # 教训 · Web 面板按动森风格重做
 
-对照的指标：设计轮 1/15，实现轮 20/65，13 个里程碑，reopen 合计 3（全部在 M-11，领域「总览缺值显示」），实现缺陷 9，验证缺口 5，协议失败 0，人工验收未确认 18，每轮门禁 20 次失败 4。
+对照的指标：设计轮 1/15，实现轮 21/65，13 个里程碑，reopen 合计 3（全部在 M-11，领域「总览缺值显示」），实现缺陷 9，验证缺口 5，协议失败 0，人工验收未确认 18，每轮门禁 21 次失败 4，合并前门禁 1 次失败 1（实现轮 21 整轮只修这次失败），门禁耗时 5549 秒。
 
 ```yaml
 - id: L-01
@@ -23,19 +23,28 @@
 
 - id: L-03
   domain: implementation
-  symptom: "宿主每轮门禁 20 次中失败 4 次；实现轮 11、12、18、19 由快检/宿主门禁抓到的失败里，有四处来自更早里程碑改了契约却没同步的旧断言：board-detail-real 仍期待「门禁未跑过」（M-04 已按 C-3 去掉）、add-project-real 仍走 M-08 前的设置路径、load-context 仍期待 3 次读取（A-Q1 已加 skills.list）、flows D-2 仍期待正序（D-3 已改倒序）；实现轮 12 和 19 整轮只修这些"
-  root_cause: "改契约的里程碑只更新了自己验收命令里的测试，没有在 apps/web/test 与 apps/web/e2e 全量检索旧期望；kernel 组和 e2e 用例不在该里程碑验收命令里，快检又按改动文件选测试，旧断言一直潜伏到后面的里程碑碰巧选中才变红"
+  symptom: "宿主每轮门禁 21 次中失败 4 次；实现轮 11、12、18、19 由快检/宿主门禁抓到的失败里，有四处来自更早里程碑改了契约却没同步的旧断言：board-detail-real 仍期待「门禁未跑过」（M-04 已按 C-3 去掉）、add-project-real 仍走 M-08 前的设置路径、load-context 仍期待 3 次读取（A-Q1 已加 skills.list）、flows D-2 仍期待正序（D-3 已改倒序）；实现轮 12 和 19 整轮只修这些。第五处同类残留 w9-http 仍向 M-08 已改成 302 跳转的 /projects/:id/settings 发 POST（得 405），一直没被选中，直到合并前门禁全量才变红，成为合并前门禁 1 次失败中的一半"
+  root_cause: "改契约的里程碑只更新了自己验收命令里的测试，没有在 apps/web/test 与 apps/web/e2e 全量检索旧期望；M-08 验收命令不含 w9-http.test.ts，kernel 组、exclusive 组和 e2e 用例也不在相关里程碑验收命令里，快检又按改动文件选测试，旧断言一直潜伏到后面的里程碑碰巧选中或合并前全量才变红"
   evidence: docs/web-面板按动森风格重做/evidence/M-10-r12-impl.md
   level: rule
-  proposal: "实现轮删改已有的用户可见文案、回包字段、调用次数或排序契约时，证据必须列出在 apps/web/test 与 apps/web/e2e 检索旧期望的命令和命中数，并写明所有正向期待旧值的命中已在同一轮改完"
+  proposal: "实现轮删改已有的用户可见文案、路由地址、回包字段、调用次数或排序契约时，证据必须列出在 apps/web/test 与 apps/web/e2e 检索旧期望的命令和命中数，并写明所有正向期待旧值的命中已在同一轮改完"
   predicted_impact: {metric: round_gate_failures, direction: down, scope: task, horizon: 3}
 
 - id: L-04
   domain: tooling
-  symptom: "20 份实现证据里 19 份记录 spawnSync ps EPERM 或 listen EPERM，实现轮没有一次跑通浏览器用例；M-02…M-10 的浏览器验收全靠审计轮补跑，M-11 的截图与 14 条布局巡检最终变成人工项 H-09、H-10"
-  root_cause: "实现轮会话的沙箱禁止进程枚举与监听 127.0.0.1，而 Playwright globalSetup 的残留进程检查和截图服务都依赖这两项；审计轮会话通常没有这个限制（审计 #11、#12 跑通了截图与布局 14 条，审计 #13、#14 的布局命令却挂起无输出），两类会话环境不一致，验证只能跨轮接力"
+  symptom: "21 份实现证据里 20 份记录 spawnSync ps EPERM 或 listen EPERM，实现轮没有一次跑通浏览器用例；M-02…M-10 的浏览器验收全靠审计轮补跑，M-11 的截图与 14 条布局巡检最终变成人工项 H-09、H-10；实现轮 21 修合并前门禁失败时，install-alignment 与 w9-http 的 15 例中 11 例同样被 EPERM 阻断，无法复现宿主报出的失败"
+  root_cause: "实现轮会话的沙箱禁止进程枚举与监听 127.0.0.1，而 Playwright globalSetup 的残留进程检查、截图服务和 exclusive 组的安装/HTTP 用例都依赖这两项；审计轮会话通常没有这个限制（审计 #11、#12 跑通了截图与布局 14 条，审计 #17 跑通 w9-http 9 例，审计 #13、#14 的布局命令却挂起无输出），两类会话环境不一致，验证只能跨轮接力"
   evidence: docs/web-面板按动森风格重做/evidence/M-11-r14-impl.md
   level: protocol
   proposal: "实现轮会话启动时允许执行 ps 与监听 127.0.0.1，以实现证据中不再出现 spawnSync ps EPERM 或 listen EPERM 为准"
   predicted_impact: {metric: manual_items_open, direction: down, scope: task, horizon: 3}
+
+- id: L-05
+  domain: verification
+  symptom: "合并前门禁（597d0f52，全量 Web test 1352 例、单步 501 秒、全程 1208 秒）报 install-alignment「空 PREFIX 安装、打开生产面板…」失败：发布包缺 app/lib/waiting.ts；同类缺失还有 overview-model.ts、task-columns.ts。缺口由 M-03（实现轮 3，提交 2ba80d65）让 server/ 值导入 app/lib 引入，此后每轮门禁按改动文件选测，从未选中该用例，从实现轮 3 一直潜伏到实现轮 20 之后的合并前门禁，最后多花一整个实现轮 21 与审计 #17"
+  root_cause: "stage-panel.ts 的暂存清单是手写文件列表，「发布包能否原生运行」只由 exclusive 组里需要 ps 与监听端口的整条安装启动用例检验；该用例既不在任何里程碑验收命令里，也不会因 server/ 新增导入被按改动文件选中，实现轮沙箱又跑不了它。实现轮 21 补上不需 ps/监听的「原生 Node 导入暂存产物」断言后，缺文件在实现轮内即可红→绿复现"
+  evidence: docs/web-面板按动森风格重做/evidence/M-13-r21-impl.md
+  level: test
+  proposal: "发布包暂存单元用例对暂存产物用原生 Node 逐个导入 server/ 下全部运行时入口模块，且该用例不调用 ps、不监听端口，归入非 exclusive 组"
+  predicted_impact: {metric: merge_gate_failures, direction: down, scope: task, horizon: 3}
 ```
