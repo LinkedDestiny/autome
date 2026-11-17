@@ -4,7 +4,7 @@ status: 实现中
 design-round: 1/15
 implementation-round: 15/65
 current-milestone: M-11
-current-milestone-reopens: 1
+current-milestone-reopens: 2
 convergence-mode: normal
 next-action: 修复总览截图中的 undefined / undefined 与进行中卡片不可见问题，重生成真实截图；在具备进程枚举权限的环境跑完整 M-11 验收，通过后标待审
 
@@ -655,7 +655,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-08 | 已完成 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
 | M-09 | 已完成 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
 | M-10 | 已完成 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
-| M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 1 | README截图交付 |
+| M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 2 | 总览缺值显示 |
 | M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
 | M-13 | 开放 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
 
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r15-impl.md · 缺图回归通过，布局受阻，保持开放 · 实现 #15
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r15-audit.md · 退回（总览缺值显示） · 审计 #12
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：
