@@ -18,7 +18,7 @@ function card(state: TaskState, kind = 'bug') { return renderToStaticMarkup(crea
 test('1 project cards expose counts, encoded destinations, failed reads and empty state', () => {
   const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(ProjectList, { projects: [...shell.projects, { id: 'a/b ?中', name: '未知项目', counts: null, error: '读盘失败' }, { id: 'P-0', name: '空项目', counts: { running: 0, needs_you: 0 } }] })));
   expect(html).toContain('aria-label="项目甲：进行中 1，等你处理 1"'); expect(html).toContain('href="/projects/P-1"');
-  expect(html).toContain('href="/projects/a%2Fb%20%3F%E4%B8%AD"'); expect(html).toContain('title="读盘失败"'); expect(html).toContain('等你处理 —'); expect(html).toContain('count-zero');
+  expect(html).toContain('href="/projects/a%2Fb%20%3F%E4%B8%AD"'); expect(html).toContain('title="读盘失败"'); expect(html).toContain('等你处理 —'); expect(html).toContain('<small>没有任务在跑</small>');
   expect(renderToStaticMarkup(createElement(ProjectList, { projects: [] }))).toContain('还没有项目。可以用命令行');
 });
 test('2 overview columns, encoded card links, stages and numeric ordering', () => {

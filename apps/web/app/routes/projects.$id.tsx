@@ -70,3 +70,5 @@ export default function ProjectBoard() {
       </>}
     </div></section>)}</div></div>;
 }
+
+export const handle = { crumb: '项目看板' };

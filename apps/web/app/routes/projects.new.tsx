@@ -86,3 +86,5 @@ export function PathSuggestions({ entries, disabled, onSelect }: { entries: Sugg
 export function DirectoryPicker({ picker, disabled, onPick, onError }: { picker: ReturnType<typeof nativePicker>; disabled: boolean; onPick: (path: string) => void; onError: (error: string) => void }) {
   return picker ? <button data-testid={TEST_IDS.pickDirectory} type="button" disabled={disabled} onClick={async () => { try { const path = await picker(); if (path) onPick(path); } catch (error) { onError(String(error)); } }}>{ADMIN.picker}</button> : null;
 }
+
+export const handle = { crumb: '添加项目' };

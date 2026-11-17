@@ -90,3 +90,5 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   </section></div>;
 }
 export default function Settings() { return <SettingsView data={useLoaderData<typeof loader>()} result={useActionData<OnboardingResult>()} busy={useNavigation().state !== 'idle'} />; }
+
+export const handle = { crumb: '项目设置' };

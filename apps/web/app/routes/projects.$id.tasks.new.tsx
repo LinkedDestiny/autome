@@ -74,3 +74,5 @@ export default function NewTask() {
       <button data-testid={TEST_IDS.taskNewDraft} name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
   </Form></div>;
 }
+
+export const handle = { crumb: '新建任务' };

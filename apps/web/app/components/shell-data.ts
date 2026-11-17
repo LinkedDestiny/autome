@@ -1,12 +1,13 @@
+import type { DriverStatus } from '../../server/drivers.ts';
 import { alertCounts, type AlertDashboard } from './alerts-data.ts';
 import type { KernelGateway } from '../load-context.ts';
 import type { TaskState } from '../lib/labels.ts';
 import { columnOf, countByColumn } from './task-columns.ts';
 
 export interface ShellTask { id: string; kind: string; title: string; project_id: string; state: TaskState; fix_round?: number }
-export interface ShellProject { id: string; name: string; counts: { running: number; needs_you: number } | null; error?: string; alerts?: number; configError?: string }
-export interface ShellData { kernel: { ok: boolean; error?: string }; projects: ShellProject[]; tasks: ShellTask[]; environment?: unknown }
-export async function loadShell(gateway: KernelGateway | null): Promise<ShellData> {
+export interface ShellProject { id: string; name: string; counts: { running: number; needs_you: number } | null; done?: number; error?: string; alerts?: number; configError?: string }
+export interface ShellData { kernel: { ok: boolean; error?: string }; projects: ShellProject[]; tasks: ShellTask[]; environment?: unknown; drivers?: DriverStatus; skillCount?: number }
+export async function loadShell(gateway: KernelGateway | null, drivers?: () => Promise<DriverStatus>): Promise<ShellData> {
   if (!gateway) return { kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [] };
   const result = await gateway.read({ method: 'project.list', params: {} });
   if (!result.body.ok) return { kernel: { ok: false, error: result.body.error }, projects: [], tasks: [] };
@@ -19,12 +20,17 @@ export async function loadShell(gateway: KernelGateway | null): Promise<ShellDat
       id, kind, title, project_id: project.id, state, ...(fix_round === undefined ? {} : { fix_round }),
     }));
     const { running, needs_you } = countByColumn(tasks);
-    return { project: { ...base, counts: { running, needs_you } }, tasks };
+    return { project: { ...base, counts: { running, needs_you }, done: tasks.filter(task => task.state.state === 'done').length }, tasks };
   }));
   const dashboard = await gateway.read({ method: 'dashboard.get', params: {} });
   const extra = dashboard.body.ok ? dashboard.body.payload as AlertDashboard : {};
   const counts = alertCounts(extra);
-  return { kernel: { ok: true }, projects: loaded.map(({ project }) => ({ ...project,
+  const [driverStatus, skills] = await Promise.all([
+    drivers ? drivers().catch(() => ({ available: false, list: [] } as DriverStatus)) : Promise.resolve(undefined),
+    gateway.read({ method: 'skills.list', params: {} }).catch(() => null),
+  ]);
+  const skillList = skills?.body.ok ? (skills.body.payload as { skills?: unknown[] }).skills : undefined;
+  return { kernel: { ok: true }, ...(driverStatus ? { drivers: driverStatus } : {}), ...(Array.isArray(skillList) ? { skillCount: skillList.length } : {}), projects: loaded.map(({ project }) => ({ ...project,
     ...(extra.projects?.find(p => p.project.id === project.id)?.config_error ? { configError: extra.projects.find(p => p.project.id === project.id)!.config_error! } : {}),
     ...(counts.has(project.id) ? { alerts: counts.get(project.id) } : {}),
   })), tasks: loaded.flatMap(item => item.tasks),

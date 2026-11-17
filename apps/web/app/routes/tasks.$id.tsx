@@ -48,3 +48,5 @@ export default function TaskPage() {
     </div></div>
   </> : <p>{error}</p>}</div>;
 }
+
+export const handle = { crumb: '任务详情' };

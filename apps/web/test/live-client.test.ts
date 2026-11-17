@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createLiveClient, reconnectDelay, type LiveSocket } from '../app/lib/live-client.ts';
+import { createLiveClient, reconnectDelay, type LiveSocket, publishLiveMessage, subscribeLiveMessages } from '../app/lib/live-client.ts';
 class Socket implements LiveSocket {
   send = vi.fn();
   onmessage: LiveSocket['onmessage'] = null;
@@ -82,4 +82,12 @@ it('在线及 resume 后 reload 清检查点；空检查点重连整体重验', 
     c.sockets.at(-1)!.message(event(5)); c.sockets.at(-1)!.message(event(6)); vi.advanceTimersByTime(0);
     expect(c.onEvents.mock.calls.at(-1)![0].map((e: { seq: number }) => e.seq)).toEqual([6]); c.stop();
   }
+});
+
+it('drivers 消息更新订阅者，卸载后不再更新', () => {
+  const socket = new Socket(), listener = vi.fn(); const unsubscribe = subscribeLiveMessages(listener);
+  const client = createLiveClient({ url: 'ws://localhost/ws', createSocket: () => socket, onEvents() {}, onReload() {}, onCore() {}, onConnection() {}, onMessage: publishLiveMessage });
+  const message = { type: 'drivers', status: { available: true, list: [] } };
+  socket.message(message); expect(listener).toHaveBeenCalledWith('drivers', message);
+  unsubscribe(); socket.message(message); expect(listener).toHaveBeenCalledTimes(1); client.stop();
 });

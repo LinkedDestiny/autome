@@ -75,7 +75,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const registration: Instance = { ...identity, port: actualPort, url: `http://127.0.0.1:${actualPort}`, started_at, web_root: resolve(import.meta.dirname, '..'), kernel };
   const ready = core.start();
   if (!instanceFile) void ready.catch(error => console.error(String(error)));
-  const ticker = createTicker({ intervalMs: tickIntervalMs, call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); } });
+  const ticker = createTicker({ intervalMs: tickIntervalMs, call: () => core.tick(), canTick: () => core.canTick(), isSlow: () => core.isSlow(), isBusy: () => core.isTickBusy(), log: console.error, onTick: report => { attached.onTick(); admin.onTick(report); void drivers().then(status => bus.publishDrivers(status)); } });
   let binaryWatch: ReturnType<typeof createBinaryWatch> | undefined = undefined;
   const running = {
     server, gateway, core, registerUpgrade, bus, logtail,

@@ -188,3 +188,19 @@ test('已在线连接重连从断开前游标续读，离线事件逐条送达',
   await f.bus.pull(); expect(c.seqs()).toEqual([11, 12, 13, 14]);
   f.bus.close();
 });
+
+test('驱动摘要变化时发一条 drivers，覆盖全部状态迁移', () => {
+  const f = fixture(); const c = f.connect();
+  const statuses = [{ available: false, list: [] }, { available: true, list: [] }, { available: true, list: [{ pid: 1, command: 'run', self: false, driving: false, started_at: 'a', last_tick_at: 'b' }] }];
+  statuses.push({ ...statuses[2], list: statuses[2].list.map(d => ({ ...d, driving: true })) });
+  for (const from of statuses) for (const to of statuses) { f.bus.publishDrivers(from); const before = c.messages.length; f.bus.publishDrivers(to); expect(c.messages.length - before).toBe(JSON.stringify(from) === JSON.stringify(to) ? 0 : 1); }
+  expect(c.messages.at(-1)).toMatchObject({ type: 'drivers', status: statuses[3] });
+});
+test('驱动摘要不变时不发，tick 更新与关闭边界', () => {
+  const f = fixture(); const c = f.connect(); const status = { available: true, list: [{ pid: 1, command: 'run', self: false, driving: true, started_at: 'a', last_tick_at: 'b' }] };
+  f.bus.publishDrivers(status); const before = c.messages.length;
+  f.bus.publishDrivers(structuredClone(status)); expect(c.messages).toHaveLength(before);
+  f.bus.publishDrivers({ ...status, list: [{ ...status.list[0], last_tick_at: 'c' }] }); expect(c.messages).toHaveLength(before + 1);
+  expect(f.connect().messages.at(-1)).toMatchObject({ type: 'drivers' });
+  f.bus.close(); f.bus.publishDrivers({ available: false, list: [] }); expect(c.messages).toHaveLength(before + 1);
+});

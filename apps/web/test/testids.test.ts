@@ -1,3 +1,5 @@
+import Loop from '../app/routes/loop.tsx';
+import Skills from '../app/routes/skills.tsx';
 import { taskPageData } from './fixtures/task-page-data.ts';
 import { timelineEntries } from '../app/components/task-timeline-model.ts';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -35,6 +37,8 @@ function render(Component: ComponentType, data: unknown, url = '/') {
 function view(child: ReactNode, url = '/') { return render(() => child, shell, url); }
 function has(html: string, ...selectors: string[]) { for (const id of selectors) expect(html).toContain(`data-testid="${id}"`); }
 const pages: [string, ComponentType, unknown, string][] = [
+  [ids.pageLoop, Loop, null, '/loop'],
+  [ids.pageSkills, Skills, null, '/skills'],
   [ids.pageOverview, Overview, shell, '/'],
   [ids.pageBoard, Board, board, '/projects/P-1'],
   [ids.pageTask, Task, await taskPageData({ task, project, sessions: [] }), '/tasks/T-01'],

@@ -206,3 +206,12 @@ it('after 替换与卸载清除旧前置，登记按任务隔离', async () => {
     });
   } finally { clear(); other(); }
 });
+
+it('Loop 和技能收到 config.changed 与 project 重新验证', async () => {
+  for (const name of ['loop', 'skills']) {
+    const { shouldRevalidate } = await import('../app/routes/' + name + '.tsx');
+    for (const kind of ['config.changed', 'project.updated', 'task.updated']) await revalidateForEvents([event(kind)], async () => {
+      expect(shouldRevalidate({ ...taskArgs, currentUrl: new URL('http://localhost/' + name), nextUrl: new URL('http://localhost/' + name) })).toBe(kind !== 'task.updated');
+    });
+  }
+});

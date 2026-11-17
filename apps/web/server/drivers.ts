@@ -20,3 +20,11 @@ export function driverSummary(drivers: DriverStatus | undefined, other?: DriverS
     ? '另一个驱动在推进：pid ' + driver.pid + '（' + driver.command + '），最近一次 tick ' + driver.last_tick_at
     : 'pid ' + driver.pid + ' 已登记但最近没有推进（' + driver.command + '），最近一次 tick ' + driver.last_tick_at).join('；') || '没有其他驱动';
 }
+
+// Compare only the card's observable summary, not registry ordering or idle ticks.
+export function driverCardKey(status: DriverStatus): string {
+  const selected = status.available ? status.list.filter(driver => driver.driving)
+    .sort((a, b) => Date.parse(b.last_tick_at) - Date.parse(a.last_tick_at))[0] : undefined;
+  return JSON.stringify([status.available, Boolean(status.list.length), selected?.pid,
+    selected?.last_tick_at, selected?.started_at, status.error, Boolean(status.other_driver?.skipped_last_minute)]);
+}

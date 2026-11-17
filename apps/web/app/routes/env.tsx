@@ -66,3 +66,5 @@ export function EnvView({ data, result, busy = false }: { data: EnvData; result?
     </div></div>;
 }
 export default function Environment() { return <EnvView data={useLoaderData<typeof loader>()} result={useActionData<typeof action>()} busy={useNavigation().state !== 'idle'} />; }
+
+export const handle = { crumb: '环境' };

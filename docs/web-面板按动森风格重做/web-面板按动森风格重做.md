@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 1/55
+implementation-round: 2/65
 current-milestone: M-02
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-02：侧栏、顶栏、驱动状态卡与 Loop/技能路由占位
+next-action: M-02 审计通过后推进 M-03 总览；若退回则先修 M-02，浏览器三例需宿主复验
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -88,15 +88,14 @@ next-action: 推进 M-02：侧栏、顶栏、驱动状态卡与 Loop/技能路�
 
 - 不换风格、不加字体与 UI 框架、不做深色主题，也不做 `config.set_theme` 的界面。
 - 不做拖动调序（C-Q4，理由见方案 C）。
-- 不显示技能描述（F-Q1）、不显示账本版本（G-Q1）、不显示「评审提了几项、裁决采纳几项」（B-Q2）：内核都没有这些结构化数据，
-  三项进 Backlog。
-- 不改 Loop 流程、调度、门禁、协议文本，不升账本版本。内核产品代码只有一处改动，即「对任务卡字面的取舍」第 1 条。
+- 不显示账本版本（G-Q1）、不显示「评审提了几项、裁决采纳几项」（B-Q2）：用户已忽略 BL-02、BL-03。技能描述由 M-12 补齐。
+- 不改 Loop 流程、调度、门禁、协议文本，不升账本版本。内核产品代码范围为「对任务卡字面的取舍」第 1 条及 M-12 的技能只读描述。
 
 ## 方案
 
 ### 总
 
-**总-Q1 里程碑怎么分。** 共 11 个，按 A→G 排，前面里程碑的验收不依赖后面才有的东西：
+**总-Q1 里程碑怎么分。** 共 13 个，主体按 A→G 排，用户纳入项追加 M-12、M-13，前面里程碑的验收不依赖后面才有的东西：
 
 - A 拆两个：M-01 是令牌、图标与共用组件；M-02 是外壳与两个新路由的占位页。
 - B、C 各一个：M-03、M-04。
@@ -105,8 +104,7 @@ next-action: 推进 M-02：侧栏、顶栏、驱动状态卡与 Loop/技能路�
 - F 一个：M-09。
 - G 拆两个：M-10 环境页与两个表单页；M-11 README 截图与一屏巡检收口。
 
-G-1 与 G-2 合并成 M-10，因为两者都只是套用 A 组组件。G-3 单列，因为它要监听端口，交接方式不同（见方案 G-Q3）。实现预算 =
-5 × 11 = 55 轮。
+G-1 与 G-2 合并成 M-10，因为两者都只是套用 A 组组件。G-3 单列，因为它要监听端口，交接方式不同（见方案 G-Q3）。实现预算由 Autome 指定为 65 轮。
 
 **总-Q2 原型写法怎么落进样式守卫。**
 
@@ -560,8 +558,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   并说明「{角色} 用 {工具}，看不到这个技能（{目录} 下没有它）」。
 - 判定同样用 `role-rules.ts`，保存时内核的拒绝原样显示。
 
-**F-Q1 描述。** 不显示。内核不读 `SKILL.md`，面板自己读又与 F-4「只显示来源路径」的边界相冲突。显示来源路径，并进 Backlog
-（BL-01：`skills.list` 加只读的 `description`）。
+**F-Q1 描述。** 用户纳入 BL-01：M-12 由内核只读解析 `SKILL.md` 头部的 `description` 并通过 `skills.list` 返回，技能卡片显示描述行。缺失或读盘失败时不编造描述，保留来源路径；不写技能文件。
 
 **F-Q4 打开目录（F-4）。** 新建 `server/open-path.ts`，经 `gateway.registerLocalOp('open.path', …)` 注册：
 
@@ -649,7 +646,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | A·令牌、图标与共用组件，样式守卫随之扩展 | 0 | |
-| M-02 | 开放 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
+| M-02 | 待审 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
 | M-03 | 开放 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
 | M-04 | 开放 | C·项目看板：丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过 | 0 | |
 | M-05 | 开放 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
@@ -659,6 +656,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-09 | 开放 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
 | M-10 | 开放 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
 | M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 0 | |
+| M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
+| M-13 | 开放 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
 
 ## 各里程碑说明
 
@@ -675,6 +674,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-09 | 技能页筛选与计数；三种绑定场景与 `config.get` 一致；不可见角色不能勾；「打开目录」打开服务端解析的路径 | F-1…F-4；验-7 | M-08 | 新 `routes/skills.tsx`、新 `skills-*.ts(x)`、新 `server/open-path.ts`、`main.ts`（注入打开器）、`lib/skill-labels.ts` |
 | M-10 | 环境页每项一行、驱动单独一卡、时间都是相对时间并可悬停；两个表单用新组件且字段不变 | G-1、G-2 | M-09 | `routes/env.tsx`、`env-model.ts`、`routes/projects.new.tsx`、`routes/projects.$id.tasks.new.tsx`、`task-dependencies.tsx` |
 | M-11 | README 五张新图；14 条一屏巡检全过 | G-3；验-1 的可运行部分 | M-10 | `scripts/screenshots.ts`、`docs/images/*.png`、`README.md`、`readme-images.test.ts`、`e2e/layout.spec.ts` |
+| M-12 | skills.list 返回头部描述；技能卡片有描述行 | BL-01、F-Q1 | M-09 | `skills.rs`、技能域类型、`skills-model`、`skills-page` 与真实内核夹具 |
+| M-13 | 批准设计卡片可打开评审与裁决文档，缺失时明示不可得 | BL-06、B-Q2 | M-03 | `overview-card`、`overview-model`、文档入口与测试 |
 
 验-8 的「不做什么」逐项都有现成或改写后的用例：
 
@@ -723,6 +724,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 在组件里直接写 `#fff`：styles 的颜色守卫失败。
 
 ### M-02 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-02-r2-impl.md · 单测通过，浏览器受沙箱限制待复验 · 实现 #2
 
 - 验收命令：`(cd apps/web && npx vitest run test/shell.test.ts test/shell-data.test.ts test/eventbus.test.ts test/live-client.test.ts test/palette.test.ts test/live-routes.test.ts test/styles.test.ts test/labels.test.ts test/testids.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts -g "总览")`
 - 预期：9 个文件，至少 107 个用例全过：
@@ -936,13 +939,27 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 - H-07 技能页与原型逐屏对照；在真实机器上点「打开目录」，Finder 打开对应的技能目录
 - H-08 Electron 薄壳加载新面板，六个页面都能到达，原生目录选择按钮仍在添加项目页出现
 
+### M-12 验收契约
+
+- 验收命令：cargo test -p automed --lib skills && (cd apps/web && npx vitest run test/skills-model.test.ts test/skills-page.test.ts test/skills-real.test.ts test/labels.test.ts)。
+- 情形：头部单行及多行 description 正确返回；无头部、空描述、文件不可读时缺失回退；多个来源的描述按稳定来源顺序取首个非空值，保留全部来源；HTML 文本按普通文本显示。
+- 只读扫描不改技能文件、不改绑定与可见性；真实内核夹具证明字段与页面一致。预期用例总数以 M-09 已关闭基线加上述回归用例计，证据逐项报告增量。
+- 负向对照：删掉 description 回包或隐藏卡片描述行，上述测试必须失败。
+
+### M-13 验收契约
+
+- 验收命令：(cd apps/web && npx vitest run test/overview.test.ts test/overview-summary.test.ts test/overview-states-real.test.ts test/labels.test.ts)。
+- 情形：批准设计卡片在评审、裁决文档均存在时分别显示可访问入口；仅一份或均缺失时明示相应结果摘要不可得；不编造问题数与采纳数；其它卡片行为不变。
+- 复用受控文档入口，不直接开放任意磁盘路径。预期用例总数以 M-03 已关闭基线加上述回归用例计，证据报告差值。
+- 负向对照：删去文档入口及缺失提示，批准设计用例必须失败。
+
 ## Backlog
 
-- BL-01 `skills.list` 增加只读的 `description`（取自 `SKILL.md` 头部），技能卡片显示原型里的描述行
-- BL-02 `/api/instance` 或 `env.get` 给出账本版本，环境页内核行显示「账本版本 N」
-- BL-03 内核记录评审提出的问题数与裁决采纳数，总览「等你处理」卡片写出原型那句「评审提了 2 项问题，裁决全部采纳」
-- BL-04 `config.get` 给出项目覆盖的原始键，Loop 默认值在项目范围精确显示「跟随全局 / 项目值」
-- BL-05 看板「待开始」列支持拖动调序（需要同时提供键盘等价操作）
-- BL-06 总览「等你处理」的批准设计卡片给出评审与裁决文档的入口，或明确写出结果摘要不可得（来自评审建议 N3，B-Q2 允许数据缺失时回退，不阻塞）
+- BL-01 已纳入 M-12：`skills.list` 增加只读的 `description`（取自 `SKILL.md` 头部），技能卡片显示原型里的描述行
+- BL-02 已忽略（用户裁定）：`/api/instance` 或 `env.get` 给出账本版本，环境页内核行显示「账本版本 N」
+- BL-03 已忽略（用户裁定）：内核记录评审提出的问题数与裁决采纳数，总览「等你处理」卡片写出原型那句「评审提了 2 项问题，裁决全部采纳」
+- BL-04 已忽略（用户裁定）：`config.get` 给出项目覆盖的原始键，Loop 默认值在项目范围精确显示「跟随全局 / 项目值」
+- BL-05 已忽略（用户裁定）：看板「待开始」列支持拖动调序（需要同时提供键盘等价操作）
+- BL-06 已纳入 M-13：总览「等你处理」的批准设计卡片给出评审与裁决文档的入口，或明确写出结果摘要不可得（来自评审建议 N3，B-Q2 允许数据缺失时回退，不阻塞）
 
 ## 争议项
