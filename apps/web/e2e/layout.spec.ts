@@ -12,7 +12,13 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     const sidebar = page.locator('.shell-sidebar');
     for (const href of ['/', '/loop', '/skills', '/env']) await expect(sidebar.locator('a[href="' + href + '"]')).toBeVisible();
     await expect(sidebar.getByRole('region', { name: '驱动状态' })).toBeVisible();
-    if (name === '总览') await page.screenshot({ path: '../../.autome/output/m02-shell.png' });
+    if (name === '总览') {
+      await expect(page.locator('.overview-conclusion')).toContainText('件事等你决定');
+      await expect(page.locator('.overview-task-card.card-yellow').first()).toBeVisible();
+      await expect(page.locator('.overview-tiles .tile')).toHaveCount(4);
+      await expect(page.locator('.overview-tiles [data-missing]')).toHaveCount(0);
+      await page.screenshot({ path: '../../.autome/output/m03-overview.png' });
+    }
   }
   if (name === '总览命令面板') {
     await page.keyboard.press('Meta+k');

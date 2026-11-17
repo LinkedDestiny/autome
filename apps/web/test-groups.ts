@@ -36,6 +36,7 @@ export const testGroups = {
     "test/older-kernel-live.test.ts",
     "test/onboarding-disk.test.ts",
     "test/overview.test.ts",
+    "test/overview-summary.test.ts",
     "test/palette.test.ts",
     "test/paths.test.ts",
     "test/project-confirm.test.ts",
@@ -86,6 +87,7 @@ export const testGroups = {
     "test/timeline-failure-path.test.ts"
   ],
   "kernel": [
+    "test/overview-states-real.test.ts",
     "test/e2e-fixture.test.ts",
     "test/web-binary-gone-real.test.ts",
     "test/web-status-driver-real.test.ts",

@@ -356,3 +356,34 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .sq-yellow { background: var(--tile-yellow); }
 .sq-red { background: var(--tile-red); }
 .sq-brown { background: var(--tile-brown); }
+
+/* Overview: decisions and live work on the left; daily facts remain visible. */
+.overview { gap: 20px; min-height: 0; }
+.overview-heading { display: flex; align-items: center; gap: 24px; flex-shrink: 0; }
+.overview-heading h1 { color: inherit; font-size: 22px; }
+.overview-conclusion { margin: 0; font-weight: 700; }
+.overview-columns { grid-template-columns: minmax(0, 1.7fr) minmax(330px, 1fr); gap: 24px; }
+.overview-column-body { gap: 24px; }
+.overview-column { gap: 14px; flex-shrink: 0; }
+.overview-column h2 { margin: 0; }
+.overview-task-card { padding: 20px; }
+.overview-task-card h3 { margin: 14px 0 8px; font-size: 18px; }
+.overview-task-card p { margin: 10px 0; font-size: 13px; }
+.overview-task-card .overview-card-meta { justify-content: flex-start; flex-wrap: wrap; align-items: center; gap: 8px; }
+.overview-task-card .task-stage { font-size: 12px; }
+.overview-task-card .btn { margin-top: 8px; }
+.overview-facts { display: flex; gap: 24px; flex-wrap: wrap; margin: 14px 0; font-size: 12px; }
+.overview-facts b { display: block; margin-top: 4px; font-size: 16px; }
+.overview-side { display: flex; flex-direction: column; min-height: 0; gap: 16px; }
+.overview-side h2 { margin: 0; font-size: 18px; }
+.overview-side h2 small { margin-left: 12px; font-size: 12px; font-weight: 400; }
+.overview-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.overview-tiles .tile { min-width: 0; }
+.overview-tiles .tile b { font-size: 24px; overflow-wrap: anywhere; }
+.overview-recent { display: flex; flex-direction: column; padding: 18px; min-height: 0; }
+.overview-merged-list { overflow-y: auto; min-height: 0; margin-top: 12px; }
+.overview-merged-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--animal-border); align-items: center; }
+.overview-merged-row strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.overview-merged-row small { font-size: 11px; text-align: right; }
+.overview-empty { padding: 24px; }
+.overview-empty p { font-size: 13px; }

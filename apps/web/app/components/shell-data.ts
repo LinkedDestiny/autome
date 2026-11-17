@@ -4,7 +4,7 @@ import type { KernelGateway } from '../load-context.ts';
 import type { TaskState } from '../lib/labels.ts';
 import { columnOf, countByColumn } from './task-columns.ts';
 
-export interface ShellTask { id: string; kind: string; title: string; project_id: string; state: TaskState; fix_round?: number }
+export interface ShellTask { id: string; kind: string; title: string; project_id: string; state: TaskState; fix_round?: number; created_at?: string; completed_at?: string | null; cost_usd?: number | null; cost_sessions_without_cost?: number; metrics?: import('../lib/overview-model.ts').MergeMetrics | null; queue_position?: number | null; blocked_by?: { id: string; reason?: string | null }[] }
 export interface ShellProject { id: string; name: string; counts: { running: number; needs_you: number } | null; done?: number; error?: string; alerts?: number; configError?: string }
 export interface ShellData { kernel: { ok: boolean; error?: string }; projects: ShellProject[]; tasks: ShellTask[]; environment?: unknown; drivers?: DriverStatus; skillCount?: number }
 export async function loadShell(gateway: KernelGateway | null, drivers?: () => Promise<DriverStatus>): Promise<ShellData> {
@@ -16,8 +16,8 @@ export async function loadShell(gateway: KernelGateway | null, drivers?: () => P
     const base = { id: project.id, name: project.display_name };
     const detail = await gateway.read({ method: 'project.get', params: { project_id: project.id } });
     if (!detail.body.ok) return { project: { ...base, counts: null, error: detail.body.error }, tasks: [] };
-    const tasks = (detail.body.payload as { tasks: ShellTask[] }).tasks.map(({ id, kind, title, state, fix_round }) => ({
-      id, kind, title, project_id: project.id, state, ...(fix_round === undefined ? {} : { fix_round }),
+    const tasks = (detail.body.payload as { tasks: ShellTask[] }).tasks.map(({ id, kind, title, state, fix_round, created_at, completed_at, cost_usd, cost_sessions_without_cost, metrics, queue_position, blocked_by }) => ({
+      id, kind, title, project_id: project.id, state, ...(fix_round === undefined ? {} : { fix_round }), created_at, completed_at, cost_usd, cost_sessions_without_cost, metrics: metrics && { merge_gate_runs: metrics.merge_gate_runs, reopen_total: metrics.reopen_total }, queue_position, blocked_by,
     }));
     const { running, needs_you } = countByColumn(tasks);
     return { project: { ...base, counts: { running, needs_you }, done: tasks.filter(task => task.state.state === 'done').length }, tasks };

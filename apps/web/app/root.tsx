@@ -1,3 +1,4 @@
+import { loadOverview } from '../server/overview.ts';
 import { ClockProvider, currentClock } from './lib/clock.tsx';
 import { useAdminRevalidate } from './components/admin-live.ts';
 import { useEffect, useState } from 'react';
@@ -10,11 +11,13 @@ import { Shell } from './components/shell.tsx';
 import appCss from './styles/app.css?url';
 import { LiveBanner, useLiveEvents, writeGate, WriteGateProvider, useKernelRecovery } from './lib/live.tsx';
 import { Links, Link, Meta, Outlet, isRouteErrorResponse, useRouteError, Scripts, ScrollRestoration, useLoaderData, useMatches, type LoaderFunctionArgs } from "react-router";
-export async function loader({ context }: LoaderFunctionArgs) {
-  const { gateway, drivers } = context.get(servicesContext);
-  return { ...await loadShell(gateway, drivers), clock: currentClock() };
+export async function loader({ context, request }: LoaderFunctionArgs) {
+  const services = context.get(servicesContext);
+  const shell = await loadShell(services.gateway, services.drivers), clock = currentClock();
+  const overview = new URL(request.url).pathname === '/' ? await loadOverview(services, shell, clock) : undefined;
+  return { ...shell, clock, overview };
 }
-export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.'));
+export const shouldRevalidate = liveShouldRevalidate(byKind('task.', 'project.', 'bug.', 'merge.', 'session.', 'gate.'));
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (<html lang="zh-CN"><head><meta charSet="utf-8" /><title>Autome 面板</title><Meta /><Links /></head><body>{children}<ScrollRestoration /><Scripts /></body></html>);

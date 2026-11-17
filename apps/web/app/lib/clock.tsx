@@ -9,10 +9,10 @@ const Context = createContext<Clock>(DEFAULT_CLOCK);
 export function ClockProvider({ initial, children }: { initial: Clock; children?: ReactNode }) {
   const [clock, setClock] = useState(initial);
   useEffect(() => {
-    setClock(currentClock());
-    const timer = setInterval(() => setClock(currentClock()), 30_000);
+    setClock({ ...currentClock(), timeZone: initial.timeZone });
+    const timer = setInterval(() => setClock({ ...currentClock(), timeZone: initial.timeZone }), 30_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [initial.timeZone]);
   return <Context.Provider value={clock}>{children}</Context.Provider>;
 }
 export const useClock = () => useContext(Context);
@@ -41,4 +41,19 @@ export function formatDuration(milliseconds: number, precision: 'second' | 'minu
   if (precision === 'minute') return `${minutes} 分`;
   if (minutes) return `${minutes} 分${seconds % 60 ? ` ${seconds % 60} 秒` : ''}`;
   return `${seconds} 秒`;
+}
+
+export function formatRelative(at: string, now: string): string {
+  const seconds = Math.max(0, Math.floor((Date.parse(now) - Date.parse(at)) / 1000));
+  if (!Number.isFinite(seconds)) return '时间未知';
+  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return `${Math.floor(seconds / 86400)} 天前`;
+}
+export function formatSpan(ms: number): string {
+  const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes} 分 ${String(seconds % 60).padStart(2, '0')} 秒` : `${Math.floor(minutes / 60)} 时 ${String(minutes % 60).padStart(2, '0')} 分`;
 }

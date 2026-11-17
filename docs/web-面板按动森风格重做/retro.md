@@ -6,3 +6,5 @@
 
 实现 #2 | M-02 | 待审；BL-01/06纳入M-12/13，BL-02/03/04/05忽略（用户裁定） | docs/web-面板按动森风格重做/evidence/M-02-r2-impl.md | ps/listen EPERM，浏览器待复验
 审计 #2 | M-02 | 通过 | docs/web-面板按动森风格重做/evidence/M-02-r2-audit.md | 无
+
+实现 #3 | M-03 | 开放（浏览器阻塞） | docs/web-面板按动森风格重做/evidence/M-03-r3-impl.md | 浏览器夹具 ps EPERM

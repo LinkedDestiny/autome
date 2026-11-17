@@ -49,7 +49,7 @@ test('4 list failures and missing gateway return an offline empty shell', async 
 });
 test('5 only whitelisted task fields leave the loader, including zero fix_round', async () => {
   const shell = await loadShell(gateway());
-  shell.tasks.forEach((task, i) => expect(Object.keys(task).sort()).toEqual(['id', 'kind', 'title', 'project_id', 'state', ...(i === 0 ? ['fix_round'] : [])].sort()));
+  shell.tasks.forEach((task, i) => expect(Object.keys(task).sort()).toEqual(['id', 'kind', 'title', 'project_id', 'state', 'created_at', 'completed_at', 'cost_usd', 'cost_sessions_without_cost', 'metrics', 'queue_position', 'blocked_by', ...(i === 0 ? ['fix_round'] : [])].sort()));
   expect(shell.tasks[0].fix_round).toBe(0); expect(JSON.stringify(shell)).not.toContain('private request');
 });
 test('6 root loader returns the same shell through RouterContextProvider', async () => {
@@ -58,7 +58,8 @@ test('6 root loader returns the same shell through RouterContextProvider', async
   const now = '2026-11-14T00:00:00.000Z';
   vi.setSystemTime(new Date(now));
   try {
-    expect(await loader(args)).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+    const { overview, ...loaded } = await loader(args); expect(overview?.error).toContain('总览事件服务不可用');
+    expect(loaded).toEqual({ ...await loadShell(g), clock: { now, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
   } finally { vi.useRealTimers(); }
 });
 

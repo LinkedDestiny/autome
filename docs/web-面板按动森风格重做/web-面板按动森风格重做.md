@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 2/65
+implementation-round: 3/65
 current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-03 总览
+next-action: 补跑 M-03 总览浏览器验收（当前沙箱 ps EPERM），通过后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -743,6 +743,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - `/loop` 的 `byKind` 漏 `config.`：live-routes 新用例失败。
 
 ### M-03 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-03-r3-impl.md · 自动化子集通过，浏览器环境阻塞，保持开放 · 实现 #3
 
 - 验收命令：`(cd apps/web && npx vitest run test/overview.test.ts test/overview-summary.test.ts test/overview-states-real.test.ts test/clock.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts -g "1512×944 总览$")`
 - 预期：7 个文件，至少 62 个用例全过：
