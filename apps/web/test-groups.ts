@@ -1,6 +1,7 @@
 // Explicit membership: new test files must be assigned and reviewed.
 export const testGroups = {
   "unit": [
+    "test/loop-defaults.test.ts",
     "test/role-rules.test.ts",
     "test/loop-page.test.ts",
     "test/task-summary.test.ts",

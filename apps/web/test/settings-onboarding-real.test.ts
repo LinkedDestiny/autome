@@ -6,7 +6,7 @@ import { RouterContextProvider, createMemoryRouter } from 'react-router';
 import { w9Kernel } from './fixtures/w9-replies.ts';
 import { createAdmin } from '../server/admin.ts';
 import { servicesContext } from '../app/load-context.ts';
-import { action as routeAction, loader, shouldRevalidate } from '../app/routes/projects.$id.settings.tsx';
+import { settingsAction as routeAction, settingsLoader as loader, shouldRevalidate } from '../app/routes/loop.tsx';
 import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
 const closes: (() => Promise<void>)[] = [];
@@ -23,7 +23,7 @@ async function setup(exitCode = 0) {
   const id = (added.body.payload as { project: { id: string } }).project.id;
   const publish = vi.fn(); const admin = createAdmin({ core: s.core, automeHome: s.automeHome, userHome: s.userHome, publish });
   const context = new RouterContextProvider(); context.set(servicesContext, { ...s, admin });
-  const args = { params: { id }, context, request: new Request('http://localhost/projects/' + id + '/settings'), url: new URL('http://localhost/projects/' + id + '/settings'), pattern: '/projects/:id/settings' };
+  const args = { params: { id }, context, request: new Request('http://localhost/loop?project=' + id + '&tab=project'), url: new URL('http://localhost/loop?project=' + id + '&tab=project'), pattern: '/projects/:id/settings' };
   const submit = (form: Record<string, string>) => action({ ...args, request: new Request(args.request.url, { method: 'POST', body: new URLSearchParams(form) }) });
   const git = (...args: string[]) => execFileSync('git', args, { cwd: path, encoding: 'utf8' }).trim();
   return { ...s, admin, id, path, publish, args, submit, git };

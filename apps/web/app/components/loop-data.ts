@@ -1,7 +1,9 @@
 import type { WebServices } from '../load-context.ts';
 import { roleOrder, type Role, type RoleConfig, type Roles, type Skill } from '../lib/role-rules.ts';
-export type ConfigReply = { resolved: { roles: { role: Role; config: RoleConfig; provenance: string }[]; loop_defaults: { design_rounds: number; budget_factor: number } } };
-export type LoopData = { project?: string; projects: { id: string; display_name: string }[]; config?: ConfigReply; skills: Skill[]; error?: string };
+import type { LoopDefaults } from './loop-defaults-data.ts';
+import type { SettingsData } from './settings-data.ts';
+export type ConfigReply = { global: { loop_defaults: LoopDefaults }; resolved: { roles: { role: Role; config: RoleConfig; provenance: string }[]; loop_defaults: LoopDefaults } };
+export type LoopData = { settings?: SettingsData; project?: string; projects: { id: string; display_name: string }[]; config?: ConfigReply; skills: Skill[]; error?: string };
 export function resolvedRoles(config: ConfigReply): Roles { return Object.fromEntries(config.resolved.roles.map(r => [r.role, r.config])) as Roles; }
 export async function loadLoop({ gateway }: WebServices, project?: string): Promise<LoopData> {
   const data: LoopData = { project, projects: [], skills: [] };

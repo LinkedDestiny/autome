@@ -50,7 +50,7 @@ test('5 action 参数限定与两条重定向', async () => {
   for (const skip of [false, true]) {
     const result = await action(args({ workspace: 'on', docs_repo: 'docs', command: 'ignored', ...(skip ? { skip_onboarding: 'on' } : {}) }));
     expect(write).toHaveBeenLastCalledWith({ op: 'project.confirm', params: { path: '~/code', workspace: true, docs_repo: 'docs', skip_onboarding: skip } });
-    expect((result as Response).headers.get('Location')).toBe(`/projects/p${skip ? '' : '/settings'}`);
+    expect((result as Response).headers.get('Location')).toBe(skip ? '/projects/p' : '/loop?project=p&tab=project');
   }
 });
 test('6 内核拒绝原文呈现', async () => {
@@ -61,7 +61,7 @@ test('7 skip 失败保留项目与设置链接，不再允许重复添加', asyn
   write.mockResolvedValueOnce({ status: 200, body: { ok: true, payload: { project: { id: 'p' }, skip_error: 'not a git repository' } } } as never);
   const result = await action(args({ skip_onboarding: 'on' })); const rendered = html(result as AddResult);
   expect(result).not.toBeInstanceOf(Response); expect(rendered).toContain('not a git repository');
-  expect(rendered).toContain('href="/projects/p"'); expect(rendered).toContain('href="/projects/p/settings"'); expect(rendered).not.toContain('确认添加');
+  expect(rendered).toContain('href="/projects/p"'); expect(rendered).toContain('href="/loop?project=p&amp;tab=project"'); expect(rendered).not.toContain('确认添加');
 });
 test('8 SSR 隐藏原生按钮，只识别函数', () => {
   expect(html()).not.toContain('选择目录'); expect(nativePicker({})).toBeUndefined(); expect(nativePicker({ autome: { pickDirectory: 'x' } } as never)).toBeUndefined();
@@ -102,3 +102,9 @@ test('12 四种拒绝在填表前显示且无确认表单', () => {
 test('13 already_project 链到项目', () => { expect(html(undefined, true, { ...probe, rejection: { kind: 'already_project', message: '原文', project_id: 'p /' } })).toContain('href="/projects/p%20%2F"'); });
 test('14 嵌套两种链到对方', () => { for (const kind of ['nested_in_project', 'contains_project']) expect(html(undefined, true, { ...probe, rejection: { kind, message: '原文', project_id: 'other' } })).toContain('href="/projects/other"'); });
 test('15 未知 kind 回退 message，null 仍可确认', () => { for (const kind of ['future', 'toString', '__proto__', '']) expect(html(undefined, true, { ...probe, rejection: { kind, message: '未来拒绝' } })).toContain('未来拒绝'); expect(canConfirm('x', { display: 'x', probe: { ...probe, rejection: null } })).toBe(true); });
+
+test('添加成功后项目信息地址对项目 ID 编码', async () => {
+  write.mockResolvedValueOnce({ status: 200, body: { ok: true, payload: { project: { id: 'p&other=1' } } } } as never);
+  const result = await action(args());
+  expect((result as Response).headers.get('Location')).toBe('/loop?project=p%26other%3D1&tab=project');
+});

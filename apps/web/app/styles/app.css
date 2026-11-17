@@ -433,5 +433,10 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .loop-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 16px 0 24px; }
 .loop-row .card { padding: 18px; min-width: 0; overflow-wrap: anywhere; }
 .loop-role button { background: transparent; border: 0; padding: 0; text-align: left; }
-.loop-conflict { outline: 3px solid var(--red, #b83939); }
-.loop-drawer { position: fixed; inset: 64px 16px 16px auto; width: min(440px, 90vw); overflow: auto; background: var(--cream, #fff9ec); padding: 24px; border: 2px solid #aa8e68; border-radius: 20px; box-shadow: 0 8px 40px #59402340; z-index: 30; display: flex; flex-direction: column; gap: 18px; }
+.loop-conflict { outline: 3px solid var(--animal-error); }
+.loop-drawer { position: fixed; inset: 64px 16px 16px auto; width: min(440px, 90vw); overflow: auto; background: var(--animal-bg-content); padding: 24px; border: 2px solid var(--animal-border-strong); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); z-index: 30; display: flex; flex-direction: column; gap: 18px; }
+
+.loop-defaults { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-block: 12px; }
+.loop-default-field { display: flex; flex-direction: column; gap: 8px; }
+.loop-default-field .stepper input { min-width: 0; width: 100%; }
+.loop-page > .project-settings { flex: 1; }

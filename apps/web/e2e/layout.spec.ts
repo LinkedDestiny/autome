@@ -34,6 +34,11 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await page.getByTestId('path-input').fill('~/');
     await expect(page.getByTestId('path-suggestion').first()).toBeVisible();
   }
+  if (name === '项目设置') {
+    await expect(page).toHaveURL(/\/loop\?project=.+&tab=project$/);
+    await expect(page.getByTestId('page-settings')).toBeVisible();
+    await page.screenshot({ path: '../../.autome/output/m08-settings.png' });
+  }
   if (name === '环境') await expect(page.getByTestId('env-copy').first()).toBeVisible();
   if (name === '项目') {
     await expect(page.locator('.board-column .ribbon-sm')).toHaveCount(4);

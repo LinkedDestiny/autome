@@ -8,7 +8,7 @@ import { renderToString } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider, RouterContextProvider } from 'react-router';
 import { expect, test, vi } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { action, loader, SettingsView } from '../app/routes/projects.$id.settings.tsx';
+import { settingsAction as action, settingsLoader as loader, SettingsView } from '../app/routes/loop.tsx';
 import { servicesContext, type WebServices } from '../app/load-context.ts';
 import type { SettingsData } from '../app/components/settings-data.ts';
 import { configRows } from '../app/components/config-view.ts';
@@ -16,7 +16,7 @@ import { WriteGateProvider } from '../app/lib/live.tsx';
 import { createAdmin } from '../server/admin.ts';
 import fixture from './fixtures/w9-replies.json' with { type: 'json' };
 export const base: SettingsData = { project: { id: 'p', path: '/tmp/p', display_name: '测试', onboarding: { onboarding: 'in_progress', step: 3 } }, files: [], session: { state: 'none' } };
-export function args(services: WebServices, form: Record<string, string> = {}) { const context = new RouterContextProvider(); context.set(servicesContext, services); return { context, params: { id: 'p' }, request: new Request('http://localhost/projects/p/settings', { method: 'POST', body: new URLSearchParams(form) }), url: new URL('http://localhost/projects/p/settings'), pattern: '/projects/:id/settings' }; }
+export function args(services: WebServices, form: Record<string, string> = {}) { const context = new RouterContextProvider(); context.set(servicesContext, services); return { context, params: { id: 'p' }, request: new Request('http://localhost/loop?project=p&tab=project', { method: 'POST', body: new URLSearchParams(form) }), url: new URL('http://localhost/loop?project=p&tab=project'), pattern: '/projects/:id/settings' }; }
 export function html(data: SettingsData, allowed = true) { const router = createMemoryRouter([{ path: '/', element: createElement(WriteGateProvider, { value: { allowed, reason: '离线' } }, createElement(SettingsView, { data })) }]); try { return renderToString(createElement(RouterProvider, { router })); } finally { router.dispose(); } }
 const ok = (payload: unknown) => ({ status: 200, body: { ok: true, payload } });
 test('1 真实配置逐行、null、未知键和省略字段', () => {

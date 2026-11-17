@@ -7,7 +7,7 @@ import { renderToString } from 'react-dom/server';
 import { RouterContextProvider, createMemoryRouter, RouterProvider } from 'react-router';
 import { w9Kernel } from './fixtures/w9-replies.ts';
 import { servicesContext } from '../app/load-context.ts';
-import { action, loader, SettingsView } from '../app/routes/projects.$id.settings.tsx';
+import { settingsAction as action, settingsLoader as loader, SettingsView } from '../app/routes/loop.tsx';
 import { loader as rootLoader, shouldRevalidate } from '../app/root.tsx';
 import { revalidateForEvents } from '../app/lib/live-routes.ts';
 import type { LedgerEvent } from '../server/eventbus-protocol.ts';
@@ -17,8 +17,8 @@ const closes: (() => Promise<void>)[]=[];
 afterEach(async()=>{for(const close of closes.splice(0).reverse()) await close();});
 async function setup() {
   const s=await w9Kernel(); closes.push(s.close); const path=s.repo('single'); const {project}=await s.core.call('project.add',{path}) as {project:{id:string}};
-  const context=new RouterContextProvider(); context.set(servicesContext,s); const args={context,params:{id:project.id},request:new Request('http://localhost/'),url:new URL('http://localhost/'),pattern:'/projects/:id/settings'};
-  const submit=()=>action({...args,request:new Request('http://localhost/',{method:'POST',body:new URLSearchParams({intent:'remove',name:'single'})})});
+  const context=new RouterContextProvider(); context.set(servicesContext,s); const args={context,params:{id:project.id},request:new Request('http://localhost/loop?project=' + project.id + '&tab=project'),url:new URL('http://localhost/'),pattern:'/projects/:id/settings'};
+  const submit=()=>action({...args,request:new Request('http://localhost/loop?project=' + project.id + '&tab=project',{method:'POST',body:new URLSearchParams({intent:'remove',name:'single'})})});
   const draft=()=>s.core.call('task.create',{project_id:project.id,kind:'bug',brief:'# Test',draft:true}) as Promise<{task:{id:string}}>;
   return {...s,path,id:project.id,args,submit,draft};
 }
@@ -40,3 +40,18 @@ test('3 取消任务后移除、跳转、事件刷新 root 且文件快照不变
  }finally{router.dispose();}
 });
 test('4 坏 TOML 不阻止设置页与移除',async()=>{const s=await setup();writeFileSync(join(s.path,'.autome/config.toml'),'[broken');const direct=await s.gateway.read({method:'config.get',params:{project_id:s.id}});const data=await loader(s.args);expect(data.project?.id).toBe(s.id);expect(data.config?.error).toBe(direct.body.error);expect(data.config?.error).toContain('TOML');expect(html(data)).toContain('移除项目');expect(await s.submit()).toBeInstanceOf(Response);});
+
+test('旧设置地址 302 到项目信息，新路由加载全部设置', async () => {
+  const s = await setup();
+  const { loader: redirectLoader } = await import('../app/routes/projects.$id.settings.tsx');
+  const redirect = redirectLoader(s.args);
+  expect(redirect.status).toBe(302);
+  expect(redirect.headers.get('Location')).toBe(`/loop?project=${encodeURIComponent(s.id)}&tab=project`);
+  const { loader: loopLoader, action: loopAction } = await import('../app/routes/loop.tsx');
+  const data = await loopLoader(s.args);
+  expect(data.settings?.project?.id).toBe(s.id);
+  expect(data.settings?.config?.rows.length).toBeGreaterThan(0);
+  const response = await loopAction({ ...s.args, request: new Request(s.args.request.url, { method: 'POST', body: new URLSearchParams({ intent: 'remove', name: 'single' }) }) });
+  expect(response).toBeInstanceOf(Response);
+  expect((response as Response).headers.get('Location')).toBe('/');
+});

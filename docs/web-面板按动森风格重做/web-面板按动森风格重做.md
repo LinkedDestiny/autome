@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 7/65
+implementation-round: 8/65
 current-milestone: M-08
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 开始 M-08：Loop 默认值、项目信息页签与 set_loop 技能校验修复
+next-action: 继续 M-08：在允许进程扫描的环境补跑项目设置浏览器验收与快检，通过后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -867,6 +867,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 新 Rust 测试在不调 `set_role` 时运行：会话行的模型断言失败（审计轮按此注入核实）。
 
 ### M-08 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-08-r8-impl.md · 子集通过，浏览器环境阻断，保持开放 · 实现 #8
 
 - 验收命令：`cargo test -p automed --lib set_loop && (cd apps/web && npx vitest run test/loop-defaults.test.ts test/loop-real.test.ts test/settings-config.test.ts test/settings-onboarding.test.ts test/settings-real.test.ts test/settings-onboarding-real.test.ts test/w9-layout.test.ts test/add-project.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/manual-items.spec.ts -g "项目设置|W9 H-01")`
 - 预期：

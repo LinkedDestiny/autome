@@ -16,7 +16,6 @@ import Board from '../app/routes/projects.$id.tsx';
 import Task from '../app/routes/tasks.$id.tsx';
 import NewTask from '../app/routes/projects.$id.tasks.new.tsx';
 import NewProject, { PathSuggestions, DirectoryPicker } from '../app/routes/projects.new.tsx';
-import Settings from '../app/routes/projects.$id.settings.tsx';
 import Env, { EnvView } from '../app/routes/env.tsx';
 import { BellView } from '../app/components/bell.tsx';
 import { LiveBanner } from '../app/lib/live.tsx';
@@ -45,7 +44,7 @@ const pages: [string, ComponentType, unknown, string][] = [
   [ids.pageTask, Task, await taskPageData({ task, project, sessions: [] }), '/tasks/T-01'],
   [ids.pageTaskNew, NewTask, shell, '/projects/P-1/tasks/new'],
   [ids.pageProjectNew, NewProject, { display: '' }, '/projects/new'],
-  [ids.pageSettings, Settings, { project, files: [], session: { state: 'none' } }, '/projects/P-1/settings'],
+  [ids.pageSettings, Loop, { projects: [], skills: [], project: project.id, settings: { project, files: [], session: { state: 'none' } } }, '/loop?project=P-1&tab=project'],
   [ids.pageEnv, Env, { recipes: {}, errors: {} }, '/env'],
 ];
 // Explicit route parameters are required by the new-task page.
@@ -58,7 +57,7 @@ for (const [id, Component, data, url] of pages) test(`${id} and shell root`, () 
   const html = pageRender(Component, data, url); has(html, ids.shellMain, id);
   if (id === ids.pageTaskNew) { has(html, ids.taskNewForm, ids.taskNewDraft); has(pageRender(NewTask, { ...shell, projects: [] }, url), id); }
   if (id === ids.pageBoard) has(render(Board, { error: '读盘失败' }), id);
-  if (id === ids.pageSettings) has(render(Settings, { error: '项目不存在' }), id);
+  if (id === ids.pageSettings) has(render(Loop, { projects: [], skills: [], settings: { error: '项目不存在' } }), id);
   if (id === ids.pageProjectNew) has(html, ids.pathInput, ids.pathSuggestions);
 });
 test('component selectors retain object identity and conditional states', () => {

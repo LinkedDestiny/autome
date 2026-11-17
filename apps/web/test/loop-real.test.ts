@@ -1,3 +1,5 @@
+import { saveDefault, defaultFields } from "../app/components/loop-defaults-data.ts";
+
 import { afterEach, expect, test } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,3 +19,30 @@ test('action 原样保留内核拒绝 message',async()=>{const s=await setup();c
 test('逐项保存中途拒绝保留已写项',async()=>{const s=await setup();const result=await saveLoop(s,undefined,[{role:'plan',fields:{model:'new'}},{role:'review',fields:{runtime:'claude',model:'new'}},{role:'audit',fields:{model:'unwritten'}}]);expect(result.saved).toEqual(['plan']);expect(result.error).toBeTruthy();const r=resolvedRoles((await loadLoop(s)).config!);expect(r.plan.model).toBe('new');expect(r.audit.model).toBe('');});
 
 test('读盘错误保留内核原文并不展示可编辑配置',async()=>{const s=await setup();writeFileSync(join(s.automeHome,'config.toml'),'[broken');const direct=await s.gateway.read({method:'config.get'});const data=await loadLoop(s);expect(data.error).toBe(direct.body.error);expect(data.config).toBeUndefined();});
+
+test('已绑定全局与项目技能时 set_loop 写入成功且读回', async () => {
+  const s = await setup();
+  const path = s.repo('skills');
+  const { project } = await s.core.call('project.add', { path }) as { project: { id: string } };
+  for (const [scope, root, name] of [[undefined, s.userHome, 'global-skill'], [project.id, path, 'project-skill']] as const) {
+    const dir = join(root, '.claude/skills', name); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+    expect(await saveLoop(s, scope, [{ role: 'plan', fields: { skills: [name] } }])).toEqual({ saved: ['plan'] });
+    expect(await saveDefault(s, scope, 'parallel', '2')).toEqual({ saved: true });
+    expect((await loadLoop(s, scope)).config!.resolved.loop_defaults.parallel).toBe(2);
+  }
+});
+test('项目四项覆盖隔离、逐项 null 恢复，修改全局后真正继续继承', async () => {
+  const s = await setup();
+  const { project } = await s.core.call('project.add', { path: s.repo('defaults') }) as { project: { id: string } };
+  const { project: other } = await s.core.call('project.add', { path: s.repo('other') }) as { project: { id: string } };
+  for (const f of defaultFields) {
+    expect(await saveDefault(s, undefined, f.key, String(f.min))).toEqual({ saved: true });
+    expect(await saveDefault(s, project.id, f.key, String(f.min + 1))).toEqual({ saved: true });
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min + 1);
+    expect((await loadLoop(s, other.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min);
+    expect(await saveDefault(s, project.id, f.key, 'null')).toEqual({ saved: true });
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min);
+    await saveDefault(s, undefined, f.key, String(f.min + 2));
+    expect((await loadLoop(s, project.id)).config!.resolved.loop_defaults[f.key]).toBe(f.min + 2);
+  }
+});

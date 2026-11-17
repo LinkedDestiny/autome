@@ -35,7 +35,7 @@ export async function action({ request, context }: ActionFunctionArgs): Promise<
   if (!result.body.ok) return { error: result.body.error };
   const added = result.body.payload as AddResult & { project: { id: string } };
   if (added.skip_error) return added;
-  return redirect(`/projects/${encodeURIComponent(added.project.id)}${skip ? '' : '/settings'}`);
+  return redirect(skip ? `/projects/${encodeURIComponent(added.project.id)}` : `/loop?project=${encodeURIComponent(added.project.id)}&tab=project`);
 }
 export function AddProjectView({ checked, result, busy = false }: { checked: CheckedProject; result?: AddResult; busy?: boolean }) {
   const gate = useWriteGate();
@@ -68,7 +68,7 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
       </Form>}
     </section>}
     {result?.error && <p role="alert">{result.error}</p>}
-    {result?.skip_error && result.project && <section role="alert"><p>{ADMIN.partial}{result.skip_error}</p><Link to={`/projects/${encodeURIComponent(result.project.id)}`}>{ADMIN.project}</Link> <Link to={`/projects/${encodeURIComponent(result.project.id)}/settings`}>{ADMIN.settings}</Link></section>}
+    {result?.skip_error && result.project && <section role="alert"><p>{ADMIN.partial}{result.skip_error}</p><Link to={`/projects/${encodeURIComponent(result.project.id)}`}>{ADMIN.project}</Link> <Link to={`/loop?project=${encodeURIComponent(result.project.id)}&tab=project`}>{ADMIN.settings}</Link></section>}
     {!gate.allowed && <p role="status">{gate.reason}</p>}
   </div></div>;
 }

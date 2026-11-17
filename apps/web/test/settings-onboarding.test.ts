@@ -2,14 +2,14 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider, RouterContextProvider } from 'react-router';
 import { expect, test, vi } from 'vitest';
-import { action as routeAction, loader, SettingsView } from '../app/routes/projects.$id.settings.tsx';
+import { settingsAction as routeAction, settingsLoader as loader, SettingsView } from '../app/routes/loop.tsx';
 import ProjectBoard from '../app/routes/projects.$id.tsx';
 import { servicesContext, type WebServices } from '../app/load-context.ts';
 import { WriteGateProvider } from '../app/lib/live.tsx';
 import { createGateway } from '../server/gateway.ts';
 import { onboardingState, type SettingsData, type OnboardingResult } from '../app/components/settings-data.ts';
 const base: SettingsData = { project: { id: 'p', path: '/tmp/p', display_name: '测试', onboarding: { onboarding: 'in_progress', step: 3 } }, files: [{ path: 'AGENTS.md', exists: true, content: 'old' }, { path: 'docs/agent-project-profile.md', exists: true, content: '' }], session: { state: 'none' } };
-function args(services: WebServices, form: Record<string, string>) { const context = new RouterContextProvider(); context.set(servicesContext, services); return { context, params: { id: 'p' }, request: new Request('http://localhost/projects/p/settings', { method: 'POST', body: new URLSearchParams(form) }), url: new URL('http://localhost/projects/p/settings'), pattern: '/projects/:id/settings' }; }
+function args(services: WebServices, form: Record<string, string>) { const context = new RouterContextProvider(); context.set(servicesContext, services); return { context, params: { id: 'p' }, request: new Request('http://localhost/loop?project=p&tab=project', { method: 'POST', body: new URLSearchParams(form) }), url: new URL('http://localhost/loop?project=p&tab=project'), pattern: '/projects/:id/settings' }; }
 function html(data = base, result?: OnboardingResult, allowed = true) { const router = createMemoryRouter([{ path: '/', element: createElement(WriteGateProvider, { value: { allowed, reason: '离线原因' } }, createElement(SettingsView, { data, result })) }]); try { return renderToString(createElement(RouterProvider, { router })); } finally { router.dispose(); } }
 const ok = (payload: unknown) => ({ status: 200, body: { ok: true, payload } });
 test('1 步骤与结束状态', async () => {
@@ -33,7 +33,7 @@ test('3 保存只收两份路径、空串和最大长度原样送网关', async 
 });
 test('4 超长由真实网关拒绝并显示原文', async () => { const call = vi.fn(); const gateway = createGateway({ core: { call, restart: vi.fn() }, home: '/tmp' }); const result = await action(args({ gateway }, { intent: 'save', path: 'AGENTS.md', content: 'x'.repeat(262145) })); expect(result.error).toMatch(/^已拒绝：.*超过.*字符上限/); expect(call).not.toHaveBeenCalled(); expect(html(base, result)).toContain(result.error); });
 test('5 会话状态和离线禁用全部按钮', () => { const running = html({ ...base, session: { state: 'running', session_id: 'ses-test' } }); expect(running).toContain('会话运行中'); expect(running).toContain('ses-test'); expect(running).toMatch(/value="run" disabled=""/); expect(html({ ...base, session: { state: 'ended', exit_code: 7 } })).toContain('退出码 7'); const offline = html(base, undefined, false); expect(offline.match(/<button/g)).toHaveLength(6); expect(offline.match(/disabled="" title="离线原因"/g)).toHaveLength(6); });
-test('6 项目页设置链接', () => { const router = createMemoryRouter([{ path: '/', Component: ProjectBoard }], { hydrationData: { loaderData: { '0': { project: { id: 'p', display_name: '测试' }, tasks: [], alerts: [], now: new Date().toISOString() } } } }); try { expect(renderToString(createElement(RouterProvider, { router }))).toContain('href="/projects/p/settings"'); } finally { router.dispose(); } });
+test('6 项目页设置链接', () => { const router = createMemoryRouter([{ path: '/', Component: ProjectBoard }], { hydrationData: { loaderData: { '0': { project: { id: 'p', display_name: '测试' }, tasks: [], alerts: [], now: new Date().toISOString() } } } }); try { expect(renderToString(createElement(RouterProvider, { router }))).toContain('href="/loop?project=p"'); } finally { router.dispose(); } });
 
 async function action(args: Parameters<typeof routeAction>[0]) { const result = await routeAction(args); if (result instanceof Response) throw new Error('Unexpected redirect during onboarding'); return result; }
 

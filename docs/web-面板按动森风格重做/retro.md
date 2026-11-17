@@ -20,3 +20,5 @@
 
 实现 #7 | M-07 | 保持开放 | docs/web-面板按动森风格重做/evidence/M-07-r7-impl.md | 浏览器夹具 ps EPERM
 审计 #7 | M-07 | 通过 | docs/web-面板按动森风格重做/evidence/M-07-r7-audit.md | 无
+
+实现 #8 | M-08 | 退回 + 验收环境 | docs/web-面板按动森风格重做/evidence/M-08-r8-impl.md | 浏览器与快检被 ps EPERM 阻断
