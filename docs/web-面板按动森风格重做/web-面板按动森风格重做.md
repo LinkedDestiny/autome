@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 6/65
+implementation-round: 7/65
 current-milestone: M-07
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 开始 M-07：Loop 配置页的角色卡片、编辑抽屉、范围切换与双模型判定
+next-action: 继续 M-07：在允许 ps 的环境跑两条浏览器验收，补齐交互与视觉证据后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -840,6 +840,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 新增操作按钮漏掉「重新打开」：task-header 的按钮集合用例失败。
 
 ### M-07 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-07-r7-impl.md · 浏览器环境阻塞，保持开放 · 实现 #7
 
 - 验收命令：`cargo test -p automed --test end_to_end a_role_written_through_set_role_reaches_the_next_session && (cd apps/web && npx vitest run test/role-rules.test.ts test/loop-page.test.ts test/loop-real.test.ts test/live-routes.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/controls.spec.ts -g "Loop 配置|E-1")`
 - 预期：Rust 1 个用例通过。vitest 7 个文件，至少 63 个用例全过：

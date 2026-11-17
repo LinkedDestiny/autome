@@ -1,0 +1,21 @@
+{
+  "scope": null,
+  "skills": [
+    {
+      "bound_roles": [],
+      "conflicts": [],
+      "name": "m07-skill",
+      "project_scoped": false,
+      "sources": [
+        {
+          "path": "/var/folders/f6/r83yddpn0wvftcfn57z_b8440000gn/T/w9-srGIvh/home/.claude/skills/m07-skill",
+          "runtime": "claude",
+          "scope": "global"
+        }
+      ],
+      "visible_to": [
+        "claude"
+      ]
+    }
+  ]
+}

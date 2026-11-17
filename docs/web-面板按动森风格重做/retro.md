@@ -17,3 +17,5 @@
 审计 #5 | M-05 | 通过 | docs/web-面板按动森风格重做/evidence/M-05-r5-audit.md | 无
 实现 #6 | M-06 | 开放：单元通过，验收受阻 | docs/web-面板按动森风格重做/evidence/M-06-r6-impl.md | 沙箱 ps EPERM，浏览器未运行
 审计 #6 | M-06 | 通过 | docs/web-面板按动森风格重做/evidence/M-06-r6-audit.md | 无
+
+实现 #7 | M-07 | 保持开放 | docs/web-面板按动森风格重做/evidence/M-07-r7-impl.md | 浏览器夹具 ps EPERM

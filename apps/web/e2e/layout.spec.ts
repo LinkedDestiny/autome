@@ -1,13 +1,14 @@
 import { test, expect, visit, oneScreen, expandLog } from './harness/browser.ts';
 import { state } from './harness/fixture.ts';
 const cases = [
-  ['总览', '/'], ['总览命令面板', '/'], ['总览铃铛', '/'],
+  ['Loop 配置', '/loop'], ['总览', '/'], ['总览命令面板', '/'], ['总览铃铛', '/'],
   ['项目', 'project'], ['全部已完成', 'project?done=all'], ['新建任务', 'project/tasks/new'],
   ['需求详情展开日志', '/tasks/T-1'], ['Bug 详情', '/tasks/T-2'],
   ['添加项目补全', '/projects/new'], ['项目设置', 'project/settings'], ['环境', '/env'], ['已取消展开', 'project?cancelled=all'],
 ] as const;
 for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => {
   await visit(page, path.replace(/^project/, `/projects/${encodeURIComponent(state().projectId)}`));
+  if (name === 'Loop 配置') { await expect(page.getByTestId('loop-role')).toHaveCount(6); await expect(page.locator('.loop-row .card-dash')).toHaveCount(4); await page.screenshot({ path: '../../.autome/output/m07-layout.png' }); }
   if (name.startsWith('总览')) {
     const sidebar = page.locator('.shell-sidebar');
     for (const href of ['/', '/loop', '/skills', '/env']) await expect(sidebar.locator('a[href="' + href + '"]')).toBeVisible();

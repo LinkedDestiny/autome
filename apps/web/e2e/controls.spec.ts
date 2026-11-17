@@ -189,3 +189,36 @@ test('BL-01 前置状态变化五秒内反映在依赖任务详情页', async ({
   await page.screenshot({ path: join(checkout, '.autome/output/m10-dependency.png') });
   cli(f.root, ['cancel', child]); cli(f.root, ['cancel', parent]);
 });
+
+test('E-1 页面改全局角色与项目覆盖后 config.get 读回并能恢复', async ({ page }) => {
+  const f=state();
+  const rpc=(method:string,params:object)=>JSON.parse(cli(f.root,['rpc',method,JSON.stringify(params)]));
+  const original=rpc('config.get',{}).global.roles.plan;
+  const projectOriginal=readFileSync(join(f.repo,'.autome/config.toml'),'utf8');
+  try {
+    rpc('config.set_role',{role:'plan',effort:'xhigh'});
+    await visit(page,'/loop');
+    await expect(page.getByTestId('loop-role')).toHaveCount(6);
+    await page.locator('[data-role=plan]').getByRole('button').click();
+    await expect(page.getByText('其它：xhigh',{exact:true})).toBeVisible();
+    await page.getByLabel('模型',{exact:true}).fill('m07-browser-global');
+    await page.getByRole('radiogroup',{name:'Effort',exact:true}).getByText('low',{exact:true}).click();
+    await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{}).global.roles.plan.model).toBe('m07-browser-global');
+    await page.getByRole('button',{name:'关闭',exact:true}).click();
+    await visit(page,`/loop?project=${f.projectId}`);
+    await page.locator('[data-role=plan]').getByRole('button').click();
+    await page.getByLabel('模型',{exact:true}).fill('m07-browser-project');
+    await page.getByRole('button',{name:'保存',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{project_id:f.projectId}).resolved.roles[0].config.model).toBe('m07-browser-project');
+    expect(rpc('config.get',{}).global.roles.plan.model).toBe('m07-browser-global');
+    page.once('dialog',dialog=>{expect(dialog.message()).toContain('项目覆盖会一起清掉');void dialog.accept();});
+    await page.getByRole('button',{name:'恢复跟随全局',exact:true}).click();
+    await expect.poll(()=>rpc('config.get',{project_id:f.projectId}).resolved.roles[0].provenance).toBe('global');
+    await page.getByRole('button',{name:'关闭',exact:true}).click();
+    await page.screenshot({path:join(checkout,'.autome/output/m07-loop.png')});
+  } finally {
+    rpc('config.set_role',{role:'plan',...original});
+    writeFileSync(join(f.repo,'.autome/config.toml'),projectOriginal);
+  }
+});

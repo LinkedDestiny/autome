@@ -7,6 +7,7 @@ export const TEST_IDS = {
   pageTaskNew: 'page-task-new',
   pageProjectNew: 'page-project-new',
   pageSettings: 'page-settings',
+  loopRole: 'loop-role',
   pageLoop: 'page-loop',
   pageSkills: 'page-skills',
   pageEnv: 'page-env',

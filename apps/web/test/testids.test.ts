@@ -1,3 +1,4 @@
+import loopConfig from './fixtures/m07-global.json' with { type: 'json' };
 import Loop from '../app/routes/loop.tsx';
 import Skills from '../app/routes/skills.tsx';
 import { taskPageData } from './fixtures/task-page-data.ts';
@@ -37,7 +38,7 @@ function render(Component: ComponentType, data: unknown, url = '/') {
 function view(child: ReactNode, url = '/') { return render(() => child, shell, url); }
 function has(html: string, ...selectors: string[]) { for (const id of selectors) expect(html).toContain(`data-testid="${id}"`); }
 const pages: [string, ComponentType, unknown, string][] = [
-  [ids.pageLoop, Loop, null, '/loop'],
+  [ids.pageLoop, Loop, { config: loopConfig, projects: [], skills: [] }, '/loop'],
   [ids.pageSkills, Skills, null, '/skills'],
   [ids.pageOverview, Overview, shell, '/'],
   [ids.pageBoard, Board, board, '/projects/P-1'],
@@ -118,7 +119,7 @@ test('selector registry is unique, used, and the only source for JSX testids', (
   expect([...used].sort()).toEqual(Object.keys(ids).sort());
 });
 test('scroll exemptions are restricted to designated internal regions', () => {
-  const allowed = ['overview-column-body', 'overview-merged-list', 'task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
+  const allowed = ['loop-body', 'overview-column-body', 'overview-merged-list', 'task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
   const found = new Set<string>();
   for (const [, source] of sources()) attributes(source, attrs => {
     if (!attrs.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText() === 'data-scroll-region')) return;
@@ -132,3 +133,5 @@ test('scroll exemptions are restricted to designated internal regions', () => {
 test('expanded cancelled section exposes stable selectors', () => {
   has(render(Board, { ...board, showCancelled: true, cancelledCounts: { all: 1, feature: 0, bug: 1 }, cancelled: [{ ...task, state: { state: 'cancelled' } }] }, '/projects/P-1?cancelled=all'), ids.boardCancelled, ids.boardCancelledToggle);
 });
+
+test('Loop 角色卡暴露六个稳定选择器', () => { const text=render(Loop,{config:loopConfig,projects:[],skills:[]},'/loop');has(text,ids.loopRole);expect(text.match(/data-testid="loop-role"/g)).toHaveLength(6); });
