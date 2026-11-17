@@ -2,11 +2,11 @@
 
 status: 已完成
 design-round: 1/15
-implementation-round: 20/65
+implementation-round: 21/65
 current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 宿主复跑快检与合并前门禁，确认发布包启动和迁移后设置 HTTP 验收通过
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`

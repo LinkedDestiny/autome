@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider, RouterContextProvider } from 'react-router';
 import { expect, test, vi } from 'vitest';
-import { settingsAction as routeAction, settingsLoader as loader, SettingsView } from '../app/routes/loop.tsx';
+import { action as routeAction, settingsLoader as loader, SettingsView } from '../app/routes/loop.tsx';
 import ProjectBoard from '../app/routes/projects.$id.tsx';
 import { servicesContext, type WebServices } from '../app/load-context.ts';
 import { WriteGateProvider } from '../app/lib/live.tsx';
@@ -35,7 +35,7 @@ test('4 超长由真实网关拒绝并显示原文', async () => { const call = 
 test('5 会话状态和离线禁用全部按钮', () => { const running = html({ ...base, session: { state: 'running', session_id: 'ses-test' } }); expect(running).toContain('会话运行中'); expect(running).toContain('ses-test'); expect(running).toMatch(/value="run" disabled=""/); expect(html({ ...base, session: { state: 'ended', exit_code: 7 } })).toContain('退出码 7'); const offline = html(base, undefined, false); expect(offline.match(/<button/g)).toHaveLength(6); expect(offline.match(/disabled="" title="离线原因"/g)).toHaveLength(6); });
 test('6 项目页设置链接', () => { const router = createMemoryRouter([{ path: '/', Component: ProjectBoard }], { hydrationData: { loaderData: { '0': { project: { id: 'p', display_name: '测试' }, tasks: [], alerts: [], now: new Date().toISOString() } } } }); try { expect(renderToString(createElement(RouterProvider, { router }))).toContain('href="/loop?project=p"'); } finally { router.dispose(); } });
 
-async function action(args: Parameters<typeof routeAction>[0]) { const result = await routeAction(args); if (result instanceof Response) throw new Error('Unexpected redirect during onboarding'); return result; }
+async function action(args: Parameters<typeof routeAction>[0]) { const result = await routeAction(args); if (result instanceof Response) throw new Error('Unexpected redirect during onboarding'); if ('saved' in result && Array.isArray(result.saved)) throw new Error('Unexpected role result during onboarding'); return result as OnboardingResult; }
 
 test('7 账本会话状态与日志入口', () => {
   expect(onboardingState(null)).toEqual({ state: 'none' });

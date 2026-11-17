@@ -52,3 +52,4 @@
 审计 #15 | M-12 | 通过 | docs/web-面板按动森风格重做/evidence/M-12-r19-audit.md | 无
 实现 #20 | M-13 | 待审 | docs/web-面板按动森风格重做/evidence/M-13-r20-impl.md | 浏览器 ps 与开发服务器监听被 EPERM 阻塞
 审计 #16 | M-13 | 通过 | docs/web-面板按动森风格重做/evidence/M-13-r20-audit.md | 无
+实现 #21 | M-13（宿主门禁修复） | 修复待宿主复验 | docs/web-面板按动森风格重做/evidence/M-13-r21-impl.md | ps/监听 EPERM，安装与 HTTP 未获通过证据
