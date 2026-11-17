@@ -14,7 +14,7 @@ export function overviewCardView(task: ShellTask, detail: OverviewDetail | undef
   const key = task.state.state === 'active' ? task.state.node! : task.state.state;
   const block = detail?.status_block, session = detail?.session;
   const impl = session && session.kind?.kind === 'role' && ['impl', 'audit', 'retro'].includes(session.kind.role);
-  const round = block ? `${impl ? block.impl_round : block.design_round} / ${impl ? block.impl_round_limit : block.design_round_limit}` : session ? String(session.round) : '';
+  const round = block ? `${(impl ? block.impl_round : block.design_round) ?? '—'} / ${(impl ? block.impl_round_limit : block.design_round_limit) ?? '—'}` : session ? String(session.round ?? '—') : '';
   const summary = detail?.error ?? (key === 'await_design_approval'
     ? block ? `设计已定稿：${block.milestones_total} 个里程碑。评审 ${detail!.reviews} 轮、裁决 ${detail!.adjudications} 轮。${detail!.pending ? `另有 ${detail!.pending} 条 Backlog 等你表态。` : ''}` : '设计摘要暂不可用'
     : key === 'failed' ? failureText((task.state as ShellTask['state'] & { reason?: Record<string, unknown> }).reason) || '任务失败，请查看详情'
@@ -22,9 +22,9 @@ export function overviewCardView(task: ShellTask, detail: OverviewDetail | undef
   return { summary, badge: WAIT_BADGES[key] ?? (session ? `${session.label} ${round}` : stageStatusLine(task.kind, task.state)),
     cost: task.cost_usd == null || (task.cost_usd === 0 && (task.cost_sessions_without_cost ?? 0) > 0) ? '无计费' : `$${task.cost_usd.toFixed(2)}`,
     elapsed: task.created_at ? formatSpan(Date.parse(now) - Date.parse(task.created_at)) : '—',
-    round: block ? `${block.design_round} / ${block.design_round_limit}` : '—',
+    round: block ? `${block.design_round ?? '—'} / ${block.design_round_limit ?? '—'}` : '—',
     sessionTime: session ? `本轮已跑 ${formatSpan(Date.parse(now) - Date.parse(session.started_at))}` : '',
-    progress: block ? `里程碑 ${block.milestones_done} / ${block.milestones_total}` : '',
+    progress: block ? `里程碑 ${block.milestones_done ?? '—'} / ${block.milestones_total ?? '—'}` : '',
     current: block?.current_milestone ? `正在做 ${block.current_milestone}` : '',
     gate: detail?.gate ? gatePhrase(detail.gate) : '',
     queue: task.state.state === 'queued' ? task.blocked_by?.length ? '等 ' + task.blocked_by.map(item => `${item.id} ${item.reason === 'cancelled' ? '已取消，请修改依赖' : item.reason === 'failed' ? '已失败，请处理依赖' : '合并后开始'}`).join('、') : `排第 ${task.queue_position ?? '—'} 位 · 等空闲槽位` : '',

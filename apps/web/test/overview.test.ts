@@ -126,3 +126,25 @@ test('17 卡片详情读取失败不编造设计轮数与摘要，纯文本转�
   const html = richCard({ ...task, title: '<script>x</script>', state: { state: 'active', node: 'await_design_approval' } }, { reviews: 0, adjudications: 0, pending: 0, error: '详情暂不可用：读盘失败' });
   expect(html).toContain('详情暂不可用：读盘失败'); expect(html).not.toContain('评审 0 轮'); expect(html).toContain('&lt;script&gt;');
 });
+
+/* eslint-disable @typescript-eslint/no-explicit-any -- 审计判别检查原文保留 */
+test('等合并的 Bug 卡片状态块缺设计轮字段时不得出现 undefined', () => {
+  const task: any = { id: 'T-audit', state: { state: 'await_merge' }, kind: 'bug', created_at: '2026-11-18T00:00:00Z', cost_usd: null };
+  const v = overviewCardView(task, { status_block: { milestones_done: 1, milestones_total: 1 } } as any, '2026-11-18T00:01:00Z');
+  expect(JSON.stringify(v)).not.toMatch(/undefined/);
+});
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+test('轮次缺值逐字段回退，零值保留，设计与实现会话使用对应预算', () => {
+  for (const role of ['plan', 'impl', 'audit', 'retro']) {
+    for (const value of [undefined, null, 0, 1]) {
+      const block = { ...detail.status_block!, design_round: value, design_round_limit: value, impl_round: value, impl_round_limit: value } as unknown as NonNullable<OverviewDetail['status_block']>;
+      const view = overviewCardView(task, { ...detail, status_block: block, session: { kind: { kind: 'role', role }, label: '会话', round: 1, started_at: now } }, now);
+      const expected = `${value ?? '—'} / ${value ?? '—'}`;
+      expect(view.round).toBe(expected);
+      expect(view.badge).toBe(`会话 ${expected}`);
+      expect(JSON.stringify(view)).not.toMatch(/undefined|null|NaN/);
+    }
+  }
+  expect(overviewCardView(task, { ...detail, status_block: { ...detail.status_block!, design_round: 0 } }, now).round).toBe('0 / 15');
+});

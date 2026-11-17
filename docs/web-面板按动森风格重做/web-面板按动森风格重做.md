@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 15/65
+implementation-round: 16/65
 current-milestone: M-11
 current-milestone-reopens: 2
 convergence-mode: normal
-next-action: 修复总览截图中的 undefined / undefined 与进行中卡片不可见问题，重生成真实截图；在具备进程枚举权限的环境跑完整 M-11 验收，通过后标待审
+next-action: 在具备进程枚举权限的环境用修复后的截图脚本生成并替换五图，跑完整 M-11 验收；当前缺值回归已绿，截图与布局被 ps EPERM 阻断
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r15-audit.md · 退回（总览缺值显示） · 审计 #12
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r16-impl.md · 缺值修复，截图与布局环境阻塞，保持开放 · 实现 #16
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：

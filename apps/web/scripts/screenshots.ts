@@ -42,6 +42,12 @@ try {
     env: { ...process.env, AUTOMED_BIN: join(checkout, 'target/debug/automed'), AUTOME_BIN: join(checkout, 'target/debug/autome') },
     timeout: PREPARE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // Keep the shared fixture's completed history, but leave room for both demo cards.
+  const { projects } = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
+  for (const { project } of projects) {
+    const { tasks } = JSON.parse(cli(root, ['rpc', 'project.get', JSON.stringify({ project_id: project.id })])) as { tasks: { id: string; state: { state: string } }[] };
+    for (const task of tasks) if (!['done', 'cancelled'].includes(task.state.state)) cli(root, ['cancel', task.id]);
+  }
   const title = '结算页支持优惠码';
   flowSteps(root, title);
   const taskId = newTask(root, title);
@@ -57,7 +63,6 @@ try {
   for (const title of ['修复导出报表时区错误', '订单列表增加筛选', '补齐支付失败提示']) {
     newTask(root, title, ['--draft']);
   }
-  const { projects } = JSON.parse(cli(root, ['rpc', 'project.list', '{}'])) as { projects: { project: { id: string } }[] };
   service = await startServer({ mode: 'production', port: 0, home: join(root, 'autome-home'), userHome: root,
     binaryPath: join(checkout, 'target/debug/autome'), binaryArgs: ['core'],
     kernelEnv: { HOME: root, AUTOMED_CLAUDE_BINARY: join(root, 'bin/fake-cli'), AUTOMED_CODEX_BINARY: join(root, 'bin/fake-cli') },
@@ -82,8 +87,9 @@ try {
     await expect(page.getByTestId('live-banner')).toHaveCount(0);
     if (['dashboard', 'project', 'task'].includes(name)) await expect(page.getByTestId('shell-main')).toContainText(title);
     if (name === 'dashboard') {
-      await expect(page.locator('.overview-task-card.card-yellow').filter({ hasText: title })).toBeVisible();
-      await expect(page.locator('.overview-task-card.card-teal').filter({ hasText: runningTitle })).toBeVisible();
+      await expect(page.locator('.overview-task-card.card-yellow').filter({ hasText: title })).toBeInViewport({ ratio: 1 });
+      await expect(page.locator('.overview-task-card.card-teal').filter({ hasText: runningTitle })).toBeInViewport({ ratio: 1 });
+      await expect(page.getByTestId('shell-main')).not.toContainText('undefined');
     }
     if (name === 'loop') await expect(page.getByTestId('loop-role')).toHaveCount(6);
     if (name === 'skills') await expect(page.getByTestId('skill-card')).toHaveCount(3);
