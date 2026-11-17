@@ -33,3 +33,5 @@
 实现 #12 | M-10 | 快检修复通过，保持开放 | docs/web-面板按动森风格重做/evidence/M-10-r12-impl.md | M-10 浏览器五条待补验
 
 审计 #10 | M-10 | 通过 | docs/web-面板按动森风格重做/evidence/M-10-r12-audit.md | 无
+
+实现 #13 | M-11 | 开放，环境阻塞 | docs/web-面板按动森风格重做/evidence/M-11-r13-impl.md | ps EPERM，截图未生成

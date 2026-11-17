@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 12/65
+implementation-round: 13/65
 current-milestone: M-11
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-11：README 五张截图与全站一屏巡检收口，按其验收契约取得通过证据再标待审
+next-action: 继续 M-11：在允许 ps 与监听端口的环境生成五张截图并复制到 docs/images，跑验收与快检后再标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -933,6 +933,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 类型单选的 `name` 改成 `type`：task-new 字段用例失败。
 
 ### M-11 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r13-impl.md · 环境阻塞，保持开放 · 实现 #13
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：

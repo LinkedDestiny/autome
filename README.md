@@ -12,7 +12,7 @@ to approve the design, once to press merge.
 The web dashboard screenshots can be regenerated from isolated e2e fixtures
 with `apps/web/scripts/screenshots.ts`. After building the core and web app, run
 `npm run screenshots --prefix apps/web`. The script uses invented tasks and a
-temporary ledger, and writes three 1512×944 images to `docs/images/`.
+temporary ledger, and writes five 1512×944 images to `docs/images/`.
 
 **The dashboard** — everything waiting on you, across every project, above
 everything that is running. Nothing else competes for the space.
@@ -29,6 +29,16 @@ current session is doing right now, and what it has produced. The stopping
 panel says whether it needs you, and says so in the same place every time.
 
 ![A task](docs/images/task.png)
+
+**Loop configuration** — models, effort and skills for each role, with global
+defaults and project overrides.
+
+![Loop configuration](docs/images/loop.png)
+
+**Skills** — browse available skills, inspect their sources and bind them to
+roles globally or for one project.
+
+![Skills](docs/images/skills.png)
 
 ## The shape of it
 
