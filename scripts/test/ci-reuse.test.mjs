@@ -29,7 +29,7 @@ function fixture(t, custom = false) {
   const cleanEnv = { ...process.env };
   for (const key of Object.keys(cleanEnv)) if (key.startsWith('AUTOME_') || key === 'CI_LOCAL_ALL' || key.startsWith('GIT_')) delete cleanEnv[key];
   const run = (args = ['--plan'], env = {}) => spawnSync('sh', ['scripts/ci-local.sh', ...args], {
-    cwd: root, env: { ...cleanEnv, ...env }, encoding: 'utf8', timeout: 120_000,
+    cwd: root, env: { ...cleanEnv, NO_COLOR: '1', FORCE_COLOR: '0', ...env }, encoding: 'utf8', timeout: 120_000,
   });
   const plan = (env = {}, args = ['--plan']) => {
     const result = run(args, env);
@@ -176,4 +176,89 @@ test('18 empty snapshot, invalid names, and failed snapshot creation are explici
   f.put('scripts/ci/steps.sh', "GLOBAL_INPUTS='scripts'\nNO_GATE=''\nstep 'valid' '' true\n");
   writeFileSync(resolve(f.root, '.git/index'), 'invalid index');
   result = f.run(['--plan']); assert.equal(result.status, 2); assert.doesNotMatch(result.stdout, /^plan\t/m);
+});
+
+function installedFixture(t, steps) {
+  const f = fixture(t, true);
+  f.put('scripts/ci/steps.sh', `GLOBAL_INPUTS='scripts .gitignore apps/web/package-lock.json apps/desktop/package-lock.json'\nNO_GATE='docs'\n${steps}\n`);
+  const bin = resolve(f.dir, 'bin'); mkdirSync(bin);
+  const calls = resolve(f.dir, 'npm-calls');
+  writeFileSync(resolve(bin, 'npm'), `#!/bin/sh\nif [ "$1" = -v ]; then echo fixture; exit; fi\nmkdir -p node_modules\ncp package-lock.json node_modules/.package-lock.json\necho install >> '${calls}'\n`, { mode: 0o755 });
+  f.env.PATH = `${bin}:${process.env.PATH}`;
+  const report = resolve(f.dir, 'report');
+  const rows = () => readFileSync(report, 'utf8').trim().split('\n').slice(1).map(line => {
+    const [action, key, name] = line.split('\t'); return { action, key, name };
+  });
+  const run = () => f.run([], { ...f.env, AUTOME_GATE_REPORT: report });
+  const save = () => f.save(rows().filter(r => ['ran', 'reused'].includes(r.action)));
+  return { ...f, calls, rows, execute: run, saveReport: save };
+}
+const installWeb = "prep 'Web install' sh scripts/ci/install-node.sh apps/web";
+const afterSteps = "step 'After A' 'stable' true\nstep 'After B' 'changing' true";
+const ranKeys = rows => rows.forEach(r => { assert.equal(r.action, 'ran'); assert.match(r.key, /^[a-f0-9]{40}$/); });
+
+test('19 装依赖后记录通过，之前的键保留，三次运行收敛', t => {
+  const f = installedFixture(t, `step Before stable true\n${installWeb}\n${afterSteps}`);
+  assert.equal(f.execute().status, 0); const first = f.rows(); ranKeys(first);
+  const plan = f.plan(f.env);
+  assert.notEqual(first[0].key, plan[0].key);
+  assert.deepEqual(first.slice(1).map(r => r.key), plan.slice(1).map(r => r.key));
+  f.saveReport(); rmSync(f.calls);
+  const second = f.execute(); assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(f.rows().map(r => r.action), ['ran', 'reused', 'reused']);
+  assert.doesNotMatch(second.stdout, /==> Web install/); assert.equal(existsSync(f.calls), false);
+  f.saveReport(); assert.equal(f.execute().status, 0);
+  assert.deepEqual(f.rows().map(r => r.action), ['reused', 'reused', 'reused']);
+});
+test('20 装依赖后已装树、锁文件变化及依赖缺失均不能沿用', t => {
+  const f = installedFixture(t, `${installWeb}\n${afterSteps}`);
+  assert.equal(f.execute().status, 0); f.saveReport();
+  const marker = 'apps/web/node_modules/.package-lock.json';
+  const original = readFileSync(resolve(f.root, marker));
+  f.put(marker, 'different tree'); allRun(f.plan(f.env));
+  f.put(marker, original); f.put('apps/web/package-lock.json', 'different lock'); allRun(f.plan(f.env));
+  f.put('apps/web/package-lock.json', original);
+  rmSync(resolve(f.root, 'apps/web/node_modules'), { recursive: true }); allRun(f.plan(f.env));
+});
+test('21 装依赖后运行中改变源码或锁文件仍是 partial', t => {
+  for (const path of ['stable', 'apps/web/package-lock.json']) {
+    const f = installedFixture(t, `${installWeb}\nstep Mutate stable sh -c 'echo changed >> ${path}'`);
+    assert.equal(f.execute().status, 0);
+    assert.deepEqual(f.rows(), [{ action: 'partial', key: '-', name: 'Mutate' }]);
+  }
+});
+test('22 装依赖准备成功后重算失败，只有成功准备重算才能恢复可信键', t => {
+  for (const recover of [false, true]) {
+    const f = installedFixture(t, `prep Break sh -c 'mv .git .git-hidden'\nstep Restore stable sh -c 'mv .git-hidden .git'\n${recover ? 'prep Recover true\n' : ''}step After stable true`);
+    assert.equal(f.execute().status, 0);
+    assert.deepEqual(f.rows()[0], { action: 'partial', key: '-', name: 'Restore' });
+    if (recover) ranKeys(f.rows().slice(1));
+    else assert.deepEqual(f.rows()[1], { action: 'partial', key: '-', name: 'After' });
+  }
+});
+test('23 两次装依赖之间步骤保留当时的键', t => {
+  const f = installedFixture(t, `prep 'Install 1' sh scripts/ci/install-node.sh apps/desktop\nstep Between stable true\n${installWeb}\nstep After changing true`);
+  assert.equal(f.execute().status, 0); const first = f.rows(); ranKeys(first); f.saveReport();
+  const marker = 'apps/web/node_modules/.package-lock.json';
+  const installed = readFileSync(resolve(f.root, marker));
+  rmSync(resolve(f.root, marker));
+  assert.equal(first[0].key, f.plan(f.env)[0].key);
+  f.put(marker, installed);
+  const plan = f.plan(f.env);
+  assert.notEqual(first[0].key, plan[0].key); assert.equal(plan[0].action, '执行');
+  assert.equal(first[1].key, plan[1].key); assert.equal(plan[1].action, '沿用');
+  rmSync(f.calls); assert.equal(f.execute().status, 0);
+  assert.deepEqual(f.rows().map(r => r.action), ['ran', 'reused']); assert.equal(existsSync(f.calls), false);
+});
+test('24 装依赖失败后无关成功准备不能刷新键，未改输入的失败仍可记录', t => {
+  for (const mutate of [true, false]) {
+    const f = installedFixture(t, `prep Install sh -c '${mutate ? 'mkdir -p apps/web/node_modules; echo changed >> apps/web/node_modules/.package-lock.json; ' : ''}exit 7'\nprep 'Build core' true\nstep After stable true`);
+    const initial = f.plan(f.env)[0].key;
+    const result = f.execute(); assert.equal(result.status, 1);
+    assert.deepEqual(f.rows(), [{ action: mutate ? 'partial' : 'ran', key: mutate ? '-' : initial, name: 'After' }]);
+    if (mutate) {
+      assert.match(result.stdout, /输入已变化或无法复核，不记录通过/);
+      f.saveReport(); assert.equal(f.execute().status, 1); assert.equal(f.rows()[0].action, 'partial');
+    }
+  }
 });
