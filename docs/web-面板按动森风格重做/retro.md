@@ -8,3 +8,4 @@
 审计 #2 | M-02 | 通过 | docs/web-面板按动森风格重做/evidence/M-02-r2-audit.md | 无
 
 实现 #3 | M-03 | 开放（浏览器阻塞） | docs/web-面板按动森风格重做/evidence/M-03-r3-impl.md | 浏览器夹具 ps EPERM
+审计 #3 | M-03 | 通过 | docs/web-面板按动森风格重做/evidence/M-03-r3-audit.md | 无

@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 3/65
-current-milestone: M-03
+current-milestone: M-04
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 补跑 M-03 总览浏览器验收（当前沙箱 ps EPERM），通过后标待审
+next-action: 实现 M-04 项目看板（丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过），按其验收契约取证后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -647,7 +647,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 |---|---|---|---|---|
 | M-01 | 已完成 | A·令牌、图标与共用组件，样式守卫随之扩展 | 0 | |
 | M-02 | 已完成 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
-| M-03 | 开放 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
+| M-03 | 已完成 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
 | M-04 | 开放 | C·项目看板：丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过 | 0 | |
 | M-05 | 开放 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
 | M-06 | 开放 | D·任务详情页面重排：头部、执行过程、右侧四页签 | 0 | |
@@ -744,7 +744,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-03 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-03-r3-impl.md · 自动化子集通过，浏览器环境阻塞，保持开放 · 实现 #3
+最新证据：docs/web-面板按动森风格重做/evidence/M-03-r3-audit.md · 通过 · 审计 #3
 
 - 验收命令：`(cd apps/web && npx vitest run test/overview.test.ts test/overview-summary.test.ts test/overview-states-real.test.ts test/clock.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts -g "1512×944 总览$")`
 - 预期：7 个文件，至少 62 个用例全过：
