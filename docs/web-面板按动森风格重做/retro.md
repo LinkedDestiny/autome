@@ -31,3 +31,5 @@
 实现 #11 | M-10 | 开放，Vitest 107 通过 | docs/web-面板按动森风格重做/evidence/M-10-r11-impl.md | 浏览器夹具 ps EPERM，5 条未执行
 
 实现 #12 | M-10 | 快检修复通过，保持开放 | docs/web-面板按动森风格重做/evidence/M-10-r12-impl.md | M-10 浏览器五条待补验
+
+审计 #10 | M-10 | 通过 | docs/web-面板按动森风格重做/evidence/M-10-r12-audit.md | 无

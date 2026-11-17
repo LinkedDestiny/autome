@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 12/65
-current-milestone: M-10
+current-milestone: M-11
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 本轮快检断言修复已通过，下一实现轮补跑 M-10 浏览器验收五条并检查截图，取得通过证据再标待审
+next-action: 实现 M-11：README 五张截图与全站一屏巡检收口，按其验收契约取得通过证据再标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -654,7 +654,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-07 | 已完成 | E·Loop 配置：角色卡片、编辑抽屉、范围切换与双模型判定 | 0 | |
 | M-08 | 已完成 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
 | M-09 | 已完成 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
-| M-10 | 开放 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
+| M-10 | 已完成 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
 | M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 0 | |
 | M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
 | M-13 | 开放 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
@@ -918,7 +918,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-10 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-10-r12-impl.md · 快检修复通过，M-10 保持开放 · 实现 #12
+最新证据：docs/web-面板按动森风格重做/evidence/M-10-r12-audit.md · 通过 · 审计 #10
 
 - 验收命令：`(cd apps/web && npx vitest run test/env-page.test.ts test/env-ops.test.ts test/env-real.test.ts test/clock.test.ts test/task-new.test.ts test/add-project.test.ts test/w9-layout.test.ts test/labels.test.ts test/testids.test.ts test/styles.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/manual-items.spec.ts -g "环境|新建任务|添加项目补全|W9 H-02|W9 H-04")`
 - 预期：10 个文件，至少 99 个用例全过：
