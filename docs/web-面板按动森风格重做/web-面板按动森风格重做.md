@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 11/65
+implementation-round: 12/65
 current-milestone: M-10
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 补跑 M-10 浏览器验收五条并检查截图，解除 ps EPERM 阻塞后取得通过证据再标待审
+next-action: 本轮快检断言修复已通过，下一实现轮补跑 M-10 浏览器验收五条并检查截图，取得通过证据再标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -918,7 +918,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-10 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-10-r11-impl.md · 开放（浏览器夹具 ps EPERM） · 实现 #11
+最新证据：docs/web-面板按动森风格重做/evidence/M-10-r12-impl.md · 快检修复通过，M-10 保持开放 · 实现 #12
 
 - 验收命令：`(cd apps/web && npx vitest run test/env-page.test.ts test/env-ops.test.ts test/env-real.test.ts test/clock.test.ts test/task-new.test.ts test/add-project.test.ts test/w9-layout.test.ts test/labels.test.ts test/testids.test.ts test/styles.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/manual-items.spec.ts -g "环境|新建任务|添加项目补全|W9 H-02|W9 H-04")`
 - 预期：10 个文件，至少 99 个用例全过：
