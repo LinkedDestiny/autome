@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 6/65
-current-milestone: M-06
+current-milestone: M-07
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 继续 M-06，复验浏览器布局与滚动，并处理快检的进程权限及 load-context 旧契约断言，取得证据后标待审
+next-action: 开始 M-07：Loop 配置页的角色卡片、编辑抽屉、范围切换与双模型判定
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -650,7 +650,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-03 | 已完成 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
 | M-04 | 已完成 | C·项目看板：丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过 | 0 | |
 | M-05 | 已完成 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
-| M-06 | 开放 | D·任务详情页面重排：头部、执行过程、右侧四页签 | 0 | |
+| M-06 | 已完成 | D·任务详情页面重排：头部、执行过程、右侧四页签 | 0 | |
 | M-07 | 开放 | E·Loop 配置：角色卡片、编辑抽屉、范围切换与双模型判定 | 0 | |
 | M-08 | 开放 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
 | M-09 | 开放 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
@@ -825,7 +825,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-06 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-06-r6-impl.md · 单元通过，浏览器验收受环境阻塞，保持开放 · 实现 #6
+最新证据：docs/web-面板按动森风格重做/evidence/M-06-r6-audit.md · 通过 · 审计 #6
 
 - 验收命令：`(cd apps/web && npx vitest run test/task-page.test.ts test/task-header.test.ts test/task-timeline.test.ts test/task-docs-view.test.ts test/task-changes.test.ts test/task-decisions.test.ts test/task-notes.test.ts test/task-ops-view.test.ts test/labels.test.ts test/testids.test.ts test/styles.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/manual-items.spec.ts -g "详情|W7 H-03|W7 H-04|C-2")`
 - 预期：11 个文件，至少 107 个用例全过：
