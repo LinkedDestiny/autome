@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 8/65
+implementation-round: 9/65
 current-milestone: M-09
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 实现 M-09：技能页筛选、绑定范围、可见性与打开目录
+next-action: 补跑 M-09 浏览器验收与截图核对；解除 ps EPERM 环境阻断并取得通过证据后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -885,6 +885,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 删掉旧地址的跳转：settings-real 新用例失败。
 
 ### M-09 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-09-r9-impl.md · 实现与测试子集通过，浏览器环境阻断，保持开放 · 实现 #9
 
 - 验收命令：`(cd apps/web && npx vitest run test/skills-model.test.ts test/skills-page.test.ts test/skills-real.test.ts test/open-path.test.ts test/write-gate.test.ts test/gateway.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/controls.spec.ts -g "技能|F-1")`
 - 预期：9 个文件，至少 120 个用例全过：

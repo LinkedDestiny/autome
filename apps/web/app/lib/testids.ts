@@ -9,6 +9,7 @@ export const TEST_IDS = {
   pageSettings: 'page-settings',
   loopRole: 'loop-role',
   pageLoop: 'page-loop',
+  skillCard: 'skill-card',
   pageSkills: 'page-skills',
   pageEnv: 'page-env',
   boardCancelled: 'board-cancelled',

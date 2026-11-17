@@ -440,3 +440,22 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .loop-default-field { display: flex; flex-direction: column; gap: 8px; }
 .loop-default-field .stepper input { min-width: 0; width: 100%; }
 .loop-page > .project-settings { flex: 1; }
+
+.skills-page { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 18px; }
+.skills-page header { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.skills-page header label { display: flex; align-items: center; gap: 8px; }
+.skills-grid { min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 18px; padding: 4px; flex: 1; }
+.skill-card { display: flex; flex-direction: column; gap: 12px; text-align: left; padding: 20px; min-width: 0; transition: transform 120ms ease; }
+.skill-card:hover { transform: translateY(-2px); }
+.skill-card strong { font-size: 18px; overflow-wrap: anywhere; }
+.skill-path { font-size: 12px; overflow-wrap: anywhere; }
+.skill-badges { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.skills-drawer { position: fixed; inset: 64px 16px 16px auto; width: min(460px, 90vw); background: var(--animal-bg-content); border: 2px solid var(--animal-border-strong); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); z-index: 30; display: flex; }
+.skills-drawer-body { padding: 24px; overflow: auto; min-height: 0; width: 100%; }
+.skills-drawer h3 { margin-top: 20px; }
+.skills-drawer p, .skill-role small { font-size: 12px; line-height: 1.6; }
+.skill-role, .skill-source { display: flex; flex-direction: column; gap: 8px; margin-block: 10px; }
+.skill-source code { overflow-wrap: anywhere; font-size: 12px; }
+.skill-role { border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); padding: 12px; }
+@media (max-width: 900px) { .skills-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .skill-card { transition: none; } }

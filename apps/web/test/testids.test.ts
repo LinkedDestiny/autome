@@ -1,3 +1,4 @@
+import skillReply from './fixtures/m09-skills.json' with { type: 'json' };
 import loopConfig from './fixtures/m07-global.json' with { type: 'json' };
 import Loop from '../app/routes/loop.tsx';
 import Skills from '../app/routes/skills.tsx';
@@ -118,7 +119,7 @@ test('selector registry is unique, used, and the only source for JSX testids', (
   expect([...used].sort()).toEqual(Object.keys(ids).sort());
 });
 test('scroll exemptions are restricted to designated internal regions', () => {
-  const allowed = ['loop-body', 'overview-column-body', 'overview-merged-list', 'task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
+  const allowed = ['skills-grid', 'skills-drawer-body', 'loop-body', 'overview-column-body', 'overview-merged-list', 'task-notes-panel', 'dependency-choice-list', 'board-config-error', 'board-column-body', 'task-timeline', 'session-log-text', 'task-docs-body', 'settings-card-body', 'palette-list', 'bell-list'];
   const found = new Set<string>();
   for (const [, source] of sources()) attributes(source, attrs => {
     if (!attrs.properties.some(attr => ts.isJsxAttribute(attr) && attr.name.getText() === 'data-scroll-region')) return;
@@ -134,3 +135,5 @@ test('expanded cancelled section exposes stable selectors', () => {
 });
 
 test('Loop 角色卡暴露六个稳定选择器', () => { const text=render(Loop,{config:loopConfig,projects:[],skills:[]},'/loop');has(text,ids.loopRole);expect(text.match(/data-testid="loop-role"/g)).toHaveLength(6); });
+
+test('技能卡使用稳定选择器且每条技能一个按钮', () => { const text = render(Skills, { config: loopConfig, globalConfig: loopConfig, projects: [], skills: skillReply.skills }, '/skills'); has(text, ids.skillCard); expect(text.match(/data-testid="skill-card"/g)).toHaveLength(3); });

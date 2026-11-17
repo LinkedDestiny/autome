@@ -1,3 +1,4 @@
+import { registerOpenPath, macPathOpener, type PathOpener } from './open-path.ts';
 import { createBinaryWatch } from './core/binary-watch.ts';
 import { readDrivers } from './drivers.ts';
 import { createRequire } from 'node:module';
@@ -29,7 +30,7 @@ import type { Mode } from './http.ts';
 
 const { version: webVersion } = createRequire(import.meta.url)('../package.json') as { version: string };
 
-export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, tickIntervalMs = 3000, instanceFile = false, onKernelBinaryGone = path => console.error(`内核二进制 ${path} 已不存在`) }: { onKernelBinaryGone?: (path: string) => void; tickIntervalMs?: number; instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
+export async function startServer({ port, mode, home = resolveAutomeHome(process.env), userHome = resolveUserHome(process.env), binaryPath, binaryArgs, kernelEnv, terminal = unavailableTerminal, opener = macPathOpener, tickIntervalMs = 3000, instanceFile = false, onKernelBinaryGone = path => console.error(`内核二进制 ${path} 已不存在`) }: { onKernelBinaryGone?: (path: string) => void; tickIntervalMs?: number; instanceFile?: boolean; port: number; mode: Mode; home?: string; userHome?: string; terminal?: TerminalLauncher; opener?: PathOpener; binaryPath?: string; binaryArgs?: string[]; kernelEnv?: NodeJS.ProcessEnv }) {
   const binary = binaryPath ? { path: binaryPath, args: binaryArgs ?? [], source: 'env' as const } : resolveAutomedBinary();
   if (binaryArgs) binary.args = binaryArgs;
   console.error(await describeKernel(binary, { env: { ...process.env, ...kernelEnv, AUTOME_HOME: home } }));
@@ -49,6 +50,7 @@ export async function startServer({ port, mode, home = resolveAutomeHome(process
   const admin = createAdmin({ core, automeHome: home, userHome, terminal, publish: message => bus.broadcast(message) });
   const gateway = createGateway({ core, home, uploads, paths: admin.paths });
   admin.register(gateway);
+  registerOpenPath(gateway, opener);
   const drivers = () => readDrivers(method => core.call(method), () => core.sidecar?._child?.pid, () => core.otherDriver());
   const { server, closeMiddleware, registerUpgrade } = await createHttpServer({ mode, gateway, notifications, store, uploads, admin, taskEvents, taskDocs, drivers, identity, instanceStatus: async (): Promise<InstanceStatus> => {
     const dashboard = await core.call('dashboard.get') as { running: { task: { id: string; title: string; state: { node?: string } } }[] };
