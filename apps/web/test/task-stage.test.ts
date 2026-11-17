@@ -74,3 +74,13 @@ test('12 rendered current phase has aria-current and milestones', () => {
   const html = renderToStaticMarkup(createElement(TaskStage, { view: stageBarView(payload(), []) }));
   expect(html).toContain('aria-current="step"'); expect(html.match(/aria-current="step"/g)).toHaveLength(1); expect(html).toContain('M-02 · 待审'); expect(html).toContain('设计 1 / 5 · 实现 3 / 30');
 });
+
+import { taskSummary } from '../app/components/task-summary-model.ts';
+test('详细步骤沿用暂停失败排队停止的位置', () => {
+  for (const state of [{state:'paused',resume:'audit'},{state:'queued',resume:'audit'},{state:'failed',at:'audit'},{state:'stopped',at:'audit'}]) expect(taskSummary(payload(state),[]).steps.find(s=>s.current)?.label).toBe('审计');
+});
+test('详细步骤取消保留位置，完成九步通过，Bug 六步通过', () => {
+ expect(taskSummary(payload({state:'cancelled'}),[ev(1,'task.updated',{state:{state:'active',node:'implement'}})]).steps.find(s=>s.current)?.label).toBe('实现');
+ expect(taskSummary(payload({state:'done'}),[]).steps.filter(s=>s.passed)).toHaveLength(9);
+ expect(taskSummary(payload({state:'done'},'bug'),[]).steps.filter(s=>s.passed)).toHaveLength(6);
+});

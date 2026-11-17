@@ -1,3 +1,4 @@
+import { taskSummary } from './task-summary-model.ts';
 import { dependencyReadOnly } from './queue-deps.ts';
 import { currentClock } from '../lib/clock.tsx';
 import { headerView } from './task-header-model.ts';
@@ -5,7 +6,7 @@ import { noticeView } from './task-notice-model.ts';
 import { stageBarView, type TaskConfig } from './task-stage-model.ts';
 import { availableOps, opsInput } from './task-ops.ts';
 import { docsView } from './task-docs-model.ts';
-import { timelineEntries } from './task-timeline-model.ts';
+import { timelineEntries, timelineGroups } from './task-timeline-model.ts';
 import type { CardContext } from './task-card-model.ts';
 import type { BlockedDependency } from './queue-deps.ts';
 import { detailTab } from './task-changes-model.ts';
@@ -23,10 +24,10 @@ export type TaskPayload = {
   status_error_detail?: string | null;
   status_block?: {
     milestones_done: number; milestones_total: number; current_milestone?: string | null;
-    milestones?: { id: string; state: string; title?: string }[];
+    milestones?: { id: string; state: string; title?: string; reopen_count?: number }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { created_at?: string; completed_at?: string | null; metrics?: { reopen_total?: number; design_rounds_used?: number; design_rounds_limit?: number; impl_rounds_used?: number } | null; after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };
@@ -85,9 +86,9 @@ export async function loadTaskDetail(services: WebServices, id: string, url: URL
       ...(Object.hasOwn(task, 'merge') ? { merge: task.merge } : {}), archived: task.archived, after: task.after, blocked_by: task.blocked_by },
     project: data.project ? { id: data.project.id } : undefined, sessions: [], status_block: data.status_block, notes: data.notes, decisions: data.decisions?.filter(d => !d.consumed),
   };
-  return { data: projected, header: headerView(data, context), notice: noticeView(data, context),
+  return { summary: taskSummary(data, history.events, history.truncated || 'error' in history), data: projected, header: headerView(data, context), notice: noticeView(data, context),
     stage: stageBarView(data, history.events, settings), ops: availableOps(opsInput(data, 'payload' in config ? config.payload : null)),
-    dependencyReason: dependencyReadOnly(data), docs: docsView(data), timeline: { entries, truncated: history.truncated, error: 'error' in history ? history.error : undefined },
+    dependencyReason: dependencyReadOnly(data), docs: docsView(data), timeline: { entries, groups: timelineGroups(entries, url.searchParams.get('show')).map(group => ({ ...group, entries: group.entries.map(entry => entry.key) })), truncated: history.truncated, error: 'error' in history ? history.error : undefined },
     window: { from: sessions[start]?.id ?? null, earlier: start }, changes, document: { ...document, nodes: 'text' in document ? parseMarkdown(document.text ?? '') : [] } };
 }
 

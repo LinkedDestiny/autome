@@ -108,3 +108,9 @@ it('已实现后重跑设计的依赖只读原因不受会话窗口裁剪影响'
   const html = renderToStaticMarkup(createElement(Stub, { initialEntries: ['/tasks/T-1?tab=notes'], hydrationData: { loaderData: { task: data } } }));
   expect(html).toContain('依赖只能在设计批准之前修改'); expect(html).not.toContain('保存依赖');
 });
+it('汇总使用全量会话但仅传输窗口，阶段组只传 key', async () => {
+  const result = await loadTaskDetail(windowFixture(60), 'T-1', url);
+  expect(result.summary?.sessions.total).toBe(60); expect(result.data?.sessions).toEqual([]);
+  expect(result.timeline?.entries.filter(e=>e.session)).toHaveLength(20);
+  expect(result.timeline?.groups.flatMap(g=>g.entries).every(key=>typeof key==='string')).toBe(true);
+});
