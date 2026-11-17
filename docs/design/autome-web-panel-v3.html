@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Autome 面板 · 动森风格重做原型</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* 令牌：animal-island-ui（与 apps/web/app/styles/tokens.css 相同） */
+@font-face{font-family:Nunito;src:url('../../apps/web/app/styles/fonts/nunito/Nunito-Variable.ttf') format('truetype-variations');font-weight:200 1000;font-display:swap}
+:root{
+  --font:Nunito,'Noto Sans SC','PingFang SC','Hiragino Sans GB',sans-serif;
+  --primary:#19c8b9;--primary-d:#11a89b;--primary-bg:#e6f9f6;
+  --text:#794f27;--body:#725d42;--sec:#9f927d;--muted:#8a7b66;
+  --bg:#f8f8f0;--content:rgb(247,243,223);--bg2:#f0e8d8;--input:#fffbe7;
+  --border:#c4b89e;--border-l:#e8dcc8;--border-s:#9f927d;
+  --ok:#6fba2c;--warn:#f5c31c;--err:#e05a5a;
+  --pink:#f8a6b2;--purple:#b77dee;--blue:#889df0;--yellow:#f7cd67;--orange:#e59266;--teal:#82d5bb;--green:#8ac68a;--red:#fc736d;--brown:#9a835a;
+  --sh-sm:0 2px 4px rgba(61,52,40,.06);--sh:0 3px 10px rgba(61,52,40,.10);--sh-lg:0 8px 24px rgba(61,52,40,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:500 14px/1.55 var(--font);color:var(--body);overflow:hidden;
+  background:radial-gradient(circle,rgba(196,184,158,.16) 1.5px,transparent 1.5px) 0 0/28px 28px,radial-gradient(circle,rgba(196,184,158,.1) 1px,transparent 1px) 7px 7px/14px 14px,var(--bg)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+b,strong{font-weight:800;color:var(--text)}
+.ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.sec{color:var(--sec)} .mono{font:600 12px ui-monospace,Menlo,monospace}
+
+/* 骨架 */
+.app{display:grid;grid-template-columns:236px 1fr;height:100vh}
+.side{background:var(--content);border-right:2px solid var(--border);padding:16px 12px 14px;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 16px}
+.brand i{width:34px;height:34px;border-radius:12px;background:var(--primary);display:grid;place-items:center;color:#fff;box-shadow:0 3px 0 var(--primary-d)}
+.brand b{font-size:19px;font-weight:900;letter-spacing:.02em}
+.nav{display:flex;align-items:center;gap:11px;height:42px;padding:0 12px;border-radius:14px;font-weight:700;color:var(--body);width:100%;text-align:left;transition:.2s}
+.nav:hover{background:#d6dff0}
+.nav.on{background:#b7c6e5;color:var(--text);box-shadow:inset 0 -2px 0 rgba(95,120,216,.25)}
+.nav .n{margin-left:auto;min-width:22px;height:22px;border-radius:11px;background:var(--warn);color:var(--text);font-size:12px;font-weight:900;display:grid;place-items:center;padding:0 6px}
+.side h6{margin:20px 0 8px 12px;font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--sec)}
+.proj{display:grid;grid-template-columns:14px 1fr auto;gap:10px;align-items:center;width:100%;text-align:left;padding:9px 12px;border-radius:14px;transition:.2s}
+.proj:hover{background:#d6dff0}
+.proj.on{background:#fffbe7;box-shadow:var(--sh-sm);outline:2px solid var(--border-l)}
+.proj .sq{width:14px;height:14px;border-radius:5px}
+.proj b{display:block;font-size:14px;line-height:1.3}
+.proj small{font-size:11px;color:var(--sec);font-weight:600}
+.dots{display:flex;gap:4px}
+.dot-n{min-width:20px;height:20px;border-radius:10px;font-size:11px;font-weight:900;display:grid;place-items:center;color:#fff;padding:0 5px}
+.side-foot{margin-top:auto;padding-top:12px;border-top:2px dashed var(--border-l)}
+.driver{display:flex;gap:10px;padding:10px 12px;border-radius:14px;background:#e8f5e8;border:1.5px solid var(--green);color:#3f7a3f;font-size:12px;font-weight:600;line-height:1.5;margin-bottom:8px}
+.driver b{color:#2f6a2f;display:block;font-size:13px}
+.beat{width:10px;height:10px;border-radius:50%;background:var(--ok);margin-top:5px;flex:none;animation:beat 2s infinite}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(111,186,44,.5)}70%{box-shadow:0 0 0 8px rgba(111,186,44,0)}100%{box-shadow:0 0 0 0 rgba(111,186,44,0)}}
+
+main{display:flex;flex-direction:column;min-width:0;height:100vh}
+.top{height:60px;flex:none;display:flex;align-items:center;gap:12px;padding:0 28px}
+.search{display:flex;align-items:center;gap:8px;width:300px;height:38px;padding:0 14px;border-radius:50px;border:2px solid var(--border-l);background:var(--input);color:var(--sec);font-weight:600;font-size:13px}
+.search kbd{margin-left:auto;font:700 11px var(--font);border:1.5px solid var(--border-l);border-radius:8px;padding:0 6px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:38px;padding:0 18px;border-radius:50px;border:2px solid var(--border);background:var(--content);color:var(--text);font-weight:700;font-size:13px;white-space:nowrap;transition:.2s}
+.btn:hover{color:var(--primary-d);border-color:var(--primary);transform:translateY(-1px);box-shadow:var(--sh)}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:#fff;box-shadow:0 4px 0 var(--primary-d)}
+.btn.pri:hover{color:#fff;box-shadow:0 5px 0 var(--primary-d)} .btn.pri:active{transform:translateY(3px);box-shadow:0 1px 0 var(--primary-d)}
+.btn.sm{height:30px;padding:0 14px;font-size:12px}
+.btn.text{border-color:transparent;background:none}
+.bell{position:relative;width:38px;padding:0}
+.bell em{position:absolute;top:-7px;right:-8px;min-width:20px;height:20px;border-radius:10px;background:var(--err);color:#fff;font:900 11px/20px var(--font);text-align:center;padding:0 5px;font-style:normal;border:2px solid var(--bg)}
+.screen{flex:1;min-height:0;padding:4px 28px 22px;display:none;flex-direction:column;gap:14px}
+.screen.on{display:flex}
+.screen.on>*{animation:pop .45s cubic-bezier(.3,1.3,.5,1) both}
+.screen.on>*:nth-child(2){animation-delay:.06s}.screen.on>*:nth-child(3){animation-delay:.12s}
+@keyframes pop{from{opacity:0;transform:translateY(10px) scale(.99)}}
+.scroll{overflow:auto;min-height:0}
+.scroll::-webkit-scrollbar{width:8px}.scroll::-webkit-scrollbar-thumb{background:var(--border-l);border-radius:4px}
+
+/* 丝带标题 */
+.ribbon{--rf:#19c8b9;--rb:#11a89b;position:relative;display:inline-flex;height:2.1em;font-size:17px;margin-left:.3em}
+.ribbon::before{content:'';position:absolute;left:-.26em;top:-.3em;right:.65em;bottom:0;background:var(--rb);border-radius:.35em}
+.ribbon>span{position:relative;display:inline-flex;align-items:center;height:2.1em;padding:0 1.4em;border-radius:.35em;color:#fff;background:var(--rf);font-weight:900;letter-spacing:.04em;white-space:nowrap;box-shadow:0 .1em .16em rgba(0,0,0,.08)}
+.ribbon.sm{font-size:13px}
+.ribbon.yellow{--rf:#f7cd67;--rb:#d4a030}.ribbon.yellow>span{color:var(--body)}
+.ribbon.blue{--rf:#889df0;--rb:#5f78d8}.ribbon.green{--rf:#8ac68a;--rb:#5fa05f}.ribbon.brown{--rf:#9a835a;--rb:#7a6440}
+.head{display:flex;align-items:center;gap:16px}
+.head p{font-weight:700;color:var(--muted);font-size:13px}
+.head p b{font-size:15px}
+h3{font-size:15px;font-weight:800;color:var(--text);display:flex;align-items:baseline;gap:8px}
+h3 small{font-size:12px;font-weight:600;color:var(--sec)}
+
+/* 卡片 */
+.card{position:relative;border-radius:20px;background:var(--content);padding:16px 20px;border:1.5px solid #d4c4a8}
+.card.hov{cursor:pointer;transition:.25s}.card.hov:hover{transform:translateY(-2px);box-shadow:var(--sh)}
+.pat{background-image:radial-gradient(circle,var(--p1) 1.5px,transparent 1.5px),radial-gradient(circle,var(--p2) 1px,transparent 1px);background-size:28px 28px,14px 14px;background-position:0 0,7px 7px}
+.c-yellow{--p1:rgba(247,205,103,.22);--p2:rgba(255,225,150,.14);background-color:#fff8e0;border-color:var(--yellow);color:#8a6a10}
+.c-teal{--p1:rgba(130,213,187,.2);--p2:rgba(170,235,210,.12);background-color:#e8faf5;border-color:var(--teal);color:#2e8a6e}
+.c-purple{--p1:rgba(183,125,238,.18);--p2:rgba(210,180,255,.12);background-color:#f0e8ff;border-color:var(--purple);color:#6f4aa8}
+.c-blue{--p1:rgba(136,157,240,.18);--p2:rgba(180,195,255,.12);background-color:#e8edff;border-color:var(--blue);color:#4f5fb0}
+.c-green{--p1:rgba(138,198,138,.2);--p2:rgba(180,225,180,.12);background-color:#e8f5e8;border-color:var(--green);color:#3f7a3f}
+.c-red{--p1:rgba(252,115,109,.18);--p2:rgba(255,180,175,.12);background-color:#ffe8e8;border-color:var(--red);color:#b0413a}
+.c-dash{border:2px dashed var(--border-l);background:rgb(250,248,242)}
+.pill{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;border-radius:50px;font-size:12px;font-weight:700;background:#fffdf3;border:1.5px solid var(--border);color:var(--body);white-space:nowrap}
+.pill.f{border:0;color:#fff;font-weight:800}
+.f-teal{background:var(--primary)}.f-blue{background:var(--blue)}.f-purple{background:var(--purple)}.f-orange{background:var(--orange)}.f-pink{background:#f08a9a}.f-brown{background:var(--brown)}.f-green{background:#6fba2c}.f-yellow{background:var(--warn);color:var(--text)!important}.f-red{background:var(--err)}
+.tid{font-weight:900;color:var(--text);letter-spacing:.03em}
+.spin{width:11px;height:11px;border-radius:50%;border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.prog{position:relative;height:14px;border-radius:999px;background:#f8f8f0;box-shadow:inset 0 1px 3px rgba(61,52,40,.12);overflow:hidden}
+.prog i{position:absolute;inset:0 auto 0 0;border-radius:999px;background:linear-gradient(90deg,#82d5bb,#19c8b9)}
+.ico{width:42px;height:42px;border-radius:14px;background:#fffdf3;display:grid;place-items:center;flex:none;box-shadow:var(--sh-sm)}
+
+/* 总览 */
+.ov{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:20px}
+.col{display:flex;flex-direction:column;gap:12px;min-height:0}
+.wait{display:grid;grid-template-columns:auto 1fr auto;gap:4px 16px;padding:18px 22px}
+.wait h4{font-size:18px;font-weight:900;color:var(--text);line-height:1.4;margin:6px 0 2px}
+.wait p{font-weight:600}
+.facts{display:flex;gap:8px;margin-top:12px}
+.fact{padding:6px 12px;white-space:nowrap;border-radius:14px;background:rgba(255,253,243,.85);font-size:12px;font-weight:700;color:var(--muted)}
+.fact b{font-size:16px;font-weight:900;margin-left:6px}
+.wait-act{display:flex;flex-direction:column;gap:10px;justify-content:center}
+.run{display:grid;grid-template-columns:1fr auto;gap:6px 16px;padding:16px 20px}
+.run h4{font-size:15px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.run .meta{font-size:12px;font-weight:600;color:var(--muted)}
+.run .prog{grid-column:1}
+.cost{font-size:19px;font-weight:900;color:var(--text);text-align:right}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.tile{border-radius:18px;padding:12px 14px;color:#fff;font-weight:700;font-size:12px;line-height:1.35}
+.tile b{display:block;font-size:24px;font-weight:900;color:inherit;line-height:1.25}
+.tile small{font-size:11px;opacity:.92;font-weight:700;white-space:nowrap}
+.list{padding:14px 14px 10px;display:flex;flex-direction:column;min-height:0}
+.list-h{display:flex;justify-content:space-between;align-items:center;padding:0 6px 10px}
+.li{display:grid;grid-template-columns:50px 1fr auto auto;gap:12px;align-items:center;padding:9px 14px;border-radius:14px;background:#fffdf3;border:1.5px solid var(--border-l);margin-bottom:7px;cursor:pointer;transition:.2s}
+.li:hover{border-color:var(--primary);transform:translateX(2px)}
+.li .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700;color:var(--text);font-size:13px}
+.li .m{font-size:12px;font-weight:700;color:var(--sec);white-space:nowrap}
+.empty{display:flex;align-items:center;gap:14px;padding:18px 22px;font-weight:600;color:var(--muted)}
+.empty b{display:block;font-size:15px}
+.app[data-demo=idle] .only-active{display:none!important}
+.app[data-demo=active] .only-idle{display:none!important}
+
+/* 看板 */
+.board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,.95fr)) minmax(0,2fr);gap:16px}
+.lane{display:flex;flex-direction:column;gap:12px;min-height:0}
+.lane-h{display:flex;align-items:center;gap:10px;height:34px}
+.lane-h small{margin-left:auto;font-size:11px;font-weight:700;color:var(--sec)}
+.tc{padding:14px 16px;display:flex;flex-direction:column;gap:9px}
+.tc h4{font-size:14px;font-weight:800;color:var(--text);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tc-top,.tc-foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tc-foot{font-size:12px;font-weight:700;color:var(--muted);white-space:nowrap}
+.tc-top .row-p{flex-wrap:nowrap}.tc .pill{padding:0 8px}.tid{white-space:nowrap}
+.ribbon em{font-style:normal}
+.day{font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--sec);padding:6px 8px 6px}
+.dl{display:grid;grid-template-columns:50px 1fr 46px 34px 60px;gap:10px;align-items:center}
+.dl.h{font-size:11px;font-weight:800;color:var(--sec);padding:0 14px 6px}
+.dl.h span:nth-child(n+3),.li.dl .m{text-align:right}
+.li.dl{grid-template-columns:50px 1fr 46px 34px 60px}
+.li.dl .m b{font-weight:900}
+
+/* 任务详情 */
+.crumbs{display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;color:var(--sec);margin-right:auto}
+.crumbs b{color:var(--text)}
+.thead{padding:16px 22px 14px}
+.thead h1{font-size:21px;font-weight:900;color:#1e7a66;line-height:1.35;margin:8px 0 12px}
+.row-p{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.steps{display:flex;margin:2px 0 12px}
+.stp{flex:1;position:relative;text-align:center;padding-top:30px;min-width:0}
+.stp::before{content:'';position:absolute;top:11px;left:-50%;right:50%;height:3px;background:var(--primary);border-radius:2px}
+.stp:first-child::before{display:none}
+.stp i{position:absolute;top:0;left:50%;margin-left:-12px;width:24px;height:24px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;border:2.5px solid #fff;box-shadow:0 0 0 1.5px var(--primary)}
+.stp i svg{width:12px;height:12px;stroke:#fff;stroke-width:3.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.stp.you i{background:var(--warn);box-shadow:0 0 0 1.5px #dba90e}
+.stp b{display:block;font-size:13px;font-weight:800;color:var(--text)}
+.stp span{display:block;font-size:11px;font-weight:700;color:#5a9a86;white-space:nowrap}
+.stp.you span{color:#a07a10}
+.sumrow{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px}
+.stat6{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat6 .tile{padding:10px 14px}
+.stat6 .tile b{font-size:21px}
+.t-teal{background:var(--teal)}.t-yellow{background:var(--yellow);color:var(--body)}.t-blue{background:var(--blue)}.t-pink{background:var(--pink)}.t-purple{background:var(--purple)}.t-orange{background:var(--orange)}.t-green{background:var(--green)}.t-brown{background:var(--brown)}
+.body2{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.pane{display:flex;flex-direction:column;min-height:0;padding:14px 14px 10px}
+.pane-h{display:flex;align-items:center;gap:8px;padding:0 6px 10px;flex:none}
+.pane-h h3{margin-right:auto}
+.seg{display:inline-flex;gap:4px;background:var(--bg2);border-radius:50px;padding:3px}
+.seg button{height:26px;padding:0 12px;border-radius:50px;font-size:12px;font-weight:700;color:var(--muted)}
+.seg button.on{background:#fffdf3;color:var(--text);box-shadow:var(--sh-sm)}
+.ph{font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--sec);padding:8px 8px 6px;display:flex;justify-content:space-between}
+.ev{display:grid;grid-template-columns:42px 56px 1fr auto 46px;gap:10px;align-items:center;padding:8px 14px;border-radius:14px;background:#fffdf3;border:1.5px solid var(--border-l);margin-bottom:6px;cursor:pointer;transition:.2s}
+.ev:hover{border-color:var(--primary)}
+.ev .tm{font-size:12px;font-weight:800;color:var(--sec)}
+.ev .w{min-width:0}
+.ev .w b{font-size:13px}
+.ev .w span{font-size:12px;font-weight:600;color:var(--sec);margin-left:6px}
+.ev .w p{font-size:12px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .r{font-size:12px;font-weight:800;color:var(--body);text-align:right;white-space:nowrap}
+.ev .pill{justify-content:center;padding:0;width:56px}
+.ev.gate{background:#e8f5e8;border-color:#b9dcb9}
+.ev.you{background:#fff8e0;border-color:var(--yellow)}
+.tabs{display:flex;gap:6px;padding:0 4px 10px;align-items:center}
+.tab{height:32px;padding:0 14px;border-radius:50px;font-weight:700;font-size:13px;color:var(--muted);display:inline-flex;gap:6px;align-items:center}
+.tab.on{background:var(--primary-bg);color:var(--primary-d);outline:2px solid var(--teal)}
+.tab em{font-style:normal;font-size:11px;font-weight:900;background:var(--bg2);border-radius:9px;padding:0 6px;color:var(--muted)}
+.docnav{display:flex;gap:6px;flex-wrap:wrap;padding:0 4px 10px}
+.docnav .pill{cursor:pointer}.docnav .pill.on{background:var(--text);border-color:var(--text);color:#fffbe7}
+.doc{background:#fffdf3;border:1.5px solid var(--border-l);border-radius:16px;padding:18px 22px}
+.doc h2{font-size:18px;font-weight:900;color:var(--text);margin-bottom:10px}
+.doc h5{font-size:13px;font-weight:900;color:var(--text);margin:14px 0 6px;padding-left:10px;border-left:4px solid var(--warn);border-radius:2px}
+.doc p{font-size:13px;line-height:1.8;font-weight:500;margin-bottom:6px}
+.doc code{font:600 12px ui-monospace,Menlo,monospace;background:var(--bg2);padding:1px 6px;border-radius:6px;color:var(--text)}
+.doc table{width:100%;border-collapse:separate;border-spacing:0 5px;font-size:12px}
+.doc th{font-weight:800;color:var(--sec);text-align:left;padding:0 10px}
+.doc td{padding:7px 10px;background:var(--bg);font-weight:600}
+.doc td:first-child{border-radius:12px 0 0 12px;font-weight:900;color:var(--text)}.doc td:last-child{border-radius:0 12px 12px 0}
+.kv{display:flex;gap:8px;flex-wrap:wrap}
+
+/* 环境 */
+.env{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}
+.er{display:grid;grid-template-columns:28px 120px 1fr auto;gap:12px;align-items:center;padding:11px 14px;border-radius:14px;background:#fffdf3;border:1.5px solid var(--border-l);margin-bottom:7px}
+.okc{width:26px;height:26px;border-radius:50%;background:var(--ok);display:grid;place-items:center}
+.okc svg{width:13px;height:13px;stroke:#fff;stroke-width:3.2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.er .p{font:600 12px ui-monospace,Menlo,monospace;color:var(--sec);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Loop 配置 */
+.cfg{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}
+.flow{display:flex;gap:26px}
+.rc{flex:1;min-width:0;padding:12px 14px;border-radius:18px;cursor:pointer;transition:.2s;position:relative;display:flex;flex-direction:column;gap:5px;border:1.5px solid}
+.rc:hover{transform:translateY(-2px);box-shadow:var(--sh)}
+.rc.sel{outline:3px solid var(--warn);outline-offset:2px}
+.rc:not(:last-child)::after{content:'';position:absolute;right:-21px;top:50%;width:14px;height:3px;border-radius:2px;background:var(--border)}
+.rc-top{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.rc b{font-size:15px;font-weight:900}
+.rc .mono{color:var(--body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:2px}
+.rc-chips .pill{height:21px;padding:0 8px;font-size:11px}
+.rc.fixed{background:rgb(250,248,242);border:2px dashed var(--border-l);color:var(--sec);cursor:default}
+.rc.fixed:hover{transform:none;box-shadow:none}
+.rc.fixed b{color:var(--muted);font-size:14px}
+.rc.fixed small,.rc.human small{font-size:11px;font-weight:700;line-height:1.4}
+.rc.human{cursor:default}
+.sw{width:34px;height:20px;border-radius:10px;background:var(--ok);position:relative;flex:none;box-shadow:inset 0 -2px 0 #5a9e1e}
+.sw::after{content:'';position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.prov{font-size:11px;font-weight:800}
+.section[data-scope=global] .only-proj,.section[data-scope=proj] .only-glob{display:none!important}
+.defs{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:14px 16px}
+.def span{display:block;font-size:12px;font-weight:800;color:var(--text)}
+.def small{display:block;font-size:11px;font-weight:600;color:var(--sec);margin-top:4px;line-height:1.4}
+.stepper{display:inline-flex;align-items:center;margin-top:6px;border-radius:50px;background:#fffdf3;border:2px solid var(--border-l);height:34px}
+.stepper button{width:32px;height:30px;font-weight:900;color:var(--muted);font-size:16px}
+.stepper b{min-width:44px;text-align:center;font-size:16px;font-weight:900}
+.drawer{display:flex;flex-direction:column;gap:12px;padding:16px 18px;min-height:0;background:#fffdf3;border:2px solid var(--border);box-shadow:var(--sh)}
+.drawer h4{font-size:17px;font-weight:900;color:var(--text);display:flex;align-items:center;gap:8px}
+.fld>label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin-bottom:5px}
+.inp{display:flex;align-items:center;height:38px;padding:0 14px;border-radius:14px;background:var(--input);border:2px solid var(--border-l);box-shadow:inset 0 2px 0 rgba(212,201,180,.35);font:600 13px ui-monospace,Menlo,monospace;color:var(--text)}
+.seg.wide{display:flex}.seg.wide button{flex:1;height:30px}
+.note{font-size:12px;font-weight:600;line-height:1.6;padding:9px 12px;border-radius:14px}
+.note.ok{background:#e8f5e8;color:#3f7a3f}.note.tip{background:var(--bg2);color:var(--muted)}
+.xpill{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 12px;border-radius:50px;background:#e8edff;border:1.5px solid var(--blue);color:#4f5fb0;font-size:12px;font-weight:800}
+.xpill i{width:18px;height:18px;border-radius:50%;background:rgba(79,95,176,.15);display:grid;place-items:center;font-style:normal;font-size:12px}
+/* 技能 */
+.skgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-content:start;padding:2px}
+.sk{padding:11px 14px;border-radius:16px;background:#fffdf3;border:1.5px solid var(--border-l);cursor:pointer;display:flex;flex-direction:column;gap:6px;transition:.2s;min-width:0}
+.sk:hover{border-color:var(--primary);transform:translateY(-1px)}
+.sk.sel{outline:3px solid var(--warn);outline-offset:1px;border-color:var(--yellow)}
+.sk b{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sk p{font-size:11px;font-weight:600;color:var(--sec);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sk .row-p{gap:5px;flex-wrap:nowrap}
+.sk .pill{height:20px;padding:0 8px;font-size:11px}
+.s-proj{background:#e8edff!important;border-color:var(--blue)!important;color:#4f5fb0!important}
+.roles6{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.chk{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-radius:14px;border:2px solid var(--border-l);background:var(--input);font-size:13px;font-weight:800;color:var(--text)}
+.chk i{width:18px;height:18px;border-radius:6px;border:2px solid var(--border);background:#fff;flex:none;display:grid;place-items:center}
+.chk.on{border-color:var(--primary);background:var(--primary-bg)}.chk.on i{background:var(--primary);border-color:var(--primary)}
+.chk.on i svg{width:11px;height:11px;stroke:#fff;stroke-width:3.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.chk.dis{opacity:.45;border-style:dashed}
+.srcrow{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;font-size:12px;margin-bottom:5px}
+
+.proto{position:fixed;left:calc(50% + 60px);top:12px;transform:translateX(-50%);display:flex;gap:8px;align-items:center;padding:4px 6px 4px 14px;border-radius:50px;background:var(--text);color:#fffbe7;font-size:12px;font-weight:800;z-index:9;box-shadow:var(--sh-lg)}
+.proto .seg{background:rgba(255,251,231,.16)}.proto .seg button{color:#fffbe7;opacity:.7}.proto .seg button.on{opacity:1;color:var(--text)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5M6.5 10v9h11v-9"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.8 2H4.2zM10 21h4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15.5 15.5 4.5 4.5"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 12V6a1.5 1.5 0 0 1 3 0v5m0-1V4.5a1.5 1.5 0 0 1 3 0V10m0-3.5a1.5 1.5 0 0 1 3 0V14c0 4-2.5 7-6.5 7S5 18.5 4.5 15.5L4 13a1.5 1.5 0 0 1 3-.5l1 1.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.5"/></symbol>
+  <symbol id="i-bag" viewBox="0 0 24 24"><path d="M5 9h14l-1 11H6zM9 9V7a3 3 0 0 1 6 0v2"/></symbol>
+  <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M5 19c0-8 5-13 14-14 0 9-5 14-13 14zM5 19l7-7"/></symbol>
+</svg>
+
+<div class="app" data-demo="active">
+<aside class="side">
+  <div class="brand"><i><svg class="ic"><use href="#i-leaf"/></svg></i><b>Autome</b></div>
+  <button class="nav on" data-go="overview"><svg class="ic"><use href="#i-home"/></svg>总览<span class="n only-active">1</span></button>
+  <button class="nav" data-go="loop"><svg class="ic"><use href="#i-route"/></svg>Loop 配置</button>
+  <button class="nav" data-go="skills"><svg class="ic"><use href="#i-bag"/></svg>技能<span class="n" style="background:var(--bg2);color:var(--muted)">126</span></button>
+  <h6>项 目</h6>
+  <button class="proj" data-go="project"><i class="sq" style="background:var(--blue)"></i><span><b>autome-v2</b><small>70 个已完成</small></span>
+    <span class="dots only-active"><span class="dot-n" style="background:var(--warn);color:var(--text)" title="等你处理">1</span><span class="dot-n" style="background:var(--primary)" title="进行中">1</span></span></button>
+  <button class="proj"><i class="sq" style="background:var(--teal)"></i><span><b>offchat</b><small>没有任务在跑</small></span></button>
+  <button class="proj"><i class="sq" style="background:var(--orange)"></i><span><b>voice-schedule</b><small>没有任务在跑</small></span></button>
+  <button class="nav" style="margin-top:6px;color:var(--sec)"><svg class="ic"><use href="#i-plus"/></svg>添加项目</button>
+  <div class="side-foot">
+    <div class="driver"><i class="beat"></i><div><b>驱动在推进</b>3 秒前检查过 · 已运行 34 分钟</div></div>
+    <button class="nav" data-go="env"><svg class="ic"><use href="#i-gear"/></svg>环境</button>
+  </div>
+</aside>
+
+<main>
+<header class="top">
+  <div class="crumbs" id="crumbs"></div>
+  <div class="search"><svg class="ic" style="width:15px;height:15px"><use href="#i-search"/></svg>搜索任务、项目或跳转<kbd>⌘K</kbd></div>
+  <button class="btn bell"><svg class="ic"><use href="#i-bell"/></svg><em>41</em></button>
+  <button class="btn pri"><svg class="ic"><use href="#i-plus"/></svg>新建任务</button>
+</header>
+
+<!-- 总览 -->
+<section class="screen on" id="s-overview">
+  <div class="head"><div class="ribbon"><span>总览</span></div>
+    <p class="only-active"><b>有 1 件事等你决定</b> · 另有 1 个任务在跑，1 个在排队</p>
+    <p class="only-idle"><b>现在没有事情等你</b> · 没有任务在跑，驱动空闲</p></div>
+  <div class="ov">
+    <div class="col">
+      <h3>等你处理 <small class="only-active">1 件 · 点卡片直达</small></h3>
+      <div class="card pat c-yellow wait only-active">
+        <div class="ico"><svg class="ic" style="width:22px;height:22px"><use href="#i-hand"/></svg></div>
+        <div>
+          <div class="row-p"><span class="pill f f-yellow">批准设计</span><span class="pill"><span class="tid">T-101</span> · autome-v2</span><span style="font-size:12px;font-weight:700">已等 12 分钟</span></div>
+          <h4>门禁脚本的同步子进程调用加超时，挂住时变成明确的失败</h4>
+          <p>设计已定稿：3 个里程碑。评审提了 2 项问题，裁决全部采纳。另有 2 条 Backlog 等你表态。</p>
+          <div class="facts"><span class="fact">设计轮<b>1 / 15</b></span><span class="fact">已花费<b>$7.82</b></span><span class="fact">已用时<b>33 分</b></span><span class="fact">设计文档<b>38 KB</b></span></div>
+        </div>
+        <div class="wait-act"><button class="btn pri" data-go="task">看设计并批准</button><button class="btn">退回…</button></div>
+      </div>
+      <div class="card c-dash empty only-idle"><div class="ico" style="background:#e8f5e8;color:#3f7a3f"><svg class="ic" style="width:22px;height:22px"><use href="#i-check"/></svg></div><div><b>都处理完了</b>设计批准、Backlog 表态、失败的任务会出现在这里。</div></div>
+
+      <h3 style="margin-top:6px">进行中 <small class="only-active">1 个在跑 · 1 个排队</small></h3>
+      <div class="card pat c-teal run hov only-active" data-go="task">
+        <div><div class="row-p"><span class="pill f f-teal"><i class="spin"></i>实现 2 / 15</span><span class="pill"><span class="tid">T-100</span> · autome-v2</span></div></div>
+        <div class="cost">$8.17</div>
+        <h4>复盘轮拿到本任务指标（含门禁数据），门禁中途装依赖后通过记录不再丢</h4>
+        <div class="meta" style="text-align:right">已用时 2 时 29 分</div>
+        <div class="prog"><i style="width:48%"></i></div>
+        <div class="meta" style="text-align:right;color:var(--text);font-weight:800">里程碑 1 / 3</div>
+        <div class="meta" style="grid-column:1/-1">正在做 M-02 复盘轮拿到现算指标 · Codex · 本轮已跑 6 分 03 秒 · 快检 1 次全过</div>
+      </div>
+      <div class="card run only-active" style="opacity:.85">
+        <div><div class="row-p"><span class="pill f f-brown">排队</span><span class="pill f f-orange">Bug</span><span class="pill"><span class="tid">T-102</span> · autome-v2</span><span class="sec" style="font-size:12px;font-weight:700">等 T-100 合并后开始</span></div></div>
+        <button class="btn sm" style="grid-row:span 2;align-self:center">调整顺序</button>
+        <h4>Scripts 步骤里的 web-groups 测试排在 Web install 之前，全新工作区会红</h4>
+      </div>
+      <div class="card c-dash empty only-idle"><div class="ico"><svg class="ic" style="width:22px;height:22px"><use href="#i-plus"/></svg></div><div><b>没有任务在跑</b>新建一张任务卡，驱动会在 3 秒内接手。</div><button class="btn pri" style="margin-left:auto">新建任务</button></div>
+    </div>
+
+    <div class="col">
+      <h3>今天 <small>所有项目</small></h3>
+      <div class="tiles">
+        <div class="tile t-teal">合并<b>1</b><small>个任务</small></div>
+        <div class="tile t-yellow">花费<b>$10.75</b><small>4 个会话无计费</small></div>
+        <div class="tile t-blue">门禁<b>4 / 4</b><small>全部通过</small></div>
+        <div class="tile t-pink">等你的时间<b>1:39</b><small>批准设计 1 次</small></div>
+      </div>
+      <div class="card list" style="flex:0 1 auto">
+        <div class="list-h"><h3>最近合并</h3><button class="btn text sm" data-go="project">全部 70 个 →</button></div>
+        <div class="scroll">
+          <div class="li" data-go="task"><span class="tid">T-100</span><span class="t">复盘轮拿到本任务指标（含门禁数据），门禁中途装依赖后…</span><span class="pill f f-green">门禁一次过</span><span class="m">今天 20:36 · $10.75</span></div>
+          <div class="li"><span class="tid">T-99</span><span class="t">合并前门禁一次通过：浏览器测试提前到每轮由宿主跑</span><span class="pill f f-green">门禁一次过</span><span class="m">昨天 23:33 · $20.59</span></div>
+          <div class="li"><span class="tid">T-98</span><span class="t">面板收尾批次：用上新的内核数据、补齐备注 / 排队顺序</span><span class="pill f f-orange">门禁 7 次</span><span class="m">11-16 03:52 · $31.40</span></div>
+          <div class="li"><span class="tid">T-96</span><span class="t">面板交付批次：W10 启动与安装、真实数据走查收尾</span><span class="pill f f-orange">退回 8 次</span><span class="m">11-14 14:17 · $28.85</span></div>
+          <div class="li"><span class="tid">T-97</span><span class="t">降低宿主门禁开销：输入没变的步骤不重跑</span><span class="pill">退回 3 次</span><span class="m">11-14 13:38 · $22.70</span></div>
+          <div class="li"><span class="tid">T-95</span><span class="t">内核补齐批次：十一项需求与缺陷一次设计、一次评审</span><span class="pill f f-green">无退回</span><span class="m">11-14 05:42 · $33.89</span></div>
+          <div class="li"><span class="tid">T-84</span><span class="t">旧内核不能推进新账本：内核带构建标识，比账本旧就只读</span><span class="pill">退回 1 次</span><span class="m">11-14 01:05 · $14.12</span></div>
+          <div class="li"><span class="tid">T-82</span><span class="t">W9 项目管理与环境：网页上添加项目、Onboarding</span><span class="pill">退回 1 次</span><span class="m">11-13 23:44 · $17.03</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 项目看板 -->
+<section class="screen" id="s-project">
+  <div class="head"><div class="ribbon"><span>autome-v2</span></div>
+    <p><span class="mono">~/project/autome-v2</span> · main @ <span class="mono">9a025fe</span> · 自动合并开 · 并行 3</p>
+    <div style="margin-left:auto;display:flex;gap:10px;align-items:center"><div class="seg"><button class="on">全部</button><button>需求</button><button>Bug</button></div><button class="btn" data-go="loop">项目设置</button></div></div>
+  <div class="board">
+    <div class="lane">
+      <div class="lane-h"><div class="ribbon sm brown"><span><em>待开始 · <span class="only-active">1</span><span class="only-idle">0</span></em></span></div><small>可拖动调整顺序</small></div>
+      <div class="card tc hov only-active">
+        <div class="tc-top"><span class="row-p"><span class="pill f f-orange">Bug</span><span class="tid">T-102</span></span><span class="pill">等 T-100 合并</span></div>
+        <h4>Scripts 步骤里的 web-groups 测试排在 Web install 之前，全新工作区会红</h4>
+        <div class="tc-foot"><span>排第 1 位</span><span>今天 19:40 建</span></div>
+      </div>
+      <div class="card c-dash empty only-idle" style="padding:14px 18px">没有排队的任务</div>
+    </div>
+    <div class="lane">
+      <div class="lane-h"><div class="ribbon sm"><span><em>进行中 · <span class="only-active">1</span><span class="only-idle">0</span></em></span></div></div>
+      <div class="card pat c-teal tc hov only-active" data-go="task">
+        <div class="tc-top"><span class="row-p"><span class="pill">需求</span><span class="tid">T-100</span></span><span class="pill f f-teal"><i class="spin"></i>实现 2 / 15</span></div>
+        <h4>复盘轮拿到本任务指标（含门禁数据），门禁中途装依赖后通过记录不再丢</h4>
+        <div class="prog"><i style="width:48%"></i></div>
+        <div class="tc-foot"><span>M-02 · 本轮 6 分</span><span>里程碑 1 / 3</span></div>
+        <div class="tc-foot"><span>已用时 2 时 29 分</span><b>$8.17</b></div>
+      </div>
+      <div class="card c-dash empty only-idle" style="padding:14px 18px">没有任务在跑</div>
+    </div>
+    <div class="lane">
+      <div class="lane-h"><div class="ribbon sm yellow"><span><em>等你处理 · <span class="only-active">1</span><span class="only-idle">0</span></em></span></div></div>
+      <div class="card pat c-yellow tc only-active">
+        <div class="tc-top"><span class="row-p"><span class="pill">需求</span><span class="tid">T-101</span></span><span class="pill f f-yellow">批准设计</span></div>
+        <h4>门禁脚本的同步子进程调用加超时，挂住时变成明确的失败</h4>
+        <div class="tc-foot"><span>3 个里程碑 · 2 条待表态</span><span>等 12 分</span></div>
+        <div style="display:flex;gap:8px"><button class="btn pri sm">看设计并批准</button><button class="btn sm">退回…</button></div>
+      </div>
+      <div class="card c-dash empty only-idle" style="padding:14px 18px">都处理完了</div>
+    </div>
+    <div class="lane">
+      <div class="lane-h"><div class="ribbon sm green"><span>已完成 · 70</span></div><small>累计 $562 · 平均实现 5.5 轮</small></div>
+      <div class="card list" style="flex:0 1 auto;padding-top:12px">
+        <div class="dl h"><span>编号</span><span>任务</span><span>轮</span><span>退回</span><span>花费</span></div>
+        <div class="scroll">
+          <div class="day">今 天</div>
+          <div class="li dl" data-go="task"><span class="tid">T-100</span><span class="t">复盘轮拿到本任务指标（含门禁数据），门禁中途装依赖后通过记录不再丢</span><span class="m">3</span><span class="m">0</span><span class="m"><b>$10.75</b></span></div>
+          <div class="day">昨 天</div>
+          <div class="li dl"><span class="tid">T-99</span><span class="t">合并前门禁一次通过：浏览器测试提前到每轮由宿主跑，门禁失败一次报全</span><span class="m">12</span><span class="m">2</span><span class="m"><b>$20.59</b></span></div>
+          <div class="li dl"><span class="tid">T-98</span><span class="t">面板收尾批次：用上新的内核数据、补齐备注 / 排队顺序 / 依赖三个控制操作</span><span class="m">29</span><span class="m">2</span><span class="m"><b>$31.40</b></span></div>
+          <div class="day">本 周 更 早</div>
+          <div class="li dl"><span class="tid">T-96</span><span class="t">面板交付批次：W10 启动与安装、真实数据走查收尾、W11 Electron 薄壳</span><span class="m">25</span><span class="m" style="color:#c26a3c">8</span><span class="m"><b>$28.85</b></span></div>
+          <div class="li dl"><span class="tid">T-97</span><span class="t">降低宿主门禁开销：输入没变的步骤不重跑、每轮在宿主上跑改动相关的测试</span><span class="m">11</span><span class="m">3</span><span class="m"><b>$22.70</b></span></div>
+          <div class="li dl"><span class="tid">T-95</span><span class="t">内核补齐批次（2026-11-13）：十一项需求与缺陷一次设计、一次评审</span><span class="m">22</span><span class="m">0</span><span class="m"><b>$33.89</b></span></div>
+          <div class="li dl"><span class="tid">T-84</span><span class="t">旧内核不能推进新账本：内核带构建标识，比账本旧就只读</span><span class="m">14</span><span class="m">1</span><span class="m"><b>$14.12</b></span></div>
+          <div class="li dl"><span class="tid">T-82</span><span class="t">W9 项目管理与环境：网页上添加项目（服务端路径校验与目录补全）</span><span class="m">10</span><span class="m">1</span><span class="m"><b>$17.03</b></span></div>
+          <div class="li dl"><span class="tid">T-87</span><span class="t">W7 任务详情：阶段进度、逐轮执行时间线、文档、门禁结果与全部控制操作</span><span class="m">8</span><span class="m">0</span><span class="m"><b>$15.73</b></span></div>
+          <div class="li dl"><span class="tid">T-86</span><span class="t"><span class="pill f f-orange" style="height:20px">Bug</span> logtail-live.test.ts 每跑一次留下一个进程</span><span class="m">—</span><span class="m">0</span><span class="m"><b>$0.14</b></span></div>
+          <div class="day">更 早 · 60 个</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 任务详情 -->
+<section class="screen" id="s-task" style="gap:12px">
+  <div class="sumrow">
+    <div class="card pat c-teal thead">
+      <div class="row-p"><span class="pill f f-green">已合并 · 今天 20:36</span><span class="pill">需求 · <span class="tid">T-100</span></span><span class="pill mono">autome/复盘轮拿到本任务指标-含门禁数据</span><span class="pill mono">9a025fe</span>
+        <span style="margin-left:auto;display:flex;gap:8px"><button class="btn sm">留备注</button><button class="btn sm">重新打开</button></span></div>
+      <h1>复盘轮拿到本任务指标（含门禁数据），门禁中途装依赖后通过记录不再丢</h1>
+      <div class="steps">
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>整理</b><span>6 分 · $2.13</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>设计</b><span>15 分 · $5.10</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>评审 · 裁决</b><span>9 分 · $0.59</span></div>
+        <div class="stp you"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>你批准</b><span>等了 1 时 39 分</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>实现 × 3</b><span>28 分 · Codex</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>审计 × 3</b><span>3 分 · $0.84</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>复盘</b><span>5 分 · $2.09</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>合并前门禁</b><span>25 分 · 一次过</span></div>
+        <div class="stp"><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>合并</b><span>20:36</span></div>
+      </div>
+      <div class="row-p"><span class="pill f f-green">M-01 通过</span><span class="pill">门禁指标进 TaskMetrics</span><span class="pill f f-green">M-02 通过</span><span class="pill">复盘轮拿到现算指标</span><span class="pill f f-green">M-03 通过</span><span class="pill">装依赖后通过记录不丢</span></div>
+    </div>
+    <div class="stat6">
+      <div class="tile t-yellow">花费<b>$10.75</b><small>4 个会话无计费</small></div>
+      <div class="tile t-blue">总用时<b>3:30</b><small>其中等你 1:39</small></div>
+      <div class="tile t-purple">会话<b>11</b><small>Claude 7 · Codex 4</small></div>
+      <div class="tile t-orange">设计轮<b>1 / 15</b><small>评审 2 项全采纳</small></div>
+      <div class="tile t-teal">实现轮<b>3 / 15</b><small>退回 0 次</small></div>
+      <div class="tile t-green">门禁<b>4 / 4</b><small>快检 3 · 合并前 1</small></div>
+    </div>
+  </div>
+  <div class="body2">
+    <div class="card pane">
+      <div class="pane-h"><h3>执行过程 <small>11 个会话 · 4 次门禁 · 1 次等你</small></h3><div class="seg"><button class="on">全部</button><button>只看门禁</button><button>只看退回</button></div></div>
+      <div class="scroll">
+        <div class="ph"><span>合 并</span><span>20:11 – 20:36</span></div>
+        <div class="ev gate"><span class="tm">20:36</span><span class="pill f f-green">宿主</span><div class="w"><b>合并进 main</b><span class="mono">9a025fe</span><p>清理工作区，停掉 1 个残留进程</p></div><span class="r"></span><span class="r"></span></div>
+        <div class="ev gate"><span class="tm">20:11</span><span class="pill f f-green">门禁</span><div class="w"><b>合并前门禁 · 通过</b><span>执行 7 步 · 沿用 4 步</span><p>Test、Desktop、Contract、Scripts、Web build、Web test、Web e2e 全部记下通过记录</p></div><span class="r">24 分 36 秒</span><span class="r"></span></div>
+        <div class="ph"><span>复 盘</span><span>19:56 – 20:11</span></div>
+        <div class="ev"><span class="tm">19:56</span><span class="pill f f-brown">复盘</span><div class="w"><b>复盘 #1</b><span>Claude · opus-5-5</span><p>写下 3 条教训：审计没接手实现轮留下的验证缺口；脚本测试全集会挂住…</p></div><span class="r">4 分 45 秒</span><span class="r">$2.09</span></div>
+        <div class="ph"><span>实 现 与 审 计 · 3 个 里 程 碑</span><span>19:18 – 19:56</span></div>
+        <div class="ev"><span class="tm">19:52</span><span class="pill f f-pink">审计</span><div class="w"><b>审计 #3 · M-03 通过</b><span>Claude · sonnet-5-5</span><p>验收命令 29 + 2 个用例全过，4 条负向对照均变红</p></div><span class="r">54 秒</span><span class="r">$0.25</span></div>
+        <div class="ev gate"><span class="tm">19:52</span><span class="pill f f-green">门禁</span><div class="w"><b>每轮快检 · 通过</b><span>执行 4 步</span></div><span class="r">23 秒</span><span class="r"></span></div>
+        <div class="ev"><span class="tm">19:38</span><span class="pill f f-teal">实现</span><div class="w"><b>实现 #3 · M-03</b><span>Codex · gpt-6-astra</span><p>准备步骤成功后重算键；新增 R19–R24、Q19–Q20</p></div><span class="r">14 分 05 秒</span><span class="r sec">无计费</span></div>
+        <div class="ev"><span class="tm">19:36</span><span class="pill f f-pink">审计</span><div class="w"><b>审计 #2 · M-02 通过</b><span>Claude · sonnet-5-5</span></div><span class="r">43 秒</span><span class="r">$0.24</span></div>
+        <div class="ev gate"><span class="tm">19:35</span><span class="pill f f-green">门禁</span><div class="w"><b>每轮快检 · 通过</b><span>执行 4 步 · 沿用 2 步</span></div><span class="r">1 分 12 秒</span><span class="r"></span></div>
+        <div class="ev"><span class="tm">19:28</span><span class="pill f f-teal">实现</span><div class="w"><b>实现 #2 · M-02</b><span>Codex · gpt-6-astra</span><p>复盘轮启动时现算指标，只交给提示词不落账本</p></div><span class="r">6 分 03 秒</span><span class="r sec">无计费</span></div>
+        <div class="ev"><span class="tm">19:27</span><span class="pill f f-pink">审计</span><div class="w"><b>审计 #1 · M-01 通过</b><span>Claude · sonnet-5-5</span></div><span class="r">1 分 09 秒</span><span class="r">$0.35</span></div>
+        <div class="ev gate"><span class="tm">19:25</span><span class="pill f f-green">门禁</span><div class="w"><b>每轮快检 · 通过</b><span>执行 7 步</span></div><span class="r">1 分 31 秒</span><span class="r"></span></div>
+        <div class="ev"><span class="tm">19:18</span><span class="pill f f-teal">实现</span><div class="w"><b>实现 #1 · M-01</b><span>Codex · gpt-6-astra</span><p>五个门禁指标进 TaskMetrics，按账本事件计数计时</p></div><span class="r">7 分 44 秒</span><span class="r sec">无计费</span></div>
+        <div class="ph"><span>设 计</span><span>17:06 – 19:18</span></div>
+        <div class="ev you"><span class="tm">19:18</span><span class="pill f f-yellow">你</span><div class="w"><b>批准设计</b><span>5 条 Backlog 标为不做</span></div><span class="r" style="color:#a07a10">等了 1 时 39 分</span><span class="r"></span></div>
+        <div class="ev"><span class="tm">17:36</span><span class="pill f f-orange">裁决</span><div class="w"><b>裁决 #1 · 设计定稿</b><span>Claude · sonnet-5-5</span><p>评审 2 项全部采纳：收窄沿用的保证范围；准备失败后禁止重算</p></div><span class="r">3 分 04 秒</span><span class="r">$0.59</span></div>
+        <div class="ev"><span class="tm">17:30</span><span class="pill f f-blue">评审</span><div class="w"><b>评审 #1 · 提出 2 项</b><span>Codex · gpt-6-astra</span></div><span class="r">6 分 15 秒</span><span class="r sec">无计费</span></div>
+        <div class="ev"><span class="tm">17:12</span><span class="pill f f-purple">设计</span><div class="w"><b>设计 #1 · 3 个里程碑</b><span>Claude · opus-5-5</span></div><span class="r">14 分 36 秒</span><span class="r">$5.10</span></div>
+        <div class="ev"><span class="tm">17:06</span><span class="pill f f-brown">整理</span><div class="w"><b>任务整理</b><span>Claude</span><p>任务卡整理成任务文件，35 KB</p></div><span class="r">5 分 31 秒</span><span class="r">$2.13</span></div>
+      </div>
+    </div>
+    <div class="card pane">
+      <div class="tabs"><button class="tab on">文档</button><button class="tab">改动 <em>13 个文件</em></button><button class="tab">Backlog <em>5</em></button><button class="tab">备注与依赖</button><span class="mono sec" style="margin-left:auto">+766 −15</span></div>
+      <div class="docnav"><span class="pill">任务卡</span><span class="pill on">设计文档</span><span class="pill">评审</span><span class="pill">裁决</span><span class="pill">审计</span><span class="pill">复盘教训 · 3</span><span class="pill">证据 · 6</span><span class="pill">运行记录</span></div>
+      <div class="scroll"><div class="doc">
+        <h2>设计文档</h2>
+        <div class="kv"><span class="pill f f-green">已完成</span><span class="pill">设计轮 1 / 15</span><span class="pill">实现轮 3 / 15</span><span class="pill mono">main · docs/复盘轮拿到本任务指标-含门禁数据/</span></div>
+        <h5>目标</h5>
+        <p>复盘轮（自动、手动两种入口）启动时，提示词里是本任务<b>当时</b>的指标表，含设计轮、实现轮、reopen 与门禁各项。指标新增五项门禁数据，进 <code>METRIC_NAMES</code>，可以被 <code>predicted_impact.metric</code> 引用。</p>
+        <p>门禁在本次运行里装了依赖，最后一次安装之后通过的步骤照常记 <code>ran &lt;键&gt;</code>，下次输入不变时沿用。</p>
+        <h5>里程碑</h5>
+        <table><tr><th>ID</th><th>标题</th><th>状态</th><th>退回</th></tr>
+          <tr><td>M-01</td><td>门禁指标进 TaskMetrics，按账本事件计数计时</td><td><span class="pill f f-green">通过</span></td><td>0</td></tr>
+          <tr><td>M-02</td><td>复盘轮启动时现算指标交给提示词且不落账本</td><td><span class="pill f f-green">通过</span></td><td>0</td></tr>
+          <tr><td>M-03</td><td>准备步骤成功后重算键，装依赖后的步骤照常记录通过</td><td><span class="pill f f-green">通过</span></td><td>0</td></tr></table>
+        <h5>方案 · A-Q1 复盘前计量放在哪</h5>
+        <p>把 <code>write_task_metrics</code> 拆成两个函数：<code>measure_task</code> 只算不写；<code>write_task_metrics</code> 调它之后照旧写账本、发事件。</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 环境 -->
+<section class="screen" id="s-env">
+  <div class="head"><div class="ribbon"><span>环境</span></div><p><b>5 项检查全部正常</b> · 刚刚检测过</p><button class="btn" style="margin-left:auto">重新检测</button></div>
+  <div class="env">
+    <div class="card list"><div class="list-h"><h3>工具</h3></div>
+      <div class="er"><i class="okc"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>Git</b><span class="p">/opt/homebrew/bin/git</span><span class="pill">2.53.0</span></div>
+      <div class="er"><i class="okc"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>Claude Code</b><span class="p">~/.local/bin/claude · 已登录</span><span class="pill">2.1.322</span></div>
+      <div class="er"><i class="okc"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>Codex</b><span class="p">/opt/homebrew/bin/codex · 已登录</span><span class="pill">0.155.1</span></div>
+      <div class="er"><i class="okc"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>iTerm2</b><span class="p">/Applications/iTerm.app</span><span class="pill">3.7.6</span></div>
+      <div class="er"><i class="okc"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i><b>内核</b><span class="p">~/.local/bin/autome · 账本版本 9</span><span class="pill mono">9a025fe</span></div>
+    </div>
+    <div class="card pat c-green list"><div class="list-h"><h3>驱动</h3><span class="pill f f-green">在推进</span></div>
+      <div class="er" style="grid-template-columns:28px 1fr auto"><i class="beat" style="margin:0 8px"></i><div><b>autome run</b> <span class="sec" style="font-size:12px;font-weight:700">后台服务（launchd）</span><div class="p">pid 67864 · 34 分钟前启动</div></div><span class="pill">3 秒前检查过</span></div>
+      <div class="er" style="grid-template-columns:28px 1fr auto"><i class="beat" style="margin:0 8px;animation:none;background:var(--border)"></i><div><b>autome core</b> <span class="sec" style="font-size:12px;font-weight:700">本面板，只读不推进</span><div class="p">pid 75205 · 14 分钟前启动</div></div><span class="pill">1 秒前</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- Loop 配置 -->
+<section class="screen section" id="s-loop" data-scope="proj">
+  <div class="head"><div class="ribbon"><span>Loop 配置</span></div>
+    <div class="seg" id="scope"><button data-v="global">全局默认</button><button class="on" data-v="proj">autome-v2</button><button data-v="proj">offchat</button><button data-v="proj">voice-schedule</button></div>
+    <p class="only-glob">所有项目的默认值 · 项目可以逐个角色覆盖</p><p class="only-proj">只对这个项目生效 · 没有单独设置的角色跟随全局</p>
+    <button class="btn pri" style="margin-left:auto">保存 1 项改动</button></div>
+  <div class="cfg">
+    <div class="col" style="gap:10px">
+      <h3>设计循环 <small>最多 15 轮 · 点角色卡片配置工具、模型、Effort 和技能</small></h3>
+      <div class="flow">
+        <div class="rc fixed"><b>任务整理</b><small>固定步骤<br>调研仓库，生成任务文件</small></div>
+        <div class="rc pat c-purple "><div class="rc-top"><b>设计</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Claude Code</span><span class="mono">claude-opus-5-5</span><div class="rc-chips"><span class="pill">Effort high</span></div><span class="prov only-proj">跟随全局</span></div><div class="rc pat c-blue "><div class="rc-top"><b>评审</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Codex</span><span class="mono">gpt-6-astra</span><div class="rc-chips"><span class="pill">Effort high</span></div><span class="prov only-proj">跟随全局</span></div><div class="rc pat c-yellow "><div class="rc-top"><b>裁决</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Claude Code</span><span class="mono">claude-sonnet-5-5</span><div class="rc-chips"><span class="pill">Effort high</span></div><span class="prov only-proj">跟随全局</span></div>
+        <div class="rc human pat c-yellow" style="border-style:dashed"><b>你批准设计</b><small>人工停顿<br>批准 / 退回 + 意见</small></div>
+      </div>
+      <h3 style="margin-top:8px">实现循环 <small>预算 = 5 × 里程碑数 · 每个里程碑：实现 → 快检 → 审计</small></h3>
+      <div class="flow">
+        <div class="rc pat c-teal "><div class="rc-top"><b>实现</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Codex</span><span class="mono">gpt-6-astra</span><div class="rc-chips"><span class="pill">Effort low</span></div><span class="prov only-proj">跟随全局</span></div>
+        <div class="rc fixed"><b>宿主快检</b><small>固定步骤<br>每轮跑项目的检查命令</small></div>
+        <div class="rc pat c-red sel"><div class="rc-top"><b>审计</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Claude Code</span><span class="mono">claude-sonnet-5-5</span><div class="rc-chips"><span class="pill">Effort medium</span><span class="pill s-proj only-proj">技能 1</span></div><span class="prov only-proj"><span style="color:#4f5fb0">项目覆盖</span></span></div><div class="rc pat c-green "><div class="rc-top"><b>复盘</b><i class="sw"></i></div><span style="font-weight:800;color:var(--text)">Claude Code</span><span class="mono">claude-opus-5-5</span><div class="rc-chips"><span class="pill">Effort high</span></div><span class="prov only-proj">跟随全局</span></div>
+        <div class="rc fixed"><b>合并前门禁</b><small>固定步骤<br>通过后自动合并</small></div>
+      </div>
+      <h3 style="margin-top:8px">Loop 默认值 <small class="only-glob">全局 · 新项目复制这一份</small><small class="only-proj">autome-v2 自己的设置</small></h3>
+      <div class="card defs">
+        <div class="def"><span>并行任务数</span><div class="stepper"><button>−</button><b>3</b><button>＋</button></div><small>同时跑几个任务，上限 5</small></div>
+        <div class="def"><span>设计轮上限</span><div class="stepper"><button>−</button><b>15</b><button>＋</button></div><small>设计 → 评审 → 裁决最多几轮</small></div>
+        <div class="def"><span>实现预算系数</span><div class="stepper"><button>−</button><b>5</b><button>＋</button></div><small>实现轮预算 = 系数 × 里程碑数，用完停下问你</small></div>
+        <div class="def"><span>单个会话时长上限</span><div class="stepper"><button>−</button><b>120</b><button>＋</button></div><small>分钟，超时的会话会被停掉</small></div>
+      </div>
+    </div>
+    <div class="card drawer scroll">
+      <h4><span class="pill f f-pink">审计</span>audit<span class="pill s-proj only-proj" style="margin-left:auto">项目覆盖</span></h4>
+      <div class="fld" style="display:flex;justify-content:space-between;align-items:center"><label style="margin:0">启用这个角色</label><i class="sw"></i></div>
+      <div class="fld"><label>工具</label><div class="seg wide"><button class="on">Claude Code</button><button>Codex</button></div></div>
+      <div class="fld"><label>模型</label><div class="inp">claude-sonnet-5-5</div></div>
+      <div class="fld"><label>Effort</label><div class="seg wide"><button>默认</button><button>low</button><button class="on">medium</button><button>high</button></div></div>
+      <div class="fld"><label>绑定的技能 <span class="sec" style="font-weight:600">· 这个角色启动时必须使用</span></label>
+        <div class="row-p"><span class="xpill only-proj">autome-v2-simplify · 项目<i>×</i></span><button class="btn sm" data-go="skills">＋ 添加技能</button></div></div>
+      <div class="note ok"><b style="color:inherit">双模型纪律 ✓</b> 审计（Claude · sonnet-5-5）和实现（Codex · gpt-6-astra）不是同一个模型。相同时不能保存。</div>
+      <div class="note tip">保存后对下一个启动的会话生效，正在跑的会话不打断。</div>
+      <div style="display:flex;gap:8px;margin-top:auto"><button class="btn pri" style="flex:1">保存</button><button class="btn only-proj">恢复跟随全局</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- 技能 -->
+<section class="screen" id="s-skills">
+  <div class="head"><div class="ribbon"><span>技能</span></div>
+    <div class="seg"><button class="on">全部 126</button><button>全局 125</button><button>本项目 1</button><button>已绑定 1</button></div>
+    <span class="pill" style="height:32px;padding:0 14px">项目：<b>autome-v2</b> ▾</span>
+    <div class="search" style="margin-left:auto;width:220px"><svg class="ic" style="width:15px;height:15px"><use href="#i-search"/></svg>搜索技能</div></div>
+  <div class="cfg">
+    <div class="card pane" style="padding:14px"><div class="scroll"><div class="skgrid"><div class="sk sel"><b>autome-v2-simplify</b><p>本仓库专用的证据驱动代码简化</p><div class="row-p"><span class="pill s-proj">项目</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill f f-pink" style="margin-left:auto">审计 必用</span></div></div><div class="sk "><b>agent-browser</b><p>浏览器自动化 CLI</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>aliyun-server-ops</b><p>阿里云服务器运维</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>archify</b><p>架构图与流程图</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>code-review</b><p>按规范与需求两条线审查改动</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>codebase-design</b><p>设计深模块的共享词汇</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>diagnosing-bugs</b><p>疑难缺陷与性能回退的诊断循环</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>domain-modeling</b><p>建立和打磨项目的领域模型</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>grilling</b><p>对计划或设计连续追问</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>investigate</b><p>先找根因再修的系统化调试</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>improve-codebase-architecture</b><p>找出可以加深的模块</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>data-analysis</b><p>数据分析</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>design-review</b><p>设计师视角的视觉走查</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>document-release</b><p>发布后同步文档</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>find-skills</b><p>查找可用技能</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>handoff</b><p>交接上下文</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>health</b><p>代码健康检查</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div><div class="sk "><b>html-review-share</b><p>分享 HTML 供评审</p><div class="row-p"><span class="pill">全局</span><span class="pill" style="border-color:var(--border-l)">Claude</span><span class="pill" style="border-color:var(--border-l)">Codex</span><span class="sec" style="font-size:11px;font-weight:700;margin-left:auto">未绑定</span></div></div></div><div class="day" style="text-align:center;padding-top:14px">还 有 108 个</div></div></div>
+    <div class="card drawer scroll">
+      <h4>autome-v2-simplify<span class="pill s-proj" style="margin-left:auto">项目技能</span></h4>
+      <div class="fld"><label>来源</label>
+        <div class="srcrow"><span class="pill s-proj">项目 · Claude</span><span class="mono sec">.claude/skills/autome-v2-simplify</span></div>
+        <div class="note tip" style="margin-top:6px">Claude Code 看得到；Codex 看不到（<span class="mono">.agents/skills</span> 下没有它）。</div></div>
+      <div class="fld"><label>绑定范围 <span class="sec" style="font-weight:600">· 这条绑定对谁生效</span></label>
+        <div class="seg wide"><button>全局 · 所有项目</button><button class="on">仅 autome-v2</button></div>
+        <div class="note tip" style="margin-top:6px">项目技能只能绑定在自己的项目里。全局技能两种范围都可以选。</div></div>
+      <div class="fld"><label>哪些角色必须使用</label>
+        <div class="roles6"><div class="chk  "><i></i>设计</div><div class="chk  dis"><i></i>评审</div><div class="chk  "><i></i>裁决</div><div class="chk  dis"><i></i>实现</div><div class="chk on "><i><svg viewBox="0 0 24 24"><use href="#i-check"/></svg></i>审计</div><div class="chk  "><i></i>复盘</div></div>
+        <div class="note tip" style="margin-top:6px">评审、实现用的是 Codex，看不到这个技能，不能勾选。没勾选的角色仍然可以自己选用它。</div></div>
+      <div style="display:flex;gap:8px;margin-top:auto"><button class="btn pri" style="flex:1">保存绑定</button><button class="btn">打开目录</button></div>
+    </div>
+  </div>
+</section>
+</main>
+</div>
+
+<div class="proto">原型 <div class="seg" id="demo"><button class="on" data-v="active">有任务在跑（演示）</button><button data-v="idle">空闲（当前真实状态）</button></div></div>
+
+<script>
+const crumbs={overview:'',project:'项目 › <b>autome-v2</b>',task:'项目 › autome-v2 › <b>T-100</b>',env:'',loop:'',skills:''};
+function go(s){
+  document.querySelectorAll('.screen').forEach(e=>e.classList.toggle('on',e.id==='s-'+s));
+  document.querySelectorAll('.side .nav,.side .proj').forEach(e=>e.classList.toggle('on',e.dataset.go===s||(s==='task'&&e.dataset.go==='project')));
+  document.getElementById('crumbs').innerHTML=crumbs[s]; history.replaceState(null,'','#'+s);
+}
+document.addEventListener('click',e=>{const t=e.target.closest('[data-go]');if(t){e.preventDefault();go(t.dataset.go)}});
+document.getElementById('demo').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;[...b.parentNode.children].forEach(x=>x.classList.toggle('on',x===b));document.querySelector('.app').dataset.demo=b.dataset.v});
+const q=new URLSearchParams(location.search);
+if(q.get('demo'))document.querySelector(`#demo [data-v=${q.get('demo')}]`).click();
+document.getElementById('scope').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;[...b.parentNode.children].forEach(x=>x.classList.toggle('on',x===b));document.getElementById('s-loop').dataset.scope=b.dataset.v});
+if(q.get('scope'))document.querySelector('#scope [data-v='+q.get('scope')+']').click();
+if(location.hash)go(location.hash.slice(1));
+</script>
+</body>
+</html>
