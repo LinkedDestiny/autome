@@ -1,12 +1,12 @@
 # Web 面板按动森风格重做：彩色组件与信息层次，补回 Loop 配置与技能绑定
 
-status: 设计中
-design-round: 0/15
-implementation-round: 0/0
-current-milestone: 无
+status: 实现中
+design-round: 1/15
+implementation-round: 0/55
+current-milestone: M-01
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 无
+next-action: 做 M-01：在 tokens.css 追加 --ui-* 令牌并同步 styles.test.ts 写死清单，新建 components/ui/* 与 icons.tsx、test/ui-kit.test.ts，跑 M-01 验收命令
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -235,20 +235,44 @@ G-1 与 G-2 合并成 M-10，因为两者都只是套用 A 组组件。G-3 单�
 - 三个都是 0：「现在没有事情等你」，副句是「没有任务在跑，驱动空闲」或「没有任务在跑，驱动在推进」。
 - 否则：「有 N 件事等你决定」（N 为 0 时写「没有事情等你决定」），后接「另有 M 个任务在跑，K 个在排队」。为 0 的项省略。
 
+**共用的等待口径（B、D 都用）。** 新建纯函数模块 `app/lib/waiting.ts`，服务端与组件都从这里取，不各写一份：
+
+- **等待状态**：`task.updated` 的新状态是 `await_design_approval`、`await_merge`、`await_info`、`not_a_bug`（与内核
+  `Node::awaits_user` 及 `task-columns.ts` 的 `AWAITING_NODES` 一致，按状态枚举判断，不用 `await_` 前缀），或任务状态
+  `failed`。`paused` / `stopped` 是用户自己的操作，**不计入**「等你的时间」（卡片仍显示在「等你处理」列，那是另一回事）。
+- **区间**：从进入等待状态那条 `task.updated` 的 `at`，到同一任务下一条改变该状态的 `task.updated` 的 `at`（批准、驳回、
+  补充信息 `reply`、合并、重跑、取消……任何离开都算）；还没离开的是「开放区间」。
+- **退出等待的用户操作**：这条 `task.updated` 的 `trigger` 是用户操作时，在时间线上就是一条用户行，写「等了 X」。
+- **门禁口径**：只数 `gate.result` 事件，且 `node` 是 `gate` / `fix_gate`（快检）或 `merge_gate`（合并前）。`repro_check`、
+  `main_check` 等其它节点不计；`gate.reused` / `gate.skipped` 不计。这是 `task_metrics.rs` 的 `gate_counts` 的口径。
+  总览与任务详情都叫「门禁」，数字按这一个口径出。
+
 **B-Q1 「今天」四个数字与「最近合并」。** 新建 `server/overview-summary.ts`，在面板服务端计算，只在总览 loader 里调用：
 
 - **「今天」的口径**：按面板服务端的时区切日，与 `clock.tsx` 下发给浏览器的 `timeZone` 一致。
-- **候选任务**：所有项目中 `completed_at` 落在今天的任务，加上全部未终结的任务（来自根 loader 已有的 `project.get` 结果）。
-  只对这些任务按 `subject` 读事件（复用 `task-history.ts`）。
-- **合并**：`state = done` 且 `completed_at` 是今天的任务数。
+- **事件来源**：服务端用不带 `subject` 的 `events.since`（面板服务端的 `eventbus.ts` 已经这样读，浏览器不经过它，不放开浏览器的
+  `events.since`）按账本顺序增量消费，不按「任务终结与否」筛候选任务：任务今天先花钱、等你、然后被取消（`cancelled` 不写
+  `completed_at`）或旧的终结任务今天又跑了一次复盘，它们今天发生的事件都照常计入。
+  - 累加器只保留需要的小记录：每个任务当前的等待状态与起点，已闭合的等待区间（`{start, end, 种类}`），会话结束记录
+    （`at`、`cost_usd`），门禁结果记录（`at`、`ok`、`node`）。闭合区间与记录只保留昨天 00:00 之后的，其余丢弃。
+  - 冷启动读一遍账本；之后每次只读 `after_seq` 之后的增量。账本回退（`latest_seq` 变小）时重建。
+- **合并**：`state = done` 且 `completed_at` 是今天的任务数（只有进入 Done 才写 `completed_at`），来自根 loader 已有的
+  `project.get` 结果。
 - **花费**：今天的 `session.ended` 事件的 `cost_usd` 之和；`cost_usd` 为空的会话单独计数，副文案写「N 个会话无计费」，全部无计费
   时主数字显示「无计费」。
-- **门禁**：今天的 `gate.result` 中 `ok = true` 的个数 / 总个数，`gate.reused` 与 `gate.skipped` 不计（与 `TaskMetrics` 同口径）。
-- **等你的时间**：候选任务今天处在「等用户」状态的时长之和。状态区间由 `task.updated` 的 `at` 切出：进入 `await_*` 节点或
-  `failed`，到下一次离开为止；还在等的区间算到现在；区间与今天取交集。副文案写「批准设计 N 次」等，按今天结束的等待种类计数。
-- **缓存**：结果按候选任务各自最新的事件序号缓存；序号不变就不重算。每次总览 loader 最多对候选任务各读一次增量事件。
+- **门禁**：今天的门禁（上面的共用口径）中 `ok = true` 的个数 / 总个数。
+- **等你的时间**：今天每个任务的等待区间（共用口径）与今天取交集后求和；开放区间算到现在。副文案写「批准设计 N 次」等，按今天
+  结束的等待种类计数。
+- **缓存与随时间增长的数字**：
+  - 事件的消费进度与闭合区间按账本序号缓存，序号不变就不重读事件。
+  - 汇总**不把最终的等待时长算死**：loader 只返回「已闭合部分的毫秒数」、每个开放区间的起点，以及今天的起止时刻
+    （`dayStart` / `dayEnd`）。组件用 `lib/clock.tsx` 的 `now` 现算「已闭合 + Σ(now − max(起点, dayStart))」，每 30 秒随时钟
+    刷新，账本没有新事件时开放区间照样增长。这个现算是 `overview-model.ts` 里的纯函数。
+  - `now` 越过 `dayEnd` 时，客户端触发一次根 loader 的重新验证（即使没有新事件），今天的切片随之换新。
+  - 花费、合并数、门禁数不依赖 `now`，只在日期切换或有新事件时变化。
 - **最近合并**：所有项目中 `state = done` 的任务按 `completed_at` 倒序取前 8 个，显示编号、标题、结果胶囊、合并时间（`clock`
-  格式）与花费。「全部 N 个 →」指向第一个项目的看板 `?done=all`；多项目时指向花费最大的那个项目，并在副文案写「所有项目」。
+  格式）与花费，每行链接到任务详情。只有一个项目时，列表底部有「全部 N 个 →」指向该项目看板的 `?done=all`；多个项目时不
+  显示这个链接（B-4 不要求跨项目的「全部」页）。
 - **结果胶囊**按指标依次判断，取第一条成立的：
   1. `merge_gate_runs > 1`：「门禁 N 次」，橙色；
   2. `reopen_total ≥ 5`：「退回 N 次」，橙色；
@@ -270,7 +294,7 @@ G-1 与 G-2 合并成 M-10，因为两者都只是套用 A 组组件。G-3 单�
   - **不写**「提了 2 项、全部采纳」，内核没有这个数（BL-03）。
 - **事实条**：设计轮 d/N、已花费（`cost_usd`；缺失时写「无计费」）、已用时（`created_at` 到现在）、设计文档大小（`task.get`
   的文档清单里有字节数时才显示）。
-- **「已等 X」（B-Q3）**：从最后一次进入当前等待状态的 `task.updated` 的 `at` 算到现在。
+- **「已等 X」（B-Q3）**：从最后一次进入当前等待状态的 `task.updated` 的 `at` 算到现在（共用等待口径，`not_a_bug` 与 `failed` 同样适用）。
 - **主按钮直达**：批准设计 → `/tasks/:id?doc=design`；失败 → `/tasks/:id`；合并 → `/tasks/:id`，并开「改动与合并」页签。
 
 **B-3 「进行中」与排队卡片。**
@@ -367,13 +391,13 @@ A 组组件重排，列头副文案改成「用卡片上的按钮调整顺序」
 **D-2 六个数字块（D-Q4）。**
 
 - **花费**：`cost.usd_total`，副文案「N 个会话无计费」。
-- **总用时**：`created_at` 到 `completed_at`（未终结时到现在），副文案「其中等你 X」，X 是全部等待区间之和。
+- **总用时**：`created_at` 到 `completed_at`（未终结时到现在），副文案「其中等你 X」，X 是共用等待口径下全部区间之和（含 `not_a_bug`；开放区间由组件用 `now` 现算，与总览同一个纯函数，总用时在途时同样如此）。
 - **会话数**：副文案按 `runtime` 分组，如「Claude 7 · Codex 4」。
 - **设计轮**：`design_round / design_round_limit`，副文案「评审 n 轮」。
 - **实现轮**：`impl_round / impl_round_limit`，副文案「退回 N 次」。N 在终结任务上取 `metrics.reopen_total`，在途任务取状态块里程碑
   表的 `reopen` 列之和。两者同源（都是 reopen 计数）。
-- **门禁**：通过数 / 总数，副文案「快检 a · 合并前 b」。一律从事件数：只数 `gate.result`；`gate` / `fix_gate` 节点算快检，
-  `merge_gate` 算合并前。这与 `TaskMetrics` 的定义相同，所以在途任务与终结任务口径一致。事件被截断（`truncated`）时显示缺失。
+- **门禁**：通过数 / 总数，副文案「快检 a · 合并前 b」。口径就是上面的「共用的等待口径」里的门禁口径，与总览「今天」的门禁、
+  `TaskMetrics` 一致，在途任务与终结任务口径一致。事件被截断（`truncated`）时显示缺失。
 
 **D-3 执行过程。**
 
@@ -390,8 +414,9 @@ A 组组件重排，列头副文案改成「用卡片上的按钮调整顺序」
   - 步数取 `gate.result.steps` 的计数（「执行」= 实际跑的步数，「沿用」= 复用的步数；实现轮按 `crates/automed/src/gate.rs` 的
     `read_report` 核对字段名后写进 `labels`）。旧事件没有 `steps` 时只写通过与否。
   - `gate.reused` 显示为「沿用上次通过」，`gate.skipped` 显示为「跳过 · {reason}」，两者都不计入门禁数。
-- **用户行**：`task.updated` 的 `trigger` 为 `approve` / `reject` / `merge` 时，以及 `task.decided` 时。「等了多久」是从进入对应
-  等待状态的 `at` 到这条事件的 `at`。
+- **用户行**：沿用现有 `task-timeline-model.ts` 里 `operations` 的全部用户操作（`approve`、`reject`、`reply`、`merge`、`pause`、
+  `resume`、`stop`、`cancel`、`rerun_from`、`extend_budget`），加 `task.decided`；新的分组与行种类不得丢掉其中任何一种。
+  退出等待状态的那条（含 `not_a_bug` 后的 `reply`）写「等了 X」，X 是共用等待口径下该区间的时长；其余用户行不带时长。
 - **筛选（D-Q5）**：
   - 「只看门禁」= 门禁行与 `gate.reused` / `gate.skipped` 行；
   - 「只看退回」= 审计把里程碑从「待审」改回「开放」的会话行（来自 `task.snapshot` 的里程碑变化）、`milestone.contradicted`、
@@ -508,19 +533,31 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   写一份完整的项目技能列表，该角色随之变成「项目覆盖」。抽屉里写明：「此后这个角色在本项目里不再跟随全局技能列表的变化；
   要恢复，去 Loop 配置点『恢复跟随全局』」。
 - **在项目范围取消一条全局绑定**：也是写一份不含它的项目列表，抽屉同样提示。
-- **已有技能覆盖的项目遇到新的全局绑定**：选「全局」时，服务端对每个项目读 `config.get` 的 `provenance`。对该角色已是「项目覆盖」
-  的项目，抽屉列出「以下项目的 {角色} 有自己的技能列表，这条全局绑定对它们不生效：A、B」。
+- **已有技能覆盖的项目遇到新的全局绑定**：角色级的 `provenance = project` 只说明这个角色在该项目里有**某个**覆盖（可能只改了
+  模型或 Effort，不碰技能），不能据此断言技能列表被覆盖，也不能据此说「不生效」。内核回包里也分不出「项目自己写了技能列表」
+  与「碰巧和全局相同」。所以：
+  - 保存前，选「全局」时抽屉只写一句中性提示「某个项目如果给这个角色写了自己的技能列表，就不会跟随这条全局绑定；保存后会列出
+    没有拿到的项目」，**不列项目名，不断言不生效**；
+  - 保存后，服务端对每个项目重读 `config.get`，把这个角色的 resolved 技能里**没有**该技能的项目列出来：「以下项目的 {角色} 没有
+    拿到这条绑定：A、B（它们在项目里有自己的技能列表）」。这是读回的事实，不是推断。取消全局绑定时同理，列出读回后仍含该技能的项目。
 - **验-7 的写法**：用三个项目断言：
   - A：选「仅当前项目」绑定后，只有 A 的 `config.get` 出现；
-  - B、C 都没有覆盖：选「全局」绑定后，两者都出现；
-  - 先给 C 写技能覆盖、再绑全局：C 不出现，页面列出 C。
-  这样既覆盖任务卡的两句话，也不说假话。
+  - B 没有任何覆盖、A 只覆盖了模型（不碰技能）：选「全局」绑定后，B 与 A 都出现，页面不把 A 列为「没拿到」；
+  - 先给 C 写技能列表覆盖、再绑全局：C 不出现，保存后页面列出 C。
+  这样既覆盖任务卡的两句话，也不说假话；「仅覆盖模型」与「显式技能列表覆盖」两种场景必须各有一个判别用例。
 
-**F-Q3 可见性。**
+**F-Q3 可见性。** 判定的输入按绑定范围取，不混用：
 
-- 「哪些角色必须使用」的六个勾选块，按当前范围的 resolved 角色工具判断：工具不在 `visible_to` 里的角色禁用，并说明
-  「{角色} 用 {工具}，看不到这个技能（{目录} 下没有它）」。
-- 项目技能（`project_scoped`）在全局范围下，「全局 · 所有项目」一档禁用，说明「项目技能只能绑定在自己的项目里」。
+- **绑定到「全局 · 所有项目」**：只看技能的**全局来源**（`sources` 中 `scope = global` 的那些）。技能存在与否、哪些工具能看到它，
+  都以全局来源为准，这与 `set_role` 全局范围用 `skills::scan_global` 校验一致。
+- **绑定到「仅当前项目」**：看当前项目 `skills.list` 回包里的全部来源（全局加项目）。
+- 因此 `project_scoped` 只表示「**任一**来源在项目里」，不能当作「仅存在于项目」。三类要分开处理：
+  - 纯全局技能：两档都可选；
+  - 纯项目技能（没有 global 来源）：「全局 · 所有项目」一档禁用，说明「项目技能只能绑定在自己的项目里」；
+  - 同名混合（既有 global 来源又有 project 来源）：「全局」一档**可用**，可见性只按其 global 来源算，不把项目来源的工具并进去；
+    「仅当前项目」按全部来源算。
+- 「哪些角色必须使用」的六个勾选块，按当前范围的 resolved 角色工具与上面选定的来源判断：工具不在对应来源的运行时里的角色禁用，
+  并说明「{角色} 用 {工具}，看不到这个技能（{目录} 下没有它）」。
 - 判定同样用 `role-rules.ts`，保存时内核的拒绝原样显示。
 
 **F-Q1 描述。** 不显示。内核不读 `SKILL.md`，面板自己读又与 F-4「只显示来源路径」的边界相冲突。显示来源路径，并进 Backlog
@@ -577,7 +614,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
      Loop 默认值，并另开 Bug 任务。
 2. **不显示技能描述、账本版本、评审 / 裁决的项目数**：数据不存在，不编造（约束 1）。三项进 Backlog。
 3. **调序不做拖动**：列头文案改成与实际一致（C-Q4）。
-4. **「最近合并」的「全部 N 个 →」**：原型只有一个项目；多项目时的落点见 B-Q1。
+4. **「最近合并」的「全部 N 个 →」**：原型只有一个项目；多项目时不显示该链接，见 B-Q1。
 
 ## 风险与验证安排
 
@@ -703,17 +740,19 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 ### M-03 验收契约
 
 - 验收命令：`(cd apps/web && npx vitest run test/overview.test.ts test/overview-summary.test.ts test/overview-states-real.test.ts test/clock.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts -g "1512×944 总览$")`
-- 预期：7 个文件，至少 57 个用例全过：
-  - overview：15（7 +8）。结论句的四种计数组合；等你处理六种种类的胶囊与摘要；没有 Backlog 时不写「待表态」；进行中卡片的
+- 预期：7 个文件，至少 62 个用例全过：
+  - overview：17（7 +10）。现算等待时长的纯函数（开放区间随 `now` 增长、与今天取交集、`now` 越过 `dayEnd` 要求重新验证）；结论句的四种计数组合；等你处理六种种类的胶囊与摘要；没有 Backlog 时不写「待表态」；进行中卡片的
     进度与本轮时长；排队卡片「等谁」两种；空闲两张虚线卡；结果胶囊六条规则。
-  - overview-summary：新，unit 组，至少 9 个。用从真实内核抓的事件加构造事件：
+  - overview-summary：新，unit 组，至少 12 个。用从真实内核抓的事件加构造事件：
     - 按服务端时区切日（含跨午夜的等待区间只算今天那段）；
-    - `gate.reused` / `gate.skipped` 不计；
+    - `gate.reused` / `gate.skipped` 不计；`repro_check`、`main_check` 的 `gate.result` 也不计，只数 `gate` / `fix_gate` / `merge_gate`；
+    - 今天有活动后被取消的任务（`completed_at` 为空）与今天又跑了一次复盘的旧终结任务，它们今天的花费、门禁、等待照常计入；
+    - `not_a_bug` 的等待区间被计入，并在 `reply` 处结束；
     - 无计费会话单独计数；
-    - 还在等的区间算到现在；
+    - 开放区间返回起点与 `dayStart` / `dayEnd`，不返回算死的时长；
     - 合并数只数今天 `done`；
-    - 最近合并取前 8 并倒序；
-    - 序号不变时不重读事件；
+    - 最近合并取前 8 并倒序；多项目时不出现「全部 N 个」；
+    - 序号不变时不重读事件，但换一个更大的 `now` 现算，开放区间的时长随之增长；
     - 没有已合并任务时列表为空。
   - overview-states-real：新，kernel 组，4 个。`idle` / `running` / `awaiting` / `failed` 各一个，断言结论句与卡片。
   - clock：9（7 +2）。`formatRelative`、`formatSpan`。
@@ -723,6 +762,9 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 把 `gate.reused` 计入门禁次数：overview-summary「reused 不计」失败。
   - 结论句漏掉排队数：overview「在跑与排队」组合失败；`running` 状态下也会写错。
   - 等待区间不与今天取交集：「跨午夜」用例失败。
+  - 候选任务改回只看 `completed_at` 为今天或未终结：「取消后的任务」用例失败。
+  - 等待状态用 `await_` 前缀判断：`not_a_bug` 用例失败。
+  - 开放区间按序号缓存成固定值：「`now` 前进后增长」用例失败。
 
 ### M-04 验收契约
 
@@ -738,34 +780,36 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
     `metrics.reopen_total`、`cost_usd` 相等，且页面不含「门禁未跑过」。
   - ★ 浏览器 5 条：layout「项目」「全部已完成」「已取消展开」，controls「B-2」「B-3」。
 - 负向对照：
-  - 恢复旧 `gatePhrase`（空时返回「门禁未跑过」）：task-card 新用例与 board-done-real 失败。
+  - 恢复旧 `gatePhrase`（空时返回「门禁未跑过」）：task-card 的「在途无门禁不渲染门禁行」与 labels 的 `gatePhrase` 返回 `null` 用例失败（已完成条目本身不渲染门禁行，判别落在仍调用 `gatePhrase` 的在途卡片）。
   - 「本周更早」从周日算起：board 的周边界用例失败。
   - 实现轮取 `budget_n`：board-done-real 的相等断言失败。
 
 ### M-05 验收契约
 
 - 验收命令：`(cd apps/web && npx vitest run test/task-summary.test.ts test/task-summary-real.test.ts test/task-timeline.test.ts test/task-stage.test.ts test/task-detail-data.test.ts test/task-detail-payload.test.ts test/task-detail-ssr.test.ts test/test-groups.test.ts)`
-- 预期：8 个文件，至少 82 个用例全过：
-  - task-summary：新，unit 组，至少 14 个。用 `test/fixtures/w7/` 的真实回包加构造事件：
+- 预期：8 个文件，至少 84 个用例全过：
+  - task-summary：新，unit 组，至少 16 个。用 `test/fixtures/w7/` 的真实回包加构造事件：
     - 需求九步与 Bug 六步的用时与花费；
-    - 「你批准」= `await_design_approval` 区间之和（含驳回后第二次等待）；
+    - 「你批准」= `await_design_approval` 区间之和（含驳回后第二次等待）；`not_a_bug` 与 `failed` 区间计入总用时的「其中等你」，`paused` 不计；
+    - 用户行保留 `reply` 等全部现有操作，退出等待的那条带「等了 X」；
     - 总用时与「其中等你」；
     - 会话按工具分组；
-    - 门禁「快检 / 合并前」按节点分、只数 `gate.result`；
+    - 门禁「快检 / 合并前」按节点分、只数 `gate.result` 且节点为 `gate` / `fix_gate` / `merge_gate`，`repro_check` 的结果不计；
     - 截断时门禁缺失；
     - 在途实现轮的退回取状态块之和；
     - 无计费会话；
     - 「只看门禁」「只看退回」两种筛选；
     - 阶段分组倒序。
   - task-summary-real：新，kernel 组，至少 3 个。`w7-flow.sh` 跑到 `await_merge`。断言：会话数与工具分组等于 `task.get`；门禁数
-    等于事件中 `gate.result` 个数；「你批准」等于从两条 `task.updated` 的 `at` 算出的差。
+    等于事件中节点为 `gate` / `fix_gate` / `merge_gate` 的 `gate.result` 个数（与同一任务终结后的 `TaskMetrics` 一致）；「你批准」等于从两条 `task.updated` 的 `at` 算出的差。
   - task-timeline：28（24 +4）。用户行与等待时长；门禁行步数；`gate.reused` / `skipped` 行；阶段分组。
   - task-stage：14（12 +2）。
   - task-detail-data：12（11 +1）。`TaskSummary` 只在服务端算、不带全量会话。
   - task-detail-payload 4、task-detail-ssr 3（150 KB 不变）、test-groups 4。
 - 负向对照：
   - 「你批准」改用会话间隙计算：task-summary 与 task-summary-real 的等待用例失败。
-  - 门禁计数包含 `gate.reused`：两处门禁用例失败。
+  - 门禁计数包含 `gate.reused` 或 `repro_check`：两处门禁用例失败。
+  - 等待状态漏掉 `not_a_bug`：task-summary 的等待用例失败。
   - 把全量会话放进 loader 返回值：task-detail-data 新用例失败；60 会话时 ssr 体积用例失败。
 
 ### M-06 验收契约
@@ -826,19 +870,21 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 ### M-09 验收契约
 
 - 验收命令：`(cd apps/web && npx vitest run test/skills-model.test.ts test/skills-page.test.ts test/skills-real.test.ts test/open-path.test.ts test/write-gate.test.ts test/gateway.test.ts test/labels.test.ts test/testids.test.ts test/test-groups.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/controls.spec.ts -g "技能|F-1")`
-- 预期：9 个文件，至少 116 个用例全过：
-  - skills-model：新，unit 组，至少 12 个。用真实 `skills.list` 回包：
+- 预期：9 个文件，至少 120 个用例全过：
+  - skills-model：新，unit 组，至少 14 个。用真实 `skills.list` 回包：
     - 四种筛选的计数随项目变化；搜索；没有项目时隐藏「本项目」；
     - 两种范围对应的 `set_role` 调用（只写成员有变化的角色；全局用 global 列表，项目用 resolved 列表）；
     - 取消全局绑定写项目列表；
-    - 有覆盖项目的提示名单；
+    - 保存后「没拿到这条绑定」的项目名单取自读回的 resolved 技能，不取自 `provenance`；
+    - 三类技能（纯全局、纯项目、同名混合）的绑定可用性与可见性：同名混合时「全局」一档可用且只按 global 来源算可见；
     - 不可见角色禁用及原因；项目技能禁用「全局」一档；`conflicts` 标红。
   - skills-page：新，unit 组，至少 4 个。卡片字段；来源路径；抽屉结构；每个来源一个「打开目录」。
-  - skills-real：新，kernel 组，至少 5 个。临时 `HOME` 下自建全局与项目技能、三个临时仓库项目：
+  - skills-real：新，kernel 组，至少 7 个。临时 `HOME` 下自建全局与项目技能、三个临时仓库项目：
     - 列出全局与项目技能；
     - 「仅当前项目」只进 A 的 `config.get`；
     - 「全局」进 B 与 C；
-    - C 先有技能覆盖时不进 C 且页面列出 C；
+    - A 只覆盖模型时全局绑定仍进 A，页面不把 A 列为没拿到；C 先有技能列表覆盖时不进 C，保存后页面列出 C；
+    - 同一个名字在全局与项目都有：项目范围 `skills.list` 回 `project_scoped = true`，全局绑定仍成功；
     - 不可见角色的勾选被禁用，绕过页面直接写时内核拒绝原样显示。
   - open-path：新，unit 组，至少 5 个。按名解析路径；多来源按序号；未知名 404；其它 `kind` 仍 501；打开器是注入的替身且收到
     服务端解析的路径。
@@ -848,6 +894,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 「仅当前项目」写成不带 `project_id`：skills-real 的 B / C 断言失败。
   - 「全局」用 resolved 列表而不是 global 列表：skills-model 的调用断言失败。
   - 打开器直接用请求参数里的路径：open-path「收到服务端解析的路径」失败。
+  - 用角色 `provenance` 判断技能覆盖：skills-real 里 A（只覆盖模型）的用例失败。
+  - 把 `project_scoped` 当作「仅项目」禁用全局一档：同名混合用例失败。
 
 ### M-10 验收契约
 
@@ -893,5 +941,6 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 - BL-03 内核记录评审提出的问题数与裁决采纳数，总览「等你处理」卡片写出原型那句「评审提了 2 项问题，裁决全部采纳」
 - BL-04 `config.get` 给出项目覆盖的原始键，Loop 默认值在项目范围精确显示「跟随全局 / 项目值」
 - BL-05 看板「待开始」列支持拖动调序（需要同时提供键盘等价操作）
+- BL-06 总览「等你处理」的批准设计卡片给出评审与裁决文档的入口，或明确写出结果摘要不可得（来自评审建议 N3，B-Q2 允许数据缺失时回退，不阻塞）
 
 ## 争议项
