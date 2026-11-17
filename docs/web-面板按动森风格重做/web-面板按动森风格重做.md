@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 5/65
-current-milestone: M-05
+current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-05 汇总模型与验收证据；通过后推进 M-06 详情页面重排
+next-action: 推进 M-06 详情页面重排
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -649,7 +649,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-02 | 已完成 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
 | M-03 | 已完成 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
 | M-04 | 已完成 | C·项目看板：丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过 | 0 | |
-| M-05 | 待审 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
+| M-05 | 已完成 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
 | M-06 | 开放 | D·任务详情页面重排：头部、执行过程、右侧四页签 | 0 | |
 | M-07 | 开放 | E·Loop 配置：角色卡片、编辑抽屉、范围切换与双模型判定 | 0 | |
 | M-08 | 开放 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
@@ -795,7 +795,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-05 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-05-r5-impl.md · 验收通过，待独立审计 · 实现 #5
+最新证据：docs/web-面板按动森风格重做/evidence/M-05-r5-audit.md · 通过 · 审计 #5
 
 - 验收命令：`(cd apps/web && npx vitest run test/task-summary.test.ts test/task-summary-real.test.ts test/task-timeline.test.ts test/task-stage.test.ts test/task-detail-data.test.ts test/task-detail-payload.test.ts test/task-detail-ssr.test.ts test/test-groups.test.ts)`
 - 预期：8 个文件，至少 84 个用例全过：

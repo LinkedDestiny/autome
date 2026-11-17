@@ -14,3 +14,4 @@
 审计 #4 | M-04 | 通过 | docs/web-面板按动森风格重做/evidence/M-04-r4-audit.md | 无
 
 实现 #5 | M-05 | 待审 | docs/web-面板按动森风格重做/evidence/M-05-r5-impl.md | 快检浏览器 ps EPERM，待宿主复验
+审计 #5 | M-05 | 通过 | docs/web-面板按动森风格重做/evidence/M-05-r5-audit.md | 无
