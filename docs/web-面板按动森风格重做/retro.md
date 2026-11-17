@@ -19,3 +19,4 @@
 审计 #6 | M-06 | 通过 | docs/web-面板按动森风格重做/evidence/M-06-r6-audit.md | 无
 
 实现 #7 | M-07 | 保持开放 | docs/web-面板按动森风格重做/evidence/M-07-r7-impl.md | 浏览器夹具 ps EPERM
+审计 #7 | M-07 | 通过 | docs/web-面板按动森风格重做/evidence/M-07-r7-audit.md | 无
