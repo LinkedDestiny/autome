@@ -1029,3 +1029,64 @@ fn gate_quick_session_template() {
     assert!(prompt.contains("sh scripts/ci-quick.sh --since abc123"));
     assert!(prompt.contains("本轮起点 `abc123`"));
 }
+
+#[test]
+fn retro_prompt_gate_metrics_rows() {
+    let templates = automed::protocol::seed().clone();
+    let metrics = autome_domain::metrics::TaskMetrics {
+        round_gate_runs: Some(3),
+        round_gate_failures: Some(1),
+        merge_gate_runs: Some(2),
+        merge_gate_failures: Some(1),
+        gate_seconds: Some(812),
+        ..Default::default()
+    };
+    let mut s = spec(SessionKind::Role { role: Role::Retro }, &templates);
+    s.task_metrics = Some(&metrics);
+    let p = build_prompt(&s).unwrap();
+    for row in [
+        "| 每轮门禁 | 3 次（失败 1） |",
+        "| 合并前门禁 | 2 次（失败 1） |",
+        "| 门禁耗时 | 812 秒 |",
+    ] {
+        assert!(p.contains(row), "{p}");
+    }
+    assert!(p.find("| 人工验收未确认").unwrap() < p.find("| 每轮门禁").unwrap());
+    assert!(p.find("| 门禁耗时").unwrap() < p.find("| 总 tokens").unwrap());
+}
+
+#[test]
+fn retro_prompt_gate_metrics_missing_reads_as_unrecorded() {
+    let templates = automed::protocol::seed().clone();
+    for (runs, failures) in [(None, None), (Some(0), None), (None, Some(0))] {
+        let metrics = autome_domain::metrics::TaskMetrics {
+            round_gate_runs: runs,
+            round_gate_failures: failures,
+            merge_gate_runs: runs,
+            merge_gate_failures: failures,
+            ..Default::default()
+        };
+        let mut s = spec(SessionKind::Role { role: Role::Retro }, &templates);
+        s.task_metrics = Some(&metrics);
+        let p = build_prompt(&s).unwrap();
+        for name in ["每轮门禁", "合并前门禁", "门禁耗时"] {
+            assert!(p.contains(&format!("| {name} | 未记录 |")), "{p}");
+        }
+        assert!(!p.contains("0 次"));
+    }
+}
+
+#[test]
+fn retro_prompt_gate_metrics_in_vocabulary() {
+    let templates = automed::protocol::seed().clone();
+    let p = build_prompt(&spec(SessionKind::Role { role: Role::Retro }, &templates)).unwrap();
+    for name in [
+        "round_gate_runs",
+        "round_gate_failures",
+        "merge_gate_runs",
+        "merge_gate_failures",
+        "gate_seconds",
+    ] {
+        assert!(p.contains(name), "{p}");
+    }
+}

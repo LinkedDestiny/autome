@@ -884,6 +884,23 @@ fn render_task_metrics(metrics: Option<&autome_domain::metrics::TaskMetrics>) ->
     row("协议失败", m.protocol_failures.to_string());
     row("关闭后被推翻", m.closed_then_contradicted.to_string());
     row("人工验收未确认", m.manual_items_open.to_string());
+    for (name, runs, failures) in [
+        ("每轮门禁", m.round_gate_runs, m.round_gate_failures),
+        ("合并前门禁", m.merge_gate_runs, m.merge_gate_failures),
+    ] {
+        row(
+            name,
+            runs.zip(failures).map_or_else(
+                || "未记录".to_string(),
+                |(runs, failures)| format!("{runs} 次（失败 {failures}）"),
+            ),
+        );
+    }
+    row(
+        "门禁耗时",
+        m.gate_seconds
+            .map_or_else(|| "未记录".to_string(), |seconds| format!("{seconds} 秒")),
+    );
     row("总 tokens", m.total_tokens.to_string());
     row("总 turns", m.total_turns.to_string());
     if let Some(cost) = m.total_cost_usd {

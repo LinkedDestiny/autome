@@ -13315,3 +13315,128 @@ fn gate_deadline_uses_feature_quick_and_bug_full_timeout() {
         }
     }
 }
+
+#[test]
+fn retro_gate_metrics_loop_prompt_and_final() {
+    needs_git!();
+    let mut w = World::new("retro-gate-metrics");
+    for name in ["quick", "merge"] {
+        std::fs::write(w.root.join(format!("{name}.sh")), format!(
+            "#!/bin/sh\np='{}'\nn=$(cat \"$p\" 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > \"$p\"\n[ $n -gt 1 ]\n", w.root.join(format!("{name}.count")).display()
+        )).unwrap();
+    }
+    w.configure(&format!(
+        "[gate]\nrun = \"before_merge\"\nquick = \"sh {}\"\ncommand = \"sh {}\"\n",
+        w.root.join("quick.sh").display(),
+        w.root.join("merge.sh").display()
+    ));
+    let request = "retro gate metrics";
+    let slug = slug_for(request);
+    for (n, round, state) in [
+        (5, 1, "待审"),
+        (6, 2, "待审"),
+        (7, 2, "已完成"),
+        (9, 3, "已完成"),
+        (10, 3, "已完成"),
+    ] {
+        w.doc_step(n, &slug, &doc("实现中", 2, round, &[("M-01", state)]));
+    }
+    for n in [8, 11] {
+        w.retro_step(n, &slug);
+        let script = std::fs::read_to_string(w.repo.join(format!(".autome/fake/{n}.sh"))).unwrap();
+        w.step(n, &(pause_prelude(&w, n) + &script));
+    }
+    let id = resume_setup(&mut w, request);
+    for (n, round, merge) in [(8, 2, 0), (11, 3, 1)] {
+        resume_wait(&mut w, |w| w.root.join(format!("ready-{n}")).exists());
+        let p = w.prompt(n);
+        assert!(!p.contains("没有记录到指标"), "{p}");
+        for row in [
+            format!("| 每轮门禁 | {round} 次（失败 1） |"),
+            format!("| 合并前门禁 | {merge} 次（失败 {merge}） |"),
+            "| 设计轮 | 2/15 |".into(),
+            format!(
+                "| 实现轮 | {round}/{} |",
+                w.ctx.store.get_task(&id).unwrap().budget_n.unwrap()
+            ),
+            "| reopen 合计 | 0 |".into(),
+        ] {
+            assert!(p.contains(&row), "missing {row}: {p}");
+        }
+        assert!(
+            w.ctx
+                .store
+                .tasks_with_metrics(&w.project_id)
+                .unwrap()
+                .iter()
+                .all(|(t, _)| t.id != id)
+        );
+        assert_eq!(w.ctx.store.count_events(&id, "task.metrics").unwrap(), 0);
+        std::fs::write(w.root.join(format!("release-{n}")), "go").unwrap();
+    }
+    w.settle();
+    assert_eq!(w.node(&id).as_deref(), Some("await_merge"));
+    ok(&w.call("task.merge", json!({"task_id":id})));
+    w.settle();
+    assert_eq!(w.state(&id), "done");
+    let m = w.ctx.store.task_metrics(&id).unwrap().unwrap();
+    assert_eq!(
+        (
+            m.round_gate_runs,
+            m.round_gate_failures,
+            m.merge_gate_runs,
+            m.merge_gate_failures
+        ),
+        (Some(3), Some(1), Some(2), Some(1))
+    );
+    assert!(m.gate_seconds.is_some());
+    let events = w.ctx.store.events_since_with_subject(0, u32::MAX).unwrap();
+    for (node, runs, failures) in [
+        ("gate", m.round_gate_runs, m.round_gate_failures),
+        ("merge_gate", m.merge_gate_runs, m.merge_gate_failures),
+    ] {
+        let results: Vec<_> = events
+            .iter()
+            .filter(|(_, k, s, p)| s == &id && k == "gate.result" && p["node"] == node)
+            .collect();
+        assert_eq!(runs, Some(results.len() as u32));
+        assert_eq!(
+            failures,
+            Some(
+                results
+                    .iter()
+                    .filter(|(_, _, _, p)| p["ok"] == false)
+                    .count() as u32
+            )
+        );
+    }
+}
+
+#[test]
+fn manual_retro_gate_metrics_for_a_paused_task() {
+    needs_git!();
+    let mut w = World::new("paused-retro-metrics");
+    let request = "paused retro metrics";
+    let slug = slug_for(request);
+    w.doc_step_for_prelude(
+        5,
+        &slug,
+        &doc("实现中", 2, 1, &[("M-01", "待审")]),
+        &pause_prelude(&w, 5),
+    );
+    w.retro_step(6, &slug);
+    let id = resume_setup(&mut w, request);
+    resume_wait(&mut w, |w| w.root.join("ready-5").exists());
+    ok(&w.call("task.pause", json!({"task_id":id})));
+    std::fs::write(w.root.join("release-5"), "go").unwrap();
+    w.settle();
+    assert!(w.ctx.store.task_metrics(&id).unwrap().is_none());
+    ok(&w.call("task.retro", json!({"task_id":id})));
+    w.settle();
+    let p = w.prompt(6);
+    assert!(p.contains("| 每轮门禁 | 0 次（失败 0） |"), "{p}");
+    assert!(!p.contains("没有记录到指标"));
+    assert!(w.ctx.store.task_metrics(&id).unwrap().is_none());
+    assert_eq!(w.ctx.store.count_events(&id, "task.metrics").unwrap(), 0);
+    assert_eq!(w.state(&id), "paused");
+}

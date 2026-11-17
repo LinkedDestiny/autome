@@ -3001,6 +3001,19 @@ pub(crate) fn write_task_metrics(ctx: &mut Ctx, task_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn retro_task_metrics(ctx: &Ctx, task_id: &str) -> Option<autome_domain::metrics::TaskMetrics> {
+    match measure_task(ctx, task_id) {
+        Ok(metrics) => Some(metrics),
+        Err(e) => {
+            tracing::warn!(task_id = %task_id, error = %e, "could not measure retro metrics");
+            ctx.store.task_metrics(task_id).unwrap_or_else(|e| {
+                    tracing::warn!(task_id = %task_id, error = %e, "could not read stored retro metrics");
+                    None
+                })
+        }
+    }
+}
+
 /// Measures the current snapshot without publishing terminal task metrics.
 pub(crate) fn measure_task(
     ctx: &Ctx,
@@ -3730,7 +3743,7 @@ fn launch_session(
     // The retro round writes against the task's measured numbers rather than
     // its recollection of the run, so it is the one round handed them.
     let task_metrics = match kind.role() {
-        Some(Role::Retro) => ctx.store.task_metrics(&task.id)?,
+        Some(Role::Retro) => retro_task_metrics(ctx, &task.id),
         _ => None,
     };
     // Written before the prompt that points at it. A round told to read a
@@ -6316,6 +6329,40 @@ mod tests {
     use autome_domain::status_block::MilestoneState;
     use autome_domain::task::Disposition;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn retro_metrics_read_failure_falls_back_without_publishing() {
+        let mut w = World::new("retro-read-failure");
+        let project = w.ctx.store.get_project(&w.project_id).unwrap();
+        let path = w.root.join("ledger.db");
+        w.ctx.store = crate::store::Store::open(&path).unwrap();
+        w.ctx.store.insert_project(&project).unwrap();
+        w.add_task("T-1", "metrics");
+        let stored = autome_domain::metrics::TaskMetrics {
+            impl_rounds_used: 7,
+            ..Default::default()
+        };
+        w.ctx.store.set_task_metrics("T-1", &stored).unwrap();
+        w.ctx
+            .store
+            .append_event("gate.result", "T-1", json!({}))
+            .unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE events SET payload = 'invalid' WHERE kind = 'gate.result'",
+            [],
+        )
+        .unwrap();
+        assert!(measure_task(&w.ctx, "T-1").is_err());
+        assert_eq!(retro_task_metrics(&w.ctx, "T-1"), Some(stored));
+        conn.execute("UPDATE tasks SET metrics = NULL WHERE id = 'T-1'", [])
+            .unwrap();
+        assert!(retro_task_metrics(&w.ctx, "T-1").is_none());
+        conn.execute("UPDATE tasks SET metrics = 'invalid' WHERE id = 'T-1'", [])
+            .unwrap();
+        assert!(retro_task_metrics(&w.ctx, "T-1").is_none());
+        assert_eq!(w.ctx.store.count_events("T-1", "task.metrics").unwrap(), 0);
+    }
 
     #[test]
     fn gate_metrics_measure_without_writing_then_persist() {
