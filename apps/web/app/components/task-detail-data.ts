@@ -27,7 +27,7 @@ export type TaskPayload = {
     milestones?: { id: string; state: string; title?: string; reopen_count?: number }[];
     design_round: number; design_round_limit: number; impl_round: number; impl_round_limit: number;
   } | null;
-  task: { created_at?: string; completed_at?: string | null; metrics?: { reopen_total?: number; design_rounds_used?: number; design_rounds_limit?: number; impl_rounds_used?: number } | null; after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
+  task: { merge_commit?: string | null; created_at?: string; completed_at?: string | null; metrics?: { reopen_total?: number; design_rounds_used?: number; design_rounds_limit?: number; impl_rounds_used?: number } | null; after?: string[]; blocked_by?: BlockedDependency[]; archived?: boolean; id: string; title: string; slug?: string; request?: string; kind?: string; branch?: string; fix_round?: number; budget_n?: number | null;
     state?: { state: string; node?: string; at?: string; resume?: string; reason?: Record<string, unknown> };
     merge?: { authorized?: boolean; stale?: { behind: number } | null; waiting_for?: string | null } | null };
   project?: { id: string; name?: string; display_name?: string };

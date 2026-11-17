@@ -29,7 +29,7 @@ export function taskSummary(data: TaskPayload, input: readonly TaskEvent[], trun
     }
     return { label, current: current === index, passed: data.task.state?.state === 'done' || current > index, durationMs, runningSince,
       cost: sessions.reduce((n, s) => n + (s.metrics?.cost_usd ?? 0), 0), unbilled: sessions.filter(s => s.metrics?.cost_usd == null).length,
-      tools: [...new Set(sessions.map(s => s.runtime).filter((s): s is string => !!s))], sessions: sessions.length, attempts: results.length };
+      tools: [...new Set(sessions.map(s => s.runtime).filter((s): s is string => !!s))], sessions: sessions.length, gatePassed: results.at(-1)?.payload.ok === true, attempts: results.length };
   });
   const byRuntime: Record<string, number> = {};
   for (const s of data.sessions) byRuntime[s.runtime ?? '未知'] = (byRuntime[s.runtime ?? '未知'] ?? 0) + 1;

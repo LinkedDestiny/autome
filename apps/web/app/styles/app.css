@@ -399,3 +399,30 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .board-column .task-card { padding: 14px; }
 .board-column .task-card h3 { font-size: 15px; margin: 10px 0; }
 .board-column .task-card p { font-size: 12px; }
+
+/* Task detail: compact summary above two independently scrolling work areas. */
+.task-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; max-height: 22%; }
+.task-detail-header > .task-detail-meta { grid-column: 1; }
+.task-detail-header > .task-ops { grid-column: 2; grid-row: 1 / 3; }
+.task-detail-header h1 { margin: 4px 0; font-size: 22px; }
+.task-summary-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; flex-shrink: 0; margin: 8px 0 12px; }
+.task-summary-tiles .tile { padding: 8px 12px; }
+.task-summary-tiles .tile b { font-size: 22px; }
+.task-summary-tiles .tile small { font-size: 11px; overflow-wrap: anywhere; }
+.summary-steps { flex-wrap: nowrap; gap: 6px; }
+.summary-steps li { flex: 1; min-width: 0; padding: 6px 8px; background: var(--animal-bg-content); font-size: 12px; }
+.summary-steps small { display: block; font-weight: 400; margin-top: 4px; }
+.summary-steps .is-passed { background: var(--animal-primary-bg); }
+.summary-steps .step-approval { background: var(--ui-card-yellow-bg); }
+.task-milestones { margin-bottom: 0; font-size: 12px; }
+.task-milestones li { display: flex; align-items: center; gap: 4px; }
+.task-detail-body { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+.timeline-filters { display: flex; gap: 12px; padding: 12px; font-size: 12px; }
+.timeline-filters [aria-current="page"] { font-weight: 800; text-decoration: underline; }
+.timeline-group-title { display: flex; justify-content: space-between; gap: 8px; margin: 8px 12px; font-size: 14px; }
+.timeline-group-title small { font-size: 11px; font-weight: 400; }
+.task-timeline li { margin: 6px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
+.task-timeline .timeline-gate { background: var(--animal-primary-bg); }
+.task-timeline .timeline-user { background: var(--ui-card-yellow-bg); }
+.task-detail-tabs { gap: 4px; padding: 8px; font-size: 12px; }
+.task-detail-tabs a { display: flex; align-items: center; gap: 4px; }

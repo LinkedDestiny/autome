@@ -28,7 +28,7 @@ export function stageBarView(payload: TaskPayload, events: readonly TaskEvent[],
   const block = payload.status_block;
   const snapshot = history.find(event => event.kind === 'task.snapshot')?.payload;
   const metrics = history.find(event => event.kind === 'task.metrics')?.payload;
-  const milestones = (block?.milestones ?? ((snapshot?.milestones ?? []) as [string, string][]).map(([id, state]) => ({ id, state })))
+  const milestones = (block?.milestones ?? ((snapshot?.milestones ?? []) as [string, string][]).map(([id, state]) => ({ id, state, title: undefined })))
     .map(item => ({ ...item, label: milestoneLabels[item.state] ?? item.state, current: item.id === block?.current_milestone }));
   const rounds = kind === 'bug' ? fixRoundProgress(task.fix_round ?? 0, task.budget_n ?? config.resolved?.bug?.fix_rounds ?? 0)
     : block ? `设计 ${block.design_round} / ${block.design_round_limit} · 实现 ${block.impl_round} / ${task.budget_n ?? block.impl_round_limit}`

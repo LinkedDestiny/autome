@@ -28,7 +28,7 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await page.getByTestId('bell-button').click();
     await expect(page.getByTestId('bell-panel')).toBeVisible();
   }
-  if (name === '需求详情展开日志') await expandLog(page);
+  if (name === '需求详情展开日志') { await expandLog(page); await expect(page.locator('.task-summary-tiles .tile')).toHaveCount(6); await page.screenshot({ path: '../../.autome/output/m06-detail.png' }); }
   if (name === '添加项目补全') {
     await page.getByTestId('path-input').fill('~/');
     await expect(page.getByTestId('path-suggestion').first()).toBeVisible();

@@ -33,12 +33,10 @@ async function render(id: string) {
   expect(result.error).toBeUndefined(); expect(result.data?.task.state).toMatchObject({ node: 'await_merge' });
   return renderToString(createElement(MemoryRouter, {}, createElement(TaskTimeline, { ...result.timeline!, window: result.window! })));
 }
-it('真实需求任务页面按会话顺序显示阶段与结果，包含快检、rebase 和合并前门禁', async () => {
+it('真实需求任务页面按阶段倒序显示会话与结果，包含快检、rebase 和合并前门禁', async () => {
   const html = await render('T-1');
-  let last = -1;
-  for (const label of ['任务整理', '设计', '评审', '裁决', '实现', '审计', '实现', '审计', '复盘']) {
-    const index = html.indexOf(`<h3>${label}`, last + 1); expect(index).toBeGreaterThan(last); last = index;
-  }
+  const roles = [...html.matchAll(/<h3><span class="pill pill-purple">([^<]+)<\/span>/g)].map(match => match[1]);
+  expect(roles).toEqual(['复盘', '审计', '实现', '审计', '实现', '裁决', '评审', '设计', '任务整理']);
   for (const text of ['快检', 'rebase 无冲突', '合并前门禁', 'M-01 开放 → 待审', 'M-01 待审 → 已完成', 'M-02 待审 → 已完成', 'Codex', '用时', '无计费数据']) expect(html).toContain(text);
 });
 it('真实 Bug 页面显示定位、复现检查、修复、复核及正确业务结果', async () => {

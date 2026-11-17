@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 5/65
+implementation-round: 6/65
 current-milestone: M-06
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 推进 M-06 详情页面重排
+next-action: 继续 M-06，复验浏览器布局与滚动，并处理快检的进程权限及 load-context 旧契约断言，取得证据后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -824,6 +824,8 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
   - 把全量会话放进 loader 返回值：task-detail-data 新用例失败；60 会话时 ssr 体积用例失败。
 
 ### M-06 验收契约
+
+最新证据：docs/web-面板按动森风格重做/evidence/M-06-r6-impl.md · 单元通过，浏览器验收受环境阻塞，保持开放 · 实现 #6
 
 - 验收命令：`(cd apps/web && npx vitest run test/task-page.test.ts test/task-header.test.ts test/task-timeline.test.ts test/task-docs-view.test.ts test/task-changes.test.ts test/task-decisions.test.ts test/task-notes.test.ts test/task-ops-view.test.ts test/labels.test.ts test/testids.test.ts test/styles.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts e2e/manual-items.spec.ts -g "详情|W7 H-03|W7 H-04|C-2")`
 - 预期：11 个文件，至少 107 个用例全过：

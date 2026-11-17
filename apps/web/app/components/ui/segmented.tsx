@@ -9,3 +9,8 @@ export function Segmented({ name, label, options, value, onChange, disabled = fa
     </label>)}
   </div>;
 }
+
+/** URL-backed tabs retain native links, history and modified-click navigation. */
+export function SegmentedTabs({ label, className = '', children }: { label: string; className?: string; children: import('react').ReactNode }) {
+  return <nav className={`seg ${className}`} aria-label={label}>{children}</nav>;
+}
