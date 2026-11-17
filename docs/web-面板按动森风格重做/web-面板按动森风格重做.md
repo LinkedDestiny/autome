@@ -1,12 +1,12 @@
 # Web 面板按动森风格重做：彩色组件与信息层次，补回 Loop 配置与技能绑定
 
-status: 实现中
+status: 已完成
 design-round: 1/15
 implementation-round: 20/65
-current-milestone: M-13
+current-milestone: 无
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立复验 M-13 的文档入口与缺失回退；在可监听及运行 ps 的环境补验快检受阻项
+next-action: 无
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -657,7 +657,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-10 | 已完成 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
 | M-11 | 已完成 | G·README 五张截图与全站一屏巡检收口 | 3 | 总览缺值显示 |
 | M-12 | 已完成 | BL-01·技能只读描述与卡片描述行 | 0 | |
-| M-13 | 待审 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
+| M-13 | 已完成 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
 
 ## 各里程碑说明
 
@@ -971,7 +971,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-13 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-13-r20-impl.md · 契约通过，环境受阻项待复验 · 实现 #20
+最新证据：docs/web-面板按动森风格重做/evidence/M-13-r20-audit.md · 通过 · 审计 #16
 
 - 验收命令：(cd apps/web && npx vitest run test/overview.test.ts test/overview-summary.test.ts test/overview-states-real.test.ts test/labels.test.ts)。
 - 情形：批准设计卡片在评审、裁决文档均存在时分别显示可访问入口；仅一份或均缺失时明示相应结果摘要不可得；不编造问题数与采纳数；其它卡片行为不变。
