@@ -1,9 +1,12 @@
 # 审计结论 · M-11 · 实现缺陷（总览缺值显示）
 
-领域：总览缺值显示；reopen 2（该领域首次，收敛模式仍 normal）。
+## Convergence Note
 
-- 验收命令全绿：readme-images 4 + docs-web 2 = 6 过；layout.spec.ts 14/14 过（本机无 ps EPERM）。负向对照（移走 loop.png）readme-images 3 条失败，还原后全过。
-- 缺陷：`docs/images/dashboard.png`（README 交付物）里「批准合并」的 bugx 卡片显示 `设计轮 undefined / undefined`。根因 `apps/web/app/lib/overview-labels.ts:25`：`round` 在 `block` 存在时直接拼 `block.design_round / block.design_round_limit`，状态块缺这两个字段（Bug 任务）就输出字面 undefined；`overview-labels.ts:17` 的 badge 同类拼接。违反 G-3（交付可用截图）与 B 组总览卡片「缺数据回退」（设计 B-Q2）。验收命令只数文件与尺寸，拦不住这一点。
-- 另：总览截图里「进行中」卡片被三张等待卡挤到首屏之外，README 看不到进行中任务（设计原型 H-01 要求有任务在跑与等批准同屏）。
-- 判别检查：`.autome/output/overview-undefined.check.test.ts`（对缺设计轮字段的状态块调用 overviewCardView，断言结果不含 undefined；运行需在 apps/web 内，本轮未能跑通因 `--root /` 过慢，下一轮实现轮搬进 `apps/web/test/overview.test.ts` 先看红再修）。证据之一是 `docs/images/dashboard.png` 本身。
-- 下一轮：修 `round`/badge 缺值回退（用 `—`）；调整总览截图夹具使进行中卡片首屏可见；重生成 dashboard.png 并复制进 `docs/images/`；验收命令与快检再跑。
+1. 未闭合领域：总览缺值显示。当前失败证据：`docs/images/dashboard.png` 仍显示 `设计轮 undefined / undefined`，且进行中卡片不在首屏。
+2. 根因：实现轮 #16 修了 `overview-labels.ts` 的缺值回退，但没有重新生成并替换 PNG（截图脚本被 ps EPERM 阻断），前轮验收只数文件与尺寸，漏检图内容。同类范围：docs/images 下五张图全部需用修复后的脚本重生成。
+3. 下一轮：在能跑 `scripts/screenshots.ts` 的环境重生成五图，替换 docs/images，目视或像素检查 dashboard.png 无 undefined 且进行中卡片首屏可见；跑完整验收命令（含 layout.spec.ts 14 条）。若环境仍被 ps EPERM 阻断，应把「重新生成五图」移入人工验收清单，而不是继续保持开放空转。
+4. 命令：当前应红——人工查看 dashboard.png；完成应绿、不得退化——`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts test/overview.test.ts)` 与 layout.spec.ts。
+
+## 结论
+
+退回开放，reopen 3，convergence-mode: milestone-review。违反 G-3 与设计 B-Q2 缺数据回退。证据：docs/web-面板按动森风格重做/evidence/M-11-r16-audit.md。判别检查即 dashboard.png 本身（未新增脚本）。
