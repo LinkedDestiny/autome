@@ -3,10 +3,10 @@
 status: 实现中
 design-round: 1/15
 implementation-round: 2/65
-current-milestone: M-02
+current-milestone: M-03
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: M-02 审计通过后推进 M-03 总览；若退回则先修 M-02，浏览器三例需宿主复验
+next-action: 推进 M-03 总览
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -646,7 +646,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | ID | 状态 | 标题 | reopen | 领域 |
 |---|---|---|---|---|
 | M-01 | 已完成 | A·令牌、图标与共用组件，样式守卫随之扩展 | 0 | |
-| M-02 | 待审 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
+| M-02 | 已完成 | A·外壳：侧栏、顶栏、驱动状态卡与两个新路由占位 | 0 | |
 | M-03 | 开放 | B·总览：结论句、等你处理 / 进行中卡片、今天与最近合并、四状态夹具 | 0 | |
 | M-04 | 开放 | C·项目看板：丝带列头、精简卡片、已完成按日期分组、去掉门禁未跑过 | 0 | |
 | M-05 | 开放 | D·任务详情汇总模型：步骤条、六个数字、阶段分组与筛选 | 0 | |
@@ -725,7 +725,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-02 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-02-r2-impl.md · 单测通过，浏览器受沙箱限制待复验 · 实现 #2
+最新证据：docs/web-面板按动森风格重做/evidence/M-02-r2-audit.md · 通过 · 审计 #2
 
 - 验收命令：`(cd apps/web && npx vitest run test/shell.test.ts test/shell-data.test.ts test/eventbus.test.ts test/live-client.test.ts test/palette.test.ts test/live-routes.test.ts test/styles.test.ts test/labels.test.ts test/testids.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts -g "总览")`
 - 预期：9 个文件，至少 107 个用例全过：
