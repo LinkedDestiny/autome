@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 13/65
+implementation-round: 14/65
 current-milestone: M-11
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 继续 M-11：在允许 ps 与监听端口的环境生成五张截图并复制到 docs/images，跑验收与快检后再标待审
+next-action: 按 G-Q3 交接 M-11：审计环境运行截图脚本输出 screens-M11，后续实现轮复制五图并跑验收与快检；本轮仍被 ps EPERM 阻塞
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r13-impl.md · 环境阻塞，保持开放 · 实现 #13
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r14-impl.md · 缺图复现，截图环境阻塞，保持开放 · 实现 #14
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：

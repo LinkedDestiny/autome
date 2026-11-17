@@ -35,3 +35,4 @@
 审计 #10 | M-10 | 通过 | docs/web-面板按动森风格重做/evidence/M-10-r12-audit.md | 无
 
 实现 #13 | M-11 | 开放，环境阻塞 | docs/web-面板按动森风格重做/evidence/M-11-r13-impl.md | ps EPERM，截图未生成
+实现 #14 | M-11 | 退回 + 截图环境阻塞（保持开放） | docs/web-面板按动森风格重做/evidence/M-11-r14-impl.md | ps EPERM，缺少两图
