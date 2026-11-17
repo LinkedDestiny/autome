@@ -24,3 +24,5 @@
 实现 #8 | M-08 | 退回 + 验收环境 | docs/web-面板按动森风格重做/evidence/M-08-r8-impl.md | 浏览器与快检被 ps EPERM 阻断
 审计 #8 | M-08 | 通过 | docs/web-面板按动森风格重做/evidence/M-08-r8-audit.md | 无
 实现 #9 | M-09 | 退回 + 验收环境 | docs/web-面板按动森风格重做/evidence/M-09-r9-impl.md | 浏览器 ps EPERM，保持开放
+
+实现 #10 | M-09 | 修复 F-1，保持开放 | docs/web-面板按动森风格重做/evidence/M-09-r10-impl.md | 浏览器 ps EPERM，待宿主复验

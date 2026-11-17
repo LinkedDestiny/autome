@@ -254,7 +254,7 @@ test('F-1 技能按仅当前项目绑定后只进该项目', async ({ page }) =>
     await expect.poll(() => planSkills(f.projectId)).not.toContain(name);
     await drawer.getByRole('button', { name: '关闭', exact: true }).click();
     await expect(drawer).toHaveCount(0);
-    await page.getByLabel('项目', { exact: true }).selectOption('');
+    await page.getByRole('combobox', { name: /^项目/ }).selectOption('');
     await expect(page).toHaveURL(/\/skills$/);
     await expect(page.getByRole('radio', { name: /^本项目/ })).toHaveCount(0);
   } finally {
