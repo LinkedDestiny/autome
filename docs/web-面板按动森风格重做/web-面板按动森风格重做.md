@@ -4,9 +4,9 @@ status: 实现中
 design-round: 1/15
 implementation-round: 14/65
 current-milestone: M-11
-current-milestone-reopens: 0
+current-milestone-reopens: 1
 convergence-mode: normal
-next-action: 按 G-Q3 交接 M-11：审计环境运行截图脚本输出 screens-M11，后续实现轮复制五图并跑验收与快检；本轮仍被 ps EPERM 阻塞
+next-action: 把审计产物 .autome/output/screens-M11/ 的五张 PNG 复制进 docs/images/（审计已在本机跑通截图脚本，1512×944），再跑 M-11 验收命令与快检，通过后标待审
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -655,7 +655,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 | M-08 | 已完成 | E·Loop 默认值、项目信息页签与 set_loop 技能校验修复 | 0 | |
 | M-09 | 已完成 | F·技能页：列表筛选、绑定范围、可见性与打开目录 | 0 | |
 | M-10 | 已完成 | G·环境页与两个表单页按新组件重排，相对时间 | 0 | |
-| M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 0 | |
+| M-11 | 开放 | G·README 五张截图与全站一屏巡检收口 | 1 | README截图交付 |
 | M-12 | 开放 | BL-01·技能只读描述与卡片描述行 | 0 | |
 | M-13 | 开放 | BL-06·批准设计卡片的评审裁决入口与摘要缺失回退 | 0 | |
 
@@ -934,7 +934,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-11 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-11-r14-impl.md · 缺图复现，截图环境阻塞，保持开放 · 实现 #14
+最新证据：docs/web-面板按动森风格重做/evidence/M-11-r14-audit.md · 退回（截图未替换） · 审计 #11
 
 - 验收命令：`(cd apps/web && npx vitest run test/readme-images.test.ts test/docs-web.test.ts) && (cd apps/web && npx playwright test e2e/layout.spec.ts)`
 - 预期：

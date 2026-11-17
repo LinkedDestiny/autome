@@ -36,3 +36,4 @@
 
 实现 #13 | M-11 | 开放，环境阻塞 | docs/web-面板按动森风格重做/evidence/M-11-r13-impl.md | ps EPERM，截图未生成
 实现 #14 | M-11 | 退回 + 截图环境阻塞（保持开放） | docs/web-面板按动森风格重做/evidence/M-11-r14-impl.md | ps EPERM，缺少两图
+审计 #11 | M-11 | 退回 + README截图交付 | docs/web-面板按动森风格重做/evidence/M-11-r14-audit.md | 无
