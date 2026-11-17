@@ -1,3 +1,6 @@
+import { Input } from '../components/ui/input.tsx';
+import { Check } from '../components/ui/check.tsx';
+import { Ribbon } from '../components/ui/ribbon.tsx';
 import { TEST_IDS } from '../lib/testids.ts';
 import { useEffect, useState } from 'react';
 import { Form, Link, redirect, useActionData, useLoaderData, useNavigation, type ActionFunctionArgs, type LoaderFunctionArgs } from 'react-router';
@@ -48,9 +51,9 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
   useEffect(() => { const client = pathCompleteClient(fetch, setSuggestions); client.input(input); return client.dispose; }, [input]);
   const disabled = !gate.allowed || busy || Boolean(result?.project);
   const defaults = checked.probe && confirmDefaults(checked.probe);
-  return <div className="add-project" data-testid={TEST_IDS.pageProjectNew}><h1>{ADMIN.add}</h1><div className="add-project-body">
+  return <div className="add-project" data-testid={TEST_IDS.pageProjectNew}><Ribbon><h1>{ADMIN.add}</h1></Ribbon><div className="add-project-body card card-pat card-blue">
     <Form method="get"><label htmlFor="project-path">{ADMIN.path}</label>
-      <input data-testid={TEST_IDS.pathInput} id="project-path" name="path" value={input} maxLength={512} placeholder="~/code/project" disabled={busy || Boolean(result?.project)} onChange={event => setInput(event.target.value)} />
+      <Input data-testid={TEST_IDS.pathInput} id="project-path" name="path" value={input} maxLength={512} placeholder="~/code/project" disabled={busy || Boolean(result?.project)} onChange={event => setInput(event.target.value)} />
       <button disabled={disabled} title={gate.reason}>{busy ? ADMIN.checking : ADMIN.check}</button>
       <DirectoryPicker picker={picker} disabled={disabled} onPick={setInput} onError={setPickerError} />
     </Form>
@@ -62,9 +65,9 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
       {!workspace && checked.probe.members.length > 0 && <p>{ADMIN.nested}</p>}
       {canConfirm(input, checked) && defaults && !result?.project && <Form method="post" className="project-confirm">
         <input type="hidden" name="intent" value="confirm" /><input type="hidden" name="path" value={checked.display} />
-        <label><input type="checkbox" name="workspace" checked={workspace} onChange={event => setWorkspace(event.target.checked)} />{ADMIN.workspace}</label>
-        <label>{ADMIN.docs}<select name="docs_repo" disabled={!workspace} defaultValue={defaults.docs_repo}>{defaults.members.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-        <label><input type="checkbox" name="skip_onboarding" />{ADMIN.skip}</label><button className="btn-primary" disabled={disabled} title={gate.reason}>{ADMIN.confirm}</button>
+        <Check name="workspace" checked={workspace} onChange={event => setWorkspace(event.target.checked)} label={ADMIN.workspace} />
+        <label>{ADMIN.docs}<select className="inp" name="docs_repo" disabled={!workspace} defaultValue={defaults.docs_repo}>{defaults.members.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
+        <Check name="skip_onboarding" label={ADMIN.skip} /><button className="btn-primary" disabled={disabled} title={gate.reason}>{ADMIN.confirm}</button>
       </Form>}
     </section>}
     {result?.error && <p role="alert">{result.error}</p>}

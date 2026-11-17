@@ -70,6 +70,7 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     expect(await grid.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
     await page.screenshot({ path: '../../.autome/output/m09-layout.png' });
   }
+  if (['环境', '新建任务', '添加项目补全'].includes(name)) await page.screenshot({ path: '../../.autome/output/m10-' + name + '.png' });
   await oneScreen(page);
   } finally { for (const dir of skillDirs) rmSync(dir, { recursive: true, force: true }); }
 });

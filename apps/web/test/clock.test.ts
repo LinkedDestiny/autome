@@ -56,3 +56,11 @@ test('相对时间秒、分、时、日和未来、空输入边界', () => {
 test('紧凑时长零、秒、分钟、小时与非有限输入', () => {
   for (const [ms, text] of [[0, '0 秒'], [59000, '59 秒'], [60000, '1 分 00 秒'], [363000, '6 分 03 秒'], [8940000, '2 时 29 分'], [-1, '0 秒'], [NaN, '0 秒'], [Infinity, '0 秒']] as const) expect(formatSpan(ms)).toBe(text);
 });
+
+import { RelativeTime } from '../app/lib/clock.tsx';
+test('34 分钟前启动且悬停保留绝对时间', () => {
+  const at = '2026-11-14T05:54:00Z';
+  const text = render(h(RelativeTime, { at, suffix: '启动' }));
+  expect(text).toContain('34 分钟前'); expect(text).toContain('启动</time>');
+  expect(text).toContain('title="' + at + '"');
+});

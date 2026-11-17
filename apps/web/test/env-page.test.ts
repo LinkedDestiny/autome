@@ -75,3 +75,35 @@ test('8 驱动卡片区分本面板、推进中、停止与旧内核', async () 
   expect(html({ ...envData, drivers: { available: false, list: [] } })).toContain('内核较旧，只能推断');
   expect(html({ ...envData, drivers: { available: false, list: [], error: '读取失败' } })).toContain('驱动信息暂不可用：读取失败');
 });
+
+test('工具每项四列，状态路径登录版本与内核独立一行', () => {
+  const text = html(envData);
+  expect(text.match(/class="env-tool-row"/g)).toHaveLength(5);
+  expect(text).toContain('env-dot-warning');
+  expect(text).toContain('pill-blue');
+  expect(text).toContain('工具检查');
+});
+test('内核行复用 api instance 信息源，失败明确回退', async () => {
+  const kernel = { path: '/real/autome', build_id: 'build-123', source: 'test' };
+  const instanceStatus = vi.fn(async () => ({ kernel }));
+  const data = await loader(args({ gateway: null, instanceStatus }));
+  expect(instanceStatus).toHaveBeenCalledOnce();
+  expect(data.kernel).toEqual(kernel);
+  expect(html(data)).toContain('/real/autome'); expect(html(data)).toContain('build-123');
+  const failed = await loader(args({ gateway: null, instanceStatus: async () => { throw new Error('offline'); } }));
+  expect(html(failed)).toContain('内核信息暂不可用');
+});
+test('驱动绿色图案卡和空驱动、检查摘要', () => {
+  expect(html(envData)).toContain('card-pat card-green env-drivers');
+  expect(html(envData)).toContain('2 项有问题');
+  expect(html({ ...envData, snapshot: { ...snapshot, problems: [] }, drivers: { available: true, list: [] } })).toContain('4 项检查全部正常');
+});
+test('检测和驱动时间仅在 time 属性保留 ISO，正文为相对时间', () => {
+  const at = '2026-01-01T00:00:00Z';
+  const text = html({ ...envData, snapshot: { ...snapshot, environment: { ...snapshot.environment!, checked_at: at } }, drivers: { available: true, list: [{ pid: 12, command: 'autome core', started_at: at, last_tick_at: at, self: true, driving: true }] } });
+  expect(text.match(/<time /g)).toHaveLength(3);
+  expect(text).toContain('title="' + at + '"');
+  const visible = text.replace(/<[^>]+>/g, '');
+  expect(visible).not.toContain(at);
+  for (const word of ['前启动', '前检查过', '前检测过']) expect(visible).toContain(word);
+});

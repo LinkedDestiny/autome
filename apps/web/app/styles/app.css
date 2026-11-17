@@ -459,3 +459,26 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .skill-role { border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); padding: 12px; }
 @media (max-width: 900px) { .skills-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { .skill-card { transition: none; } }
+
+/* Environment and forms share the island controls. */
+.env-tools, .env-drivers { padding: 20px; margin-bottom: 20px; }
+.env-tools > h2 { margin: 0 0 12px; }
+.env-tool-row { display: grid; grid-template-columns: 12px 140px minmax(0, 1fr) auto; align-items: center; gap: 16px; }
+.env-tool-row h3, .env-tool-row p { margin: 0; }
+.env-tool-row .env-path { color: var(--animal-text-muted); margin-bottom: 6px; }
+.env-tool-row > div { min-width: 0; overflow-wrap: anywhere; }
+.env-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--animal-primary); }
+.env-dot-warning { background: var(--ui-pill-red); }
+.env-tools .env-component { padding: 14px 0; margin: 0; background: transparent; border-bottom: 1px solid var(--animal-border); }
+.env-tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-left: 28px; }
+.env-tool-actions p { margin: 4px 0; }
+.env-tool-actions pre { margin: 4px 0; padding: 6px 10px; font-size: 12px; }
+.env-tool-actions form { margin: 0; }
+.env-driver-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; overflow-wrap: anywhere; }
+.env-driver-row > div { flex: 1; min-width: 0; }
+.env-driver-row p { margin: 6px 0 0; }
+.env-driver-row strong { margin-right: 12px; }
+.path-suggestions button { border: 1px solid var(--animal-border); margin-bottom: 4px; }
+.attachment-picker { position: relative; cursor: pointer; }
+.attachment-picker:focus-within { outline: 3px solid var(--animal-primary); outline-offset: 3px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

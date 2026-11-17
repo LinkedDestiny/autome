@@ -68,3 +68,8 @@ export function doneGroup(at: string | null | undefined, now: string, timeZone: 
   const monday = today - ((new Date(today).getUTCDay() + 6) % 7) * 86400000;
   return date === today ? '今天' : date === yesterday ? '昨天' : date >= monday && date < yesterday ? '本周更早' : '更早';
 }
+
+export function RelativeTime({ at, suffix = "" }: { at: string; suffix?: string }) {
+  const clock = useClock();
+  return <time dateTime={at} title={at}>{formatRelative(at, clock.now)}{suffix}</time>;
+}

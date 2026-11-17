@@ -108,3 +108,11 @@ test('添加成功后项目信息地址对项目 ID 编码', async () => {
   const result = await action(args());
   expect((result as Response).headers.get('Location')).toBe('/loop?project=p%26other%3D1&tab=project');
 });
+
+test('新控件保留路径工作区文档仓库与跳过字段', () => {
+  const text = html();
+  for (const name of ['path', 'workspace', 'docs_repo', 'skip_onboarding']) expect(text).toContain('name="' + name + '"');
+  expect(text.match(/class="chk"/g)).toHaveLength(2);
+  expect(text).toContain('class="inp"');
+  expect(text).not.toContain('data-testid="pick-directory"');
+});

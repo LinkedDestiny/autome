@@ -21,14 +21,16 @@ test('单仓库检查、添加、跳转设置与注册', async () => {
   expect((await s.check('~/missing')).probe?.exists).toBe(false);
   const response = await s.confirm('~/single') as Response;
   const list = await s.core.call('project.list', {}) as { projects: { project: { id: string } }[] }; expect(list.projects).toHaveLength(1);
-  expect(response.headers.get('Location')).toBe(`/projects/${list.projects[0].project.id}/settings`);
+  expect(response.headers.get('Location')).toBe(`/loop?project=${encodeURIComponent(list.projects[0].project.id)}&tab=project`);
 });
 test('工作区成员建议、docs 选择与项目看板', async () => {
   const s = await setup(); for (const name of ['app', 'docs', 'lib']) s.repo(`workspace/${name}`);
   const checked = await s.check('~/workspace'); expect(probeView(checked.probe!).join()).toContain('看起来是工作区');
   expect(checked.probe!.members.map(m => m.name)).toEqual(['app', 'docs', 'lib']); expect(checked.probe!.suggested_docs_repo).toBe('docs');
   const response = await s.confirm('~/workspace', { workspace: 'on', docs_repo: 'docs' }) as Response;
-  const id = response.headers.get('Location')!.split('/')[2];
+  const destination = new URL(response.headers.get('Location')!, 'http://localhost');
+  expect(destination.pathname).toBe('/loop'); expect(destination.searchParams.get('tab')).toBe('project');
+  const id = destination.searchParams.get('project')!;
   const data = await board({ request: new Request('http://localhost/projects/' + id), url: new URL("http://localhost/projects/" + id), pattern: "/projects/:id", params: { id }, context: s.context }); expect(data).not.toHaveProperty('error');
 });
 test('跳过 Onboarding 与 init commit', async () => {

@@ -1,3 +1,5 @@
+import { Segmented } from '../components/ui/segmented.tsx';
+import { Ribbon } from '../components/ui/ribbon.tsx';
 import { DependencyChoices } from '../components/task-dependencies.tsx';
 import { dependencyCandidates } from '../components/queue-deps.ts';
 import { TEST_IDS } from '../lib/testids.ts';
@@ -50,16 +52,16 @@ export default function NewTask() {
   }
   if (!project) return <p data-testid={TEST_IDS.pageTaskNew} role="alert">项目不存在</p>;
   return <div data-testid={TEST_IDS.pageTaskNew} className="task-new-page"><Form method="post" className="task-new" data-testid={TEST_IDS.taskNewForm}>
-    <header><h1>新建任务卡</h1><Link to={projectHref(id)}>{project.name}</Link></header>
-    <fieldset disabled={busy}><legend>任务类型</legend>{(['feature', 'bug'] as const).map(value => <label key={value}>
-      <input type="radio" name="kind" value={value} checked={kind === value} onChange={() => {
-        const changed = switchKind(body, kind, value); setKind(value); setBody(changed.body); setKept(changed.kept);
-      }} />{KIND_LABELS[value]}</label>)}</fieldset>
+    <header><Ribbon><h1>新建任务卡</h1></Ribbon><Link to={projectHref(id)}>{project.name}</Link></header>
+    <Segmented name="kind" label="任务类型" value={kind} disabled={busy} options={(['feature', 'bug'] as const).map(value => ({ value, label: KIND_LABELS[value] }))} onChange={value => {
+      const next = value as TaskKind;
+      const changed = switchKind(body, kind, next); setKind(next); setBody(changed.body); setKept(changed.kept);
+    }} />
     {kept && <p role="status">正文已修改，未替换模板 <button type="button" disabled={busy} onClick={() => { setBody(TASK_TEMPLATES[kind]); setKept(false); }}>换成{KIND_LABELS[kind]}模板</button></p>}
     <label htmlFor="task-brief">任务正文（Markdown）</label>
-    <textarea id="task-brief" name="brief" value={body} readOnly={busy} onChange={event => setBody(event.target.value)} />
+    <textarea className="inp" id="task-brief" name="brief" value={body} readOnly={busy} onChange={event => setBody(event.target.value)} />
     <section className="task-new-attachments" aria-label="附件">
-      <label>附件（单个最多 {UPLOAD_MAX_BYTES / 1024 / 1024} MB，最多 {UPLOAD_MAX_FILES} 个）<input type="file" multiple disabled={!gate.allowed || busy} onChange={event => {
+      <label className="btn attachment-picker">附件（单个最多 {UPLOAD_MAX_BYTES / 1024 / 1024} MB，最多 {UPLOAD_MAX_FILES} 个）<input className="visually-hidden" type="file" multiple disabled={!gate.allowed || busy} onChange={event => {
         const files = Array.from(event.target.files ?? []); event.target.value = ''; void addFiles(files);
       }} /></label>
       <ul>{attachments.map(item => <li key={item.key}>{item.name} · {item.size} 字节

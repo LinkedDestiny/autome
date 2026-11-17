@@ -27,3 +27,5 @@
 
 实现 #10 | M-09 | 修复 F-1，保持开放 | docs/web-面板按动森风格重做/evidence/M-09-r10-impl.md | 浏览器 ps EPERM，待宿主复验
 审计 #9 | M-09 | 通过 | docs/web-面板按动森风格重做/evidence/M-09-r10-audit.md | 无
+
+实现 #11 | M-10 | 开放，Vitest 107 通过 | docs/web-面板按动森风格重做/evidence/M-10-r11-impl.md | 浏览器夹具 ps EPERM，5 条未执行

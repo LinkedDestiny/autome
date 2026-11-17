@@ -82,3 +82,18 @@ test('11 新建提交带 after，空和上限合法超限拒绝', async () => {
     else expect(write).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ after: input.getAll('after') }) }));
   }
 });
+
+test('新控件保留提交字段，附件视觉隐藏且可聚焦', () => {
+  const text = render();
+  expect(text).toContain('class="seg"');
+  for (const name of ['kind', 'brief', 'intent']) expect(text).toContain('name="' + name + '"');
+  expect(text).not.toContain('name="type"');
+  expect(text).toContain('class="inp"');
+  expect(text).toContain('class="visually-hidden" type="file"');
+  expect(text).not.toContain('tabindex="-1"');
+  const input = form(); input.append('attachments', 'file'); input.append('after', 'T-1');
+  const write = vi.fn(async () => ({ status: 200, body: { ok: true } }));
+  return submit(input, { gateway: { read: vi.fn(), write }, uploads }).then(() => {
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ attachments: ['file'], after: ['T-1'] }) }));
+  });
+});
