@@ -33,19 +33,20 @@ it('根 loader 白名单读取项目列表和详情，空列表和单项目都�
   expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
   expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
   expect(g.read).toHaveBeenNthCalledWith(3, { method: 'dashboard.get', params: {} });
-  expect(g.read).toHaveBeenCalledTimes(3);
+  expect(g.read).toHaveBeenNthCalledWith(4, { method: 'skills.list', params: {} });
+  expect(g.read).toHaveBeenCalledTimes(4);
   expect(g.write).not.toHaveBeenCalled();
-  expect(result.projects).toEqual([{ id: 'P-1', name: '演示项目甲', counts: { running: 0, needs_you: 0 } }]);
+  expect(result.projects).toEqual([{ id: 'P-1', name: '演示项目甲', counts: { running: 0, needs_you: 0 }, done: 0 }]);
   vi.mocked(g.read).mockResolvedValue({ status: 200, body: { ok: true, payload: { projects: [] } } });
   expect((await loader(args(g))).projects).toEqual([]);
 });
 it('未接入 gateway 返回离线而不抛错', async () => {
-  expect(await loader(args(null))).toEqual({ kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [], clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+  expect(await loader(args(null))).toEqual({ kernel: { ok: false, error: '内核未连接：服务未接入网关' }, projects: [], tasks: [], overview: { waiting: {}, details: {}, recent: [], doneCount: 0, allDoneHref: undefined, error: '内核未连接：服务未接入网关', listError: '内核未连接：服务未接入网关' }, clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
 });
 it('503、504、409 错误原样传递', async () => {
   for (const [status, error] of [[503, '内核未连接：离线'], [504, '内核响应超时'], [409, '项目读取冲突']] as const) {
     const g = gateway(); vi.mocked(g.read).mockResolvedValue({ status, body: { ok: false, error } });
-    expect(await loader(args(g))).toEqual({ kernel: { ok: false, error }, projects: [], tasks: [], clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+    expect(await loader(args(g))).toEqual({ kernel: { ok: false, error }, projects: [], tasks: [], overview: { waiting: {}, details: {}, recent: [], doneCount: 0, allDoneHref: undefined, error, listError: error }, clock: { now: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
   }
 });
 async function checkSSR(build: ServerBuild, mode: string) {
@@ -55,7 +56,8 @@ async function checkSSR(build: ServerBuild, mode: string) {
   expect(g.read).toHaveBeenNthCalledWith(1, { method: 'project.list', params: {} });
   expect(g.read).toHaveBeenNthCalledWith(2, { method: 'project.get', params: { project_id: 'P-1' } });
   expect(g.read).toHaveBeenNthCalledWith(3, { method: 'dashboard.get', params: {} });
-  expect(g.read).toHaveBeenCalledTimes(3);
+  expect(g.read).toHaveBeenNthCalledWith(4, { method: 'skills.list', params: {} });
+  expect(g.read).toHaveBeenCalledTimes(4);
 }
 it('开发 Vite SSR 取得 Node 注入的网关，不监听端口', async () => {
   const vite = await createServer({ root, server: { middlewareMode: true, hmr: false, watch: null } });
@@ -79,15 +81,15 @@ it('HTTP 两处分支都配置 getLoadContext', () => {
     if (ts.isObjectLiteralExpression(options)) expect(options.properties.some(p => p.name?.getText(source) === 'getLoadContext')).toBe(true);
   }
 });
-it('根重验覆盖 task/project/bug/merge，忽略 config/session', async () => {
+it('根重验覆盖 task/project/bug/merge/session/gate，忽略 config', async () => {
   let count = 0;
   const router = createMemoryRouter([{ path: '/', loader: () => ++count, shouldRevalidate }]);
   try {
     await vi.waitFor(() => expect(router.state.initialized).toBe(true));
-    for (const kind of ['task.updated', 'project.added', 'bug.fix_round_started', 'merge.rebased', 'config.changed', 'session.started']) {
+    for (const kind of ['task.updated', 'project.added', 'bug.fix_round_started', 'merge.rebased', 'config.changed', 'session.started', 'session.ended', 'gate.result']) {
       const before = count;
       await revalidateForEvents([{ seq: 1, kind, subject: 'T-1', payload: {} }], () => router.revalidate());
-      expect(count - before).toBe(/^(config|session)\./.test(kind) ? 0 : 1);
+      expect(count - before).toBe(/^config\./.test(kind) ? 0 : 1);
     }
   } finally { router.dispose(); }
 });

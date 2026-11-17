@@ -55,7 +55,9 @@ test('D-2 命令行 Bug 的定位、复现检查、修复、复核逐轮出现�
   }
   const nodes = await page.getByTestId('timeline-entry').evaluateAll(entries => entries.map(e => e.getAttribute('data-node')));
   const positions = ['locate', 'repro_check', 'fix', 'fix_review'].map(node => nodes.indexOf(node));
-  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  // D-3 displays both phase groups and entries newest first.
+  for (const position of positions) expect(position).toBeGreaterThanOrEqual(0);
+  expect(positions).toEqual([...positions].sort((a, b) => b - a));
   await expect(page.getByRole('button', { name: '合并', exact: true })).toBeVisible({ timeout: 30_000 });
   await page.getByRole('button', { name: '合并', exact: true }).click();
   await page.locator(`a[href="/projects/${encodeURIComponent(f.projectId)}"]`).first().click();

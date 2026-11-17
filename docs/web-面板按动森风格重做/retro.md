@@ -48,3 +48,4 @@
 审计 #14 | M-11 | 通过 | docs/web-面板按动森风格重做/evidence/M-11-r17-audit.md | 布局14条与五图重生成移交 H-09/H-10
 
 实现 #18 | M-12 | 待审 | docs/web-面板按动森风格重做/evidence/M-12-r18-impl.md | 快检失败项见证据
+实现 #19 | M-12 | 待审 | docs/web-面板按动森风格重做/evidence/M-12-r19-impl.md | 快检仅 Web e2e 准备/清理 ps EPERM，交宿主复验

@@ -2,11 +2,11 @@
 
 status: 实现中
 design-round: 1/15
-implementation-round: 18/65
+implementation-round: 19/65
 current-milestone: M-12
 current-milestone-reopens: 0
 convergence-mode: normal
-next-action: 独立审计 M-12 的描述读取、卡片回退与验收证据；通过后推进 M-13
+next-action: 宿主复跑快检与 D-2 浏览器流程；独立审计 M-12，通过后推进 M-13
 
 任务文件：`docs/web-面板按动森风格重做/web-面板按动森风格重做-task.md`
 任务卡：`docs/web-面板按动森风格重做/web-面板按动森风格重做-card.md`
@@ -962,7 +962,7 @@ argv 层由 `launcher.rs` 现有单元测试负责（见背景）。新增的只
 
 ### M-12 验收契约
 
-最新证据：docs/web-面板按动森风格重做/evidence/M-12-r18-impl.md · 75 例通过，待独立审计 · 实现 #18
+最新证据：docs/web-面板按动森风格重做/evidence/M-12-r19-impl.md · 快检回归修复，待宿主复验及独立审计 · 实现 #19
 
 - 验收命令：cargo test -p automed --lib skills && (cd apps/web && npx vitest run test/skills-model.test.ts test/skills-page.test.ts test/skills-real.test.ts test/labels.test.ts)。
 - 情形：头部单行及多行 description 正确返回；无头部、空描述、文件不可读时缺失回退；多个来源的描述按稳定来源顺序取首个非空值，保留全部来源；HTML 文本按普通文本显示。
