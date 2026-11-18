@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 5/5
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -70,7 +70,33 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 
 ## 复核意见
 
-### 第 3/3 轮（当前结论）
+### 第 5/5 轮（当前结论）
+
+**通过。** 定位基线 `4442737be10fe156cbc15ab72a002e344e79aa6a`，候选 `5c8332b4bad6272697f7f71e29845c91f46a6bfd`。检查定位至候选的累计差异，以及第 4 轮产品提交 `3eb3bfda` 至候选的增量。规范轴与需求轴均未发现新的阻断项；本结论不等同于浏览器验收或项目全量门禁通过。
+
+1. **根因与范围。** 原抽屉内容区缺纵向排布、长技能描述未限高、通知沿用大按钮等原因与实际差异吻合。公共 drawer-body 的纵向 flex/gap、字段布局、技能绑定区前置、紧凑通知和环境行、文档间距与 Markdown 复用均有对应实现。累计产品改动限于 apps/web 的六个既有文件，未扩到内核；第 5 轮产品代码无增量，仅移动并保留新增类名断言。累计简报来自 Autome chore 提交，不作为产品修复范围。参考原型的 Effort 可见标签仍保留。
+2. **回归保护。** 独立逐字节比较确认 overlay-layout.spec.ts 与 task-notes.test.ts 整文件等同定位提交；loop-page.test.ts:204–212 的覆盖/继承对照用例原文连续保留。第 213–222 行另起新用例，两条类名断言均保留，且遍历有覆盖和无覆盖。旧模型标签选择器、技能来源顺序的适配有任务卡授权；bell-view 的高度样式断言随获准的产品上限更新，不属于定位保护用例。没有删除、跳过或弱化定位回归。几何断言、确定性的全部正常环境夹具、覆盖来源正反对照与 Markdown 元素断言均有回归价值。
+
+#### 操作者备注逐项核对
+
+| 备注要求 | 核对证据与结论 |
+| --- | --- |
+| #1.1 恢复按钮小号、保留行为 | loop.tsx:82 使用 btn btn-sm，disabled 仍为 disabled 或无覆盖，确认交互与 onReset 保留；照做。 |
+| #1.1 两抽屉主操作写法一致、补类名断言 | loop.tsx:82 与 skills.tsx:44 均为 btn btn-primary；loop-page.test.ts:218–219 两条断言完整；照做。 |
+| #1.2 实测 default 权限下六条长标题未读通知，必要时改样式 | 修复说明记录第 5 条下边缘 643.8px，原可视区下边缘 635px，修后 749px；app.css:46 已为 min(72vh, 680px)。数字来自修复轮记录，本轮未独立重测；处理记录与产品差异一致。 |
+| #1.2 补面板可视区断言、运行布局与相关单测 | layout.spec.ts:75–80 比较前五条中最后一条底边与 panel.top + clientHeight（1px 边框容差），未写死总条数；修复说明记录 22 例 e2e、59 例单测通过；本轮独立结果见下。 |
+| #2.1 移出受保护用例内新增断言 | 基线逐字比较通过；定位用例无差异。 |
+| #2.2 在原用例后另起测试 | loop-page.test.ts:213 新用例位于受保护用例之后，保留两条类名断言；照做。 |
+| #2.3 task-notes 与 overlay-layout 不改 | 相对定位提交整文件无差异；照做。 |
+| #2.4 其它文件不动、单测通过后提交 | 5c8332b4 仅改 loop-page.test.ts 与本 Bug 文档；文档明确说明记录轮次与处理结果的例外。修复记录 28 例通过，本轮再次覆盖该文件全部 28 例；产品改动保留。 |
+
+#### 独立验证与边界
+
+3. **独立复验。** `cd apps/web && npx vitest run test/loop-page.test.ts test/skills-page.test.ts test/task-notes.test.ts test/loop-defaults.test.ts test/bell-view.test.ts test/task-docs.test.ts test/task-docs-view.test.ts test/markdown.test.ts test/drawer-focus.test.ts test/w9-layout.test.ts test/env-page.test.ts test/task-detail-ssr.test.ts` 退出码 0，12 文件、124 例通过。原复现命令 `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts` 及相关布局子集 `cd apps/web && npx playwright test e2e/layout.spec.ts` 均退出码 1：globalSetup 调用 process-scan.ts:5 的 ps 遭 `spawnSync ps EPERM`，清理也受限，分别 6 例与 16 例未执行。属于任务卡明确的沙箱限制，不是产品断言失败，不记为通过。累计差异 `git diff --check 4442737b...HEAD` 退出码 0。证据统一在被忽略的 `.autome/output/review-t103-round5/`：related.log、reproduction.log、layout.log、protection-check.log、web.diff、round5-web.diff、diff-check.log。
+4. **覆盖与门禁限制。** layout 新增断言修正了比较对象，检查真正会裁切的 bell-panel 可视区；仍使用现有通知数据，未固定六条长标题、正文与 default 权限的最坏夹具，空列表时不检查几何。因此它不能独立保证最坏场景每次均被覆盖。该场景目前依据修复轮实测记录，不冒充本轮浏览器实测；这属于覆盖限制，未发现足以推翻本轮修复的产品反例，不声明回归测试有缺陷。用户提供的宿主复现命令加快检退出码 0 仅作为外部修复门禁证据。遵照要求未运行 `sh scripts/ci-local.sh`，全量门禁留给宿主合并前统一执行。
+5. **写入边界。** 本轮只修改本 Bug 文档的复核字段与复核意见；status、fix-round、复现命令、根因保持不变，原文无 repos，不新增。未改产品或测试，未注入缺陷，检查日志不提交。提交文档后结束本轮，不合并、不推送、不启动下一会话。
+
+### 第 3/3 轮（历史记录）
 
 **打回。** 定位基线 `4442737be10fe156cbc15ab72a002e344e79aa6a`，当前候选 `e0d090f3fca7d6d1dcf6d02b4b1faecaf65b78d2`。本轮重新检查累计差异，发现上一轮漏记的明确需求缺口；不因缺少全量门禁或浏览器沙箱限制打回。
 
