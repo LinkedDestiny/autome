@@ -41,3 +41,5 @@
 
 实现 #19 | M-11 | 待审 | docs/面板观感收尾/evidence/M-11-r19-impl.md | 无；实际拍图保留 H-01
 审计 #12 | M-11 | 通过 | docs/面板观感收尾/evidence/M-11-r19-audit.md | 无
+
+实现 #20 | M-12 | 待审 | docs/面板观感收尾/evidence/M-12-r20-impl.md | 快检浏览器阶段 ps EPERM，待宿主复验

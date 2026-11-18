@@ -111,3 +111,93 @@ test('角色技能名称胶囊、空态与添加技能项目链接，模型沿�
     } finally { router.dispose(); }
   }
 });
+
+// Render the production LoopView and invoke the actual add-skill Link handler.
+const navigationHarness = vi.hoisted(() => ({
+  active: false,
+  drafts: {} as Partial<Record<import('../app/lib/role-rules.ts').Role, import('../app/lib/role-rules.ts').RoleConfig>>,
+  result: undefined as import('../app/components/loop-data.ts').SaveResult | undefined,
+  effects: [] as (() => void)[],
+  click: undefined as undefined | ((event: { preventDefault(): void }) => void),
+  to: '',
+}));
+import { vi } from 'vitest';
+vi.mock('react', async original => {
+  const actual = await original<typeof import('react')>();
+  return { ...actual,
+    useState: (initial: unknown) => {
+      if (!navigationHarness.active) return actual.useState(initial);
+      if (initial === null) return ['plan', vi.fn()];
+      if (initial && typeof initial === 'object' && !Object.keys(initial).length) return [navigationHarness.drafts, (update: (old: typeof navigationHarness.drafts) => typeof navigationHarness.drafts) => { navigationHarness.drafts = update(navigationHarness.drafts); }];
+      return actual.useState(initial);
+    },
+    useEffect: (effect: () => void, deps: unknown[]) => {
+      if (navigationHarness.active) navigationHarness.effects.push(effect);
+      else actual.useEffect(effect, deps);
+    },
+  };
+});
+vi.mock('react-router', async original => {
+  const actual = await original<typeof import('react-router')>();
+  return { ...actual,
+    useFetcher: () => {
+      const fetcher = actual.useFetcher();
+      return navigationHarness.active ? { ...fetcher, state: 'idle', data: navigationHarness.result } : fetcher;
+    },
+    Link: (props: import('react').ComponentProps<typeof actual.Link>) => {
+      if (navigationHarness.active && props.className === 'btn btn-sm') {
+        navigationHarness.click = props.onClick as typeof navigationHarness.click;
+        navigationHarness.to = String(props.to);
+      }
+      return h(actual.Link, props);
+    },
+  };
+});
+const savedRole = resolvedRoles(cfg).plan;
+for (const scenario of ['无改动', '脏草稿取消', '脏草稿确认', '改回原值', '保存成功', '保存失败']) {
+  test(`添加技能：${scenario}`, () => {
+    const dirty = !['无改动', '改回原值'].includes(scenario);
+    const draft = { ...savedRole, model: 'new-model' };
+    navigationHarness.active = true;
+    navigationHarness.drafts = scenario === '无改动' ? {} : { plan: dirty ? draft : { ...draft, model: savedRole.model } };
+    navigationHarness.result = scenario === '保存成功' ? { saved: ['plan'] } : scenario === '保存失败' ? { saved: [], error: '保存失败' } : undefined;
+    navigationHarness.effects = [];
+    const confirm = vi.fn(() => scenario === '脏草稿确认');
+    vi.stubGlobal('window', { confirm });
+    try {
+      const config = structuredClone(cfg);
+      if (scenario === '保存成功') config.resolved.roles.find(r => r.role === 'plan')!.config = draft;
+      html(config, { project: '项目 /?&' });
+      for (const effect of navigationHarness.effects) effect();
+      html(config, { project: '项目 /?&' });
+      const before = structuredClone(navigationHarness.drafts);
+      const preventDefault = vi.fn();
+      expect(navigationHarness.click).toBeTypeOf('function');
+      navigationHarness.click!({ preventDefault });
+      const prompts = dirty && scenario !== '保存成功';
+      expect(confirm).toHaveBeenCalledTimes(prompts ? 1 : 0);
+      expect(preventDefault).toHaveBeenCalledTimes(prompts && scenario !== '脏草稿确认' ? 1 : 0);
+      expect(navigationHarness.drafts).toEqual(before);
+      expect(navigationHarness.to).toBe('/skills?project=' + encodeURIComponent('项目 /?&'));
+      expect(html(config)).toContain('aria-label="编辑设计"');
+    } finally {
+      navigationHarness.active = false;
+      navigationHarness.result = undefined;
+      vi.unstubAllGlobals();
+    }
+  });
+}
+test('添加技能：每个角色字段变更都确认，全局路径与空模型、空技能边界', () => {
+  navigationHarness.active = true;
+  vi.stubGlobal('window', { confirm: vi.fn(() => false) });
+  try {
+    for (const fields of [{ enabled: !savedRole.enabled }, { runtime: savedRole.runtime === 'claude' ? 'codex' as const : 'claude' as const }, { model: savedRole.model ? '' : 'x' }, { effort: savedRole.effort === null ? 'high' : null }, { skills: savedRole.skills.length ? [] : ['alpha'] }]) {
+      navigationHarness.drafts = { plan: { ...savedRole, ...fields } };
+      html();
+      const preventDefault = vi.fn();
+      navigationHarness.click!({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(navigationHarness.to).toBe('/skills');
+    }
+  } finally { navigationHarness.active = false; vi.unstubAllGlobals(); }
+});
