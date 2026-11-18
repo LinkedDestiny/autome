@@ -9,7 +9,10 @@ import { register } from './reap.ts';
 import { recordTiming, reportDirectory } from './budget.ts';
 import { mkdirSync } from 'node:fs';
 import teardown from './teardown.ts';
+import { ensureBuilt } from '../../test/fixtures/ensure-built.ts';
 export default async function setup() {
+  // Standalone e2e must not serve an earlier build or a reverted mutation probe.
+  ensureBuilt();
   mkdirSync(reportDirectory(), { recursive: true });
   writeFileSync(join(reportDirectory(), 'harness.jsonl'), '');
   const root = mkdtempSync(join(tmpdir(), 'autome-e2e-'));

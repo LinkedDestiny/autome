@@ -19,6 +19,7 @@ export default function Overview() {
   const notice = environmentNotice(environment), { now } = useClock();
   const revalidator = useRevalidator(), requestedDay = useRef<number | null>(null);
   const today = overview?.today;
+  const waitMs = today ? waitingMilliseconds(today, now) : 0;
   useEffect(() => {
     if (today && needsNewDay(today, now) && requestedDay.current !== today.dayEnd) {
       requestedDay.current = today.dayEnd; void revalidator.revalidate();
@@ -44,7 +45,7 @@ export default function Overview() {
         <Tile color="teal" label={OVERVIEW.merged} value={today?.merged}>个任务</Tile>
         <Tile color="yellow" label="花费" value={today ? today.billed === 0 && today.unbilled > 0 ? '无计费' : `$${today.cost.toFixed(2)}` : null}>{today ? `${today.unbilled} 个会话无计费` : '数据暂不可用'}</Tile>
         <Tile color="blue" label="门禁" value={today ? `${today.passed} / ${today.gates}` : null}>{today ? today.gates ? today.passed === today.gates ? '全部通过' : '有未通过项' : '今天暂无门禁' : '数据暂不可用'}</Tile>
-        <Tile color="pink" label="等你的时间" value={today ? formatSpan(waitingMilliseconds(today, now)) : null}>{today ? endedWaiting(today.ended) || '今天暂无结束的等待' : '数据暂不可用'}</Tile>
+        <Tile color="pink" label="等你的时间" value={today ? waitMs === 0 ? OVERVIEW.zeroWait : formatSpan(waitMs) : null}>{today ? waitMs === 0 ? OVERVIEW.noWait : endedWaiting(today.ended) || OVERVIEW.ongoingWait : '数据暂不可用'}</Tile>
       </div>
       <Card className="overview-recent"><h2>{OVERVIEW.recent}</h2>
         <div className="overview-merged-list" data-scroll-region>{overview?.listError ? <p>{overview.listError}</p> : overview?.recent.length ? overview.recent.map(task => {

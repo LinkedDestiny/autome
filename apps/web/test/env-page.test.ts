@@ -6,7 +6,7 @@ import { EnvView, action, loader, shouldRevalidate } from '../app/routes/env.tsx
 import { createLoadContext, type WebServices } from '../app/load-context.ts';
 import { WriteGateProvider } from '../app/lib/live.tsx';
 import { envData, snapshot, recipe } from './fixtures/w9-env.ts';
-import type { EnvData, EnvResult } from '../app/components/env-model.ts';
+import { toolOk, type EnvData, type EnvResult } from '../app/components/env-model.ts';
 import { SidebarFooter } from '../app/components/sidebar-footer.tsx';
 import Overview from '../app/routes/_index.tsx';
 import type { LiveMessageListener } from '../app/lib/live-client.ts';
@@ -106,4 +106,34 @@ test('检测和驱动时间仅在 time 属性保留 ISO，正文为相对时间'
   const visible = text.replace(/<[^>]+>/g, '');
   expect(visible).not.toContain(at);
   for (const word of ['前启动', '前检查过', '前检测过']) expect(visible).toContain(word);
+});
+
+test('正常五行标记且安装说明默认收起', () => {
+  const components = snapshot.environment!.components.map(c => ({ ...c, present: true, login: { login: 'not_applicable' as const } }));
+  const text = html({ ...envData, kernel: { path: '/bin/autome', build_id: 'test', source: 'test' }, snapshot: { ...snapshot, problems: [], environment: { components } } });
+  expect(text.match(/data-env-ok="true"/g)).toHaveLength(5);
+  expect(text.match(/<details class="env-install">/g)).toHaveLength(4);
+  expect(text.match(/<summary>查看安装方法/g)).toHaveLength(4);
+});
+test('未安装、过期、未知登录或问题列表中的工具自动展开', () => {
+  const base = snapshot.environment!.components[0];
+  for (const login of ['ok', 'not_applicable', 'expired', 'unknown'] as const) {
+    for (const present of [true, false]) for (const listed of [true, false]) {
+      const component = { ...base, present, login: { login } };
+      const problems = listed ? [component] : [];
+      const expected = present && !listed && ['ok', 'not_applicable'].includes(login);
+      expect(toolOk(component, problems)).toBe(expected);
+      const text = html({ ...envData, snapshot: { ...snapshot, problems, environment: { components: [component] } } });
+      expect(text.includes('<details class="env-install" open="">')).toBe(!expected);
+    }
+  }
+  expect(html({ recipes: {}, errors: {}, snapshot: { ...snapshot, environment: { components: [] }, problems: [] } })).not.toContain('env-install');
+});
+
+test('重新检测四种健康状态迁移的 open 属性随健康值变化', () => {
+  for (const before of [true, false]) for (const after of [true, false]) {
+    const render = (present: boolean) => html({ ...envData, snapshot: { ...snapshot, problems: [], environment: { components: [{ ...snapshot.environment!.components[0], present }] } } });
+    expect(render(before).includes('<details class="env-install" open="">')).toBe(!before);
+    expect(render(after).includes('<details class="env-install" open="">')).toBe(!after);
+  }
 });

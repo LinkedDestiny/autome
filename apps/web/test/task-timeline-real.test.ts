@@ -35,7 +35,7 @@ async function render(id: string) {
 }
 it('真实需求任务页面按阶段倒序显示会话与结果，包含快检、rebase 和合并前门禁', async () => {
   const html = await render('T-1');
-  const roles = [...html.matchAll(/<h3><span class="pill pill-purple">([^<]+)<\/span>/g)].map(match => match[1]);
+  const roles = [...html.matchAll(/<span class="pill pill-purple">([^<]+)<\/span>/g)].map(match => match[1]);
   expect(roles).toEqual(['复盘', '审计', '实现', '审计', '实现', '裁决', '评审', '设计', '任务整理']);
   for (const text of ['快检', 'rebase 无冲突', '合并前门禁', 'M-01 开放 → 待审', 'M-01 待审 → 已完成', 'M-02 待审 → 已完成', 'Codex', '用时', '无计费数据']) expect(html).toContain(text);
 });

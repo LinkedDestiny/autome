@@ -117,7 +117,7 @@ it('稳定键与追加顺序，截断时按会话开始时间回填，空输入�
 });
 it('运行中的会话默认展开，历史折叠，截断与读取失败提示可见', () => {
   const html = renderToString(createElement(TaskTimeline, { sessions: [ses('old'), ses('new', true)], events: [], now, truncated: true, error: '内核事件暂时读不到：超时' }));
-  expect(html.match(/open=""/g)).toHaveLength(1); expect(html.match(/<details/g)).toHaveLength(2);
+  expect(html.match(/open=""/g)).toHaveLength(1); expect(html.match(/<details class="session-log"/g)).toHaveLength(2);
   expect(html).toContain('更早的内核事件已省略'); expect(html).toContain('内核事件暂时读不到：超时');
 });
 it('全部用户操作均保留独立条目', () => {
@@ -243,4 +243,81 @@ it('筛选链接保留 from、doc 与四页签状态，所有筛选都有返回�
  expect(html).toContain('data-scroll-region');
  if(show==='gates')expect(html).not.toContain('timeline-user');
  }
+});
+
+const renderEntries = (entries: ReturnType<typeof build>, earlier = 0) => renderToString(createElement(MemoryRouter, {}, createElement(Timeline, { entries, window: { from: null, earlier } }))).replaceAll('<!-- -->', '');
+it('紧凑行按时间、类别、文字、耗费、结果排列，会话携带 cost/outcome', () => {
+  const entry = build([], [{ ...ses(), metrics: { cost_usd: 1.25 } }])[0];
+  expect(entry).toMatchObject({ cost: '$1.25', outcome: 'pass', durationMs: 10000 });
+  expect(renderEntries([entry])).toMatch(/<li[^>]*class="timeline-row [^"]*"><time[^>]*>00:00<\/time><span class="pill pill-purple">实现<\/span><details class="timeline-text">[\s\S]*<\/details><span class="timeline-metrics">10 秒 · \$1.25<\/span><div class="timeline-result"><span class="pill pill-green">通过<\/span><\/div><details class="session-log"/);
+  for (const [kind, label] of [['gate.result', '门禁'], ['task.decided', '你'], ['task.protocol_failure', '系统']]) expect(renderEntries(build([ev(1, kind, { ok: true })]))).toContain(`>${label}</span><details class="timeline-text">`);
+});
+it('文字格保留完整标题摘要和详情，不再有 h3/meta 或详情 title 属性', () => {
+  const entry = { ...build([], [ses()])[0], title: '完整标题', summary: '完整摘要', details: ['模型细节', '结束方式'], unverified: true };
+  const html = renderEntries([entry]);
+  expect(html).toContain('<details class="timeline-text"><summary><b>完整标题</b> <span class="timeline-unverified">完整摘要</span></summary><div><p>模型细节</p><p>结束方式</p></div></details>');
+  expect(html).not.toMatch(/<h3|timeline-meta|title="[^"]*(模型细节|结束方式)/);
+});
+it('运行会话日志默认展开，结束会话折叠，失败标记保留', () => {
+  for (const running of [true, false]) {
+    const html = renderEntries(build([], [ses('s', running)]));
+    const tag = html.match(/<details class="session-log"[^>]*>/)![0];
+    expect(tag.includes('open=""')).toBe(running);
+  }
+  const entry = { ...build([], [ses()])[0], failures: ['错误原因'] };
+  expect(renderEntries([entry])).toContain('<details class="timeline-failure"><summary>失败详情</summary><p>错误原因</p></details>');
+});
+it('40px 紧凑行、折叠省略与展开换行，更早会话是按钮链接', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.timeline-row\s*\{[^}]*min-block-size: 40px/);
+  expect(css).toMatch(/\.timeline-text > summary\s*\{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis/);
+  expect(css).toMatch(/\.timeline-text\[open\] > summary\s*\{[^}]*white-space: normal/);
+  expect(css).toMatch(/\.timeline-row > \.session-log\[open\]\s*\{[^}]*grid-column: 1 \/ -1/);
+  expect(renderEntries([], 1)).toMatch(/<a class="btn btn-sm"[^>]*timeline=all[^>]*>显示更早的 1 个会话<\/a>/);
+  expect(renderEntries([], 0)).not.toContain('显示更早的');
+  expect(renderEntries([])).toContain('还没有执行记录');
+});
+it('首屏十条的密度预算包含行间距与分组标题外边距', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.task-timeline li\s*\{[^}]*margin: 0 12px;/);
+  expect(css).toMatch(/\.timeline-group-title\s*\{[^}]*margin: 4px 12px;/);
+});
+it('桌面详情给时间线留出高度，上方阶段与提示保留内部滚动', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/@media \(min-width: 1100px\) and \(min-height: 800px\)\s*\{\s*\.task-page\s*\{ gap: 4px; \}/);
+  expect(css).toMatch(/\.task-page > \.task-stage\s*\{ max-height: 96px; \}/);
+  expect(css).toMatch(/\.task-page > \.task-summary-tiles\s*\{ margin: 0; \}/);
+  expect(css).toMatch(/\.task-page > \.task-controls\s*\{ max-height: 48px; \}/);
+  expect(css).toMatch(/\.task-controls > \.task-notice\s*\{ margin: 0; padding: 8px 12px; \}/);
+  for (const selector of ['.task-page > .task-stage', '.task-controls']) {
+    expect(css.split(selector).some(rule => rule.slice(0, rule.indexOf('}')).includes('overflow-y: auto'))).toBe(true);
+  }
+});
+it('R1-P01 长系统事件与多里程碑摘要均有独立完整文字展开入口', () => {
+  const rows = build([
+    ev(1, 'task.processes_stopped', { processes: [1, 2, 3].map(pid => ({ pid, command: 'long-command '.repeat(30) })), survivors: [{ pid: 4, error: '末尾错误原因 EPERM' }] }),
+    ev(2, 'task.protocol_failure', { detail: '协议字段缺失 '.repeat(50) }),
+    ev(3, 'task.snapshot', { milestones: [['M-01', '开放'], ['M-02', '开放']] }),
+    ev(4, 'session.started', { session_id: 's' }),
+    ev(5, 'task.snapshot', { milestones: [['M-01', '待审'], ['M-02', '已完成']] }),
+  ], [ses()]);
+  expect(rows[0].session).toBeUndefined(); expect(rows[0].failures).toBeUndefined();
+  expect(rows[0].title).toContain('仍有 1 个进程未退出：4 末尾错误原因 EPERM');
+  expect(rows[2].summary).toContain('M-01 开放 → 待审；M-02 开放 → 已完成');
+  for (const row of rows) {
+    const html = renderEntries([row]);
+    expect(html).toContain(`<details class="timeline-text"><summary><b>${row.title}</b> <span>${row.summary}</span></summary>`);
+    for (const detail of row.details) expect(html).toContain(`<p>${detail}</p>`);
+  }
+});
+it('结果状态覆盖运行、结束、停止、超时、崩溃、门禁和退回', () => {
+  expect(build([], [ses('s', true)])[0].outcome).toBe('running');
+  expect(build([], [ses()])[0].cost).toBe('无计费');
+  expect(build([], [{ ...ses(), metrics: { cost_usd: 0 } }])[0].cost).toBe('$0.00');
+  for (const end of ['exited', 'stopped', 'timed_out', 'crashed']) expect(build([ev(2, 'session.ended', { session_id: 's', end, exit_code: end === 'exited' ? 0 : null })], [ses('s', true)])[0].outcome).toBe(end === 'exited' ? 'pass' : 'fail');
+  for (const [kind, payload, outcome] of [
+    ['gate.queued', { job: 'gate', position: 1 }, undefined], ['gate.started', {}, 'running'],
+    ['gate.result', { ok: true, exit_code: 0 }, 'pass'], ['gate.result', { ok: false, exit_code: 1 }, 'fail'], ['gate.result', { ok: false, exit_code: null }, 'fail'],
+    ['milestone.contradicted', {}, 'reopen'], ['task.updated', { trigger: 'reject' }, 'reopen'],
+  ] as const) expect(build([ev(1, kind, { node: 'gate', ...payload })])[0].outcome).toBe(outcome);
 });

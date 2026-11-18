@@ -7,6 +7,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chromium, expect, type BrowserContext } from '@playwright/test';
 import { checkout, cli, flowSteps, newTask, PREPARE_TIMEOUT_MS } from '../e2e/harness/fixture.ts';
 import { clearProcesses, leftoverProcesses } from '../test/fixtures/process-scan.ts';
+import { dirtyText } from './dirty-text.ts';
+import { parseScreenshotArgs, screenshotShots } from './screenshot-shots.ts';
 import { startServer } from '../server/main.ts';
 
 async function cleanupProcesses(root: string) {
@@ -16,11 +18,8 @@ async function cleanupProcesses(root: string) {
   console.log('截图进程残留检查：0');
 }
 
-const args = process.argv.slice(2);
-if (args.length && (args.length !== 2 || args[0] !== '--out' || !args[1].trim())) {
-  throw Error('用法：node apps/web/scripts/screenshots.ts [--out <目录>]');
-}
-const out = resolve(checkout, args[1] ?? 'docs/images');
+const options = parseScreenshotArgs(process.argv.slice(2));
+const out = resolve(checkout, options.out);
 for (const path of ['apps/web/build/server/index.js', 'target/debug/autome', 'target/debug/automed']) {
   if (!existsSync(join(checkout, path))) {
     throw Error(`缺少 ${path}；请先运行 cargo build -p automed -p autome-cli && npm run build --prefix apps/web`);
@@ -77,10 +76,8 @@ try {
   browser = await chromium.launchPersistentContext(join(root, 'browser'), { headless: true, viewport: { width: 1512, height: 944 } });
   const page = await browser.newPage();
   mkdirSync(out, { recursive: true });
-  for (const [name, path] of [
-    ['dashboard', '/'], ['project', `/projects/${encodeURIComponent(projects[0].project.id)}`], ['task', `/tasks/${taskId}`],
-    ['loop', '/loop'], ['skills', '/skills'],
-  ]) {
+  const shots = screenshotShots(options.set, projects[0].project.id, taskId);
+  for (const { name, path, click, scroll } of shots) {
     const response = await page.goto(`http://127.0.0.1:${address.port}${path}`);
     expect(response?.status()).toBe(200);
     await expect(page.getByTestId('shell-main')).toBeVisible();
@@ -93,10 +90,17 @@ try {
     }
     if (name === 'loop') await expect(page.getByTestId('loop-role')).toHaveCount(6);
     if (name === 'skills') await expect(page.getByTestId('skill-card')).toHaveCount(3);
+    if (click) {
+      const target = page.getByTestId(click.testId).first();
+      await (click.button ? target.getByRole('button') : target).click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+    }
+    if (scroll) await page.locator(scroll).scrollIntoViewIfNeeded();
     await page.evaluate(() => document.fonts.ready);
+    expect(dirtyText(await page.locator('body').innerText()), name).toEqual([]);
     await page.screenshot({ path: join(out, `${name}.png`), animations: 'disabled' });
   }
-  console.log(`已生成五张 1512×944 截图：${out}`);
+  console.log(`已生成 ${shots.length} 张 1512×944 截图：${out}`);
 } finally {
   try {
     await browser?.close();

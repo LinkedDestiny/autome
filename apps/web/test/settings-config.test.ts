@@ -112,3 +112,13 @@ test('14 角色 provenance 区分全局项目默认', () => {
   expect(rows.map(r => r.source)).toEqual(['全局', '项目', '默认']);
   const text = html({ ...base, config: { rows, paths: [], warnings: [] } }); for (const source of ['全局', '项目', '默认']) expect(text).toContain('>' + source + '</span>');
 });
+
+test('三个自然高度区块共用项目信息滚动容器', () => {
+  const text = html({ ...base, config: { rows: configRows(populatedConfig), paths: [], warnings: [] } });
+  expect(text).toMatch(/^<div class="project-settings" data-scroll-region="true"/);
+  const sections = text.match(/<section class="settings-card-body"[^>]*>/g)!;
+  expect(sections).toHaveLength(3);
+  for (const section of sections) expect(section).not.toContain('data-scroll-region');
+  expect(text.match(/data-scroll-region/g)).toHaveLength(1);
+  expect(text).toContain('id="remove-name"');
+});

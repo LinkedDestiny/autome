@@ -23,7 +23,7 @@ test('时区切日含闰日、跨年和 DST 的 23/25 小时', () => {
   }
 });
 test('跨午夜闭合等待只算今天交集', async () => {
-  const { today } = await fixture([update(1, 'await_design_approval', '2026-11-16T15:00:00Z'), update(2, 'implement', '2026-11-16T17:00:00Z')]).summary([], clock);
+  const { today } = await fixture([update(1, 'await_design_approval', '2026-11-16T15:00:00Z'), update(2, 'implement', '2026-11-16T17:00:00Z')]).summary([task('T-1', null, 'active')], clock);
   expect(today.closedMs).toBe(3600_000); expect(today.ended).toEqual({ await_design_approval: 1 });
 });
 test('reused / skipped 不计，repro_check / main_check 不计', async () => {
@@ -37,7 +37,7 @@ test('取消后的任务与旧终结任务今天的复盘仍计花费、门禁�
   expect(today).toMatchObject({ cost: 5, gates: 1, closedMs: 600_000, merged: 0 });
 });
 test('not_a_bug 等待在 reply 退出时结束，不按 await 前缀推断', async () => {
-  const { today } = await fixture([update(1, 'not_a_bug'), event(2, 'task.updated', { state: state('locate'), trigger: 'reply' }, '2026-11-17T01:05:00Z')]).summary([], clock);
+  const { today } = await fixture([update(1, 'not_a_bug'), event(2, 'task.updated', { state: state('locate'), trigger: 'reply' }, '2026-11-17T01:05:00Z')]).summary([task('T-1', null, 'active')], clock);
   expect(today.closedMs).toBe(300_000); expect(today.openStarts).toEqual([]); expect(today.ended).toEqual({ not_a_bug: 1 });
 });
 test('无计费单独计数，零成本仍是已计费', async () => {
@@ -46,7 +46,8 @@ test('无计费单独计数，零成本仍是已计费', async () => {
 });
 test('开放区间保留起点，不按序号缓存固定时长，now 前进后增长', async () => {
   const { summary, call } = fixture([update(1, 'await_info')]);
-  const first = await summary([], clock), laterClock = { ...clock, now: '2026-11-17T02:01:00Z' }, second = await summary([], laterClock);
+  const tasks = [{ ...task('T-1', null), state: state('await_info') }];
+  const first = await summary(tasks, clock), laterClock = { ...clock, now: '2026-11-17T02:01:00Z' }, second = await summary(tasks, laterClock);
   expect(first.today).toEqual(second.today); expect(first.today.closedMs).toBe(0); expect(first.today.openStarts).toEqual([Date.parse('2026-11-17T01:00:00Z')]);
   expect(waitingMilliseconds(second.today, laterClock.now) - waitingMilliseconds(first.today, clock.now)).toBe(60_000);
   expect(call.mock.calls[1][1]).toEqual({ after_seq: 1, limit: 1000 });
@@ -78,7 +79,10 @@ test('所有等待状态 × 不变、另一等待、离开，暂停/停止/未�
 });
 test('真实内核捕获事件与独立直接计数相符', async () => {
   const events = captured.events as TaskEvent[], now = events.at(-1)!.at;
-  const { today } = await fixture(events).summary([], { now, timeZone: 'UTC' });
+  const latest = new Map<string, ShellTask['state']>();
+  for (const e of events) if (e.kind === 'task.updated' && e.payload.state) latest.set(e.subject, e.payload.state as ShellTask['state']);
+  const tasks = [...latest].map(([id, state]) => ({ ...task(id, null), state }));
+  const { today } = await fixture(events).summary(tasks, { now, timeZone: 'UTC' });
   expect(today.gates).toBe(events.filter(e => e.kind === 'gate.result' && ['gate', 'fix_gate', 'merge_gate'].includes(String(e.payload.node))).length);
   expect(today.openStarts).toHaveLength(2);
 });
@@ -103,4 +107,33 @@ test('部分项目读盘失败时不把不完整账本显示成全局零，卡�
   const gateway = { read: vi.fn(async () => ({ status: 504, body: { ok: false, error: '任务读取超时' } })), write: vi.fn() };
   const result = await loadOverview({ gateway, overviewSummary: fixture([]).summary }, { kernel: { ok: true }, projects: [], tasks: [{ ...task('T-1', null), state: state('await_design_approval') }] }, clock);
   expect(result.details['T-1'].error).toContain('任务读取超时'); expect(result.details['T-1'].status_block).toBeUndefined();
+});
+test('移除任务的五种等待均不计，时钟前进不增长，重新添加恢复', async () => {
+  for (const status of [state('await_design_approval'), state('await_merge'), state('await_info'), state('not_a_bug'), { state: 'failed' }]) {
+    const { summary } = fixture([event(1, 'task.updated', { state: status }, '2026-11-16T16:00:00Z')]);
+    const current = [{ ...task('T-1', null), state: status }];
+    expect((await summary(current, clock)).today.openStarts).toEqual([start]);
+    for (const now of ['2026-11-16T20:52:00Z', '2026-11-16T20:57:00Z']) {
+      const result = await summary([], { ...clock, now });
+      expect(result.waiting).toEqual({}); expect(result.today).toMatchObject({ closedMs: 0, openStarts: [], ended: {} });
+      expect(waitingMilliseconds(result.today, now)).toBe(0);
+    }
+    expect((await summary(current, clock)).waiting).toEqual({ 'T-1': start });
+  }
+});
+test('账本开放但当前不等待：所有非等待状态过滤，恢复等待重新计入', async () => {
+  const { summary } = fixture([update(1, 'await_info')]);
+  for (const status of [{ state: 'active', node: 'implement' }, { state: 'active', node: 'await_future' }, ...['done', 'cancelled', 'paused', 'stopped', 'queued'].map(state => ({ state }))]) {
+    const result = await summary([{ ...task('T-1', null), state: status }], clock);
+    expect(result.today.openStarts).toEqual([]); expect(result.waiting).toEqual({});
+  }
+  expect((await summary([{ ...task('T-1', null), state: state('await_info') }], clock)).today.openStarts).toHaveLength(1);
+});
+test('闭合区间与结束计数按任务身份过滤，移除再添加不丢失缓存', async () => {
+  const { summary } = fixture([update(1, 'await_merge'), update(2, 'implement', '2026-11-17T01:05:00Z'), event(3, 'task.updated', { state: state('await_info') }, '2026-11-17T01:10:00Z', 'T-2'), event(4, 'task.updated', { state: { state: 'done' } }, '2026-11-17T01:20:00Z', 'T-2')]);
+  for (const ids of [['T-1', 'T-2'], ['T-2'], [], ['T-1']]) {
+    const { today } = await summary(ids.map(id => task(id, null)), clock);
+    expect(today.closedMs).toBe((ids.includes('T-1') ? 300_000 : 0) + (ids.includes('T-2') ? 600_000 : 0));
+    expect(today.ended).toEqual({ ...(ids.includes('T-1') ? { await_merge: 1 } : {}), ...(ids.includes('T-2') ? { await_info: 1 } : {}) });
+  }
 });

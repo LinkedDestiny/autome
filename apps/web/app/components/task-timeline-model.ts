@@ -11,7 +11,7 @@ export function sessionNode(kind: SessionKind | undefined) {
   if (kind?.kind === 'role') return kind.role === 'plan' ? 'design' : kind.role === 'impl' ? 'implement' : kind.role;
   return kind?.kind;
 }
-export type TimelineEntry = { kind?: 'session' | 'gate' | 'user' | 'event'; phase?: string; reopen?: boolean; waitMs?: number; durationMs?: number; key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; failures?: string[]; log?: string };
+export type TimelineEntry = { cost?: string; outcome?: 'pass' | 'fail' | 'running' | 'reopen'; kind?: 'session' | 'gate' | 'user' | 'event'; phase?: string; reopen?: boolean; waitMs?: number; durationMs?: number; key: string; node?: string; at: string; title: string; summary: string; unverified?: boolean; details: string[]; session?: TimelineSession; failures?: string[]; log?: string };
 export function logName(path: string): string { return path.split('/').at(-1) ?? ''; }
 const milestone: Record<string, string> = { open: '开放', pending: '待审', done: '已完成', '开放': '开放', '待审': '待审', '已完成': '已完成' };
 const operations: Record<string, string> = { approve: '你批准了设计', reject: '你驳回了设计', reply: '你补充了信息', merge: '你提交了合并', pause: '你暂停了任务', resume: '你恢复了任务', stop: '你停止了任务', cancel: '你取消了任务', rerun_from: '你重跑了任务', extend_budget: '你追加了预算' };
@@ -118,6 +118,8 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
     const failures: string[] = [];
     return { key: session.id, node: sessionNode(session.kind) ?? (index < 0 ? undefined : str(events[index].payload.node) || undefined), at: session.started_at, session: effectiveSession, title: `${session.label} · 第 ${session.round} 轮`,
       summary: end === 'stopped' ? endText : index < 0 ? (effectiveSession.running ? '运行中' : '已结束') : sessionSummary(effectiveSession, events.slice(index + 1, next < 0 ? undefined : next), (previous?.payload.milestones ?? []) as [string, string][], failures),
+      durationMs: elapsed, cost: session.metrics?.cost_usd != null ? `$${session.metrics.cost_usd.toFixed(2)}` : '无计费',
+      outcome: effectiveSession.running ? 'running' : failures.length || end !== 'exited' || (exitCode != null && exitCode !== 0) ? 'fail' : 'pass',
       failures,
       details: [Object.hasOwn(RUNTIME_LABELS, runtime) ? RUNTIME_LABELS[runtime as keyof typeof RUNTIME_LABELS] : runtime, session.model ?? '',
         formatRange(session.started_at, endedAt, clock), endText, `${effectiveSession.running ? '已运行' : '用时'} ${formatDuration(elapsed)}`,
@@ -191,6 +193,12 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
         if (start) { entry.durationMs = Math.max(0, Date.parse(result.at) - Date.parse(start.at)); entry.details.push(`用时 ${formatDuration(entry.durationMs)}`); }
       }
     }
+    if (entry.kind === 'gate') {
+      if (entry.summary === '运行中') entry.outcome = 'running';
+      else if (entry.summary.startsWith('通过') || entry.summary.startsWith('已复现') || entry.title === '沿用已通过的结果') entry.outcome = 'pass';
+      else if (entry.summary.startsWith('未通过') || entry.summary === '超时' || entry.summary.startsWith('未复现') || entry.summary.startsWith('复现检查') || entry.summary.startsWith('复现命令')) entry.outcome = 'fail';
+    }
+    if (entry.reopen && entry.kind !== 'gate') entry.outcome = 'reopen';
     const node = entry.node;
     if (node === 'intake') phase = '整理';
     else if (['design', 'review', 'adjudicate', 'await_design_approval'].includes(node ?? '')) phase = '设计';
@@ -201,7 +209,7 @@ export function timelineEntries(sessions: readonly TimelineSession[], input: rea
   }
   return entries;
 }
-export const TIMELINE_TEXT = { title: '执行时间线', failure: '失败详情', empty: '还没有执行记录', truncated: '更早的内核事件已省略' };
+export const TIMELINE_TEXT = { outcome: { pass: '通过', fail: '未通过', running: '运行中', reopen: '退回' }, title: '执行时间线', failure: '失败详情', empty: '还没有执行记录', truncated: '更早的内核事件已省略' };
 
 export function timelineGroups(entries: readonly TimelineEntry[], show?: string | null) {
   const groups = new Map<string, TimelineEntry[]>();

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider, RouterContextProvider } from 'react-router';
@@ -115,4 +116,13 @@ test('新控件保留路径工作区文档仓库与跳过字段', () => {
   expect(text.match(/class="chk"/g)).toHaveLength(2);
   expect(text).toContain('class="inp"');
   expect(text).not.toContain('data-testid="pick-directory"');
+});
+
+test('候选列表占满剩余高度并允许收缩，成员列表仍限高', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  const rule = (selector: string) => css.slice(css.indexOf(selector + ' {')).split('}')[0];
+  for (const declaration of ['flex: 1;', 'display: flex', 'flex-direction: column', 'overflow-y: auto']) expect(rule('.add-project-body')).toContain(declaration);
+  expect(rule('.path-suggestions')).toContain('flex: 1 1 160px');
+  expect(rule('.path-suggestions')).not.toContain('max-height');
+  expect(rule('.probe-members')).toContain('max-height: 160px');
 });

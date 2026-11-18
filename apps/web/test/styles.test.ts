@@ -10,6 +10,11 @@ const tsx = files.filter(path => path.endsWith('.tsx')).map(read).join('\n');
 const rules = [...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
 function declarations(source: string) { return Object.fromEntries([...source.match(/:root\s*\{([^}]+)\}/)![1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()])); }
 function rule(selector: string) { const found = rules.find(r => r.selector === selector); expect(found, selector).toBeDefined(); return found!.body; }
+it('C-2 时间线新增头部会话不让浏览器锚定改变外层滚动位置', () => {
+  expect(rule('.task-timeline')).toMatch(/overflow-anchor:\s*none/);
+  expect(rule('.task-timeline')).toMatch(/overflow-y:\s*auto/);
+  expect(rule('.session-log-text')).toMatch(/overflow-anchor:\s*none/);
+});
 it('Layer 1 token 名值逐条一致', () => {
   expect(declarations(tokens)).toEqual({
     "--animal-font": "Nunito, 'Noto Sans SC', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif",
@@ -156,7 +161,7 @@ it('看板高度受限且四列各自滚动，页面不增加滚动容器', () =
   expect(rule('.board')).toContain('min-height: 0'); expect(rule('.board')).toContain('height: 100%');
   expect(rule('.board-columns')).toContain('min-height: 0'); expect(rule('.board-columns')).toContain('repeat(4, minmax(0, 1fr))');
   expect(rule('.board-column')).toContain('min-height: 0');
-  expect(rule('.board-column-body')).toContain('overflow-y: auto'); expect(rule('.board-column-body')).toContain('min-height: 0');
+  expect(rule('.board-column-body')).toContain('flex: 1 1 0'); expect(rule('.board-column-body')).toContain('overflow-y: auto'); expect(rule('.board-column-body')).toContain('min-height: 0');
   for (const r of rules.filter(r => /^(html|body)$/.test(r.selector))) expect(r.body).not.toMatch(/overflow(?:-y)?:\s*(auto|scroll)/);
 });
 it('新建页正文和附件内部滚动', () => {

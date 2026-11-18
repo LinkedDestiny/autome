@@ -70,7 +70,8 @@ afterAll(cleanup);
 it('页面历史会话折叠，运行中会话默认展开', () => {
   expect(sessions.map(s => s.running)).toEqual([false, true]);
   const html = renderToString(createElement(TaskTimeline, { sessions, events: [], now: new Date().toISOString() }));
-  expect(html.match(/<details/g)).toHaveLength(2); expect(html.match(/open=""/g)).toHaveLength(1);
+  const logs = html.match(/<details[^>]*class="session-log"[^>]*>/g) ?? [];
+  expect(logs).toHaveLength(2); expect(logs.filter(tag => /open=""/.test(tag))).toHaveLength(1);
 });
 it('时间线历史与运行会话均能接入 W8 日志订阅且收到增量', async () => {
   for (const session of sessions) ws!.send(JSON.stringify({ type: 'log.subscribe', session_id: session.id, offset: 0 }));

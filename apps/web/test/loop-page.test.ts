@@ -24,3 +24,180 @@ test('没有网关时保存失败并无已保存项',async()=>{expect(await save
 
 test('未知 Effort 只读其它选项保留原值',()=>{expect(effortOptions('xhigh').at(-1)).toEqual({value:'xhigh',label:'其它：xhigh',disabled:true});expect(effortOptions(null)).toHaveLength(4);});
 test('写入未授权时角色开关禁用',()=>{const text=html();expect((text.match(/<input[^>]*>/g) ?? []).filter(input=>input.includes('role="switch"') && input.includes('disabled'))).toHaveLength(6);});
+
+import { RoleDrawer } from '../app/routes/loop.tsx';
+test('角色抽屉全局和项目的保存、恢复、成功与失败提示均在 footer', () => {
+  for (const project of [undefined, 'P-1']) for (const result of [undefined, { saved: ['plan'] as const }, { saved: [], error: '保存失败' }]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: resolvedRoles(cfg).plan, project, disabled: false, saveDisabled: false, onEdit() {}, onSave() {}, onReset() {}, onClose() {}, result: result && { ...result, saved: [...result.saved] } }) }]);
+    try {
+      const html = renderToString(h(RouterProvider, { router }));
+      const foot = html.match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+      expect(foot).toContain('>保存</button>');
+      expect(foot.includes('恢复跟随全局')).toBe(!!project);
+      if (result?.error) expect(foot).toContain('role="alert">保存失败');
+      if (result?.saved.length) expect(foot).toContain('role="status">已保存');
+    } finally { router.dispose(); }
+  }
+});
+
+import { readFileSync } from 'node:fs';
+import { roleNames } from '../app/lib/role-rules.ts';
+const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+const rule = (selector: string) => css.slice(css.indexOf(selector + ' {')).split('}')[0];
+test('范围和项目页签使用 seg 且仅当前项标记 aria-current', () => {
+  const projects = [{ id: 'p', display_name: '项目' }] as LoopData['projects'];
+  for (const scope of [undefined, 'p']) {
+    const text = html(cfg, { project: scope, projects });
+    const nav = text.match(/<nav class="seg" aria-label="配置范围">([\s\S]*?)<\/nav>/)![1];
+    expect(nav.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(nav).toContain(scope ? 'aria-current="page" href="/loop?project=p"' : 'aria-current="page" href="/loop"');
+    if (scope) expect(text).toMatch(/<nav class="seg" aria-label="项目配置页签">[\s\S]*?aria-current="page"[^>]*>Loop 配置/);
+  }
+});
+test('模型和 Effort 同行且长模型完整保留 title', () => {
+  for (const model of ['', 'a', 'model-'.repeat(80)]) {
+    const config = structuredClone(cfg);
+    config.resolved.roles.forEach(r => { r.config.model = model; r.config.effort = 'medium'; });
+    const rows = html(config).match(/<div class="loop-role-model">[\s\S]*?<\/div>/g)!;
+    expect(rows).toHaveLength(6);
+    for (const row of rows) {
+      expect(row).toContain(`title="${model || 'CLI 默认'}"`);
+      expect(row).toContain('<span class="pill">medium</span>');
+    }
+  }
+  expect(rule('.loop-role-model')).toContain('white-space: nowrap');
+  expect(rule('.loop-role-model > span:first-child')).toContain('text-overflow: ellipsis');
+  expect(rule('.loop-role-model .pill')).toContain('flex: none');
+});
+test('六张卡有编辑提示且开关独立于伸展按钮', () => {
+  const cards = html().match(/<section[^>]*data-role="[^"]+"[\s\S]*?<\/section>/g)!;
+  expect(cards).toHaveLength(6);
+  for (const [index, card] of cards.entries()) {
+    const button = card.match(/<button[\s\S]*?<\/button>/)![0];
+    expect(button).toContain(`aria-label="编辑${roleNames[roleOrder[index]]}"`);
+    expect(button).toContain('<span class="loop-role-edit">编辑</span>');
+    expect(button).not.toContain('<input');
+    expect(card).toContain('role="switch"');
+  }
+  expect(rule('.loop-role-head button::after')).toContain('inset: 0');
+  expect(rule('.loop-role-head .switch')).toContain('z-index: 1');
+});
+test('卡片密度及悬停聚焦反馈遵循角色卡预算', () => {
+  expect(rule('.loop-row .card')).toContain('padding: 12px 14px');
+  expect(rule('.loop-row .card')).not.toContain('overflow-wrap');
+  expect(rule('.loop-role')).toContain('gap: 5px');
+  expect(css).toContain('.loop-role:hover, .loop-role:focus-within { transform: translateY(-2px); box-shadow: var(--animal-shadow-base)');
+  expect(rule('.loop-role-disabled')).toContain('-webkit-line-clamp: 2');
+  for (const enabled of [false, true]) {
+    const config = structuredClone(cfg);
+    config.resolved.roles.forEach(r => { r.config.enabled = enabled; });
+    const text = html(config, { project: 'p' });
+    expect((text.match(/class="loop-role-disabled"/g) ?? []).length).toBe(enabled ? 0 : 6);
+    expect(text).toContain('class="loop-role-badges"');
+    if (!enabled) expect(text).toContain('title="已停用：Autome');
+  }
+});
+
+test('角色技能名称胶囊、空态与添加技能项目链接，模型沿用基础外观', () => {
+  for (const project of [undefined, '项目 /?']) for (const skills of [[], ['alpha'], ['alpha', 'beta']]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: { ...resolvedRoles(cfg).plan, skills }, project, disabled: false, saveDisabled: true, onEdit() {}, onSave() {}, onReset() {}, onClose() {} }) }]);
+    try {
+      const text = renderToString(h(RouterProvider, { router }));
+      expect(text.includes('还没有绑定技能')).toBe(skills.length === 0);
+      for (const skill of skills) expect(text.replaceAll('<!-- -->', '')).toContain(`<button class="pill">${skill} ×</button>`);
+      expect(text).toContain(`class="btn btn-sm" href="${project ? '/skills?project=' + encodeURIComponent(project) : '/skills'}"`);
+      expect(text).toContain('＋ 添加技能</a>');
+      expect(text.match(/<label>模型(<input[^>]*>)/)![1]).not.toContain('class=');
+    } finally { router.dispose(); }
+  }
+});
+
+// Render the production LoopView and invoke the actual add-skill Link handler.
+const navigationHarness = vi.hoisted(() => ({
+  active: false,
+  drafts: {} as Partial<Record<import('../app/lib/role-rules.ts').Role, import('../app/lib/role-rules.ts').RoleConfig>>,
+  result: undefined as import('../app/components/loop-data.ts').SaveResult | undefined,
+  effects: [] as (() => void)[],
+  click: undefined as undefined | ((event: { preventDefault(): void }) => void),
+  to: '',
+}));
+import { vi } from 'vitest';
+vi.mock('react', async original => {
+  const actual = await original<typeof import('react')>();
+  return { ...actual,
+    useState: (initial: unknown) => {
+      if (!navigationHarness.active) return actual.useState(initial);
+      if (initial === null) return ['plan', vi.fn()];
+      if (initial && typeof initial === 'object' && !Object.keys(initial).length) return [navigationHarness.drafts, (update: (old: typeof navigationHarness.drafts) => typeof navigationHarness.drafts) => { navigationHarness.drafts = update(navigationHarness.drafts); }];
+      return actual.useState(initial);
+    },
+    useEffect: (effect: () => void, deps: unknown[]) => {
+      if (navigationHarness.active) navigationHarness.effects.push(effect);
+      else actual.useEffect(effect, deps);
+    },
+  };
+});
+vi.mock('react-router', async original => {
+  const actual = await original<typeof import('react-router')>();
+  return { ...actual,
+    useFetcher: () => {
+      const fetcher = actual.useFetcher();
+      return navigationHarness.active ? { ...fetcher, state: 'idle', data: navigationHarness.result } : fetcher;
+    },
+    Link: (props: import('react').ComponentProps<typeof actual.Link>) => {
+      if (navigationHarness.active && props.className === 'btn btn-sm') {
+        navigationHarness.click = props.onClick as typeof navigationHarness.click;
+        navigationHarness.to = String(props.to);
+      }
+      return h(actual.Link, props);
+    },
+  };
+});
+const savedRole = resolvedRoles(cfg).plan;
+for (const scenario of ['无改动', '脏草稿取消', '脏草稿确认', '改回原值', '保存成功', '保存失败']) {
+  test(`添加技能：${scenario}`, () => {
+    const dirty = !['无改动', '改回原值'].includes(scenario);
+    const draft = { ...savedRole, model: 'new-model' };
+    navigationHarness.active = true;
+    navigationHarness.drafts = scenario === '无改动' ? {} : { plan: dirty ? draft : { ...draft, model: savedRole.model } };
+    navigationHarness.result = scenario === '保存成功' ? { saved: ['plan'] } : scenario === '保存失败' ? { saved: [], error: '保存失败' } : undefined;
+    navigationHarness.effects = [];
+    const confirm = vi.fn(() => scenario === '脏草稿确认');
+    vi.stubGlobal('window', { confirm });
+    try {
+      const config = structuredClone(cfg);
+      if (scenario === '保存成功') config.resolved.roles.find(r => r.role === 'plan')!.config = draft;
+      html(config, { project: '项目 /?&' });
+      for (const effect of navigationHarness.effects) effect();
+      html(config, { project: '项目 /?&' });
+      const before = structuredClone(navigationHarness.drafts);
+      const preventDefault = vi.fn();
+      expect(navigationHarness.click).toBeTypeOf('function');
+      navigationHarness.click!({ preventDefault });
+      const prompts = dirty && scenario !== '保存成功';
+      expect(confirm).toHaveBeenCalledTimes(prompts ? 1 : 0);
+      expect(preventDefault).toHaveBeenCalledTimes(prompts && scenario !== '脏草稿确认' ? 1 : 0);
+      expect(navigationHarness.drafts).toEqual(before);
+      expect(navigationHarness.to).toBe('/skills?project=' + encodeURIComponent('项目 /?&'));
+      expect(html(config)).toContain('aria-label="编辑设计"');
+    } finally {
+      navigationHarness.active = false;
+      navigationHarness.result = undefined;
+      vi.unstubAllGlobals();
+    }
+  });
+}
+test('添加技能：每个角色字段变更都确认，全局路径与空模型、空技能边界', () => {
+  navigationHarness.active = true;
+  vi.stubGlobal('window', { confirm: vi.fn(() => false) });
+  try {
+    for (const fields of [{ enabled: !savedRole.enabled }, { runtime: savedRole.runtime === 'claude' ? 'codex' as const : 'claude' as const }, { model: savedRole.model ? '' : 'x' }, { effort: savedRole.effort === null ? 'high' : null }, { skills: savedRole.skills.length ? [] : ['alpha'] }]) {
+      navigationHarness.drafts = { plan: { ...savedRole, ...fields } };
+      html();
+      const preventDefault = vi.fn();
+      navigationHarness.click!({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(navigationHarness.to).toBe('/skills');
+    }
+  } finally { navigationHarness.active = false; vi.unstubAllGlobals(); }
+});

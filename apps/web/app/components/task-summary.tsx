@@ -4,12 +4,17 @@ import { formatClock, formatSpan, useClock } from '../lib/clock.tsx';
 import { Tile } from './ui/tile.tsx';
 export function SummarySteps({ summary }: { summary: TaskSummary }) {
   const clock = useClock(), elapsed = summaryElapsed(summary, clock.now);
-  return <ol className="task-stage-list summary-steps">{summary.steps.map((step, i) => <li key={step.label} aria-current={step.current ? 'step' : undefined} className={[step.passed && 'is-passed', step.label === '你批准' && 'step-approval'].filter(Boolean).join(' ')}>
-    <b>{step.label}{[t.implementation, t.audit].includes(step.label) ? ` × ${step.sessions}` : ''}</b>
-    <small>{step.label === t.merge ? summary.time.end ? formatClock(summary.time.end, clock) : t.unmerged : `${step.label === '你批准' ? '等了 ' : ''}${formatSpan(elapsed.steps[i])}`}</small>
-    {step.sessions > 0 && <small>{step.unbilled === step.sessions ? `${step.tools.join(' · ')} · 无计费` : `$${step.cost.toFixed(2)}${step.unbilled ? ` + ${step.unbilled} 个无计费` : ''}`}</small>}
-    {step.attempts > 0 && <small>{step.attempts === 1 && step.gatePassed ? '一次过' : `${step.attempts} 次`}</small>}
-  </li>)}</ol>;
+  return <ol className="task-stage-list summary-steps">{summary.steps.map((step, i) => {
+    const label = `${step.label}${[t.implementation, t.audit].includes(step.label) ? ` × ${step.sessions}` : ''}`;
+    const duration = step.label === t.merge ? summary.time.end ? formatClock(summary.time.end, clock) : t.unmerged : `${step.label === '你批准' ? '等了 ' : ''}${formatSpan(elapsed.steps[i])}`;
+    const cost = step.unbilled === step.sessions ? `${step.tools.join(' · ')} · 无计费` : `$${step.cost.toFixed(2)}${step.unbilled ? ` + ${step.unbilled} 个无计费` : ''}`;
+    const attempts = step.attempts === 1 && step.gatePassed ? '一次过' : `${step.attempts} 次`;
+    return <li key={step.label} aria-current={step.current ? 'step' : undefined} className={[step.passed && 'is-passed', step.label === '你批准' && 'step-approval'].filter(Boolean).join(' ')}>
+    <b title={label}>{label}</b>
+    <small title={duration}>{duration}</small>
+    {step.sessions > 0 && <small title={cost}>{cost}</small>}
+    {step.attempts > 0 && <small title={attempts}>{attempts}</small>}
+  </li>})}</ol>;
 }
 export function TaskSummaryTiles({ summary }: { summary: TaskSummary }) {
   const { now } = useClock(), elapsed = summaryElapsed(summary, now);
