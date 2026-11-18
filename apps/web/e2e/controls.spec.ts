@@ -254,9 +254,20 @@ test('F-1 技能按仅当前项目绑定后只进该项目', async ({ page }) =>
     await expect.poll(() => planSkills(f.projectId)).not.toContain(name);
     await drawer.getByRole('button', { name: '关闭', exact: true }).click();
     await expect(drawer).toHaveCount(0);
-    await page.getByRole('combobox', { name: /^项目/ }).selectOption('');
+    const scope = page.getByRole('navigation', { name: '技能范围', exact: true });
+    const globalScope = scope.getByRole('link', { name: '全局', exact: true });
+    const projectScope = scope.locator(`a[href="/skills?project=${encodeURIComponent(f.projectId)}"]`);
+    await expect(projectScope).toHaveAttribute('aria-current', 'page');
+    await globalScope.click();
     await expect(page).toHaveURL(/\/skills$/);
+    await expect(globalScope).toHaveAttribute('aria-current', 'page');
+    await expect(projectScope).not.toHaveAttribute('aria-current', 'page');
     await expect(page.getByRole('radio', { name: /^本项目/ })).toHaveCount(0);
+    await projectScope.click();
+    await expect(page).toHaveURL(url => url.pathname === '/skills' && url.searchParams.get('project') === f.projectId);
+    await expect(projectScope).toHaveAttribute('aria-current', 'page');
+    await expect(globalScope).not.toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('radio', { name: /^本项目/ })).toBeVisible();
   } finally {
     writeFileSync(join(f.repo, '.autome/config.toml'), original);
     rpc('project.remove', { project_id: other.projectId });

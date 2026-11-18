@@ -15,3 +15,4 @@
 审计 #5 | M-05 | 通过 | docs/面板观感收尾/evidence/M-05-r6-audit.md | 无
 
 实现 #7 | M-06 | 待审 | docs/面板观感收尾/evidence/M-06-r7-impl.md | 浏览器与监听/ps 检查受沙箱限制
+实现 #8 | M-06 | 待审 | docs/面板观感收尾/evidence/M-06-r8-impl.md | F-1 已更新范围链接；浏览器初始化受 ps EPERM 阻断，待宿主复跑
