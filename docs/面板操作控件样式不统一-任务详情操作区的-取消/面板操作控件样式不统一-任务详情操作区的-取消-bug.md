@@ -1,7 +1,7 @@
 # 面板操作控件样式不统一：任务详情操作区的「取消」是裸链接
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
 复核: 待复核
@@ -40,7 +40,9 @@ fix-round: 0/3
 
 ## 修复说明
 
-（待修复轮填写）
+- app.css：裸 `button` 兜底样式改为与 .btn 一致的 30px 胶囊（2px 边框、圆角 pill），漏写类名的按钮不再是 45px 方角；新增 `.btn-danger`，任务操作区 flex 对齐改为顶对齐一致、取消确认表单同行、summary 去掉原生三角。
+- task-ops-view.tsx：全部操作按钮、「取消」Link、「返回」Link、表单类 `<summary>` 套 `btn btn-sm`，取消/确认取消用 `btn-danger`；保留 data-op/data-testid 与跳转。
+- 验证：复现命令两个用例通过；整套 `npx playwright test` 43 通过、0 失败（基线 41 通过 + 2 新用例）。
 
 ## 复核意见
 
