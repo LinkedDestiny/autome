@@ -1,4 +1,8 @@
 import { expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { SummarySteps } from '../app/components/task-summary.tsx';
 import feature from './fixtures/w7/feature.json' with { type: 'json' };
 import bug from './fixtures/w7/bug.json' with { type: 'json' };
 import history from './fixtures/w7/events.json' with { type: 'json' };
@@ -7,6 +11,16 @@ import { timelineEntries, timelineGroups } from '../app/components/task-timeline
 import type { TaskPayload } from '../app/components/task-detail-data.ts';
 import type { TaskEvent } from '../server/task-history.ts';
 const data = feature as unknown as TaskPayload;
+it('阶段说明单行省略且完整工具与混合计费文本保留在 title', () => {
+ const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+ expect(css).toMatch(/\.summary-steps small\s*\{[^}]*white-space: nowrap;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis/);
+ const summary = taskSummary(data, []);
+ for (const unbilled of [12, 13]) {
+  summary.steps[0] = { ...summary.steps[0], sessions: 13, unbilled, cost: 123.45, tools: ['claude', 'codex'] };
+  const text = unbilled === 13 ? 'claude · codex · 无计费' : '$123.45 + 12 个无计费';
+  expect(renderToStaticMarkup(createElement(SummarySteps, { summary }))).toContain(`<small title="${text}">${text}</small>`);
+ }
+});
 const at = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString();
 const event = (n: number, kind: string, payload: Record<string, unknown>): TaskEvent => ({ seq: n, at: at(n), subject: data.task.id, kind, payload });
 const state = (n: number, node: string, trigger = '') => event(n, 'task.updated', { state: { state: node === 'failed' || node === 'paused' ? node : 'active', node }, trigger });

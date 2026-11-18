@@ -430,7 +430,8 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-summary-tiles .tile small { font-size: 11px; overflow-wrap: anywhere; }
 .summary-steps { flex-wrap: nowrap; gap: 6px; }
 .summary-steps li { flex: 1; min-width: 0; padding: 6px 8px; background: var(--animal-bg-content); font-size: 12px; }
-.summary-steps small { display: block; font-weight: 400; margin-top: 4px; }
+.summary-steps small { display: block; font-weight: 400; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.summary-steps b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary-steps .is-passed { background: var(--animal-primary-bg); }
 .summary-steps .step-approval { background: var(--ui-card-yellow-bg); }
 .task-milestones { margin-bottom: 0; font-size: 12px; }
@@ -442,6 +443,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
   .task-page { gap: 8px; }
   .task-page > .task-stage { max-height: 96px; }
   .task-page > .task-summary-tiles { margin: 0; }
+  .task-summary-tiles .tile { padding: 2px 12px; }
   .task-page > .task-controls { max-height: 48px; }
   .task-controls > .task-notice { margin: 0; padding: 8px 12px; }
 }
