@@ -1,10 +1,10 @@
 # 面板操作控件样式不统一：任务详情操作区的「取消」是裸链接
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -67,3 +67,11 @@ fix-round: 1/3
 - 执行 `cd apps/web && npx vitest run test/task-ops-view.test.ts test/task-ops.test.ts test/testids.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/task-header.test.ts test/task-new.test.ts`：7 个文件、108 项通过，退出码 0。日志：`.autome/output/independent-review/unit.log`。
 - 用户提供的宿主复现命令与快检退出码 0 作为已有证据记录，不等同于本轮独立浏览器验收，也不等同于项目全量门禁。按要求未运行 `sh scripts/ci-local.sh`，全量门禁仍由宿主在合并前统一执行。
 - 打回依据是上述可定位的产品缺口，不是缺少全量门禁。本轮未修改产品代码或测试、未注入临时缺陷；仅更新本 Bug 文档的复核字段和复核意见，保持状态、fix-round、复现命令与根因不变。
+
+## 修复说明（第 2 轮）
+
+针对复核两条打回：
+1. `.btn-danger` 移到 `.btn` / `.btn-primary` 规则之后并用 `--animal-error` / `--animal-error-active`（普通、悬停、禁用态），不再被覆盖；「停止」「取消」「确认取消」「移除项目」都用危险变体；`Button` 组件新增 `danger` 变体。
+2. 全站迁移：表单页提交按钮（创建并开始、存为待开始、添加项目的检查/确认、设置页保存/运行/完成/跳过/移除、环境安装/登录/复制）加 `btn`（默认 38px）；行内/卡片/抽屉等紧凑场景（会话日志、队列、依赖、备注、表态、告警、Loop 默认值、命令面板关闭、任务卡「开始」、目录选择）用 `btn btn-sm`（30px）；兜底 `button` 的悬停与 `.btn` 一致。
+- 同步更新两处依赖旧标记的单测断言（loop-defaults、settings-config，仅类名前缀）。
+- 验证：复现命令通过；整套 playwright 43 通过；vitest 全量 1432 个仅上述 2 个因标记变化失败，已修后子集 24 通过；eslint、typecheck 通过。
