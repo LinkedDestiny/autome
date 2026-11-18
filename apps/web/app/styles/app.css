@@ -575,7 +575,7 @@ a.btn, summary.btn { text-decoration: none; }
 .env-tool-row > div { min-width: 0; overflow-wrap: anywhere; }
 .env-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--animal-primary); }
 .env-dot-warning { background: var(--ui-pill-red); }
-.env-tools .env-component { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 16px; padding: 10px 0; margin: 0; background: transparent; border-bottom: 1px solid var(--animal-border); }
+.env-tools .env-component { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 16px; padding: 8px 0; margin: 0; background: transparent; border-bottom: 1px solid var(--animal-border); }
 .env-install[open] { grid-column: 1 / -1; grid-row: 2; }
 .env-install summary { white-space: nowrap; font-size: 12px; }
 .env-tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-left: 28px; }

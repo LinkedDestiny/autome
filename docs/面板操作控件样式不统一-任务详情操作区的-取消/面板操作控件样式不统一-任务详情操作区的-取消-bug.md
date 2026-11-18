@@ -1,10 +1,10 @@
 # 面板操作控件样式不统一：任务详情操作区的「取消」是裸链接
 
 status: 已定位
-fix-round: 5/5
+fix-round: 6/6
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -43,6 +43,24 @@ fix-round: 5/5
 - app.css：裸 `button` 兜底样式改为与 .btn 一致的 30px 胶囊（2px 边框、圆角 pill），漏写类名的按钮不再是 45px 方角；新增 `.btn-danger`，任务操作区 flex 对齐改为顶对齐一致、取消确认表单同行、summary 去掉原生三角。
 - task-ops-view.tsx：全部操作按钮、「取消」Link、「返回」Link、表单类 `<summary>` 套 `btn btn-sm`，取消/确认取消用 `btn-danger`；保留 data-op/data-testid 与跳转。
 - 验证：复现命令两个用例通过；整套 `npx playwright test` 43 通过、0 失败（基线 41 通过 + 2 新用例）。
+
+## 修复说明（第 6 轮）
+
+### 操作者备注处理
+- 备注 #3：照做，只修环境页正常工具行高度；其余项未动。备注 #1、#2 继续有效，`e2e/action-controls.spec.ts`、`overlay-layout.spec.ts`、`layout.spec.ts` 未改。
+- 备注 #3 里关于 T-123 单测计时波动（`controls.spec.ts` B-4）：不为它改产品或测试。本轮整套 Playwright 该用例通过。
+
+### 根因与改动
+- 复核推导成立：`.env-tools .env-component` 上下各 10px 内边距，加 30px 小号文字按钮与 1px 底边框，整行 51px。
+- 新增 `apps/web/e2e/env-rows.spec.ts`（新文件）：照搬 overlay-layout 环境页用例的代理搭法，但先等 `.env-component[data-env-ok="true"] summary` ≥ 1 且所有 `[data-env-ok]` 均为 true，再断言带 summary 的工具行 ≤ 48px、summary 30±1px、驱动卡下沿 ≤ 944、`.env-components` 无内部滚动。无需登记（e2e 目录自动发现，`test-groups.ts` 只含 vitest）。
+- **先红后绿**：未改内边距时新用例失败，实测 `Expected: <= 48, Received: 51`。
+- 产品：`app/styles/app.css:578` `.env-tools .env-component` 的 `padding: 10px 0` 改为 `8px 0`（30+8+8+1=47px）。内核行与工具行同一规则；入口仍是 30px 的 `btn btn-text btn-sm`。
+
+### 验证
+- `npx playwright test e2e/env-rows.spec.ts`：修复后通过（与 overlay-layout / layout / action-controls 同跑通过）。
+- 整套 `npx playwright test`：44 passed，退出码 0。
+- `npx vitest run`：165 文件 / 1435 用例全部通过，退出码 0。
+- 截图（临时脚本 `.autome/output/shot.mjs`，不进仓库，对新用例同款服务四工具正常）：`.autome/output/env-closed.png`、`.autome/output/env-open.png`。目视：工具行单行，点开 Git 的安装方法后说明在该行下方展开，驱动卡完整可见，无内部滚动。
 
 ## 复核意见
 
