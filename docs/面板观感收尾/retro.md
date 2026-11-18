@@ -48,3 +48,4 @@
 审计 #14 | M-13 | 通过 | docs/面板观感收尾/evidence/M-13-r21-audit.md | 无
 实现 #22 | 无（修复轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/fix-r22-impl.md | 无
 实现 #23 | 无（交接轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/M-13-r23-impl.md | 无
+实现 #24 | 无（交接轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/M-13-r24-impl.md | 无
