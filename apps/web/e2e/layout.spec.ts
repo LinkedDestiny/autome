@@ -80,6 +80,12 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   if (name === '项目设置') {
     await expect(page).toHaveURL(/\/loop\?project=.+&tab=project$/);
     await expect(page.getByTestId('page-settings')).toBeVisible();
+    const sections = page.locator('.project-settings > section');
+    await expect(sections).toHaveCount(3);
+    for (const section of await sections.all()) expect(await section.evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+    const remove = page.locator('#remove-name');
+    await remove.scrollIntoViewIfNeeded();
+    expect(await remove.evaluate(el => { const r = el.getBoundingClientRect(); const parent = el.closest('.project-settings')!.getBoundingClientRect(); return r.top >= Math.max(0, parent.top) && r.bottom <= Math.min(innerHeight, parent.bottom) && r.left >= 0 && r.right <= innerWidth; })).toBe(true);
     await page.screenshot({ path: '../../.autome/output/m08-settings.png' });
   }
   if (name === '环境') await expect(page.getByTestId('env-copy').first()).toBeVisible();

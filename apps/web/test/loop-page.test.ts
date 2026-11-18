@@ -97,3 +97,17 @@ test('卡片密度及悬停聚焦反馈遵循角色卡预算', () => {
     if (!enabled) expect(text).toContain('title="已停用：Autome');
   }
 });
+
+test('角色技能名称胶囊、空态与添加技能项目链接，模型沿用基础外观', () => {
+  for (const project of [undefined, '项目 /?']) for (const skills of [[], ['alpha'], ['alpha', 'beta']]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: { ...resolvedRoles(cfg).plan, skills }, project, disabled: false, saveDisabled: true, onEdit() {}, onSave() {}, onReset() {}, onClose() {} }) }]);
+    try {
+      const text = renderToString(h(RouterProvider, { router }));
+      expect(text.includes('还没有绑定技能')).toBe(skills.length === 0);
+      for (const skill of skills) expect(text.replaceAll('<!-- -->', '')).toContain(`<button class="pill">${skill} ×</button>`);
+      expect(text).toContain(`class="btn btn-sm" href="${project ? '/skills?project=' + encodeURIComponent(project) : '/skills'}"`);
+      expect(text).toContain('＋ 添加技能</a>');
+      expect(text.match(/<label>模型(<input[^>]*>)/)![1]).not.toContain('class=');
+    } finally { router.dispose(); }
+  }
+});

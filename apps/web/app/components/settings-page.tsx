@@ -61,7 +61,7 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   const disabled = !gate.allowed || busy;
   const session = data.session;
   const status = session.label ?? (session.state === 'running' ? ONBOARDING.running : session.state === 'ended' ? ONBOARDING.exit(session.exit_code) : session.state === 'interrupted' ? ONBOARDING.interrupted : ONBOARDING.none);
-  return <div className="project-settings" data-testid={TEST_IDS.pageSettings}><h1>{data.project.display_name} · {ADMIN.settings}</h1><section className="settings-card-body" data-scroll-region><h2>{ONBOARDING.title}</h2>
+  return <div className="project-settings" data-scroll-region data-testid={TEST_IDS.pageSettings}><h1>{data.project.display_name} · {ADMIN.settings}</h1><section className="settings-card-body"><h2>{ONBOARDING.title}</h2>
     <p>{active ? ONBOARDING.step(state.step!) : state.onboarding === 'skipped' ? ONBOARDING.skipped : ONBOARDING.ended}</p>
     {active && <p>{ONBOARDING.descriptions[state.step!]}</p>}<p role="status">{status} {session.session_id}</p>{session.error && <p role="alert">{session.error}</p>}
     {session.session_id && <SessionLog key={session.session_id} session={{ id: session.session_id, label: 'Onboarding', round: 1, running: session.state === 'running', started_at: session.started_at ?? '' }} />}
@@ -73,14 +73,14 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
       {data.files.map(file => <Editor key={file.path + file.content} file={file} disabled={disabled} reason={gate.reason} />)}
       <Form method="post"><button name="intent" value="finish" disabled={disabled} title={gate.reason}>{ONBOARDING.finish}</button><button name="intent" value="skip" disabled={disabled} title={gate.reason}>{ONBOARDING.skip}</button></Form></>}
   </section>
-  <section className="settings-card-body" data-scroll-region><h2>{SETTINGS.config}</h2>
+  <section className="settings-card-body"><h2>{SETTINGS.config}</h2>
     {data.config?.error ? <p role="alert">{data.config.error}</p> : <>
       {data.config?.paths.map(path => <p key={path}><code>{path}</code></p>)}
       <dl className="config-rows">{data.config?.rows.map(row => <div key={row.key} data-config-key={row.key}><dt>{row.label}</dt><dd>{row.value} {row.isDefault && <span className="count-pill">默认</span>}{row.source && <span className="count-pill">{row.source}</span>}</dd></div>)}</dl>
       {data.config?.warnings.map((warning, i) => <pre key={i}>{configWarning(warning)}</pre>)}
     </>}
   </section>
-  <section className="settings-card-body" data-scroll-region><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>
+  <section className="settings-card-body"><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>
     <Form method="post"><input type="hidden" name="intent" value="remove" /><label htmlFor="remove-name">{SETTINGS.name}（{data.project.display_name}）</label>
       <input id="remove-name" name="name" value={name} onChange={event => setName(event.target.value)} autoComplete="off" />
       <button disabled={disabled || name !== data.project.display_name} title={gate.reason}>{SETTINGS.remove}</button>

@@ -198,14 +198,13 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .project-confirm { flex-direction: column; align-items: flex-start !important; }
 .add-project [role="alert"] { overflow-wrap: anywhere; }
 
-.project-settings { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 24px; }
-.settings-card-body { min-height: 0; overflow-y: auto; padding: 24px; }
+.project-settings { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 24px; }
+.settings-card-body { flex: none; padding: 24px; }
 .onboarding-editor { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
 .onboarding-editor textarea { min-height: 0; height: 12rem; overflow-y: auto; resize: vertical; }
 
 .project-settings h1 { margin: 0; }
 .settings-card-body { background: var(--animal-bg-content); border-radius: var(--animal-radius); max-width: 960px; overflow-wrap: anywhere; }
-.settings-card-body { flex: 1 1 0; }
 .config-rows { min-height: 0; overflow-y: auto; }
 .config-rows > div { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 16px; padding-block: 8px; }
 .config-rows dd { margin: 0; white-space: pre-wrap; }
@@ -461,7 +460,14 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .loop-drawer { width: min(440px, 90vw); }
 
 .loop-defaults { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-block: 12px; }
-.loop-default-field { display: flex; flex-direction: column; gap: 8px; }
+.loop-default-field { display: grid; grid-template-rows: auto auto auto; align-content: start; gap: 8px; }
+.loop-default-head, .loop-default-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.loop-default-head { justify-content: space-between; }
+.loop-default-controls > div { flex: 1; min-width: 0; }
+.loop-default-controls > button, .loop-default-controls > [role=status] { flex: none; }
+.loop-default-reset { justify-self: start; }
+.loop-default-field .stepper { display: flex; margin: 0; width: 100%; }
+.loop-default-field .stepper button { flex: none; }
 .loop-default-field .stepper input { min-width: 0; width: 100%; }
 .loop-page > .project-settings { flex: 1; }
 

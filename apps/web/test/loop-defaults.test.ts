@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { ConfigReply } from '../app/components/loop-data.ts';
 import { expect, test, vi } from 'vitest';
 import { createElement as h } from 'react';
@@ -34,14 +35,14 @@ test('Stepper 边界按钮禁用，未修改保存禁用', () => {
     for (const f of defaultFields) c.resolved.loop_defaults[f.key] = f[bound];
     const text = html(undefined, false, c);
     for (const f of defaultFields) expect(text).toContain(`aria-label="${bound === 'min' ? '减少' : '增加'}${f.label}" disabled=""`);
-    expect((text.match(/<button disabled=""/g) ?? []).length).toBe(4);
+    expect((text.match(/<button aria-label="保存[^"]+" disabled=""/g) ?? []).length).toBe(4);
   }
 });
 test('项目来源按值比较，相同不冒充继承，四项都有恢复', () => {
   expect(html('p').match(/与全局相同/g)).toHaveLength(4);
   const c = structuredClone(config); c.resolved.loop_defaults.parallel = 2;
   expect(html('p', false, c).match(/项目值/g)).toHaveLength(1);
-  expect(html('p').match(/恢复跟随全局/g)).toHaveLength(4);
+  expect(html('p').match(/>恢复跟随全局</g)).toHaveLength(4);
 });
 test('未授权或忙碌禁用全部输入和操作', () => {
   const text = html('p', true);
@@ -72,4 +73,33 @@ test('离线、拒绝授权、读盘失败、超时、技能拒绝原样保留',
     const request = new Request('http://localhost/loop?project=p', { method: 'POST', body: new URLSearchParams({ intent: 'default', key: 'parallel', value: '2' }) });
     expect(await action({ context, request, params: {}, url: new URL(request.url), pattern: '/loop' })).toEqual({ error });
   }
+});
+
+test('四卡同结构、保存可见名统一且可访问名唯一、成功反馈留在对应卡内', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.loop-default-field \{[^}]*display: grid;[^}]*grid-template-rows: auto auto auto/);
+  for (const project of [undefined, 'p']) {
+    const text = html(project);
+    const cards = text.match(/<section class="card card-blue loop-default-field">[\s\S]*?<\/section>/g)!;
+    expect(cards).toHaveLength(4);
+    const classes = (card: string) => [...card.matchAll(/class="([^"]+)"/g)].map(m => m[1]);
+    for (const [i, card] of cards.entries()) {
+      expect(classes(card)).toEqual(classes(cards[0]));
+      expect(card).toContain(`aria-label="保存${defaultFields[i].label}" disabled=""`);
+      expect(card).toContain('>保存</button>');
+      expect(card).not.toContain(`>保存${defaultFields[i].label}</button>`);
+      if (project) expect(card).toContain(`aria-label="恢复跟随全局 · ${defaultFields[i].label}"`);
+    }
+  }
+  feedback.data = { saved: true };
+  try {
+    const cards = html('p').match(/<section class="card card-blue loop-default-field">[\s\S]*?<\/section>/g)!;
+    for (const card of cards) expect(card).toMatch(/class="loop-default-controls">[\s\S]*?<span role="status">已保存<\/span><\/div>/);
+  } finally { feedback.data = undefined; }
+});
+
+const feedback = vi.hoisted(() => ({ data: undefined as { saved?: boolean; error?: string } | undefined }));
+vi.mock('react-router', async importOriginal => {
+  const actual = await importOriginal<typeof import('react-router')>();
+  return { ...actual, useFetcher: () => ({ ...actual.useFetcher(), data: feedback.data }) };
 });
