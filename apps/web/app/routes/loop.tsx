@@ -54,10 +54,13 @@ export function LoopView({ data }: { data: LoopData }) {
   const roleCard = (role: Role) => {
     const cfg = merged![role], error = violations.some(v => v.roles.includes(role));
     return <Card key={role} color={colors[role]} patterned className={error ? 'loop-role loop-conflict' : 'loop-role'} data-role={role} data-testid={TEST_IDS.loopRole}>
-      <button type="button" onClick={() => setEditing(role)}><h3>{roleNames[role]}</h3></button><p>{cfg.runtime === 'claude' ? 'Claude Code' : 'Codex'}</p><strong>{cfg.model || 'CLI 默认'}</strong><p className="pill">{cfg.effort ?? 'Effort 默认'}</p><p>{cfg.skills.length} 个绑定技能</p>
-      {data.project && <p>{data.config!.resolved.roles.find(r => r.role === role)?.provenance === 'project' ? '项目覆盖' : '跟随全局'}</p>}
-      <Switch label={`${roleNames[role]}启用`} checked={cfg.enabled} disabled={disabled} onChange={e => edit(role, { enabled: e.target.checked })} />
-      {!cfg.enabled && <small>已停用：Autome 不再为这个角色启动会话，双模型检查对这一对免检</small>}
+      <div className="loop-role-head"><button type="button" aria-label={LOOP.edit + roleNames[role]} onClick={() => setEditing(role)}><span className="loop-role-name">{roleNames[role]}</span><span className="loop-role-edit">{LOOP.edit}</span></button>
+        <Switch label={<span className="visually-hidden">{roleNames[role]}启用</span>} checked={cfg.enabled} disabled={disabled} onChange={e => edit(role, { enabled: e.target.checked })} />
+      </div>
+      <p>{cfg.runtime === 'claude' ? 'Claude Code' : 'Codex'}</p>
+      <div className="loop-role-model"><span title={cfg.model || 'CLI 默认'}>{cfg.model || 'CLI 默认'}</span><span className="pill">{cfg.effort ?? 'Effort 默认'}</span></div>
+      <div className="loop-role-badges"><span className="pill">{cfg.skills.length} 个技能</span>{data.project && <span className="pill">{data.config!.resolved.roles.find(r => r.role === role)?.provenance === 'project' ? '项目覆盖' : '跟随全局'}</span>}</div>
+      {!cfg.enabled && <small className="loop-role-disabled" title={LOOP.disabled}>{LOOP.disabled}</small>}
     </Card>;
   };
   return <div className="loop-page" data-testid={TEST_IDS.pageLoop}><header><Ribbon color="blue">Loop 配置</Ribbon><nav className="seg" aria-label="配置范围"><Link aria-current={!data.project ? 'page' : undefined} to="/loop">全局默认</Link>{data.projects.map(p => <Link key={p.id} aria-current={data.project === p.id ? 'page' : undefined} to={`/loop?project=${encodeURIComponent(p.id)}`}>{p.display_name}</Link>)}</nav>{Object.keys(patches).length > 0 && <button disabled={disabled || violations.length > 0 || !order} onClick={() => submit(order!)}>保存 {Object.keys(patches).length} 项改动</button>}</header>

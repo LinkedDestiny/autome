@@ -438,9 +438,25 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .loop-page { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .loop-page header { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
 .loop-body { min-height: 0; overflow: auto; flex: 1; }
-.loop-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 16px 0 24px; }
-.loop-row .card { padding: 18px; min-width: 0; overflow-wrap: anywhere; }
+.loop-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 8px 0 12px; }
+.loop-row .card { padding: 12px 14px; min-width: 0; }
 .loop-role button { background: transparent; border: 0; padding: 0; text-align: left; }
+.loop-role { position: relative; display: flex; flex-direction: column; gap: 5px; font-size: 12px; transition: transform var(--animal-duration-fast) var(--animal-ease); }
+.loop-role p { margin: 0; }
+.loop-role-head { display: flex; align-items: center; justify-content: space-between; gap: 5px; }
+.loop-role-head button { display: flex; align-items: center; gap: 6px; }
+.loop-role-head button::after { content: ''; position: absolute; inset: 0; }
+.loop-role-head .switch { position: relative; z-index: 1; flex: none; gap: 0; }
+.loop-role-name { font-size: 15px; font-weight: 900; }
+.loop-role-edit { font-size: 12px; color: var(--animal-text-muted); }
+.loop-role:hover, .loop-role:focus-within { transform: translateY(-2px); box-shadow: var(--animal-shadow-base); }
+.loop-role:hover .loop-role-edit, .loop-role:focus-within .loop-role-edit { color: var(--animal-primary); }
+.loop-role-model { display: flex; align-items: center; gap: 5px; white-space: nowrap; min-width: 0; }
+.loop-role-model > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
+.loop-role-model .pill { flex: none; }
+.loop-role-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.loop-role .pill { height: 21px; padding: 0 6px; font-size: 11px; }
+.loop-role-disabled { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .loop-conflict { outline: 3px solid var(--animal-error); }
 .loop-drawer { width: min(440px, 90vw); }
 

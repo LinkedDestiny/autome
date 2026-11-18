@@ -7,3 +7,5 @@
 
 实现 #4 | M-03 | 待审 | docs/面板观感收尾/evidence/M-03-r4-impl.md | 快检 e2e 初始化 ps EPERM，宿主复验
 审计 #3 | M-03 | 通过 | docs/面板观感收尾/evidence/M-03-r4-audit.md | 无（抽屉浏览器用例由宿主 e2e 承担）
+
+实现 #5 | M-04 | 待审 | docs/面板观感收尾/evidence/M-04-r5-impl.md | 快检监听与 ps 被沙箱拒绝，待宿主复验

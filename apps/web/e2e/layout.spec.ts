@@ -32,11 +32,22 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
       expect(style.shadow).not.toBe('none');
       await expect(scope).toHaveCSS('column-gap', '4px');
     };
+    const assertRoleCards = async () => {
+      for (const card of await page.getByTestId('loop-role').all()) {
+        const bounds = await card.boundingBox();
+        expect(bounds!.height).toBeLessThanOrEqual(160);
+        const model = await card.locator('.loop-role-model > span').first().boundingBox();
+        const effort = await card.locator('.loop-role-model .pill').boundingBox();
+        expect(Math.abs((model!.y + model!.height / 2) - (effort!.y + effort!.height / 2))).toBeLessThanOrEqual(1);
+      }
+    };
     await expect(current).toHaveText('全局默认');
     await assertSelected();
+    await assertRoleCards();
     await scope.locator('a').nth(1).click();
     await expect(current).not.toHaveText('全局默认');
     await assertSelected();
+    await assertRoleCards();
     await expect(page.getByRole('navigation', { name: '项目配置页签' }).locator('[aria-current="page"]')).toHaveText('Loop 配置');
     await scope.getByRole('link', { name: '全局默认' }).click();
     await expect(current).toHaveText('全局默认');
