@@ -19,3 +19,5 @@
 审计 #6 | M-06 | 通过 | docs/面板观感收尾/evidence/M-06-r8-audit.md | 无
 
 实现 #9 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r9-impl.md | 快检真实内核与浏览器清理受 ps EPERM 限制
+
+实现 #10 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r10-impl.md | 浏览器启动受 ps EPERM 限制，宿主复验

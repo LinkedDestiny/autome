@@ -277,6 +277,11 @@ it('40px 紧凑行、折叠省略与展开换行，更早会话是按钮链接',
   expect(renderEntries([], 0)).not.toContain('显示更早的');
   expect(renderEntries([])).toContain('还没有执行记录');
 });
+it('首屏十条的密度预算包含行间距与分组标题外边距', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/\.task-timeline li\s*\{[^}]*margin: 0 12px;/);
+  expect(css).toMatch(/\.timeline-group-title\s*\{[^}]*margin: 4px 12px;/);
+});
 it('R1-P01 长系统事件与多里程碑摘要均有独立完整文字展开入口', () => {
   const rows = build([
     ev(1, 'task.processes_stopped', { processes: [1, 2, 3].map(pid => ({ pid, command: 'long-command '.repeat(30) })), survivors: [{ pid: 4, error: '末尾错误原因 EPERM' }] }),

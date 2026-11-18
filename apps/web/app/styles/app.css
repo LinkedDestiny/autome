@@ -437,9 +437,9 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-milestones li { display: flex; align-items: center; gap: 4px; }
 .task-detail-body { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
 .timeline-filters { flex-shrink: 0; }
-.timeline-group-title { display: flex; justify-content: space-between; gap: 8px; margin: 8px 12px; font-size: 14px; }
+.timeline-group-title { display: flex; justify-content: space-between; gap: 8px; margin: 4px 12px; font-size: 14px; }
 .timeline-group-title small { font-size: 11px; font-weight: 400; }
-.task-timeline li { margin: 2px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
+.task-timeline li { margin: 0 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
 .task-timeline .timeline-gate { background: var(--animal-primary-bg); }
 .task-timeline .timeline-user { background: var(--ui-card-yellow-bg); }
 
