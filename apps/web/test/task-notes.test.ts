@@ -42,3 +42,7 @@ it('空串空白及 8001 拒绝，1 与 8000 保留原文', async () => {
 });
 it('离线禁用并显示原因',()=>{expect(render({state:'draft'},[],{},false)).toContain('<fieldset disabled=""');expect(render({state:'draft'},[],{},false)).toContain('内核离线');});
 it('旧内核无 notes 仍可显示，未知角色不误标',()=>{expect(render({state:'draft'})).toContain('备注正文');expect(render({state:'active'},[{n:1,text:'x',at:'2026-11-15',delivered:{role:'future',round:2,at:'2026-11-15'}}])).toContain('future 第 2 轮');});
+it('备注正文按 Markdown 渲染：列表与行内代码', () => {
+  const html = render({ state: 'draft' }, [{ n: 1, text: '说明 `code`\n\n- 甲\n- 乙', at: '2026-11-15T00:00:00Z' }]);
+  expect(html).toContain('<code>code</code>'); expect(html).toContain('<ul>'); expect(html).toContain('<li>甲');
+});

@@ -201,3 +201,12 @@ test('添加技能：每个角色字段变更都确认，全局路径与空模�
     }
   } finally { navigationHarness.active = false; vi.unstubAllGlobals(); }
 });
+test('没有项目覆盖时「恢复跟随全局」置灰，有覆盖时可点', () => {
+  for (const overridden of [false, true]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: resolvedRoles(cfg).plan, project: 'p', overridden, disabled: false, saveDisabled: true, onEdit() {}, onSave() {}, onReset() {}, onClose() {} } as never) }]);
+    try {
+      const foot = renderToString(h(RouterProvider, { router })).match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+      expect(/<button[^>]*disabled[^>]*>恢复跟随全局/.test(foot)).toBe(!overridden);
+    } finally { router.dispose(); }
+  }
+});
