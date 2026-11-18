@@ -40,7 +40,7 @@ export function SkillDrawer({ skill, scope, roles, selected, project, disabled, 
   skill: SkillEntry; scope: BindingScope; roles: Roles; selected: Role[]; project?: string; disabled: boolean;
   onScope: (s: BindingScope) => void; onRoles: (r: Role[]) => void; onSave: () => void; onOpen: (source: number) => void; onClose: () => void; result?: BindingResult;
 }) {
-  return <Drawer className="skills-drawer" label={`绑定 ${skill.name}`} title={skill.name} onClose={onClose} footer={<>    <button className="btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
+  return <Drawer className="skills-drawer" label={`绑定 ${skill.name}`} title={skill.name} onClose={onClose} footer={<>    <button className="btn btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
     {result?.error && <p role="alert">{result.error}</p>}{result && !result.error && <p role="status">{result.saved.length ? '绑定已保存' : '无需修改绑定'}</p>}{result?.messages.map(m => <p key={m} role="status">{m}</p>)}
 </>}><h3>绑定范围</h3>
     <Segmented name="binding-scope" label="绑定范围" value={scope} disabled={disabled} onChange={v => onScope(v as BindingScope)} options={[{ value: 'global', label: '全局 · 所有项目', disabled: !scopedSkill(skill, 'global') }, { value: 'project', label: '仅当前项目', disabled: !project }]} />

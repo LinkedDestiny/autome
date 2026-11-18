@@ -1,10 +1,10 @@
 # 面板浮层与面板内部排布缺陷（重提 T-103）
 
 status: 已定位
-fix-round: 3/3
+fix-round: 4/4
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -51,6 +51,16 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 第 2 轮：复核指出角色抽屉 Effort 分段只有 aria-label、无可见标签。`routes/loop.tsx` 把 Effort 分段包进 `div.field` 并加可见 `<span>Effort</span>`，与「模型」字段同一纵向布局。复核第 5 点（铃铛面板裁切）为待实测风险，未改。验证：vitest loop-page/loop-defaults 36 例通过；ci-quick 见提交。
 
 第 3 轮：宿主门禁失败原因是 e2e globalSetup 的 w7-flow.sh 在机器高负载（load average 约 90）下耗时 150.6s，超过 150s 的 prepare 上限（ETIMEDOUT），6 个用例未执行，不是产品断言失败。产品代码与测试均未改动；在本轮会话重跑 `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts`，6 例全部通过（总计 2.5 分钟，其中大部分是夹具准备）。该超时依赖宿主负载，修复轮不能修改夹具/回归测试，如门禁再因准备超时失败，请在负载较低时重跑。
+
+第 4 轮（操作者备注 #1，两件事）：
+1. 角色抽屉 footer：「恢复跟随全局」加 `btn btn-sm`（保留 overridden 判断、禁用条件与确认交互），「保存」加 `btn btn-primary`；技能抽屉「保存绑定」原为裸 `btn-primary`，同步为 `btn btn-primary`，两个抽屉写法一致。`loop-page.test.ts` 的恢复按钮用例补两条类名断言。
+2. 铃铛最坏情况实测（1512×944，`page.route` 补 6 条两行长标题+正文未读通知，通知权限 default、有「开启系统通知」行）：改前每条 93px，面板 clientHeight 564（60vh），第 5 条下边缘 643.8px，面板可视区下边缘 635px，被裁约 9px。改 `.bell-panel` 为 `max-height: min(72vh, 680px)`：clientHeight 678，可视区下边缘 749px，第 5 条下边缘 643.8px 完整可见，面板底 749.7px 未超出 944 视口。`layout.spec.ts`「总览铃铛」补「前 5 条（不足则取现有条数）最后一条下边缘不超过面板可视区下边缘」断言；`bell-view.test.ts` 中钉死 60vh 的样式断言同步为新值（该文件不在回归保护内）。
+验证：`cd apps/web && npx playwright test e2e/overlay-layout.spec.ts e2e/layout.spec.ts` 22 例通过；vitest loop-page/skills-page/loop-defaults/bell-view 59 例通过；ci-quick 见提交。overlay-layout.spec.ts 未改动。
+
+### 操作者备注处理
+
+- 备注 1（恢复按钮小号、保存主按钮、补类名断言）：照做。
+- 备注 2（实测铃铛）：照做，实测被裁 9px，已改样式并补断言，数字见上。
 
 ## 复核意见
 

@@ -43,7 +43,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .bell { position: relative; color: var(--animal-text-body); }
 .bell-button { display: flex; align-items: center; }
 .bell-badge { margin-left: 6px; color: var(--animal-error-active); font-weight: 600; }
-.bell-panel { position: absolute; right: 0; margin-top: 8px; width: min(380px, calc(100vw - 40px)); max-height: 60vh; overflow-y: auto; min-height: 0; background: var(--animal-bg); border: 1px solid var(--animal-border); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); }
+.bell-panel { position: absolute; right: 0; margin-top: 8px; width: min(380px, calc(100vw - 40px)); max-height: min(72vh, 680px); overflow-y: auto; min-height: 0; background: var(--animal-bg); border: 1px solid var(--animal-border); border-radius: var(--animal-radius); box-shadow: var(--animal-shadow-lg); }
 .bell-header { display: flex; justify-content: space-between; align-items: center; padding: 16px; }
 .bell-request { margin: 0 16px 16px; }
 .bell-message { padding: 0 16px; }

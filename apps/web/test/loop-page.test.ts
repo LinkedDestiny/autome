@@ -207,6 +207,8 @@ test('没有项目覆盖时「恢复跟随全局」置灰，有覆盖时可点',
     try {
       const foot = renderToString(h(RouterProvider, { router })).match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
       expect(/<button[^>]*disabled[^>]*>恢复跟随全局/.test(foot)).toBe(!overridden);
+      expect(/<button class="btn btn-sm"[^>]*>恢复跟随全局/.test(foot)).toBe(true);
+      expect(/<button class="btn btn-primary"[^>]*>保存</.test(foot)).toBe(true);
     } finally { router.dispose(); }
   }
 });
