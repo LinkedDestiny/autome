@@ -27,3 +27,4 @@
 审计 #7 | M-07 | 退回 + 任务详情时间线几何 | docs/面板观感收尾/evidence/M-07-r13-audit.md | 无
 
 实现 #14 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r14-impl.md | 浏览器 ps EPERM，宿主需以重建产物复验
+审计 #8 | M-07 | 通过 | docs/面板观感收尾/evidence/M-07-r14-audit.md | 无
