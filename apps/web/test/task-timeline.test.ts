@@ -284,7 +284,7 @@ it('首屏十条的密度预算包含行间距与分组标题外边距', () => {
 });
 it('桌面详情给时间线留出高度，上方阶段与提示保留内部滚动', () => {
   const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
-  expect(css).toMatch(/@media \(min-width: 1100px\) and \(min-height: 800px\)\s*\{\s*\.task-page\s*\{ gap: 8px; \}/);
+  expect(css).toMatch(/@media \(min-width: 1100px\) and \(min-height: 800px\)\s*\{\s*\.task-page\s*\{ gap: 4px; \}/);
   expect(css).toMatch(/\.task-page > \.task-stage\s*\{ max-height: 96px; \}/);
   expect(css).toMatch(/\.task-page > \.task-summary-tiles\s*\{ margin: 0; \}/);
   expect(css).toMatch(/\.task-page > \.task-controls\s*\{ max-height: 48px; \}/);

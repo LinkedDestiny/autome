@@ -440,7 +440,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 /* Keep the desktop timeline usable: header regions share the vertical budget.
  * Stage and notice contents remain reachable through their existing scroll areas. */
 @media (min-width: 1100px) and (min-height: 800px) {
-  .task-page { gap: 8px; }
+  .task-page { gap: 4px; }
   .task-page > .task-stage { max-height: 96px; }
   .task-page > .task-summary-tiles { margin: 0; }
   .task-summary-tiles .tile { padding: 2px 12px; }
