@@ -40,3 +40,4 @@
 审计 #11 | M-10 | 通过 | docs/面板观感收尾/evidence/M-10-r18-audit.md | 无
 
 实现 #19 | M-11 | 待审 | docs/面板观感收尾/evidence/M-11-r19-impl.md | 无；实际拍图保留 H-01
+审计 #12 | M-11 | 通过 | docs/面板观感收尾/evidence/M-11-r19-audit.md | 无
