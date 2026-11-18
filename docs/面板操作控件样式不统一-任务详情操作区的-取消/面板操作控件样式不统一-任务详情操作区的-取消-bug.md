@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -46,7 +46,38 @@ fix-round: 3/3
 
 ## 复核意见
 
-### 第 2/3 轮独立复核（当前结论：打回）
+### 第 3/3 轮独立复核（当前结论：打回）
+
+复核 HEAD：`d1b93b41925ba305d0f4247304123a344d12b3dd`。检查定位提交 `6d54414f` 至 HEAD 的全部产品及测试差异，并单独核对第 3 轮修复提交 `dfaae548`、`d1b93b41`；已读取任务卡、协议、四张附件及参考 HTML 的按钮定义。本轮打回依据是任务卡范围内仍存在的迁移遗漏，不是缺少全量门禁或沙箱浏览器权限。
+
+#### 必须修复
+
+1. **P2：全站仍有未迁移的操作入口。** `apps/web/app/components/queue-controls.tsx:12` 的「调整顺序」仍为 `<summary>调整顺序</summary>`，没有统一按钮类名；它直接展开调序表单，不属于时间线或日志展开三角的豁免。`task-card.tsx:29` 表明，当任务处于排队态且队列多于一项时，该入口会显示。此次只迁移了表单内部三枚按钮，入口依旧是裸文字。参考 `docs/design/autome-web-panel-v3.html:350` 的同名入口也明确使用小号按钮。另一个遗漏是 `apps/web/app/routes/projects.new.tsx:86` 的路径建议按钮：有建议结果时，它仍没有 className；`app.css:222,587` 仅补宽度、边框和间距，尺寸、底色仍来自裸 button 兜底，不是统一 `.btn`。两者违反任务卡期望 0、4 的全站迁移要求。应补齐这些实际可达的操作入口，保留原生展开、选择路径行为、文案、字段与测试标识；不能以全局兜底已缩至 30px 代替迁移。
+2. **P2：抽屉小号尺寸仍漏了技能抽屉。** `apps/web/app/routes/skills.tsx:43` 的「保存绑定」仍是 `btn btn-primary`，由 `app.css:334` 得到 38px；同一抽屉的「关闭」（`components/ui/drawer.tsx:11`）及「打开目录」（`routes/skills.tsx:51`）是 30px。第 3 轮新增的 `app.css:595` 只匹配 `.loop-drawer .drawer-foot .btn`，不匹配 `.skills-drawer`，因此只能修复 Loop 抽屉。任务卡期望 0 明确把抽屉列为小号 30px 场景，打开技能卡即有反例。应统一抽屉操作尺寸，保留主按钮变体与绑定行为。这是源码及 CSS 层叠结论，本轮未取得浏览器计算尺寸，不把静态核查冒充实测。
+
+#### 上轮问题闭环、根因与范围
+
+- Loop 角色「编辑」和「保存 N 项改动」已补统一小号类名；Loop 抽屉保存按钮通过限定选择器设为 30px。铃铛 `.bell-footer .btn-sm` 已去除 24px 高度覆盖，保留 `flex: none`，现在使用统一 30px 规则。
+- 两处被修改的测试断言已恢复。`git diff --quiet 6d54414f HEAD -- apps/web/test apps/web/e2e` 退出码 0；产品仅调整新增 className 的属性顺序以兼容原断言。定位至当前版本没有删除、跳过、改名或弱化测试，不再沿用上一轮关于测试改动的打回项。
+- 原根因成立：裸按钮、统一按钮、裸操作链接/summary 并存。任务详情取消/返回及表单入口已经采用 `.btn.btn-sm`，停止、取消、确认取消使用危险变体；危险样式位于基础按钮规则之后，使用既有 error 令牌。Link 跳转、表单参数、禁用条件与事件保持原行为。
+- 定位至 HEAD 的产品差异为 17 个 Web 文件、增加 51 行/删除 42 行，集中于按钮类名、公共样式和危险变体，没有内核改动；第 3 轮本身围绕上轮意见修复，未发现无关功能扩张。但全站统一是原任务范围，不能只修上轮列出的例子后据此认定完成。
+
+#### 回归测试审查
+
+- `action-controls.spec.ts` 两个用例与定位版本完全一致。操作区等高、同行、边框/底色与圆角、取消确认态同行断言能抓住原始问题；全站尺寸清扫也有实际回归价值。
+- 覆盖边界仍然存在：清扫只选 `button:visible`，不检查操作 summary，也不检查是否使用统一类名；没有输入路径触发建议列表、打开技能抽屉或打开铃铛；允许任意按钮为 30 或 38px，不能判断抽屉必须为 30px。因此上述遗漏与现有回归命令通过可以同时成立。
+- 未声明「回归测试: 有缺陷」：本轮没有产品已满足要求却被错误回归断言阻断的证据。现有 `queue-deps.test.ts` 用例 7 固定匹配裸 summary 标记，是后续迁移时须处理的验证约束；当前产品入口尚未修好，本轮不改测试，也不以预期冲突代替协议要求的实际失败证据。
+
+#### 独立复验与限制
+
+- 原样执行头部复现命令：客户端、服务端构建成功；Playwright 在 globalSetup 遭遇 `spawnSync ps EPERM`，退出码 1，两个用例未进入断言，清理也被同一权限限制阻断。日志：`.autome/output/independent-review-r3/repro.log`。
+- 执行 `cd apps/web && npx playwright test e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '需求详情展开日志|任务详情页头与文档页签'`：同样在 globalSetup 被 `spawnSync ps EPERM` 阻断，退出码 1。时间线密度及页头布局没有完成本轮浏览器复验。日志：`.autome/output/independent-review-r3/related-e2e.log`。没有绕过沙箱或修改测试夹具。
+- 执行 `cd apps/web && npx vitest run test/task-ops-view.test.ts test/task-ops.test.ts test/testids.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/task-header.test.ts test/task-new.test.ts test/loop-defaults.test.ts test/settings-config.test.ts test/loop-page.test.ts test/bell.test.ts test/session-log-view.test.ts test/queue-deps.test.ts test/task-notes.test.ts test/task-decisions.test.ts test/add-project.test.ts test/env-page.test.ts`：实际 16 文件、218 项通过，退出码 0；其中 `test/bell.test.ts` 不存在，未计为执行或通过。日志：`.autome/output/independent-review-r3/unit.log`。
+- 补充执行 `cd apps/web && npx vitest run test/bell-view.test.ts test/skills-page.test.ts`：2 文件、23 项通过，退出码 0。两组合计 18 文件、241 项通过。日志：`.autome/output/independent-review-r3/unit-overlays.log`。
+- 用户提供的宿主复现命令及快检退出码 0 作为已有证据，不能等同于全量门禁或本轮独立浏览器验收。按要求未执行 `sh scripts/ci-local.sh`；全量门禁留给宿主在合并前运行，不因本轮缺少全量结果而打回。
+- 本轮仅修改本 Bug 文档的复核字段与复核意见，保持 status、fix-round、复现命令、根因及 repos 不变；没有修改产品或测试，没有临时缺陷注入，不合并、不推送、不启动后续会话。
+
+### 第 2/3 轮独立复核（历史结论：打回）
 
 复核 HEAD：`05527e722fc43e976e9282771a9a306f699dd27b`；产品修复提交：`b7aa8181`；核对定位提交 `6d54414f` 至 HEAD 的完整差异，并单独检查上一轮修复 `f2647a41` 后的变化。已读取任务卡、协议、四张附件及参考 HTML 的按钮定义。
 
