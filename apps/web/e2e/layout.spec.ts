@@ -72,7 +72,27 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await page.getByTestId('bell-button').click();
     await expect(page.getByTestId('bell-panel')).toBeVisible();
   }
-  if (name === '需求详情展开日志') { await expandLog(page); await expect(page.locator('.task-summary-tiles .tile')).toHaveCount(6); await page.screenshot({ path: '../../.autome/output/m06-detail.png' }); }
+  if (name === '需求详情展开日志') {
+    const timeline = page.getByTestId('timeline');
+    const rows = timeline.locator('li.timeline-row').filter({ hasNot: page.locator('[open]') });
+    expect(await rows.count()).toBeGreaterThan(0);
+    await timeline.evaluate(el => { el.scrollTop = 0; });
+    const bounds = await timeline.boundingBox();
+    for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeLessThanOrEqual(44);
+    for (const row of (await rows.all()).slice(0, 10)) {
+      const box = (await row.boundingBox())!;
+      expect(box.y).toBeGreaterThanOrEqual(bounds!.y);
+      expect(box.y + box.height).toBeLessThanOrEqual(bounds!.y + bounds!.height);
+    }
+    const plain = timeline.locator('li.timeline-event').filter({ hasNot: page.locator('.session-log, .timeline-failure') }).first().locator('.timeline-text');
+    const summary = plain.locator(':scope > summary');
+    const complete = await summary.textContent();
+    await summary.click();
+    await expect(plain).toHaveAttribute('open', '');
+    await expect(summary).toHaveCSS('white-space', 'normal');
+    expect(await summary.textContent()).toBe(complete);
+    await summary.click();
+    await expandLog(page); await expect(page.locator('.task-summary-tiles .tile')).toHaveCount(6); await page.screenshot({ path: '../../.autome/output/m06-detail.png' }); }
   if (name === '添加项目补全') {
     await page.getByTestId('path-input').fill('~/');
     await expect(page.getByTestId('path-suggestion').first()).toBeVisible();

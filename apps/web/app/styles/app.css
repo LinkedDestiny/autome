@@ -135,9 +135,18 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 
 .task-timeline { min-height: 0; overflow-y: auto; overflow-anchor: none; }
 .task-timeline ol { list-style: none; margin: 0; padding: 0; }
-.task-timeline li { padding: 12px 16px; border-bottom: 1px solid var(--animal-border); }
-.task-timeline h3 { margin: 0; font-size: 1rem; }
-.timeline-meta { overflow-wrap: anywhere; color: var(--animal-text-secondary); font-size: .85rem; }
+.timeline-row { display: grid; grid-template-columns: 52px auto minmax(0, 1fr) auto auto; grid-auto-columns: auto; align-items: center; gap: 8px; min-block-size: 40px; padding: 4px 10px; font-size: 12px; }
+.timeline-text { min-width: 0; }
+.timeline-text > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.timeline-text[open] > summary { white-space: normal; overflow-wrap: anywhere; }
+.timeline-text p { margin: 4px 0; overflow-wrap: anywhere; }
+.timeline-metrics { white-space: nowrap; color: var(--animal-text-secondary); }
+.timeline-result { display: flex; align-items: center; gap: 4px; }
+.timeline-failure > summary { cursor: pointer; white-space: nowrap; padding: 2px 8px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); background: var(--animal-bg-content); }
+.timeline-failure[open] { max-width: 240px; overflow-wrap: anywhere; }
+.timeline-row > .session-log { grid-column: 6; margin: 0; min-width: 0; }
+.timeline-row > .session-log > summary { padding: 2px 6px; font-size: 11px; white-space: nowrap; }
+.timeline-row > .session-log[open] { grid-column: 1 / -1; }
 .timeline-unverified { color: var(--animal-error-active); }
 .timeline-step { color: var(--animal-text-secondary); }
 
@@ -430,7 +439,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .timeline-filters { flex-shrink: 0; }
 .timeline-group-title { display: flex; justify-content: space-between; gap: 8px; margin: 8px 12px; font-size: 14px; }
 .timeline-group-title small { font-size: 11px; font-weight: 400; }
-.task-timeline li { margin: 6px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
+.task-timeline li { margin: 2px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
 .task-timeline .timeline-gate { background: var(--animal-primary-bg); }
 .task-timeline .timeline-user { background: var(--ui-card-yellow-bg); }
 
