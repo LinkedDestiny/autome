@@ -1,3 +1,4 @@
+import { SegmentedTabs } from './ui/segmented.tsx';
 import { timelineGroups } from './task-timeline-model.ts';
 import { Ribbon } from './ui/ribbon.tsx';
 import { Pill } from './ui/pill.tsx';
@@ -24,7 +25,7 @@ export function TaskTimeline({ entries, window, truncated, error }: { entries: T
     return suffix && value.endsWith(suffix) ? <>{value.slice(0, -suffix.length)}<span className="timeline-log" title={log}>{suffix}</span></> : value;
   };
   return <section ref={container} className="task-timeline" data-testid={TEST_IDS.timeline} data-scroll-region aria-label={t.title}>
-    <Ribbon small>执行过程</Ribbon><nav className="timeline-filters" aria-label="执行过程筛选">{[['', '全部'], ['gates', '只看门禁'], ['reopens', '只看退回']].map(([value, label]) => <Link key={value} preventScrollReset aria-current={(search.get('show') ?? '') === value ? 'page' : undefined} to={`?${withParams(search, { set: { show: value } })}`}>{label}</Link>)}</nav>{truncated && <p>{t.truncated}</p>}{error && <p role="status">{error}</p>}
+    <Ribbon small>执行过程</Ribbon><SegmentedTabs className="timeline-filters" label="执行过程筛选">{[['', '全部'], ['gates', '只看门禁'], ['reopens', '只看退回']].map(([value, label]) => <Link key={value} preventScrollReset aria-current={(search.get('show') ?? '') === value ? 'page' : undefined} to={`?${withParams(search, { set: { show: value } })}`}>{label}</Link>)}</SegmentedTabs>{truncated && <p>{t.truncated}</p>}{error && <p role="status">{error}</p>}
     {window.earlier > 0 && <Link preventScrollReset to={`?${withParams(search, { set: { timeline: 'all' }, remove: ['from'] })}`} onClick={() => { savedScroll.current = container.current?.scrollTop ?? null; }}>显示更早的 {window.earlier} 个会话</Link>}
     {!entries.length && <p>{t.empty}</p>}
     <div>{timelineGroups(entries, search.get('show')).map(group => <section key={group.label}><h2 className="timeline-group-title">{group.label}<small>{formatRange(group.start, group.end, clock)}</small></h2><ol>{group.entries.map(entry => <li data-testid={TEST_IDS.timelineEntry} data-entry-key={entry.key} data-node={entry.node} key={entry.key} className={`${entry.session ? 'timeline-session' : 'timeline-step'} timeline-${entry.kind ?? 'event'}`}>

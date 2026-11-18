@@ -14,6 +14,32 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   try {
   await visit(page, path.replace(/^project/, `/projects/${encodeURIComponent(state().projectId)}`));
   if (name === 'Loop 配置') { await expect(page.getByTestId('loop-role')).toHaveCount(6); await expect(page.locator('.loop-row .card-dash')).toHaveCount(4); await page.screenshot({ path: '../../.autome/output/m07-layout.png' }); }
+  if (name === 'Loop 配置') {
+    const scope = page.getByRole('navigation', { name: '配置范围' });
+    const current = scope.locator('a[aria-current="page"]');
+    const assertSelected = async () => {
+      const style = await current.evaluate(el => {
+        const computed = getComputedStyle(el);
+        const probe = document.createElement('span');
+        probe.style.backgroundColor = 'var(--ui-surface)';
+        el.append(probe);
+        const surface = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return { background: computed.backgroundColor, shadow: computed.boxShadow, surface };
+      });
+      expect(style.background).toBe(style.surface);
+      expect(style.shadow).not.toBe('none');
+      await expect(scope).toHaveCSS('column-gap', '4px');
+    };
+    await expect(current).toHaveText('全局默认');
+    await assertSelected();
+    await scope.locator('a').nth(1).click();
+    await expect(current).not.toHaveText('全局默认');
+    await assertSelected();
+    await expect(page.getByRole('navigation', { name: '项目配置页签' }).locator('[aria-current="page"]')).toHaveText('Loop 配置');
+    await scope.getByRole('link', { name: '全局默认' }).click();
+    await expect(current).toHaveText('全局默认');
+  }
   if (name.startsWith('总览')) {
     const sidebar = page.locator('.shell-sidebar');
     for (const href of ['/', '/loop', '/skills', '/env']) await expect(sidebar.locator('a[href="' + href + '"]')).toBeVisible();

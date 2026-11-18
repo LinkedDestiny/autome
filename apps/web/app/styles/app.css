@@ -71,8 +71,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .board-config-error { max-height: 120px; overflow: auto; }
 .board-header { display: flex; align-items: center; gap: 16px; }
 .board-header h1 { margin: 0 auto 0 0; min-width: 0; overflow-wrap: anywhere; color: var(--animal-text); }
-.board-filters { display: flex; gap: 4px; flex-shrink: 0; }
-.board-filters button[aria-pressed="true"] { background: var(--animal-primary-bg); font-weight: 800; }
+.board-filters { flex-shrink: 0; }
 .board-new { padding: 10px 16px; border-radius: var(--animal-radius-sm); background: var(--animal-primary-bg); white-space: nowrap; }
 .board-columns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 0; flex: 1; gap: 16px; }
 .board-column { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -153,9 +152,8 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-detail-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; overflow: hidden; }
 .task-detail-body > .task-timeline { background: var(--animal-bg-content); border-radius: var(--animal-radius); min-width: 0; }
 .task-detail-panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--animal-bg-content); border-radius: var(--animal-radius); }
-.task-detail-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; flex-shrink: 0; }
-.task-detail-tabs a { padding: 8px; border-radius: var(--animal-radius-sm); }
-.task-detail-tabs [aria-current="page"], .task-merge-progress [aria-current="step"] { background: var(--animal-primary-bg); font-weight: 800; }
+.task-detail-tabs { flex-shrink: 0; }
+.task-merge-progress [aria-current="step"] { background: var(--animal-primary-bg); font-weight: 800; }
 .task-detail-panel > .task-docs { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
 .task-docs h2 { margin: 0; padding: 0 12px; font-size: 1rem; }
 .task-docs nav { max-height: 30%; overflow-y: auto; flex-shrink: 0; }
@@ -297,12 +295,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .btn-sm { height: 30px; padding: 0 14px; font-size: 12px; }
 .btn-text { border-color: transparent; background: none; }
 .btn:disabled { background: var(--animal-bg-disabled); color: var(--animal-text-muted); box-shadow: none; }
-.seg { display: inline-flex; gap: 4px; background: var(--animal-bg-secondary); border-radius: var(--animal-radius-pill); padding: 3px; }
+.seg { width: fit-content; max-width: 100%; overflow-x: auto; overflow-y: hidden; display: inline-flex; gap: 4px; background: var(--animal-bg-secondary); border-radius: var(--animal-radius-pill); padding: 3px; }
 .seg label, .switch { position: relative; display: inline-flex; align-items: center; }
 .seg input, .switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.seg span { display: inline-flex; align-items: center; min-height: 26px; padding: 0 12px; border-radius: var(--animal-radius-pill); font-size: 12px; font-weight: 700; color: var(--animal-text-muted); cursor: pointer; }
-.seg input:checked + span { background: var(--ui-surface); color: var(--animal-text); box-shadow: var(--animal-shadow-sm); }
-.seg input:focus-visible + span, .switch input:focus-visible + span { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
+.seg > a, .seg > button, .seg label > span { display: inline-flex; align-items: center; min-height: 26px; padding: 0 12px; flex-shrink: 0; gap: 4px; white-space: nowrap; border: 0; background: transparent; text-decoration: none; border-radius: var(--animal-radius-pill); font-size: 12px; font-weight: 700; color: var(--animal-text-muted); cursor: pointer; }
+.seg > [aria-current="page"], .seg > [aria-pressed="true"], .seg input:checked + span { background: var(--ui-surface); color: var(--animal-text); box-shadow: var(--animal-shadow-sm); }
+.seg > a:focus-visible, .seg > button:focus-visible, .seg input:focus-visible + span, .switch input:focus-visible + span { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
 .seg input:disabled + span, .switch input:disabled ~ span { opacity: .5; cursor: not-allowed; }
 .switch { gap: 8px; cursor: pointer; }
 .switch input + span { display: inline-block; position: relative; width: 40px; height: 24px; border-radius: var(--animal-radius-pill); background: var(--animal-border); }
@@ -417,15 +415,12 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-milestones { margin-bottom: 0; font-size: 12px; }
 .task-milestones li { display: flex; align-items: center; gap: 4px; }
 .task-detail-body { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
-.timeline-filters { display: flex; gap: 12px; padding: 12px; font-size: 12px; }
-.timeline-filters [aria-current="page"] { font-weight: 800; text-decoration: underline; }
+.timeline-filters { flex-shrink: 0; }
 .timeline-group-title { display: flex; justify-content: space-between; gap: 8px; margin: 8px 12px; font-size: 14px; }
 .timeline-group-title small { font-size: 11px; font-weight: 400; }
 .task-timeline li { margin: 6px 12px; border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); }
 .task-timeline .timeline-gate { background: var(--animal-primary-bg); }
 .task-timeline .timeline-user { background: var(--ui-card-yellow-bg); }
-.task-detail-tabs { gap: 4px; padding: 8px; font-size: 12px; }
-.task-detail-tabs a { display: flex; align-items: center; gap: 4px; }
 
 .loop-page { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .loop-page header { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }

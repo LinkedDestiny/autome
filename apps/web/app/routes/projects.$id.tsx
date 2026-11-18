@@ -55,7 +55,7 @@ export default function ProjectBoard() {
   const cancelledHref = location.pathname + (cancelledQuery.size ? '?' + cancelledQuery : '');
   const cancelledCount = data.cancelledCounts?.[kind] ?? 0;
   return <div className="board" data-testid={TEST_IDS.pageBoard}><header className="board-header"><h1>{data.project.display_name}</h1>
-    <div className="board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
+    <div className="seg board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
     <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
     <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}

@@ -7,7 +7,7 @@ import { Pill, type PillColor } from '../app/components/ui/pill.tsx';
 import { Tile } from '../app/components/ui/tile.tsx';
 import { Progress } from '../app/components/ui/progress.tsx';
 import { Button } from '../app/components/ui/button.tsx';
-import { Segmented } from '../app/components/ui/segmented.tsx';
+import { Segmented, SegmentedTabs } from '../app/components/ui/segmented.tsx';
 import { Switch } from '../app/components/ui/switch.tsx';
 import { Stepper } from '../app/components/ui/stepper.tsx';
 import { Input } from '../app/components/ui/input.tsx';
@@ -151,4 +151,10 @@ it('开关与勾选的原生变更回调保留两个方向', () => {
     check!.props.children[0].props.children[0].props.onChange({ currentTarget: { checked } });
   }
   expect(changes).toEqual([true, true, false, false]);
+});
+
+it('链接分段保留导航语义、类名、空与单元素子项', () => {
+  expect(render(h(SegmentedTabs, { label: '范围', children: null }))).toContain('aria-label="范围"');
+  const html = render(h(SegmentedTabs, { label: '范围', className: 'scope-tabs', children: h('a', { href: '/loop', 'aria-current': 'page' }, '全局') }));
+  expect(html).toBe('<nav class="seg scope-tabs" aria-label="范围"><a href="/loop" aria-current="page">全局</a></nav>');
 });
