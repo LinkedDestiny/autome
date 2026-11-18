@@ -27,3 +27,14 @@ test('描述为普通文本且缺失、空串、空白均明确回退', () => {
     for (const source of skills[0].sources) expect(text).toContain(source.path);
   }
 });
+test('技能抽屉来源在角色之前，保存与所有结果提示位于 footer', () => {
+  for (const result of [undefined, { saved: [], messages: [], error: '保存失败' }, { saved: [], messages: ['已打开目录'] }, { saved: ['plan' as const], messages: [] }]) {
+    const html = renderToString(h(SkillDrawer, { skill: skills[0], scope: 'global', roles, selected: [], disabled: false, onScope: noop, onRoles: noop, onSave: noop, onOpen: noop, onClose: noop, result }));
+    expect(html.indexOf('<h3>来源')).toBeLessThan(html.indexOf('<fieldset'));
+    const foot = html.match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+    expect(foot).toContain('>保存绑定</button>');
+    if (result?.error) expect(foot).toContain('role="alert">保存失败');
+    if (result && !result.error) expect(foot).toContain(result.saved.length ? '绑定已保存' : '无需修改绑定');
+    if (result?.messages.length) expect(foot).toContain('已打开目录');
+  }
+});

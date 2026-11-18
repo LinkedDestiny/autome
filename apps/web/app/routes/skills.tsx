@@ -1,3 +1,4 @@
+import { Drawer } from '../components/ui/drawer.tsx';
 import { useState } from 'react';
 import { useFetcher, useLoaderData, useNavigate, type LoaderFunctionArgs, type ActionFunctionArgs } from 'react-router';
 import { Ribbon } from '../components/ui/ribbon.tsx';
@@ -34,16 +35,14 @@ export function SkillDrawer({ skill, scope, roles, selected, project, disabled, 
   skill: SkillEntry; scope: BindingScope; roles: Roles; selected: Role[]; project?: string; disabled: boolean;
   onScope: (s: BindingScope) => void; onRoles: (r: Role[]) => void; onSave: () => void; onOpen: (source: number) => void; onClose: () => void; result?: BindingResult;
 }) {
-  return <aside className="skills-drawer" role="dialog" aria-modal="false" aria-label={`绑定 ${skill.name}`} onKeyDown={e => { if (e.key === 'Escape') onClose(); }}>
-    <div className="skills-drawer-body" data-scroll-region><button onClick={onClose}>关闭</button><h2>{skill.name}</h2><h3>绑定范围</h3>
+  return <Drawer className="skills-drawer" label={`绑定 ${skill.name}`} title={skill.name} onClose={onClose} footer={<>    <button className="btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
+    {result?.error && <p role="alert">{result.error}</p>}{result && !result.error && <p role="status">{result.saved.length ? '绑定已保存' : '无需修改绑定'}</p>}{result?.messages.map(m => <p key={m} role="status">{m}</p>)}
+</>}>    <h3>来源</h3>{skill.sources.map((s, i) => <div className="skill-source" key={i}><span>{s.scope === 'global' ? '全局' : '项目'} · {s.runtime === 'claude' ? 'Claude Code' : 'Codex'}</span><code>{s.path}</code><button disabled={disabled} onClick={() => onOpen(i)}>打开目录</button></div>)}<h3>绑定范围</h3>
     <Segmented name="binding-scope" label="绑定范围" value={scope} disabled={disabled} onChange={v => onScope(v as BindingScope)} options={[{ value: 'global', label: '全局 · 所有项目', disabled: !scopedSkill(skill, 'global') }, { value: 'project', label: '仅当前项目', disabled: !project }]} />
     {!scopedSkill(skill, 'global') && <p>项目技能只能绑定在自己的项目里</p>}
     <p>{scope === 'project' ? '此后这个角色在本项目里不再跟随全局技能列表的变化；要恢复，去 Loop 配置点「恢复跟随全局」。' : '某个项目如果给这个角色写了自己的技能列表，就不会跟随这条全局绑定；保存后会列出没有拿到的项目。'}</p>
     <fieldset disabled={disabled}><legend>哪些角色必须使用</legend>{roleOrder.map(role => { const reason = bindingReason(skill, scope, roles, role); return <label className="skill-role" key={role}><span><input type="checkbox" checked={selected.includes(role)} disabled={!!reason} onChange={e => onRoles(e.target.checked ? [...selected, role] : selected.filter(r => r !== role))} />{roleNames[role]}</span>{reason && <small>{reason}</small>}</label>; })}</fieldset>
-    <button className="btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
-    {result?.error && <p role="alert">{result.error}</p>}{result && !result.error && <p role="status">{result.saved.length ? '绑定已保存' : '无需修改绑定'}</p>}{result?.messages.map(m => <p key={m} role="status">{m}</p>)}
-    <h3>来源</h3>{skill.sources.map((s, i) => <div className="skill-source" key={i}><span>{s.scope === 'global' ? '全局' : '项目'} · {s.runtime === 'claude' ? 'Claude Code' : 'Codex'}</span><code>{s.path}</code><button disabled={disabled} onClick={() => onOpen(i)}>打开目录</button></div>)}</div>
-  </aside>;
+  </Drawer>;
 }
 function BindingEditor({ skill, data, onClose }: { skill: SkillEntry; data: SkillsData; onClose: () => void }) {
   const fetcher = useFetcher<BindingResult>(), gate = useWriteGate();

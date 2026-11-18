@@ -10,6 +10,7 @@ export const testGroups = {
     "test/task-summary.test.ts",
     "test/ui-kit.test.ts",
     "test/ui-base.test.ts",
+    "test/dirty-text.test.ts",
     "test/dependency-poll.test.ts",
     "test/gate-reporter.test.ts",
     "test/core-binary-watch.test.ts",

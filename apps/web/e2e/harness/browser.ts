@@ -1,3 +1,4 @@
+import { dirtyText } from '../../scripts/dirty-text.ts';
 import { test as base, expect, type Page } from '@playwright/test';
 import { state } from './fixture.ts';
 export const test = base.extend<{ consoleErrors: string[] }>({
@@ -17,6 +18,7 @@ export async function visit(page: Page, path: string) {
   await page.evaluate(() => document.fonts.ready);
 }
 export async function oneScreen(page: Page) {
+  expect(dirtyText(await page.locator('body').innerText())).toEqual([]);
   const overflows = await page.evaluate(() => {
     const main = document.querySelector('[data-testid=shell-main]');
     if (!main) throw Error('Missing shell-main');

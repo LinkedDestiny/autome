@@ -24,3 +24,18 @@ test('没有网关时保存失败并无已保存项',async()=>{expect(await save
 
 test('未知 Effort 只读其它选项保留原值',()=>{expect(effortOptions('xhigh').at(-1)).toEqual({value:'xhigh',label:'其它：xhigh',disabled:true});expect(effortOptions(null)).toHaveLength(4);});
 test('写入未授权时角色开关禁用',()=>{const text=html();expect((text.match(/<input[^>]*>/g) ?? []).filter(input=>input.includes('role="switch"') && input.includes('disabled'))).toHaveLength(6);});
+
+import { RoleDrawer } from '../app/routes/loop.tsx';
+test('角色抽屉全局和项目的保存、恢复、成功与失败提示均在 footer', () => {
+  for (const project of [undefined, 'P-1']) for (const result of [undefined, { saved: ['plan'] as const }, { saved: [], error: '保存失败' }]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: resolvedRoles(cfg).plan, project, disabled: false, saveDisabled: false, onEdit() {}, onSave() {}, onReset() {}, onClose() {}, result: result && { ...result, saved: [...result.saved] } }) }]);
+    try {
+      const html = renderToString(h(RouterProvider, { router }));
+      const foot = html.match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+      expect(foot).toContain('>保存</button>');
+      expect(foot.includes('恢复跟随全局')).toBe(!!project);
+      if (result?.error) expect(foot).toContain('role="alert">保存失败');
+      if (result?.saved.length) expect(foot).toContain('role="status">已保存');
+    } finally { router.dispose(); }
+  }
+});

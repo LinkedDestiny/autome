@@ -149,3 +149,32 @@ test('全站样式不恢复浏览器原生外观', () => {
   for (const [, value] of source.matchAll(/(?:[\w-]*appearance)\s*:\s*([^;}]+)/g)) expect(value.trim()).toBe('none');
   expect(source).not.toMatch(/\ball\s*:\s*(?:revert(?:-layer)?|unset|initial)\b/i);
 });
+
+import { Drawer } from '../app/components/ui/drawer.tsx';
+test('丝带标题继承字号，两档尺寸且容器不拉伸', () => {
+  for (const declaration of ['font-size: inherit', 'line-height: inherit', 'margin: 0', 'color: inherit']) expect(baseRule('.ribbon :is(h1, h2, h3)')).toContain(declaration);
+  for (const declaration of ['width: fit-content', 'max-width: 100%', 'font-size: 17px']) expect(rule('.ribbon')).toContain(declaration);
+  expect(rule('.ribbon-sm')).toContain('font-size: 13px');
+});
+test('没有其它针对丝带标题的字号覆盖', () => {
+  for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/font-size\s*:/.test(body) && /h[123]/.test(selector) && /ribbon|overview-heading|add-project|task-new|env-page/.test(selector)) expect(selector.trim()).toBe('.ribbon :is(h1, h2, h3)');
+  }
+});
+test('Drawer 标题行关闭、正文独立滚动、固定 footer', () => {
+  const html = renderToStaticMarkup(h(Drawer, { label: '编辑', title: '标题', onClose() {}, footer: h('button', {}, '保存'), children: '正文' }));
+  expect(html).toMatch(/<aside[^>]*role="dialog"[^>]*aria-modal="false"/);
+  expect(html).toMatch(/<header class="drawer-head"><h2>标题<\/h2><button[^>]*drawer-close[^>]*>关闭<\/button><\/header>/);
+  expect(html).toContain('<div class="drawer-body" data-scroll-region="true">正文</div>');
+  expect(html).toContain('<footer class="drawer-foot"><button>保存</button></footer>');
+  for (const value of ['position: fixed', 'inset: 64px 16px 16px auto', 'overflow: hidden', 'flex-direction: column']) expect(rule('.drawer')).toContain(value);
+  for (const value of ['flex: 1', 'min-height: 0', 'overflow-y: auto']) expect(rule('.drawer-body')).toContain(value);
+  expect(rule('.drawer-foot')).toContain('flex: none');
+});
+test('Drawer Esc 和关闭按钮调用 onClose，其它键不关闭', () => {
+  let calls = 0;
+  const element = Drawer({ label: '编辑', title: '标题', onClose: () => calls++, footer: null, children: null });
+  element.props.onKeyDown({ key: 'Enter' }); expect(calls).toBe(0);
+  element.props.onKeyDown({ key: 'Escape' }); expect(calls).toBe(1);
+  element.props.children[0].props.children[1].props.onClick(); expect(calls).toBe(2);
+});
