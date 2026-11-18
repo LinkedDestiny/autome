@@ -45,3 +45,5 @@ export function opsInput(data: TaskPayload, config: unknown): OpsInput {
   return { kind: data.task.kind ?? 'feature', state: data.task.state ?? { state: 'draft' }, roles: resolved?.resolved?.roles ? Object.fromEntries(resolved.resolved.roles.map(r => [r.role, r.config.enabled])) : null,
     archived: data.task.archived, mergeQueue: Object.hasOwn(data.task, 'merge'), merge: data.task.merge, openDecisions: !!data.decisions?.some(d => !d.consumed) };
 }
+
+export const hasVisibleOps = (ops: OpView[]): boolean => ops.some(entry => entry.op !== 'decide');

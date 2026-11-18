@@ -84,3 +84,35 @@ test('详细步骤取消保留位置，完成九步通过，Bug 六步通过', (
  expect(taskSummary(payload({state:'done'}),[]).steps.filter(s=>s.passed)).toHaveLength(9);
  expect(taskSummary(payload({state:'done'},'bug'),[]).steps.filter(s=>s.passed)).toHaveLength(6);
 });
+
+import { readFileSync } from 'node:fs';
+import { fixture } from './fixtures/task-detail-60.ts';
+import { revealCurrentMilestone } from '../app/components/task-stage.tsx';
+test('30 个里程碑全量单行滚动，概要固定在行首，空和单元素边界', () => {
+ const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+ expect(css).toMatch(/\.task-milestones\s*\{[^}]*flex-wrap: nowrap;[^}]*overflow-x: auto;[^}]*overflow-y: hidden/);
+ expect(css).toMatch(/\.task-milestones li\s*\{[^}]*flex: none/);
+ const view = stageBarView(fixture().data, []);
+ for (const count of [0, 1, 30]) {
+  const html = renderToStaticMarkup(createElement(TaskStage, { view: { ...view, milestones: view.milestones.slice(0, count) } }));
+  expect(html.match(/<li/g)!.length).toBe(view.stages.length + count);
+  if(count) expect(html).toContain(`里程碑 已完成 0 / ${count}`); else expect(html).not.toContain('task-milestone-bar');
+ }
+});
+test('当前里程碑黄色实心，开放待审完成都保持当前标记', () => {
+ for (const state of ['open', 'pending', 'done']) {
+  const p = payload(); p.status_block!.milestones![1].state = state;
+  const html = renderToStaticMarkup(createElement(TaskStage, { view: stageBarView(p, []) }));
+  expect(html).toContain('<li class="is-current"><span class="pill pill-yellow pill-fill">M-02');
+  expect(html).toContain(`里程碑 已完成 ${state === 'done' ? 2 : 1} / 3`);
+ }
+});
+test('当前项左右越界只调整本条 scrollLeft，已可见和无当前项不动', () => {
+ for(const [left,right,expected] of [[250,300,150],[-50,0,-50],[20,80,0],[20,400,20]]) {
+  const list = {scrollLeft:0,getBoundingClientRect:()=>({left:0,right:150}),querySelector:()=>({getBoundingClientRect:()=>({left,right})})};
+  revealCurrentMilestone(list as unknown as HTMLUListElement); expect(list.scrollLeft).toBe(expected);
+ }
+ const list={scrollLeft:50,querySelector:()=>null}; revealCurrentMilestone(list as unknown as HTMLUListElement); expect(list.scrollLeft).toBe(50);
+ const source=readFileSync(new URL('../app/components/task-stage.tsx',import.meta.url),'utf8');
+ expect(source).toContain('}, [currentId])'); expect(source).not.toContain('scrollIntoView');
+});

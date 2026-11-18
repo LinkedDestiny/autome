@@ -73,6 +73,10 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await expect(page.getByTestId('bell-panel')).toBeVisible();
   }
   if (name === '需求详情展开日志') {
+    const milestones = page.locator('.task-milestones');
+    await expect(milestones).toHaveCSS('flex-wrap', 'nowrap');
+    const tops = await milestones.locator('li').evaluateAll(items => items.map(item => item.getBoundingClientRect().top));
+    expect(new Set(tops).size).toBe(1);
     const timeline = page.getByTestId('timeline');
     const rows = timeline.locator('li.timeline-row').filter({ hasNot: page.locator('[open]') });
     expect(await rows.count()).toBeGreaterThan(0);
@@ -99,6 +103,14 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await expect(summary).toHaveCSS('white-space', 'normal');
     expect(await summary.textContent()).toBe(complete);
     await summary.click();
+    await page.getByRole('link', { name: /^文档/ }).click();
+    const nav = page.locator('.task-docs nav');
+    for (const pill of await nav.locator(':scope > a, :scope > details > summary').all()) {
+      const rect = (await pill.boundingBox())!, outer = (await nav.boundingBox())!;
+      expect(rect.y).toBeGreaterThanOrEqual(outer.y);
+      expect(rect.y + rect.height).toBeLessThanOrEqual(outer.y + outer.height);
+      expect(await pill.evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+    }
     await expandLog(page); await expect(page.locator('.task-summary-tiles .tile')).toHaveCount(6); await page.screenshot({ path: '../../.autome/output/m06-detail.png' }); }
   if (name === '添加项目补全') {
     await page.getByTestId('path-input').fill('~/');

@@ -28,3 +28,5 @@
 
 实现 #14 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r14-impl.md | 浏览器 ps EPERM，宿主需以重建产物复验
 审计 #8 | M-07 | 通过 | docs/面板观感收尾/evidence/M-07-r14-audit.md | 无
+
+实现 #15 | M-08 | 待审 | docs/面板观感收尾/evidence/M-08-r15-impl.md | 快检内核清理及浏览器准备 ps EPERM，9 步预算未跑

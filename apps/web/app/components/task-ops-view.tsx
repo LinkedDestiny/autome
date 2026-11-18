@@ -3,15 +3,17 @@ import { Form, Link, useSearchParams, useNavigation } from 'react-router';
 import { useWriteGate } from '../lib/live.tsx';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
 import { NODE_LABELS } from '../lib/labels.ts';
-import { OP_LABELS, type OpView } from './task-ops.ts';
+import { hasVisibleOps, OP_LABELS, type OpView } from './task-ops.ts';
 export function TaskOps({ ops, result }: { ops: OpView[]; result?: { error?: string; notice?: string } }) {
   const gate = useWriteGate();
   const [search] = useSearchParams();
   const pending = useNavigation().state !== 'idle';
   const confirm = new URLSearchParams(search); confirm.set('confirm', 'cancel');
+  const visible = hasVisibleOps(ops);
+  if (!visible && !result?.error && !result?.notice) return null;
   return <section className="task-ops" aria-label="任务操作">
     {result?.error && <p role="alert">{result.error}</p>}{result?.notice && <p role="status">{result.notice}</p>}
-    {!gate.allowed && <p>{gate.reason}</p>}
+    {visible && !gate.allowed && <p>{gate.reason}</p>}
     <div className="task-ops-list">{ops.filter(o => o.op !== 'decide').map(entry => {
       const { op } = entry;
       const disabled = !gate.allowed || !entry.enabled || pending;

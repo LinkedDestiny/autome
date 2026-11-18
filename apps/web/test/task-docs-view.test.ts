@@ -65,3 +65,16 @@ it('默认分支来源标注，主检出读盘失败仍显示原错误', async (
     expect(html).toContain('role="alert"'); expect(docRead).toHaveBeenCalledWith('/kernel/design', 204800);
   }
 });
+
+import { readFileSync } from 'node:fs';
+it('38 份证据用胶囊入口展开，链接没有额外上下内边距', () => {
+ const payload={...data,documents:Array.from({length:38},(_,i)=>({name:`evidence-${i}.md`,label:'证据',absolute:`/evidence/${i}`}))};
+ const html=render(payload); expect(html).toContain('<summary class="pill pill-blue">证据（38）</summary>');
+ expect(html.match(/>evidence-\d+\.md<\/a>/g)).toHaveLength(38);
+ expect(render(payload,{name:'evidence-37.md',text:'',nodes:[],truncated:false})).toContain('<details open="">');
+ const css=readFileSync(new URL('../app/styles/app.css',import.meta.url),'utf8');
+ expect(css).not.toMatch(/\.task-docs nav a\s*\{[^}]*padding/);
+ expect(css).not.toMatch(/\.task-docs summary\s*\{[^}]*padding/);
+ expect(css).toMatch(/\.task-docs nav\s*\{[^}]*align-items: center/);
+ expect(css).toMatch(/\.task-docs nav details\[open\]\s*\{[^}]*flex-basis: 100%/);
+});
