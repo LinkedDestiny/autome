@@ -49,3 +49,4 @@
 实现 #22 | 无（修复轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/fix-r22-impl.md | 无
 实现 #23 | 无（交接轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/M-13-r23-impl.md | 无
 实现 #24 | 无（交接轮） | 待审里程碑不变 | docs/面板观感收尾/evidence/M-13-r24-impl.md | 无
+审计 #15 | M-07（M-13 r24 交接索引） | 通过 | docs/面板观感收尾/evidence/M-13-r24-audit.md | listen/ps EPERM，宿主复验 H-12/H-13
