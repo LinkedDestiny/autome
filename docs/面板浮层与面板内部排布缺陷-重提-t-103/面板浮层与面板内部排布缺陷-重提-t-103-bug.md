@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -50,4 +50,11 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 
 ## 复核意见
 
-（复核轮填写）
+本轮独立复核结论：**打回**。定位基线 `4442737be10fe156cbc15ab72a002e344e79aa6a`，修复候选 `d92c066c81e36aefa9e42fd018145a3d1717735f`；检查 `git diff 4442737b...d92c066c`。不是因未跑全量门禁打回，而是仍有明确的需求遗漏。
+
+1. **需求复核：P2，角色抽屉仍缺可见的 Effort 标签。** 任务卡「期望」第 1 项明确要求“Effort 分段选择一行（带「Effort」标签）”，参考原型 `docs/design/autome-web-panel-v3.html:571` 也有可见标签。`apps/web/app/routes/loop.tsx:82` 只给 `Segmented` 传 `label="Effort"`；`apps/web/app/components/ui/segmented.tsx:5` 将它写入 `aria-label`，第 6–9 行只渲染选项文字。打开任意角色抽屉，用户仍看到无字段名称的“默认 / low / medium / high”。本轮用真实 `RoleDrawer`、现有配置夹具和 React SSR 隔离渲染，确认 HTML 含 `aria-label="Effort"`，去标签后的正文含“模型”却不含“Effort”。证据在 `.autome/output/review-t103/effort-render.html`、`effort-text.txt`、`effort-probe.log`；临时探针命令 `apps/web/node_modules/.bin/vitest run --config .autome/output/review-t103/probe.config.mjs` 退出码 0。交回修复轮在角色抽屉补可见标签并保持纵向排布及现有回归断言，本轮不修产品代码。
+2. **规范复核：未发现回归测试被删除、跳过或弱化，范围基本最小。** `overlay-layout.spec.ts`、`layout.spec.ts`、`task-notes.test.ts` 从定位到修复无差异，`loop-page.test.ts` 定位新增的覆盖来源用例也未改。模型标签选择器与旧技能顺序断言的同步，属于任务卡明确允许的旧结构适配；默认值测试增加了“相同值不能冒充无覆盖”的约束。产品差异限于 `apps/web` 的 6 个既有文件，没有内核改动或无关功能扩展。
+3. **根因与测试意义。** 原 `.drawer-body` 缺少纵向布局、技能描述无截断、通知沿用大按钮等根因与差异相符；修复增加公共抽屉 flex/gap、字段布局、紧凑通知与来源行、文档内边距，并按项目来源控制角色恢复按钮、复用 Markdown 渲染。6 个浏览器用例直接量几何尺寸，环境夹具无条件构造并断言全部正常；角色恢复单测同时检查有覆盖和无覆盖，备注单测检查实际 `<code>` / `<ul>`，均有回归价值。但这些检查不能证明遗漏的 Effort 可见标签已实现。
+4. **独立复验结果。** `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts` 退出码 1：`globalSetup` 在 `apps/web/test/fixtures/process-scan.ts:5` 调用 `ps` 时遇到 `spawnSync ps EPERM`，收尾同样受限，6 个浏览器用例全部未执行，不记为产品断言失败或通过。日志 `.autome/output/review-t103/reproduction.log`。`cd apps/web && npx vitest run test/loop-page.test.ts test/skills-page.test.ts test/task-notes.test.ts test/loop-defaults.test.ts` 退出码 0，4 文件 59 例通过；直接相关子集 `test/bell-view.test.ts test/task-docs.test.ts test/task-docs-view.test.ts test/markdown.test.ts test/drawer-focus.test.ts test/w9-layout.test.ts test/env-page.test.ts test/task-detail-ssr.test.ts` 通过 `npx vitest run` 复验，退出码 0，8 文件 64 例通过。日志分别为 `.autome/output/review-t103/unit.log`、`related.log`。
+5. **额外覆盖缺口，交宿主实测。** `apps/web/e2e/overlay-layout.spec.ts:88–92` 把 `.bell-list` 的全内容边界当作可视区，而实际裁切发生在 `.bell-panel`（`app.css:46`，`max-height:60vh; overflow-y:auto`）；第 5 条处于列表内不等于它完整处于面板视口内。待验证场景：通知权限为 `default`、前 5 条均未读且都有两行长标题和正文。按当前 CSS 静态预算约 `62 + 46 + 5×95 = 583px`，超过 944 高视口的 `60vh=566.4px`；这是待浏览器实测的风险，不冒充本轮已复现结果。未做缺陷注入，未改测试；本轮按产品遗漏退回修复，不声明“产品已修好但测试自身卡住”。
+6. **验证边界。** 用户提供的宿主复现加快检退出码 0，只代表该次修复门禁；本轮没有将其表述成全量门禁通过。遵照要求未运行 `sh scripts/ci-local.sh`，由宿主在合并前统一执行。当前沙箱下不能确认真实浏览器几何结果，也未补做浏览器截图验收。本轮只更新本 Bug 文档的复核字段与意见，状态、fix-round、复现命令、根因保持原样。
