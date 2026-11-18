@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 6/6
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -64,7 +64,48 @@ fix-round: 6/6
 
 ## 复核意见
 
-### 第 5/5 轮独立复核（当前结论：打回）
+### 第 6/6 轮独立复核（当前结论：通过）
+
+复核对象：`e4238b36658037691b77dd210d81d96fc081898b`。已读取协议、任务卡、完整修复记录、四张用户附件和参考 HTML，核对定位提交 `6d54414f` 至 HEAD 的产品及测试差异，并单独核对 `4f4277c0..HEAD`。本轮没有发现需打回的产品缺陷或回归测试弱化；第 5 轮的环境工具行高度问题已闭环。
+
+#### 根因、最小范围与回归有效性
+
+- 原根因成立：裸按钮、统一按钮、裸操作链接及 summary 并存；累计修复以统一类名、公共 CSS 和危险变体为主，保留跳转、事件、字段和测试标识。第 6 轮产品差异严格只有 `app/styles/app.css:578` 的 `padding: 10px 0` 改为 `8px 0`，另加 `e2e/env-rows.spec.ts`，没有再动前轮已通过的产品项。
+- 同一 `.env-tools .env-component` 规则覆盖内核及工具行；工具入口仍由 `.btn-sm` 保持 30px。收起时工具行的尺寸组合从 30 + 10 + 10 + 1 = 51px 降为 30 + 8 + 8 + 1 = 47px；原生 details 和向下展开规则未改。本轮未取得浏览器计算尺寸，47px 是 CSS 推导，不冒充实测。
+- 新用例 `env-rows.spec.ts:67-69` 先等待带 summary 的正常行至少一条，再等待所有标记行正常，随后才枚举带 summary 的行；因此原来“只有内核一行也通过”的路径不再成立。`env.tsx:62-74` 从同一已探测快照一次渲染组件列表。用例逐行约束 ≤48px、入口 30±1px，同时检查驱动卡下边缘、内部滚动和整页布局，没有条件跳过。
+- `action-controls.spec.ts`、`overlay-layout.spec.ts`、`layout.spec.ts` 与定位版本逐字一致，保护文件差异为 0 字节（`.autome/output/independent-review-r6/protected.diff`）。已有测试仅有获授权的 queue-deps 1 处、board 2 处、env-page 1 处精确标记更新，数量、输入、用例名和其它断言保留；未删除、跳过或放宽回归约束。新增 A/B/C 单测及登记保留。无需声明“回归测试: 有缺陷”。
+
+#### 操作者备注逐项核对
+
+| 备注条目 | 证据及处理结果 |
+|---|---|
+| #1 一.1 调整顺序 | `queue-controls.tsx:12` 仍为 `summary.btn.btn-sm`；原生展开保留。 |
+| #1 一.2 路径建议 | `projects.new.tsx:86` 使用 `btn btn-sm`；两处路径建议 CSS 只留宽度、对齐和间距。 |
+| #1 一.3 公共抽屉 | `.drawer .btn` 覆盖公共抽屉正文及页脚；技能保存绑定保留 primary，统一 30px。 |
+| #1 一.4、5 看板页头 | 设置为 `btn`，新建为 `btn btn-primary board-new`；board-new 自写外观已删除，两者默认 38px，保留 Link 和文案。 |
+| #1 二被替代、#2 二专用样式 | 按后发备注保留分段/页签/导航、胶囊、整卡整行、时间线/日志展开、步进器、铃铛图标、顶栏标题。第 6 轮未改这些项。 |
+| #2 A.1、2 | 环境安装方法及提交标题均为 `btn btn-text btn-sm`；本轮只修前者外层行内边距。 |
+| #2 B.3—7 | 驱动卡、总览环境入口、添加项目结果三个链接、看板折叠行均使用小号文字按钮；错误页返回使用默认 btn，跳转保留。 |
+| #2 C.8、9 | 任务标题、项目名、告警编号和铃铛条目使用公共 link；悬停/聚焦用既有 primary-active 及下划线，Markdown 外链另有默认下划线。 |
+| #1 三、#2 三测试与去留表 | 第 5 轮修复说明列有去留表及四处旧断言改前改后，与实际差异一致；新文件 link-styles 的 A/B/C 三项本轮实跑通过。重新扫描全部 button/summary/Link/a，清单保存在 `independent-review-r6/clickable-inventory.txt`，未发现新的清单外入口。 |
+| #1 四、#2 三历史截图及验证 | 前轮说明明确记录未取得指定截图的环境理由；依备注 #3“其余各项已通过、不要再动”，不重新扩大修复范围，也不把旧缺口写成已完成。本轮新增环境截图另见下行。 |
+| #3 二.1 产品 | 仅调整公共行内边距为上下 8px，未缩入口、未改展开结构。两张留存截图显示四个工具单行排列，展开 Git 安装说明后内容位于该行下方、驱动卡完整可见。 |
+| #3 二.2 新用例与登记 | 独立服务和全部正常代理搭法与 overlay-layout 一致，新增等待及要求的四类断言。Playwright 的 `testDir: './e2e'` 自动发现；test-groups 只登记 Vitest，无需增加 e2e 条目，修复说明已解释。 |
+| #3 二.3 先红后绿 | `.autome/output/r6a.txt:7-19` 明确为行高断言失败，实测 51px，非启动失败；后续 `r6c.txt` 包含新用例并以 44 passed 结束。与修复说明一致。 |
+| #3 三验证 | 留存 `r6b.txt` 的四文件子集曾有 3 项失败（仍测得 51px，另有两项铃铛几何断言失败），不能把该日志说成通过；后续整套 `r6c.txt` 覆盖同一子集并全部通过，`r6v.txt` 为 165 文件/1435 项通过。修复说明记录整套退出码 0；子集单独成功的退出码未单列，不额外声称已核实。 |
+| #3 三截图 | 已打开 `.autome/output/env-closed.png`、`env-open.png` 目视核对；`shot.mjs` 确实提取新用例的代理和服务代码，用项目自带 Playwright 截图。截图路径已写入修复说明。图片中的代理内核版本提示和页头“1 项有问题”不代表真实生产健康验收；本次只据四个正常工具及可见布局验收样式。 |
+| #3 三计时波动 | `controls.spec.ts` 未改；留存整套日志包含 B-4 且通过，没有放宽 5000ms 预算。 |
+
+#### 本轮独立复验与限制
+
+- 原样执行头部复现命令，Web 客户端和服务端构建成功；Playwright 在 globalSetup 被 `spawnSync ps EPERM` 阻断，退出码 1，两个回归用例均未进入断言。完整测试报告留存 `.autome/output/independent-review-r6/repro-report.json`。
+- 执行 `cd apps/web && npx playwright test e2e/env-rows.spec.ts e2e/overlay-layout.spec.ts e2e/layout.spec.ts`，同样在准备阶段被进程查询权限阻断，退出码 1；日志 `.autome/output/independent-review-r6/related-e2e.log`。未绕过权限、修改夹具或注入产品缺陷。
+- 执行 `cd apps/web && npx vitest run test/env-page.test.ts test/styles.test.ts test/link-styles.test.ts test/board.test.ts test/queue-deps.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/task-ops-view.test.ts`：**8 文件、97 项通过，退出码 0**，日志 `.autome/output/independent-review-r6/unit.log`。
+- 修复轮全套日志、截图是本轮读取的留存证据，并非本轮独立浏览器实跑；其记录本身未嵌入最终 SHA，结合最终提交差异使用，不替代最终提交的合并前门禁。用户本次提供的宿主复现命令及快检退出码 **0** 另行记录，不等同项目全量门禁通过。
+- 按要求未运行 `sh scripts/ci-local.sh`，由宿主合并前统一运行。本轮通过是对修复范围、根因、回归约束及上述证据的复核结论，不因已知沙箱限制或没有全量门禁而打回。
+- 本轮仅修改本 Bug 文档的复核字段与复核意见，保持 status、fix-round、复现命令、根因及 repos 不变；不改产品或测试，不合并、不推送、不启动后续会话。
+
+### 第 5/5 轮独立复核（历史结论：打回）
 
 复核 HEAD：`4f4277c0637ba014e6cd15983f6c26d1a5aa7afa`。核对定位提交 `6d54414f` 至 HEAD 的完整差异，并检查本轮修复提交 `4f4277c0`；读取协议、任务卡、四张附件、参考 HTML 及两条操作者备注。备注 #2 取代 #1 第二节，其余约束继续适用。
 
