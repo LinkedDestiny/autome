@@ -6,7 +6,7 @@ import { MarkdownView } from './markdown-view.tsx';
 export function TaskDocs({ data, document, view = docsView(data) }: { view?: ReturnType<typeof docsView>; data: TaskPayload; document: Awaited<ReturnType<typeof loadTaskDetail>>['document'] }) {
   const [search] = useSearchParams();
   const link = (tab: (typeof view.tabs)[number]) => <Link className="pill pill-blue" key={tab.name ?? 'brief'} to={`?${withParams(search, { set: { tab: 'docs', ...(tab.name === null ? {} : { doc: tab.name }) }, remove: tab.name === null ? ['doc'] : [] })}`} preventScrollReset aria-current={document?.name === tab.name ? 'page' : undefined}>{tab.label}</Link>;
-  return <section className="task-docs" aria-label="任务文档"><header className="task-doc-heading"><h2>文档</h2>{view.source && <small className="task-doc-source">{view.source}</small>}</header>
+  return <section className="task-docs" aria-label="任务文档"><header className="task-doc-heading">{view.source && <small className="task-doc-source">{view.source}</small>}</header>
     <nav aria-label="文档选择">{view.tabs.map(link)}{view.evidence.length > 0 && <details open={view.evidence.some(tab => tab.name === document?.name)}><summary className="pill pill-blue">证据（{view.evidence.length}）</summary><div className="task-evidence-links">{view.evidence.map(link)}</div></details>}</nav>
     {view.note && <p>{view.note}</p>}
     <article className="task-docs-body" data-scroll-region>

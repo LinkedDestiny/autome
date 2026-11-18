@@ -70,7 +70,15 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   }
   if (name === '总览铃铛') {
     await page.getByTestId('bell-button').click();
-    await expect(page.getByTestId('bell-panel')).toBeVisible();
+    const panel = page.getByTestId('bell-panel');
+    await expect(panel).toBeVisible();
+    const items = panel.getByTestId('bell-item');
+    const n = Math.min(5, await items.count());
+    if (n > 0) {
+      const last = (await items.nth(n - 1).boundingBox())!, top = (await panel.boundingBox())!.y;
+      const clientHeight = await panel.evaluate(el => el.clientHeight);
+      expect(last.y + last.height).toBeLessThanOrEqual(top + clientHeight + 1);
+    }
   }
   if (name === '需求详情展开日志') {
     const milestones = page.locator('.task-milestones');

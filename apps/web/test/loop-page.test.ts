@@ -107,7 +107,7 @@ test('角色技能名称胶囊、空态与添加技能项目链接，模型沿�
       for (const skill of skills) expect(text.replaceAll('<!-- -->', '')).toContain(`<button class="pill">${skill} ×</button>`);
       expect(text).toContain(`class="btn btn-sm" href="${project ? '/skills?project=' + encodeURIComponent(project) : '/skills'}"`);
       expect(text).toContain('＋ 添加技能</a>');
-      expect(text.match(/<label>模型(<input[^>]*>)/)![1]).not.toContain('class=');
+      expect(text.match(/<label class="field"><span>模型<\/span>(<input[^>]*>)/)![1]).not.toContain('class=');
     } finally { router.dispose(); }
   }
 });
@@ -200,4 +200,23 @@ test('添加技能：每个角色字段变更都确认，全局路径与空模�
       expect(navigationHarness.to).toBe('/skills');
     }
   } finally { navigationHarness.active = false; vi.unstubAllGlobals(); }
+});
+test('没有项目覆盖时「恢复跟随全局」置灰，有覆盖时可点', () => {
+  for (const overridden of [false, true]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: resolvedRoles(cfg).plan, project: 'p', overridden, disabled: false, saveDisabled: true, onEdit() {}, onSave() {}, onReset() {}, onClose() {} } as never) }]);
+    try {
+      const foot = renderToString(h(RouterProvider, { router })).match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+      expect(/<button[^>]*disabled[^>]*>恢复跟随全局/.test(foot)).toBe(!overridden);
+    } finally { router.dispose(); }
+  }
+});
+test('角色抽屉底部按钮：恢复跟随全局用小号，保存用主按钮', () => {
+  for (const overridden of [false, true]) {
+    const router = createMemoryRouter([{ path: '/', element: h(RoleDrawer, { role: 'plan', config: resolvedRoles(cfg).plan, project: 'p', overridden, disabled: false, saveDisabled: true, onEdit() {}, onSave() {}, onReset() {}, onClose() {} } as never) }]);
+    try {
+      const foot = renderToString(h(RouterProvider, { router })).match(/<footer class="drawer-foot">([\s\S]*?)<\/footer>/)![1];
+      expect(/<button class="btn btn-sm"[^>]*>恢复跟随全局/.test(foot)).toBe(true);
+      expect(/<button class="btn btn-primary"[^>]*>保存</.test(foot)).toBe(true);
+    } finally { router.dispose(); }
+  }
 });

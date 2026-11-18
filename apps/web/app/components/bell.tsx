@@ -23,9 +23,9 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
     </button>
     {open && <section aria-label="通知列表" className="bell-panel" data-testid={TEST_IDS.bellPanel}>
       <header className="bell-header">
-        <strong>通知</strong><button type="button" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
+        <strong>通知</strong><button type="button" className="btn btn-sm" disabled={snapshot.unread === 0} onClick={() => { void onAll(); }}>全部已读</button>
       </header>
-      {permission === 'default' && <button type="button" onClick={onRequest} className="bell-request">开启系统通知</button>}
+      {permission === 'default' && <button type="button" onClick={onRequest} className="btn btn-sm bell-request">开启系统通知</button>}
       {permission === 'denied' && <p className="bell-message">系统通知已被浏览器拒绝，铃铛照常提醒</p>}
       {snapshot.error && <p role="alert" className="bell-error">{snapshot.error}</p>}
       {!snapshot.items.length && <p className="bell-empty">还没有通知</p>}
@@ -39,12 +39,11 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
               event.preventDefault();
               await onRead(item.id);
               window.location.assign(target.href!);
-            }}>{item.title}</Link> : <span>{item.title}</span>}
+            }} className="bell-title" title={item.title}>{item.title}</Link> : <span className="bell-title" title={item.title}>{item.title}</span>}
             {item.body && <p className="bell-body">{item.body}</p>}
-            {target.note && <p className="bell-note">{target.note}</p>}
             <div className="bell-footer">
-              <time dateTime={item.created_at} className="bell-time">{formatClock(item.created_at, clock)}</time>
-              {!item.read_at && <button type="button" onClick={() => { void onRead(item.id); }}>标为已读</button>}
+              <span className="bell-meta"><time dateTime={item.created_at} className="bell-time">{formatClock(item.created_at, clock)}</time>{target.note && <span className="bell-note" title={target.note}>{target.note}</span>}</span>
+              {!item.read_at && <button type="button" className="btn btn-sm" onClick={() => { void onRead(item.id); }}>标为已读</button>}
             </div>
           </li>;
         })}

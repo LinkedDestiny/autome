@@ -3,6 +3,8 @@ import { useWriteGate } from '../lib/live.tsx';
 import { formatClock, useClock } from '../lib/clock.tsx';
 import { nodeLabel, roleLabel } from '../lib/labels.ts';
 import { MAX_PROSE_LENGTH } from '../../server/gates/write-gate.ts';
+import { MarkdownView } from './markdown-view.tsx';
+import { parseMarkdown } from '../lib/markdown.ts';
 import type { TaskPayload } from './task-detail-data.ts';
 
 export function TaskNotes({ data, result }: { data: TaskPayload; result?: { error?: string; warning?: string } }) {
@@ -13,7 +15,7 @@ export function TaskNotes({ data, result }: { data: TaskPayload; result?: { erro
   const ended = state?.state === 'done' || state?.state === 'cancelled';
   return <section className="task-notes" aria-label="备注">
     {(data.notes ?? []).map(note => <article key={note.n}>
-      <div>#{note.n} · {formatClock(note.at, clock)}</div><p>{note.text}</p>
+      <div>#{note.n} · {formatClock(note.at, clock)}</div><div className="task-note-text"><MarkdownView nodes={parseMarkdown(note.text)} /></div>
       <div>{note.delivered ? `已送达 · ${roleLabel(note.delivered.role)} 第 ${note.delivered.round} 轮 · ${formatClock(note.delivered.at, clock)}` : '等待下一轮'}</div>
     </article>)}
     {ended ? <p>任务已结束，备注不会再被读到</p> : <Form method="post">

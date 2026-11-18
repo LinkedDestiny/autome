@@ -32,17 +32,23 @@ export function SkillCard({ skill, roles, onSelect }: { skill: SkillEntry; roles
     {skill.conflicts.map(r => <span key={r}>{roleNames[r]} 用 {roles?.[r].runtime === 'claude' ? 'Claude Code' : 'Codex'}，看不到它</span>)}
   </button>;
 }
+function SkillDescription({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return <><p className={open ? 'skill-drawer-description' : 'skill-drawer-description skill-drawer-clamp'}>{text}</p>{(text.length > 120 || text.includes('\n')) && <button type="button" className="btn btn-sm btn-text skill-expand" aria-expanded={open} onClick={() => setOpen(v => !v)}>{open ? '收起' : '展开'}</button>}</>;
+}
 export function SkillDrawer({ skill, scope, roles, selected, project, disabled, onScope, onRoles, onSave, onOpen, onClose, result }: {
   skill: SkillEntry; scope: BindingScope; roles: Roles; selected: Role[]; project?: string; disabled: boolean;
   onScope: (s: BindingScope) => void; onRoles: (r: Role[]) => void; onSave: () => void; onOpen: (source: number) => void; onClose: () => void; result?: BindingResult;
 }) {
-  return <Drawer className="skills-drawer" label={`绑定 ${skill.name}`} title={skill.name} onClose={onClose} footer={<>    <button className="btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
+  return <Drawer className="skills-drawer" label={`绑定 ${skill.name}`} title={skill.name} onClose={onClose} footer={<>    <button className="btn btn-primary" disabled={disabled} onClick={onSave}>保存绑定</button>
     {result?.error && <p role="alert">{result.error}</p>}{result && !result.error && <p role="status">{result.saved.length ? '绑定已保存' : '无需修改绑定'}</p>}{result?.messages.map(m => <p key={m} role="status">{m}</p>)}
-</>}><p className="skill-drawer-description">{skill.description?.trim() || '暂无描述'}</p><h3>来源</h3>{skill.sources.map((s, i) => <div className="skill-source" key={i}><span>{s.scope === 'global' ? '全局' : '项目'} · {s.runtime === 'claude' ? 'Claude Code' : 'Codex'}</span><code>{s.path}</code><button disabled={disabled} onClick={() => onOpen(i)}>打开目录</button></div>)}<h3>绑定范围</h3>
+</>}><h3>绑定范围</h3>
     <Segmented name="binding-scope" label="绑定范围" value={scope} disabled={disabled} onChange={v => onScope(v as BindingScope)} options={[{ value: 'global', label: '全局 · 所有项目', disabled: !scopedSkill(skill, 'global') }, { value: 'project', label: '仅当前项目', disabled: !project }]} />
     {!scopedSkill(skill, 'global') && <p>项目技能只能绑定在自己的项目里</p>}
     <p>{scope === 'project' ? '此后这个角色在本项目里不再跟随全局技能列表的变化；要恢复，去 Loop 配置点「恢复跟随全局」。' : '某个项目如果给这个角色写了自己的技能列表，就不会跟随这条全局绑定；保存后会列出没有拿到的项目。'}</p>
     <fieldset disabled={disabled} className="skill-roles"><legend>哪些角色必须使用</legend>{roleOrder.map(role => { const reason = bindingReason(skill, scope, roles, role); return <Check key={role} label={roleNames[role]} checked={selected.includes(role)} {...(reason ? { disabled: true, reason } : { disabled: false })} onChange={e => onRoles(e.target.checked ? [...selected, role] : selected.filter(r => r !== role))} />; })}</fieldset>
+    <h3>描述</h3><SkillDescription text={skill.description?.trim() || '暂无描述'} />
+    <h3>来源</h3>{skill.sources.map((s, i) => <div className="skill-source" key={i}><span>{s.scope === 'global' ? '全局' : '项目'} · {s.runtime === 'claude' ? 'Claude Code' : 'Codex'}</span><div className="skill-source-path"><code title={s.path}>{s.path}</code><button className="btn btn-sm" disabled={disabled} onClick={() => onOpen(i)}>打开目录</button></div></div>)}
   </Drawer>;
 }
 function BindingEditor({ skill, data, onClose }: { skill: SkillEntry; data: SkillsData; onClose: () => void }) {
