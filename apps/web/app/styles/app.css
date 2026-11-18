@@ -58,7 +58,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .bell-note { margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bell-note, .bell-time { color: var(--animal-text-muted); font-size: 12px; }
 .bell-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; }
-.bell-footer .btn-sm { height: 24px; flex: none; }
+.bell-footer .btn-sm { flex: none; }
 .bell-meta { display: flex; gap: 8px; min-width: 0; align-items: baseline; }
 .bell-meta .bell-note { margin: 0; min-width: 0; }
 .project-card { flex-shrink: 0; }
@@ -592,3 +592,4 @@ a.btn, summary.btn { text-decoration: none; }
 .env-component[data-env-ok="true"] .env-tool-row > div { white-space: nowrap; overflow: hidden; display: flex; align-items: center; gap: 8px; }
 .env-component[data-env-ok="true"] .env-path { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .env-component[data-env-ok="true"] .env-tool-row p + p { flex-shrink: 0; white-space: nowrap; }
+.loop-drawer .drawer-foot .btn { height: 30px; padding: 0 14px; font-size: 12px; }

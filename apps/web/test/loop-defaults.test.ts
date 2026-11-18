@@ -35,7 +35,7 @@ test('Stepper 边界按钮禁用，未修改保存禁用', () => {
     for (const f of defaultFields) c.resolved.loop_defaults[f.key] = f[bound];
     const text = html(undefined, false, c);
     for (const f of defaultFields) expect(text).toContain(`aria-label="${bound === 'min' ? '减少' : '增加'}${f.label}" disabled=""`);
-    expect((text.match(/<button class="btn btn-sm" aria-label="保存[^"]+" disabled=""/g) ?? []).length).toBe(4);
+    expect((text.match(/<button aria-label="保存[^"]+" disabled=""/g) ?? []).length).toBe(4);
   }
 });
 test('项目来源按值比较，相同不冒充继承，四项都有恢复', () => {

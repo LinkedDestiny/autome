@@ -83,7 +83,7 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   <section className="settings-card-body"><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>
     <Form method="post"><input type="hidden" name="intent" value="remove" /><label htmlFor="remove-name">{SETTINGS.name}（{data.project.display_name}）</label>
       <input id="remove-name" name="name" value={name} onChange={event => setName(event.target.value)} autoComplete="off" />
-      <button className="btn btn-danger" disabled={disabled || name !== data.project.display_name} title={gate.reason}>{SETTINGS.remove}</button>
+      <button disabled={disabled || name !== data.project.display_name} className="btn btn-danger" title={gate.reason}>{SETTINGS.remove}</button>
     </Form>
   </section></div>;
 }

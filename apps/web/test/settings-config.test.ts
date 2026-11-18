@@ -56,7 +56,7 @@ test('4 配置失败独立显示，其他卡照常', async () => {
 test('5 名字严格比较，错误不写，正确才写；离线禁用', async () => {
   const read=vi.fn(async()=>ok({projects:[{project:base.project}]})), write=vi.fn(async()=>ok({removed:'p'}));
   for(const name of ['', ' test', '测试 ', '测', 'TEST']) expect(await action(args({gateway:{read,write}}, {intent:'remove',name}))).toHaveProperty('error','已拒绝：输入的项目名不一致');
-  expect(write).not.toHaveBeenCalled(); expect(html(base)).toMatch(/<button class="btn btn-danger" disabled=""[^>]*>移除项目/);
+  expect(write).not.toHaveBeenCalled(); expect(html(base)).toMatch(/<button disabled=""[^>]*>移除项目/);
   const result=await action(args({gateway:{read,write}}, {intent:'remove',name:'测试'})); expect(result).toBeInstanceOf(Response); expect((result as Response).headers.get('Location')).toBe('/'); expect(write).toHaveBeenCalledWith({op:'project.remove',params:{project_id:'p'}});
   const offline=html(base,false); expect(offline.match(/<button/g)?.length).toBe(offline.match(/<button[^>]*disabled/g)?.length);
 });
