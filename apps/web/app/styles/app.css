@@ -4,6 +4,22 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: var(--animal-font); color: var(--animal-text-body); background: var(--animal-bg); }
 a { color: inherit; text-decoration: none; }
+/* Element defaults: :where keeps page layout and component overrides authoritative. */
+:where(input:not([type=checkbox],[type=radio],[type=hidden],[type=file],[type=range]), select, textarea) { appearance: none; padding: 0 14px; border-radius: var(--animal-radius-sm); background: var(--animal-bg-input); border: 2px solid var(--animal-border-light); box-shadow: var(--ui-shadow-input); font: 600 13px var(--animal-font); color: var(--animal-text); }
+:where(input:not([type=checkbox],[type=radio],[type=hidden],[type=file],[type=range]), select) { height: 38px; }
+:where(textarea) { padding: 12px 14px; }
+:where(select) { padding-right: 36px; background-image: linear-gradient(45deg, transparent 50%, var(--animal-text-muted) 50%), linear-gradient(135deg, var(--animal-text-muted) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+:where(input[type=checkbox], input[type=radio]) { appearance: none; position: relative; flex: none; width: 18px; height: 18px; padding: 0; border: 2px solid var(--animal-border); background: var(--ui-white); vertical-align: middle; }
+:where(input[type=checkbox]) { border-radius: var(--animal-radius-sm); }
+:where(input[type=radio]) { border-radius: 50%; }
+:where(input:disabled, select:disabled, textarea:disabled) { background-color: var(--animal-bg-disabled); color: var(--animal-text-muted); cursor: not-allowed; }
+:where(input[type=checkbox]:checked, input[type=radio]:checked) { background: var(--animal-primary); border-color: var(--animal-primary); }
+:where(input[type=checkbox]:checked)::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid var(--ui-white); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+:where(input[type=radio]:checked) { box-shadow: inset 0 0 0 4px var(--ui-white); }
+:where(input[type=checkbox]:disabled, input[type=radio]:disabled) { opacity: .5; }
+:where(fieldset) { border: 2px solid var(--animal-border-light); border-radius: var(--animal-radius); padding: 12px 14px; margin: 0; min-width: 0; }
+:where(legend) { padding: 0 6px; font-size: 12px; font-weight: 800; color: var(--animal-text-muted); }
+:where(input, select, textarea):focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
 button { font: inherit; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border-light); border-radius: var(--animal-radius-sm); padding: 10px 16px; cursor: pointer; }
 button:hover:not(:disabled) { background: var(--animal-bg-secondary); }
 button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-disabled); cursor: not-allowed; }
@@ -61,7 +77,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .palette-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 24px 24px; background: color-mix(in srgb, var(--animal-text) 25%, transparent); }
 .palette { width: min(640px, 100%); max-height: 76vh; display: flex; flex-direction: column; padding: 24px; gap: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius-lg); background: var(--animal-bg); box-shadow: var(--animal-shadow-lg); }
 .palette-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-weight: 800; }
-.palette input { width: 100%; font: inherit; padding: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); background: var(--animal-bg-input); color: var(--animal-text); }
+.palette input { width: 100%; }
 .palette-option { padding: 16px; border-radius: var(--animal-radius); cursor: pointer; overflow-wrap: anywhere; }
 .palette-option strong, .palette-option span { display: block; }
 .palette-option span, .palette-hint { margin-top: 6px; font-size: 13px; color: var(--animal-text-muted); }
@@ -89,7 +105,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-new header { display: flex; align-items: center; gap: 16px; }
 .task-new h1 { margin: 0; }
 .task-new fieldset { border: 0; padding: 0; display: flex; gap: 16px; }
-.task-new textarea { flex: 1; min-height: 0; overflow-y: auto; resize: none; padding: 16px; border: 1px solid var(--animal-border); border-radius: var(--animal-radius); background: var(--animal-bg-input); color: var(--animal-text); font: inherit; }
+.task-new textarea { flex: 1; min-height: 0; overflow-y: auto; resize: none; }
 .task-new-attachments { max-height: 160px; min-height: 0; overflow-y: auto; }
 .task-new footer { display: flex; gap: 16px; }
 .task-new :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 2px; }
@@ -173,7 +189,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .add-project h1 { margin: 0; }
 .add-project-body { min-height: 0; overflow-y: auto; max-width: 840px; padding: 24px; background: var(--animal-bg-content); border-radius: var(--animal-radius); }
 .add-project form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.add-project input:not([type="checkbox"]):not([type="hidden"]), .add-project select { min-width: 0; padding: 10px; font: inherit; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); }
+.add-project input:not([type="checkbox"]):not([type="hidden"]), .add-project select { min-width: 0; }
 .add-project input[name="path"] { flex: 1; }
 .path-suggestions { overflow-y: auto; min-height: 0; max-height: 160px; list-style: none; padding: 0; }
 .path-suggestions button { width: 100%; text-align: left; }
@@ -189,7 +205,6 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 
 .project-settings h1 { margin: 0; }
 .settings-card-body { background: var(--animal-bg-content); border-radius: var(--animal-radius); max-width: 960px; overflow-wrap: anywhere; }
-.onboarding-editor textarea { font: inherit; padding: 12px; color: var(--animal-text); background: var(--animal-bg-input); border: 1px solid var(--animal-border); border-radius: var(--animal-radius-sm); }
 .settings-card-body { flex: 1 1 0; }
 .config-rows { min-height: 0; overflow-y: auto; }
 .config-rows > div { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr); gap: 16px; padding-block: 8px; }
@@ -309,7 +324,7 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .switch input:checked + span::before { transform: translateX(16px); }
 .stepper { display: inline-flex; align-items: center; margin: 6px 0 0 8px; border-radius: var(--animal-radius-pill); background: var(--ui-surface); border: 2px solid var(--animal-border-light); height: 34px; }
 .stepper button { width: 32px; height: 30px; padding: 0; border: 0; background: transparent; font-weight: 900; color: var(--animal-text-muted); font-size: 16px; }
-.stepper input { width: 64px; min-width: 0; text-align: center; font: inherit; color: var(--animal-text); background: transparent; border: 0; border-radius: var(--animal-radius-sm); }
+.stepper input { height: 30px; padding: 0; box-shadow: none; width: 64px; min-width: 0; text-align: center; font: inherit; color: var(--animal-text); background: transparent; border: 0; border-radius: var(--animal-radius-sm); }
 .inp { height: 38px; padding: 0 14px; border-radius: var(--animal-radius-sm); background: var(--animal-bg-input); border: 2px solid var(--animal-border-light); box-shadow: var(--ui-shadow-input); font: 600 13px var(--animal-font); color: var(--animal-text); }
 .inp:disabled { background: var(--animal-bg-disabled); color: var(--animal-text-muted); }
 .chk { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border-radius: var(--animal-radius-sm); border: 2px solid var(--animal-border-light); background: var(--animal-bg-input); font-size: 13px; font-weight: 800; color: var(--animal-text); }

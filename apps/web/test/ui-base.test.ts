@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import { readFileSync, readdirSync } from 'node:fs';
 import { createElement as h, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createRoutesStub } from 'react-router';
@@ -86,4 +87,65 @@ test('页面不再定义分段选中外观，时间线使用 SegmentedTabs', () 
   }
   const source = readFileSync(new URL('../app/components/task-timeline.tsx', import.meta.url), 'utf8');
   expect(source).toContain('<SegmentedTabs className="timeline-filters"');
+});
+
+const textControls = ':where(input:not([type=checkbox],[type=radio],[type=hidden],[type=file],[type=range]), select, textarea)';
+function baseRule(selector: string) {
+  const body = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([, s]) => s.replace(/\/\*[\s\S]*?\*\//g, '').trim() === selector)?.[2];
+  expect(body, selector).toBeDefined();
+  return body!;
+}
+
+test('七类控件有元素级外观、选中与禁用状态及黄色焦点环', () => {
+  const text = baseRule(textControls);
+  for (const value of ['appearance: none', 'padding: 0 14px', 'border-radius: var(--animal-radius-sm)', 'background: var(--animal-bg-input)', 'border: 2px solid var(--animal-border-light)', 'box-shadow: var(--ui-shadow-input)', 'font: 600 13px var(--animal-font)', 'color: var(--animal-text)']) expect(text).toContain(value);
+  expect(baseRule(textControls.replace(', textarea', ''))).toContain('height: 38px');
+  expect(baseRule(':where(textarea)')).not.toMatch(/(?:^|;)\s*height:/);
+  for (const value of ['padding-right: 36px', 'linear-gradient(45deg', 'linear-gradient(135deg', 'background-repeat: no-repeat']) expect(baseRule(':where(select)')).toContain(value);
+  const check = baseRule(':where(input[type=checkbox], input[type=radio])');
+  for (const value of ['appearance: none', 'width: 18px', 'height: 18px', 'border: 2px solid var(--animal-border)', 'background: var(--ui-white)']) expect(check).toContain(value);
+  expect(baseRule(':where(input[type=checkbox])')).toContain('border-radius: var(--animal-radius-sm)');
+  expect(baseRule(':where(input[type=radio])')).toContain('border-radius: 50%');
+  for (const value of ['background: var(--animal-primary)', 'border-color: var(--animal-primary)']) expect(baseRule(':where(input[type=checkbox]:checked, input[type=radio]:checked)')).toContain(value);
+  for (const value of ['border: solid var(--ui-white)', 'transform: rotate(45deg)']) expect(baseRule(':where(input[type=checkbox]:checked)::after')).toContain(value);
+  expect(baseRule(':where(input[type=radio]:checked)')).toContain('box-shadow: inset 0 0 0 4px var(--ui-white)');
+  for (const value of ['background-color: var(--animal-bg-disabled)', 'color: var(--animal-text-muted)']) expect(baseRule(':where(input:disabled, select:disabled, textarea:disabled)')).toContain(value);
+  expect(baseRule(':where(input[type=checkbox]:disabled, input[type=radio]:disabled)')).toContain('opacity: .5');
+  for (const value of ['border: 2px solid var(--animal-border-light)', 'border-radius: var(--animal-radius)', 'padding: 12px 14px', 'margin: 0', 'min-width: 0']) expect(baseRule(':where(fieldset)')).toContain(value);
+  for (const value of ['padding: 0 6px', 'font-size: 12px', 'font-weight: 800', 'color: var(--animal-text-muted)']) expect(baseRule(':where(legend)')).toContain(value);
+  expect(baseRule(':where(input, select, textarea):focus-visible')).toContain('outline: 3px solid var(--animal-focus-yellow)');
+  for (const selector of ['.palette input', '.task-new textarea', '.onboarding-editor textarea', '.add-project input:not([type="checkbox"]):not([type="hidden"])', '.add-project select']) expect(rule(selector)).not.toMatch(/(?:^|;)\s*(?:border(?:-radius)?|background|color|font|padding):/);
+  expect(rule('.seg input')).toContain('opacity: 0');
+  expect(rule('.switch input')).toContain('opacity: 0');
+  expect(rule('.stepper input')).toContain('background: transparent');
+});
+
+test('全站 TSX 控件类型落在基础覆盖集合，文件输入保持隐藏', () => {
+  const app = new URL('../app/', import.meta.url);
+  const allowed = new Set(['text', 'search', 'number', 'checkbox', 'radio', 'hidden', 'file']);
+  let count = 0;
+  for (const file of readdirSync(app, { recursive: true }).map(String).filter(f => f.endsWith('.tsx'))) {
+    const source = ts.createSourceFile(file, readFileSync(new URL(file, app), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    function visit(node: ts.Node) {
+      if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) && /^(input|Input|select|textarea|fieldset)$/.test(node.tagName.getText(source))) {
+        count++;
+        if (/^(input|Input)$/.test(node.tagName.getText(source))) {
+          const attrs = node.attributes.properties.filter(ts.isJsxAttribute);
+          const type = attrs.find(a => a.name.getText(source) === 'type')?.initializer;
+          const value = !type ? 'text' : ts.isStringLiteral(type) ? type.text : ts.isJsxExpression(type) && type.expression && ts.isStringLiteral(type.expression) ? type.expression.text : '<dynamic>';
+          expect(allowed.has(value), `${file}: ${node.getText(source)}`).toBe(true);
+          if (value === 'file') expect(attrs.find(a => a.name.getText(source) === 'className')?.initializer?.getText(source)).toMatch(/\bvisually-hidden\b/);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+  expect(count).toBeGreaterThan(0);
+});
+
+test('全站样式不恢复浏览器原生外观', () => {
+  const source = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const [, value] of source.matchAll(/(?:[\w-]*appearance)\s*:\s*([^;}]+)/g)) expect(value.trim()).toBe('none');
+  expect(source).not.toMatch(/\ball\s*:\s*(?:revert(?:-layer)?|unset|initial)\b/i);
 });
