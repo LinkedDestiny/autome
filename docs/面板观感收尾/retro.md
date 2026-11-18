@@ -34,3 +34,5 @@
 
 实现 #16 | M-09 | 待审 | docs/面板观感收尾/evidence/M-09-r16-impl.md | 快检 6 步受 ps/监听端口 EPERM 阻塞，待宿主复跑
 审计 #10 | M-09 | 通过 | docs/面板观感收尾/evidence/M-09-r16-audit.md | 无
+
+实现 #17 | M-10 | 待审 | docs/面板观感收尾/evidence/M-10-r17-impl.md | 浏览器 ps/监听权限受限，快检结果见证据

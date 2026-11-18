@@ -161,7 +161,7 @@ it('看板高度受限且四列各自滚动，页面不增加滚动容器', () =
   expect(rule('.board')).toContain('min-height: 0'); expect(rule('.board')).toContain('height: 100%');
   expect(rule('.board-columns')).toContain('min-height: 0'); expect(rule('.board-columns')).toContain('repeat(4, minmax(0, 1fr))');
   expect(rule('.board-column')).toContain('min-height: 0');
-  expect(rule('.board-column-body')).toContain('overflow-y: auto'); expect(rule('.board-column-body')).toContain('min-height: 0');
+  expect(rule('.board-column-body')).toContain('flex: 1 1 0'); expect(rule('.board-column-body')).toContain('overflow-y: auto'); expect(rule('.board-column-body')).toContain('min-height: 0');
   for (const r of rules.filter(r => /^(html|body)$/.test(r.selector))) expect(r.body).not.toMatch(/overflow(?:-y)?:\s*(auto|scroll)/);
 });
 it('新建页正文和附件内部滚动', () => {

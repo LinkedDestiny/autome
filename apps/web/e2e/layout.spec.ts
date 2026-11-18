@@ -115,6 +115,9 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   if (name === '添加项目补全') {
     await page.getByTestId('path-input').fill('~/');
     await expect(page.getByTestId('path-suggestion').first()).toBeVisible();
+    const list = page.locator('.path-suggestions');
+    expect((await list.boundingBox())!.height).toBeGreaterThan(160);
+    await expect(list).toHaveCSS('flex', '1 1 160px');
   }
   if (name === '项目设置') {
     await expect(page).toHaveURL(/\/loop\?project=.+&tab=project$/);
@@ -127,7 +130,21 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     expect(await remove.evaluate(el => { const r = el.getBoundingClientRect(); const parent = el.closest('.project-settings')!.getBoundingClientRect(); return r.top >= Math.max(0, parent.top) && r.bottom <= Math.min(innerHeight, parent.bottom) && r.left >= 0 && r.right <= innerWidth; })).toBe(true);
     await page.screenshot({ path: '../../.autome/output/m08-settings.png' });
   }
-  if (name === '环境') await expect(page.getByTestId('env-copy').first()).toBeVisible();
+  if (name === '环境') {
+    await expect(page.locator('.env-tool-row')).toHaveCount(5);
+    for (const row of await page.locator('.env-component[data-env-ok]').all()) {
+      const details = row.locator('details.env-install');
+      if (await details.count()) {
+        expect(await details.evaluate(el => el.hasAttribute('open'))).toBe((await row.getAttribute('data-env-ok')) !== 'true');
+        await details.locator('summary').click();
+        expect(await details.evaluate(el => el.hasAttribute('open'))).toBe((await row.getAttribute('data-env-ok')) === 'true');
+        await details.locator('summary').click();
+      }
+    }
+    if (await page.locator('.env-component[data-env-ok="true"]').count() === 5) {
+      expect(await page.locator('.env-components').evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+    }
+  }
   if (name === '项目') {
     await expect(page.locator('.board-column .ribbon-sm')).toHaveCount(4);
     await expect(page.locator('.board')).not.toContainText('门禁未跑过');
@@ -143,6 +160,9 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
   if (name === '已取消展开') {
     await expect(page.getByTestId('board-cancelled').getByTestId('task-card')).toHaveCount(30);
     await expect(page.locator('.board-column-body[data-scroll-region]').filter({ has: page.getByTestId('board-cancelled') })).toHaveCount(1);
+    const last = page.getByTestId('board-cancelled').getByTestId('task-card').last();
+    await last.scrollIntoViewIfNeeded();
+    expect(await last.evaluate(el => { const r = el.getBoundingClientRect(); const body = el.closest('.board-column-body')!.getBoundingClientRect(); return r.top >= body.top && r.bottom <= body.bottom && r.bottom <= innerHeight && body.bottom <= innerHeight; })).toBe(true);
     await page.screenshot({ path: '../../.autome/output/m11-cancelled.png' });
   }
   if (name === '技能') {

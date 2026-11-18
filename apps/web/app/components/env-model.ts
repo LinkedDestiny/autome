@@ -18,3 +18,7 @@ export function environmentNotice(value: unknown): string | null {
   if (!env?.probed || !env.problems?.length) return null;
   return ENV.summary(env.problems.length) + env.problems.map(p => `${p.name ?? p.component}（${p.present ? loginLabel(p.login) : ENV.missing}）`).join('、');
 }
+
+export function toolOk(component: EnvComponent, problems: EnvSnapshot['problems']): boolean {
+  return component.present && ['ok', 'not_applicable'].includes(component.login.login) && !problems.some(p => p.component === component.component);
+}
