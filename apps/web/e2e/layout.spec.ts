@@ -78,6 +78,13 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     expect(await rows.count()).toBeGreaterThan(0);
     await timeline.evaluate(el => { el.scrollTop = 0; });
     const bounds = await timeline.boundingBox();
+    await test.info().attach('timeline-geometry', {
+      body: JSON.stringify(await page.locator('.task-page, .task-detail-header, .task-stage, .task-summary-tiles, .task-controls, .task-timeline, .timeline-group-title, li.timeline-row').evaluateAll(elements => elements.map(el => ({
+        className: el.className, rect: el.getBoundingClientRect().toJSON(), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight,
+      }))), null, 2),
+      contentType: 'application/json',
+    });
+    await page.screenshot({ path: '../../.autome/output/m07-collapsed-detail.png' });
     for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeLessThanOrEqual(44);
     for (const row of (await rows.all()).slice(0, 10)) {
       const box = (await row.boundingBox())!;

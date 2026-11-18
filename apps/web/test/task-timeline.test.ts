@@ -282,6 +282,17 @@ it('首屏十条的密度预算包含行间距与分组标题外边距', () => {
   expect(css).toMatch(/\.task-timeline li\s*\{[^}]*margin: 0 12px;/);
   expect(css).toMatch(/\.timeline-group-title\s*\{[^}]*margin: 4px 12px;/);
 });
+it('桌面详情给时间线留出高度，上方阶段与提示保留内部滚动', () => {
+  const css = readFileSync(new URL('../app/styles/app.css', import.meta.url), 'utf8');
+  expect(css).toMatch(/@media \(min-width: 1100px\) and \(min-height: 800px\)\s*\{\s*\.task-page\s*\{ gap: 8px; \}/);
+  expect(css).toMatch(/\.task-page > \.task-stage\s*\{ max-height: 96px; \}/);
+  expect(css).toMatch(/\.task-page > \.task-summary-tiles\s*\{ margin: 0; \}/);
+  expect(css).toMatch(/\.task-page > \.task-controls\s*\{ max-height: 48px; \}/);
+  expect(css).toMatch(/\.task-controls > \.task-notice\s*\{ margin: 0; padding: 8px 12px; \}/);
+  for (const selector of ['.task-page > .task-stage', '.task-controls']) {
+    expect(css.split(selector).some(rule => rule.slice(0, rule.indexOf('}')).includes('overflow-y: auto'))).toBe(true);
+  }
+});
 it('R1-P01 长系统事件与多里程碑摘要均有独立完整文字展开入口', () => {
   const rows = build([
     ev(1, 'task.processes_stopped', { processes: [1, 2, 3].map(pid => ({ pid, command: 'long-command '.repeat(30) })), survivors: [{ pid: 4, error: '末尾错误原因 EPERM' }] }),
