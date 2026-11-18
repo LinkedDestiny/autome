@@ -202,3 +202,23 @@ test('卡片入口经受控详情加载器读取，撤去清单或读取失败�
   }
   expect(docRead).not.toHaveBeenCalled();
 });
+function waitingOverview(closedMs: number, openStarts: number[], ended: Record<string, number> = {}) {
+  const data = { ...shell, overview: { today: { dayStart: Date.parse(now) - 3600_000, dayEnd: Date.parse(now) + 86400_000, closedMs, openStarts, ended, cost: 0, billed: 0, unbilled: 0, gates: 0, passed: 0, merged: 0 }, details: {}, waiting: {}, recent: [], doneCount: 0 } };
+  const Stub = createRoutesStub([{ id: 'root', path: '/', loader: () => data, Component: Overview }]);
+  return renderToStaticMarkup(createElement(ClockProvider, { initial: { now, timeZone: 'Asia/Shanghai' } }, createElement(Stub, { hydrationData: { loaderData: { root: data } } })));
+}
+test('等待为零显示 0 分与今天没有等待，缺失数据仍不可用', () => {
+  for (const starts of [[], [Date.parse(now)]]) {
+    const html = waitingOverview(0, starts);
+    expect(html).toContain('0 分'); expect(html).toContain('今天没有等待'); expect(html).not.toContain('0 秒');
+  }
+  expect(overview()).toContain('数据暂不可用');
+});
+test('只有开放等待显示正在等你，有结束时沿用分类次数', () => {
+  const html = waitingOverview(0, [Date.parse(now) - 60_000]);
+  expect(html).toContain('1 分 00 秒'); expect(html).toContain('正在等你，今天暂无结束的等待');
+  for (const starts of [[], [Date.parse(now) - 60_000]]) {
+    const ended = waitingOverview(60_000, starts, { await_merge: 1 });
+    expect(ended).toContain('批准合并 1 次'); expect(ended).not.toContain('今天暂无结束的等待');
+  }
+});

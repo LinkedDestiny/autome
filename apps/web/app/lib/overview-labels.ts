@@ -4,6 +4,7 @@ import { formatSpan } from './clock.tsx';
 import type { ShellTask } from '../components/shell-data.ts';
 import type { OverviewDetail } from '../../server/overview.ts';
 export const OVERVIEW = {
+  zeroWait: '0 分', noWait: '今天没有等待', ongoingWait: '正在等你，今天暂无结束的等待',
   today: '今天', merged: '合并', recent: '最近合并', emptyMerged: '还没有已合并的任务',
   emptyWait: '都处理完了', emptyWaitBody: '设计批准、Backlog 表态、失败的任务会出现在这里。',
   emptyRun: '没有任务在跑', emptyRunBody: '新建一张任务卡，驱动会在 3 秒内接手。',

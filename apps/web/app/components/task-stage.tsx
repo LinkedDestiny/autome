@@ -24,7 +24,7 @@ export function TaskStage({ view, summary }: { view: ReturnType<typeof stageBarV
     </li>)}</ol>}</>
     {view.unknownStage && <p>{view.unknownStage}</p>}
     <div className="task-detail-meta"><span>{view.rounds}</span><span>{view.reproduction}</span></div>
-    {view.milestones.length > 0 && <div className="task-milestone-bar"><Pill>里程碑 已完成 {view.milestones.filter(item => item.state === 'done').length} / {view.milestones.length}</Pill><ul ref={milestonesRef} className="task-milestones">{view.milestones.map(item => <li key={item.id} className={item.current ? 'is-current' : undefined}><Pill filled={item.current} color={item.current ? 'yellow' : item.state === 'done' ? 'green' : item.state === 'pending' ? 'yellow' : 'blue'}>{item.id} · {item.label}</Pill> {item.title}</li>)}</ul></div>}
+    {view.milestones.length > 0 && <div className="task-milestone-bar"><Pill>里程碑 {STATE_LABELS.done} {view.milestones.filter(item => item.state === 'done').length} / {view.milestones.length}</Pill><ul ref={milestonesRef} className="task-milestones">{view.milestones.map(item => <li key={item.id} className={item.current ? 'is-current' : undefined}><Pill filled={item.current} color={item.current ? 'yellow' : item.state === 'done' ? 'green' : item.state === 'pending' ? 'yellow' : 'blue'}>{item.id} · {item.label}</Pill> {item.title}</li>)}</ul></div>}
     {view.message && <p>{view.message}</p>}
   </section>;
 }

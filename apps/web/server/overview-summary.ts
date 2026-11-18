@@ -1,4 +1,4 @@
-import { isCountedGate, waitingTransition, type OpenWaiting, type WaitingInterval } from '../app/lib/waiting.ts';
+import { isCountedGate, waitingKind, waitingTransition, type OpenWaiting, type WaitingInterval } from '../app/lib/waiting.ts';
 import type { TaskState } from '../app/lib/labels.ts';
 import type { Clock } from '../app/lib/clock.tsx';
 import type { TodayWaiting } from '../app/lib/overview-model.ts';
@@ -25,7 +25,7 @@ export function recentMerged(tasks: ShellTask[]) {
 export function createOverviewSummary(call: Call) {
   let cursor = 0;
   let open = new Map<string, OpenWaiting>();
-  let closed: WaitingInterval[] = [];
+  let closed: (WaitingInterval & { task: string })[] = [];
   let costs: { at: number; cost: number | null }[] = [];
   let gates: { at: number; ok: boolean }[] = [];
   let pending: Promise<void> = Promise.resolve();
@@ -38,7 +38,7 @@ export function createOverviewSummary(call: Call) {
         const at = Date.parse(event.at);
         if (event.kind === 'task.updated' && event.payload.state) {
           const transition = waitingTransition(open.get(event.subject), event.payload.state as TaskState, at);
-          if (transition.closed) closed.push(transition.closed);
+          if (transition.closed) closed.push({ ...transition.closed, task: event.subject });
           if (transition.open) open.set(event.subject, transition.open); else open.delete(event.subject);
         }
         if (event.kind === 'session.ended') costs.push({ at, cost: typeof event.payload.cost_usd === 'number' ? event.payload.cost_usd : null });
@@ -58,15 +58,18 @@ export function createOverviewSummary(call: Call) {
     costs = costs.filter(item => item.at >= yesterday); gates = gates.filter(item => item.at >= yesterday);
     const todayCosts = costs.filter(item => item.at >= dayStart && item.at < dayEnd);
     const todayGates = gates.filter(item => item.at >= dayStart && item.at < dayEnd);
+    const present = new Map(tasks.map(task => [task.id, task]));
+    const currentOpen = [...open].filter(([id]) => { const task = present.get(id); return task && waitingKind(task.state); });
+    const currentClosed = closed.filter(item => present.has(item.task));
     const ended: Record<string, number> = {};
-    for (const item of closed) if (item.end >= dayStart && item.end < dayEnd) ended[item.kind] = (ended[item.kind] ?? 0) + 1;
+    for (const item of currentClosed) if (item.end >= dayStart && item.end < dayEnd) ended[item.kind] = (ended[item.kind] ?? 0) + 1;
     return { today: { dayStart, dayEnd,
-      closedMs: closed.reduce((sum, item) => sum + Math.max(0, Math.min(item.end, dayEnd) - Math.max(item.start, dayStart)), 0),
-      openStarts: [...open.values()].map(item => item.start), ended,
+      closedMs: currentClosed.reduce((sum, item) => sum + Math.max(0, Math.min(item.end, dayEnd) - Math.max(item.start, dayStart)), 0),
+      openStarts: currentOpen.map(([, item]) => item.start), ended,
       cost: todayCosts.reduce((sum, item) => sum + (item.cost ?? 0), 0), billed: todayCosts.filter(item => item.cost !== null).length,
       unbilled: todayCosts.filter(item => item.cost === null).length,
       gates: todayGates.length, passed: todayGates.filter(item => item.ok).length,
       merged: tasks.filter(t => t.state.state === 'done' && Date.parse(t.completed_at ?? '') >= dayStart && Date.parse(t.completed_at ?? '') < dayEnd).length,
-    }, waiting: Object.fromEntries([...open].map(([id, item]) => [id, item.start])) };
+    }, waiting: Object.fromEntries(currentOpen.map(([id, item]) => [id, item.start])) };
   };
 }

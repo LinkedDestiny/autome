@@ -31,3 +31,5 @@
 
 实现 #15 | M-08 | 待审 | docs/面板观感收尾/evidence/M-08-r15-impl.md | 快检内核清理及浏览器准备 ps EPERM，9 步预算未跑
 审计 #9 | M-08 | 通过 | docs/面板观感收尾/evidence/M-08-r15-audit.md | 无
+
+实现 #16 | M-09 | 待审 | docs/面板观感收尾/evidence/M-09-r16-impl.md | 快检 6 步受 ps/监听端口 EPERM 阻塞，待宿主复跑
