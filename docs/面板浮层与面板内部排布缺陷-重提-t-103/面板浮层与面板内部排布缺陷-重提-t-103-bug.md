@@ -1,10 +1,10 @@
 # 面板浮层与面板内部排布缺陷（重提 T-103）
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -49,6 +49,8 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 验证：`npx playwright test e2e/overlay-layout.spec.ts` 6 例通过；vitest 的 loop-page/skills-page/task-notes/loop-defaults 59 例通过；`sh scripts/ci-quick.sh --since 4442737b` 全部通过。
 
 第 2 轮：复核指出角色抽屉 Effort 分段只有 aria-label、无可见标签。`routes/loop.tsx` 把 Effort 分段包进 `div.field` 并加可见 `<span>Effort</span>`，与「模型」字段同一纵向布局。复核第 5 点（铃铛面板裁切）为待实测风险，未改。验证：vitest loop-page/loop-defaults 36 例通过；ci-quick 见提交。
+
+第 3 轮：宿主门禁失败原因是 e2e globalSetup 的 w7-flow.sh 在机器高负载（load average 约 90）下耗时 150.6s，超过 150s 的 prepare 上限（ETIMEDOUT），6 个用例未执行，不是产品断言失败。产品代码与测试均未改动；在本轮会话重跑 `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts`，6 例全部通过（总计 2.5 分钟，其中大部分是夹具准备）。该超时依赖宿主负载，修复轮不能修改夹具/回归测试，如门禁再因准备超时失败，请在负载较低时重跑。
 
 ## 复核意见
 
