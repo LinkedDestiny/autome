@@ -25,3 +25,5 @@
 实现 #12 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r12-impl.md | 浏览器及实时测试受 ps/listen EPERM 阻塞，宿主复验
 实现 #13 | M-07 | 待审，桌面区块间距收紧 | docs/面板观感收尾/evidence/M-07-r13-impl.md | 本地浏览器准备 ps EPERM，待宿主复验
 审计 #7 | M-07 | 退回 + 任务详情时间线几何 | docs/面板观感收尾/evidence/M-07-r13-audit.md | 无
+
+实现 #14 | M-07 | 待审 | docs/面板观感收尾/evidence/M-07-r14-impl.md | 浏览器 ps EPERM，宿主需以重建产物复验
