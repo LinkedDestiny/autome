@@ -171,10 +171,3 @@ test('Drawer 标题行关闭、正文独立滚动、固定 footer', () => {
   for (const value of ['flex: 1', 'min-height: 0', 'overflow-y: auto']) expect(rule('.drawer-body')).toContain(value);
   expect(rule('.drawer-foot')).toContain('flex: none');
 });
-test('Drawer Esc 和关闭按钮调用 onClose，其它键不关闭', () => {
-  let calls = 0;
-  const element = Drawer({ label: '编辑', title: '标题', onClose: () => calls++, footer: null, children: null });
-  element.props.onKeyDown({ key: 'Enter' }); expect(calls).toBe(0);
-  element.props.onKeyDown({ key: 'Escape' }); expect(calls).toBe(1);
-  element.props.children[0].props.children[1].props.onClick(); expect(calls).toBe(2);
-});

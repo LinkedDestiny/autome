@@ -44,3 +44,4 @@
 
 实现 #20 | M-12 | 待审 | docs/面板观感收尾/evidence/M-12-r20-impl.md | 快检浏览器阶段 ps EPERM，待宿主复验
 审计 #13 | M-12 | 通过 | docs/面板观感收尾/evidence/M-12-r20-audit.md | 无
+实现 #21 | M-13 | 待审 | docs/面板观感收尾/evidence/M-13-r21-impl.md | 快检浏览器 ps EPERM，宿主复验
