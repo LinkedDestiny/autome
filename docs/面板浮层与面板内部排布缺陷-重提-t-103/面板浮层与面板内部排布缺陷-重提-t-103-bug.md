@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -53,6 +53,19 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 第 3 轮：宿主门禁失败原因是 e2e globalSetup 的 w7-flow.sh 在机器高负载（load average 约 90）下耗时 150.6s，超过 150s 的 prepare 上限（ETIMEDOUT），6 个用例未执行，不是产品断言失败。产品代码与测试均未改动；在本轮会话重跑 `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts`，6 例全部通过（总计 2.5 分钟，其中大部分是夹具准备）。该超时依赖宿主负载，修复轮不能修改夹具/回归测试，如门禁再因准备超时失败，请在负载较低时重跑。
 
 ## 复核意见
+
+### 第 3/3 轮（当前结论）
+
+**打回。** 定位基线 `4442737be10fe156cbc15ab72a002e344e79aa6a`，当前候选 `e0d090f3fca7d6d1dcf6d02b4b1faecaf65b78d2`。本轮重新检查累计差异，发现上一轮漏记的明确需求缺口；不因缺少全量门禁或浏览器沙箱限制打回。
+
+1. **需求轴：应修——角色抽屉的次要按钮仍沿用页面级尺寸。** 任务卡「期望」第 0 项要求「浮层内的次要按钮一律用小号按钮」。`apps/web/app/routes/loop.tsx:82` 的项目「恢复跟随全局」仍为没有 className 的 button，`apps/web/app/components/ui/drawer.tsx:13` 原样渲染 footer。`apps/web/app/styles/app.css:23` 给裸按钮设置页面级 `padding: 10px 16px`，`:544` 的 drawer-foot 仅处理排布，没有尺寸覆盖；已有 `:333` 小号规则为 `height: 30px; padding: 0 14px; font-size: 12px`。关闭、添加技能、打开目录等已使用小号样式，角色恢复按钮遗漏。这由实际 JSX 与样式选择器确认，不宣称已测得浏览器高度。建议修复轮为该次要按钮复用既有小号规则，保留覆盖来源判断、禁用条件与确认交互，不改定位回归断言。原型 `docs/design/autome-web-panel-v3.html:576` 没有对此按钮的小号要求作明确豁免，以任务卡具体要求为准。此项足以打回，不将下述铃铛风险充作已复现缺陷。
+2. **规范轴：回归保护与范围检查通过。** `git diff 4442737b...HEAD` 的产品改动限于 apps/web 的 6 个既有文件；抽屉缺纵向排布、技能描述未限高、通知使用大按钮等根因与差异吻合。定位至当前候选的 overlay-layout.spec.ts、layout.spec.ts、task-notes.test.ts 无差异；loop-page.test.ts:204–211 的覆盖/继承对照保持原样。旧模型标签选择器和旧技能来源/角色顺序断言适配有任务卡「线索」的明确授权；默认值恢复测试增加禁止按数值相等置灰约束，没有删除、跳过或弱化定位回归。累计差异中的三份 brief 来自 Autome 独立 chore 提交，本轮不改。第 2 轮产品候选 `9ad5b744` 至当前候选的 apps/web 差异为空，证据 `.autome/output/review-t103-round3/round3-web.diff`；`git diff --check 4442737b...HEAD` 退出码 0。
+3. **独立复验：相关单测通过，浏览器复现未执行用例。** 原命令 `cd apps/web && npx playwright test e2e/overlay-layout.spec.ts` 退出码 1；globalSetup 在 apps/web/test/fixtures/process-scan.ts:5 调用 ps 遭 `spawnSync ps EPERM`，清理同样受限，6 例全部未执行。日志 `.autome/output/review-t103-round3/reproduction.log`；这是任务卡记录的沙箱限制，不是排布断言失败，不记为通过。独立执行 `cd apps/web && npx vitest run test/loop-page.test.ts test/skills-page.test.ts test/task-notes.test.ts test/loop-defaults.test.ts test/bell-view.test.ts test/task-docs.test.ts test/task-docs-view.test.ts test/markdown.test.ts test/drawer-focus.test.ts test/w9-layout.test.ts test/env-page.test.ts test/task-detail-ssr.test.ts`，退出码 0，12 文件、123 例通过，日志同目录 related.log。通过的测试没有断言角色恢复按钮尺寸，不能覆盖第 1 项缺口。
+4. **铃铛覆盖缺口保留为风险。** overlay-layout.spec.ts:88–92 检查 bell-list 全内容边界，实际裁切发生在 app.css:46 的 bell-panel（max-height:60vh、overflow-y:auto），不能独立证明前 5 条在面板可视区内完整显示。权限为 default、前 5 条均未读且有两行长标题和正文的高度预算风险仍在，本轮没有新增浏览器测量。宿主应比较该场景第 5 条底边与面板实际可视区；本轮不修改测试，也不声明「回归测试: 有缺陷」，因为未出现产品修复后因错误测试而失败的证据。
+5. **其他要求与门禁边界。** Effort 可见标签仍在 loop.tsx:82，与原型 :571 一致，上一轮该项修复未回退。其余已检查要求有对应实现，未发现额外范围扩展。用户提供的宿主「复现命令 + 快检」退出码 0 作为外部修复门禁结果记录，不能等同全量门禁或本轮浏览器验收。本轮未运行 `sh scripts/ci-local.sh`，留给宿主合并前统一执行。
+6. **写入与后续。** 本轮只改本 Bug 文档的复核字段和本节，status、fix-round、复现命令、根因保持不变；原文没有 repos 字段，不新增。未改产品或测试，未做负向缺陷注入；日志及检查产物仅写入被 Git 忽略的 `.autome/output/review-t103-round3/`。第 3/3 轮仍按协议写打回，预算及后续流程交由 Autome 处理，不自行增轮、修代码、合并或启动下一个会话。
+
+### 第 2/3 轮（历史记录）
 
 第 2/3 轮独立复核结论：**通过**。定位基线 `4442737be10fe156cbc15ab72a002e344e79aa6a`，当前候选 `9ad5b7448bb78570a567e4e6bec93b4a312f2b6d`。检查定位至当前候选的完整产品/测试差异，并单独核对上一轮候选 `d92c066c81e36aefa9e42fd018145a3d1717735f` 至当前候选的增量。本结论不表示本轮浏览器验收或全量门禁已通过。
 
