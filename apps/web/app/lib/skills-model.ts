@@ -25,3 +25,5 @@ export function bindingChanges(name: string, roles: Roles, selected: Role[], pro
 export function bindingExceptions(name: string, role: Role, bound: boolean, projects: { display_name: string; roles: Roles }[]) {
   return projects.filter(p => p.roles[role].skills.includes(name) !== bound).map(p => p.display_name);
 }
+
+export function boundRolesLabel(roles: Role[]) { return roles.length ? roles.map(role => roleNames[role]).join(' · ') : '未绑定'; }

@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 import captured from './fixtures/m09-skills.json' with { type: 'json' };
 import config from './fixtures/m07-global.json' with { type: 'json' };
 import { resolvedRoles, type ConfigReply } from '../app/components/loop-data.ts';
-import { bindingChanges, bindingExceptions, bindingReason, filterSkills, scopedSkill, skillCounts, type SkillEntry } from '../app/lib/skills-model.ts';
+import { boundRolesLabel, bindingChanges, bindingExceptions, bindingReason, filterSkills, scopedSkill, skillCounts, type SkillEntry } from '../app/lib/skills-model.ts';
 const skills = captured.skills as SkillEntry[], roles = () => structuredClone(resolvedRoles(config as ConfigReply));
 const alpha = skills.find(s => s.name === 'alpha')!, beta = skills.find(s => s.name === 'beta')!, gamma = skills.find(s => s.name === 'gamma')!;
 test('真实回包全部、全局、本项目、已绑定计数', () => { expect(skillCounts(skills)).toEqual({ all: 3, global: 2, project: 2, bound: 1 }); });
@@ -21,3 +21,5 @@ test('纯项目不可选全局', () => { expect(scopedSkill(gamma, 'global')).to
 test('混合同名 project_scoped 不阻止全局绑定且不并入项目工具', () => { expect(beta.project_scoped).toBe(true); expect(scopedSkill(beta, 'global')?.visible_to).toEqual(['claude']); expect(scopedSkill(beta, 'project')?.visible_to).toEqual(['claude', 'codex']); });
 test('不可见角色原因与范围切换', () => { const r = roles(); r.audit.runtime = 'codex'; expect(bindingReason(beta, 'global', r, 'audit')).toContain('审计 用 Codex'); expect(bindingReason(beta, 'project', r, 'audit')).toBeUndefined(); });
 test('项目 runtime 覆盖参与可见性判定', () => { const r = roles(); r.plan.runtime = 'codex'; expect(bindingReason(gamma, 'project', r, 'plan')).toContain('.agents/skills'); r.plan.runtime = 'claude'; expect(bindingReason(gamma, 'project', r, 'plan')).toBeUndefined(); });
+
+test('绑定文案覆盖空、单角色与全部六角色', () => { expect(boundRolesLabel([])).toBe('未绑定'); expect(boundRolesLabel(['audit'])).toBe('审计'); expect(boundRolesLabel(['audit', 'retro'])).toBe('审计 · 复盘'); expect(boundRolesLabel(['plan', 'review', 'impl', 'audit', 'retro', 'adjudicate']).split(' · ')).toHaveLength(6); });

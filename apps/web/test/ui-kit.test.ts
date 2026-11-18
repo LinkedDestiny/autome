@@ -105,7 +105,8 @@ it('输入框保留表单约束与空值', () => {
 });
 it('勾选块禁用原因可追溯，保留外部描述且两态可渲染', () => {
   const html = render(h(Check, { label: '技能', disabled: true, reason: '当前工具不可用', 'aria-describedby': 'extra', defaultChecked: true }));
-  const id = html.match(/<small id="([^"]+)"/)![1];
+  const id = html.match(/<label class="chk">[\s\S]*<small id="([^"]+)" class="chk-reason" title="当前工具不可用">当前工具不可用</)![1];
+  expect(html).toContain('</small></label>');
   expect(html).toContain(`aria-describedby="extra ${id}"`); expect(html).toContain('当前工具不可用'); expect(html).toContain('disabled=""'); expect(html).toContain('checked=""');
   const enabled = render(h(Check, { label: '技能' })); expect(enabled).not.toContain('aria-describedby'); expect(enabled).not.toContain('disabled');
 });
@@ -148,7 +149,7 @@ it('开关与勾选的原生变更回调保留两个方向', () => {
   render(h(Capture));
   for (const checked of [true, false]) {
     toggle.props.children[0].props.onChange({ currentTarget: { checked } });
-    check!.props.children[0].props.children[0].props.onChange({ currentTarget: { checked } });
+    check!.props.children.props.children[0].props.onChange({ currentTarget: { checked } });
   }
   expect(changes).toEqual([true, true, false, false]);
 });

@@ -4,5 +4,5 @@ export function Check({ label, reason, disabled, className = '', 'aria-described
   const reasonId = useId();
   return <div><label className={['chk', className].filter(Boolean).join(' ')}>
     <input {...props} type="checkbox" disabled={disabled} aria-describedby={[describedBy, disabled && reasonId].filter(Boolean).join(' ') || undefined} />{label}
-  </label>{disabled && <small id={reasonId}>{reason}</small>}</div>;
+  {disabled && <small id={reasonId} className="chk-reason" title={reason}>{reason}</small>}</label></div>;
 }

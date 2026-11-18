@@ -13,3 +13,5 @@
 
 实现 #6 | M-05 | 待审 | docs/面板观感收尾/evidence/M-05-r6-impl.md | 快检真实 SSR/浏览器受沙箱权限限制，交宿主复验
 审计 #5 | M-05 | 通过 | docs/面板观感收尾/evidence/M-05-r6-audit.md | 无
+
+实现 #7 | M-06 | 待审 | docs/面板观感收尾/evidence/M-06-r7-impl.md | 浏览器与监听/ps 检查受沙箱限制

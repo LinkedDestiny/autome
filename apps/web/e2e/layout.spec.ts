@@ -11,7 +11,7 @@ const cases = [
 ] as const;
 for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => {
   const skillDirs: string[] = [];
-  if (name === '技能' || name === '技能抽屉') for (let i = 0; i < 24; i++) { const dir = join(state().root, '.claude/skills', 'layout-skill-' + i); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'SKILL.md'), '# Skill'); skillDirs.push(dir); }
+  if (name === '技能' || name === '技能抽屉') for (let i = 0; i < 126; i++) { const dir = join(state().root, '.claude/skills', 'layout-skill-' + i); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'SKILL.md'), '---\nname: layout-skill-' + i + '\ndescription: ' + '完整技能说明 '.repeat(100) + '\n---\n# Skill'); skillDirs.push(dir); }
   try {
   await visit(page, path.replace(/^project/, `/projects/${encodeURIComponent(state().projectId)}`));
   if (name === 'Loop 配置') { await expect(page.getByTestId('loop-role')).toHaveCount(6); await expect(page.locator('.loop-row .card-dash')).toHaveCount(4); await page.screenshot({ path: '../../.autome/output/m07-layout.png' }); }
@@ -107,8 +107,13 @@ for (const [name, path] of cases) test(`1512×944 ${name}`, async ({ page }) => 
     await page.screenshot({ path: '../../.autome/output/m11-cancelled.png' });
   }
   if (name === '技能') {
-    await expect(page.getByTestId('skill-card')).toHaveCount(24);
+    await expect(page.getByTestId('skill-card')).toHaveCount(126);
     const grid = page.locator('.skills-grid');
+    const cards = await page.getByTestId('skill-card').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; }));
+    const bounds = await grid.boundingBox();
+    expect(cards.filter(r => r.top >= bounds!.y && r.bottom <= Math.min(944, bounds!.y + bounds!.height)).length).toBeGreaterThanOrEqual(9);
+    expect(cards.every(r => r.height === 196)).toBe(true);
+    expect(await page.locator('.skill-description').first().evaluate(el => getComputedStyle(el).webkitLineClamp)).toBe('3');
     expect(await grid.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
     await grid.evaluate(el => { el.scrollTop = el.scrollHeight; });
     expect(await grid.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
