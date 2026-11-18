@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 5/5
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -46,7 +46,57 @@ fix-round: 5/5
 
 ## 复核意见
 
-### 第 3/3 轮独立复核（当前结论：打回）
+### 第 5/5 轮独立复核（当前结论：打回）
+
+复核 HEAD：`4f4277c0637ba014e6cd15983f6c26d1a5aa7afa`。核对定位提交 `6d54414f` 至 HEAD 的完整差异，并检查本轮修复提交 `4f4277c0`；读取协议、任务卡、四张附件、参考 HTML 及两条操作者备注。备注 #2 取代 #1 第二节，其余约束继续适用。
+
+#### 必须修复
+
+1. **P2：环境页正常工具行增高，违反必须保留的 ≤48px 约束。** 在四个工具均正常、安装方法收起时，`apps/web/app/routes/env.tsx:67` 新增的 `btn btn-text btn-sm` 使 summary 按 `app.css:336,340` 取得 30px 高度；但 `app.css:578` 的 `.env-tools .env-component` 仍保留上下各 10px 内边距和 1px 底边框。该行是自动高度 grid，右列 details 必须容纳 summary，因此整块高度下界为 **30 + 10 + 10 + 1 = 51px**（行盒可能使实际值更大），已经超过 48px。扫描全部样式没有发现降低这些正常工具行内边距或覆盖 summary 高度的规则。备注 #2 A.1 明确要求该约束继续通过；未改动的 `apps/web/e2e/overlay-layout.spec.ts:179` 也逐行断言 `height <= 48`。这不是测试缺陷，不能降低断言或缩掉统一 30px 按钮来通过；修复轮应协调环境工具行的排布与内边距，保留单行信息、原生展开行为及驱动卡可见性，再复跑相关浏览器用例。本条是可核对的 CSS 尺寸约束推导，**本轮未取得浏览器计算尺寸，不将 51px 写成实测值**。
+
+#### 操作者备注逐项核对
+
+以下“源码满足”只表示元素与样式声明已核对，不替代运行时布局与截图验收。
+
+| 备注条目 | 实现证据与复核结果 |
+|---|---|
+| #1 一.1 调整顺序 | `queue-controls.tsx:12` 为 `summary.btn.btn-sm`，保留 details；源码满足。 |
+| #1 一.2 路径建议 | `projects.new.tsx:86` 为 `btn btn-sm`；`app.css:224,589` 两条规则仅保留宽度、左对齐、间距，不再自写边框；源码满足。 |
+| #1 一.3 公共抽屉 | `app.css:597` 使用 `.drawer .btn`，同时覆盖正文和页脚；`ui/drawer.tsx:10-13` 的公共骨架包含两者；技能保存绑定仍保留主按钮变体，声明高度 30px；源码满足。 |
+| #1 一.4、5 看板页头 | `projects.$id.tsx:59-60` 的设置为 `btn`、新建为 `btn btn-primary board-new`，均保留 Link 和文案；`.board-new` 自写样式已删除，使用默认 38px；源码满足，页头不增高及整页无滚动尚缺本轮浏览器结果。 |
+| #1 二与 #2 二 专用控件去留 | 按后发备注执行。分段选择、范围切换、页签、侧栏、文档/证据/技能胶囊、技能卡/项目卡/任务卡/完成行/最近合并行、时间线和日志行、步进器、铃铛图标、顶栏标题继续归入专用样式；未要求这些控件迁移为按钮。 |
+| #2 A.1 环境安装方法 | 已加 `btn btn-text btn-sm` 并保留 details，但高度组合不满足 ≤48px，见必须修复项；未通过。 |
+| #2 A.2 提交标题 | `task-changes.tsx:17` 为 `summary.btn.btn-text.btn-sm`，保留 details；源码满足。 |
+| #2 B.3、4 驱动卡与总览环境入口 | `driver-card.tsx:12`、`_index.tsx:32` 均为 `btn btn-text btn-sm`，Link 及文案保留；源码满足。 |
+| #2 B.5 添加项目结果链接 | `projects.new.tsx:64,74` 三个链接均为 `btn btn-text btn-sm`，跳转目标保留；源码满足。 |
+| #2 B.6 看板折叠行 | `projects.$id.tsx:69,71` 为 `btn btn-text btn-sm board-fold`；`app.css:104` 只留居中和间距；源码满足。 |
+| #2 B.7 错误页返回 | `root.tsx:54` 为默认 `btn`，保留 Link；源码满足。 |
+| #2 C.8 实体链接 | overview-card、task-card 的标题、task-header 项目名、新建任务项目名、project-alerts 任务编号、bell 条目均有公共 `link` 类；`app.css:7-8` 在悬停及键盘聚焦时使用既有 primary-active 令牌和下划线；源码满足。 |
+| #2 C.9 Markdown 外链 | `markdown-view.tsx:10` 使用 `link link-ext`；`app.css:9` 默认下划线，安全 href 处理及新窗口属性未变；源码满足。 |
+| #1 三、#2 三 测试变更边界 | `action-controls.spec.ts` 与定位版本逐字相同（差异文件 0 字节）；queue-deps 1 处、board 2 处、env-page 1 处仅把旧标记换成新 class 标记，数量仍为 2/4，没有删用例、跳过、改名或放宽匹配；与修复说明列出的改前改后一致。 |
+| #2 三 新增 A/B/C 断言 | 新文件 `test/link-styles.test.ts` 的 3 项分别断言提交标题、查看环境、Markdown 外链的渲染类名，并加入 test-groups；本轮实跑全部通过。没有往已有用例插入新断言。 |
+| #1 四、#2 三 实跑验证 | 修复说明声称整套 e2e 43 通过，但没有给出可关联本 HEAD 的原始日志；该声明不足以排除上述环境行高度反例。Vitest 说明仅记录首次全量存在失败、修后相关子集通过，未提供修后全量通过证据。本轮独立复验见下文。 |
+| #1 四、#2 三 截图与目视 | 修复说明明确给出未执行理由“本沙箱无法起浏览器”，没有伪装为已截图。看板页头、调序收起/展开、路径建议、技能抽屉，以及环境正常/展开、看板折叠行、驱动卡、标题悬停、提交标题均未交付本轮新截图；记录为验证缺口，不能用自动断言替代目视确认。本轮未因单独缺少截图或全量门禁而打回。 |
+
+已重新扫描 `apps/web/app` 下全部 `<button>`、`<summary>`、`<Link>`、`<a>`（原始清单 `.autome/output/independent-review-r5/clickable-inventory.txt`）。没有发现清单外仍未归入统一按钮、公共链接或备注 #2 专用样式的入口。修复说明的去留表已覆盖要求的类别，但“全部照做”须以上述环境行高度反例及未完成验证为限，不能据类名齐全认定全部验收通过。
+
+#### 根因、范围与回归约束
+
+- 原根因成立：裸按钮、统一按钮和裸操作链接/summary 并存。修复保留原事件、表单字段、跳转、文案及测试标识；公共抽屉规则和公共链接类能够统一多个页面，未发现内核或无关功能改动。定位至 HEAD 产品改动限于 26 个 Web 文件，另有获授权的单测调整、新增单测及登记。
+- 原回归测试有实际价值：操作区高度、对齐、可见边框/底色、圆角、确认态同行均检查原始问题；全站按钮扫描可抓住 45px 兜底。但它不测 summary 外层工具行高度、不验证危险色、不区分抽屉 30px 与默认 38px，因而只跑该文件无法排除本轮反例。既有 overlay-layout 正好提供必要的 ≤48px 约束，应保留。
+- 没有删除、跳过或弱化回归测试；不声明“回归测试: 有缺陷”。打回对象是产品排布组合，不是已获授权的旧标记断言更新。
+
+#### 独立复验与限制
+
+- 原样执行头部复现命令：客户端和服务端构建成功，Playwright 在 globalSetup 报 `spawnSync ps EPERM`，退出码 1；两个回归用例均未进入断言，teardown 也受进程查询权限限制。日志：`.autome/output/independent-review-r5/repro.log`。
+- 执行 `cd apps/web && npx playwright test e2e/layout.spec.ts e2e/overlay-layout.spec.ts e2e/controls.spec.ts`：同样在 globalSetup 被 `spawnSync ps EPERM` 阻断，退出码 1。日志：`.autome/output/independent-review-r5/related-e2e.log`。没有绕过沙箱或改测试夹具。
+- 直接相关 Vitest 子集：22 文件、289 项通过，退出码 0，包含 A/B/C 新测试及调序、看板、环境、CSS、按钮、操作区、抽屉相关组件。完整命令与结果见 `.autome/output/independent-review-r5/related-unit-command.txt`、`related-unit.log`。
+- `npm run lint --prefix apps/web && npm run typecheck --prefix apps/web` 通过，退出码 0。日志：`.autome/output/independent-review-r5/static.log`。
+- 补充按备注执行 `cd apps/web && npx vitest run`：退出码 1，1324 项通过、80 项失败、31 项跳过（总计 1435 项）。失败日志包含 `spawnSync ps EPERM`、`listen EPERM: operation not permitted 127.0.0.1` 及由监听失败引起的启动超时；这批进程/HTTP/安装集成验收未取得成功结果，不能等同产品断言通过，也不据此新增样式缺陷。本轮没有修改或跳过测试来规避限制。日志：`.autome/output/independent-review-r5/unit.log`；失败索引：`unit-errors-final.txt`。
+- 用户给出的宿主“复现命令 + 快检”退出码为 **1**，不能写成门禁通过。本轮没有执行 `sh scripts/ci-local.sh`，没有项目全量门禁结论；不因缺少全量门禁而打回。
+- 本轮只修改本 Bug 文档复核字段与复核意见，保持 status、fix-round、复现命令、根因与 repos 不变；未改产品、测试或格式，未注入缺陷，不合并、不推送、不启动后续会话。
+
+### 第 3/3 轮独立复核（历史结论：打回）
 
 复核 HEAD：`d1b93b41925ba305d0f4247304123a344d12b3dd`。检查定位提交 `6d54414f` 至 HEAD 的全部产品及测试差异，并单独核对第 3 轮修复提交 `dfaae548`、`d1b93b41`；已读取任务卡、协议、四张附件及参考 HTML 的按钮定义。本轮打回依据是任务卡范围内仍存在的迁移遗漏，不是缺少全量门禁或沙箱浏览器权限。
 
