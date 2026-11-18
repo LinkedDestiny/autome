@@ -1,7 +1,7 @@
 # 面板浮层与面板内部排布缺陷（重提 T-103）
 
 status: 已定位
-fix-round: 0/3
+fix-round: 1/3
 复现命令: cd apps/web && npx playwright test e2e/overlay-layout.spec.ts
 根因: 抽屉内容区 .drawer-body、页签内容区、铃铛面板没有统一的纵向排布与间距规则，浮层内按钮沿用页面级大号样式；角色抽屉的恢复按钮不看是否有项目覆盖，备注正文未走 Markdown 组件
 复核: 待复核
@@ -44,7 +44,9 @@ T-102 合并后，真实账本 1512×944 下 9 处浮层/页签排布不对（�
 
 ## 修复说明
 
-（修复轮填写）
+从 `refs/keep/t103-fix-7a595e22` 带回上次的产品修复（`apps/web/app` 的 bell/task-docs/task-notes/loop/skills/app.css）：统一抽屉与页签纵向排布、浮层按钮缩小、技能抽屉角色在来源前并收起长描述、恢复按钮按 `overridden`（provenance=project）置灰、备注走 Markdown。
+同步旧测试：`loop-page.test.ts` 的模型标签选择器改为 `label.field > span`；`skills-page.test.ts` 的顺序断言改为角色在来源之前；`loop-defaults.test.ts` 补「默认值恢复不得按数值置灰」断言。定位轮的回归用例（overlay-layout.spec.ts、新增单测）未改动。
+验证：`npx playwright test e2e/overlay-layout.spec.ts` 6 例通过；vitest 的 loop-page/skills-page/task-notes/loop-defaults 59 例通过；`sh scripts/ci-quick.sh --since 4442737b` 全部通过。
 
 ## 复核意见
 

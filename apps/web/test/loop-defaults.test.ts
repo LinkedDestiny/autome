@@ -43,6 +43,8 @@ test('项目来源按值比较，相同不冒充继承，四项都有恢复', ()
   const c = structuredClone(config); c.resolved.loop_defaults.parallel = 2;
   expect(html('p', false, c).match(/项目值/g)).toHaveLength(1);
   expect(html('p').match(/>恢复跟随全局</g)).toHaveLength(4);
+  // 配置回包不含默认值的项目覆盖来源，值相同也可能是显式覆盖：恢复按钮不得按数值相等置灰。
+  expect((html('p').match(/aria-label="恢复跟随全局 · [^"]+"( disabled="")?/g) ?? []).some(t => t.includes('disabled'))).toBe(false);
 });
 test('未授权或忙碌禁用全部输入和操作', () => {
   const text = html('p', true);
