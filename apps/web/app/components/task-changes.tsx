@@ -14,7 +14,7 @@ export function TaskChangesPanel({ data, changes }: { data: TaskPayload; changes
       {view.rebase && <p>{view.rebase}</p>}{view.included && <p>{view.included}</p>}
       {view.blocked.length > 0 && <div role="alert"><p>{CHANGES_COPY.blocked}</p><ul>{view.blocked.map(path => <li key={path}>{path}</li>)}</ul></div>}
       {view.groups.length ? view.groups.map((repo, index) => <section key={repo.name ?? index} aria-label={repo.name}><h3>{repo.name}</h3><p>删除文件数：{repo.deleted_count ?? 0}</p>{fileList(repo.files ?? [])}</section>) : fileList(view.files)}
-      <details><summary>提交标题</summary><ul>{view.subjects.map((subject, index) => <li key={index}>{subject}</li>)}</ul></details>
+      <details><summary className="btn btn-text btn-sm">提交标题</summary><ul>{view.subjects.map((subject, index) => <li key={index}>{subject}</li>)}</ul></details>
     </> : <p>当前没有可读取的分支改动</p>}
   </section>;
 }

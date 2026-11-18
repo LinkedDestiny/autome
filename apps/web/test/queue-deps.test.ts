@@ -55,7 +55,7 @@ test('6 输入域零一八九项及空串格式前导零边界', () => {
 test('7 调序控件使用原生可聚焦元素且离线禁用', () => {
   const Stub = createRoutesStub([{ path:'/', Component: () => createElement(WriteGateProvider,{value:{allowed:false,reason:'离线'}}, createElement(QueueControls,{task,queue:[task,{...task,id:'T-2'}]})) }]);
   const html = renderToStaticMarkup(createElement(Stub));
-  expect(html).toContain('<summary>调整顺序</summary>'); expect(html).toContain('<select'); expect(html).toContain('<fieldset disabled=""');
+  expect(html).toContain('<summary class="btn btn-sm">调整顺序</summary>'); expect(html).toContain('<select'); expect(html).toContain('<fieldset disabled=""');
   for (const name of ['top','before','after']) expect(html).toContain(`name="${name}"`);
 });
 test('8 依赖区显示当前状态与可改表单只读原因', () => {

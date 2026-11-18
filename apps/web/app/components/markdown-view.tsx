@@ -7,7 +7,7 @@ function InlineView({ nodes }: { nodes: Inline[] }) {
     if (node.type === 'strong' || node.type === 'em') return createElement(node.type, { key: i }, <InlineView nodes={node.children} />);
     if (node.type === 'link') {
       const href = safeHref(node.href);
-      return href ? <a key={i} href={href} rel="noreferrer" target="_blank">{node.text}</a>
+      return href ? <a className="link link-ext" key={i} href={href} rel="noreferrer" target="_blank">{node.text}</a>
         : <Fragment key={i}>{node.text}{node.relative && <> <code>{node.href}</code></>}</Fragment>;
     }
   });

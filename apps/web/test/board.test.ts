@@ -123,9 +123,9 @@ test('12 排队在前草稿编号倒序在后含空队列和单元素', () => {
 });
 test('13 只有排队且队列多于一张才给调序菜单', () => {
   const q = task({ state: 'queued' });
-  expect(render(data([q]))).not.toContain('<summary>调整顺序');
+  expect(render(data([q]))).not.toContain('<summary class="btn btn-sm">调整顺序');
   const html = render(data([q, task({ state: 'queued' }, 'T-2'), task({ state: 'draft' }, 'T-3')]));
-  expect(html.match(/<summary>调整顺序/g)).toHaveLength(2);
+  expect(html.match(/<summary class="btn btn-sm">调整顺序/g)).toHaveLength(2);
 });
 
 test('14 四个列头使用小号彩色丝带及按钮提示', () => {

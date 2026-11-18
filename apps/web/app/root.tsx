@@ -51,5 +51,5 @@ export function ErrorBoundary() {
   const error = useRouteError();
   const missing = isRouteErrorResponse(error) && error.status === 404;
   const message = error instanceof Error ? error.message : isRouteErrorResponse(error) ? error.statusText : '未知错误';
-  return <main className="error-card"><h1>{missing ? '这个页面还没开放' : `页面出错了：${message}`}</h1><Link to="/">回到总览</Link></main>;
+  return <main className="error-card"><h1>{missing ? '这个页面还没开放' : `页面出错了：${message}`}</h1><Link className="btn" to="/">回到总览</Link></main>;
 }

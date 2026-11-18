@@ -64,7 +64,7 @@ export function EnvView({ data, result, busy = false }: { data: EnvData; result?
         const ok = toolOk(component, snapshot.problems);
         return <section className="env-component" data-env-ok={ok} key={component.component}><div className="env-tool-row"><span className={ok ? "env-dot" : "env-dot env-dot-warning"} /><h3>{Object.hasOwn(COMPONENT_NAMES, component.component) ? COMPONENT_NAMES[component.component] : component.component}</h3><div><p className="env-path" title={component.path ?? undefined}>{component.path ?? ENV.none}</p>
           <p>{component.present ? ENV.installed : ENV.missing} · {loginLabel(component.login)}{snapshot.problems.some(p => p.component === component.component) && ` · ${ENV.attention}`}</p>
-          </div><Pill color="blue">{component.version ?? ENV.none}</Pill></div><details className="env-install" open={!ok}><summary>查看安装方法</summary><div className="env-tool-actions">
+          </div><Pill color="blue">{component.version ?? ENV.none}</Pill></div><details className="env-install" open={!ok}><summary className="btn btn-text btn-sm">查看安装方法</summary><div className="env-tool-actions">
           {data.errors[component.component] && <p role="alert">{data.errors[component.component]}</p>}
           {recipe && <><p>{recipe.recipe.note}</p><p>{ENV.prerequisite}：{recipe.recipe.prerequisite ?? ENV.none} · {recipe.prerequisite_ok ? ENV.met : ENV.unmet}</p><CopyCommand command={recipe.recipe.command} />
             <Form method="post"><input type="hidden" name="component" value={component.component} /><button className="btn" name="intent" value="install" disabled={disabled || !recipe.prerequisite_ok} title={gate.reason}>{ENV.install}</button></Form>

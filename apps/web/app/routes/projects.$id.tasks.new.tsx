@@ -52,7 +52,7 @@ export default function NewTask() {
   }
   if (!project) return <p data-testid={TEST_IDS.pageTaskNew} role="alert">项目不存在</p>;
   return <div data-testid={TEST_IDS.pageTaskNew} className="task-new-page"><Form method="post" className="task-new" data-testid={TEST_IDS.taskNewForm}>
-    <header><Ribbon><h1>新建任务卡</h1></Ribbon><Link to={projectHref(id)}>{project.name}</Link></header>
+    <header><Ribbon><h1>新建任务卡</h1></Ribbon><Link className="link" to={projectHref(id)}>{project.name}</Link></header>
     <Segmented name="kind" label="任务类型" value={kind} disabled={busy} options={(['feature', 'bug'] as const).map(value => ({ value, label: KIND_LABELS[value] }))} onChange={value => {
       const next = value as TaskKind;
       const changed = switchKind(body, kind, next); setKind(next); setBody(changed.body); setKept(changed.kept);

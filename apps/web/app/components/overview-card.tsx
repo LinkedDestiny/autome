@@ -17,7 +17,7 @@ export function OverviewCard({ task, projectName, configError, detail, waitingSi
       {waitingSince != null && <span>已等 {formatSpan(Date.parse(now) - waitingSince)}</span>}
       {configError && <span className="count-pill count-alert" title={configError}>配置有误</span>}
     </div>
-    <h3><Link to={view.href}>{task.title}</Link></h3>
+    <h3><Link className="link" to={view.href}>{task.title}</Link></h3>
     <span className="task-stage">{stageStatusLine(task.kind, task.state)}</span>
     {view.summary && <p>{view.summary}</p>}
     {view.reviewDocuments.length > 0 && <div className="overview-card-meta">{view.reviewDocuments.map(doc => doc.href

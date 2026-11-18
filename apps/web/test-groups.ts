@@ -68,6 +68,7 @@ export const testGroups = {
     "test/task-notes.test.ts",
     "test/task-card.test.ts",
     "test/task-changes.test.ts",
+    "test/link-styles.test.ts",
     "test/task-columns.test.ts",
     "test/task-decisions.test.ts",
     "test/task-detail-data.test.ts",

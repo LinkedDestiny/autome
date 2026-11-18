@@ -9,7 +9,7 @@ export function QueueControls({ task, queue }: { task: BoardTask; queue: BoardTa
   const fetcher = useFetcher<{ error?: string }>();
   const gate = useWriteGate();
   const selected = peers.some(row => row.id === reference) ? reference : peers[0]?.id;
-  return <details className="queue-controls"><summary>调整顺序</summary><fetcher.Form method="post">
+  return <details className="queue-controls"><summary className="btn btn-sm">调整顺序</summary><fetcher.Form method="post">
     <input type="hidden" name="intent" value="move" /><input type="hidden" name="task_id" value={task.id} />
     <fieldset disabled={!gate.allowed || fetcher.state !== 'idle'}>
       <button className="btn btn-sm" name="top" value="yes">移到最前</button>

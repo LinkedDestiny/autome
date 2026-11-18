@@ -1,10 +1,10 @@
 # 面板操作控件样式不统一：任务详情操作区的「取消」是裸链接
 
 status: 已定位
-fix-round: 3/3
+fix-round: 5/5
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -147,3 +147,35 @@ fix-round: 3/3
 2. app.css：去掉 `.bell-footer .btn-sm { height: 24px }` 的高度覆盖，保留 `flex: none`，铃铛「标为已读」恢复 30px。
 3. 恢复 `test/loop-defaults.test.ts`、`test/settings-config.test.ts` 到定位提交版本（断言不再改动）；产品侧把 className 放在原断言匹配的属性之后（`aria-label…disabled=""` 之后、`<button disabled=""` 之前后），兼容原正则。
 - 验证：vitest loop-defaults / settings-config / loop-page / bell 共 75 项通过。
+
+## 修复说明（第 5 轮）
+
+### 操作者备注处理
+- 备注 #1 第一节 5 处必须迁移：全部照做。备注 #1 第二节「豁免」被备注 #2 取代，按 #2 执行。其余（第三、四节）照做；`e2e/action-controls.spec.ts` 未动。
+- 截图目视：本沙箱无法起浏览器看图，未取得截图；以整套 Playwright（43 通过，含 1512×944 各页无整页纵向滚动、环境页单行高度、抽屉布局断言）代替，不冒充目视。
+
+### 完整去留表
+| 元素 | 归类 |
+|---|---|
+| queue-controls「调整顺序」summary | `btn btn-sm` |
+| projects.new 路径建议按钮 | `btn btn-sm`，CSS 只留整行宽/左对齐/间距 |
+| 抽屉内全部按钮（页脚+正文，含技能「保存绑定」） | `.drawer .btn` 30px，主按钮变体保留 |
+| 看板「新建任务卡」 | `btn btn-primary`（38px），`.board-new` 样式已删 |
+| 看板「设置」 | `btn`（38px） |
+| env「查看安装方法」、task-changes「提交标题」 | `btn btn-text btn-sm`（保留 details） |
+| driver-card「查看环境」、_index 去环境页、projects.new「打开这个项目」及添加成功两个跳转、board-fold（更早/收起/已取消） | `btn btn-text btn-sm`（`.board-fold` 只留居中间距） |
+| root「回到总览」 | `btn` |
+| 任务标题（overview-card、task-card）、task-header 项目名、新建任务页项目名、告警任务编号、铃铛条目链接 | 公共 `.link`（悬停/聚焦变 primary-active 并下划线，聚焦环黄色） |
+| Markdown 外链 | `.link .link-ext`（平时即下划线） |
+| 任务详情操作区各按钮/取消/返回/表单入口、Loop/设置/环境/会话日志等已迁移项 | 前几轮已是 `.btn` 系列 |
+| 分段选择/页签/侧栏、胶囊（文档/证据/技能）、整卡整行可点、时间线与日志行展开、步进器、铃铛图标、顶栏标题 | 不改（专用样式） |
+
+### 改动的既有断言（只换期望标记）
+- `test/queue-deps.test.ts` 用例 7：`<summary>调整顺序</summary>` → `<summary class="btn btn-sm">调整顺序</summary>`。
+- `test/board.test.ts` 用例 13 两处：`<summary>调整顺序` → `<summary class="btn btn-sm">调整顺序`（数量 2 不变）。
+- `test/env-page.test.ts:116`：`<summary>查看安装方法` → `<summary class="btn btn-text btn-sm">查看安装方法`（数量 4 不变）。
+- 新增 `test/link-styles.test.ts`（A/B/C 三类各一条）并登记到 `test-groups.ts`。
+
+### 验证
+- 复现命令所在的整套 `npx playwright test`：43 通过。
+- `npx vitest run` 全量：除我新增测试的两处写法错误与 `.link:focus-visible` 焦点环规则（styles 测试要求黄色环，已补）外全过；修后相关子集通过。typecheck、eslint 通过（修了铃铛链接重复 className）。

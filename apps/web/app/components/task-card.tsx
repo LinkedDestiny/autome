@@ -18,7 +18,7 @@ export function TaskCard({ task, detail, context, overviewDetail, queue = [] }: 
   const shared = overviewCardView(task, overviewDetail, context.now), column = columnOf(task.state);
   return <article className={`overview-card task-card${column === 'running' ? ' card card-teal' : column === 'needs_you' ? ' card card-yellow' : ''}`} data-testid={TEST_IDS.taskCard} data-task-id={task.id}>
     <div className="overview-card-meta"><Pill color={column === 'needs_you' ? 'yellow' : column === 'running' ? 'teal' : 'brown'}>{view.kind}</Pill><span>{task.id}</span></div>
-    <h3><Link to={taskHref(task.id)}>{task.title}</Link></h3>
+    <h3><Link className="link" to={taskHref(task.id)}>{task.title}</Link></h3>
     {view.badge && <Pill color="yellow" filled>{shared.badge}</Pill>}
     {column === 'running' && overviewDetail?.status_block && <Progress value={overviewDetail.status_block.milestones_total ? overviewDetail.status_block.milestones_done / overviewDetail.status_block.milestones_total * 100 : 0} label={CARD_LABELS.progress} />}
     {view.unknownStage && <p>{view.unknownStage}</p>}{view.progress && <p>{view.progress}</p>}
