@@ -57,7 +57,7 @@ export default function NewTask() {
       const next = value as TaskKind;
       const changed = switchKind(body, kind, next); setKind(next); setBody(changed.body); setKept(changed.kept);
     }} />
-    {kept && <p role="status">正文已修改，未替换模板 <button type="button" disabled={busy} onClick={() => { setBody(TASK_TEMPLATES[kind]); setKept(false); }}>换成{KIND_LABELS[kind]}模板</button></p>}
+    {kept && <p role="status">正文已修改，未替换模板 <button className="btn btn-sm" type="button" disabled={busy} onClick={() => { setBody(TASK_TEMPLATES[kind]); setKept(false); }}>换成{KIND_LABELS[kind]}模板</button></p>}
     <label htmlFor="task-brief">任务正文（Markdown）</label>
     <textarea className="inp" id="task-brief" name="brief" value={body} readOnly={busy} onChange={event => setBody(event.target.value)} />
     <section className="task-new-attachments" aria-label="附件">
@@ -66,14 +66,14 @@ export default function NewTask() {
       }} /></label>
       <ul>{attachments.map(item => <li key={item.key}>{item.name} · {item.size} 字节
         {item.error ? <span role="alert">{item.error}</span> : !item.info ? <span>上传中</span> : <input type="hidden" name="attachments" value={item.info.id} />}
-        <button type="button" disabled={navigation.state !== 'idle'} onClick={() => setAttachments(items => items.filter(other => other.key !== item.key))}>移除</button>
+        <button className="btn btn-sm" type="button" disabled={navigation.state !== 'idle'} onClick={() => setAttachments(items => items.filter(other => other.key !== item.key))}>移除</button>
       </li>)}</ul>
     </section>
     <DependencyChoices tasks={dependencyCandidates(shell?.tasks ?? [], id)} disabled={!gate.allowed || busy} />
     {result && 'error' in result && <p role="alert">{result.error}</p>}
     {!gate.allowed && <p role="status">{gate.reason}</p>}
-    <footer><button className="btn-primary" name="intent" value="start" disabled={Boolean(disabled)}>创建并开始</button>
-      <button data-testid={TEST_IDS.taskNewDraft} name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
+    <footer><button className="btn btn-primary" name="intent" value="start" disabled={Boolean(disabled)}>创建并开始</button>
+      <button className="btn" data-testid={TEST_IDS.taskNewDraft} name="intent" value="draft" disabled={Boolean(disabled)}>存为{COLUMN_LABELS.todo}</button></footer>
   </Form></div>;
 }
 

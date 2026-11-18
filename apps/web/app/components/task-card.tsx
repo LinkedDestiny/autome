@@ -39,7 +39,7 @@ function StartTask({ taskId }: { taskId: string }) {
   return <fetcher.Form method="post">
     <input type="hidden" name="intent" value="start" />
     <input type="hidden" name="task_id" value={taskId} />
-    <button data-testid={TEST_IDS.taskOp} data-op="start" className="btn-primary" disabled={!gate.allowed || fetcher.state !== 'idle'}>开始</button>
+    <button data-testid={TEST_IDS.taskOp} data-op="start" className="btn btn-sm btn-primary" disabled={!gate.allowed || fetcher.state !== 'idle'}>开始</button>
     {!gate.allowed && <p role="status">{gate.reason}</p>}
     {fetcher.data?.error && <p role="alert">{fetcher.data.error}</p>}
   </fetcher.Form>;

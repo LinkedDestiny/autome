@@ -50,7 +50,7 @@ function Editor({ file, disabled, reason }: { file: Artefact; disabled: boolean;
   const [content, setContent] = useState(file.content ?? '');
   return <Form method="post" className="onboarding-editor"><input type="hidden" name="intent" value="save" /><input type="hidden" name="path" value={file.path} />
     <label htmlFor={file.path}>{file.path}</label><textarea id={file.path} name="content" value={content} onChange={event => setContent(event.target.value)} />
-    <span>{ONBOARDING.count(content.length, MAX_DOCUMENT_LENGTH)}</span><button disabled={disabled} title={reason}>{ONBOARDING.save}</button></Form>;
+    <span>{ONBOARDING.count(content.length, MAX_DOCUMENT_LENGTH)}</span><button className="btn" disabled={disabled} title={reason}>{ONBOARDING.save}</button></Form>;
 }
 export function SettingsView({ data, result, busy = false }: { data: SettingsData; result?: OnboardingResult; busy?: boolean }) {
   const gate = useWriteGate();
@@ -68,10 +68,10 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
     {data.error && <p role="alert">{data.error}</p>}
     {result?.error && <p role="alert">{result.error}</p>}{result?.saved && <p role="status">{ONBOARDING.saved}</p>}
     {result && 'init_commit' in result && <p role="status">{result.init_commit ? ONBOARDING.commit(result.init_commit) : ONBOARDING.noCommit}</p>}
-    {active && <><Form method="post"><button name="intent" value="run" disabled={disabled || session.state === 'running'} title={gate.reason}>{ONBOARDING.run}</button></Form>
+    {active && <><Form method="post"><button className="btn" name="intent" value="run" disabled={disabled || session.state === 'running'} title={gate.reason}>{ONBOARDING.run}</button></Form>
       {data.artefactsError && <p role="alert">{data.artefactsError}</p>}
       {data.files.map(file => <Editor key={file.path + file.content} file={file} disabled={disabled} reason={gate.reason} />)}
-      <Form method="post"><button name="intent" value="finish" disabled={disabled} title={gate.reason}>{ONBOARDING.finish}</button><button name="intent" value="skip" disabled={disabled} title={gate.reason}>{ONBOARDING.skip}</button></Form></>}
+      <Form method="post"><button className="btn" name="intent" value="finish" disabled={disabled} title={gate.reason}>{ONBOARDING.finish}</button><button className="btn" name="intent" value="skip" disabled={disabled} title={gate.reason}>{ONBOARDING.skip}</button></Form></>}
   </section>
   <section className="settings-card-body"><h2>{SETTINGS.config}</h2>
     {data.config?.error ? <p role="alert">{data.config.error}</p> : <>
@@ -83,7 +83,7 @@ export function SettingsView({ data, result, busy = false }: { data: SettingsDat
   <section className="settings-card-body"><h2>{SETTINGS.remove}</h2><p>{SETTINGS.warning}</p><p><code>{data.project.path}</code></p>
     <Form method="post"><input type="hidden" name="intent" value="remove" /><label htmlFor="remove-name">{SETTINGS.name}（{data.project.display_name}）</label>
       <input id="remove-name" name="name" value={name} onChange={event => setName(event.target.value)} autoComplete="off" />
-      <button disabled={disabled || name !== data.project.display_name} title={gate.reason}>{SETTINGS.remove}</button>
+      <button className="btn btn-danger" disabled={disabled || name !== data.project.display_name} title={gate.reason}>{SETTINGS.remove}</button>
     </Form>
   </section></div>;
 }

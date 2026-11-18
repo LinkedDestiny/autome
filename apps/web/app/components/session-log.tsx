@@ -27,17 +27,17 @@ export function SessionLogView({ session, state, open, onToggle, onAction, textR
     <summary>第 {session.round} 轮 · {session.label} · {session.running ? t.running : t.ended}</summary>
     {open && <div className="session-log-body">
       <div className="session-log-toolbar">
-        <button type="button" disabled={!state.follow} onClick={() => onAction({ type: 'pause' })}>{t.pause}</button>
-        <button type="button" onClick={() => onAction({ type: 'jump' })}>{t.jump}{state.unseen ? `（${t.unseen}）` : ''}</button>
+        <button className="btn btn-sm" type="button" disabled={!state.follow} onClick={() => onAction({ type: 'pause' })}>{t.pause}</button>
+        <button className="btn btn-sm" type="button" onClick={() => onAction({ type: 'jump' })}>{t.jump}{state.unseen ? `（${t.unseen}）` : ''}</button>
       </div>
       {view.hiddenBefore > 0 && <div className="session-log-toolbar"><span>{t.before(view.hiddenBefore)}</span>
-        <button type="button" onClick={() => onAction({ type: 'earlier' })}>{t.earlier}</button>
-        <button type="button" onClick={() => onAction({ type: 'top' })}>{t.top}</button></div>}
+        <button className="btn btn-sm" type="button" onClick={() => onAction({ type: 'earlier' })}>{t.earlier}</button>
+        <button className="btn btn-sm" type="button" onClick={() => onAction({ type: 'top' })}>{t.top}</button></div>}
       <pre className="session-log-text" data-testid={TEST_IDS.sessionLogBody} data-session-id={session.id} data-scroll-region ref={textRef} tabIndex={0} onScroll={event => onAction({ type: 'scrolled', atBottom: isAtBottom(event.currentTarget) })}>{view.text || t.empty}</pre>
       {view.hiddenAfter > 0 && <div className="session-log-toolbar"><span>{t.after(view.hiddenAfter)}</span>
-        <button type="button" onClick={() => onAction({ type: 'later' })}>{t.later}</button></div>}
+        <button className="btn btn-sm" type="button" onClick={() => onAction({ type: 'later' })}>{t.later}</button></div>}
       <p className="session-log-status">{state.notice || (state.phase === 'subscribing' ? t.loading : state.follow ? t.following : t.paused)}</p>
-      {state.phase === 'rejected' && <button type="button" onClick={() => onAction({ type: 'retry' })}>{t.retry}</button>}
+      {state.phase === 'rejected' && <button className="btn btn-sm" type="button" onClick={() => onAction({ type: 'retry' })}>{t.retry}</button>}
     </div>}
   </details>;
 }

@@ -17,7 +17,7 @@ export function TaskOps({ ops, result }: { ops: OpView[]; result?: { error?: str
     <div className="task-ops-list">{ops.filter(o => o.op !== 'decide').map(entry => {
       const { op } = entry;
       const disabled = !gate.allowed || !entry.enabled || pending;
-      const button = <button className={op === 'cancel' ? 'btn btn-sm btn-danger' : 'btn btn-sm'} data-testid={TEST_IDS.taskOp} data-op={op} type="submit" disabled={disabled}>{entry.label ?? OP_LABELS[op]}</button>;
+      const button = <button className={['cancel', 'stop'].includes(op) ? 'btn btn-sm btn-danger' : 'btn btn-sm'} data-testid={TEST_IDS.taskOp} data-op={op} type="submit" disabled={disabled}>{entry.label ?? OP_LABELS[op]}</button>;
       if (op === 'cancel' && search.get('confirm') !== 'cancel') return <div key={op}>{disabled ? <button className="btn btn-sm btn-danger" data-testid={TEST_IDS.taskOp} data-op={op} disabled>{OP_LABELS.cancel}</button> : <Link className="btn btn-sm btn-danger" data-testid={TEST_IDS.taskOp} data-op={op} to={`?${confirm}`}>{OP_LABELS.cancel}</Link>}</div>;
       const inputs = <>
         {op === 'reject' && <label>驳回意见<textarea name="feedback" maxLength={MAX_PROSE_LENGTH} required /></label>}

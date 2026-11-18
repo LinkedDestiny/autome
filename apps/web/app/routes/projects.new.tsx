@@ -54,7 +54,7 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
   return <div className="add-project" data-testid={TEST_IDS.pageProjectNew}><Ribbon><h1>{ADMIN.add}</h1></Ribbon><div className="add-project-body card card-pat card-blue">
     <Form method="get"><label htmlFor="project-path">{ADMIN.path}</label>
       <Input data-testid={TEST_IDS.pathInput} id="project-path" name="path" value={input} maxLength={512} placeholder="~/code/project" disabled={busy || Boolean(result?.project)} onChange={event => setInput(event.target.value)} />
-      <button disabled={disabled} title={gate.reason}>{busy ? ADMIN.checking : ADMIN.check}</button>
+      <button className="btn" disabled={disabled} title={gate.reason}>{busy ? ADMIN.checking : ADMIN.check}</button>
       <DirectoryPicker picker={picker} disabled={disabled} onPick={setInput} onError={setPickerError} />
     </Form>
     <PathSuggestions entries={suggestions.entries} disabled={busy || Boolean(result?.project)} onSelect={setInput} />
@@ -67,7 +67,7 @@ export function AddProjectView({ checked, result, busy = false }: { checked: Che
         <input type="hidden" name="intent" value="confirm" /><input type="hidden" name="path" value={checked.display} />
         <Check name="workspace" checked={workspace} onChange={event => setWorkspace(event.target.checked)} label={ADMIN.workspace} />
         <label>{ADMIN.docs}<select className="inp" name="docs_repo" disabled={!workspace} defaultValue={defaults.docs_repo}>{defaults.members.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
-        <Check name="skip_onboarding" label={ADMIN.skip} /><button className="btn-primary" disabled={disabled} title={gate.reason}>{ADMIN.confirm}</button>
+        <Check name="skip_onboarding" label={ADMIN.skip} /><button className="btn btn-primary" disabled={disabled} title={gate.reason}>{ADMIN.confirm}</button>
       </Form>}
     </section>}
     {result?.error && <p role="alert">{result.error}</p>}
@@ -87,7 +87,7 @@ export function PathSuggestions({ entries, disabled, onSelect }: { entries: Sugg
 }
 
 export function DirectoryPicker({ picker, disabled, onPick, onError }: { picker: ReturnType<typeof nativePicker>; disabled: boolean; onPick: (path: string) => void; onError: (error: string) => void }) {
-  return picker ? <button data-testid={TEST_IDS.pickDirectory} type="button" disabled={disabled} onClick={async () => { try { const path = await picker(); if (path) onPick(path); } catch (error) { onError(String(error)); } }}>{ADMIN.picker}</button> : null;
+  return picker ? <button className="btn btn-sm" data-testid={TEST_IDS.pickDirectory} type="button" disabled={disabled} onClick={async () => { try { const path = await picker(); if (path) onPick(path); } catch (error) { onError(String(error)); } }}>{ADMIN.picker}</button> : null;
 }
 
 export const handle = { crumb: '添加项目' };

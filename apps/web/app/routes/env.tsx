@@ -40,7 +40,7 @@ export async function action({ request, context }: ActionFunctionArgs): Promise<
 }
 function CopyCommand({ command }: { command: string }) {
   const [status, setStatus] = useState('');
-  return <><pre>{command}</pre><button data-testid={TEST_IDS.envCopy} data-command={command} type="button" onClick={async () => {
+  return <><pre>{command}</pre><button className="btn" data-testid={TEST_IDS.envCopy} data-command={command} type="button" onClick={async () => {
     try { await navigator.clipboard.writeText(command); setStatus(ENV.copied); } catch { setStatus(ENV.copyError); }
   }}>{ENV.copy}</button><span role="status">{status}</span></>;
 }
@@ -67,8 +67,8 @@ export function EnvView({ data, result, busy = false }: { data: EnvData; result?
           </div><Pill color="blue">{component.version ?? ENV.none}</Pill></div><details className="env-install" open={!ok}><summary>查看安装方法</summary><div className="env-tool-actions">
           {data.errors[component.component] && <p role="alert">{data.errors[component.component]}</p>}
           {recipe && <><p>{recipe.recipe.note}</p><p>{ENV.prerequisite}：{recipe.recipe.prerequisite ?? ENV.none} · {recipe.prerequisite_ok ? ENV.met : ENV.unmet}</p><CopyCommand command={recipe.recipe.command} />
-            <Form method="post"><input type="hidden" name="component" value={component.component} /><button name="intent" value="install" disabled={disabled || !recipe.prerequisite_ok} title={gate.reason}>{ENV.install}</button></Form>
-            {recipe.login_command && <><CopyCommand command={recipe.login_command} /><Form method="post"><input type="hidden" name="component" value={component.component} /><button name="intent" value="login" disabled={disabled} title={gate.reason}>{ENV.login}</button></Form></>}
+            <Form method="post"><input type="hidden" name="component" value={component.component} /><button className="btn" name="intent" value="install" disabled={disabled || !recipe.prerequisite_ok} title={gate.reason}>{ENV.install}</button></Form>
+            {recipe.login_command && <><CopyCommand command={recipe.login_command} /><Form method="post"><input type="hidden" name="component" value={component.component} /><button className="btn" name="intent" value="login" disabled={disabled} title={gate.reason}>{ENV.login}</button></Form></>}
           </>}
         </div></details></section>;
       })}</section>

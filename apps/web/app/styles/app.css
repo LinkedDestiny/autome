@@ -21,7 +21,7 @@ a { color: inherit; text-decoration: none; }
 :where(legend) { padding: 0 6px; font-size: 12px; font-weight: 800; color: var(--animal-text-muted); }
 :where(input, select, textarea):focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
 button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; font: inherit; font-size: 12px; font-weight: 700; white-space: nowrap; color: var(--animal-text); background: var(--animal-bg-content); border: 2px solid var(--animal-border); border-radius: var(--animal-radius-pill); padding: 0 14px; cursor: pointer; }
-button:hover:not(:disabled) { background: var(--animal-bg-secondary); }
+button:hover:not(:disabled) { color: var(--animal-primary-active); border-color: var(--animal-primary); }
 button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-disabled); cursor: not-allowed; }
 :focus-visible { outline: 3px solid var(--animal-focus-yellow); outline-offset: 3px; }
 .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); height: 100dvh; overflow: hidden; }
@@ -178,8 +178,6 @@ button:disabled { color: var(--animal-text-muted); background: var(--animal-bg-d
 .task-ops form > fieldset { flex-direction: row; flex-wrap: wrap; align-items: center; }
 .task-ops details > summary { list-style: none; }
 .task-ops details[open] > summary { margin-bottom: 8px; }
-.btn-danger { color: var(--animal-error); border-color: currentColor; }
-.btn-danger:hover:not(:disabled) { color: var(--animal-error); border-color: var(--animal-error); }
 a.btn, summary.btn { text-decoration: none; }
 .task-ops fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .task-ops label { display: flex; flex-direction: column; gap: 4px; }
@@ -365,6 +363,9 @@ a.btn, summary.btn { text-decoration: none; }
 .row-you { background: var(--ui-row-you); }
 
 .btn-primary { background: var(--animal-primary); border-color: var(--animal-primary); color: var(--ui-white); box-shadow: 0 4px 0 var(--animal-shadow-btn); font-weight: 800; }
+.btn-danger { color: var(--animal-error); border-color: var(--animal-error); }
+.btn-danger:hover:not(:disabled) { color: var(--animal-error-active); border-color: var(--animal-error-active); background: var(--animal-bg-content); }
+.btn-danger:disabled { color: var(--animal-text-muted); border-color: var(--animal-border-light); }
 
 /* Island shell: navigation first, status anchored below the project list. */
 .shell-sidebar { padding: 24px 16px 16px; gap: 8px; background: var(--animal-bg-content); }
