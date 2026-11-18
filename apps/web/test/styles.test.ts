@@ -10,6 +10,11 @@ const tsx = files.filter(path => path.endsWith('.tsx')).map(read).join('\n');
 const rules = [...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
 function declarations(source: string) { return Object.fromEntries([...source.match(/:root\s*\{([^}]+)\}/)![1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()])); }
 function rule(selector: string) { const found = rules.find(r => r.selector === selector); expect(found, selector).toBeDefined(); return found!.body; }
+it('C-2 时间线新增头部会话不让浏览器锚定改变外层滚动位置', () => {
+  expect(rule('.task-timeline')).toMatch(/overflow-anchor:\s*none/);
+  expect(rule('.task-timeline')).toMatch(/overflow-y:\s*auto/);
+  expect(rule('.session-log-text')).toMatch(/overflow-anchor:\s*none/);
+});
 it('Layer 1 token 名值逐条一致', () => {
   expect(declarations(tokens)).toEqual({
     "--animal-font": "Nunito, 'Noto Sans SC', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif",
