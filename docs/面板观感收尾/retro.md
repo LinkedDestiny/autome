@@ -36,3 +36,4 @@
 审计 #10 | M-09 | 通过 | docs/面板观感收尾/evidence/M-09-r16-audit.md | 无
 
 实现 #17 | M-10 | 待审 | docs/面板观感收尾/evidence/M-10-r17-impl.md | 浏览器 ps/监听权限受限，快检结果见证据
+实现 #18 | M-10 | 待审，修复复制用例展开步骤，88 用例通过 | docs/面板观感收尾/evidence/M-10-r18-impl.md | 浏览器初始化 ps EPERM，待宿主复验

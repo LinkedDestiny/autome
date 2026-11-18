@@ -63,6 +63,13 @@ test('W9 H-02 路径补全点选且普通浏览器没有原生选择按钮', asy
 test('W9 H-04 复制按钮把页面原命令写入真实剪贴板', async ({ page }) => {
   await visit(page, '/env');
   const button = page.getByTestId('env-copy').first();
+  const installation = button.locator('xpath=ancestor::details');
+  // Healthy tools start collapsed; use the same disclosure control as a user.
+  if (await installation.getAttribute('open') === null) {
+    await expect(button).toBeHidden();
+    await installation.locator('summary').click();
+  }
+  await expect(installation).toHaveAttribute('open', '');
   await expect(button).toBeVisible();
   const command = await button.getAttribute('data-command');
   expect(command?.length).toBeGreaterThan(0);
