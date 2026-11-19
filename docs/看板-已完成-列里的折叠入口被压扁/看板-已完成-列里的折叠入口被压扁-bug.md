@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -45,16 +45,17 @@ fix-round: 2/3
 
 ## 复核意见
 
-本轮结论：打回。静态复核未发现产品修复或测试修正缺陷，但独立浏览器复验在夹具初始化阶段受当前沙箱权限阻断，尚未取得本轮复现通过证据。按本轮测试失败交回要求处理；不是因为未跑全量门禁，也不声明回归测试有缺陷。
+第 2 轮结论：打回。静态复核未发现根因、产品修复或回归测试修正缺陷，产品改动范围最小；但本轮独立复现及相关浏览器子集仍在夹具初始化阶段被沙箱权限阻断，未取得页面断言的独立执行证据。按本轮测试失败交回要求记录，不把环境阻塞认定为产品失败，也不因未跑全量门禁打回。
 
-- 复核范围：定位提交 `e03c372544ee1d23f9dd007cc1eaac3f114af478` 至当前 `69a3185e2ea2fd4385532d6a4a4441a35ac9ddba`；分别检查修复提交 `c5c2f239` 和测试修正提交 `69a3185e`。宿主生成的 `d2e0e28c` 简报不属于产品修复。
-- 规范复核：未发现违规。修复提交未修改回归测试；随后测试修正与文档所述共享夹具污染一致。用例名、1512×420 视口、展开操作、溢出断言、按钮数量及高度断言均保留，没有删除、跳过或弱化断言；`layout.spec.ts` 的 `toHaveCount(30)` 原样保留。
-- 需求与根因复核：`app.css:102` 的纵向 flex 容器和 `:335` 的固定高度按钮支持所述根因。公共 `.btn` 增加 `flex-shrink: 0` 直接阻止压缩；铃铛按钮同时带 `btn btn-sm`，默认 grow=0、basis=auto 配合公共 shrink=0 保留原 `flex: none` 效果。产品差异仅此两处，范围合理。`fixture.ts:35–37` 已创建 30 个已取消任务，删除额外创建的 3 个任务能够消除污染，并保留制造溢出的输入。
-- 独立复现：原命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts` 退出码 1。`process-scan.ts:5` 调用 `ps -axo pid=,ppid=,command=` 时发生 `spawnSync ps EPERM`，globalSetup 失败，1 个用例未执行；清理同样被权限阻断。尚未进入页面或高度断言，不能记作复现通过或产品失败。日志：`.autome/output/independent-review-1/reproduction.log`。
-- 相关浏览器子集：`cd apps/web && npx playwright test e2e/board-fold.spec.ts e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '折叠入口|已取消展开|1512×944 项目$|全部已完成|铃铛'`，退出码 1，同一初始化错误；6 个用例全部未执行，包括共享夹具污染检查与铃铛布局检查。日志：`.autome/output/independent-review-1/related-e2e.log`。
-- 相关单测：`cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例全部通过；本轮未增删用例。该结果不能替代真实浏览器几何检查。日志：`.autome/output/independent-review-1/related-unit.log`。
-- 验证边界：宿主提供的复现加快检退出码 0 不作为本轮独立复验结果，亦不等于项目全量门禁通过；本轮未运行 `sh scripts/ci-local.sh`。浏览器初始化受阻，因此未做负向缺陷注入；未改产品、测试或格式化文件。
-- 后续处理：由宿主/修复轮在允许进程检查及浏览器夹具运行的环境，重跑上述复现命令和相关浏览器子集，取得真实执行结果后再交独立复核。无需据此修改 CSS、跳过进程检查或弱化断言；本轮只提交复核文档，保持状态、fix-round、复现命令及根因不变。
+- 复核范围：定位提交 `e03c372544ee1d23f9dd007cc1eaac3f114af478` 至本轮受审 HEAD `29c5a6757626e8191a950de5193f3c143c3ba57a`。分别核对产品修复 `c5c2f239`、测试修正 `69a3185e`；后者至 HEAD 的 `apps/web` 差异为空，第 2 轮确实没有再次修改产品或测试。宿主简报不属于产品改动。
+- 根因与范围：`app.css:102` 的纵向 flex 容器允许内容溢出；原公共按钮固定 height 但默认 shrink=1，能够被压缩。`app.css:335` 新增 `flex-shrink: 0` 直接阻止压缩。删除铃铛局部 `flex: none` 后，`bell.tsx:46` 的按钮仍有 `btn btn-sm`，默认 grow=0、basis=auto 与公共 shrink=0 保留原效果。产品差异仅上述两处，未发现无关扩展。
+- 回归测试完整性：产品修复提交未改测试；`69a3185e` 的夹具输入调整与已登记的污染缺陷相符，只移除额外新建并取消 3 个任务及相关 import，改用 `e2e/harness/fixture.ts:35–38` 自带的 30 个已取消任务。用例名、1512×420 视口、展开操作、溢出断言、按钮数量下限及 30±1 或 38±1 高度断言均保留，未增加跳过标记；`layout.spec.ts` 的 `toHaveCount(30)` 未改。测试先确认溢出再量真实几何尺寸，能够针对所述压缩回归，不是只检查 CSS 字符串。本轮浏览器无法启动，因此没有重新取得修复前失败的负向证据，未做临时缺陷注入。
+- 独立复现：`cd apps/web && npx playwright test e2e/board-fold.spec.ts`，退出码 1。`apps/web/test/fixtures/process-scan.ts:5` 执行 `ps -axo pid=,ppid=,command=` 时发生 `spawnSync ps EPERM`，globalSetup 及 teardown 均受阻，1 个用例未执行。尚未进入页面或高度断言，不能记作复现通过或产品失败。原始日志：`.autome/output/independent-review-2/reproduction.log`。
+- 相关浏览器子集：`cd apps/web && npx playwright test e2e/board-fold.spec.ts e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '折叠入口|已取消展开|1512×944 项目$|全部已完成|铃铛'`，退出码 1，同样在初始化阶段发生 `spawnSync ps EPERM`，6 个用例全部未执行。原始日志：`.autome/output/independent-review-2/related-e2e.log`。
+- 相关单测：`cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例通过。原始日志：`.autome/output/independent-review-2/related-unit.log`。该结果不能替代真实浏览器几何断言。
+- 第 2 轮既有失败的处理：修复记录称 `overlay-layout.spec.ts:73` 铃铛面板高度 98.97 > 96，且定位版 CSS 对照同样失败。本轮核实了该测试的 96px 断言及铃铛按钮样式等价关系，但受上述权限限制，未能独立重现该失败或其基线对照；不能把修复轮陈述记成本轮已确认的无关失败，更不能称该相关子集全部通过。保持原测试，交回修复轮保留并核验现有失败证据。
+- 门禁边界：宿主提供的复现加快检退出码 0 已知，但不等于全量门禁通过，也不替代本轮独立复验。遵照要求未运行 `sh scripts/ci-local.sh`，未重跑快检、修改产品、测试或格式化文件，未声明回归测试有缺陷。
+- 后续：需由 Autome 在允许进程检查及浏览器夹具运行的环境安排独立复验，重跑上述原命令与相关子集，并核验铃铛失败的基线对照。无需为沙箱错误修改 CSS、跳过进程检查或弱化断言。本轮只更新本 Bug 文档，保持状态、fix-round、复现命令与根因不变；不合并、不推送、不启动后续会话。
 
 ## 修复说明（第 2 轮）
 
