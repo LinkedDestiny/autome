@@ -1,10 +1,10 @@
 # 看板「已完成」列里的折叠入口被压扁
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -64,3 +64,11 @@ fix-round: 2/3
 - 复现命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts`：1 passed，退出码 0。
 - 相关子集（board-fold、layout 的铃铛/项目/全部已完成/已取消展开、overlay-layout 铃铛）：6 个用例 5 通过；`layout.spec.ts` 的 `toHaveCount(30)` 与铃铛布局通过。
 - 失败的 `overlay-layout.spec.ts:73`「铃铛面板」（通知卡高度 98.97 > 96）与本修复无关：把 `app.css` 还原到定位提交 `e03c372` 的版本单跑，同样失败于 98.97，已恢复修复后的 CSS。该用例不在本缺陷范围内，未改动。
+
+## 修复说明（第 3 轮）
+
+产品代码未再改动（`.btn` 的 `flex-shrink: 0`、删除 `.bell-footer .btn-sm` 补丁已在位）；回归测试未动。本轮在可运行浏览器的环境里独立取得执行证据：
+
+- 复现命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts`：通过。
+- 相关子集 `--grep '折叠入口|铃铛'`（board-fold + overlay-layout）：1 通过、1 失败。失败为 `overlay-layout.spec.ts:91` 铃铛面板高度 `Expected <= 96, Received 98.96875`。
+- 铃铛失败的基线对照：把 `app.css` 临时还原为定位提交 `e03c372` 的版本单跑，同样失败于 98.96875，随后已恢复修复后的 CSS（工作区无多余改动）。故该失败早于本修复、与 `.btn` 收缩无关，不在本缺陷范围，未改动该用例。日志：`.autome/output/r3.log`、`r3-base.log`。
