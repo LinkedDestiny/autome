@@ -167,6 +167,7 @@ export const testGroups = {
     "test/web-instance.test.ts",
     "test/web-launcher-cleanup.test.ts",
     "test/web-launcher.test.ts",
+    "test/process-listing-env.test.ts",
     "test/web-service.test.ts",
     "test/web-stop-gate.test.ts",
     "test/install-alignment.test.ts"
