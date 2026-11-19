@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 5/5
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -45,7 +45,28 @@ fix-round: 5/5
 
 ## 复核意见
 
-### 第 4 轮独立复核（当前结论）
+### 第 5 轮独立复核（当前结论）
+
+结论：通过。受审 HEAD 为 `6f1206ed73f50c6eb77ede3c8c9270395ff57899`。本轮未发现产品修复缺陷或回归测试弱化，按操作者备注 #2 沿用第 4 轮通过结论；独立浏览器复验仍受沙箱权限阻断，记为验证缺口。本结论不表示项目全量门禁通过。
+
+- 差异范围：`976715afd535..HEAD` 仅修改本 Bug 文档并增加宿主生成的 `brief/impl-5.md`；修复提交 `6f1206ed` 本身只改本 Bug 文档。严格说整个区间不只一个文件，但新增简报不是产品改动，不影响备注要求。产品代码、测试与 `scripts/` 均无变化。原始记录：`.autome/output/independent-review-5/since-review4.log`、`round5-doc.log`。
+- 定位至修复：当前历史中的定位、产品修复、测试修正提交分别为 `894bb5a9`、`a78ab243`、`6aaa7792`。`894bb5a9..HEAD` 的 Web 差异仅为 `app.css` 和 `board-fold.spec.ts`；`6aaa7792..HEAD` 的 Web 差异为空。历史文档中的旧 SHA 跨重放比较会混入 `9da32504` 的截图测试变更，因此本轮以当前历史重新核对，不把基线差异误算成本任务修复。证据：`current-history.log`、`current-diff.log`、`current-product-fix.log`、`current-test-correction.log`（均在上述日志目录）。
+- 根因与最小范围：`app.css:102` 的纵向 flex 容器允许溢出，`projects.$id.tsx:71` 的折叠按钮是其直接子元素；固定 height 不会阻止默认 flex 收缩。公共 `.btn` 增加 `flex-shrink: 0` 直接修复该原因。删除铃铛局部 `flex: none` 后，其 `.btn.btn-sm` 仍具有 grow=0、shrink=0、basis=auto，未发现行为缺口。产品提交仅改这两处样式及 Bug 文档，未改测试。
+- 回归完整性：测试修正只移除额外创建并取消 3 个任务及相关 import，改用共享夹具的 30 个已取消任务，吻合已登记的夹具污染缺陷。用例名、1512×420 输入、展开操作、溢出断言、按钮数量下限、30±1 或 38±1 高度断言和跳过状态均未弱化；`layout.spec.ts:169` 的 `toHaveCount(30)` 未改。当前 DOM 包含可见折叠按钮，先验证溢出再测几何尺寸能抓住所述回归。沿用定位及测试修正轮记录的 21px 负向证据，本轮未重复缺陷注入、未声明新的测试缺陷。
+- 当前 HEAD 宿主证据：读取 `fix_gate-6f1206ed73f5.log` 及同名 `.exit`、`.kind`、`.report`（目录 `/Users/dannie/project/autome-v2/.autome/output/gates/T-136/`）。折叠用例 1 passed（881ms），退出码 0，结束于 `2026-11-19T07:17:57Z`，执行种类为复现加 quick。Format、Clippy 本次实跑通过；Web lint、Web typecheck 按输入指纹沿用 `merge_gate@976715afd535` 成功结果，执行 2 步、沿用 2 步、失败 0 步。日志中的浏览器用例清单不作为相关用例本次重新执行的证明。原文副本：`.autome/output/independent-review-5/host-gate.log`。
+- 独立复现：执行原命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts`，退出码 1；`test/fixtures/process-scan.ts:5` 执行 `ps -axo pid=,ppid=,command=` 报 `spawnSync ps EPERM`，在 globalSetup/teardown 阶段受阻，未进入页面断言。日志：`.autome/output/independent-review-5/reproduction.log`，退出码见同名 `.exit`。
+- 相关浏览器子集：执行 `cd apps/web && npx playwright test e2e/board-fold.spec.ts e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '折叠入口|已取消展开|1512×944 项目$|全部已完成|铃铛'`，退出码 1，同一初始化权限错误，未取得浏览器断言结果。日志：`.autome/output/independent-review-5/related-e2e.log`，退出码见同名 `.exit`。上述两项按备注 #1、#2 记为验证缺口，不作为产品失败或打回理由。
+- 相关单测：执行 `cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例通过。日志：`.autome/output/independent-review-5/related-unit.log`，退出码见同名 `.exit`；不替代真实浏览器高度验收。
+- 合并前门禁记录：只读核查 `merge_gate-976715afd535.log`，确认为 Scripts 唯一失败；用例 `06 zero quick allowance does not consume independent browser allowance` 耗时 63854.570875ms，实际退出码 143，Scripts 步骤 551s。机器负载约 25、另一项目同时跑门禁及负载超时归因来自操作者备注，本轮未独立测量历史机器负载。按备注将该事项交由宿主重新运行合并前门禁，不改预算、不加重试、不修脚本。本轮没有运行 `sh scripts/ci-local.sh` 或重跑快检，不能宣称新提交的全量门禁已通过。
+
+#### 操作者备注
+
+- 备注 #2 / 修复轮要求：已核实照做。第 5 轮“修复说明”的“操作者备注”记录了超时、日志与只改文档的处置；修复提交确实未改产品、测试、脚本或预算，无遗漏项。
+- 备注 #2 / 复核轮要求：照做。核对第 4 轮后仅有任务文档和宿主简报差异后，沿用通过结论；沙箱浏览器受阻保留为验证缺口。已逐项对照 `brief/impl-5.md` 的“操作者备注”小节。
+- 备注 #1 / 延续要求：照做。引用本轮受审 HEAD 的宿主日志，保留已有 21px 负向证据，不重复注入；铃铛单跑 98.97 > 96 继续作为操作者另行处理的遗留事项，不因环境阻塞或该遗留事项打回。
+- 会话边界：本轮仅更新本 Bug 文档的复核字段与复核意见；status、fix-round、复现命令、根因与 repos 保持不变。未修改产品或测试，未合并、推送或启动下一会话；提交后交由 Autome 调度。
+
+### 第 4 轮独立复核（历史记录）
 
 结论：通过。对受审 HEAD `315cb0981538786abbc5eba2b694763e207e1ee0` 的静态复核未发现产品修复缺陷、无关扩展或回归断言弱化；当前 HEAD 的宿主复现通过、复现加快检退出码为 0。本轮独立单测通过，浏览器复验受沙箱进程检查权限阻断，按操作者备注记为验证缺口，不作为打回理由。此结论不表示项目全量门禁通过。
 
