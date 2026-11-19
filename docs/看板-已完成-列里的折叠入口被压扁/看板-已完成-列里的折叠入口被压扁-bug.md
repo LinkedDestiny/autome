@@ -1,10 +1,10 @@
 # 看板「已完成」列里的折叠入口被压扁
 
 status: 已定位
-fix-round: 3/3
+fix-round: 4/4
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -87,3 +87,15 @@ fix-round: 3/3
 - 复现命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts`：通过。
 - 相关子集 `--grep '折叠入口|铃铛'`（board-fold + overlay-layout）：1 通过、1 失败。失败为 `overlay-layout.spec.ts:91` 铃铛面板高度 `Expected <= 96, Received 98.96875`。
 - 铃铛失败的基线对照：把 `app.css` 临时还原为定位提交 `e03c372` 的版本单跑，同样失败于 98.96875，随后已恢复修复后的 CSS（工作区无多余改动）。故该失败早于本修复、与 `.btn` 收缩无关，不在本缺陷范围，未改动该用例。日志：`.autome/output/r3.log`、`r3-base.log`。
+
+## 修复说明（第 4 轮）
+
+本轮未改任何产品代码或测试（`.btn` 的 `flex-shrink: 0`、删除 `.bell-footer .btn-sm` 补丁已在位）。
+
+### 操作者备注
+
+- 备注 #1：照做。三轮打回的原因是复核沙箱里 `ps` 被拒（`spawnSync ps EPERM`），浏览器夹具起不来，属环境限制，不是产品或测试问题；本轮不改代码，只记录处理。
+  - 宿主门禁证据（本机无沙箱，对 HEAD `fb526afec993` 实跑）：`/Users/dannie/project/autome-v2/.autome/output/gates/T-136/fix_gate-fb526afec993.log` 与同名 `.exit`。其中复现命令 `npx playwright test e2e/board-fold.spec.ts` 1 passed，随后快检退出码 0，用例清单包含 `overlay-layout.spec.ts › 浮层排布 · 铃铛面板` 与 `layout.spec.ts › 总览铃铛`。本轮 HEAD 变化后以本轮那份为准。
+  - 负向证据已有：定位轮在未修代码上实测折叠入口约 21px；回归测试修正轮临时去掉 `flex-shrink: 0` 后仍失败于「按钮高度 21px 应为 30 或 38」。
+  - 铃铛用例单跑失败（98.97 > 96）是遗留事项：不在本任务范围，整套运行里通过，与 `.btn` 是否可收缩无关，由操作者另行处理；本轮未重跑基线对照。
+  - 沙箱跑不了浏览器用例属验证缺口，不构成打回理由。
