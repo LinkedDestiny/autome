@@ -1,0 +1,58 @@
+# 角色 → 协议小节 的静态映射。
+#
+# 每轮开始前 Autome 生成 `docs/<slug>/brief/<node>-<round>.md`，其中一段是
+# 「本轮相关的协议小节」。这张表决定那一段抄哪些标题下的内容。
+#
+# 为什么是静态映射而不是让会话自己找：会话自己找要先读全文，那就没省下什么。
+# 标题按 `loop-protocol.md` / `session-protocol.md` 里的二级或三级标题逐字写；
+# 找不到的标题在 `autome protocol eval` 第 1 层会被报出来，不会静默跳过。
+
+[roles.plan]
+loop-protocol = [
+  "共同原则",
+  "角色",
+  "文件",
+  "设计循环",
+  "里程碑",
+]
+session-protocol = ["状态块"]
+
+[roles.review]
+loop-protocol = [
+  "共同原则",
+  "设计循环",
+  "里程碑",
+]
+session-protocol = []
+
+[roles.adjudicate]
+loop-protocol = [
+  "共同原则",
+  "设计循环",
+  "Backlog 与争议项",
+]
+session-protocol = ["状态块"]
+
+[roles.impl]
+loop-protocol = [
+  "共同原则",
+  "文件",
+  "实现循环",
+]
+session-protocol = ["状态块", "硬性边界"]
+
+[roles.audit]
+loop-protocol = [
+  "共同原则",
+  "文件",
+  "实现循环",
+  "Backlog 与争议项",
+]
+session-protocol = ["状态块"]
+
+[roles.retro]
+loop-protocol = [
+  "共同原则",
+  "终止",
+]
+session-protocol = ["硬性边界"]
