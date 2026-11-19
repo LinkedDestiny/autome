@@ -1,10 +1,10 @@
 # 面板服务进程把环境变量暴露在进程列表里
 
 status: 已定位
-fix-round: 2/3
+fix-round: 3/3
 复现命令: npm run build --prefix apps/web && cd apps/web && npx vitest run test/process-listing-env.test.ts
 根因: launcher.ts 的 launch() 把 process.title 设成比原始 argv 更短的 `autome-web <home> <action>`，Node 在 macOS 上就地覆写参数区，pgrep -fl 一类读原始参数区的工具会越过新标题读进紧随其后的环境变量区
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -56,6 +56,22 @@ fix-round: 2/3
 1. 没有使用 pkill/killall 或任何按名字结束进程的方式；只运行测试夹具，由夹具按自己拉起的 pid 起停，未触碰 7420 端口的实例。
 2. 没有打印任何进程列表；终端只看了测试结果与快检汇总。
 3. 临时输出放在本 worktree 的 `.autome/output/`（repro3/subset3/quick3 日志），不在 `/tmp`。
+4. 本文与提交不含任何环境变量的值，只写变量名。
+
+## 第 3 轮修复说明
+
+上两轮复核都卡在沙箱的 `ps EPERM`，没有指出可证实的产品缺陷；本轮会话里 `ps` 可用，产品代码（`launcher.ts` 的 `argv0`）无需再改，直接在本会话复验：
+
+- 复现命令通过（构建成功，1 passed，退出码 0）。
+- `web-instance`、`web-launcher`、`web-launcher-cleanup`、`web-launcher-input` 加泄漏回归，5 个文件 39 个用例全过。
+- `sh scripts/ci-quick.sh --since 3b0ce366…` 全部通过（5 步，失败 0）。
+- 未改回归测试，未跑全量门禁。
+
+### 操作者备注
+
+1. 没有使用 pkill/killall 或任何按名字结束进程的方式；只运行测试夹具，由夹具按自己拉起的 pid 起停，未触碰 7420 端口的实例。
+2. 没有打印任何进程列表；终端只看测试与快检的汇总。
+3. 临时输出放在本 worktree 的 `.autome/output/`（r3-*.log），不在 `/tmp`；它们在已忽略的目录里，不入提交。
 4. 本文与提交不含任何环境变量的值，只写变量名。
 
 ## 复核意见
