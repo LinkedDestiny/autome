@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 4/4
 复现命令: npm run build --prefix apps/web && cd apps/web && npx vitest run test/process-listing-env.test.ts
 根因: launcher.ts 的 launch() 把 process.title 设成比原始 argv 更短的 `autome-web <home> <action>`，Node 在 macOS 上就地覆写参数区，pgrep -fl 一类读原始参数区的工具会越过新标题读进紧随其后的环境变量区
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -100,30 +100,41 @@ fix-round: 4/4
 
 ## 复核意见
 
-第 3/3 轮独立复核结论：打回。复核对象为 HEAD `e91ddaf05316d2fad0ed31ad1133ed181a57cae4`，产品修复仍为 `89eb063dc8b9deb6e7ca8548c112e74ec8249030`。本轮重新执行原复现命令及直接相关测试子集，均在真实进程测试的夹具预检处遭遇 `spawnSync ps EPERM`，未取得泄漏消除和实例生命周期的独立通过证据。未发现可证实的产品实现缺陷，不声明回归测试有缺陷。需要宿主提供允许执行 `ps` 的独立复核环境，重验同一提交；不要通过改动或跳过测试绕过环境限制。本轮未修改 fix-round，不自行启动后续会话。
+第 4/4 轮独立复核结论：通过。受审提交为 `be0fdbd1516dbe0c753c00b12acf93758de064c9`，产品修复为 `89eb063dc8b9deb6e7ca8548c112e74ec8249030`。根因与修复方向成立，产品差异最小，回归测试没有删除、跳过或弱化；当前受审提交的宿主修复门禁退出码为 0。按操作者备注二，本轮沙箱中的 `ps EPERM` 仅记为独立验证缺口，不再据此打回，不声明回归测试有缺陷。
 
-### 提交差异与根因
+### 提交差异、根因与回归约束
 
-- 比较定位提交 `7ca8d3ff` 至本轮 HEAD：产品仅修改 `apps/web/server/launcher.ts:66` 的后台 spawn 参数，以及 `:134` 附近的标题赋值和解释注释；其余差异为任务简报与 Bug 文档。产品修复提交至当前 HEAD 的 launcher 差异为空，第 3 轮未新增产品改动。环境继承、端口选择和停止策略未改，修复范围最小。
-- 源码证据支持修复方向：移除 `process.title` 赋值，停止改写原始参数区；后台服务用 `argv0` 保留 `autome-web` 与 home 标识。`instance.ts:65,68` 的识别逻辑未改。直接 serve、Rust CLI 和 launchd 的启动链仍经过 `bin/autome-web.js`，保留服务识别字符串。macOS 下 argc/参数区的具体读取机制沿用定位证据，本轮没有重新实测；源码判断不能代替泄漏复验通过。
-- 定位至 HEAD 的 `apps/web/test/` 与 `apps/web/test-groups.ts` 差异为空；泄漏回归测试两端 Git blob 均为 `8fc449efbab56ebb0c8594c76bba57064387c002`。没有删除、跳过、改名、改变输入或弱化断言，无回归测试修正需要核对。
-- 回归测试有意义：先要求三种视图找到登记 PID 和服务标识，再检查哨兵与继承环境键值，最后验证 status、stop 和无残留，无法以服务未启动冒充修复成功。进程视图在内存按 PID 过滤，泄漏断言报告命中数量或变量名。其它环境变量检查有大写变量名和长度至少 12 的筛选，不能将通过扩大解释为覆盖所有环境变量；位于环境首项的随机哨兵仍直接覆盖本次缺陷。没有发现产品修好后由测试自身错误卡住的证据。本轮未注入临时缺陷，未重跑修复前负向对照。
+- 定位提交 `7ca8d3ff` 至受审提交，产品仅改 `apps/web/server/launcher.ts:66` 的后台 spawn 选项及 `:134` 附近的标题赋值和说明注释；其余差异均在本任务文档目录。`89eb063d` 至受审提交的整个 `apps/web` 差异为空；第 4 轮修复提交只改 Bug 文档。未扩展环境继承、端口选择或停止策略。
+- 去掉 `process.title` 赋值，消除改写原始 argv 参数区的入口；后台 spawn 用 `argv0` 提供 `autome-web` 和 home 标识，保持原参数边界。`instance.ts:65,68` 依赖的识别字符串仍存在。Rust CLI 的 `web.rs:64` 继续传入 `bin/autome-web.js`；launchd 的 `service.ts:42` 通过 core web serve 走同一入口。静态证据支持根因与修复；macOS 参数区读取的运行证据采用宿主回归结果，本轮不声称独立验证了操作系统内部机制。
+- 定位提交至受审提交的 `apps/web/test/` 与 `apps/web/test-groups.ts` 差异为空；泄漏回归文件两端 Git blob 均为 `8fc449efbab56ebb0c8594c76bba57064387c002`，exclusive 组登记仍在。断言、输入、用例名和跳过标记均未改，也不存在需要复核的测试修正。
+- 回归测试先确认服务启动、取得登记 PID、三种进程视图均找到该服务，再检查环境首项随机哨兵及其它符合筛选条件的环境键值，随后验证 status、stop 和无残留。服务未启动或视图未找到进程不能冒充通过。列表先在内存按 PID 筛选，泄漏断言只报告数量或变量名。其它环境值检查限定大写变量名且值长度至少 12，不能将测试通过扩大为覆盖所有环境变量；首项随机哨兵直接覆盖本次泄漏路径。
+- 已读宿主定位日志 `repro_check-7ca8d3ff3ddb.log`，原实现确实因 `pgrep -fl autome-web` 中 1 行命中哨兵而断言失败。当前同一测试在宿主通过，具备修复前失败、修复后通过的判别证据。本轮没有注入临时缺陷或重跑旧实现。
 
-### 独立执行结果
+### 宿主证据与独立执行结果
 
-测试 TMPDIR 指向本 worktree 的 `.autome/output/review3-tmp/`，未改头部复现命令或测试文件；所需 `target/debug/autome` 可执行文件存在。
+宿主证据目录：`/Users/dannie/project/autome-v2/.autome/output/gates/T-138/`。
 
-1. 执行头部原复现命令，退出码 1。Web 构建成功，泄漏回归 1 个失败。错误为 `Error: spawnSync ps EPERM`，调用链为 `test/fixtures/web-launcher.ts:16` 的进程查询 → 第 26 行 harness 预检 → `test/process-listing-env.test.ts:18`。失败早于服务创建和哨兵检查，既不算再次复现泄漏，也不算修复通过。
-2. 执行 `cd apps/web && npx vitest run test/web-instance.test.ts test/web-launcher.test.ts test/web-launcher-cleanup.test.ts test/web-launcher-input.test.ts`，退出码 1：4 个文件中 2 通过、2 失败；38 个用例中 21 通过、17 失败，无跳过。17 项失败均为相同的 `ps EPERM` 预检错误。加泄漏回归共 39 个，与第 3 轮修复说明一致；真实启动、复用、暂停、停止场景未完成独立验证。
-3. `git diff --check` 通过。未执行快检或全量门禁 `sh scripts/ci-local.sh`。用户提供的修复门禁退出码 0 只作为已有证据，不等于本轮独立复验或项目全量门禁通过。未跑全量门禁不是打回原因。
-
-本轮原始输出保存在 `.autome/output/review3-*.log`，提取证据后删除本轮日志与临时目录，不提交临时产物。最终仅修改本 Bug 文档的复核字段和复核意见，产品、测试及其它被跟踪文件未改。
+1. 已核实受审提交对应的 `fix_gate-be0fdbd1516d.exit`：`exit_code=0`，结束时间 `2026-11-19T14:12:55Z`；对应 `.kind` 记录的是本轮提示词中的复现命令与快检组合，种类为 quick。对应 `.log` 显示 Web 构建和泄漏回归实际执行，1 文件、1 用例通过。`.report` 与日志显示 Format、Clippy、Web lint、Web typecheck 沿用缓存结果，快检为执行 0 步、沿用 4 步、失败 0 步；不将它们写成当前提交重新执行。这是当前提交的宿主门禁证据，不以旧提交的通过记录替代。
+2. 本轮独立执行头部原命令 `npm run build --prefix apps/web && cd apps/web && npx vitest run test/process-listing-env.test.ts`，退出码 1。Web 构建成功，泄漏回归 1 个失败，错误为 `Error: spawnSync ps EPERM`，位置是 `test/fixtures/web-launcher.ts:16` → `:26` 的 harness 预检 → `test/process-listing-env.test.ts:18`。失败早于服务创建和哨兵检查，属于沙箱权限缺口，既不算泄漏再次复现，也不记为本轮独立通过。
+3. 独立执行 `cd apps/web && npx vitest run test/web-instance.test.ts test/web-launcher.test.ts test/web-launcher-cleanup.test.ts test/web-launcher-input.test.ts`，退出码 1：4 文件中 2 通过、2 失败；38 用例中 21 通过、17 失败，无跳过。17 项失败均为同一 `spawnSync ps EPERM` 预检错误。加泄漏回归共 39 用例，与此前范围一致；真实进程生命周期尚未在本沙箱独立跑通。按备注二采用宿主进程检查证据，不因该环境限制要求改代码或测试。
+4. 测试所需 `target/debug/autome` 可执行文件存在。测试的 `TMPDIR` 指向本 worktree 的 `.autome/output/review4-tmp/`；原始输出保存在 `.autome/output/review4-repro.log`、`review4-subset.log`。未修改测试或头部复现命令。`git diff --check` 通过。本轮未重跑快检，未运行全量门禁 `sh scripts/ci-local.sh`；修复门禁通过不等于项目全量门禁通过，全量由宿主合并前统一运行。
 
 ### 操作者备注逐条核对
 
-已核对本轮送达备注、`brief/impl-4.md` 的「操作者备注」及「第 3 轮修复说明」中的逐条回应：
+已核对 `brief/impl-5.md` 中送达的两份备注，以及「第 4 轮修复说明」的「操作者备注」小节；八项均有回应，并核对当前修复提交差异。历史会话的全部操作过程不在本轮可独立证明范围内，不据此要求补充操作者已明确免除的证明。
 
-1. 修复说明明确回应只按自建实例 PID 起停、未触碰 7420 实例。本轮未使用 `pkill`、`killall` 或按名字匹配的终止命令；真实进程测试均在创建服务前被预检拒绝，未拉起或终止面板服务，未接触 7420 实例。
-2. 修复说明明确回应未打印进程列表。本轮没有独立执行未过滤的进程查询；测试内真实 `ps` 被拒绝，没有取得或打印本机进程列表。终端仅提取测试汇总和错误类型，未输出真实环境值。
-3. 修复说明明确回应临时输出放在本 worktree 的 `.autome/output/`，但只说明忽略、不入提交，没有提供用完删除的证明。本轮日志、读取快照和测试临时目录均放在该目录，未使用 /tmp，完成后删除自己创建的产物。历史产物清理情况未独立证明，不擅自清理；此项不能把「不入提交」当成「已删除」。
-4. 修复说明明确回应文档与提交不含真实环境变量值。本轮产品差异只涉及变量名与代码表达式，复核内容没有真实环境变量值或令牌。四条备注都有核对记录；此前修复会话实际命令史不在本轮可独立证明范围内。
+备注一：
+
+1. 照做。修复说明明确本轮没有启停进程，实际提交只有文档。本复核未使用 pkill、killall 或按名字匹配的终止命令；真实进程测试在创建服务前被预检拒绝，没有拉起或终止面板服务，未接触 7420 实例。
+2. 照做。修复说明明确未打印进程列表；本复核未输出本机进程列表，只提取测试汇总和错误类型。测试内真实 ps 调用被拒绝，没有取得列表；没有打印环境值或令牌。
+3. 照做。修复说明记录本轮没有临时产物。本复核临时输出和测试目录均在本 worktree 的 `.autome/output/`，不在 /tmp，也不入提交。按备注二第 4 条，不再要求历史产物删除证明，不清理其它会话产物。
+4. 照做。修复提交和本轮复核文档均不含真实环境变量值；涉及环境时只记录变量名或代码表达式。
+
+备注二：
+
+1. 照做。已核实第 4 轮修复仅在 Bug 文档新增说明并重置待复核；产品仍是 `89eb063d`，测试未改。本复核也只修改 Bug 文档的复核字段和复核意见，保持 status、fix-round、复现命令、根因及 repos 状态不变。
+2. 照做。需要 ps / pgrep 的运行证据采用当前受审提交 `be0fdbd1` 的宿主日志与退出码；前三轮结果只作背景，不代替本次证据。
+3. 照做。本轮重新尝试原复现命令与相关子集，将 ps 权限失败明确记为验证缺口。静态核对三项成立且当前宿主修复门禁成功，结论为通过。
+4. 照做。备注一四条继续执行；临时产物留在允许的忽略目录且不提交，无需另补删除证明。未运行全量门禁，未合并、推送、切换分支或启动后续会话。
+
+本轮提交范围仅为本 Bug 文档；后续由 Autome 调度。
