@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 1/3
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -45,4 +45,13 @@ fix-round: 1/3
 
 ## 复核意见
 
-（待复核轮填写）
+本轮结论：打回。静态复核未发现产品修复或测试修正缺陷，但独立浏览器复验在夹具初始化阶段受当前沙箱权限阻断，尚未取得本轮复现通过证据。按本轮测试失败交回要求处理；不是因为未跑全量门禁，也不声明回归测试有缺陷。
+
+- 复核范围：定位提交 `e03c372544ee1d23f9dd007cc1eaac3f114af478` 至当前 `69a3185e2ea2fd4385532d6a4a4441a35ac9ddba`；分别检查修复提交 `c5c2f239` 和测试修正提交 `69a3185e`。宿主生成的 `d2e0e28c` 简报不属于产品修复。
+- 规范复核：未发现违规。修复提交未修改回归测试；随后测试修正与文档所述共享夹具污染一致。用例名、1512×420 视口、展开操作、溢出断言、按钮数量及高度断言均保留，没有删除、跳过或弱化断言；`layout.spec.ts` 的 `toHaveCount(30)` 原样保留。
+- 需求与根因复核：`app.css:102` 的纵向 flex 容器和 `:335` 的固定高度按钮支持所述根因。公共 `.btn` 增加 `flex-shrink: 0` 直接阻止压缩；铃铛按钮同时带 `btn btn-sm`，默认 grow=0、basis=auto 配合公共 shrink=0 保留原 `flex: none` 效果。产品差异仅此两处，范围合理。`fixture.ts:35–37` 已创建 30 个已取消任务，删除额外创建的 3 个任务能够消除污染，并保留制造溢出的输入。
+- 独立复现：原命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts` 退出码 1。`process-scan.ts:5` 调用 `ps -axo pid=,ppid=,command=` 时发生 `spawnSync ps EPERM`，globalSetup 失败，1 个用例未执行；清理同样被权限阻断。尚未进入页面或高度断言，不能记作复现通过或产品失败。日志：`.autome/output/independent-review-1/reproduction.log`。
+- 相关浏览器子集：`cd apps/web && npx playwright test e2e/board-fold.spec.ts e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '折叠入口|已取消展开|1512×944 项目$|全部已完成|铃铛'`，退出码 1，同一初始化错误；6 个用例全部未执行，包括共享夹具污染检查与铃铛布局检查。日志：`.autome/output/independent-review-1/related-e2e.log`。
+- 相关单测：`cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例全部通过；本轮未增删用例。该结果不能替代真实浏览器几何检查。日志：`.autome/output/independent-review-1/related-unit.log`。
+- 验证边界：宿主提供的复现加快检退出码 0 不作为本轮独立复验结果，亦不等于项目全量门禁通过；本轮未运行 `sh scripts/ci-local.sh`。浏览器初始化受阻，因此未做负向缺陷注入；未改产品、测试或格式化文件。
+- 后续处理：由宿主/修复轮在允许进程检查及浏览器夹具运行的环境，重跑上述复现命令和相关浏览器子集，取得真实执行结果后再交独立复核。无需据此修改 CSS、跳过进程检查或弱化断言；本轮只提交复核文档，保持状态、fix-round、复现命令及根因不变。
