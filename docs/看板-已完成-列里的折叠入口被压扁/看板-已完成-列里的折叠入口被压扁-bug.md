@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 3/3
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -44,6 +44,21 @@ fix-round: 3/3
 用例不再新建/取消任务，改用共享夹具自带的 30 个已取消任务制造溢出，不再污染 `layout.spec.ts` 的 `toHaveCount(30)`。验证：`npx prettier --write` 无改动；修好的 CSS 上复现命令通过（1 passed）；临时去掉 `.btn` 的 `flex-shrink: 0` 后仍失败于 `按钮高度 21px 应为 30 或 38`（已恢复 CSS）。
 
 ## 复核意见
+
+### 第 3 轮独立复核（当前结论）
+
+结论：打回。静态复核未发现产品修复缺陷、无关扩展或回归断言弱化；但本轮独立复现及相关浏览器子集均因沙箱禁止进程检查而退出 1，未取得页面断言的独立执行证据。按本轮测试失败交回要求记录环境阻塞，不将其认定为产品失败，也不因未跑全量门禁打回。
+
+- 复核范围：定位提交 `e03c372544ee1d23f9dd007cc1eaac3f114af478` 至受审 HEAD `fb526afec99324f3c0efbe43b7bb71c52d24c3ab`。产品修复在 `c5c2f239`，回归测试修正在 `69a3185e`；后者至受审 HEAD 的 `apps/web` 差异为空，第 2、3 轮均未再改产品或测试。完整差异记录：`.autome/output/independent-review-3/diff.log`。
+- 根因与最小范围：`app.css:102` 的纵向 flex 容器内容溢出时，只有 height、默认 shrink=1 的按钮可被压缩；`app.css:335` 增加 `flex-shrink: 0` 直接消除该原因。产品差异仅公共按钮增加这一属性、删除铃铛局部 `flex: none` 两处。`bell.tsx:46` 按钮仍为 `btn btn-sm`，默认 grow=0、basis=auto 加公共 shrink=0 保留原局部规则的效果，未发现需扩大修复范围的代码证据。
+- 回归测试完整性：产品修复提交未改测试。`69a3185e` 只移除额外新建并取消 3 个任务及相关 import，改用 `e2e/harness/fixture.ts:35–38` 自带的 30 个已取消任务，与已登记的共享夹具污染缺陷吻合。用例名、1512×420 视口、展开操作、溢出断言、按钮数量下限及 30±1 或 38±1 高度断言均保留，未新增跳过标记；`layout.spec.ts:169` 的 `toHaveCount(30)` 未改。测试先确认真实溢出，再检查浏览器几何尺寸，针对所述回归有意义。本轮因初始化受阻，未重新取得修复前失败的负向证据，未注入临时缺陷；不新增“回归测试有缺陷”声明。
+- 独立复现：`cd apps/web && npx playwright test e2e/board-fold.spec.ts`，退出码 1。`test/fixtures/process-scan.ts:5` 执行 `ps -axo pid=,ppid=,command=` 发生 `spawnSync ps EPERM`，globalSetup 与 teardown 均受阻，1 个用例未执行。`e2e/harness/setup.ts:36` 在 prepare 和服务启动前即调用该检查，尚未进入页面或高度断言。日志：`.autome/output/independent-review-3/reproduction.log`。
+- 相关浏览器子集：`cd apps/web && npx playwright test e2e/board-fold.spec.ts e2e/layout.spec.ts e2e/overlay-layout.spec.ts --grep '折叠入口|已取消展开|1512×944 项目$|全部已完成|铃铛'`，退出码 1，同一初始化权限错误，6 个用例全部未执行。日志：`.autome/output/independent-review-3/related-e2e.log`。
+- 相关单测：`cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例通过。日志：`.autome/output/independent-review-3/related-unit.log`。该结果不能替代浏览器高度验收。
+- 铃铛既有失败：本轮读取了修复轮的 `.autome/output/r3.log` 与 `.autome/output/r3-base.log`；前者记录折叠用例通过、铃铛失败，后者记录铃铛单跑失败，两者均为 `overlay-layout.spec.ts:91` 的 `Expected <= 96, Received 98.96875`。日志与修复说明一致，但日志本身没有绑定执行时 CSS 哈希；本轮也未能独立重跑基线，因此不能把“基线同样失败、与修复无关”升级为本轮独立确认的结果。保留该问题与证据交回，不修改原测试。
+- 门禁与后续：宿主报告的复现加快检退出码 0 不等于全量门禁通过，也不替代本轮独立复验。遵照要求未运行 `sh scripts/ci-local.sh`、未重跑快检；保持状态、fix-round、复现命令、根因及 repos 不变。本轮只更新本 Bug 文档，产品和测试无改动。需要 Autome 在允许进程检查和浏览器夹具运行的环境安排独立复验，并绑定 CSS 内容核验铃铛基线对照；无需为沙箱错误修改 CSS、绕过进程检查或弱化断言。不合并、不推送、不启动后续会话。
+
+### 第 2 轮独立复核（历史记录）
 
 第 2 轮结论：打回。静态复核未发现根因、产品修复或回归测试修正缺陷，产品改动范围最小；但本轮独立复现及相关浏览器子集仍在夹具初始化阶段被沙箱权限阻断，未取得页面断言的独立执行证据。按本轮测试失败交回要求记录，不把环境阻塞认定为产品失败，也不因未跑全量门禁打回。
 
