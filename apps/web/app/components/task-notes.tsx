@@ -23,7 +23,7 @@ export function TaskNotes({ data, result }: { data: TaskPayload; result?: { erro
       <fieldset disabled={!gate.allowed || pending}>
         <label>备注正文<textarea name="text" maxLength={MAX_PROSE_LENGTH} required /></label>
         {state?.state === 'active' && state.node === 'await_merge' && <label><input type="checkbox" name="reopen" value="yes" />{`同时送回${nodeLabel('implement')}轮处理（不${nodeLabel('merging')}）`}</label>}
-        <button type="submit">提交备注</button>
+        <button className="btn btn-sm" type="submit">提交备注</button>
       </fieldset>
       {!gate.allowed && <p>{gate.reason}</p>}
       {result?.error && <p role="alert">{result.error}</p>}

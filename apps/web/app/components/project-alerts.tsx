@@ -14,9 +14,9 @@ export function ProjectAlerts({ alerts, error }: { alerts: ProjectAlert[]; error
       <strong>{Object.hasOwn(ALERT_KINDS, alert.kind) ? ALERT_KINDS[alert.kind] : alert.kind}</strong>
       <time dateTime={alert.created_at}>{formatClock(alert.created_at, clock)}</time>
       <p className="project-alert-detail">{alert.detail}</p>
-      {alert.task_id && <Link to={`/tasks/${encodeURIComponent(alert.task_id)}`}>{alert.task_id}</Link>}
+      {alert.task_id && <Link className="link" to={`/tasks/${encodeURIComponent(alert.task_id)}`}>{alert.task_id}</Link>}
       <Form method="post"><input type="hidden" name="intent" value="dismiss" /><input type="hidden" name="alert_id" value={alert.id} />
-        <button disabled={!gate.allowed} title={gate.reason}>{ALERTS.dismiss}</button>
+        <button className="btn btn-sm" disabled={!gate.allowed} title={gate.reason}>{ALERTS.dismiss}</button>
       </Form>
     </article>)}
   </section>;

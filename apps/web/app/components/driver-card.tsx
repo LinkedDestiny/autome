@@ -9,5 +9,5 @@ export function DriverCard({ initial }: { initial?: DriverStatus }) {
   useEffect(() => { setLive(undefined); }, [initial]);
   useEffect(() => subscribeLiveMessages((type, message) => { if (type === 'drivers') setLive(message.status as DriverStatus); }), []);
   const model = driverCardModel(live ?? initial, useClock().now);
-  return <section className="driver-card" aria-label="驱动状态"><span className={model.active ? 'driver-dot active' : 'driver-dot'} /><div><strong>{model.title}</strong>{model.detail && <small>{model.detail}</small>}{model.title === '没有驱动在运行' && <Link to="/env">查看环境</Link>}</div></section>;
+  return <section className="driver-card" aria-label="驱动状态"><span className={model.active ? 'driver-dot active' : 'driver-dot'} /><div><strong>{model.title}</strong>{model.detail && <small>{model.detail}</small>}{model.title === '没有驱动在运行' && <Link className="btn btn-text btn-sm" to="/env">查看环境</Link>}</div></section>;
 }

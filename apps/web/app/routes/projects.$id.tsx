@@ -56,8 +56,8 @@ export default function ProjectBoard() {
   const cancelledCount = data.cancelledCounts?.[kind] ?? 0;
   return <div className="board" data-testid={TEST_IDS.pageBoard}><header className="board-header"><h1>{data.project.display_name}</h1>
     <div className="seg board-filters" role="group" aria-label="任务类型">{(Object.keys(KIND_FILTER_LABELS) as KindFilter[]).map(value => <button key={value} aria-pressed={kind === value} onClick={() => setKind(value)}>{KIND_FILTER_LABELS[value]}</button>)}</div>
-    <Link to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
-    <Link className="board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
+    <Link className="btn" to={settingsHref(data.project.id)}>{ADMIN.settings}</Link>
+    <Link className="btn btn-primary board-new" to={newTaskHref(data.project.id)}>新建任务卡</Link>
   </header>{result && 'error' in result && <p role="alert">{result.error}</p>}
   {data.configError && <section role="alert"><p>项目配置有误，以下是内核的校验原文</p><pre className="board-config-error" data-scroll-region>{data.configError}</pre></section>}<ProjectAlerts alerts={data.alerts} error={data.alertsError} /><div className="board-columns">{columns.map(column => <section className="board-column" data-testid={TEST_IDS.boardColumn} data-column={column.id} key={column.id} aria-labelledby={`board-${column.id}`}>
     <Ribbon small color={column.id === 'todo' ? 'brown' : column.id === 'needs_you' ? 'yellow' : column.id === 'done' ? 'green' : 'teal'}><h2 id={`board-${column.id}`}>{boardHeading(column, kind)}</h2></Ribbon>{column.id === 'todo' && <p className="board-hint">{BOARD_QUEUE_HINT}</p>}{column.id === 'done' && <p className="board-hint" title={BOARD_TOTAL_HINT}>累计 {totals.cost} · 平均{BOARD_IMPL} {totals.average} 轮</p>}<div className="board-column-body" data-scroll-region>
@@ -66,9 +66,9 @@ export default function ProjectBoard() {
         return rows.length > 0 && <section className="board-done-group" key={group}><h3>{group} · {rows.length} 个</h3>{rows.map(row => <Link className="board-done-row" data-testid={TEST_IDS.taskCard} data-task-id={row.id} key={row.id} to={taskHref(row.id)}><span>{row.id}</span><strong>{row.title}</strong><small>{BOARD_IMPL} {row.rounds} 轮 · 退回 {row.reopens} · {row.cost}</small></Link>)}</section>;
       }) : column.tasks.map(task => <TaskCard key={task.id} task={task} queue={data.tasks.filter(isQueued)} detail={data.details?.[task.id]} overviewDetail={data.overviewDetails?.[task.id]} context={{ fixRounds: 0, cooldowns: [], unread: {}, ...data.cardContext, now, timeZone }} />)}
       {column.tasks.length === 0 && <p>暂无任务</p>}
-      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="board-fold" to={foldHref}>{data.showAll ? '收起' : `更早 · ${column.older.length} 个 →`}</Link>}
+      {column.id === 'done' && (data.showAll || column.older.length > 0) && <Link className="btn btn-text btn-sm board-fold" to={foldHref}>{data.showAll ? '收起' : `更早 · ${column.older.length} 个 →`}</Link>}
       {column.id === 'done' && cancelledCount > 0 && <>
-        <Link className="board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起' + STATE_LABELS.cancelled : STATE_LABELS.cancelled + '（' + cancelledCount + '）'}</Link>
+        <Link className="btn btn-text btn-sm board-fold" data-testid={TEST_IDS.boardCancelledToggle} to={cancelledHref}>{data.showCancelled ? '收起' + STATE_LABELS.cancelled : STATE_LABELS.cancelled + '（' + cancelledCount + '）'}</Link>
         {data.showCancelled && <div data-testid={TEST_IDS.boardCancelled}>{data.cancelled?.filter(task => kind === 'all' || task.kind === kind).map(task => <Link key={task.id} className="overview-card task-card" data-testid={TEST_IDS.taskCard} data-task-id={task.id} to={taskHref(task.id)}>
           <div className="overview-card-meta"><span>{KIND_LABELS[task.kind as keyof typeof KIND_LABELS] ?? task.kind}</span><span>{task.id}</span></div><h3>{task.title}</h3><p>{STATE_LABELS.cancelled}</p>
         </Link>)}</div>}

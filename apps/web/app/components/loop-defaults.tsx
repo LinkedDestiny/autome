@@ -14,7 +14,7 @@ function DefaultField({ field, config, project, disabled }: { field: typeof defa
   return <Card color="blue" className="loop-default-field">
     <div className="loop-default-head"><span>{field.label}</span>{project && <span className="pill">{base === config.global.loop_defaults[field.key] ? '与全局相同' : '项目值'}</span>}</div>
     <div className="loop-default-controls"><Stepper labelHidden label={field.label} min={field.min} max={field.max} name={field.key} value={value} onChange={setValue} disabled={busy} />
-    <button aria-label={`保存${field.label}`} disabled={busy || value === base || !validDefault(field.key, value)} onClick={() => submit(field.key, value)}>保存</button>
+    <button aria-label={`保存${field.label}`} disabled={busy || value === base || !validDefault(field.key, value)} className="btn btn-sm" onClick={() => submit(field.key, value)}>保存</button>
     {fetcher.data?.saved && <span role="status">已保存</span>}</div>
     {project && <button className="loop-default-reset btn btn-sm" aria-label={`恢复跟随全局 · ${field.label}`} disabled={busy} onClick={() => submit(field.key, null)}>恢复跟随全局</button>}
     {fetcher.data?.error && <p role="alert">{fetcher.data.error}</p>}

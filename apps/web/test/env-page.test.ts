@@ -113,7 +113,7 @@ test('正常五行标记且安装说明默认收起', () => {
   const text = html({ ...envData, kernel: { path: '/bin/autome', build_id: 'test', source: 'test' }, snapshot: { ...snapshot, problems: [], environment: { components } } });
   expect(text.match(/data-env-ok="true"/g)).toHaveLength(5);
   expect(text.match(/<details class="env-install">/g)).toHaveLength(4);
-  expect(text.match(/<summary>查看安装方法/g)).toHaveLength(4);
+  expect(text.match(/<summary class="btn btn-text btn-sm">查看安装方法/g)).toHaveLength(4);
 });
 test('未安装、过期、未知登录或问题列表中的工具自动展开', () => {
   const base = snapshot.environment!.components[0];

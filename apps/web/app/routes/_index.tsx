@@ -29,7 +29,7 @@ export default function Overview() {
   const queued = tasks.filter(t => t.state.state === 'queued').sort((a, b) => (a.queue_position ?? Infinity) - (b.queue_position ?? Infinity));
   return <div className="overview" data-testid={TEST_IDS.pageOverview}>
     <header className="overview-heading"><Ribbon><h1>总览</h1></Ribbon><p className="overview-conclusion">{kernel.ok ? overviewConclusion(waiting.length, running.length, queued.length, drivers?.list.some(d => d.driving)) : '内核离线，任务统计暂不可用'}</p></header>
-    {notice && <p role="status">{notice} <Link to="/env">{ENV.go}</Link></p>}
+    {notice && <p role="status">{notice} <Link className="btn btn-text btn-sm" to="/env">{ENV.go}</Link></p>}
     <div className="overview-columns"><div className="overview-column-body" data-scroll-region>
       {(['needs_you', 'running'] as const).map(column => {
         const cards = column === 'needs_you' ? waiting : [...running, ...queued];

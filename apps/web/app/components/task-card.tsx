@@ -18,7 +18,7 @@ export function TaskCard({ task, detail, context, overviewDetail, queue = [] }: 
   const shared = overviewCardView(task, overviewDetail, context.now), column = columnOf(task.state);
   return <article className={`overview-card task-card${column === 'running' ? ' card card-teal' : column === 'needs_you' ? ' card card-yellow' : ''}`} data-testid={TEST_IDS.taskCard} data-task-id={task.id}>
     <div className="overview-card-meta"><Pill color={column === 'needs_you' ? 'yellow' : column === 'running' ? 'teal' : 'brown'}>{view.kind}</Pill><span>{task.id}</span></div>
-    <h3><Link to={taskHref(task.id)}>{task.title}</Link></h3>
+    <h3><Link className="link" to={taskHref(task.id)}>{task.title}</Link></h3>
     {view.badge && <Pill color="yellow" filled>{shared.badge}</Pill>}
     {column === 'running' && overviewDetail?.status_block && <Progress value={overviewDetail.status_block.milestones_total ? overviewDetail.status_block.milestones_done / overviewDetail.status_block.milestones_total * 100 : 0} label={CARD_LABELS.progress} />}
     {view.unknownStage && <p>{view.unknownStage}</p>}{view.progress && <p>{view.progress}</p>}
@@ -39,7 +39,7 @@ function StartTask({ taskId }: { taskId: string }) {
   return <fetcher.Form method="post">
     <input type="hidden" name="intent" value="start" />
     <input type="hidden" name="task_id" value={taskId} />
-    <button data-testid={TEST_IDS.taskOp} data-op="start" className="btn-primary" disabled={!gate.allowed || fetcher.state !== 'idle'}>开始</button>
+    <button data-testid={TEST_IDS.taskOp} data-op="start" className="btn btn-sm btn-primary" disabled={!gate.allowed || fetcher.state !== 'idle'}>开始</button>
     {!gate.allowed && <p role="status">{gate.reason}</p>}
     {fetcher.data?.error && <p role="alert">{fetcher.data.error}</p>}
   </fetcher.Form>;

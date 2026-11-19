@@ -23,7 +23,7 @@ export function TaskDependencies({ data, result, reason = dependencyReadOnly(dat
     {reason ? <p>{reason}</p> : <Form method="post" key={after.join(',')}>
       <input type="hidden" name="intent" value="set_after" />
       <DependencyChoices tasks={dependencyCandidates(tasks, data.project?.id ?? '', data.task.id)} selected={after} disabled={!gate.allowed || busy} />
-      <button disabled={!gate.allowed || busy}>保存依赖</button><button name="clear" value="yes" disabled={!gate.allowed || busy}>清空依赖</button>
+      <button className="btn btn-sm" disabled={!gate.allowed || busy}>保存依赖</button><button className="btn btn-sm" name="clear" value="yes" disabled={!gate.allowed || busy}>清空依赖</button>
       {!gate.allowed && <p>{gate.reason}</p>}{result?.error && <p role="alert">{result.error}</p>}
     </Form>}
   </section>;

@@ -39,7 +39,7 @@ export function BellView({ snapshot, open, onToggle, onRead, onAll, targets = TA
               event.preventDefault();
               await onRead(item.id);
               window.location.assign(target.href!);
-            }} className="bell-title" title={item.title}>{item.title}</Link> : <span className="bell-title" title={item.title}>{item.title}</span>}
+            }} className="link bell-title" title={item.title}>{item.title}</Link> : <span className="bell-title" title={item.title}>{item.title}</span>}
             {item.body && <p className="bell-body">{item.body}</p>}
             <div className="bell-footer">
               <span className="bell-meta"><time dateTime={item.created_at} className="bell-time">{formatClock(item.created_at, clock)}</time>{target.note && <span className="bell-note" title={target.note}>{target.note}</span>}</span>

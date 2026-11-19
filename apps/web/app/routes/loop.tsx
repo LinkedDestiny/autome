@@ -54,7 +54,7 @@ export function LoopView({ data }: { data: LoopData }) {
   const roleCard = (role: Role) => {
     const cfg = merged![role], error = violations.some(v => v.roles.includes(role));
     return <Card key={role} color={colors[role]} patterned className={error ? 'loop-role loop-conflict' : 'loop-role'} data-role={role} data-testid={TEST_IDS.loopRole}>
-      <div className="loop-role-head"><button type="button" aria-label={LOOP.edit + roleNames[role]} onClick={() => setEditing(role)}><span className="loop-role-name">{roleNames[role]}</span><span className="loop-role-edit">{LOOP.edit}</span></button>
+      <div className="loop-role-head"><button type="button" className="btn btn-sm" aria-label={LOOP.edit + roleNames[role]} onClick={() => setEditing(role)}><span className="loop-role-name">{roleNames[role]}</span><span className="loop-role-edit">{LOOP.edit}</span></button>
         <Switch label={<span className="visually-hidden">{roleNames[role]}启用</span>} checked={cfg.enabled} disabled={disabled} onChange={e => edit(role, { enabled: e.target.checked })} />
       </div>
       <p>{cfg.runtime === 'claude' ? 'Claude Code' : 'Codex'}</p>
@@ -63,7 +63,7 @@ export function LoopView({ data }: { data: LoopData }) {
       {!cfg.enabled && <small className="loop-role-disabled" title={LOOP.disabled}>{LOOP.disabled}</small>}
     </Card>;
   };
-  return <div className="loop-page" data-testid={TEST_IDS.pageLoop}><header><Ribbon color="blue">Loop 配置</Ribbon><nav className="seg" aria-label="配置范围"><Link aria-current={!data.project ? 'page' : undefined} to="/loop">全局默认</Link>{data.projects.map(p => <Link key={p.id} aria-current={data.project === p.id ? 'page' : undefined} to={`/loop?project=${encodeURIComponent(p.id)}`}>{p.display_name}</Link>)}</nav>{Object.keys(patches).length > 0 && <button disabled={disabled || violations.length > 0 || !order} onClick={() => submit(order!)}>保存 {Object.keys(patches).length} 项改动</button>}</header>
+  return <div className="loop-page" data-testid={TEST_IDS.pageLoop}><header><Ribbon color="blue">Loop 配置</Ribbon><nav className="seg" aria-label="配置范围"><Link aria-current={!data.project ? 'page' : undefined} to="/loop">全局默认</Link>{data.projects.map(p => <Link key={p.id} aria-current={data.project === p.id ? 'page' : undefined} to={`/loop?project=${encodeURIComponent(p.id)}`}>{p.display_name}</Link>)}</nav>{Object.keys(patches).length > 0 && <button className="btn btn-primary btn-sm" disabled={disabled || violations.length > 0 || !order} onClick={() => submit(order!)}>保存 {Object.keys(patches).length} 项改动</button>}</header>
       {data.project && <nav className="seg" aria-label="项目配置页签"><Link to={`/loop?project=${encodeURIComponent(data.project)}`} aria-current={!data.settings ? 'page' : undefined}>Loop 配置</Link><Link to={`/loop?project=${encodeURIComponent(data.project)}&tab=project`} aria-current={data.settings ? 'page' : undefined}>项目信息</Link></nav>}
       {data.settings ? <SettingsView data={data.settings} result={result} busy={navigation.state !== 'idle'} /> : <>
       <p>{data.project ? '仅覆盖当前项目；未改过的字段继续跟随全局。' : '全局默认，所有未覆盖的项目都会使用。'}</p>

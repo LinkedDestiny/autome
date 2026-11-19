@@ -18,10 +18,10 @@ export function TaskDecisions({ decisions = [] }: { decisions?: TaskPayload['dec
       {item.carried && <p>{DECISION_COPY.carried}</p>}
       <Form method="post"><input type="hidden" name="intent" value="decide" /><input type="hidden" name="kind" value={item.kind} /><input type="hidden" name="item_id" value={item.item_id} />
         <fieldset disabled={!gate.allowed || pending}>
-          {item.kind === 'backlog' ? <><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="include">纳入</button><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ignore">忽略</button></> : <>
-            <label>裁定文字<textarea name="ruling" defaultValue={item.ruling ?? ''} maxLength={MAX_PROSE_LENGTH} required /></label><button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ruled">裁定</button>
+          {item.kind === 'backlog' ? <><button className="btn btn-sm" data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="include">纳入</button><button className="btn btn-sm" data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ignore">忽略</button></> : <>
+            <label>裁定文字<textarea name="ruling" defaultValue={item.ruling ?? ''} maxLength={MAX_PROSE_LENGTH} required /></label><button className="btn btn-sm" data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="ruled">裁定</button>
           </>}
-          <button data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="none" formNoValidate>撤销表态</button>
+          <button className="btn btn-sm" data-testid={TEST_IDS.taskOp} data-op="decide" name="disposition" value="none" formNoValidate>撤销表态</button>
         </fieldset>
       </Form>
     </article>)}

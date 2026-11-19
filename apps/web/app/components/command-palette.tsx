@@ -33,7 +33,7 @@ export function CommandPalette({ candidates, state, onChange }: { candidates: Ca
         if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }
     }}>
-      <div className="palette-header"><label htmlFor="palette-query">搜索或跳转</label><button type="button" onClick={() => dispatch({ type: 'close' })}>关闭</button></div>
+      <div className="palette-header"><label htmlFor="palette-query">搜索或跳转</label><button className="btn btn-sm" type="button" onClick={() => dispatch({ type: 'close' })}>关闭</button></div>
       <input ref={input} id="palette-query" role="combobox" aria-expanded="true" aria-controls="palette-results" aria-autocomplete="list"
         aria-activedescendant={items[state.active] ? optionId(state.active) : undefined} value={state.query} placeholder="输入任务、项目或新建"
         onChange={event => { const query = event.target.value; dispatch({ type: 'input', query, items: filterCandidates(candidates, query).items }); }}
