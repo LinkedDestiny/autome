@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 2/3
 复现命令: npm run build --prefix apps/web && cd apps/web && npx vitest run test/process-listing-env.test.ts
 根因: launcher.ts 的 launch() 把 process.title 设成比原始 argv 更短的 `autome-web <home> <action>`，Node 在 macOS 上就地覆写参数区，pgrep -fl 一类读原始参数区的工具会越过新标题读进紧随其后的环境变量区
-复核: 待复核
+复核: 打回
 
 ## 现象
 
@@ -60,28 +60,28 @@ fix-round: 2/3
 
 ## 复核意见
 
-本轮结论：打回，原因是独立复验被当前沙箱阻塞，未取得泄漏场景及实例生命周期的独立通过证据；尚未发现可证实的产品实现缺陷，也不声明回归测试有缺陷。请在允许执行 `ps` 的环境对同一修复提交复验，不要为绕过沙箱删除、跳过或弱化测试。本轮未运行全量门禁，缺少全量门禁结果不是打回原因。
+第 2/3 轮独立复核结论：打回。核对 HEAD 为 `7dda6002fe9fe148183f3ddd7f2a840b406e02c7`，产品修复仍为 `89eb063dc8b9deb6e7ca8548c112e74ec8249030`。本轮独立复验再次在创建面板子进程前被当前沙箱的 `spawnSync ps EPERM` 阻塞，未取得泄漏场景及实例生命周期的独立通过证据。未发现可证实的产品实现缺陷，不声明回归测试有缺陷。请由宿主在允许执行 `ps` 的独立复核环境重验同一提交；不要为了绕过环境限制修改、删除、跳过或弱化测试。
 
 ### 提交差异与根因
 
-- 核对定位提交 `7ca8d3ff` 至修复提交 `89eb063dc8b9deb6e7ca8548c112e74ec8249030`：产品仅修改 `apps/web/server/launcher.ts`，增加 spawn 的 `argv0`、移除 `process.title` 赋值并添加解释注释；其余差异是任务简报与 Bug 文档。产品改动范围最小，未改变环境继承、端口选择或停止策略。
-- 根因与修复方向在源码层面成立：停止就地改写标题，避免触发文档描述的原始参数区读取问题；后台启动的 `argv0` 保留 `autome-web` 与 home 标识。直接 `serve` 及 Rust CLI 入口仍通过 `bin/autome-web.js` 启动，命令行保留实例识别所需的 `autome-web`。`instance.ts` 的识别与停止逻辑未改。macOS 上的实际泄漏消除尚未由本轮运行证明。
-- 定位以来 `apps/web/test/` 与 `test-groups.ts` 差异为空，回归文件的 Git blob 均为 `8fc449efbab56ebb0c8594c76bba57064387c002`。没有删除、跳过、改名、改变输入或弱化断言。
-- 回归测试有判别意义：三种进程视图必须找到登记 PID 的服务，才检查哨兵与环境键值泄漏；之后检查 status、stop 与残留进程，避免以服务未启动或标识消失冒充修复。实际进程输出先在内存按 PID 过滤，泄漏断言只报告命中数量或变量名。未发现需要退回定位轮修改测试的缺陷。
+- 比较定位提交 `7ca8d3ff` 至当前 HEAD：产品只改 `apps/web/server/launcher.ts:66` 与 `:134` 附近，增加后台 spawn 的 `argv0`、移除 `process.title` 赋值并添加解释注释；其余差异为本任务简报与 Bug 文档。第 2 轮没有新增产品改动，未改变环境继承、端口选择或停止策略，范围最小。
+- 源码层面修复方向与根因一致：停止就地重写标题，避免原始参数区读取问题；后台服务通过 `argv0` 保留 `autome-web` 与 home 标识。直接 `serve`、Rust CLI 与 launchd 入口仍进入 `bin/autome-web.js`，保留实例识别所需的 `autome-web`。`instance.ts:65,68` 的识别、按登记 PID 停止的逻辑未改。macOS 实际泄漏消除未由本轮运行证明；argc 与参数区的具体行为沿用定位证据，本轮没有重新实测。
+- 定位至当前 HEAD 的 `apps/web/test/` 和 `apps/web/test-groups.ts` 差异为空；泄漏回归测试 Git blob 两端均为 `8fc449efbab56ebb0c8594c76bba57064387c002`。没有删除、跳过、改名、改变输入或弱化断言，也没有测试修正需要核对。
+- 回归测试有意义：三种进程视图必须先找到登记 PID 且包含服务标识，再检查哨兵值和继承环境的键值，随后验证 status、stop 与无残留，不能以进程消失冒充修复。输出在内存按 PID 过滤，泄漏断言仅报告命中数量或变量名。没有发现需退回定位轮修正的测试缺陷。本轮未做临时缺陷注入，未重新取得修复前失败的负向对照。
 
 ### 独立执行结果
 
-测试进程的 `TMPDIR` 指向本 worktree 的 `.autome/output/review-tmp/`，未改变测试文件或复现命令。
+测试的 `TMPDIR` 指向本 worktree 的 `.autome/output/review2-tmp/`，没有改测试文件或头部复现命令。
 
-1. 执行头部原复现命令，退出码 1。Web 构建成功；回归测试 1 个失败，错误为 `Error: spawnSync ps EPERM`。调用链为 `test/fixtures/web-launcher.ts:16` 的 `processes()` → 第 26 行夹具预检 → `test/process-listing-env.test.ts:18`。失败发生在创建面板子进程和哨兵检查之前，不能算再次复现泄漏，也不能算修复通过。
-2. 执行 `cd apps/web && npx vitest run test/web-instance.test.ts test/web-launcher.test.ts test/web-launcher-cleanup.test.ts test/web-launcher-input.test.ts`，退出码 1，共 38 个用例：21 通过、17 失败，无跳过。17 项全部在同一 `ps EPERM` 预检失败；实际启动、复用、暂停、强制停止及清理行为未完成独立验证。修复说明的“四个文件共 39 个”与本轮收集数量不符；这四个文件为 38 个，加泄漏回归才是 39 个，测试文件本身没有减少。
-3. `git diff --check` 通过。未执行快检或 `sh scripts/ci-local.sh`，未把宿主提供的修复门禁退出码 0 当作本轮独立通过或项目全量门禁通过。
+1. 执行头部原复现命令，退出码 1。Web 构建成功；泄漏回归 1 个失败，错误为 `Error: spawnSync ps EPERM`，调用链为 `test/fixtures/web-launcher.ts:16` 的进程查询 → 第 26 行 harness 预检 → 泄漏回归。失败早于服务创建和哨兵检查，不能算再次复现泄漏，也不能算修复通过。
+2. 执行 `cd apps/web && npx vitest run test/web-instance.test.ts test/web-launcher.test.ts test/web-launcher-cleanup.test.ts test/web-launcher-input.test.ts`，退出码 1：4 个文件，21 通过、17 失败，共 38 个用例，无跳过。17 项全部在相同的 `ps EPERM` 预检失败。加泄漏回归共 39 个，与第 2 轮修复说明的用例数一致；真实启动、复用、暂停及停止场景未完成独立验证。
+3. `git diff --check` 通过。未执行快检或全量门禁 `sh scripts/ci-local.sh`；宿主提供的修复门禁退出码 0 只作为已有证据，没有当作本轮独立通过或项目全量门禁通过。未跑全量门禁不是打回原因。
 
-原始输出临时写入 `.autome/output/review-repro.log` 与 `.autome/output/review-subset.log`，结论提取后按操作者要求清理，不提交临时产物。没有进行缺陷注入，没有修改产品、测试或格式化文件。
+原始输出写入 `.autome/output/review2-repro.log` 与 `.autome/output/review2-subset.log`，提取以上证据后删除本轮临时日志和临时目录，不提交临时产物。未改产品、测试、格式化文件或其它被跟踪文件。
 
 ### 操作者备注逐条核对
 
-1. 修复说明已回应禁止按名字批量结束进程。本轮未使用 `pkill`、`killall` 或按名字匹配的终止命令；真实进程测试在预检即失败，未拉起或终止面板服务，未触碰 7420 实例。
-2. 修复说明已回应不得打印其它进程列表。回归源码只保留登记 PID 的进程行；本轮 `ps` 被沙箱拒绝，未获得或打印任何真实进程列表，也未运行独立的不带过滤的进程查询。
-3. 修复说明已回应临时脚本位置及清理。本轮原始输出和测试临时目录均置于 `.autome/output/`，完成后删除本轮创建的文件与临时目录，不清理其它轮次产物。
-4. 修复说明已回应不得写入真实环境变量值。核对定位至修复的产品与 Bug 文档差异，以及本轮新增内容，未发现真实令牌或环境变量值；只涉及变量名与代码表达式。四条备注均有处理说明，无遗漏；此前会话的实际命令执行史不在本轮可独立证明范围内。
+1. 第 2 轮修复说明明确回应仅按自己拉起的 PID 起停、未触碰 7420 实例。本轮未使用 `pkill`、`killall` 或按名字匹配的终止命令；真实进程测试在预检即失败，未拉起或终止面板服务，未接触 7420 实例。
+2. 第 2 轮修复说明明确回应未打印进程列表。本轮未独立执行未过滤的进程查询；测试内的 `ps` 在预检被拒绝，未获得或打印真实进程列表。仅提取测试计数和错误类型，未输出环境值。
+3. 第 2 轮修复说明明确回应临时输出位于本 worktree 的 `.autome/output/`。本轮临时输出与测试临时目录同样置于此处，未使用 `/tmp`；完成后只删除本轮创建的产物。历史轮次产物的清理情况未独立证明，不擅自清理。
+4. 第 2 轮修复说明明确回应文档与提交不含环境变量值。本轮检查的产品新增代码仅涉及变量名与代码表达式，复核文档没有真实环境变量值或令牌。四条备注均有处理说明，无遗漏；此前会话实际命令史不在本轮可独立证明范围内。
