@@ -1,10 +1,10 @@
 # 看板「已完成」列里的折叠入口被压扁
 
 status: 已定位
-fix-round: 1/3
+fix-round: 2/3
 复现命令: cd apps/web && npx playwright test e2e/board-fold.spec.ts
 根因: `.btn`（app.css 第 336 行）只写固定 height、未禁止 flex 收缩，放进内容溢出的纵向弹性容器 `.board-column-body`（第 103 行）时被压到文字行高
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -55,3 +55,11 @@ fix-round: 1/3
 - 相关单测：`cd apps/web && npx vitest run test/styles.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/bell-view.test.ts test/board.test.ts test/board-cancelled.test.ts`，退出码 0，6 个文件、79 个用例全部通过；本轮未增删用例。该结果不能替代真实浏览器几何检查。日志：`.autome/output/independent-review-1/related-unit.log`。
 - 验证边界：宿主提供的复现加快检退出码 0 不作为本轮独立复验结果，亦不等于项目全量门禁通过；本轮未运行 `sh scripts/ci-local.sh`。浏览器初始化受阻，因此未做负向缺陷注入；未改产品、测试或格式化文件。
 - 后续处理：由宿主/修复轮在允许进程检查及浏览器夹具运行的环境，重跑上述复现命令和相关浏览器子集，取得真实执行结果后再交独立复核。无需据此修改 CSS、跳过进程检查或弱化断言；本轮只提交复核文档，保持状态、fix-round、复现命令及根因不变。
+
+## 修复说明（第 2 轮）
+
+复核打回的原因是沙箱阻断浏览器夹具，并非产品问题；本轮产品代码未再改动（`.btn` 的 `flex-shrink: 0`、删除 `.bell-footer .btn-sm` 补丁均已在位）。本轮在可运行浏览器的环境里取得真实执行结果：
+
+- 复现命令 `cd apps/web && npx playwright test e2e/board-fold.spec.ts`：1 passed，退出码 0。
+- 相关子集（board-fold、layout 的铃铛/项目/全部已完成/已取消展开、overlay-layout 铃铛）：6 个用例 5 通过；`layout.spec.ts` 的 `toHaveCount(30)` 与铃铛布局通过。
+- 失败的 `overlay-layout.spec.ts:73`「铃铛面板」（通知卡高度 98.97 > 96）与本修复无关：把 `app.css` 还原到定位提交 `e03c372` 的版本单跑，同样失败于 98.97，已恢复修复后的 CSS。该用例不在本缺陷范围内，未改动。
