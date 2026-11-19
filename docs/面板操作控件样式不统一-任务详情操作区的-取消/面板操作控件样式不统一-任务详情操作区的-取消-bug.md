@@ -4,7 +4,7 @@ status: 已定位
 fix-round: 7/16
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 待复核
+复核: 通过
 
 ## 现象
 
@@ -71,7 +71,27 @@ fix-round: 7/16
 
 ## 复核意见
 
-### 第 6/6 轮独立复核（当前结论：通过）
+### 第 7/16 轮独立复核（当前结论：通过）
+
+复核对象：`0bb57f10bf9aa3ef99d795ca38b794a0d343b65a`。已读取 Bug 协议、任务卡、完整 Bug 记录、`brief/impl-6.md` 的操作者备注 #1—#3，查看四张用户附件及参考 HTML 的按钮定义。核对定位提交 `6d54414f` 至 HEAD 的累计差异，并单独检查 `c594aa65..HEAD`：第 7 轮只有简报和 Bug 文档变化，没有产品或测试改动。规范轴与需求轴均未发现需要打回的问题。
+
+#### 根因、修复范围与回归约束
+
+- 根因成立：定位版本的裸 button 兜底、统一按钮与无样式 Link/summary 并存。累计产品改动限于 26 个 Web 文件，主要为公共样式、类名迁移及 Button 危险变体；没有内核或无关功能变化。任务操作的跳转、字段、事件、禁用条件和测试标识保留。
+- `task-ops-view.tsx:20-32` 的停止、取消及确认取消使用危险变体，取消和返回仍为 Link，表单入口使用统一小号按钮；`app.css:368-370` 的危险规则位于基础按钮规则后，仅使用既有颜色令牌。公共抽屉、看板页头、只读展开、独立跳转和实体链接与备注封闭清单一致。
+- 第 6 轮环境修复保持不变：`app.css:578` 上下内边距各 8px，入口仍为 30px，正常工具行按 CSS 推导为 47px；原生 details 和下方展开规则保留。这里是源码尺寸推导，不是本轮浏览器实测。
+- 定位回归 `action-controls.spec.ts`、既有 `overlay-layout.spec.ts`、`layout.spec.ts`、`controls.spec.ts` 以及曾误改的 loop-defaults/settings-config 单测均与定位版本一致。其它旧测试只有备注 #1、#2 授权的 queue-deps 1 处、board 2 处、env-page 1 处精确标记替换，数量及其余断言不变；没有删除、跳过、改名或弱化回归测试。证据：`.autome/output/independent-review-r7/protected.diff` 及 `standards-*`。
+- 原回归用例的高度、同行、圆角、可见边框/底色及确认态检查能约束原始问题；它不单独证明危险色、抽屉场景尺寸或工具行外层高度。新增 `env-rows.spec.ts:67-77` 按备注 #3 先等待正常工具行出现及所有标记行正常，再检查行高 ≤48px、入口 30±1px、驱动卡下边缘和内部滚动，避免只测到内核行而通过。A/B/C 新单测及登记保留。没有需要声明“回归测试: 有缺陷”的证据。
+
+#### 本轮独立复验与限制
+
+- 原样执行 `npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts`：客户端、服务端构建成功；Playwright 在 globalSetup 被 `spawnSync ps EPERM` 阻断，退出码 **1**，两个用例未进入断言，清理也受相同权限限制。日志：`.autome/output/independent-review-r7/repro.log`、`repro.exit`。
+- 执行 `cd apps/web && npx playwright test e2e/env-rows.spec.ts e2e/overlay-layout.spec.ts e2e/layout.spec.ts`：同样在准备阶段被 `spawnSync ps EPERM` 阻断，退出码 **1**。日志：`.autome/output/independent-review-r7/related-e2e.log`、`related-e2e.exit`。未绕过权限、修改夹具或注入缺陷，没有取得本轮浏览器截图或计算尺寸。
+- 执行 `cd apps/web && npx vitest run test/env-page.test.ts test/styles.test.ts test/link-styles.test.ts test/board.test.ts test/queue-deps.test.ts test/ui-kit.test.ts test/ui-base.test.ts test/task-ops-view.test.ts`：**8 文件、97 项通过，退出码 0**，与第 6 轮同一子集数量一致（差 0）。日志：`.autome/output/independent-review-r7/unit.log`、`unit.exit`。
+- 用户提供的宿主“复现命令 + 快检”退出码 **0** 作为宿主证据记录，不冒充本轮独立浏览器通过或项目全量门禁通过。未运行 `sh scripts/ci-local.sh`，全量门禁仍由宿主合并前统一运行。任务卡明确将复核沙箱浏览器限制记为验证缺口；本轮未发现产品缺陷或测试弱化，因此结论为通过。
+- 本轮只修改本 Bug 文档的复核字段与复核意见；status、fix-round、复现命令、根因及 repos 保持不变。未改产品、测试或格式，不合并、不推送、不启动后续会话。
+
+### 第 6/6 轮独立复核（历史结论：通过）
 
 复核对象：`e4238b36658037691b77dd210d81d96fc081898b`。已读取协议、任务卡、完整修复记录、四张用户附件和参考 HTML，核对定位提交 `6d54414f` 至 HEAD 的产品及测试差异，并单独核对 `4f4277c0..HEAD`。本轮没有发现需打回的产品缺陷或回归测试弱化；第 5 轮的环境工具行高度问题已闭环。
 
