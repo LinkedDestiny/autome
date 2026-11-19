@@ -63,7 +63,7 @@ async function ensure(file: string, explicit: string | undefined) {
   const log = join(resolveAutomeHome(process.env), 'web/logs/server.log');
   await mkdir(join(resolveAutomeHome(process.env), 'web/logs'), { recursive: true });
   const fd = await open(log, 'a', 0o600);
-  const child = spawn(process.execPath, [join(root, 'bin/autome-web.js'), 'serve', ...(explicit === undefined ? [] : ['--port', explicit])], { detached: true, stdio: ['ignore', fd.fd, fd.fd] });
+  const child = spawn(process.execPath, [join(root, 'bin/autome-web.js'), 'serve', ...(explicit === undefined ? [] : ['--port', explicit])], { detached: true, stdio: ['ignore', fd.fd, fd.fd], argv0: `autome-web ${resolveAutomeHome(process.env)}` });
   let failure: Error | undefined;
   child.on('error', error => { failure = error; });
   child.unref();
@@ -131,7 +131,8 @@ export async function stop(file: string, { force = false, wait = 1800, instance 
 }
 export async function launch(args: string[]) {
   const action = args[0]?.startsWith('-') ? 'open' : args.shift() ?? 'open';
-  process.title = `autome-web ${resolveAutomeHome(process.env)} ${action}`;
+  // 不设置 process.title：它只写一个参数串，argc 大于 1 时 pgrep -f 会越过标题读进环境变量区。
+  // 进程标识（autome-web 与 home）改由拉起服务时的 argv[0] 提供。
   if (action === 'service') {
     if (args.length !== 1) throw new Error('用法：service install|uninstall');
     return service(args[0]);
