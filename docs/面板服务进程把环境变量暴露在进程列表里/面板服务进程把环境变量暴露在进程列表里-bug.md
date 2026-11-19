@@ -1,10 +1,10 @@
 # 面板服务进程把环境变量暴露在进程列表里
 
 status: 已定位
-fix-round: 3/3
+fix-round: 4/4
 复现命令: npm run build --prefix apps/web && cd apps/web && npx vitest run test/process-listing-env.test.ts
 根因: launcher.ts 的 launch() 把 process.title 设成比原始 argv 更短的 `autome-web <home> <action>`，Node 在 macOS 上就地覆写参数区，pgrep -fl 一类读原始参数区的工具会越过新标题读进紧随其后的环境变量区
-复核: 打回
+复核: 待复核
 
 ## 现象
 
@@ -73,6 +73,30 @@ fix-round: 3/3
 2. 没有打印任何进程列表；终端只看测试与快检的汇总。
 3. 临时输出放在本 worktree 的 `.autome/output/`（r3-*.log），不在 `/tmp`；它们在已忽略的目录里，不入提交。
 4. 本文与提交不含任何环境变量的值，只写变量名。
+
+## 第 4 轮修复说明
+
+按操作者备注二处理：本轮不改产品代码，也不改测试，只在本文档记录并重置待复核。
+
+- 产品修复仍是提交 `89eb063d`（`apps/web/server/launcher.ts`：去掉 `process.title` 赋值，后台拉起服务时用 `argv0` 提供 `autome-web <home>` 标识）。自该提交以来 launcher 差异为空；回归测试 `apps/web/test/process-listing-env.test.ts` 未动。
+- 前三轮复核都只因沙箱里 `spawnSync ps EPERM` 打回，复核自己写明未发现可证实的产品缺陷。这是环境限制，不是产品或测试问题。
+- 需要 `ps` / `pgrep` 的检查以宿主修复门禁为执行证据：宿主在本机不受沙箱限制地执行了头部复现命令（含 `test/process-listing-env.test.ts`）和快检，提交 `89eb063d`、`7dda6002`、`e91ddaf0` 三次退出码均为 0，日志在 `/Users/dannie/project/autome-v2/.autome/output/gates/T-138/`。本轮新提交上内核会再跑一次修复门禁。
+- 给复核轮：沙箱里因权限跑不了的检查（进程枚举、监听端口、启动浏览器）记为验证缺口，写明命令与报错，不构成打回理由；静态核对根因是否成立、差异是否超出修复范围、回归测试是否被弱化，三项成立且宿主修复门禁在受审提交上退出码为 0 即应通过。
+- 本轮未运行任何进程相关命令，也未跑全量门禁。
+
+### 操作者备注
+
+备注一：
+1. 未使用 pkill/killall 或任何按名字结束进程的方式，本轮没有启停任何进程，未触碰 7420 端口的实例。
+2. 未打印任何进程列表。
+3. 本轮没有产生临时脚本或输出，未使用 /tmp。
+4. 本文与提交不含任何环境变量的值，只写变量名。
+
+备注二：
+1. 照做：未改产品代码与测试，只新增本节并重置待复核，产生一个新提交。
+2. 照做：以宿主门禁为执行证据，见上。
+3. 已写给复核轮的说明，见上。
+4. 备注一的四条继续有效，见上。
 
 ## 复核意见
 
