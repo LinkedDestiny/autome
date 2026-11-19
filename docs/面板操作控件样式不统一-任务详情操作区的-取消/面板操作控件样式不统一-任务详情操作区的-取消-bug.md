@@ -1,10 +1,10 @@
 # 面板操作控件样式不统一：任务详情操作区的「取消」是裸链接
 
 status: 已定位
-fix-round: 6/6
+fix-round: 7/16
 复现命令: npm run build --prefix apps/web && cd apps/web && npx playwright test e2e/action-controls.spec.ts
 根因: 面板并存两套按钮样式：统一的 ui/button.tsx（.btn 系列）只有约 14 处在用，其余约 48 处 <button> 无类名，落到 app.css 的裸 button 兜底样式（约 45px 高）；任务详情的「取消」「返回」是无样式的 <Link>，表单类操作是无样式的 <details><summary>，且 Button 组件没有危险变体
-复核: 通过
+复核: 待复核
 
 ## 现象
 
@@ -61,6 +61,13 @@ fix-round: 6/6
 - 整套 `npx playwright test`：44 passed，退出码 0。
 - `npx vitest run`：165 文件 / 1435 用例全部通过，退出码 0。
 - 截图（临时脚本 `.autome/output/shot.mjs`，不进仓库，对新用例同款服务四工具正常）：`.autome/output/env-closed.png`、`.autome/output/env-open.png`。目视：工具行单行，点开 Git 的安装方法后说明在该行下方展开，驱动卡完整可见，无内部滚动。
+
+## 修复说明（第 7 轮）
+
+本轮起点（c594aa65）复现命令与快检均已通过，第 6 轮复核结论为通过，未发现新的产品缺陷，因此没有改产品或测试代码，只重置复核状态。
+
+- `cd apps/web && npx playwright test e2e/action-controls.spec.ts`：2 passed，退出码 0。
+- `sh scripts/ci-quick.sh --since c594aa656cd97b19a8190cbc7c66ce1fd5da3d8d`：全部通过，退出码 0。
 
 ## 复核意见
 
