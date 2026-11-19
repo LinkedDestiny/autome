@@ -1,18 +1,14 @@
 import { test, expect, visit } from "./harness/browser.ts";
-import { cli, flowSteps, newTask, state } from "./harness/fixture.ts";
+import { state } from "./harness/fixture.ts";
 
 // 看板「已完成」列折叠入口被压扁：统一按钮（.btn）没有禁止被弹性容器收缩，
 // 列内容溢出时被压到文字行高（约 21px）。
-// 让列溢出的办法：取消 3 个任务后点开「已取消」把卡片展开，
-// 并把视口高度调小到 1512×420，使「已完成」列内容超过列高。
+// 让列溢出的办法：共享夹具里本来就有 30 个已取消任务，点开「已取消」展开，
+// 并把视口高度调小到 1512×420。不新建任务，避免污染共享夹具
+// （layout.spec 断言已取消恰为 30）。
 
 test("已完成列溢出时折叠入口仍保持统一按钮高度", async ({ page }) => {
   const f = state();
-  for (let i = 0; i < 3; i++) {
-    const slug = `board-fold-${i}`;
-    flowSteps(f.root, slug, "feature", { holdFirstStep: true });
-    cli(f.root, ["cancel", newTask(f.root, slug)]);
-  }
   await page.setViewportSize({ width: 1512, height: 420 });
   await visit(page, `/projects/${encodeURIComponent(f.projectId)}`);
   const body = page.locator(
