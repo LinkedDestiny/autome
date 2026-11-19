@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, test } from 'vitest';
 import { parseScreenshotArgs, screenshotShots } from '../scripts/screenshot-shots.ts';
@@ -9,9 +9,10 @@ test('默认集合恰为 README 五张且默认参数不变', () => {
   expect(parseScreenshotArgs([])).toEqual({ set: 'readme', out: 'docs/images' });
   expect(screenshotShots('readme', 'p', 't').map(s => `${s.name}.png`).sort()).toEqual(['dashboard.png', 'loop.png', 'project.png', 'skills.png', 'task.png']);
 });
-test('all 十张与改前附件一一对应且没有重复', () => {
+test('all 十张名称固定且没有重复', () => {
   const names = screenshotShots('all', 'p', 't').map(s => `${s.name}.png`).sort();
-  expect(names).toEqual(readdirSync(resolve(root, 'docs/面板观感收尾/attachments')).filter(n => n.endsWith('.png')).sort());
+  // 截图不进仓库：对照图的名称写在这里，不再读任务目录下的附件。
+  expect(names).toEqual(['env.png', 'loop-bottom.png', 'loop-drawer.png', 'loop-projinfo.png', 'loop.png', 'project-new.png', 'project.png', 'skills-click.png', 'skills.png', 'task.png']);
   expect(new Set(names).size).toBe(10);
 });
 test('两个抽屉通过稳定 testid 与对应页面打开', () => {
