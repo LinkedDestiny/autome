@@ -4022,6 +4022,7 @@ fn launch_session(
             launcher::build_args(&role_config, &session_cwd, &layout.worktrees()),
             resolved.runtimes.options(role_config.runtime),
         ),
+        env: resolved.runtimes.options(role_config.runtime).env.clone(),
         prompt,
         mode: ctx.launch_mode,
     })?;
@@ -5842,6 +5843,7 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
             launcher::build_args(&role_config, &repo, &[repo.as_path()]),
             global.runtimes.options(role_config.runtime),
         ),
+        env: global.runtimes.options(role_config.runtime).env.clone(),
         prompt,
         mode: ctx.launch_mode,
     })?;

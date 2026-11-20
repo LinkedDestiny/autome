@@ -282,6 +282,19 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
                     })
                     .collect::<std::result::Result<_, _>>()?;
             }
+            if let Some(v) = table.get("env") {
+                let env = v
+                    .as_table()
+                    .ok_or_else(|| format!("[runtimes.{name}] env 必须是表"))?;
+                options.env = env
+                    .iter()
+                    .map(|(k, v)| {
+                        v.as_str()
+                            .map(|v| (k.clone(), v.to_string()))
+                            .ok_or_else(|| format!("[runtimes.{name}] env.{k} 必须是字符串"))
+                    })
+                    .collect::<std::result::Result<_, _>>()?;
+            }
         }
     }
     Ok(config)
@@ -707,23 +720,34 @@ pub fn save_global(autome_home: &Path, config: &GlobalConfig) -> Result<()> {
     // never use it, and an empty `[runtimes]` section would be noise.
     for (name, runtime) in [("claude", Runtime::Claude), ("codex", Runtime::Codex)] {
         let options = config.runtimes.options(runtime);
-        if options.args.is_empty() {
-            if let Some(t) = doc.get_mut("runtimes").and_then(Item::as_table_mut) {
-                if let Some(rt) = t.get_mut(name).and_then(Item::as_table_mut) {
-                    rt.remove("args");
-                    if rt.is_empty() {
-                        t.remove(name);
-                    }
-                }
-                if t.is_empty() {
-                    doc.remove("runtimes");
-                }
-            }
-        } else {
+        if !options.is_empty() {
             let runtimes_table = ensure_table(doc.as_table_mut(), "runtimes");
             runtimes_table.set_implicit(true);
-            let t = ensure_table(runtimes_table, name);
-            t["args"] = array_of_strings(&options.args);
+            ensure_table(runtimes_table, name);
+        }
+        if let Some(t) = doc.get_mut("runtimes").and_then(Item::as_table_mut) {
+            if let Some(rt) = t.get_mut(name).and_then(Item::as_table_mut) {
+                if options.args.is_empty() {
+                    rt.remove("args");
+                } else {
+                    rt["args"] = array_of_strings(&options.args);
+                }
+                if options.env.is_empty() {
+                    rt.remove("env");
+                } else {
+                    let mut env = toml_edit::InlineTable::new();
+                    for (k, v) in &options.env {
+                        env.insert(k, v.as_str().into());
+                    }
+                    rt["env"] = value(env);
+                }
+                if rt.is_empty() {
+                    t.remove(name);
+                }
+            }
+            if t.is_empty() {
+                doc.remove("runtimes");
+            }
         }
     }
 
@@ -954,6 +978,9 @@ const GLOBAL_TEMPLATE: &str = r#"# Autome 全局默认配置。
 # 开头的 ~/ 会展开成主目录。例如让 Claude 会话使用另一份 Claude 配置：
 #   [runtimes.claude]
 #   args = ["--settings", "~/.claude/settings-other.json"]
+# 运行时环境变量（可选），例如让 Codex 会话走本地代理：
+#   [runtimes.codex]
+#   env = { HTTPS_PROXY = "http://127.0.0.1:7890", HTTP_PROXY = "http://127.0.0.1:7890" }
 "#;
 
 /// The header written into a brand-new project config. Deliberately explains
@@ -2420,12 +2447,48 @@ effort = ""
     }
 
     #[test]
+    fn runtime_env_is_read_saved_and_removed() {
+        let dir = TempDir::new("runtimes-env");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[runtimes.codex]\nenv = { HTTPS_PROXY = \"http://127.0.0.1:7897\" }\n",
+        )
+        .unwrap();
+        let mut config = load_global(dir.path()).unwrap();
+        assert_eq!(
+            config
+                .runtimes
+                .codex
+                .env
+                .get("HTTPS_PROXY")
+                .map(String::as_str),
+            Some("http://127.0.0.1:7897")
+        );
+        config
+            .runtimes
+            .codex
+            .env
+            .insert("HTTP_PROXY".into(), "http://127.0.0.1:7897".into());
+        save_global(dir.path(), &config).unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+        let fresh = TempDir::new("runtimes-env-copy");
+        save_global(fresh.path(), &config).unwrap();
+        assert_eq!(load_global(fresh.path()).unwrap(), config);
+        config.runtimes.codex.env.clear();
+        save_global(dir.path(), &config).unwrap();
+        let text = std::fs::read_to_string(global_config_path(dir.path())).unwrap();
+        assert!(!text.contains("runtimes"), "{text}");
+    }
+
+    #[test]
     fn runtime_args_reject_unknown_runtimes_and_non_strings() {
         for bad in [
             "[runtimes.gemini]\nargs = []\n",
             "[runtimes.claude]\nargs = \"--settings x\"\n",
             "[runtimes.claude]\nargs = [1]\n",
             "runtimes = 1\n",
+            "[runtimes.codex]\nenv = \"x\"\n",
+            "[runtimes.codex]\nenv = { A = 1 }\n",
         ] {
             let dir = TempDir::new("runtimes-bad");
             std::fs::write(global_config_path(dir.path()), bad).unwrap();

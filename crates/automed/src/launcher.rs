@@ -15,6 +15,7 @@
 //! 3. **The terminal.** AppleScript into iTerm2, or Terminal when iTerm2 is
 //!    missing (requirement E-02).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -1109,6 +1110,8 @@ pub struct LaunchSpec<'a> {
     pub repo: &'a Path,
     pub runtime: Runtime,
     pub args: Vec<String>,
+    /// Extra environment for the session (`[runtimes.<rt>] env`).
+    pub env: BTreeMap<String, String>,
     pub prompt: String,
     pub mode: LaunchMode,
 }
@@ -1188,7 +1191,7 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     ];
     argv.extend(spec.args.iter().cloned());
 
-    let terminal = run_in_terminal(&argv, spec.cwd)?;
+    let terminal = run_in_terminal(&argv, spec.cwd, &spec.env)?;
 
     Ok(Launched {
         log_path: log_path.to_string_lossy().into_owned(),
@@ -1213,7 +1216,11 @@ fn renderer_path() -> String {
 /// Starts the wrapper detached, with no window at all — the only non-dry mode
 /// there is. The wrapper tees the CLI's output to the session log, which is
 /// where the task panel looks.
-fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
+fn run_in_terminal(
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<Terminal> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .current_dir(cwd)
@@ -1234,6 +1241,9 @@ fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
     // The core's own git calls were never exposed: `git::run` clears the
     // environment outright. This is the other half of the same rule.
     strip_git_env(&mut cmd);
+    // The user's per-runtime variables, after the strip: they are an explicit
+    // instruction, not something inherited by accident.
+    cmd.envs(env);
     // Its own process group, with the wrapper as leader. Two things depend
     // on it. `stop_session` signals `-pid`, the wrapper's group, so that the
     // CLI the wrapper pipes from dies with it; a wrapper sitting in the core's
@@ -1716,6 +1726,7 @@ mod tests {
                 "~/.claude/settings-va.json".into(),
                 "/abs/~/kept".into(),
             ],
+            env: Default::default(),
         };
         let args = with_runtime_args(base.clone(), &options);
         assert_eq!(&args[..base.len()], &base[..]);
@@ -2646,6 +2657,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "the prompt".into(),
             mode: LaunchMode::Dry,
         })
@@ -2686,6 +2698,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "hello".into(),
             mode: LaunchMode::Dry,
         };
@@ -2706,6 +2719,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "hello prompt".into(),
             mode: LaunchMode::Dry,
         };

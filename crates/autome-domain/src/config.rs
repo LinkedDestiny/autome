@@ -181,11 +181,16 @@ pub struct RuntimeOptions {
     /// (the CLI is started without a shell, so nothing else would expand it).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Extra environment variables for the session process (e.g. a proxy:
+    /// `HTTPS_PROXY = "http://127.0.0.1:7897"`). Set on top of the core's own
+    /// environment; the CLI and every command it runs inherit them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 impl RuntimeOptions {
     pub fn is_empty(&self) -> bool {
-        self.args.is_empty()
+        self.args.is_empty() && self.env.is_empty()
     }
 }
 
