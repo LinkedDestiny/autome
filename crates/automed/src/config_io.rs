@@ -255,6 +255,35 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
             config.roles.insert(role, read_role(role, table, base)?);
         }
     }
+
+    if let Some(runtimes) = doc.get("runtimes") {
+        let runtimes = runtimes.as_table().ok_or("[runtimes] 不是一个表")?;
+        for (name, table) in runtimes {
+            let options = match name.as_str() {
+                "claude" => &mut config.runtimes.claude,
+                "codex" => &mut config.runtimes.codex,
+                // Same reasoning as an unknown role: a typo here would be a
+                // setting that silently does nothing.
+                _ => return Err(format!("未知运行时 `{name}`，可选：claude/codex")),
+            };
+            let table = table
+                .as_table()
+                .ok_or_else(|| format!("[runtimes.{name}] 不是一个表"))?;
+            if let Some(v) = table.get("args") {
+                let arr = v
+                    .as_array()
+                    .ok_or_else(|| format!("[runtimes.{name}] args 必须是字符串数组"))?;
+                options.args = arr
+                    .iter()
+                    .map(|a| {
+                        a.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("[runtimes.{name}] args 必须是字符串数组"))
+                    })
+                    .collect::<std::result::Result<_, _>>()?;
+            }
+        }
+    }
     Ok(config)
 }
 
@@ -674,6 +703,30 @@ pub fn save_global(autome_home: &Path, config: &GlobalConfig) -> Result<()> {
         t["skills"] = array_of_strings(&cfg.skills);
     }
 
+    // Written only when set, and an emptied one is removed: most installs
+    // never use it, and an empty `[runtimes]` section would be noise.
+    for (name, runtime) in [("claude", Runtime::Claude), ("codex", Runtime::Codex)] {
+        let options = config.runtimes.options(runtime);
+        if options.args.is_empty() {
+            if let Some(t) = doc.get_mut("runtimes").and_then(Item::as_table_mut) {
+                if let Some(rt) = t.get_mut(name).and_then(Item::as_table_mut) {
+                    rt.remove("args");
+                    if rt.is_empty() {
+                        t.remove(name);
+                    }
+                }
+                if t.is_empty() {
+                    doc.remove("runtimes");
+                }
+            }
+        } else {
+            let runtimes_table = ensure_table(doc.as_table_mut(), "runtimes");
+            runtimes_table.set_implicit(true);
+            let t = ensure_table(runtimes_table, name);
+            t["args"] = array_of_strings(&options.args);
+        }
+    }
+
     write_atomically(&path, doc.to_string().as_bytes())
 }
 
@@ -896,6 +949,11 @@ const GLOBAL_TEMPLATE: &str = r#"# Autome 全局默认配置。
 #
 # 双模型纪律：review 与 plan、audit 与 impl 不得使用相同的 runtime:model。
 # effort 留空表示使用该 CLI 的默认值。
+#
+# 运行时附加参数（可选）：追加在 Autome 自带参数之后，对该运行时的所有角色生效，
+# 开头的 ~/ 会展开成主目录。例如让 Claude 会话使用另一份 Claude 配置：
+#   [runtimes.claude]
+#   args = ["--settings", "~/.claude/settings-other.json"]
 "#;
 
 /// The header written into a brand-new project config. Deliberately explains
@@ -2327,6 +2385,52 @@ effort = ""
         config.roles.get_mut(&Role::Audit).unwrap().skills = vec!["vitest".into()];
         save_global(dir.path(), &config).unwrap();
         assert_eq!(load_global(dir.path()).unwrap(), config);
+    }
+
+    #[test]
+    fn runtime_args_are_read_saved_and_removed() {
+        let dir = TempDir::new("runtimes-global");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[runtimes.claude]\nargs = [\"--settings\", \"~/.claude/settings-va.json\"]\n",
+        )
+        .unwrap();
+        let mut config = load_global(dir.path()).unwrap();
+        assert_eq!(
+            config.runtimes.claude.args,
+            vec![
+                "--settings".to_string(),
+                "~/.claude/settings-va.json".into()
+            ]
+        );
+        assert!(config.runtimes.codex.args.is_empty());
+        // Saving an unrelated change keeps the args; a fresh file gets them too.
+        config.loop_defaults.parallel = 3;
+        save_global(dir.path(), &config).unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+        let fresh = TempDir::new("runtimes-global-copy");
+        save_global(fresh.path(), &config).unwrap();
+        assert_eq!(load_global(fresh.path()).unwrap(), config);
+        // Clearing them removes the section rather than leaving it empty.
+        config.runtimes.claude.args.clear();
+        save_global(dir.path(), &config).unwrap();
+        let text = std::fs::read_to_string(global_config_path(dir.path())).unwrap();
+        assert!(!text.contains("runtimes"), "{text}");
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+    }
+
+    #[test]
+    fn runtime_args_reject_unknown_runtimes_and_non_strings() {
+        for bad in [
+            "[runtimes.gemini]\nargs = []\n",
+            "[runtimes.claude]\nargs = \"--settings x\"\n",
+            "[runtimes.claude]\nargs = [1]\n",
+            "runtimes = 1\n",
+        ] {
+            let dir = TempDir::new("runtimes-bad");
+            std::fs::write(global_config_path(dir.path()), bad).unwrap();
+            assert!(load_global(dir.path()).is_err(), "{bad}");
+        }
     }
 
     #[test]

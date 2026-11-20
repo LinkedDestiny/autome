@@ -142,6 +142,51 @@ pub struct GlobalConfig {
     /// with the core about what is true.
     #[serde(default)]
     pub ui: UiConfig,
+    /// Per-runtime launch options shared by every role on that runtime, e.g.
+    /// `[runtimes.claude] args = ["--settings", "~/.claude/settings-x.json"]`
+    /// so sessions run under a different Claude configuration than the
+    /// user's default one. Global only: which account or settings file a CLI
+    /// uses is a property of the machine, not of a project.
+    #[serde(default, skip_serializing_if = "RuntimesConfig::is_empty")]
+    pub runtimes: RuntimesConfig,
+}
+
+/// `[runtimes.<runtime>]` in the global config.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimesConfig {
+    #[serde(default, skip_serializing_if = "RuntimeOptions::is_empty")]
+    pub claude: RuntimeOptions,
+    #[serde(default, skip_serializing_if = "RuntimeOptions::is_empty")]
+    pub codex: RuntimeOptions,
+}
+
+impl RuntimesConfig {
+    pub fn is_empty(&self) -> bool {
+        self.claude.is_empty() && self.codex.is_empty()
+    }
+
+    pub fn options(&self, runtime: Runtime) -> &RuntimeOptions {
+        match runtime {
+            Runtime::Claude => &self.claude,
+            Runtime::Codex => &self.codex,
+        }
+    }
+}
+
+/// Launch options for one runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOptions {
+    /// Extra CLI arguments appended after Autome's own flags, verbatim. A
+    /// leading `~/` in an argument is expanded to the home directory at launch
+    /// (the CLI is started without a shell, so nothing else would expand it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+impl RuntimeOptions {
+    pub fn is_empty(&self) -> bool {
+        self.args.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +267,7 @@ impl Default for GlobalConfig {
             loop_defaults: LoopDefaults::default(),
             roles,
             ui: UiConfig::default(),
+            runtimes: RuntimesConfig::default(),
         }
     }
 }
@@ -460,6 +506,9 @@ pub struct ResolvedConfig {
     #[serde(default = "default_gate_concurrency")]
     pub gate_quick_concurrency: u32,
     pub retry: RetryPolicy,
+    /// Copied from the global config; see `GlobalConfig::runtimes`.
+    #[serde(default, skip_serializing_if = "RuntimesConfig::is_empty")]
+    pub runtimes: RuntimesConfig,
 }
 
 impl ResolvedConfig {
@@ -567,6 +616,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
         gate_reuse_for_main_check: project.gate_reuse_for_main_check.unwrap_or(true),
         retry: project.retry.unwrap_or_default(),
+        runtimes: global.runtimes.clone(),
     }
 }
 

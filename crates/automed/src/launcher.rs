@@ -297,6 +297,27 @@ pub fn build_args(config: &RoleConfig, cwd: &Path, worktrees: &[&Path]) -> Vec<S
     args
 }
 
+/// Appends the user's per-runtime extra arguments (`[runtimes.<rt>] args` in
+/// the global config) after Autome's own. Last, so that a flag the CLI lets
+/// repeat or override (e.g. `--settings`) is the user's word on it. A leading
+/// `~/` is expanded here because the CLI is started without a shell.
+pub fn with_runtime_args(
+    mut args: Vec<String>,
+    options: &autome_domain::config::RuntimeOptions,
+) -> Vec<String> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
+    args.extend(
+        options
+            .args
+            .iter()
+            .map(|a| match (&home, a.strip_prefix("~/")) {
+                (Some(home), Some(rest)) => format!("{}/{rest}", home.trim_end_matches('/')),
+                _ => a.clone(),
+            }),
+    );
+    args
+}
+
 // ---------------------------------------------------------------------------
 // Prompt construction
 // ---------------------------------------------------------------------------
@@ -1684,6 +1705,31 @@ mod tests {
     fn an_empty_model_adds_no_model_flag() {
         let args = build_args(&system_role_config(), nowhere(), no_repo());
         assert!(!args.contains(&"--model".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn runtime_args_come_last_with_home_expanded() {
+        let base = build_args(&system_role_config(), nowhere(), no_repo());
+        let options = autome_domain::config::RuntimeOptions {
+            args: vec![
+                "--settings".into(),
+                "~/.claude/settings-va.json".into(),
+                "/abs/~/kept".into(),
+            ],
+        };
+        let args = with_runtime_args(base.clone(), &options);
+        assert_eq!(&args[..base.len()], &base[..]);
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            &args[base.len()..],
+            &[
+                "--settings".to_string(),
+                format!("{}/.claude/settings-va.json", home.trim_end_matches('/')),
+                "/abs/~/kept".to_string(),
+            ]
+        );
+        let none = with_runtime_args(base.clone(), &Default::default());
+        assert_eq!(none, base);
     }
 
     #[test]

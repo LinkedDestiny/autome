@@ -4018,7 +4018,10 @@ fn launch_session(
         cwd: &session_cwd,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config, &session_cwd, &layout.worktrees()),
+        args: launcher::with_runtime_args(
+            launcher::build_args(&role_config, &session_cwd, &layout.worktrees()),
+            resolved.runtimes.options(role_config.runtime),
+        ),
         prompt,
         mode: ctx.launch_mode,
     })?;
@@ -5835,7 +5838,10 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         // Onboarding runs in the project root. For a repository that is a
         // checkout and `git_common_dirs` finds nothing outside it; for a
         // workspace it is not a repository at all and finds nothing either.
-        args: launcher::build_args(&role_config, &repo, &[repo.as_path()]),
+        args: launcher::with_runtime_args(
+            launcher::build_args(&role_config, &repo, &[repo.as_path()]),
+            global.runtimes.options(role_config.runtime),
+        ),
         prompt,
         mode: ctx.launch_mode,
     })?;
