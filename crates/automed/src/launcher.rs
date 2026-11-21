@@ -623,7 +623,7 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
                 } else {
                     "门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。"
                 };
-                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{ending}\n"));
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。{ending}\n"));
             }
         }
         Inject::GateFailed {
@@ -683,14 +683,14 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             if let Some(cmd) = spec.gate_before_merge {
-                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{}\n", round_gate_line(spec, cmd), if spec.gate_quick.is_some() { "快检结果以 Autome 在你提交后重跑为准；全量门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" } else { "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" }));
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。{}\n", round_gate_line(spec, cmd), if spec.gate_quick.is_some() { "快检结果以 Autome 在你提交后重跑为准；全量门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" } else { "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" }));
             } else {
                 p.push_str(&format!(
                 "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n\
                  ```\n{tail}\n```\n\n\
                  本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。\
                  本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，\
-                 implementation-round 照常加一，照常写本轮的证据文件。\
+                 implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。\
                  门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n"
             ));
             }
@@ -2918,7 +2918,7 @@ mod tests {
             &tpl,
         );
         let original = build_prompt(&s).unwrap();
-        let expected = "\nAutome 在提交 `1234567890` 上运行了项目门禁 `failed-command`，没有通过。输出末尾（原文）：\n\n```\nfailure-tail\n```\n\n本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n";
+        let expected = "\nAutome 在提交 `1234567890` 上运行了项目门禁 `failed-command`，没有通过。输出末尾（原文）：\n\n```\nfailure-tail\n```\n\n本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n";
         assert!(original.ends_with(expected));
         s.gate_before_merge = Some("echo {slug}");
         let p = build_prompt(&s).unwrap();
