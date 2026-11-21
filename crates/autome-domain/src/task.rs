@@ -1042,6 +1042,26 @@ fn apply_inner(
                             .with_budget(limit),
                     )
                 }
+                // The budget ran out on a rebase conflict: the conflict is
+                // only known to the rebase step (it aborts the rebase and
+                // hands the files to the repair round), so resume there. A
+                // bare implementation round would see a clean tree and have
+                // nothing to do, and the next rebase would fail again.
+                FailureReason::ImplBudget { limit }
+                    if matches!(at, Node::Rebase | Node::MergeGate)
+                        && ctx.decisions.included == 0 =>
+                {
+                    let limit = limit
+                        .checked_add(extra)
+                        .ok_or_else(|| reject("追加轮次不能溢出"))?;
+                    Ok(
+                        Transition::active(
+                            Node::Rebase,
+                            Action::RunCoreStep { node: Node::Rebase },
+                        )
+                        .with_budget(limit),
+                    )
+                }
                 FailureReason::ImplBudget { limit } => Ok(start_impl(ctx, Some(limit + extra))),
                 FailureReason::DesignBudget { .. } => Ok(Transition::active(
                     Node::Design,
@@ -3176,6 +3196,38 @@ mod tests {
         .unwrap();
         assert_eq!(t.next, active(Node::Implement));
         assert_eq!(t.budget_n, Some(30));
+    }
+
+    #[test]
+    fn extending_a_budget_that_ran_out_on_a_rebase_conflict_reruns_the_rebase() {
+        let c = cfg();
+        for at in [Node::Rebase, Node::MergeGate] {
+            let failed = TaskState::Failed {
+                at,
+                reason: FailureReason::ImplBudget { limit: 15 },
+            };
+            let t = apply(
+                &failed,
+                &Trigger::ExtendBudget { extra_rounds: 15 },
+                &ctx(&c),
+            )
+            .unwrap();
+            assert_eq!(t.next, active(Node::Rebase));
+            assert_eq!(t.action, Action::RunCoreStep { node: Node::Rebase });
+            assert_eq!(t.budget_n, Some(30));
+        }
+        let overflow = TaskState::Failed {
+            at: Node::Rebase,
+            reason: FailureReason::ImplBudget { limit: u32::MAX },
+        };
+        assert!(
+            apply(
+                &overflow,
+                &Trigger::ExtendBudget { extra_rounds: 1 },
+                &ctx(&c)
+            )
+            .is_err()
+        );
     }
 
     #[test]

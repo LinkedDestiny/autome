@@ -651,7 +651,10 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
         Inject::RebaseConflict { files } => {
             p.push_str(&format!(
                 "\n本分支 rebase 到最新默认分支时发生冲突，涉及文件：\n{}\n\n\
-                 {REBASE_YOURSELF}保持里程碑状态与设计文档一致，然后照常结束会话。\n",
+                 {REBASE_YOURSELF}保持里程碑状态与设计文档一致。\
+                 本轮是实现轮：implementation-round 照常加一，照常写本轮的证据文件，写明解了哪些冲突、怎么解的——\
+                 文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取冲突所属的里程碑（里程碑都已完成时取最后一个），\
+                 即使本轮没有推进里程碑也要写，否则会被判为没有留下证据文件。然后照常结束会话。\n",
                 files
                     .iter()
                     .map(|f| format!("- {f}"))
@@ -2249,6 +2252,11 @@ mod tests {
         assert!(p.contains("git rebase"), "{p}");
         assert!(p.contains("git rebase --continue"), "{p}");
         assert!(p.contains("不要用 merge"), "{p}");
+        // The repair round is an implementation round and owes an evidence
+        // file even when no milestone moves; T-34 round 19 resolved the
+        // conflict, skipped the evidence and was failed by the guard.
+        assert!(p.contains("M-xx-r<k>-impl.md"), "{p}");
+        assert!(p.contains("即使本轮没有推进里程碑也要写"), "{p}");
     }
 
     #[test]
