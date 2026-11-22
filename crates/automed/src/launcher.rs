@@ -15,6 +15,7 @@
 //! 3. **The terminal.** AppleScript into iTerm2, or Terminal when iTerm2 is
 //!    missing (requirement E-02).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -294,6 +295,27 @@ pub fn build_args(config: &RoleConfig, cwd: &Path, worktrees: &[&Path]) -> Vec<S
             Runtime::Claude => effort.clone(),
         });
     }
+    args
+}
+
+/// Appends the user's per-runtime extra arguments (`[runtimes.<rt>] args` in
+/// the global config) after Autome's own. Last, so that a flag the CLI lets
+/// repeat or override (e.g. `--settings`) is the user's word on it. A leading
+/// `~/` is expanded here because the CLI is started without a shell.
+pub fn with_runtime_args(
+    mut args: Vec<String>,
+    options: &autome_domain::config::RuntimeOptions,
+) -> Vec<String> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
+    args.extend(
+        options
+            .args
+            .iter()
+            .map(|a| match (&home, a.strip_prefix("~/")) {
+                (Some(home), Some(rest)) => format!("{}/{rest}", home.trim_end_matches('/')),
+                _ => a.clone(),
+            }),
+    );
     args
 }
 
@@ -601,7 +623,7 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
                 } else {
                     "门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。"
                 };
-                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{ending}\n"));
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了快检 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的检查，修好它，用同一条快检命令确认通过后提交，然后照常结束会话。{line}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。{ending}\n"));
             }
         }
         Inject::GateFailed {
@@ -629,7 +651,10 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
         Inject::RebaseConflict { files } => {
             p.push_str(&format!(
                 "\n本分支 rebase 到最新默认分支时发生冲突，涉及文件：\n{}\n\n\
-                 {REBASE_YOURSELF}保持里程碑状态与设计文档一致，然后照常结束会话。\n",
+                 {REBASE_YOURSELF}保持里程碑状态与设计文档一致。\
+                 本轮是实现轮：implementation-round 照常加一，照常写本轮的证据文件，写明解了哪些冲突、怎么解的——\
+                 文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取冲突所属的里程碑（里程碑都已完成时取最后一个），\
+                 即使本轮没有推进里程碑也要写，否则会被判为没有留下证据文件。然后照常结束会话。\n",
                 files
                     .iter()
                     .map(|f| format!("- {f}"))
@@ -661,14 +686,14 @@ fn render_inject(p: &mut String, spec: &PromptSpec<'_>, inject: &Inject) {
             let verdict = gate_failure_verdict(tail);
             let short = &head[..head.len().min(10)];
             if let Some(cmd) = spec.gate_before_merge {
-                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。{}\n", round_gate_line(spec, cmd), if spec.gate_quick.is_some() { "快检结果以 Autome 在你提交后重跑为准；全量门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" } else { "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" }));
+                p.push_str(&format!("\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n```\n{tail}\n```\n\n本轮先从输出里找出失败的用例或步骤，单独复现并修好它，再跑与本轮改动直接相关的测试子集确认通过后提交，然后照常结束会话。{}本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。{}\n", round_gate_line(spec, cmd), if spec.gate_quick.is_some() { "快检结果以 Autome 在你提交后重跑为准；全量门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" } else { "门禁结果以 Autome 在合并前重跑为准，不以你在证据里写的结论为准。" }));
             } else {
                 p.push_str(&format!(
                 "\nAutome 在提交 `{short}` 上运行了项目门禁 `{command}`，{verdict}。输出末尾（原文）：\n\n\
                  ```\n{tail}\n```\n\n\
                  本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。\
                  本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，\
-                 implementation-round 照常加一，照常写本轮的证据文件。\
+                 implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。\
                  门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n"
             ));
             }
@@ -1088,6 +1113,8 @@ pub struct LaunchSpec<'a> {
     pub repo: &'a Path,
     pub runtime: Runtime,
     pub args: Vec<String>,
+    /// Extra environment for the session (`[runtimes.<rt>] env`).
+    pub env: BTreeMap<String, String>,
     pub prompt: String,
     pub mode: LaunchMode,
 }
@@ -1167,7 +1194,7 @@ pub fn launch(spec: &LaunchSpec<'_>) -> Result<Launched> {
     ];
     argv.extend(spec.args.iter().cloned());
 
-    let terminal = run_in_terminal(&argv, spec.cwd)?;
+    let terminal = run_in_terminal(&argv, spec.cwd, &spec.env)?;
 
     Ok(Launched {
         log_path: log_path.to_string_lossy().into_owned(),
@@ -1192,7 +1219,11 @@ fn renderer_path() -> String {
 /// Starts the wrapper detached, with no window at all — the only non-dry mode
 /// there is. The wrapper tees the CLI's output to the session log, which is
 /// where the task panel looks.
-fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
+fn run_in_terminal(
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<Terminal> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .current_dir(cwd)
@@ -1213,6 +1244,9 @@ fn run_in_terminal(argv: &[String], cwd: &Path) -> Result<Terminal> {
     // The core's own git calls were never exposed: `git::run` clears the
     // environment outright. This is the other half of the same rule.
     strip_git_env(&mut cmd);
+    // The user's per-runtime variables, after the strip: they are an explicit
+    // instruction, not something inherited by accident.
+    cmd.envs(env);
     // Its own process group, with the wrapper as leader. Two things depend
     // on it. `stop_session` signals `-pid`, the wrapper's group, so that the
     // CLI the wrapper pipes from dies with it; a wrapper sitting in the core's
@@ -1684,6 +1718,32 @@ mod tests {
     fn an_empty_model_adds_no_model_flag() {
         let args = build_args(&system_role_config(), nowhere(), no_repo());
         assert!(!args.contains(&"--model".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn runtime_args_come_last_with_home_expanded() {
+        let base = build_args(&system_role_config(), nowhere(), no_repo());
+        let options = autome_domain::config::RuntimeOptions {
+            args: vec![
+                "--settings".into(),
+                "~/.claude/settings-va.json".into(),
+                "/abs/~/kept".into(),
+            ],
+            env: Default::default(),
+        };
+        let args = with_runtime_args(base.clone(), &options);
+        assert_eq!(&args[..base.len()], &base[..]);
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            &args[base.len()..],
+            &[
+                "--settings".to_string(),
+                format!("{}/.claude/settings-va.json", home.trim_end_matches('/')),
+                "/abs/~/kept".to_string(),
+            ]
+        );
+        let none = with_runtime_args(base.clone(), &Default::default());
+        assert_eq!(none, base);
     }
 
     #[test]
@@ -2192,6 +2252,11 @@ mod tests {
         assert!(p.contains("git rebase"), "{p}");
         assert!(p.contains("git rebase --continue"), "{p}");
         assert!(p.contains("不要用 merge"), "{p}");
+        // The repair round is an implementation round and owes an evidence
+        // file even when no milestone moves; T-34 round 19 resolved the
+        // conflict, skipped the evidence and was failed by the guard.
+        assert!(p.contains("M-xx-r<k>-impl.md"), "{p}");
+        assert!(p.contains("即使本轮没有推进里程碑也要写"), "{p}");
     }
 
     #[test]
@@ -2600,6 +2665,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "the prompt".into(),
             mode: LaunchMode::Dry,
         })
@@ -2640,6 +2706,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "hello".into(),
             mode: LaunchMode::Dry,
         };
@@ -2660,6 +2727,7 @@ mod tests {
             repo: &dir,
             runtime: Runtime::Claude,
             args: vec![],
+            env: Default::default(),
             prompt: "hello prompt".into(),
             mode: LaunchMode::Dry,
         };
@@ -2858,7 +2926,7 @@ mod tests {
             &tpl,
         );
         let original = build_prompt(&s).unwrap();
-        let expected = "\nAutome 在提交 `1234567890` 上运行了项目门禁 `failed-command`，没有通过。输出末尾（原文）：\n\n```\nfailure-tail\n```\n\n本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件。门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n";
+        let expected = "\nAutome 在提交 `1234567890` 上运行了项目门禁 `failed-command`，没有通过。输出末尾（原文）：\n\n```\nfailure-tail\n```\n\n本轮先复现这个失败，修好它，在同一命令下确认通过后提交，然后照常结束会话。本轮是修复轮，不推进新的里程碑：已是 `待审` 的里程碑保持 `待审`，implementation-round 照常加一，照常写本轮的证据文件——文件名仍是 `M-xx-r<k>-impl.md`，`M-xx` 取本轮修复所属的里程碑（通常就是保持 `待审` 的那个），不要用 `fix-`、`gate-` 之类的前缀，否则会被判为没有留下证据文件。门禁结果以 Autome 在你提交后的那个提交上重跑为准，不以你在证据里写的结论为准。\n";
         assert!(original.ends_with(expected));
         s.gate_before_merge = Some("echo {slug}");
         let p = build_prompt(&s).unwrap();

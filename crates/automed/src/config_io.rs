@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use autome_domain::config::{
-    GlobalConfig, LoopOverrides, ProjectConfig, RoleConfig, RoleOverrides,
+    GlobalConfig, LoopOverrides, ProjectConfig, RoleConfig, RoleOverrides, RuntimeOverride,
 };
 use autome_domain::role::{Role, Runtime};
 use toml_edit::{DocumentMut, Item, Table, value};
@@ -255,6 +255,19 @@ fn parse_global(text: &str) -> std::result::Result<GlobalConfig, String> {
             config.roles.insert(role, read_role(role, table, base)?);
         }
     }
+
+    for (runtime, over) in parse_runtimes(&doc)? {
+        let options = match runtime {
+            Runtime::Claude => &mut config.runtimes.claude,
+            Runtime::Codex => &mut config.runtimes.codex,
+        };
+        if let Some(args) = over.args {
+            options.args = args;
+        }
+        if let Some(env) = over.env {
+            options.env = env;
+        }
+    }
     Ok(config)
 }
 
@@ -346,12 +359,71 @@ fn parse_budget(
     }))
 }
 
+/// Reads `[runtimes.<runtime>]` (`args`, `env`), shared by the global and the
+/// project document. A field left out is `None` so the caller decides what
+/// "not given" means: keep the built-in default, or inherit the global value.
+fn parse_runtimes(
+    doc: &toml::Value,
+) -> std::result::Result<Vec<(Runtime, RuntimeOverride)>, String> {
+    let Some(runtimes) = doc.get("runtimes") else {
+        return Ok(Vec::new());
+    };
+    let runtimes = runtimes.as_table().ok_or("[runtimes] 不是一个表")?;
+    let mut out = Vec::new();
+    for (name, table) in runtimes {
+        let runtime = match name.as_str() {
+            "claude" => Runtime::Claude,
+            "codex" => Runtime::Codex,
+            // Same reasoning as an unknown role: a typo here would be a
+            // setting that silently does nothing.
+            _ => return Err(format!("未知运行时 `{name}`，可选：claude/codex")),
+        };
+        let table = table
+            .as_table()
+            .ok_or_else(|| format!("[runtimes.{name}] 不是一个表"))?;
+        let mut over = RuntimeOverride::default();
+        if let Some(v) = table.get("args") {
+            let arr = v
+                .as_array()
+                .ok_or_else(|| format!("[runtimes.{name}] args 必须是字符串数组"))?;
+            over.args = Some(
+                arr.iter()
+                    .map(|a| {
+                        a.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("[runtimes.{name}] args 必须是字符串数组"))
+                    })
+                    .collect::<std::result::Result<_, _>>()?,
+            );
+        }
+        if let Some(v) = table.get("env") {
+            let env = v
+                .as_table()
+                .ok_or_else(|| format!("[runtimes.{name}] env 必须是表"))?;
+            over.env = Some(
+                env.iter()
+                    .map(|(k, v)| {
+                        v.as_str()
+                            .map(|v| (k.clone(), v.to_string()))
+                            .ok_or_else(|| format!("[runtimes.{name}] env.{k} 必须是字符串"))
+                    })
+                    .collect::<std::result::Result<_, _>>()?,
+            );
+        }
+        out.push((runtime, over));
+    }
+    Ok(out)
+}
+
 fn parse_project(text: &str) -> std::result::Result<ProjectConfig, String> {
     let doc: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut config = ProjectConfig {
         budget: parse_budget(&doc)?,
         ..ProjectConfig::default()
     };
+    for (runtime, over) in parse_runtimes(&doc)? {
+        *config.runtimes.for_runtime_mut(runtime) = over;
+    }
 
     if let Some(t) = doc.get("loop").and_then(toml::Value::as_table) {
         config.loop_overrides = LoopOverrides {
@@ -674,6 +746,41 @@ pub fn save_global(autome_home: &Path, config: &GlobalConfig) -> Result<()> {
         t["skills"] = array_of_strings(&cfg.skills);
     }
 
+    // Written only when set, and an emptied one is removed: most installs
+    // never use it, and an empty `[runtimes]` section would be noise.
+    for (name, runtime) in [("claude", Runtime::Claude), ("codex", Runtime::Codex)] {
+        let options = config.runtimes.options(runtime);
+        if !options.is_empty() {
+            let runtimes_table = ensure_table(doc.as_table_mut(), "runtimes");
+            runtimes_table.set_implicit(true);
+            ensure_table(runtimes_table, name);
+        }
+        if let Some(t) = doc.get_mut("runtimes").and_then(Item::as_table_mut) {
+            if let Some(rt) = t.get_mut(name).and_then(Item::as_table_mut) {
+                if options.args.is_empty() {
+                    rt.remove("args");
+                } else {
+                    rt["args"] = array_of_strings(&options.args);
+                }
+                if options.env.is_empty() {
+                    rt.remove("env");
+                } else {
+                    let mut env = toml_edit::InlineTable::new();
+                    for (k, v) in &options.env {
+                        env.insert(k, v.as_str().into());
+                    }
+                    rt["env"] = value(env);
+                }
+                if rt.is_empty() {
+                    t.remove(name);
+                }
+            }
+            if t.is_empty() {
+                doc.remove("runtimes");
+            }
+        }
+    }
+
     write_atomically(&path, doc.to_string().as_bytes())
 }
 
@@ -896,6 +1003,14 @@ const GLOBAL_TEMPLATE: &str = r#"# Autome 全局默认配置。
 #
 # 双模型纪律：review 与 plan、audit 与 impl 不得使用相同的 runtime:model。
 # effort 留空表示使用该 CLI 的默认值。
+#
+# 运行时附加参数（可选）：追加在 Autome 自带参数之后，对该运行时的所有角色生效，
+# 开头的 ~/ 会展开成主目录。例如让 Claude 会话使用另一份 Claude 配置：
+#   [runtimes.claude]
+#   args = ["--settings", "~/.claude/settings-other.json"]
+# 运行时环境变量（可选），例如让 Codex 会话走本地代理：
+#   [runtimes.codex]
+#   env = { HTTPS_PROXY = "http://127.0.0.1:7890", HTTP_PROXY = "http://127.0.0.1:7890" }
 "#;
 
 /// The header written into a brand-new project config. Deliberately explains
@@ -2327,6 +2442,152 @@ effort = ""
         config.roles.get_mut(&Role::Audit).unwrap().skills = vec!["vitest".into()];
         save_global(dir.path(), &config).unwrap();
         assert_eq!(load_global(dir.path()).unwrap(), config);
+    }
+
+    #[test]
+    fn runtime_args_are_read_saved_and_removed() {
+        let dir = TempDir::new("runtimes-global");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[runtimes.claude]\nargs = [\"--settings\", \"~/.claude/settings-va.json\"]\n",
+        )
+        .unwrap();
+        let mut config = load_global(dir.path()).unwrap();
+        assert_eq!(
+            config.runtimes.claude.args,
+            vec![
+                "--settings".to_string(),
+                "~/.claude/settings-va.json".into()
+            ]
+        );
+        assert!(config.runtimes.codex.args.is_empty());
+        // Saving an unrelated change keeps the args; a fresh file gets them too.
+        config.loop_defaults.parallel = 3;
+        save_global(dir.path(), &config).unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+        let fresh = TempDir::new("runtimes-global-copy");
+        save_global(fresh.path(), &config).unwrap();
+        assert_eq!(load_global(fresh.path()).unwrap(), config);
+        // Clearing them removes the section rather than leaving it empty.
+        config.runtimes.claude.args.clear();
+        save_global(dir.path(), &config).unwrap();
+        let text = std::fs::read_to_string(global_config_path(dir.path())).unwrap();
+        assert!(!text.contains("runtimes"), "{text}");
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+    }
+
+    #[test]
+    fn runtime_env_is_read_saved_and_removed() {
+        let dir = TempDir::new("runtimes-env");
+        std::fs::write(
+            global_config_path(dir.path()),
+            "[runtimes.codex]\nenv = { HTTPS_PROXY = \"http://127.0.0.1:7897\" }\n",
+        )
+        .unwrap();
+        let mut config = load_global(dir.path()).unwrap();
+        assert_eq!(
+            config
+                .runtimes
+                .codex
+                .env
+                .get("HTTPS_PROXY")
+                .map(String::as_str),
+            Some("http://127.0.0.1:7897")
+        );
+        config
+            .runtimes
+            .codex
+            .env
+            .insert("HTTP_PROXY".into(), "http://127.0.0.1:7897".into());
+        save_global(dir.path(), &config).unwrap();
+        assert_eq!(load_global(dir.path()).unwrap(), config);
+        let fresh = TempDir::new("runtimes-env-copy");
+        save_global(fresh.path(), &config).unwrap();
+        assert_eq!(load_global(fresh.path()).unwrap(), config);
+        config.runtimes.codex.env.clear();
+        save_global(dir.path(), &config).unwrap();
+        let text = std::fs::read_to_string(global_config_path(dir.path())).unwrap();
+        assert!(!text.contains("runtimes"), "{text}");
+    }
+
+    #[test]
+    fn project_runtimes_override_the_global_ones_field_by_field() {
+        let home = TempDir::new("runtimes-project-home");
+        std::fs::write(
+            global_config_path(home.path()),
+            "[runtimes.claude]\nargs = [\"--settings\", \"~/.claude/settings-va.json\"]\n\
+             [runtimes.codex]\nenv = { HTTPS_PROXY = \"http://127.0.0.1:7897\" }\n",
+        )
+        .unwrap();
+        let global = load_global(home.path()).unwrap();
+
+        // A project without `[runtimes]` inherits everything.
+        let plain = TempDir::new("runtimes-project-plain");
+        let resolved =
+            autome_domain::config::resolve(&global, &load_project(plain.path()).unwrap());
+        assert_eq!(resolved.runtimes, global.runtimes);
+
+        // `args = []` drops the global args; codex keeps the global env.
+        let repo = TempDir::new("runtimes-project");
+        let path = project_config_path(repo.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[loop]\nparallel = 3\n\n[runtimes.claude]\nargs = []\n",
+        )
+        .unwrap();
+        let mut project = load_project(repo.path()).unwrap();
+        assert_eq!(project.runtimes.claude.args, Some(Vec::new()));
+        assert!(project.runtimes.codex.is_empty());
+        let resolved = autome_domain::config::resolve(&global, &project);
+        assert!(resolved.runtimes.claude.is_empty());
+        assert_eq!(resolved.runtimes.codex, global.runtimes.codex);
+
+        // Saving an unrelated change keeps the hand-written section.
+        project.loop_overrides.parallel = Some(2);
+        save_project(repo.path(), &project).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[runtimes.claude]"), "{text}");
+        assert_eq!(load_project(repo.path()).unwrap(), project);
+
+        // A project's own args and env replace the global ones as a whole.
+        std::fs::write(
+            &path,
+            "[runtimes.claude]\nargs = [\"--settings\", \"~/.claude/settings-x.json\"]\n\
+             [runtimes.codex]\nenv = { NO_PROXY = \"*\" }\n",
+        )
+        .unwrap();
+        let resolved = autome_domain::config::resolve(&global, &load_project(repo.path()).unwrap());
+        assert_eq!(
+            resolved.runtimes.claude.args,
+            vec!["--settings".to_string(), "~/.claude/settings-x.json".into()]
+        );
+        assert_eq!(
+            resolved.runtimes.codex.env.into_iter().collect::<Vec<_>>(),
+            vec![("NO_PROXY".to_string(), "*".to_string())]
+        );
+
+        // The project file is validated like the global one.
+        std::fs::write(&path, "[runtimes.gemini]\nargs = []\n").unwrap();
+        assert!(load_project(repo.path()).is_err());
+        std::fs::write(&path, "[runtimes.claude]\nargs = [1]\n").unwrap();
+        assert!(load_project(repo.path()).is_err());
+    }
+
+    #[test]
+    fn runtime_args_reject_unknown_runtimes_and_non_strings() {
+        for bad in [
+            "[runtimes.gemini]\nargs = []\n",
+            "[runtimes.claude]\nargs = \"--settings x\"\n",
+            "[runtimes.claude]\nargs = [1]\n",
+            "runtimes = 1\n",
+            "[runtimes.codex]\nenv = \"x\"\n",
+            "[runtimes.codex]\nenv = { A = 1 }\n",
+        ] {
+            let dir = TempDir::new("runtimes-bad");
+            std::fs::write(global_config_path(dir.path()), bad).unwrap();
+            assert!(load_global(dir.path()).is_err(), "{bad}");
+        }
     }
 
     #[test]

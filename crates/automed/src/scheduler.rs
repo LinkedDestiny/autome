@@ -4018,7 +4018,11 @@ fn launch_session(
         cwd: &session_cwd,
         repo: &repo,
         runtime: role_config.runtime,
-        args: launcher::build_args(&role_config, &session_cwd, &layout.worktrees()),
+        args: launcher::with_runtime_args(
+            launcher::build_args(&role_config, &session_cwd, &layout.worktrees()),
+            resolved.runtimes.options(role_config.runtime),
+        ),
+        env: resolved.runtimes.options(role_config.runtime).env.clone(),
         prompt,
         mode: ctx.launch_mode,
     })?;
@@ -5822,9 +5826,8 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
 
     let global = config_io::load_global(&ctx.autome_home)?;
     let local = config_io::load_project(&repo)?;
-    let limit_minutes = config::resolve(&global, &local)
-        .loop_defaults
-        .session_minutes;
+    let resolved = config::resolve(&global, &local);
+    let limit_minutes = resolved.loop_defaults.session_minutes;
     let session_id = crate::store::new_id("ses");
     let launched = launcher::launch(&launcher::LaunchSpec {
         session_id: &session_id,
@@ -5835,7 +5838,11 @@ pub fn start_onboarding(ctx: &mut Ctx, project_id: &str) -> Result<String> {
         // Onboarding runs in the project root. For a repository that is a
         // checkout and `git_common_dirs` finds nothing outside it; for a
         // workspace it is not a repository at all and finds nothing either.
-        args: launcher::build_args(&role_config, &repo, &[repo.as_path()]),
+        args: launcher::with_runtime_args(
+            launcher::build_args(&role_config, &repo, &[repo.as_path()]),
+            resolved.runtimes.options(role_config.runtime),
+        ),
+        env: resolved.runtimes.options(role_config.runtime).env.clone(),
         prompt,
         mode: ctx.launch_mode,
     })?;

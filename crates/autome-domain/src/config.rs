@@ -142,6 +142,112 @@ pub struct GlobalConfig {
     /// with the core about what is true.
     #[serde(default)]
     pub ui: UiConfig,
+    /// Per-runtime launch options shared by every role on that runtime, e.g.
+    /// `[runtimes.claude] args = ["--settings", "~/.claude/settings-x.json"]`
+    /// so sessions run under a different Claude configuration than the
+    /// user's default one. A project can override it with its own
+    /// `[runtimes.<runtime>]` (see `ProjectConfig::runtimes`), e.g. when only
+    /// one project's sessions should run under another account.
+    #[serde(default, skip_serializing_if = "RuntimesConfig::is_empty")]
+    pub runtimes: RuntimesConfig,
+}
+
+/// `[runtimes.<runtime>]` in the global config.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimesConfig {
+    #[serde(default, skip_serializing_if = "RuntimeOptions::is_empty")]
+    pub claude: RuntimeOptions,
+    #[serde(default, skip_serializing_if = "RuntimeOptions::is_empty")]
+    pub codex: RuntimeOptions,
+}
+
+impl RuntimesConfig {
+    pub fn is_empty(&self) -> bool {
+        self.claude.is_empty() && self.codex.is_empty()
+    }
+
+    pub fn options(&self, runtime: Runtime) -> &RuntimeOptions {
+        match runtime {
+            Runtime::Claude => &self.claude,
+            Runtime::Codex => &self.codex,
+        }
+    }
+
+    /// The global options with a project's overrides applied, field by field.
+    pub fn overridden_by(&self, project: &RuntimeOverrides) -> Self {
+        Self {
+            claude: self.claude.overridden_by(&project.claude),
+            codex: self.codex.overridden_by(&project.codex),
+        }
+    }
+}
+
+/// `[runtimes.<runtime>]` in a project's config. Each field that is present
+/// replaces the global value as a whole (`args = []` drops the global
+/// arguments, an `env` table replaces the global `env` table); a field that is
+/// absent inherits the global one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOverrides {
+    #[serde(default, skip_serializing_if = "RuntimeOverride::is_empty")]
+    pub claude: RuntimeOverride,
+    #[serde(default, skip_serializing_if = "RuntimeOverride::is_empty")]
+    pub codex: RuntimeOverride,
+}
+
+impl RuntimeOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.claude.is_empty() && self.codex.is_empty()
+    }
+
+    pub fn for_runtime_mut(&mut self, runtime: Runtime) -> &mut RuntimeOverride {
+        match runtime {
+            Runtime::Claude => &mut self.claude,
+            Runtime::Codex => &mut self.codex,
+        }
+    }
+}
+
+/// One runtime's project override; `None` means "inherit the global value".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, String>>,
+}
+
+impl RuntimeOverride {
+    pub fn is_empty(&self) -> bool {
+        self.args.is_none() && self.env.is_none()
+    }
+}
+
+/// Launch options for one runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOptions {
+    /// Extra CLI arguments appended after Autome's own flags, verbatim. A
+    /// leading `~/` in an argument is expanded to the home directory at launch
+    /// (the CLI is started without a shell, so nothing else would expand it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Extra environment variables for the session process (e.g. a proxy:
+    /// `HTTPS_PROXY = "http://127.0.0.1:7897"`). Set on top of the core's own
+    /// environment; the CLI and every command it runs inherit them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl RuntimeOptions {
+    pub fn is_empty(&self) -> bool {
+        self.args.is_empty() && self.env.is_empty()
+    }
+
+    fn overridden_by(&self, project: &RuntimeOverride) -> Self {
+        Self {
+            args: project.args.clone().unwrap_or_else(|| self.args.clone()),
+            env: project.env.clone().unwrap_or_else(|| self.env.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +328,7 @@ impl Default for GlobalConfig {
             loop_defaults: LoopDefaults::default(),
             roles,
             ui: UiConfig::default(),
+            runtimes: RuntimesConfig::default(),
         }
     }
 }
@@ -300,6 +407,11 @@ pub struct ProjectConfig {
     /// How a session that crashed is retried before the task stops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
+    /// `[runtimes.<runtime>]` overrides of the global launch options, e.g. one
+    /// project's Claude sessions on another settings file while every other
+    /// project keeps the user's default configuration.
+    #[serde(default, skip_serializing_if = "RuntimeOverrides::is_empty")]
+    pub runtimes: RuntimeOverrides,
 }
 
 /// Host command run in the main checkout after a successful merge.
@@ -460,6 +572,9 @@ pub struct ResolvedConfig {
     #[serde(default = "default_gate_concurrency")]
     pub gate_quick_concurrency: u32,
     pub retry: RetryPolicy,
+    /// The global options with the project's `[runtimes]` overrides applied.
+    #[serde(default, skip_serializing_if = "RuntimesConfig::is_empty")]
+    pub runtimes: RuntimesConfig,
 }
 
 impl ResolvedConfig {
@@ -567,6 +682,7 @@ pub fn resolve(global: &GlobalConfig, project: &ProjectConfig) -> ResolvedConfig
             .unwrap_or(DEFAULT_GATE_SAME_FAILURE_LIMIT),
         gate_reuse_for_main_check: project.gate_reuse_for_main_check.unwrap_or(true),
         retry: project.retry.unwrap_or_default(),
+        runtimes: global.runtimes.overridden_by(&project.runtimes),
     }
 }
 
